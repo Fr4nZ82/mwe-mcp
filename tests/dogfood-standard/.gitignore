@@ -1,0 +1,4 @@
+# Throwaway runtime artefacts — never commit JWTs or session cookies.
+tokens/
+*.jwt
+cookies.txt

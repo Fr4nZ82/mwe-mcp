@@ -1,0 +1,40 @@
+{
+  "consumer": "claude-code",
+  "consumer_label": "Claude Code (Anthropic)",
+  "milestone": "OAuth smart consumer — a strongly-recommended, token-less, cross-platform SessionStart recall+capture hook (operator-installed)",
+  "spec_reference": "wiki/design-notes/web-agent-oauth.md + wiki/development/agents-bridges.md",
+  "status": "ready",
+  "target_file": "~/.claude/settings.json (global, matches --scope user) or <project>/.claude/settings.json (per-project override).",
+  "installation": "The OPERATOR (human) merges `snippet.hooks` into their settings.json `hooks` key — an agent cannot do it: merging an externally-sourced hook into settings.json is self-modification with external content, which Claude Code's safety classifier blocks. No script file, no token, no placeholders.",
+  "policy": "Claude Code connects over OAuth (no static token). The MCP `instructions` field is a passive nudge the model may ignore (claude.ai, on-demand by design, does); this SessionStart hook is what makes recall + capture fire RELIABLY at the start of every session — without it Claude Code may not auto-recall or auto-capture at all, so it is strongly recommended, not optional. It is a TOKEN-LESS `command` hook that writes a fixed reminder to stdout — for SessionStart, stdout is added to the model's context directly (no JSON envelope needed) — telling the model to call smart_bootstrap then recall. It holds no secret and calls nothing on the server: the recall is the model's own tool call, so its results land in context naturally. Per-prompt recall stays model-driven (hook inputs can't be templated with the prompt). Cross-platform: a single-quoted `echo` runs identically under every shell Claude Code uses for hooks — `sh` on macOS/Linux, Git Bash or PowerShell on Windows (single quotes are string delimiters in all three; Claude Code does not use cmd.exe for hooks). It avoids `printf` (absent on Windows) and the JSON envelope.",
+  "tools_referenced": {
+    "smart_bootstrap": {
+      "status": "shipped",
+      "note": "The model calls it itself at session start (nudged by this hook + the skill). Surfaces the smart consumer's owned wikis — its operational wiki (marked is_self: true) + any project wikis — and pending briefing items. Smart-only. See wiki/protocol/tool-reference.md."
+    },
+    "recall_core_global": {
+      "status": "shipped",
+      "note": "The model calls it on the first prompt / on a topic shift (steered by the skill). Owner-scoped transversal recall over the user's own wikis. Smart-only."
+    }
+  },
+  "snippet": {
+    "hooks": {
+      "SessionStart": [
+        {
+          "matcher": "*",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "echo 'mwe-mcp memory is connected. Load it now: call smart_bootstrap to pull your operational wiki and any briefing, then recall relevant memory before answering. Capture durable facts as you go, routed per the core / smart-consumer skill: project knowledge to the project wiki, your own operating notes to your operational wiki, facts about the user via wiki_ingest_message. Never dump everything into the user standard memory.'",
+              "timeout": 5
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "recommended": [
+    "SessionStart"
+  ],
+  "optional": []
+}

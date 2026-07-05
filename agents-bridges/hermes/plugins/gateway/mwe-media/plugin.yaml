@@ -1,0 +1,10 @@
+name: mwe-media
+version: 0.1.0
+description: "Gateway media → mwe-mcp memory: uploads incoming Telegram media to the mwe server out of band (POST /media) and spools the catalog ids for the bridge's per-turn ingest (the mwe-mcp hermes bridge, media half). Fail-closed for unmapped senders. Opt-in: add mwe-media to plugins.enabled in config.yaml. Stdlib-only, no pip dependencies."
+# Explicit kind so hermes never reclassifies this plugin on a source
+# sniff — it must load through the general hook system.
+kind: standalone
+requires_env:
+  - MWE_TOKEN
+provides_hooks:
+  - pre_gateway_dispatch

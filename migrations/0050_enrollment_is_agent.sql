@@ -1,0 +1,18 @@
+-- 0050_enrollment_is_agent — explicit `is_agent` marker on enrollment_users
+--
+-- The "diagonal identity model" (wiki/concepts/identity-and-acl.md §1.5) distinguished a
+-- standard consumer's bot identity (a credential-less system user) from a human only by the
+-- *absence* of a `user_credentials` row — which §1.5 itself flagged as unreliable: "a bot is
+-- not reliably distinguishable from a not-yet-onboarded human by credentials alone … an
+-- explicit `is_system` marker would let us gate it too — deferred". This column is that
+-- marker, now un-deferred (agent wiring).
+--
+-- `is_agent = 1` marks an `enrollment_users` row as a consumer agent's OWN identity (the
+-- system user a standard token binds, e.g. `hermes1`). It is set the moment a standard
+-- consumer token connects (crates/mwe-mcp-server/src/mcp/auth.rs establishes the
+-- consumer↔system-user binding from the token, no separate `consumer_register` needed) and
+-- when such a token is issued. It is **mutually exclusive** with a `user_credentials` login
+-- account, enforced in both directions (enrollment::validate_token_identity bars a
+-- credentialed human from a standard token; the credential-creation paths bar an agent from a
+-- login): an identity is EITHER a human with a login OR an agent, never both.
+ALTER TABLE enrollment_users ADD COLUMN is_agent INTEGER NOT NULL DEFAULT 0;

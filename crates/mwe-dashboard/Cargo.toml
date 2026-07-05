@@ -1,0 +1,79 @@
+[package]
+name = "mwe-dashboard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Built-in PWA dashboard for mwe-mcp: Axum routes /dashboard/*, Maud templating, HTMX, embedded static assets"
+
+[lib]
+name = "mwe_dashboard"
+path = "src/lib.rs"
+
+[dependencies]
+mwe-core = { path = "../mwe-core", version = "0.18.0" }
+
+axum = { workspace = true }
+axum-extra = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+maud = { workspace = true }
+rust-embed = { workspace = true }
+
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+jsonwebtoken = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+
+# Password hashing for /dashboard/setup, /dashboard/login,
+# /dashboard/accept-invite, /dashboard/settings/me (A.9 + A.12).
+argon2 = { workspace = true }
+password-hash = { workspace = true }
+time = { workspace = true }
+serde_html_form = { workspace = true }
+
+# Password recovery + 2FA (roadmap 28). lettre = SMTP over rustls;
+# totp-rs/qrcode = TOTP enrollment; chacha20poly1305/sha2 = encrypt the
+# TOTP shared secret at rest with a key derived from MWE_TOKEN_SECRET.
+lettre = { workspace = true }
+totp-rs = { workspace = true }
+qrcode = { workspace = true }
+chacha20poly1305 = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+getrandom = { workspace = true }
+hex = { workspace = true }
+# C.8.a admin LLM-config editor serializes the live Config back into
+# mwe-mcp.config.yaml on save. Already a workspace dep (mwe-core uses
+# it for the load side); pulling it in here keeps the dashboard
+# self-contained.
+serde_yaml = { workspace = true }
+
+# Markdown → HTML for the wiki page preview rendered at
+# `/dashboard/wiki/:id/view/*path`. Heading slugs are computed via
+# `mwe_core::briefing::slug_from_heading` so the C.11.f comment
+# anchors line up onto the rendered `<h*>` elements.
+pulldown-cmark = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = { workspace = true }
+http-body-util = "0.1"
+hyper = { workspace = true }
+mwe-core = { path = "../mwe-core", version = "0.18.0", features = ["test-fakes"] }
+# Untar the export route's response body in the wiki-export tests.
+tar = { workspace = true }
+# Pinned to the already-transitive copy used by `axum::Form` — the
+# C.0.4 prompt-editor tests submit large markdown bodies that need
+# proper percent-encoding, doing it manually with `Body::from` is
+# error-prone.
+serde_urlencoded = "0.7"

@@ -1,0 +1,77 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# IDE / editor
+/.idea/
+/.vscode/
+*.iml
+*.swp
+*~
+.DS_Store
+# Obsidian per-vault editor state (workspace layout, enabled plugins, appearance,
+# graph view). The product is Obsidian-native, but these are personal per-machine
+# editor config — same category as .idea/.vscode above. Unanchored so it matches
+# .obsidian/ at any depth (repo root + wiki/).
+.obsidian/
+
+# Local workdir / state (mwe-mcp runtime)
+/work/
+/work_example/
+/work-bridgetest/
+/.mwe-mcp.lock
+*.mwe-write-in-progress
+
+# Claude Code session artefacts (runtime locks, scheduled-task state)
+/.claude/
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+
+# Build artifacts (static assets compilati da tailwind)
+# NOTE: the dashboard build output `crates/mwe-dashboard/assets/tailwind.css`
+# IS committed — it is the source rust-embed pulls in at compile time, and
+# Cargo cannot run the standalone tailwindcss CLI itself. Devs re-run
+# `tailwindcss -i tailwind/app.css -o crates/mwe-dashboard/assets/tailwind.css --minify`
+# after editing tailwind/ (see wiki/development/build-run.md).
+/static/tailwind.css
+
+# Logs / temp
+*.log
+*.tmp
+*.pid
+
+# Test artifacts
+/coverage/
+/profraw/
+*.profraw
+*.profdata
+
+# Playwright MCP scratch (snapshots, console logs, debug screenshots)
+/.playwright-mcp/
+/home-*.png
+/phase*-*.png
+/dogfood-*.png
+
+# Dashboard runtime comment/submission cache (created at runtime, not source)
+/.comment-md-cache/
+
+# OS
+Thumbs.db
+
+# gitignored
+/gitignored/
+.secrets
+
+# Historical design corpus — the frozen "road behind" archive. The whole
+# Italian planning corpus lives here on disk as a reference of last resort;
+# OUT of the tracked repo. Canonical current state lives in the engineering
+# wiki (wiki/), forward work in wiki/roadmap.md. The nested road-behind/
+# inside it is the deeper pre-0.2.0 layer.
+/road-behind/
+/work_qwen_35b/
+/work_gemini_flash/
+__pycache__/

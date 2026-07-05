@@ -1,0 +1,13 @@
+---
+source: crates/mwe-core/src/render.rs
+expression: out.text
+---
+# Controller API edit-composition
+
+
+Endpoint del Widget Pro che gestisce l'edit di una composition utente.
+
+
+[redacted]
+
+[redacted]

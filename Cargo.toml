@@ -1,0 +1,208 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mwe-core",
+    "crates/mwe-mcp-server",
+    "crates/mwe-dashboard",
+    "crates/mwe-mcp-tray",
+]
+
+[workspace.package]
+version = "0.18.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/Fr4nZ82/mwe-mcp"
+homepage = "https://github.com/Fr4nZ82/mwe-mcp"
+authors = ["Francesco <fr4nz82@gmail.com>"]
+description = "Memory Wiki Engine — agent-agnostic MCP server for persistent structured memory"
+keywords = ["mcp", "memory", "wiki", "llm", "agent"]
+categories = ["database", "command-line-utilities"]
+
+[workspace.dependencies]
+# MCP SDK (Rust, official)
+rmcp = { version = "=1.7.0", default-features = false, features = [
+    "server",
+    "macros",
+    "tower",
+    "transport-io",
+    "transport-streamable-http-server",
+] }
+http = "1"
+
+# HTTP / web — `multipart` backs the `POST /media` upload endpoint.
+axum = { version = "0.7", features = ["macros", "multipart"] }
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "compression-gzip", "fs", "normalize-path"] }
+hyper = { version = "1", features = ["full"] }
+
+# Templating server-side
+maud = { version = "0.26", features = ["axum"] }
+
+# Markdown → HTML for the dashboard wiki page preview (C.11.f
+# discoverability fix follow-up: replace the verbatim `<pre>` body
+# with a rendered preview where comments anchor onto real heading
+# elements). Pinned at 0.13 — current stable, fast, escape-aware.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+
+# Database — sqlx with compile-time SQL validation
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate", "json", "uuid"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+
+# Desktop tray (mwe-mcp-tray only): KDE/freedesktop StatusNotifierItem over
+# DBus (zbus) — no GTK, no OpenSSL. Linux control surface for the systemd
+# service (roadmap 14d).
+ksni = { version = "0.3", default-features = false, features = ["tokio"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Auth
+jsonwebtoken = "9"
+
+# Password hashing for the dashboard login (A.9 + A.12). PHC Argon2id
+# with OWASP-recommended defaults; tuning lands in mwe-mcp.config.yaml
+# in Phase B.
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["getrandom"] }
+
+# Cookie jar for the dashboard's sliding-TTL session.
+axum-extra = { version = "0.9", default-features = false, features = ["cookie"] }
+
+# HTML-form decoder that supports repeated keys (members=a&members=b →
+# Vec<String>) — serde_urlencoded, which axum::Form uses, does not.
+serde_html_form = "0.2"
+
+# IDs
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+
+# RNG for secret material (HS256 token secret bootstrap)
+getrandom = "0.2"
+
+# SMTP client for self-service password recovery (roadmap 28). rustls
+# transport only — no OpenSSL (CLAUDE.md §9). Async over the tokio
+# executor; `builder` for the typed Message API.
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport",
+    "tokio1-rustls-tls",
+    "builder",
+    "hostname",
+] }
+
+# TOTP (RFC 6238) + QR enrollment for dashboard 2FA (roadmap 28).
+# Pure-Rust, MIT/Apache. `otpauth` builds the provisioning URI,
+# `gen_secret` mints the shared secret; we render the QR ourselves with
+# the `qrcode` crate (inline SVG) rather than totp-rs's `qr` feature,
+# which would drag in the `image` crate.
+totp-rs = { version = "5", default-features = false, features = ["otpauth", "gen_secret"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
+# Encrypt the TOTP shared secret at rest (roadmap 28). XChaCha20-Poly1305
+# AEAD keyed off a SHA-256 derivation of MWE_TOKEN_SECRET — rotating the
+# token secret invalidates 2FA enrollments (documented). RustCrypto,
+# MIT/Apache. (`sha2` for the key derivation is already a workspace dep.)
+chacha20poly1305 = "0.10"
+
+# File watching
+notify = "6"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# .env loader — used by `mwe-mcp` to read `<workdir>/mwe-mcp.env` at
+# subcommand startup so operators no longer have to `source` an env
+# file in every shell. Maintained fork of the original `dotenv` crate.
+dotenvy = "=0.15.7"
+
+# Tracing — writer on stderr (rmcp stdio gotcha). `tracing-appender`
+# adds the rotating file sink so an operator running `mwe-mcp` detached
+# still has a `tail`-able log under `<workdir>/logs/` — extension of
+# decision O.1, not a revision (stderr stays as the second sink).
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
+tracing-appender = "0.2"
+
+# HTTP client (LLM/embedding backends)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+
+# Bundled local embedder (roadmap group 18) — Candle, a Rust ML stack
+# whose CPU kernels compile into the binary (no external onnxruntime/.so
+# at runtime, the reason it was chosen over ONNX/ORT). CPU by default; a
+# CUDA feature is opt-in (18f).
+#
+# Caveat surfaced by the 18a spike: candle-core 0.10.2 *unconditionally*
+# depends on `tokenizers` with the `onig` feature (Oniguruma), so the
+# build pulls a vendored C regex engine compiled by `cc`. It is statically
+# linked — the runtime binary stays self-contained — but the build now
+# needs a C compiler (matters for the cross-compile pipeline, 5m). Our own
+# `tokenizers` line is pinned to the same 0.22 + onig so the graph carries
+# one version, not two.
+candle-core = "=0.10.2"
+candle-nn = "=0.10.2"
+candle-transformers = "=0.10.2"
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+
+# Lockfile (R.1.6)
+fs2 = "0.4"
+
+# Wiki export archive (dashboard export feature). Plain uncompressed
+# tar — memory-wiki prose is small, no compression dep needed.
+tar = "0.4"
+
+# Static asset embedding (dashboard PWA)
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+
+# Error / utility
+anyhow = "1"
+thiserror = "2"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+# `time` is already pulled transitively by sqlx + cookie; we expose it
+# explicitly because the dashboard uses `cookie::set_max_age`, which
+# takes `time::Duration`.
+time = "0.3"
+
+# Unicode (slug pipeline B.21+B.22)
+unicode-normalization = "0.1"
+unicode-segmentation = "1"
+
+# Crypto / hashing
+sha2 = "0.10"
+hex = "0.4"
+
+# Base64 — image bytes riding the multimodal ingest call (media pipeline)
+base64 = "0.22"
+
+# Async traits
+async-trait = "0.1"
+
+# Concurrency helpers
+dashmap = "6"
+parking_lot = "0.12"
+
+# Test / bench (referenced from each crate's [dev-dependencies] with workspace = true)
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
+insta = { version = "1", features = ["yaml"] }
+filetime = "0.2"
+wiremock = "0.6"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.test]
+opt-level = 1

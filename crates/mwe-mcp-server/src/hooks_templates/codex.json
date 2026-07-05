@@ -1,0 +1,10 @@
+{
+  "consumer": "codex",
+  "consumer_label": "Codex (OpenAI)",
+  "milestone": "no native hook surface yet (placeholder)",
+  "spec_reference": "wiki/protocol/mcp-tools.md",
+  "status": "no_native_hook_mechanism_yet",
+  "note": "Codex (as of 2026-05) does not expose SessionStart / UserPromptSubmit / PostToolUse hook equivalents to Claude Code. mwe-mcp cannot ship a Codex hook bundle until that surface exists. Use the mwe-mcp skills directly from chat (or from your consumer's system prompt) as the entry point: load `core-globalmemory` for transversal recall when the cwd has no `.mwe/state.json`, or `smart-consumer` for companion-bound work. See `wiki/design-notes/mcp-dispatcher.md` for the dispatcher logic.",
+  "fallback_pattern": "Without hooks, the consumer must invoke the relevant mwe-mcp skill explicitly at session start. The skill catalogue (`GET /skills`) and `skill_fetch` MCP tool let you pull skill bodies on demand; system-prompt augmentation is the universal fallback for consumers without a native skill loader. See `wiki/protocol/mcp-tools.md` for the three options (skill native / system-prompt augmentation / future `InitializeResult.instructions`).",
+  "snippet": null
+}

@@ -1,0 +1,90 @@
+name: release
+
+# Build the download-and-run binaries (roadmap 5m). On a `v*` tag this
+# publishes the artifacts to the GitHub Release; `workflow_dispatch` runs the
+# same build matrix as a DRY RUN (no upload) so the cross-OS bundled-embedder
+# build — candle + the onig C dependency on Windows/macOS — can be verified
+# before a real tag is cut.
+#
+# The binary is built `--features local-embedder`, so the shipped default is
+# the in-binary Candle embedder (no external embedding service). The CI test
+# workflow (ci.yml) is separate.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # A tag does not create a GitHub Release on its own, and the upload action
+  # below uploads to an EXISTING release (otherwise: "release not found").
+  # Create it once, before the matrix, so the parallel upload jobs have a
+  # target and do not race to create it. Skipped on workflow_dispatch (the
+  # dry run uploads nothing).
+  create-release:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: taiki-e/create-gh-release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    name: ${{ matrix.target }}
+    needs: create-release
+    # Run after create-release on a tag; still run on workflow_dispatch, where
+    # create-release is skipped (dry run, no upload).
+    if: always() && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-14
+            target: aarch64-apple-darwin
+          # macOS x86_64 (Intel) is intentionally omitted: GitHub's macos-13
+          # Intel runners are scarce/deprecated (a dry-run job sat queued
+          # for >1h). Apple Silicon (aarch64) covers modern Macs; re-add
+          # `{ os: macos-13, target: x86_64-apple-darwin }` if Intel demand appears.
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      # Builds `cargo build --release --features local-embedder --bin
+      # mwe-mcp`, archives (tar.gz on unix, zip on Windows), writes a
+      # per-asset .sha256, and uploads to the tag's Release. On
+      # workflow_dispatch (no tag) it is a dry run: it builds + packages but
+      # uploads nothing, which is how we smoke the Windows/macOS feature build.
+      - name: Build + package + upload mwe-mcp
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: mwe-mcp
+          target: ${{ matrix.target }}
+          features: local-embedder
+          archive: mwe-mcp-$tag-$target
+          checksum: sha256
+          include: README.md,LICENSE-MIT,LICENSE-APACHE
+          token: ${{ secrets.GITHUB_TOKEN }}
+          dry-run: ${{ github.ref_type != 'tag' }}

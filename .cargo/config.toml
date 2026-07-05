@@ -1,0 +1,15 @@
+[build]
+# Use sparse registry protocol for faster index updates
+# (default in stable since 1.70, set explicitly for clarity)
+
+[target.'cfg(all())']
+rustflags = [
+    "-W", "clippy::pedantic",
+    "-W", "clippy::nursery",
+    "-A", "clippy::module_name_repetitions",
+    "-A", "clippy::missing_errors_doc",
+    "-A", "clippy::missing_panics_doc",
+]
+
+[net]
+git-fetch-with-cli = true

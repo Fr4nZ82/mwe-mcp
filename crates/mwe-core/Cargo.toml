@@ -1,0 +1,90 @@
+[package]
+name = "mwe-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Headless core for mwe-mcp: memory engine, parser, ACL, REM, internal APIs"
+
+[lib]
+name = "mwe_core"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+notify = { workspace = true }
+jsonwebtoken = { workspace = true }
+getrandom = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+fs2 = { workspace = true }
+unicode-normalization = { workspace = true }
+unicode-segmentation = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+async-trait = { workspace = true }
+tar = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+reqwest = { workspace = true }
+rust-embed = { workspace = true }
+tempfile = { workspace = true }
+
+# Bundled local embedder (roadmap group 18). Heavy ML deps, so kept
+# optional and gated behind the off-by-default `local-embedder` feature
+# during the engine spike (18a); flips to a default feature once the
+# group lands (18b/18e).
+candle-core = { workspace = true, optional = true }
+candle-nn = { workspace = true, optional = true }
+candle-transformers = { workspace = true, optional = true }
+tokenizers = { workspace = true, optional = true }
+
+[features]
+default = []
+# Fault injection per test E2E (R.1.7)
+mwe-mcp-test-faults = []
+# Expose `FakeEmbedder` / `FakeLlmBackend` so downstream test crates
+# (mwe-dashboard tests, integration suites in Phase B) can build a
+# recall/REM pipeline without hitting the network.
+test-fakes = []
+# Bundled local embedder (Candle / bge-m3) — roadmap group 18. Gates the
+# Candle stack (heavy ML deps + a build-time C compiler for onig), so it is
+# kept off in the default dev/CI build to keep those fast; the published
+# GitHub release artifact is built WITH this feature so a downloaded binary
+# needs no external embedding service. The dashboard adapts at runtime via
+# `config::bundled_embedder_available()`.
+local-embedder = [
+    "dep:candle-core",
+    "dep:candle-nn",
+    "dep:candle-transformers",
+    "dep:tokenizers",
+]
+
+[dev-dependencies]
+proptest = { workspace = true }
+insta = { workspace = true }
+criterion = { workspace = true }
+filetime = { workspace = true }
+wiremock = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "macros"] }
+
+[[bench]]
+name = "parser_throughput"
+harness = false
+
+# Engine spike for the bundled embedder (roadmap 18a). Downloads bge-m3,
+# runs it through Candle on CPU, and compares the vectors against the
+# Ollama bge-m3 baseline. Manual tool, not part of `cargo test`.
+[[example]]
+name = "embedder_spike"
+required-features = ["local-embedder"]

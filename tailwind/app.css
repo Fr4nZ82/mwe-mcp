@@ -1,0 +1,1491 @@
+/* ────────────────────────────────────────────────────────────
+   mwe-mcp · Tailwind entry point.
+   Fed to the standalone tailwindcss CLI to produce
+   `crates/mwe-dashboard/assets/tailwind.css`, embedded into the
+   dashboard binary via rust-embed and served at
+   `/dashboard/static/tailwind.css`.
+
+   Layered as:
+     1. Design tokens (single source of truth, from the design pack)
+     2. Tailwind v4 preflight + utility engine
+     3. @source declarations so v4 scans the Maud HTML macros in `.rs`
+     4. @theme block that maps the design tokens onto Tailwind class
+        names — change a token in tokens.css, the whole dashboard
+        re-colours without touching markup
+     5. Self-hosted @font-face declarations (no Google CDN)
+     6. @layer base for bare-element styles
+     7. @layer components for design-pack pieces (.term-panel,
+        .wordmark), the chat-panel state machine, the mobile-nav
+        toggle, and the rules ported from the legacy
+        `assets/app.css` so per-page bodies keep their styling
+        with the new phosphor palette
+   ──────────────────────────────────────────────────────────── */
+
+@import "./tokens.css";
+@import "tailwindcss";
+
+/* Tailwind v4 auto-detects scan targets but does not know about
+   `.rs` files; explicitly tell it to look at every Maud-rendering
+   module in the dashboard crate. Paths are relative to this file. */
+@source "../crates/mwe-dashboard/src/**/*.rs";
+
+/* Map the design tokens (from tokens.css) onto Tailwind's class
+   namespace. v4 reads the `--color-*`, `--font-*`, `--radius`, and
+   `--shadow-*` variables under @theme and exposes them as
+   `bg-foo`, `text-foo`, `border-foo`, `font-foo`, `rounded`,
+   `shadow-foo` utilities. Naming mirrors the design pack's
+   tailwind.theme.js so anyone reading both files sees the same
+   surface. */
+@theme {
+  --color-bg:              var(--bg);
+  --color-bg-1:            var(--bg-1);
+  --color-bg-2:            var(--bg-2);
+  --color-bg-3:            var(--bg-3);
+  --color-border:          var(--border);
+  --color-border-hi:       var(--border-hi);
+  --color-phosphor:        var(--p);
+  --color-phosphor-bright: var(--p-bright);
+  --color-phosphor-dim:    var(--p-dim);
+  --color-text:            var(--text);
+  --color-text-dim:        var(--text-dim);
+  --color-amber:           var(--amber);
+  --color-rose:            var(--rose);
+  --color-sky:             var(--sky);
+
+  --font-mono: var(--font-mono);
+  --font-crt:  var(--font-crt);
+
+  --radius: var(--radius);
+
+  --shadow-glow: var(--glow);
+}
+
+/* Self-hosted JetBrains Mono — three weights cover the dashboard's
+   current needs (body=400, emphasised=700, wordmark=800). VT323 is
+   intentionally not loaded: the CRT scanline aesthetic was dropped
+   for v1 per the sober/no-CRT design choice. License: SIL OFL 1.1,
+   see crates/mwe-dashboard/assets/fonts/OFL.txt. WOFF2 only — every
+   browser the dashboard targets supports it. */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-weight: 400;
+  font-display: swap;
+  src: url('/dashboard/static/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-weight: 700;
+  font-display: swap;
+  src: url('/dashboard/static/fonts/JetBrainsMono-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-weight: 800;
+  font-display: swap;
+  src: url('/dashboard/static/fonts/JetBrainsMono-ExtraBold.woff2') format('woff2');
+}
+
+/* ────────────────────────────────────────────────────────────
+   Base styles — what every page gets unconditionally.
+   ──────────────────────────────────────────────────────────── */
+@layer base {
+  body {
+    /* Subtle radial halo from the design pack so the page does
+       not feel like a flat slab. `fixed` keeps the glow anchored
+       on scroll. */
+    background:
+      radial-gradient(120% 80% at 50% -10%, #0c1f1a 0%, var(--bg) 60%) fixed,
+      var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3 {
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--text);
+    margin: 0;
+  }
+  /* Breathing room between page-body blocks. Tailwind's preflight
+     resets margin to 0 on every element; left as-is the route
+     bodies render paragraphs glued to each other and headings
+     glued to the preceding paragraph. These three rules give
+     small but consistent rhythm — `.muted` paragraphs and the
+     in-form `<p>` stay zeroed via more specific rules already in
+     the components layer. */
+  p {
+    margin: 0 0 0.4rem;
+  }
+  h2 {
+    font-size: 1.15rem;
+    margin: 1.4rem 0 0.5rem;
+  }
+  h3 {
+    font-size: 1rem;
+    margin: 1rem 0 0.4rem;
+  }
+  /* Lists and blockquotes need vertical rhythm too. */
+  ul, ol {
+    margin: 0 0 0.6rem;
+    padding-left: 1.4rem;
+  }
+  li {
+    margin-bottom: 0.2rem;
+  }
+  code, pre {
+    font-family: var(--font-mono);
+  }
+  a {
+    color: var(--p);
+    text-decoration: none;
+  }
+  a:hover {
+    color: var(--p-bright);
+  }
+}
+
+/* ────────────────────────────────────────────────────────────
+   Components — recurring surfaces from the design pack + the
+   chat-panel / hamburger state machines + the page-body styles
+   ported from the legacy `assets/app.css` (Phase 3).
+   ──────────────────────────────────────────────────────────── */
+@layer components {
+
+  /* ── Design pack — terminal panel + wordmark ──────────── */
+
+  .term-panel {
+    @apply relative bg-bg-1 border border-border rounded p-6;
+  }
+  .term-panel::before,
+  .term-panel::after {
+    content: "";
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border: 1px solid var(--p);
+    opacity: 0.7;
+  }
+  .term-panel::before {
+    top: -1px; left: -1px;
+    border-right: 0; border-bottom: 0;
+  }
+  .term-panel::after {
+    bottom: -1px; right: -1px;
+    border-left: 0; border-top: 0;
+  }
+
+  .wordmark {
+    @apply font-mono font-extrabold tracking-tight text-phosphor-bright leading-none;
+    text-shadow: var(--shadow-glow);
+  }
+  .wordmark .dim {
+    @apply text-phosphor-dim;
+    text-shadow: none;
+  }
+
+  /* ── Mobile nav toggle ──────────────────────────────────
+     Below the md breakpoint the nav is hidden by default;
+     the hamburger button adds .nav-open to reveal it as a
+     stacked column underneath the topbar. From md upward
+     the nav is always visible inline. */
+  @media (max-width: 767px) {
+    nav.site-nav {
+      display: none;
+    }
+    nav.site-nav.nav-open {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      gap: 0.25rem;
+      margin-top: 0.5rem;
+    }
+  }
+
+  /* ── Chat panel state machine ───────────────────────────
+     Two body classes drive it:
+       .has-chat-panel  — server-rendered on every
+                          authenticated page.
+       .chat-open       — set by ui.js based on localStorage +
+                          viewport default; absent ⇒ panel
+                          hidden and the FAB takes over. */
+  .chat-panel {
+    display: none;
+  }
+  body.has-chat-panel.chat-open .chat-panel {
+    display: flex;
+  }
+  #chat-reopen {
+    display: none;
+  }
+  body.has-chat-panel:not(.chat-open) #chat-reopen {
+    display: inline-flex;
+  }
+  /* Reserve right-padding for the chat panel only when (a) the
+     panel is open AND (b) the viewport is at the xl breakpoint
+     (below xl the panel overlays rather than docks). The width
+     comes from `--chat-panel-width`, which `chat.js` updates on
+     resize / hydration; default 380px matches `.chat-panel`'s
+     declared width. */
+  @media (min-width: 1280px) {
+    body.has-chat-panel.chat-open {
+      padding-right: var(--chat-panel-width, 380px);
+    }
+  }
+
+  /* ── Ported from assets/app.css (2026-05-26 — Phase 3) ───
+     Variable references resolve via the legacy aliases in
+     tokens.css (e.g. `--bg-elev` → `--bg-1`). Inline hex
+     colors that did not map onto a token were swapped to a
+     reasonable phosphor equivalent (`#ffffff` input bg →
+     `var(--bg)`, `#f4f4f4` table-head → `var(--bg-3)`, the
+     red error backgrounds → `var(--error-bg)` rose tint).
+     Markup in the page bodies keeps using the original class
+     names (`.flash`, `.kpi`, `.config-table`, …) — no per-
+     route changes were needed for the re-skin. */
+
+  /* Default form / input / button styling. Logout form in
+     the header and the chat panel form opt out via their own
+     class rules below. */
+  form {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem;
+    margin-bottom: 1rem;
+    /* A plain single-column form hugs a readable width instead of sprawling
+       across the (now un-capped) page — left-aligned, like the rest of the
+       content. Data-bearing forms opt out automatically below. */
+    max-width: 45rem;
+  }
+  /* …but a form that carries a data table or a flex-wrap field grid wants the
+     full width to lay those out — `:has()` opts it back out without a marker
+     class on every such form (facts filter, the config-table editors, the
+     welcome primer's identity grid, …). */
+  form:has(table),
+  form:has(.field-grid),
+  form:has(.card-grid) {
+    max-width: none;
+  }
+  form p {
+    margin: 0 0 0.75rem;
+  }
+  /* A hint after its input sits on its own line under the field — inline it
+     would wrap mid-sentence in the leftover sliver next to the input. */
+  form p > small.muted {
+    display: block;
+    margin-top: 0.3rem;
+  }
+  label {
+    display: block;
+    font-size: 0.9rem;
+    color: var(--text-dim);
+    margin-bottom: 0.25rem;
+  }
+  input[type="text"],
+  input[type="password"],
+  input[type="email"],
+  input[type="date"],
+  input[type="tel"],
+  input[type="number"],
+  input[type="url"],
+  input[type="search"],
+  textarea,
+  select {
+    width: 100%;
+    /* Cap the natural width: with the page-wide 1040px clamp gone, a bare
+       `width:100%` input would stretch across a 4k screen. Fields stay at a
+       readable size; a field that genuinely needs more room opts out with
+       `.input-wide`, and `.field-grid` items get their own (smaller) cap. */
+    max-width: 32rem;
+    padding: 0.5rem 0.6rem;
+    font-size: 0.95rem;
+    font-family: var(--font-mono);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    color: var(--text);
+  }
+  input:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: var(--p);
+  }
+  textarea {
+    min-height: 5rem;
+    max-width: 52rem;
+    resize: vertical;
+  }
+  /* Opt-out for the inputs/texts that genuinely want the full column width
+     (long URLs, the prompt editor, raw-markdown editors). */
+  .input-wide,
+  textarea.prompt-editor {
+    max-width: none;
+  }
+  /* Numeric inputs hold 2–4 digits (page_size, top-K counts, hour windows) —
+     keep them compact instead of letting them span a whole text field. */
+  input[type="number"] {
+    max-width: 7rem;
+  }
+
+  /* ── Responsive field grid ──────────────────────────────────
+     The reusable "flex-wrap a form's fields into columns" layout. A form
+     whose fields are wrapped in `.field-grid` flows them side by side on a
+     wide screen and collapses to a single column on mobile — the mobile-first
+     default falls straight out of `flex-wrap` + a rem-based flex-basis. Each
+     direct child is one field (typically a `<p>` holding a label + input).
+       · `.field-wide`  — a field that wants the full row (long textareas,
+                          radio groups, a submit row).
+       · `.field-break` — a zero-height full-row spacer that forces what
+                          follows onto a new line. */
+  .field-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.5rem;
+    align-items: flex-start;
+  }
+  .field-grid > * {
+    /* Mobile: grow to fill the row (a lone field spans the full width). */
+    flex: 1 1 17rem;
+    min-width: 0;
+    max-width: 26rem;
+    margin: 0;
+  }
+  /* Desktop: a fixed, comfortable field width that does NOT stretch to fill —
+     otherwise a handful of short filter fields fan out to ~24rem each and
+     spread sparsely across a 4k row. Fields pack left at their natural size and
+     wrap; `.field-narrow` / `.field-wide` keep their own (more specific) flex. */
+  @media (min-width: 768px) {
+    .field-grid > * {
+      flex: 0 1 18rem;
+    }
+  }
+  .field-grid > .field-wide {
+    flex-basis: 100%;
+    max-width: none;
+  }
+  /* A field whose value is short (a number, a slug) — shrink the cell so it
+     hugs the input instead of leaving a wide empty cell beside it. */
+  .field-grid > .field-narrow {
+    flex: 0 1 8rem;
+    max-width: 10rem;
+  }
+  .field-grid > .field-break {
+    flex-basis: 100%;
+    max-width: none;
+    height: 0;
+    margin: 0;
+  }
+  /* Inside a field grid the input already fills its (capped) cell, so drop the
+     element-level cap that would otherwise fight the cell width — except for
+     numeric inputs, which stay compact (see `input[type="number"]`). */
+  .field-grid input:not([type="number"]),
+  .field-grid select,
+  .field-grid textarea {
+    max-width: none;
+  }
+
+  /* Readability cap for free-flowing copy now that `main` is wide: keep a
+     descriptive paragraph to a comfortable measure instead of letting it run
+     the full width of a 4k screen. Only top-level intro/help paragraphs are
+     targeted — copy inside forms, table cells, `.field-grid`, the chat panel,
+     or `.prose` (capped just below) manages its own width. */
+  main > p,
+  main > p.muted,
+  main > p.help,
+  main > p.small {
+    max-width: 82ch;
+  }
+  .wiki-page-view.prose {
+    max-width: 86ch;
+  }
+
+  /* Page content width. `.app-main` is the default wide cap; the centered
+     variants below cap it narrower for single-form / reading surfaces. All
+     three live in @layer components so specificity (not just layer order)
+     decides — which is why `main` carries `.app-main` rather than a
+     `max-w-[…]` utility (a utility would win over these by Tailwind's layer
+     order). `main` is `mx-auto`, so capping its width centers the column. */
+  .app-main {
+    max-width: 2200px;
+  }
+  /* Single-form anonymous pages (login / setup / invite / recovery): center the
+     form as a narrow column instead of pinning it to the left of a wide page —
+     heading and form move together. */
+  body.anon-shell main {
+    max-width: 30rem;
+  }
+  /* Reading-width surfaces: a centered ~52rem column. Authenticated ones — a
+     wiki page, a page viewer, edit/comment/describe forms, help; and the
+     anonymous onboarding pages — the public front splash and the bridges
+     catalog / guides, which are informational, not single forms (those keep
+     the narrower `anon-shell`). The prose preview drops its own measure cap
+     here so it fills and centers with the column rather than left-aligning
+     inside it. */
+  body.reading-main main {
+    max-width: 52rem;
+  }
+  body.reading-main .wiki-page-view.prose {
+    max-width: none;
+  }
+  button,
+  input[type="submit"] {
+    appearance: none;
+    background: var(--p);
+    color: var(--bg);
+    border: 0;
+    padding: 0.55rem 0.9rem;
+    border-radius: var(--radius);
+    font-size: 0.9rem;
+    font-family: var(--font-mono);
+    font-weight: 600;
+    cursor: pointer;
+    min-height: 36px;
+  }
+  button:hover,
+  input[type="submit"]:hover {
+    background: var(--p-bright);
+  }
+  button.secondary {
+    background: transparent;
+    color: var(--p);
+    border: 1px solid var(--p);
+  }
+  button.secondary:hover {
+    background: var(--bg-3);
+    color: var(--p-bright);
+  }
+  button.danger {
+    background: var(--rose);
+    color: var(--bg);
+  }
+  button.danger:hover {
+    background: var(--rose);
+    filter: brightness(1.15);
+  }
+
+  /* Header pieces overridden — they live outside `<main>`
+     and bring their own layout via Tailwind utilities. */
+  .logout-form {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    margin: 0;
+    padding: 0;
+  }
+  .chat-panel-form {
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    margin: 0;
+    padding: 0.75rem;
+  }
+
+  /* Flash banners — three semantic kinds. Phosphor versions
+     of the original light-theme palette: dimmed background
+     tint + saturated border + saturated text. */
+  .flash {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.75rem;
+    margin: 0 0 1rem;
+  }
+  .flash-error {
+    background: var(--error-bg);
+    color: var(--rose);
+    border-color: var(--rose);
+  }
+  .flash-success {
+    background: var(--success-bg);
+    color: var(--p-bright);
+    border-color: var(--p);
+  }
+  .flash-info {
+    background: var(--info-bg);
+    color: var(--sky);
+    border-color: var(--sky);
+  }
+
+  /* Pending-action spinner (welcome wizard, chat panel,
+     forge apply). */
+  .spinner {
+    display: inline-block;
+    width: 0.9em;
+    height: 0.9em;
+    border: 2px solid var(--border);
+    border-top-color: var(--p);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: middle;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* Tables (users / groups / tokens / proposals / wikis /
+     wiki-types / facts / prompts). Default desktop layout. */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.55rem 0.7rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th {
+    background: var(--bg-3);
+    color: var(--text);
+    font-weight: 600;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  tr:last-child td { border-bottom: 0; }
+
+  /* Tables that do not fit their viewport scroll horizontally
+     inside their own container instead of overflowing the page.
+     The container is added by `ui.js` at DOM-ready (wraps every
+     `main table` in a `<div class="table-wrap">`), which keeps
+     the table itself as native `display: table` so the thead and
+     tbody share one column layout — headers always line up with
+     row cells. `overflow-x: auto` shows a scrollbar only when
+     needed; desktop layouts that fit are untouched.
+     `-webkit-overflow-scrolling: touch` enables momentum scroll
+     on iOS. */
+  .table-wrap {
+    /* The wrapper is the table's own scroll viewport on BOTH axes: it scrolls
+       horizontally when the columns overflow (the original behaviour) and
+       vertically once the rows exceed `max-height`, so a long table scrolls
+       inside its frame instead of pushing the page down. Short tables stay
+       under the cap and show no scrollbar. Paired with the sticky `thead`
+       below, the header row stays pinned while the body scrolls.
+       The visual frame (border + rounded corners + surface) lives HERE rather
+       than on the table: a `<table>` with its own `overflow: hidden` (which is
+       what clips the rounded corners) becomes the sticky thead's scroll
+       container and the header scrolls away with the body. Framing the wrapper
+       instead — and letting the wrapped table overflow `visible` — lets the
+       sticky header resolve against this scrollport. */
+    overflow: auto;
+    max-width: 100%;
+    max-height: min(72vh, 760px);
+    -webkit-overflow-scrolling: touch;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-1);
+  }
+  .table-wrap > table {
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+  }
+  /* Header row stays put while the wrapper scrolls. `position: sticky` pins it
+     to the top of the nearest scroll container — which is `.table-wrap` itself.
+     The opaque background keeps body rows from showing through as they pass
+     underneath. `.facts-table.compact` keeps its own (denser) sticky header
+     rule below; this covers every other wrapped table (users, tokens, groups,
+     prompts, config tables, …). */
+  .table-wrap > table > thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--bg-3);
+  }
+  /* On mobile, cells get `white-space: nowrap` so single-line
+     values stay readable; the user swipes the table to see
+     hidden columns. Multi-line cells (long text, code blocks)
+     opt out with their own override. */
+  @media (max-width: 767px) {
+    main table th,
+    main table td {
+      white-space: nowrap;
+    }
+    /* No-JS fallback: if `ui.js` failed to wrap (e.g. JS
+       disabled), the table itself becomes the scroll container.
+       Header/row alignment degrades to "each row group lays out
+       independently" — accepted because no-JS is a rare path on
+       a dashboard that needs JS for chat anyway. */
+    main > table:not(.table-wrap > table),
+    main section > table:not(.table-wrap > table) {
+      display: block;
+      overflow-x: auto;
+      max-width: 100%;
+    }
+  }
+
+  /* Error page status label. */
+  .error .status { font-weight: 600; color: var(--rose); }
+
+  /* Muted text / help text / footer-style notes. */
+  .muted { color: var(--text-dim); }
+  .help { font-size: 0.85rem; margin-top: -0.4rem; color: var(--text-dim); }
+  .small { font-size: 0.8rem; margin-top: 0.2rem; }
+
+  /* In-cell forms (CRUD reprompts, revoke buttons). */
+  .inline-form {
+    display: inline-block;
+    margin: 0;
+    padding: 0;
+    background: none;
+    border: 0;
+  }
+  .inline-form button {
+    padding: 0;
+    min-height: 0;
+    background: none;
+    color: var(--p);
+    border: 0;
+    cursor: pointer;
+  }
+  .inline-form button.danger { color: var(--rose); }
+  td form.inline-form input[type="text"] {
+    width: 14rem;
+    padding: 0.2rem 0.4rem;
+    margin-right: 0.4rem;
+  }
+  td form.inline-form button {
+    padding: 0.2rem 0.6rem;
+    background: var(--p);
+    color: var(--bg);
+    border: 0;
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  /* A *filled* danger button (rose background) needs legible dark text.
+     Without resetting `color` here, the rose-text rule for the
+     link-style `.inline-form button.danger` above bleeds through and the
+     label renders rose-on-rose (unreadable). The dark `--bg` text on the
+     rose fill matches the base `button.danger`. */
+  td form.inline-form button.danger { background: var(--rose); color: var(--bg); }
+
+  .link-button {
+    background: none;
+    color: var(--p);
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+  }
+  .link-button.danger { color: var(--rose); }
+
+  .primary-action {
+    display: inline-block;
+    background: var(--p);
+    color: var(--bg);
+    text-decoration: none;
+    padding: 0.5rem 0.9rem;
+    border-radius: var(--radius);
+    margin-bottom: 1rem;
+  }
+  .primary-action:hover { background: var(--p-bright); }
+
+  /* Home page KPI tiles. */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+  .kpi {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.75rem;
+    text-align: center;
+  }
+  .kpi strong {
+    display: block;
+    font-size: 1.5rem;
+    color: var(--p-bright);
+  }
+
+  /* Home navigation link-lists laid out as side-by-side cards (Memory /
+     Admin actions / Your account). Auto-fit so they fill the row on a wide
+     screen and collapse to one column on mobile. */
+  .home-sections {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+    align-items: start;
+    margin-top: 1rem;
+  }
+  .home-card {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.4rem 1.1rem 0.9rem;
+  }
+  .home-card h2 {
+    /* The base `h2` carries a large top margin for in-flow rhythm; inside a
+       card it should sit near the top. */
+    margin-top: 0.6rem;
+  }
+  .home-card ul {
+    margin-bottom: 0;
+  }
+
+  /* Auto-fit card grid for the LLM-config sections — the provider/credential
+     cards and the per-role cards. ~2–3 columns on a wide screen (each card
+     keeps its controls side by side at ≥34rem) and one column on mobile, so
+     they use the page width instead of stacking in a tall narrow strip. Each
+     card brings its own frame via the inline CARD_STYLE; this only governs
+     their flow. `align-items: start` keeps a tall card (an expanded
+     «Advanced», the Ollama endpoint) from stretching its row-mates. */
+  .card-grid {
+    display: grid;
+    /* Exactly two columns on desktop, one on mobile — never three. An auto-fit
+       grid packs a third narrow column on a 4k screen, which reads badly for
+       these content-rich cards; a fixed two-column track avoids it. The
+       single-column default keeps mobile-first; `minmax(0, 1fr)` lets a card
+       shrink instead of overflowing on long content. */
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.8rem;
+    align-items: start;
+  }
+  @media (min-width: 1024px) {
+    .card-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  /* Group editor — checkbox grid for members. */
+  .members-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.75rem;
+  }
+  .member-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--text);
+  }
+
+  /* B.9 memory explorer + chat-response card. */
+  .wiki-page,
+  .suggested-seed,
+  .context-snippet {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.75rem;
+    white-space: pre-wrap;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--text);
+  }
+
+  .chat-response {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem;
+    margin-top: 1rem;
+  }
+  .chat-response dl {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.25rem 0.75rem;
+    margin: 0 0 0.75rem;
+  }
+  .chat-response dt { color: var(--text-dim); font-size: 0.85rem; }
+  .chat-response dd { margin: 0; }
+
+  /* Chat-panel bubbles + tool-call traces. */
+  .chat-panel-turn {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .chat-panel-user {
+    align-self: flex-end;
+    max-width: 90%;
+    background: var(--p);
+    color: var(--bg);
+    padding: 0.5rem 0.75rem;
+    border-radius: 12px 12px 2px 12px;
+    font-size: 0.9rem;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .chat-panel-bot {
+    align-self: flex-start;
+    max-width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0.5rem 0.75rem;
+    border-radius: 12px 12px 12px 2px;
+    font-size: 0.85rem;
+  }
+  .chat-panel-bot .chat-response {
+    margin-top: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+  .chat-panel-bot .chat-response h2 { display: none; }
+  .chat-panel-bot .chat-response h3 {
+    font-size: 0.85rem;
+    margin: 0.5rem 0 0.25rem;
+    color: var(--p);
+  }
+  /* Markdown rendered into the bot bubble (final_message_html). The
+     reply ships as paragraphs / lists / bold / code, so give it the
+     spacing + structure of a normal chat reply instead of the old
+     mono wall. The bubble keeps the dashboard's mono identity; what was
+     missing is the structure. Margins collapse to the bubble padding at
+     the edges so there is no double gap. */
+  .chat-panel-bot { line-height: 1.5; }
+  .chat-panel-bot > :first-child { margin-top: 0; }
+  .chat-panel-bot > :last-child { margin-bottom: 0; }
+  .chat-panel-bot p { margin: 0 0 0.6rem; }
+  .chat-panel-bot ul,
+  .chat-panel-bot ol { margin: 0 0 0.6rem; padding-left: 1.25rem; }
+  .chat-panel-bot li { margin: 0.15rem 0; }
+  .chat-panel-bot li > ul,
+  .chat-panel-bot li > ol { margin: 0.15rem 0; }
+  .chat-panel-bot h1,
+  .chat-panel-bot h2,
+  .chat-panel-bot h3,
+  .chat-panel-bot h4 {
+    font-size: 0.9rem;
+    margin: 0.75rem 0 0.35rem;
+    color: var(--p);
+  }
+  .chat-panel-bot strong { font-weight: 600; }
+  .chat-panel-bot a { color: var(--p); text-decoration: underline; }
+  .chat-panel-bot code {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.05rem 0.3rem;
+    font-size: 0.8rem;
+  }
+  .chat-panel-bot pre {
+    margin: 0 0 0.6rem;
+    padding: 0.4rem 0.5rem;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: auto;
+  }
+  .chat-panel-bot pre code { background: none; border: 0; padding: 0; }
+  .chat-panel-bot blockquote {
+    margin: 0 0 0.6rem;
+    padding-left: 0.6rem;
+    border-left: 2px solid var(--border);
+    color: var(--text-dim);
+  }
+  .chat-panel-bot table {
+    border-collapse: collapse;
+    margin: 0 0 0.6rem;
+    font-size: 0.8rem;
+  }
+  .chat-panel-bot th,
+  .chat-panel-bot td {
+    border: 1px solid var(--border);
+    padding: 0.2rem 0.4rem;
+    text-align: left;
+  }
+  .chat-panel-error {
+    background: var(--error-bg);
+    border: 1px solid var(--rose);
+    color: var(--rose);
+    padding: 0.4rem 0.6rem;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+  }
+  .chat-panel-tool {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.4rem 0.6rem;
+    font-size: 0.8rem;
+    max-width: 100%;
+    align-self: stretch;
+  }
+  .chat-panel-tool.is-error {
+    background: var(--error-bg);
+    border-color: var(--rose);
+  }
+  .chat-panel-tool-header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: baseline;
+    margin-bottom: 0.25rem;
+  }
+  .chat-panel-tool-name {
+    font-weight: 600;
+    color: var(--p);
+  }
+  .chat-panel-tool.is-error .chat-panel-tool-name {
+    color: var(--amber);
+  }
+  .chat-panel-tool-args {
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    word-break: break-all;
+  }
+  .chat-panel-tool-result {
+    margin: 0;
+    padding: 0.3rem 0.4rem;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    color: var(--text-dim);
+    max-height: 12rem;
+    overflow: auto;
+  }
+  .chat-panel-form textarea {
+    min-height: 3.5rem;
+    font-size: 0.9rem;
+    resize: vertical;
+  }
+  .chat-panel-form button {
+    align-self: flex-end;
+    padding: 0.35rem 0.75rem;
+    min-height: 0;
+    font-size: 0.85rem;
+  }
+
+  /* A11y helper for screen-reader-only text. */
+  .sr-only {
+    position: absolute;
+    left: -9999px;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+  }
+
+  /* Page-meta dl block (wiki view, edit form, comment form). */
+  section.meta dl {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.25rem 0.75rem;
+    margin: 0 0 1rem;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.75rem 1rem;
+  }
+  section.meta dt { color: var(--text-dim); font-size: 0.85rem; }
+  section.meta dd {
+    margin: 0;
+    color: var(--text);
+    /* `min-width: 0` lets the grid item shrink below its content
+       size (grid default is `min-width: auto` = max-content,
+       which blocks shrinking). Combined with `overflow-wrap:
+       anywhere`, long unbreakable strings like `schema_hash`
+       (64-char hex) or full URLs wrap at character boundaries
+       instead of escaping the card to the right. `anywhere` is
+       preferred over `break-all` because it tries word
+       boundaries first and only breaks mid-word when needed. */
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* Proposals tray — pending / applied sections + flashes. */
+  section.proposals-pending,
+  section.proposals-applied {
+    margin-top: 1.5rem;
+  }
+  section.proposals-pending h2,
+  section.proposals-applied h2 {
+    margin-bottom: 0.5rem;
+  }
+  section.proposal-flash {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.6rem 0.85rem;
+    margin: 0.5rem 0 1rem;
+  }
+  section.proposal-flash.flash-success {
+    background: var(--success-bg);
+    color: var(--p-bright);
+    border-color: var(--p);
+  }
+  section.proposal-flash.flash-error {
+    background: var(--error-bg);
+    color: var(--rose);
+    border-color: var(--rose);
+  }
+  section.proposal-flash code {
+    background: rgba(255, 255, 255, 0.06);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+  }
+
+  /* C.0.4 — operational prompt editor badges. */
+  .badge {
+    display: inline-block;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    border: 1px solid var(--border);
+    background: var(--bg-1);
+    color: var(--text-dim);
+  }
+  .badge.badge-default {
+    color: var(--p-bright);
+    background: var(--success-bg);
+    border-color: var(--p);
+  }
+  .badge.badge-modified {
+    color: var(--rose);
+    background: var(--error-bg);
+    border-color: var(--rose);
+  }
+  .badge.badge-bundled { color: var(--text-dim); }
+  .badge.badge-drift {
+    color: var(--sky);
+    background: var(--info-bg);
+    border-color: var(--sky);
+  }
+  /* Facts view: an un-promoted capture awaiting the light dream. */
+  .badge.badge-fresh {
+    color: var(--amber);
+    background: rgba(240, 178, 60, 0.12);
+    border-color: var(--amber);
+  }
+  .badge.badge-superseded { color: var(--text-dim); }
+  .badge.badge-deleted {
+    color: var(--rose);
+    background: var(--error-bg);
+    border-color: var(--rose);
+  }
+  .facts-table tr.fresh-row {
+    background: rgba(240, 178, 60, 0.06);
+  }
+
+  /* Compact data-grid for the facts browser: a wide, many-column table that
+     privileges density over polish. The shared `.table-wrap` (added by ui.js)
+     gives it horizontal scroll, so on mobile the operator swipes across the
+     columns — the functional, oldstyle answer to "20 columns on a phone". */
+  .facts-table.compact {
+    font-size: 0.72rem;
+    line-height: 1.25;
+    border-collapse: collapse;
+    white-space: nowrap;
+  }
+  .facts-table.compact th,
+  .facts-table.compact td {
+    padding: 0.12rem 0.4rem;
+    vertical-align: top;
+    border-bottom: 1px solid var(--border);
+  }
+  .facts-table.compact thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bg-1);
+    text-align: left;
+    font-weight: 600;
+    white-space: nowrap;
+    /* Override the global uppercased, larger th: this dense grid wants
+       small, plain (lower-case) headers that match the cell text. */
+    font-size: 0.68rem;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .facts-table.compact code { font-size: 0.72rem; }
+  /* Right-align numeric columns; tabular figures keep them aligned. */
+  .facts-table.compact td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  /* The body is the one cell allowed to wrap; everything else stays one line
+     and the table scrolls. Overrides the mobile `nowrap` rule above. */
+  .facts-table.compact td.body-cell {
+    white-space: normal;
+    min-width: 16rem;
+    max-width: 28rem;
+  }
+  /* Sortable column headers: a link with a ↑/↓ marker. */
+  .facts-table.compact a.sort-link {
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .facts-table.compact a.sort-link:hover { color: var(--p); text-decoration: underline; }
+  /* Click-to-copy fact ids. */
+  .facts-table.compact code.copy-id { cursor: pointer; }
+  .facts-table.compact code.copy-id:hover { color: var(--p); }
+  .facts-table.compact code.copy-id.copied { color: var(--p-bright); }
+  /* Inactive (superseded / deleted) rows recede. */
+  .facts-table.compact tr.inactive { opacity: 0.55; }
+  .facts-filter-toggle label { font-weight: 400; cursor: pointer; }
+
+  textarea.prompt-editor {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    min-height: 24rem;
+    line-height: 1.4;
+  }
+
+  .reset-section {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+
+  /* C.11.e — inline comments on the page view. */
+  .wiki-page-view {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+  .wiki-page-view .wiki-page {
+    border-radius: 0;
+    border-top-width: 0;
+    margin: 0;
+  }
+  .wiki-page-view .wiki-page:first-of-type {
+    border-top-width: 1px;
+    border-top-left-radius: var(--radius);
+    border-top-right-radius: var(--radius);
+  }
+  .wiki-page-view .wiki-page:last-child {
+    border-bottom-left-radius: var(--radius);
+    border-bottom-right-radius: var(--radius);
+  }
+
+  /* Admin ACL-reveal (dashboard operator override). When the admin
+     flips the reveal toggle, `render::render_admin_reveal` wraps a
+     fragment the viewer could not normally read in `.acl-revealed`
+     (a span inline, a div for a whole-line region) so it reads as
+     "privileged / normally hidden" — amber, the warning accent. The
+     toggle + banner gate the mode visibly. See
+     wiki/design-notes/redaction-policy.md. */
+  .wiki-page-view .acl-revealed {
+    background: var(--amber-bg);
+    box-shadow: inset 0 0 0 1px var(--amber);
+    border-radius: 3px;
+    padding: 0 0.25rem;
+  }
+  .wiki-page-view div.acl-revealed {
+    display: block;
+    padding: 0.5rem 0.85rem;
+    margin: 0.7rem 0;
+    border-left: 3px solid var(--amber);
+    box-shadow: none;
+  }
+  .acl-reveal-toggle {
+    margin: 0.5rem 0;
+    font-size: 0.9rem;
+  }
+  .acl-reveal-label {
+    cursor: pointer;
+    color: var(--text-dim);
+  }
+  .acl-reveal-banner {
+    border-color: var(--amber);
+    border-left: 3px solid var(--amber);
+    background: var(--amber-bg);
+    color: var(--text);
+  }
+
+  /* Prose styles for the markdown preview rendered by
+     `md_render::render`. Sits inside `<section
+     class="wiki-page-view prose">` on both the page viewer
+     (/dashboard/wiki/:id/view/*path) and the wiki home's index.md
+     preview. The container itself gets the panel frame so
+     interleaved comment blocks remain visually distinct from
+     prose paragraphs. */
+  .wiki-page-view.prose {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+    display: block;
+    color: var(--text);
+  }
+  .wiki-page-view.prose h1,
+  .wiki-page-view.prose h2,
+  .wiki-page-view.prose h3,
+  .wiki-page-view.prose h4,
+  .wiki-page-view.prose h5,
+  .wiki-page-view.prose h6 {
+    /* Brighter than body text so headings read at a glance. */
+    color: var(--p-bright);
+    margin: 1.5rem 0 0.5rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    scroll-margin-top: 5rem; /* compensate sticky topbar on #anchor jumps */
+  }
+  .wiki-page-view.prose h1 { font-size: 1.4rem; margin-top: 0; }
+  .wiki-page-view.prose h2 { font-size: 1.2rem; }
+  .wiki-page-view.prose h3 { font-size: 1.05rem; }
+  .wiki-page-view.prose h4,
+  .wiki-page-view.prose h5,
+  .wiki-page-view.prose h6 { font-size: 1rem; }
+  .wiki-page-view.prose p { margin: 0 0 0.7rem; }
+  .wiki-page-view.prose ul,
+  .wiki-page-view.prose ol { margin: 0 0 0.7rem; padding-left: 1.4rem; }
+  .wiki-page-view.prose li { margin-bottom: 0.25rem; }
+  .wiki-page-view.prose blockquote {
+    border-left: 3px solid var(--p-dim);
+    margin: 0.5rem 0 0.7rem;
+    padding: 0.2rem 0.75rem;
+    color: var(--text-dim);
+    background: var(--bg-2);
+    border-radius: 0 var(--radius) var(--radius) 0;
+  }
+  .wiki-page-view.prose code {
+    background: var(--bg-2);
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.9em;
+    color: var(--p-bright);
+  }
+  .wiki-page-view.prose pre {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.6rem 0.75rem;
+    overflow-x: auto;
+    margin: 0 0 0.75rem;
+  }
+  .wiki-page-view.prose pre code {
+    background: transparent;
+    padding: 0;
+    color: var(--text);
+  }
+  .wiki-page-view.prose hr {
+    border: 0;
+    border-top: 1px solid var(--border);
+    margin: 1.2rem 0;
+  }
+  .wiki-page-view.prose table {
+    margin: 0.5rem 0 0.75rem;
+  }
+  .wiki-page-view.prose a {
+    color: var(--p);
+    text-decoration: underline;
+    text-decoration-color: var(--p-dim);
+    text-underline-offset: 2px;
+  }
+  .wiki-page-view.prose a:hover {
+    color: var(--p-bright);
+    text-decoration-color: var(--p);
+  }
+
+  /* Inline media embeds — the elements md_render emits for
+     `{{embed=…}}` markers (media pipeline). A denied byte fetch shows
+     as a broken image by design; keep the frame subtle either way. */
+  .wiki-page-view.prose img.wiki-embed,
+  .wiki-page-view.prose video.wiki-embed {
+    display: block;
+    max-width: min(100%, 28rem);
+    max-height: 24rem;
+    margin: 0.6rem 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .wiki-page-view.prose audio.wiki-embed {
+    display: block;
+    width: min(100%, 28rem);
+    margin: 0.6rem 0;
+  }
+  .wiki-page-view.prose a.wiki-embed-link {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.85em;
+  }
+
+  /* Raw-edit footer styling — small, dim, with a subtle warning
+     icon (just text "⚠" via ::before) so it reads as "advanced". */
+  .raw-edit-footer {
+    margin-top: 2rem;
+    padding: 0.6rem 0.75rem;
+    background: var(--bg-2);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+    font-size: 0.8rem;
+    color: var(--text-dim);
+  }
+  .raw-edit-footer::before {
+    content: "⚠ ";
+    color: var(--amber);
+  }
+  .raw-edit-footer a {
+    color: var(--amber);
+    text-decoration: underline;
+    text-decoration-color: var(--amber);
+  }
+  .raw-edit-footer a:hover {
+    color: var(--p-bright);
+    text-decoration-color: var(--p);
+  }
+  .comment-block {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--p);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.75rem;
+    margin: 0.4rem 0 0.4rem 1.5rem;
+    font-size: 0.85rem;
+  }
+  .comment-block.orphaned {
+    border-left-color: var(--text-dim);
+  }
+  .comment-block .comment-meta {
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    margin-bottom: 0.25rem;
+  }
+  .comment-block .comment-attribution {
+    font-weight: 600;
+    color: var(--text);
+  }
+  .comment-block .comment-id { font-size: 0.75rem; }
+  .comment-block .comment-body pre {
+    margin: 0;
+    white-space: pre-wrap;
+    font-family: inherit;
+    font-size: 0.9rem;
+  }
+  section.orphaned-comments {
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+  section.orphaned-comments h3 { margin-top: 0; }
+
+  /* C.11.f — inline comment write affordance. */
+  .comment-mode-toggle {
+    margin: 0.5rem 0 1rem 0;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.9rem;
+  }
+  .add-comment-cta {
+    margin: 0.25rem 0 0.5rem 1.5rem;
+    font-size: 0.85rem;
+  }
+  .add-comment-cta a {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border: 1px dashed var(--p);
+    border-radius: var(--radius);
+    text-decoration: none;
+    color: var(--p);
+  }
+  .add-comment-cta a:hover {
+    background: var(--bg-3);
+    color: var(--p-bright);
+  }
+
+  /* Recall traces — journal table: keep the turn column one line. */
+  .trace-turn-cell {
+    max-width: 28rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Recall-trace 3D replay (admin Traces viewer — recall-trace.js).
+     The stage is the WebGL canvas plus a DOM HUD (caption bar, transport
+     controls, progress hairline); without JS/WebGL the JS removes the
+     stage and the textual trace below is the whole surface. */
+  .trace-stage {
+    position: relative;
+    height: min(72vh, 680px);
+    margin-top: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg);
+    overflow: hidden;
+  }
+  .trace-stage:empty { display: none; }
+  .trace-stage canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+  }
+  .trace-hud {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
+  .trace-caption {
+    margin: 0 auto 1.9rem auto;
+    max-width: min(92%, 54rem);
+    padding: 0.6rem 1rem;
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    backdrop-filter: blur(2px);
+  }
+  .trace-caption-phase {
+    color: var(--p-bright);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    margin-bottom: 0.2rem;
+  }
+  .trace-caption-text {
+    color: var(--text);
+    font-size: 0.95rem;
+    line-height: 1.45;
+    min-height: 1.4em;
+    white-space: pre-wrap;
+  }
+  .trace-controls {
+    position: absolute;
+    top: 0.6rem;
+    right: 0.6rem;
+    display: flex;
+    gap: 0.35rem;
+    pointer-events: auto;
+  }
+  .trace-controls button,
+  .trace-controls select {
+    background: color-mix(in srgb, var(--bg-1) 85%, transparent);
+    color: var(--p);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.25rem 0.55rem;
+    font-size: 0.85rem;
+    line-height: 1.2;
+    max-width: none;
+    cursor: pointer;
+  }
+  .trace-controls button:hover,
+  .trace-controls select:hover {
+    color: var(--p-bright);
+    border-color: var(--border-hi);
+    background: var(--bg-3);
+  }
+  .trace-progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    background: color-mix(in srgb, var(--border) 55%, transparent);
+  }
+  .trace-progress-fill {
+    height: 100%;
+    width: 0;
+    background: var(--p);
+    box-shadow: 0 0 8px var(--p);
+    transition: width 120ms linear;
+  }
+}

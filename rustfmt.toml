@@ -1,0 +1,17 @@
+edition = "2024"
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+use_small_heuristics = "Default"
+reorder_imports = true
+reorder_modules = true
+remove_nested_parens = true
+match_block_trailing_comma = true
+fn_params_layout = "Tall"
+
+# Removed: `imports_granularity = "Crate"` and `group_imports = "StdExternalCrate"`.
+# Entrambe sono nightly-only e venivano ignorate silenziosamente su `cargo fmt`
+# stable (MSRV 1.88) con un warning rumoroso a ogni run. Rivalutare in Fase E
+# se vogliamo migrare CI fmt a nightly per ottenere il raggruppamento import
+# canonico.

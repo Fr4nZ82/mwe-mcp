@@ -1,0 +1,68 @@
+/* ────────────────────────────────────────────────────────────
+   mwe-mcp · phosphor-terminal design tokens
+   Source of truth. Import once (e.g. top of tailwind/app.css,
+   before @tailwind base). Maud templates reference these via the
+   Tailwind theme mapping in tailwind.config.js.
+   ──────────────────────────────────────────────────────────── */
+:root {
+  /* surfaces */
+  --bg:        #050d0b;   /* page                  */
+  --bg-1:      #0a1714;   /* card / panel          */
+  --bg-2:      #102420;   /* elevated / topbar     */
+  --bg-3:      #16302a;   /* hover / active        */
+  --border:    #1c3a33;
+  --border-hi: #2c5b4f;
+
+  /* phosphor (synapse teal-green) */
+  --p:         #34e1a8;   /* primary               */
+  --p-bright:  #6bffcb;   /* glow / hover          */
+  --p-dim:     #4a7a6e;   /* muted lines / labels  */
+
+  /* text */
+  --text:      #c8f2e4;
+  --text-dim:  #6e9b8e;
+
+  /* semantic accents */
+  --amber:     #f0b23c;   /* warning · pending     */
+  --rose:      #ff6b8a;   /* danger · revert · private */
+  --sky:       #5bc8ff;   /* info · group ACL      */
+
+  /* system */
+  --radius:    4px;
+  --glow:      0 0 6px rgba(52,225,168,.55), 0 0 18px rgba(52,225,168,.18);
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
+  --font-crt:  'VT323', var(--font-mono);
+
+  /* ── Legacy aliases — Phase 3 transition ──────────────────
+     The original `assets/app.css` referenced its own variable
+     names (`--bg-elev`, `--fg`, …) that do not exist in the
+     design pack. Aliasing them onto the phosphor tokens here
+     lets the rules ported from `app.css` into the components
+     layer keep working unchanged, and lets any future markup
+     that still references the old names render with the new
+     palette. Prefer the phosphor names (`--bg-1`, `--text`,
+     `--p`) for new code; these aliases are a compat shim, not
+     a parallel API. */
+  --bg-elev:    var(--bg-1);
+  --fg:         var(--text);
+  --fg-muted:   var(--text-dim);
+  --accent:     var(--p);
+  --accent-fg:  var(--bg);
+  --error:      var(--rose);
+  --error-bg:   rgba(255, 107, 138, 0.12);
+  --success:    var(--p-bright);
+  --success-bg: rgba(52, 225, 168, 0.12);
+  --info:       var(--sky);
+  --info-bg:    rgba(91, 200, 255, 0.12);
+  --amber-bg:   rgba(240, 178, 60, 0.13);
+  --max-width:  1040px;
+}
+
+/* Optional global CRT scanline overlay — add class="crt" to <body>.
+   Pure CSS, no JS; safe to drop if you want a flat terminal. */
+.crt::before {
+  content: ""; position: fixed; inset: 0; z-index: 9998; pointer-events: none;
+  background: repeating-linear-gradient(0deg,
+    transparent 0 2px, rgba(0,0,0,.16) 3px 3px);
+  mix-blend-mode: multiply;
+}

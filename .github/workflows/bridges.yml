@@ -1,0 +1,45 @@
+# Agent-bridge CI — deliberately a separate workflow from `ci` so it
+# never gates a merge (the bridges are host-native code outside the
+# cargo workspace; see agents-bridges/README.md).
+name: bridges
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "agents-bridges/**"
+      - ".github/workflows/bridges.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "agents-bridges/**"
+      - ".github/workflows/bridges.yml"
+  schedule:
+    # Weekly canary: offline smokes against upstream HEAD, so host-seam
+    # drift is detected. A red canary never auto-moves a pin.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: manifests + offline smokes (pinned upstream)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 agents-bridges/_harness/run_smokes.py --check
+      - run: python3 agents-bridges/_harness/run_smokes.py
+
+  canary:
+    name: offline smokes (upstream HEAD)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 agents-bridges/_harness/run_smokes.py --upstream-head

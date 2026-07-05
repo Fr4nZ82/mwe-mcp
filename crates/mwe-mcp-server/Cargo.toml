@@ -1,0 +1,57 @@
+[package]
+name = "mwe-mcp-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "MCP server binary for mwe-mcp: wraps mwe-core, exposes the MCP tool surface via Streamable HTTP + a built-in dashboard"
+
+[[bin]]
+name = "mwe-mcp"
+path = "src/main.rs"
+
+[dependencies]
+mwe-core = { path = "../mwe-core", version = "0.18.0" }
+mwe-dashboard = { path = "../mwe-dashboard", version = "0.18.0" }
+
+rmcp = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+http = { workspace = true }
+
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sqlx = { workspace = true }
+clap = { workspace = true }
+dotenvy = { workspace = true }
+jsonwebtoken = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+mwe-core = { path = "../mwe-core", version = "0.18.0", features = ["test-fakes"] }
+tower = { workspace = true }
+
+[features]
+default = []
+mwe-mcp-test-faults = ["mwe-core/mwe-mcp-test-faults"]
+# Bundle the in-binary Candle embedder (roadmap group 18). The published
+# GitHub release artifact (5m) is built with this so a downloaded binary
+# defaults to the bundled embedder and needs no external embedding service;
+# the dev/CI default build leaves it off to stay lean.
+local-embedder = ["mwe-core/local-embedder"]

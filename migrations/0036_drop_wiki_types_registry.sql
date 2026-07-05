@@ -1,0 +1,32 @@
+-- 0036_drop_wiki_types_registry — retire the two now-inert `wiki_type`
+-- caches (workstream "rimozione wiki_type → modello di memoria", slice H6).
+--
+-- The `wiki_type` concept has been dismantled end-to-end across slices
+-- H1–H5. Two tables it seeded are now dead weight — nothing reads or
+-- writes them anymore:
+--
+--   * `wiki_types_registry` (created in 0007, extended by 0021/0028/0030)
+--     was a zero-data cache of every registered template, rebuilt from
+--     the `_styles/*.md` / `_meta.md` files on disk. Its whole machine —
+--     seed/sync-from-disk, schema-evolve, the roster, the
+--     `companion`/`narrative` derived flags — was deleted with
+--     `wiki_type.rs` in H5. The companion gate now reads the per-wiki
+--     `companion` bool straight from `_meta.md` (slice G), so no SELECT
+--     against this table survives in the codebase.
+--
+--   * `skills_custom` (created in 0024) was the durable home of per-owner
+--     custom skills, minted only as a side-effect of `wiki_type_register`.
+--     Its sole producer (`register_custom_companion_type`) and every
+--     reader (MCP `skill_list`/`skill_fetch` `include_custom`, the
+--     dashboard `skills_view`, the core `skills.rs` custom branch) were
+--     removed in H1. Only bundled skills remain.
+--
+-- Filesystem-SSOT note: dropping these loses nothing reconstructible.
+-- `wiki_types_registry` was a cache derivable from the `.md` files (and
+-- the source of truth — the companion bool — now lives in `_meta.md`);
+-- `skills_custom` held custom skills no longer produced. A fresh
+-- `rm engine.db` + reboot regenerates the live schema without either
+-- table. Dropping a table drops its indexes with it in sqlite.
+
+DROP TABLE IF EXISTS wiki_types_registry;
+DROP TABLE IF EXISTS skills_custom;

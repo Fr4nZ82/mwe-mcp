@@ -1,0 +1,67 @@
+# cargo-deny configuration — license/security policy
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = false
+no-default-features = false
+
+[licenses]
+confidence-threshold = 0.93
+allow = [
+    # Our own workspace crates (mwe-core, mwe-dashboard, mwe-mcp-server,
+    # mwe-mcp-tray) — the project license. Dependencies stay permissive-only.
+    "AGPL-3.0-or-later",
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Zlib",
+    "MPL-2.0",
+    # `ksni` (the desktop-tray DBus crate, roadmap 14d) is released into the
+    # public domain under Unlicense — functionally the sibling of the CC0-1.0
+    # dedication already allowed above, no copyleft on consumers.
+    "Unlicense",
+    # `quoted_printable` (pulled in by `lettre`, the SMTP client for
+    # password-recovery email — roadmap 28) is under 0BSD, the BSD Zero
+    # Clause License: OSI-approved, public-domain-equivalent with no
+    # attribution or copyleft requirement — the functional sibling of the
+    # CC0-1.0 / Unlicense dedications already allowed above.
+    "0BSD",
+    # `webpki-roots` 1.0+ ships its embedded CA list under
+    # CDLA-Permissive-2.0 (it is data, not code). The Linux Foundation
+    # explicitly classifies this as a permissive data license that does
+    # not impose copyleft-style restrictions on the consuming crate.
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[advisories]
+yanked = "deny"
+ignore = [
+    # `proc-macro-error 1.0.4` is build-time only, pulled through
+    # `maud_macros 0.26`. The maintainer is unresponsive but the crate
+    # never ships in our runtime; the advisory is informational
+    # ("unmaintained") not exploitable. We accept the dep until
+    # `maud 0.27` (which already removed `proc-macro-error`) lands in
+    # workspace.dependencies.
+    "RUSTSEC-2024-0370",
+    # `rsa 0.9.x` Marvin Attack: pulled in by `sqlx-macros-core` for
+    # the unused mysql backend (we configure `sqlx = { features = ["sqlite"] }`
+    # explicitly). The crate is compiled but never reached at runtime,
+    # so the timing side-channel is not exploitable in mwe-mcp.
+    # Re-evaluate once `rsa 0.10` (constant-time rewrite) is released
+    # and sqlx-mysql picks it up.
+    "RUSTSEC-2023-0071",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

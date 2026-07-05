@@ -1,0 +1,12 @@
+bridge = "hermes"
+description = "hermes-agent plugin trio (memory provider + truncating context engine + gateway media hook), zero fork"
+contract = 1
+
+[upstream]
+name = "hermes-agent"
+repo = "https://github.com/nousresearch/hermes-agent.git"
+pin = "v2026.6.5"
+
+[smoke]
+offline = "./smoke.sh"
+live = "./smoke_live.py"

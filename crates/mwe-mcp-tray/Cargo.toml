@@ -1,0 +1,21 @@
+[package]
+name = "mwe-mcp-tray"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Optional KDE/Linux desktop tray that controls the mwe-mcp systemd service"
+
+[[bin]]
+name = "mwe-mcp-tray"
+path = "src/main.rs"
+
+[dependencies]
+ksni = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

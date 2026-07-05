@@ -1,0 +1,21 @@
+-- 0020_enrollment_users_locale — optional per-user BCP-47 locale for prompt LANGUAGE injection
+--
+-- Source of truth: [engine DB and migrations](../wiki/design-notes/engine-db-and-migrations.md).
+--
+-- The two v2.0 prompts (`ingest`, `agentic-chat-panel`) historically
+-- relied on a "mirror the user's message" rule for locale. P.2 calls
+-- instead for an explicit injection of `User locale: <code>. Respond
+-- in <Language>.` derived from one of three sources, in order:
+--
+--   1. `metadata.locale` on the `wiki_ingest_message` MCP request,
+--   2. this column (`enrollment_users.locale`), as the per-user
+--      default the admin configured,
+--   3. `SessionUser` for the dashboard chat panel.
+--
+-- Nullable + no default: an unset value falls back to the mirror
+-- behaviour, preserving today's semantics for any deployment that
+-- doesn't populate the column. BCP-47 tags are stored verbatim
+-- (`it-IT`, `en-US`, `de-DE`, ...); applicative code is responsible
+-- for trimming + lowercasing the language subtag where appropriate.
+
+ALTER TABLE enrollment_users ADD COLUMN locale TEXT;

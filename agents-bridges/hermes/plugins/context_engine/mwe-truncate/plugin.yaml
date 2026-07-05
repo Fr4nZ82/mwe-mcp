@@ -1,0 +1,3 @@
+name: mwe-truncate
+version: 0.1.0
+description: "Truncating context engine for the mwe-mcp sessionless model: bounded recent window, no summarization pass — per-turn recall replaces the summary (the mwe-mcp hermes bridge, context half)."
