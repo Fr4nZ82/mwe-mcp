@@ -147,6 +147,14 @@ through everything — no YAML to hand-edit, no credentials to hand to anyone el
    **Embeddings always run locally and are free** — independent of this choice.
    Already running Ollama with an embedder? Switch the embedding backend to
    `ollama` from **Admin → Embedding** to avoid keeping a second model.
+
+   > **How capable does the internal LLM need to be?** The `ingest` role is a
+   > structured router: it must emit valid plans with exact wiki ids, every
+   > turn. In our testing, **small local models (≤ ~10B) route unreliably** —
+   > they hallucinate target ids and facts get dropped — so `all-local` wants
+   > a genuinely strong local model, and `hybrid` (local workhorse + an API
+   > model on `ingest`/`cronista`/REM) is the safer budget setup. If pages
+   > come out empty or badly filed, suspect the model before the engine.
 3. **Do the short profile primer** the wizard shows next (your name, language, a
    few preferences) so the memory starts with some context — or skip it.
 4. **Mint a token for your agent** (Admin → users / tokens). Use plain lowercase
