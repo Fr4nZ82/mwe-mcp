@@ -46,6 +46,10 @@ highlight = "all"
 [advisories]
 yanked = "deny"
 ignore = [
+    # `paste` (proc-macro, build-time only, transitive) is unmaintained
+    # (RUSTSEC-2024-0436) but not exploitable: nothing of it ships in the
+    # runtime binary. Accepted until upstream deps move off it.
+    "RUSTSEC-2024-0436",
     # `proc-macro-error 1.0.4` is build-time only, pulled through
     # `maud_macros 0.26`. The maintainer is unresponsive but the crate
     # never ships in our runtime; the advisory is informational

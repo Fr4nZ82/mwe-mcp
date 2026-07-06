@@ -210,10 +210,17 @@ mod tests {
 
     #[test]
     fn suggested_dest_is_a_timestamped_sibling() {
-        let s = suggested_dest(Path::new("/srv/mwe/work"));
-        assert!(s.starts_with("/srv/mwe/work-backup-"), "got: {s}");
-        assert!(
-            !s.starts_with("/srv/mwe/work/"),
+        let work = Path::new("/srv/mwe/work");
+        let s = suggested_dest(work);
+        let dest = Path::new(&s);
+        let name = dest
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        assert!(name.starts_with("work-backup-"), "got: {s}");
+        assert_eq!(
+            dest.parent(),
+            work.parent(),
             "must be a sibling, not inside the workdir: {s}"
         );
     }
