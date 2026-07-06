@@ -6,13 +6,14 @@ healthy and the dual-licensing model ([LICENSING.md](LICENSING.md)) workable.
 ## Before you write code
 
 Many architectural trade-offs in this codebase are already deliberately
-resolved — the engineering wiki under [`wiki/`](wiki/) documents most of them.
+resolved — the documentation under [`docs/`](docs/) records part of that
+reasoning.
 For anything beyond a small fix, **open an issue and discuss direction with
 the maintainer first**; it avoids wasted work on a design that won't merge.
 
 ## Building and testing
 
-See [`wiki/development/build-run.md`](wiki/development/build-run.md). CI runs
+See [`docs/development/build-run.md`](docs/development/build-run.md). CI runs
 `cargo fmt --check`, `clippy -D warnings`, the full test suite (unit +
 integration + property + fault-injection), and `cargo deny check` on every
 push — keep it green locally before opening a PR.
@@ -41,4 +42,4 @@ contribution — open an issue describing the change instead.
 
 `rustfmt` and `clippy` settings are checked into the repo and enforced by CI;
 match the conventions described in
-[`wiki/development/conventions.md`](wiki/development/conventions.md).
+[`docs/development/conventions.md`](docs/development/conventions.md).

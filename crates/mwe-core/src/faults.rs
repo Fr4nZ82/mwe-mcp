@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Fault-injection harness for race / recovery tests
-//! (see [build & run](../../../wiki/development/build-run.md)).
+//! (see [build & run](../../../docs/development/build-run.md)).
 //!
 //! ## Why
 //!

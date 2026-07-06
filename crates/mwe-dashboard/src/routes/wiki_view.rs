@@ -162,7 +162,7 @@ pub fn router() -> Router<DashboardState> {
 // operator could not read via a consumer token renders highlighted via
 // `render::render_admin_reveal` instead of `[redacted]`) and show
 // [`crate::reveal::banner`] while it is on. Documented in
-// `wiki/design-notes/redaction-policy.md`.
+// the redaction-policy design note.
 
 /// Admin-only download of the wiki subtree as a portable full-marker
 /// archive (`mwe_core::export`): every DB-known region travels with its
@@ -982,7 +982,7 @@ async fn rendered_index_for(
 /// before rendering**: the frontmatter card (`keywords`/`description`) is
 /// owner-tier metadata, not prose, so leaving it in would leak the themes of a
 /// wiki the operator is not the default reader of (the
-/// [ACL card boundary](../../../../wiki/concepts/identity-and-acl.md#the-acl-card-boundary--what-card-metadata-may-carry),
+/// [ACL card boundary](../../../../docs/concepts/identity-and-acl.md#the-acl-card-boundary--what-card-metadata-may-carry),
 /// dashboard half). The structured fields the viewer needs
 /// (`title`/`type`/`acl_default`) are shown separately from `meta`.
 async fn project_page(
@@ -1095,7 +1095,7 @@ pub fn wikilink_index(
 }
 
 /// Resolve one wikilink target against the tree, per the link grammar of
-/// [recall-pipeline.md](../../../../wiki/design-notes/recall-pipeline.md):
+/// recall-pipeline.md:
 /// `wiki_id` → that wiki's view route; `wiki_id/page-slug` → that page's
 /// view route when the page file exists (the slug never carries `.md`;
 /// nested slugs keep their `/`).

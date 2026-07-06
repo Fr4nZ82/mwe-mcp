@@ -6,7 +6,7 @@
 //! candidates offered, the decision with its one-line note, the pages that
 //! actually opened) and the block that was finally injected into the
 //! consumer. Two producers write here (see the
-//! [recall pipeline](../../../wiki/design-notes/recall-pipeline.md)):
+//! recall pipeline):
 //!
 //! - the **ingest per-turn injection** ([`crate::ingest::wiki_ingest_message`])
 //!   — what a bridge-connected consumer received for a user's turn;

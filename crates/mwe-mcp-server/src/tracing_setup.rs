@@ -7,13 +7,13 @@
 //! - A rotating file sink under
 //!   `<workdir>/<logging.file_path>` (default `logs/mwe-mcp.log`) when
 //!   `logging.file_rotation` is not `disabled`. The rationale is
-//!   documented in [logging](../../../wiki/design-notes/logging.md):
+//!   documented in logging:
 //!   running `mwe-mcp` detached (systemd, container, agent process)
 //!   needs a `tail`-able file the operator can attach to after the
 //!   fact.
 //!
 //! The file sink is enabled by default — see the rationale in
-//! [logging](../../../wiki/design-notes/logging.md). Operators on
+//! logging. Operators on
 //! read-only mounts or with external log shipping wired in can flip
 //! `logging.file_rotation` to `disabled` in `mwe-mcp.config.yaml` to
 //! recover the original stderr-only floor.

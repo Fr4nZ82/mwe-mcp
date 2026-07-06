@@ -23,8 +23,8 @@
 //! row already exists in the past N days, skip the insert.
 //!
 //! The dedup window is 30 days (the same as the
-//! consumer-ack retention default in [engine DB and
-//! migrations](../../../wiki/design-notes/engine-db-and-migrations.md)). A consumer that acks an
+//! consumer-ack retention default in engine DB and
+//! migrations). A consumer that acks an
 //! event and wants to be re-notified later flips the underlying state
 //! (e.g. resets `status: pending` → `done` → `pending`), at which point
 //! the natural cadence resumes.
@@ -89,7 +89,7 @@ pub enum EventKind {
     /// time and silence is now a valid form of consent.
     AutoApplied,
     /// A document-ingest job finished
-    /// ([document ingest](../../../wiki/design-notes/document-ingest.md)).
+    /// (document ingest).
     /// The payload carries `job_id`, the resolved `disposition` and
     /// `title`, the anchor `document_page` (consult/dossier — absent on
     /// dissolve), `facts_buffered`, and the `source_ref`, so the consumer
@@ -293,7 +293,7 @@ pub struct AckOutcome {
 }
 
 /// Default `top_k` for [`poll_events`] — matches the
-/// [tool reference](../../../wiki/protocol/tool-reference.md) for `events_poll`.
+/// [tool reference](../../../docs/protocol/tool-reference.md) for `events_poll`.
 pub const DEFAULT_POLL_TOP_K: i64 = 20;
 
 /// Maximum `top_k` accepted by [`poll_events`] — same spec.
@@ -394,7 +394,7 @@ pub async fn poll_events(
 ///   and the consumer never sees the event again.
 /// - Unknown `event_id` values are returned in [`AckOutcome::unknown`];
 ///   the caller surfaces them as the `unknown` field of the tool
-///   response per the [tool reference](../../../wiki/protocol/tool-reference.md) for `events_ack`.
+///   response per the [tool reference](../../../docs/protocol/tool-reference.md) for `events_ack`.
 ///
 /// # Errors
 ///

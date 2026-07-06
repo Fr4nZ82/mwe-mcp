@@ -10,7 +10,7 @@
 //!
 //! **[`run_cycle`] is the SSOT for the sub-job roster and their fixed
 //! order — read its body**; the per-sub-job contract is documented in
-//! [rem-cycle.md](../../../wiki/design-notes/rem-cycle.md). The shape
+//! rem-cycle.md. The shape
 //! of the cycle: the two proposal sweeps settle overdue
 //! `structure_proposals` first; the consolidation and hygiene sweeps
 //! (dedup, promote, merge, completion, contradiction, refile,
@@ -95,7 +95,7 @@ pub struct RemPolicy {
     pub hub_writer_cap: usize,
     /// Maximum number of dedup supersedes per cycle. Mirrors the
     /// `cap_promotions_per_night` figure in
-    /// [engine DB and migrations](../../../wiki/design-notes/engine-db-and-migrations.md) — REM never
+    /// engine DB and migrations — REM never
     /// silently rewrites the whole corpus in one tick.
     pub revisor_cap: usize,
     /// Lower bound for the jaccard-6gram pre-pass: pairs below this
@@ -122,7 +122,7 @@ pub struct RemPolicy {
     pub revisor_examined_cap: usize,
     /// Maximum number of structural changes the auto-promote
     /// sub-job applies per cycle. The spec
-    /// ([memory model](../../../wiki/concepts/memory-model.md))
+    /// ([memory model](../../../docs/concepts/memory-model.md))
     /// pins it at 5/night by default — REM never carpet-bombs the
     /// operator's inbox.
     pub auto_promote_cap: usize,
@@ -153,14 +153,14 @@ pub struct RemPolicy {
     /// Maximum number of page-merge candidate pairs the merge sub-job
     /// sends to the LLM confirmer per cycle (the cure front of semantic
     /// page consolidation — see the
-    /// [page-merge sub-job](../../../wiki/design-notes/rem-cycle.md#page-merge-sub-job-semantic-page-consolidation)).
+    /// page-merge sub-job).
     /// A **resource** cap on confirmation calls, not a semantic gate —
     /// structural signals only nominate, the LLM decides. `0` disables
     /// the sub-job.
     pub page_merge_cap: usize,
     /// Maximum number of evidence facts the completion sweep sends to
     /// the LLM per cycle (the REM safety net behind the ingest closure
-    /// verb — see the [REM cycle](../../../wiki/design-notes/rem-cycle.md)).
+    /// verb — see the REM cycle).
     /// A **resource** cap: embedding similarity only nominates open
     /// candidates per evidence fact, the LLM decides what completed.
     /// `0` disables the sub-job.
@@ -168,7 +168,7 @@ pub struct RemPolicy {
     /// Maximum number of candidate facts the cross-wiki refile sweep
     /// sends to the LLM per cycle (the LLM-decided refile of a single
     /// misfiled fact into a different existing wiki — see the
-    /// [REM cycle](../../../wiki/design-notes/rem-cycle.md)). A
+    /// REM cycle). A
     /// **resource** cap: a deterministic cosine pre-filter only nominates
     /// facts that embed materially closer to a foreign wiki than to home,
     /// the revisor LLM decides whether (and where) each really belongs.
@@ -211,7 +211,7 @@ pub struct RemPolicy {
     pub archive_inactivity: chrono::Duration,
     /// Max notifications emitted by each new smart-wiki sub-job
     /// (Briefing dispatcher + Backlink reciprocity detector) per wiki
-    /// per cycle. Per the [memory model](../../../wiki/concepts/memory-model.md)
+    /// per cycle. Per the [memory model](../../../docs/concepts/memory-model.md)
     /// the per-wiki cap is 10 — the global 50/h cap in
     /// [`crate::briefing`] backstops at the inbox level. Default 10.
     pub briefing_notify_cap: usize,
@@ -390,7 +390,7 @@ pub struct RevisorReport {
     /// `proposal_id`s of the born-applied `dedup_merge` receipts: each
     /// confirmed pair merged **act-first** in-cycle, revertible from the
     /// dashboard within the standard window
-    /// ([memory model](../../../wiki/concepts/memory-model.md)).
+    /// ([memory model](../../../docs/concepts/memory-model.md)).
     pub applied: Vec<String>,
     /// Soft errors.
     pub errors: Vec<String>,
@@ -827,7 +827,7 @@ pub enum RemError {
     #[error("rem briefing: {0}")]
     Briefing(#[from] BriefingError),
     /// LLM call failed mid-cycle. Per the
-    /// [REM cycle](../../../wiki/design-notes/rem-cycle.md), this aborts
+    /// REM cycle, this aborts
     /// the sub-job (and therefore the cycle) rather than being
     /// soft-collected: the operator configured a specific model and
     /// expects that quality bar, not a silently degraded run.
@@ -858,7 +858,7 @@ pub type Result<T> = std::result::Result<T, RemError>;
 /// already stored on the rows), and a [`RemLlms`] bag carrying the
 /// per-sub-job model handles so the operator can wire each function to
 /// a different profile (`hub_writer` → workhorse, `revisor` → small,
-/// `auto_promote` → strong; per the [ingest pipeline](../../../wiki/design-notes/ingest-pipeline.md)).
+/// `auto_promote` → strong; per the ingest pipeline).
 ///
 /// Order of sub-jobs is fixed:
 /// **auto-apply → revisor → auto-promote → hub-writer**.
@@ -1192,7 +1192,7 @@ async fn find_active_in_family(
 /// that adapts the call's report shape to the REM
 /// sub-job report shape ([`AutoApplyReport`]).
 ///
-/// Per the [memory model](../../../wiki/concepts/memory-model.md)
+/// Per the [memory model](../../../docs/concepts/memory-model.md)
 /// the sweep flips `pending → applied_pending_confirm` with
 /// `apply_mode='auto'` and starts the 7 d confirm window; silence past
 /// the deadline triggers the auto-revert sweep. Per-row
@@ -1214,7 +1214,7 @@ async fn run_auto_apply_sweep(
 /// that adapts the call's report
 /// shape to the REM sub-job report shape ([`AutoFinalizeReport`]).
 ///
-/// Per the [memory model](../../../wiki/concepts/memory-model.md)
+/// Per the [memory model](../../../docs/concepts/memory-model.md)
 /// the sweep flips `applied_pending_confirm → applied` once
 /// `confirm_deadline` has elapsed (silence = consent). No kind inverse
 /// handler, no `revert_token` minted, no event emitted — the user was
@@ -1525,7 +1525,7 @@ fn parse_llm_yes(raw: &str) -> bool {
 ///
 /// No LLM → the sub-job short-circuits cleanly with
 /// `disabled_reason = Some("no rem_promotions LLM wired")`. See the
-/// [REM cycle](../../../wiki/design-notes/rem-cycle.md).
+/// REM cycle.
 #[allow(
     clippy::too_many_lines,
     reason = "filter + LLM call + dedup check + emit live as one orchestrator"
@@ -1584,7 +1584,7 @@ async fn run_auto_promote(
         // (recall), naming the facts that move out. The page floor is
         // the only deterministic gate, a cheap resource pre-filter so
         // tiny pages never reach the LLM; everything semantic is the
-        // LLM's call ([memory model](../../../wiki/concepts/memory-model.md)).
+        // LLM's call ([memory model](../../../docs/concepts/memory-model.md)).
         let mut pages: Vec<&str> = page_mass
             .iter()
             .filter(|&(_, &m)| m >= policy.auto_promote_min_page_facts)
@@ -2021,7 +2021,7 @@ async fn run_subwiki_emergence_for_wiki(
         }
         // A `lista`-style page is structurally terminal: a list never
         // emerges into a sub-wiki on mass, however many records it
-        // accumulates ([memory model](../../../wiki/concepts/memory-model.md)).
+        // accumulates ([memory model](../../../docs/concepts/memory-model.md)).
         // List items that outgrow the list promote individually through
         // the paragraph→page rung first — by then the container is a
         // folder of pages, not a list. This is a form invariant, not a
@@ -2380,7 +2380,7 @@ fn merge_prompt(tree: &WikiTree, a: &PagePlan, b: &PagePlan, signal: &str) -> Re
 }
 
 /// Page-merge sub-job — the **cure front** of semantic page consolidation
-/// ([rem-cycle.md §Page-merge sub-job](../../../wiki/design-notes/rem-cycle.md#page-merge-sub-job-semantic-page-consolidation)).
+/// (rem-cycle.md §Page-merge sub-job).
 ///
 /// Structural signals (the reviewer's `duplicate_prose` over the compiled
 /// pages, page-name kinship in the persisted plan) **nominate**
@@ -2682,7 +2682,7 @@ fn completion_cases<'a>(
 /// The completion sweep — the REM safety net of the closure verb.
 ///
 /// The ingest path closes the open items its recall window shows it
-/// (see the [ingest pipeline](../../../wiki/design-notes/ingest-pipeline.md));
+/// (see the ingest pipeline);
 /// this sub-job catches the rest with the global view: each fresh
 /// **evidence** fact is paired with the most similar open items of its
 /// wiki (embedding similarity **nominates only** — a resource cap, not
@@ -4253,7 +4253,7 @@ fn split_trailing_provenance_refs(text: &str) -> Option<(String, Vec<String>)> {
 /// inbound links, feeding link noise to embeddings and dedup, and
 /// freezing prose the Cronista cannot restyle. The go-forward writer is
 /// fixed (provenance rides `authored_refs` —
-/// [document ingest](../../../wiki/design-notes/document-ingest.md)); this
+/// document ingest); this
 /// sweep converges the pre-existing corpus. Per flagged fact: move the
 /// pointer into `authored_refs` (dedup'd), strip the suffix, re-embed the
 /// cleaned text, and write text + embedding + refs in **one atomic
@@ -4672,7 +4672,7 @@ async fn run_date_normalizer(
         // Marker guard: the rewrite may carry braces only as well-formed
         // self-closing embeds, and its embed set must equal the
         // original's — a date rewrite may never add, drop, or alter a
-        // media link (see [media pipeline](../../../wiki/design-notes/media-pipeline.md)).
+        // media link (see media pipeline).
         let embeds_ok = if new_text.contains("{{") || new_text.contains("}}") {
             crate::parser::embed_only_markers(new_text)
                 .is_some_and(|new_embeds| new_embeds == crate::parser::collect_embeds(&row.text))

@@ -2496,7 +2496,7 @@ struct WikiForgetBulkArgs {
 }
 
 /// `wiki_forget` — authority-routed forget of a single fact, the consumer-MCP
-/// half of the authority-routed forget model ([tool reference](../../../../wiki/protocol/tool-reference.md)).
+/// half of the authority-routed forget model ([tool reference](../../../../docs/protocol/tool-reference.md)).
 ///
 /// Routes by the caller's authority over the loaded fact:
 /// - **author or admin** ([`mwe_core::acl::can_delete`]) → tombstone it now
@@ -2505,7 +2505,7 @@ struct WikiForgetBulkArgs {
 ///   [`mwe_core::acl::sender_owns`]) → forgetting needs an audience vote, and a
 ///   vote is opened **only from the dashboard**, never started in the background
 ///   by the agent (the write-authority model —
-///   [identity and ACL](../../../wiki/concepts/identity-and-acl.md)). So the tool does
+///   [identity and ACL](../../../docs/concepts/identity-and-acl.md)). So the tool does
 ///   **not** open a request here — it returns `outcome: "request_from_dashboard"`
 ///   to steer the user there.
 /// - **anyone else** → refused (`sender_unauthorized`).

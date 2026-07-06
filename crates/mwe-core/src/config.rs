@@ -13,7 +13,7 @@
 //! Everything else is captured verbatim in [`Config::extra`].
 //!
 //! The canonical schema lives in
-//! [the config schema reference](../../../wiki/protocol/config-schema.md);
+//! [the config schema reference](../../../docs/protocol/config-schema.md);
 //! this module follows it.
 //!
 //! ## Lookup order
@@ -191,7 +191,7 @@ impl LogLevel {
 
 // ---------- LLM ----------
 
-/// One of the canonical LLM functions (see [the config schema reference](../../../wiki/protocol/config-schema.md)).
+/// One of the canonical LLM functions (see [the config schema reference](../../../docs/protocol/config-schema.md)).
 ///
 /// Used both as a config sub-section name and as the suffix for the
 /// env-var override convention: `MWE_LLM_<UPPER>_MODEL` /
@@ -235,7 +235,7 @@ pub enum LlmFunction {
     Cronista,
     /// `navigator` — the recall navigator: per-turn, reads the root
     /// index + destination cards and decides which wikis/pages to open
-    /// next ([the recall pipeline](../../../wiki/design-notes/recall-pipeline.md)).
+    /// next (the recall pipeline).
     /// Wants a **strong-but-cheap** model: it runs on every turn
     /// (latency + cost bound) but its link choices are the recall
     /// quality bar.
@@ -396,7 +396,7 @@ impl LlmFunctionConfig {
                 // The reserved `claude-code` sentinel routes the slot to the
                 // Claude Code login store (resolved + refreshed per request)
                 // instead of an env var. Test/personal use only; see
-                // `crate::oauth` and `wiki/protocol/config-schema.md`.
+                // `crate::oauth` and `docs/protocol/config-schema.md`.
                 if self.api_key_env.as_deref() == Some(crate::oauth::CLAUDE_CODE_LOGIN) {
                     let store = crate::oauth::global_store().ok_or_else(|| ConfigError::Parse {
                         path: PathBuf::from(format!("llm.{}", function.yaml_key())),
@@ -554,7 +554,7 @@ where
 /// reach into the runtime config by `Config::llm.ingest` (etc.) and
 /// build the backend lazily.
 ///
-/// Env-var overrides (see [the config schema reference](../../../wiki/protocol/config-schema.md))
+/// Env-var overrides (see [the config schema reference](../../../docs/protocol/config-schema.md))
 /// are applied by [`Self::apply_env_overrides`] after YAML parse:
 /// `MWE_LLM_INGEST_MODEL` overrides `llm.ingest.model`,
 /// `MWE_LLM_INGEST_BACKEND` overrides `llm.ingest.backend`, and so on
@@ -594,7 +594,7 @@ pub struct LlmConfig {
 
 /// Profile presets seeded by `mwe-mcp init`.
 ///
-/// The three canned profiles in [the config schema reference](../../../wiki/protocol/config-schema.md)
+/// The three canned profiles in [the config schema reference](../../../docs/protocol/config-schema.md)
 /// plus the catch-all `custom` (empty skeleton — operator fills in).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProfile {
@@ -645,7 +645,7 @@ impl LlmProfile {
     /// Build the canonical [`LlmConfig`] for this profile.
     ///
     /// Picks per slot follow the tier table in
-    /// [the ingest pipeline notes](../../../wiki/design-notes/ingest-pipeline.md):
+    /// the ingest pipeline notes:
     ///
     /// - `hub_writer`, `ingest` — workhorse tier. Local where possible
     ///   (latency matters for chat).
@@ -1244,7 +1244,7 @@ impl RemConfig {
 }
 
 /// `document:` section — resource knobs of the document-ingest pipeline
-/// ([document ingest](../../../wiki/design-notes/document-ingest.md)).
+/// (document ingest).
 ///
 /// Every knob is a resource cap (segment sizing, job cadence, merge
 /// threshold), never a semantic gate — the disposition and the extraction
@@ -1714,7 +1714,7 @@ impl EmbeddingConfig {
 // ---------- Email (SMTP password recovery, roadmap 28) ----------
 
 /// `email:` section — the SMTP backend that powers self-service
-/// password recovery ([roadmap 28](../../../wiki/roadmap.md)).
+/// password recovery (roadmap 28).
 ///
 /// Off by default: with `enabled: false` (or any required field unset)
 /// the dashboard hides the "forgot password" affordance and the request

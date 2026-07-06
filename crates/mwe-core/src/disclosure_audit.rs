@@ -3,8 +3,8 @@
 //! the consumer chat.
 //!
 //! The owner can broaden or narrow who reads their OWN fact straight from a
-//! conversation via the `acl_changes` ingest verb ([ingest
-//! pipeline](../../../wiki/design-notes/ingest-pipeline.md)). Because that
+//! conversation via the `acl_changes` ingest verb (ingest
+//! pipeline). Because that
 //! change is applied act-first, every change leaves an immutable row here:
 //! who acted, the previous and the new read-set, and whether the change
 //! WIDENED disclosure (a new principal entered the effective read-set,

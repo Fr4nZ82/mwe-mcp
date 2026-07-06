@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Applicative WAL for structure-proposal apply and REM nightly cycles
-//! (see [applicative WAL](../../../wiki/design-notes/applicative-wal.md)).
+//! (see applicative WAL).
 //!
 //! ## Why an *applicative* `WAL` on top of `SQLite` WAL
 //!

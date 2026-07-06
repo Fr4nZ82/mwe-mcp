@@ -23,7 +23,7 @@ use tracing_subscriber::layer::SubscriberExt as _;
 fn install_uses_workdir_logs_directory_by_default() {
     // The default-loaded `Config` (no `mwe-mcp.config.yaml` on disk)
     // must resolve the file sink at `<workdir>/logs/mwe-mcp.log` — the
-    // friendly default documented in [logging](../../../wiki/design-notes/logging.md).
+    // friendly default documented in logging.
     let dir = tempdir().expect("tempdir");
     let cfg = Config::default();
     let resolved = cfg

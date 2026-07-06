@@ -2,7 +2,7 @@
 //! Page-level operations on a standard memory wiki.
 //!
 //! Today this is the **governed delete-page** primitive
-//! ([agentic-chat.md §`WikiDeletePage`](../../../wiki/design-notes/agentic-chat.md)): a
+//! (agentic-chat.md §`WikiDeletePage`): a
 //! page deletion is partitioned by the per-fragment **sender** axis so one
 //! user can never destroy another's contribution —
 //!
@@ -26,7 +26,7 @@
 //! it); the per-fragment sender axis still governs how each fact on the page is
 //! disposed. Smart wikis carry no per-fragment sender and are out of scope here
 //! (their single proprietor decides — see
-//! [smart-wikis.md](../../../wiki/design-notes/smart-wikis.md)); this primitive is for
+//! smart-wikis.md); this primitive is for
 //! **standard** wikis.
 
 use serde_json::json;
@@ -90,7 +90,7 @@ pub enum DeletionMode {
     /// **Admin** "delete all facts": tombstone **every** fact regardless of
     /// sender, with no evacuation — the admin is destroying others'
     /// contributions, so the verb layer requires an informed confirmation
-    /// (see [the `WikiDeletePage` verb](../../../wiki/design-notes/agentic-chat.md)).
+    /// (see the `WikiDeletePage` verb).
     TombstoneAll,
 }
 

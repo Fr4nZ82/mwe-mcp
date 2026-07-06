@@ -23,7 +23,7 @@
 //!
 //! No OAuth scopes: the token is "smart consumer owned by user X"; the wiki-level
 //! ACL + the smart-wiki owner-match govern what it can touch (see
-//! [`web-agent-oauth.md`](../../../../wiki/design-notes/web-agent-oauth.md)).
+//! `web-agent-oauth.md`).
 
 use std::time::Duration;
 

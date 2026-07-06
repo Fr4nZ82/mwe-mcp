@@ -37,8 +37,8 @@
 //! kept stable so the smart consumer's parser at
 //! `smart_bootstrap` time can rely on the heading shape.
 //!
-//! [`modello-memoria.md §9`]: ../../../wiki/concepts/memory-model.md
-//! [`protocollo.md §H.3`]: ../../../wiki/protocol/tool-reference.md
+//! [`modello-memoria.md §9`]: ../../../docs/concepts/memory-model.md
+//! [`protocollo.md §H.3`]: ../../../docs/protocol/tool-reference.md
 
 use std::path::PathBuf;
 
@@ -320,7 +320,7 @@ pub fn parse_bi_id(raw: &str) -> Option<i64> {
     if n < 1 { None } else { Some(n) }
 }
 
-/// Rules (mirror [the tool reference](../../../wiki/protocol/tool-reference.md)):
+/// Rules (mirror [the tool reference](../../../docs/protocol/tool-reference.md)):
 ///
 /// - lowercase ASCII;
 /// - any contiguous run of non-`[a-z0-9]` characters collapses to a
@@ -545,7 +545,7 @@ pub struct NotifyResponse {
     pub ts: String,
 }
 
-/// Three-layer semantic classification per [the memory model](../../../wiki/concepts/memory-model.md).
+/// Three-layer semantic classification per [the memory model](../../../docs/concepts/memory-model.md).
 ///
 /// `wiki_admin_notify` defaults to `Observation` when the caller omits
 /// the field; REM sub-jobs stamp it explicitly. Used by

@@ -23,7 +23,7 @@ script a multi-turn flow (e.g. a `needs_disambig` first turn):
     stub.responses["wiki_ingest_message"]["needs_disambig"] = True
 
 The stub also serves the out-of-band media endpoint (`POST …/media`,
-multipart/form-data — wiki/design-notes/media-pipeline.md): each upload
+multipart/form-data — the media-pipeline design note): each upload
 is recorded in `stub.media_uploads` ({kind, caption, description,
 filename, size, headers}) and answered with a canned catalog response
 whose NNN counter increments per upload.

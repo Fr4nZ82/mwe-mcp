@@ -33,7 +33,7 @@ on 2026-05-29. This folder is the reusable apparatus; the dated
 surface over raw HTTP with a `consumer_class=standard` JWT. Do **not**
 adopt the consumer contract in this session: no hook bundle, no skills,
 no `AGENT_INSTRUCTIONS.md` behaviours. You are Claude Code working *on*
-the repo (CLAUDE.md), pretending to be a thin standard consumer only at
+the repo (maintainer role), pretending to be a thin standard consumer only at
 the wire level. This keeps the dev-session role and the consumer role
 from collapsing into each other.
 
@@ -396,7 +396,7 @@ force a full recompile (e.g. to re-verify the compiler), also delete the plan
 ## Pointers
 
 - Dated findings + verdict: `road-behind/road-behind/dogfood-standard-2026-05-29.md` (gitignored historical wing, local-only)
-- Open findings: `wiki/roadmap.md` (the remaining-work list)
+- Open findings: the maintainer's internal roadmap (private repo)
 - Chronology: `road-behind/road-behind/road-behind.md` § the relevant date (historical log)
 - Tool surface spec (for the consumer side): `AGENT_INSTRUCTIONS.md`
-- Engineering wiki for the ingest path: `wiki/design-notes/ingest-pipeline.md`
+- Engineering wiki for the ingest path: the ingest-pipeline design note

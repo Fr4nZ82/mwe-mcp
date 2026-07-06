@@ -8,7 +8,7 @@
 //! already the **effective** principal. The MCP ingest stays JSON — bytes
 //! travel out of band through this pair, then ride
 //! `wiki_ingest_message.attachments` as catalog ids (see
-//! [media pipeline](../../../wiki/design-notes/media-pipeline.md)).
+//! media pipeline).
 //!
 //! - `POST /media` — multipart fields: `file` (required; bytes + optional
 //!   filename + content type), `kind` (required; `photo` / `video` /

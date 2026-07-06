@@ -20,7 +20,7 @@ name resemblance is never sufficient on its own — this call is the
 mandatory confirmation. The orchestrator calls the prompt through the
 hybrid loader [`mwe_core::prompts::render`]: the override at
 `<workdir>/prompts/rem-merge.md` wins when present, otherwise this
-bundled default. See the [REM cycle page](../../../wiki/design-notes/rem-cycle.md)
+bundled default. See the REM cycle page
 for the narrative and `crates/mwe-core/src/rem.rs` (around the
 `merge_prompt` call site) for the runtime parameters.
 

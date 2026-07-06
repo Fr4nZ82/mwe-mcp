@@ -18,7 +18,7 @@
 //! dashboard `/connect` page will link to these endpoints
 //! so the operator can copy-paste straight from the browser.
 //!
-//! See the [tool reference](../../../wiki/protocol/tool-reference.md)
+//! See the [tool reference](../../../docs/protocol/tool-reference.md)
 //! for the design rationale and the explicit constraint that the MCP
 //! protocol has no way for the server to register hooks on the
 //! client — mwe-mcp can only *recommend* them.

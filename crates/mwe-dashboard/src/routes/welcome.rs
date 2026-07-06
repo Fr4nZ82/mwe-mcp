@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! First-login profile wizard — visual front-end to `wiki_ingest_message`.
 //!
-//! Per the [setup & identity model](../../../../wiki/design-notes/setup-and-identity.md),
+//! Per the setup & identity model,
 //! every freshly-created user has a working account (email + password)
 //! and an empty identity wiki. The very first time they sign in
 //! (`user_credentials.profile_initialized = 0`), the auth flow lands
@@ -9,7 +9,7 @@
 //! profile data and ships it to [`mwe_core::ingest::wiki_ingest_message`].
 //!
 //! **Three steps → three destinations** (see the
-//! [memory model](../../../../wiki/concepts/memory-model.md)). The form is one page with three
+//! [memory model](../../../../docs/concepts/memory-model.md)). The form is one page with three
 //! client-side steps that map to the three universal ingest
 //! destinations:
 //!

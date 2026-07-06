@@ -4,7 +4,7 @@
 //! The transport is built per-send from the [`EmailConfig`] section of
 //! `mwe-mcp.config.yaml` (the admin edits it in the Email section of
 //! `/dashboard/settings/me`).
-//! rustls only — no OpenSSL ([CLAUDE.md §9]) — over the tokio executor.
+//! rustls only — no OpenSSL (project dependency policy) — over the tokio executor.
 //!
 //! The SMTP password never lives in the YAML: `password_env` names an
 //! env-var (default `MWE_SMTP_PASSWORD`) read from the process

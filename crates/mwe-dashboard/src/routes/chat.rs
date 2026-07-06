@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Chat onnipresente — unico punto di ingresso per le chiamate LLM dal
-//! cruscotto ([agentic chat](../../../../wiki/design-notes/agentic-chat.md)).
+//! cruscotto (agentic chat).
 //!
 //! - `GET /dashboard/chat`: stand-alone chat page (header + main + the
 //!   right-side panel rendered by the layout). The page itself only
@@ -25,7 +25,7 @@
 //! recent `{user, assistant}` window** (sent by `chat.js`, clamped by
 //! [`parse_chat_history`]) so a bare "sì" resolves against the
 //! assistant's prior proposal — see the
-//! [agentic chat design](../../../../wiki/design-notes/agentic-chat.md).
+//! agentic chat design.
 //! The full chat history lives in the browser's `localStorage` for the
 //! user's benefit (scrollback), trimmed FIFO at 100 entries by
 //! [`crate::assets`]' `chat.js`.
@@ -61,7 +61,7 @@ use crate::ui::{components, layout};
 /// The verbatim prompt body lives in
 /// `crates/mwe-dashboard/prompts/agentic-chat-panel.md` (frontmatter +
 /// a single ```text ... ``` fenced block); see the
-/// [agentic chat design](../../../../wiki/design-notes/agentic-chat.md)
+/// agentic chat design
 /// for the design narrative. Referenced
 /// from [`crate::BUNDLED_PROMPTS`] so `mwe-mcp init` materialises it
 /// under the workdir.
@@ -170,7 +170,7 @@ async fn post_message(
 ///
 /// Returned by [`process_submission`] so other routes (notably the
 /// welcome wizard's `Save` branch per the
-/// [agentic chat design](../../../../wiki/design-notes/agentic-chat.md))
+/// agentic chat design)
 /// can re-use the exact same ingest path the chat handler uses.
 #[derive(Debug)]
 pub struct ChatTurn {
@@ -180,7 +180,7 @@ pub struct ChatTurn {
 
 /// Run a single user turn through the ingest pipeline. This is the
 /// single chokepoint for every LLM call originating from the dashboard:
-/// the chat handler, the welcome wizard primer ([agentic chat](../../../../wiki/design-notes/agentic-chat.md)),
+/// the chat handler, the welcome wizard primer (agentic chat),
 /// and anything future wires through here instead of calling
 /// [`ingest::wiki_ingest_message`] directly.
 ///
@@ -346,7 +346,7 @@ fn render_page_with_error(user: &SessionUser, error: &str) -> String {
 /// dashboard surfaces these as compact "tool" bubbles above the final
 /// assistant reply so the user sees exactly which `_internal.*`
 /// operations the LLM invoked on its behalf (see the
-/// [agentic chat design](../../../../wiki/design-notes/agentic-chat.md) —
+/// agentic chat design —
 /// transparency).
 #[derive(Debug, Serialize, Clone)]
 pub struct ToolCallTrace {
@@ -400,7 +400,7 @@ pub struct AgenticTurn {
 /// Run an agentic submission through the operational chat LLM backend
 /// (the `operator_chat` slot, falling back to `hub_writer` — see
 /// [`crate::state::MemoryHandles::backend_for_chat`])
-/// ([agentic chat](../../../../wiki/design-notes/agentic-chat.md)) with the dashboard's
+/// (agentic chat) with the dashboard's
 /// whitelisted tool registry.
 ///
 /// `history` is the recent `{user, assistant}` window the chat panel
@@ -627,7 +627,7 @@ async fn post_agentic(
 
 /// Rendered representation of an [`IngestResponse`]. Exposed because
 /// the right-side chat panel injects this exact fragment into its
-/// scroll area on every turn ([agentic chat](../../../../wiki/design-notes/agentic-chat.md)).
+/// scroll area on every turn (agentic chat).
 #[must_use]
 pub fn response_panel(response: &IngestResponse) -> Markup {
     html! {

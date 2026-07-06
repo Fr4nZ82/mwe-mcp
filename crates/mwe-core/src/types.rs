@@ -255,7 +255,7 @@ const fn is_ascii_lower_hex(b: u8) -> bool {
 // ---------- CatalogId ----------
 
 /// A `catalog_id` in the form `c-YYYY-MM-DD-<kind>-NNN.<ext>` (see the
-/// [marker grammar](../../../wiki/design-notes/marker-grammar.md)).
+/// marker grammar).
 ///
 /// Example: `c-2026-05-10-photo-001.jpg`. `<kind>` is lowercase ASCII
 /// letters, `<ext>` is lowercase ASCII alnum, `NNN` is ≥1 ASCII digit.

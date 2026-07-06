@@ -32,7 +32,7 @@
 //! map) — no `mwe-mcp serve` restart needed; the env-file copy on disk is
 //! what survives a restart.
 //!
-//! See the [admin LLM config](../../../../wiki/design-notes/admin-llm-config.md)
+//! See the admin LLM config
 //! wiki page.
 
 #![allow(clippy::too_many_lines, reason = "single-page admin editor")]
@@ -198,7 +198,7 @@ const REASONING_EFFORTS: &[&str] = &["low", "medium", "high", "extra-high"];
 /// on every save: omitting `Cronista` meant the dashboard silently wiped
 /// the prose compiler, so a fresh setup captured facts but never rendered
 /// readable pages (see
-/// [admin LLM config](../../../../wiki/design-notes/admin-llm-config.md)).
+/// admin LLM config).
 /// `Cronista` keeps its `#[deprecated]` marker (it has not yet graduated
 /// to a full REM sub-job) but is configured like every other slot.
 #[allow(
@@ -869,7 +869,7 @@ pub fn render_status_page(
 /// status + login / logout buttons for the workdir OAuth store. Shown when
 /// the card's auth mode is "login". Test / personal use only; the `_llm`
 /// param keeps the call site's `llm` threaded for future use. See
-/// [`mwe_core::oauth`] and `wiki/protocol/config-schema.md`.
+/// [`mwe_core::oauth`] and `docs/protocol/config-schema.md`.
 fn claude_login_block(_llm: &LlmConfig) -> Markup {
     let creds = mwe_core::oauth::global_store().and_then(|s| s.load().ok().flatten());
     html! {

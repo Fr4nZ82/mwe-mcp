@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Optional cooperative lease for `wiki_admin_push` coordination
 //! across multiple smart consumers of the same owner — see
-//! [smart-wikis](../../../wiki/design-notes/smart-wikis.md).
+//! smart-wikis.
 //!
 //! The lease is **opt-in**: a smart consumer that does not call
 //! [`acquire`] sees the existing push semantics (subject to future
@@ -30,7 +30,7 @@
 //! - Collaborative-write across multiple owners (`group:` `shared_with`
 //!   members pushing to the same smart-wiki). The lease coordinates
 //!   between devices of the *same* user; cross-user collaborative
-//!   write is deferred — see [memory model](../../../wiki/concepts/memory-model.md).
+//!   write is deferred — see [memory model](../../../docs/concepts/memory-model.md).
 //! - Pre-emption (revoke a lease held by another consumer). Out of
 //!   scope: if a lease was acquired by a crashed laptop, wait for
 //!   the TTL to expire or wait for REM's `lease_expirer` (which picks

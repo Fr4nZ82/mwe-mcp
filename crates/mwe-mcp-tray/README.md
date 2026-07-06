@@ -1,7 +1,7 @@
 # mwe-mcp-tray
 
 An **optional** desktop control surface for the `mwe-mcp` systemd service —
-roadmap [group 14](../../wiki/planning/14_production-operationalization.md),
+roadmap group 14,
 item 14d. It is a **separate binary**: the server never links any GUI code, so
 a headless server runs the daemon unchanged and simply does not run this.
 

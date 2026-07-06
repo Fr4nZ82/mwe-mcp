@@ -21,7 +21,7 @@
 //!   fields default).
 //! - Chat-with-tools shapes — [`ChatMessage`], [`Role`], [`Tool`],
 //!   [`ToolCall`], [`ChatRequest`], [`ChatResponse`] — used by the
-//!   dashboard's agentic loop ([LLM functions](../../../wiki/design-notes/llm-functions.md)) when
+//!   dashboard's agentic loop (LLM functions) when
 //!   it composes `_internal.*` operations through function calling.
 //!   The `complete` single-prompt path stays untouched: callers that
 //!   do not need tools (ingest, REM, dedup) keep using it.
@@ -134,7 +134,7 @@ pub struct CompletionUsage {
 }
 
 /// One image riding a completion request (the vision path of the
-/// [media pipeline](../../../wiki/design-notes/media-pipeline.md)).
+/// media pipeline).
 ///
 /// Carried per-request, never as backend state: the ingest slot is
 /// shared by several callers and only the main ingest classify call may
@@ -246,7 +246,7 @@ pub struct CompletionResponse {
 //
 // Separate from the single-prompt `complete` path so the existing
 // structured callers (ingest, REM dedup) are untouched. Used by the
-// dashboard agentic loop ([LLM functions](../../../wiki/design-notes/llm-functions.md)) to
+// dashboard agentic loop (LLM functions) to
 // compose `mwe-core`'s `_internal.*` operations: the model receives a
 // turn-by-turn message history plus a list of callable tools, decides
 // whether to emit one or more `tool_calls`, and the dashboard
@@ -372,7 +372,7 @@ impl ChatMessage {
 /// The `parameters` field is a JSON Schema object describing the
 /// tool's arguments. The dashboard's `AgenticTool` registry produces
 /// these descriptors from the whitelisted `_internal.*` operations
-/// ([LLM functions](../../../wiki/design-notes/llm-functions.md)).
+/// (LLM functions).
 #[derive(Debug, Clone)]
 pub struct Tool {
     /// Tool name. Must be unique per `ChatRequest`. Matched against
@@ -539,7 +539,7 @@ pub trait LlmBackend: Send + Sync {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
 
     /// Run a multi-turn chat exchange, optionally with function-callable
-    /// tools. Used by the dashboard agentic loop ([LLM functions](../../../wiki/design-notes/llm-functions.md))
+    /// tools. Used by the dashboard agentic loop (LLM functions)
     /// where the model alternates between text replies and tool calls.
     ///
     /// Backends that do not support function calling — currently every
@@ -563,7 +563,7 @@ pub trait LlmBackend: Send + Sync {
 
     /// Sanity check that this backend is reachable and the configured
     /// model responds. Called at `mwe-mcp serve` boot
-    /// ([LLM functions](../../../wiki/design-notes/llm-functions.md)) for every
+    /// (LLM functions) for every
     /// configured slot so the server refuses to bind the listener
     /// when an LLM is misconfigured or unreachable; called on-demand
     /// by `mwe-mcp doctor` for the same check post-deploy.
@@ -819,7 +819,7 @@ struct OllamaGenerateRequest<'a> {
     /// which breaks every structured caller (ingest, REM dedup) that
     /// expects parseable output. The dashboard UI for surfacing the
     /// reasoning to the user is deferred — when it lands this field
-    /// becomes per-call configurable per [LLM functions](../../../wiki/design-notes/llm-functions.md).
+    /// becomes per-call configurable per LLM functions.
     think: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<OllamaOptions>,
@@ -1009,7 +1009,7 @@ impl LlmBackend for OllamaBackend {
 
     /// Multi-turn chat with optional function-callable tools, posted
     /// to `POST /api/chat` on the Ollama daemon. Used by the dashboard
-    /// agentic loop ([LLM functions](../../../wiki/design-notes/llm-functions.md)) where the
+    /// agentic loop (LLM functions) where the
     /// model alternates between text replies and tool invocations.
     ///
     /// Behaviour notes:
@@ -1066,7 +1066,7 @@ impl LlmBackend for OllamaBackend {
     /// Cheaper liveness probe for Ollama: hits `/api/version` instead
     /// of running an actual completion (which would warm the model
     /// into RAM). Used at `mwe-mcp serve` boot per
-    /// [LLM functions](../../../wiki/design-notes/llm-functions.md).
+    /// LLM functions.
     ///
     /// Only confirms the daemon is reachable; the configured model is
     /// not exercised here. A follow-up `complete` against an
@@ -1891,7 +1891,7 @@ impl LlmBackend for AnthropicBackend {
     /// Multi-turn chat with optional function-callable tools, posted
     /// to `POST /v1/messages` with the message history converted to
     /// Anthropic's typed content-block shape. Used by the dashboard
-    /// agentic loop ([LLM functions](../../../wiki/design-notes/llm-functions.md)) when the
+    /// agentic loop (LLM functions) when the
     /// operator pins a cloud profile (`hybrid` / `all-api`).
     ///
     /// Behaviour notes:
@@ -2057,8 +2057,8 @@ impl LlmBackend for AnthropicBackend {
 // every one of those gotchas.
 //
 // ## Operational notes (carried over from a pre-1.0 dogfood post-
-// mortem 2026-05-07; mirrored in `wiki/development/conventions.md`
-// + `wiki/architecture/overview.md`)
+// mortem 2026-05-07; mirrored in `docs/development/conventions.md`
+// + `docs/architecture/overview.md`)
 //
 // - **Combined thinking + output budget.** Gemini 3's `maxOutputTokens`
 //   is a *combined* budget for the model's internal reasoning AND the
@@ -2071,7 +2071,7 @@ impl LlmBackend for AnthropicBackend {
 //   (ingest, REM dedup, hub_writer JSON) get parseable output instead
 //   of a truncated tail. A future surface that wants visible reasoning
 //   (dashboard ChatPanel "show thinking" toggle) will make this
-//   per-call configurable, mirroring [LLM functions](../../../wiki/design-notes/llm-functions.md).
+//   per-call configurable, mirroring LLM functions.
 // - **Temperature 1.0 mandatory.** Gemini 3 documentation is explicit
 //   that values below 1.0 cause loops and degraded performance on
 //   reasoning / math tasks. We clamp the caller's requested
@@ -2104,7 +2104,7 @@ impl LlmBackend for AnthropicBackend {
 //   in the part object, not inside it. We capture it on the inbound
 //   response onto [`ToolCall::thought_signature`] and re-emit it on the
 //   outbound `functionCall` part in `split_gemini_messages`, so it
-//   survives the dashboard's agentic loop ([LLM functions](../../../wiki/design-notes/llm-functions.md)),
+//   survives the dashboard's agentic loop (LLM functions),
 //   which holds `Vec<ChatMessage>` and replays the assistant turn.
 //   The signature is carried opaquely on the assistant message's
 //   `ToolCall`; providers without the concept leave it `None`.
@@ -3793,7 +3793,7 @@ mod tests {
     }
 
     /// Thinking is disabled system-wide on every Ollama request
-    /// per [LLM functions](../../../wiki/design-notes/llm-functions.md). The flag must reach
+    /// per LLM functions. The flag must reach
     /// `/api/generate`'s body so thinking-capable models (Qwen 3.x, etc.)
     /// produce a non-empty `response` instead of consuming `num_predict`
     /// inside an unobserved reasoning block. Wiremock matches the body

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Link fabric on the memory explorer's rendered page — the human
 //! surface of the canonical wikilink grammar
-//! (`wiki/design-notes/recall-pipeline.md` §Link grammar) plus the
+//! (the recall-pipeline design note §Link grammar) plus the
 //! region → source-fact click-through:
 //!
 //! - canonical `[[wiki_id]]` / `[[wiki_id/page-slug]]` wikilinks render

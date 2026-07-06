@@ -252,7 +252,7 @@ pub async fn buffer_capture(
 /// `source_kind` names the producer (`ingest` | `document` | …) and
 /// `source_ref` carries the source-document provenance (catalog id / url)
 /// that promotion copies onto `fact_index.source_ref`
-/// ([document ingest](../../wiki/design-notes/document-ingest.md)).
+/// (document ingest).
 ///
 /// # Errors
 ///
@@ -353,7 +353,7 @@ fn validate_buffer_body(body: &str) -> Result<()> {
     // `<!--` stays reserved unconditionally (the journal's entry
     // delimiters); braces are admitted only as well-formed self-closing
     // `{{embed=…}}` markers, mirroring `capture::validate_body` (see
-    // [media pipeline](../../../wiki/design-notes/media-pipeline.md)).
+    // media pipeline).
     if body.contains("<!--") {
         return Err(CaptureBufferError::BodyContainsReserved);
     }

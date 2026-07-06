@@ -2,7 +2,7 @@
 //! Memory-wiki filesystem SSOT.
 //!
 //! `mwe-core::wiki` is the single owner of the `<workdir>/wikis/…` directory
-//! tree. Per the [memory model](../../../wiki/concepts/memory-model.md)
+//! tree. Per the [memory model](../../../docs/concepts/memory-model.md)
 //! the filesystem is the source of truth: every internal API in this module
 //! either reads the tree, or rewrites a file atomically while the caller
 //! mirrors the change into the `fact_index` (the DB is a rebuildable cache).
@@ -253,7 +253,7 @@ pub struct WikiChildEntry {
 /// Parsed `_meta.md` frontmatter.
 ///
 /// The canonical schema is documented in
-/// [the engine DB and migrations page](../../../wiki/design-notes/engine-db-and-migrations.md). All required fields are
+/// the engine DB and migrations page. All required fields are
 /// promoted to typed Rust fields; optional fields default to `None` / empty;
 /// every key the canonical schema does *not* know about is preserved
 /// verbatim in [`WikiMeta::extra`] so a forge-specific field round-trips
@@ -335,7 +335,7 @@ pub struct WikiMeta {
     /// Obsidian, and the dashboard / REM can spot it from the `_meta.md` alone.
     /// Round-tripped only when set (the vast majority of wikis stay lean).
     /// Defaults to `false`. SSOT for "is this an agent?" stays the binding; this
-    /// is the cache. See [`roadmap` item 27d / 4i](../../../wiki/roadmap.md).
+    /// is the cache. See `roadmap` item 27d / 4i.
     pub is_agent: bool,
     /// Wall-clock creation time. ISO 8601 string preserved verbatim so
     /// the wire format is stable even across `chrono` revisions.
@@ -1373,7 +1373,7 @@ pub fn wiki_catalog_list(tree: &WikiTree) -> Result<BTreeMap<String, Vec<Catalog
 /// frontmatter, and `summary` is served only when the wiki's id is in
 /// `summary_visible` (the reader's read-set covers the wiki's default
 /// visibility). This is the catalog half of the reader-relative card boundary
-/// ([identity-and-acl.md §The ACL card boundary](../../../wiki/concepts/identity-and-acl.md#the-acl-card-boundary--what-card-metadata-may-carry)):
+/// ([identity-and-acl.md §The ACL card boundary](../../../docs/concepts/identity-and-acl.md#the-acl-card-boundary--what-card-metadata-may-carry)):
 /// a reader denied a fact never sees its theme leak through the catalog card.
 ///
 /// # Errors
@@ -1445,7 +1445,7 @@ pub struct CatalogEntry {
 /// this stays a pure, side-effect-free render. Returns an empty string for an
 /// empty catalog.
 ///
-/// The navigation-recall entry map ([recall pipeline](../../../wiki/design-notes/recall-pipeline.md)):
+/// The navigation-recall entry map (recall pipeline):
 /// `recall_nav::navigate` renders it per turn from the sender-scoped catalog and
 /// hands it to the navigator as the ROOT INDEX section of every hop.
 #[must_use]
@@ -1546,7 +1546,7 @@ pub struct IdentityWikiCreation {
 /// own wiki, so the "## Behaviour" section was dropped. Neutral on purpose:
 /// the decided default posture is "the agent
 /// decides, as now" — no conservative ACL override is baked in
-/// ([no hardcoded gates](../../../wiki/design-notes/wiki-filesystem-ssot.md)). The
+/// (no hardcoded gates). The
 /// body is flat prose: the ingest write-path ([`append_engine_rule`]) appends
 /// each new rule as a bullet, and the whole file is injected verbatim as the
 /// classifier's `sender_rules`, so layout is not load-bearing.
@@ -1606,7 +1606,7 @@ pub fn append_engine_rule(handle: &WikiHandle, rule: &str) -> Result<()> {
 
 /// Create the on-disk scaffold for an identity wiki.
 ///
-/// (See the [wiki filesystem SSOT](../../../wiki/design-notes/wiki-filesystem-ssot.md).) Writes
+/// (See the wiki filesystem SSOT.) Writes
 /// `<workdir>/wikis/<id>/_meta.md` (frontmatter) + `index.md` (placeholder
 /// body) + [`rules.md`](RULES_FILENAME) (default user-policy page).
 ///

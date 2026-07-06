@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Tool-execution audit trail — wraps the `tool_executions` table
-//! ([engine DB & migrations](../../../wiki/design-notes/engine-db-and-migrations.md)).
+//! (engine DB & migrations).
 //!
 //! ## Why this module exists
 //!
 //! Every MCP-exposed tool call gets one row in `tool_executions` so the
 //! operator can later answer "who called what, when, with what cost,
 //! did it fail" — without the audit row ever leaking back into a
-//! consumer agent's context (see [identity and ACL](../../../wiki/concepts/identity-and-acl.md)).
+//! consumer agent's context (see [identity and ACL](../../../docs/concepts/identity-and-acl.md)).
 //!
 //! Writes happen at the dispatcher boundary in
 //! `mwe-mcp-server::mcp::audit`, on every call regardless of success.
@@ -44,7 +44,7 @@ pub type Result<T> = std::result::Result<T, AuditError>;
 pub type ErrorClass = Option<String>;
 
 /// One write request from the dispatcher boundary. Field shape matches
-/// [engine DB & migrations](../../../wiki/design-notes/engine-db-and-migrations.md) one-to-one.
+/// engine DB & migrations one-to-one.
 #[derive(Debug, Clone)]
 pub struct ToolExecutionInput<'a> {
     /// Stable MCP tool name (e.g. `wiki_ingest_message`). Use the
@@ -132,7 +132,7 @@ pub async fn record(pool: &SqlitePool, input: &ToolExecutionInput<'_>) -> Result
 /// Search filters for [`search`].
 ///
 /// Every field is optional + AND-combined. Matches the input shape of
-/// [`tool_log_search` in the tool reference](../../../wiki/protocol/tool-reference.md).
+/// [`tool_log_search` in the tool reference](../../../docs/protocol/tool-reference.md).
 #[derive(Debug, Default, Clone)]
 pub struct SearchFilters {
     /// Constrain to one sender.

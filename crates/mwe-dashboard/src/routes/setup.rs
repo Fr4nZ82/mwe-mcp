@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! First-run setup wizard (see
-//! [setup and identity](../../../../wiki/design-notes/setup-and-identity.md)).
+//! setup and identity).
 //!
 //! Served **only while no admin exists**. Once the first row with
 //! `is_admin = 1` is in the DB, every GET/POST here redirects to

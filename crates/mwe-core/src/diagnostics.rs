@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Live diagnostics shared by the CLI `doctor` and the dashboard health
-//! page (roadmap [group 19](../../../wiki/development/build-run.md)).
+//! page (roadmap [group 19](../../../docs/development/build-run.md)).
 //!
 //! These are the **read-only** health checks that can run while
 //! `mwe-mcp serve` holds the workdir lockfile: DB reachability +

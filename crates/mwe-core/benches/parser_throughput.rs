@@ -4,7 +4,7 @@
 //! Builds a ~10 MB synthetic corpus with a realistic-ish mix of prose,
 //! marker-delimited regions, and self-closing embeds. Reports MB/s.
 //!
-//! Roadmap target ([roadmap](../../../wiki/roadmap.md)): single-thread throughput
+//! Roadmap target (roadmap): single-thread throughput
 //! ≥ 10 MB/s. This bench is **not gated in CI** (criterion is slow and
 //! noise-sensitive on shared runners); run it locally with:
 //!

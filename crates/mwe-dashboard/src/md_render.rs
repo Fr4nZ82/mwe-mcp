@@ -29,7 +29,7 @@
 //!    renderer; per-blob denial happens at `GET` time (a denied byte
 //!    fetch shows as a broken image — the marker may be visible while
 //!    the bytes are not, by design of the
-//!    [media pipeline](../../../wiki/design-notes/media-pipeline.md)).
+//!    media pipeline).
 //!    Markers inside code blocks and code spans stay literal so
 //!    documentation about the marker grammar renders as text.
 //!
@@ -37,7 +37,7 @@
 //!    [`PageRenderContext`], `[[wiki_id]]` / `[[wiki_id/page-slug]]` /
 //!    `[[target|display]]` become in-dashboard `<a>` navigation per the
 //!    link grammar of
-//!    [recall-pipeline.md](../../../wiki/design-notes/recall-pipeline.md):
+//!    recall-pipeline.md:
 //!    the context's resolver maps the target (alias already stripped) to
 //!    an href, an unresolved target stays literal text (never a broken
 //!    link), the label is emitted as a text event so pulldown escapes it

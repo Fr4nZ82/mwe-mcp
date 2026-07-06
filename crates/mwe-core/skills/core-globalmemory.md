@@ -103,7 +103,7 @@ wiki_search({
 the gates pre-wired.
 
 If the recall returns hits, weave them into your reply with a citation
-(`wiki://<wiki_id>/<path>` — see [companion-wikis.md §citation-ids](../../../wiki/design-notes/companion-wikis.md)
+(`wiki://<wiki_id>/<path>` — see companion-wikis.md §citation-ids
 for the format; standard wikis use the same scheme). If it returns
 nothing, answer from the prompt alone and move on — do not invent
 context that mwe-mcp did not return.
@@ -327,10 +327,10 @@ transversal mode without prompting.
 
 ## Cross-references
 
-- Design narrative: [tool reference](../../../wiki/protocol/tool-reference.md).
-- Memory-model invariants: [memory model](../../../wiki/concepts/memory-model.md).
+- Design narrative: [tool reference](../../../docs/protocol/tool-reference.md).
+- Memory-model invariants: [memory model](../../../docs/concepts/memory-model.md).
 - Reference scenarios A & B (transversal recall + promotion to
-  companion-bound): [ingest pipeline](../../../wiki/design-notes/ingest-pipeline.md).
+  companion-bound): ingest pipeline.
 - Sibling skill: [`smart-consumer`](smart-consumer.md) — load this
   when the cwd promotes to companion-bound.
-- Engineering wiki: [`wiki/design-notes/companion-wikis.md`](https://github.com/Fr4nZ82/mwe-mcp/blob/main/wiki/design-notes/companion-wikis.md).
+- Engineering wiki: [the companion-wikis design note](https://github.com/Fr4nZ82/mwe-mcp/blob/main/the companion-wikis design note).

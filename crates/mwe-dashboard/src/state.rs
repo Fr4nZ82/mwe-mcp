@@ -26,11 +26,11 @@ use sqlx::SqlitePool;
 pub struct DashboardConfig {
     /// Minimum password length accepted by the setup wizard,
     /// `/dashboard/accept-invite`, and the self-service password
-    /// change. Pinned to 12 by the [memory model](../../../wiki/concepts/memory-model.md).
+    /// change. Pinned to 12 by the [memory model](../../../docs/concepts/memory-model.md).
     pub min_password_len: usize,
 
     /// TTL for fresh `user_invitations` rows. Per the
-    /// [engine DB and migrations](../../../wiki/design-notes/engine-db-and-migrations.md)
+    /// engine DB and migrations
     /// the default is 24h; the dashboard form does not expose this knob
     /// (only the CLI `mwe-mcp admin-reset` does), so it lives here.
     pub invitation_ttl_hours: i64,
@@ -46,7 +46,7 @@ pub struct DashboardConfig {
     /// keepalive ping (`/dashboard/session/keepalive`) refreshes it on
     /// user activity so a long form (the welcome primer) never lapses
     /// mid-fill. See the
-    /// [JWT & session model](../../wiki/design-notes/jwt-and-session-model.md).
+    /// JWT & session model.
     pub session_ttl_minutes: i64,
 
     /// When set, the session cookie is emitted with the `Secure`
@@ -116,7 +116,7 @@ pub struct MemoryHandles {
     /// leaves it empty and the live `LlmConfig` does the work.
     ///
     /// This is the seam that enables the e2e ingest test with a fake
-    /// LLM backend (see the [dashboard](../../../wiki/design-notes/dashboard.md)).
+    /// LLM backend (see the dashboard).
     pub llm_overrides: LlmBackendOverrides,
     /// Workdir root, exposed for handlers that need to construct
     /// `<workdir>/...` paths (today only used by the chat handler's

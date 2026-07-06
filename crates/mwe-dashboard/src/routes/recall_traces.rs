@@ -15,7 +15,7 @@
 //!
 //! The journal itself is written by the two recall producers (see
 //! [`mwe_core::recall_trace`] and the
-//! [recall pipeline](../../../../wiki/design-notes/recall-pipeline.md)): the
+//! recall pipeline): the
 //! ingest per-turn injection and the `wiki_navigate` tool. This surface only
 //! reads it.
 

@@ -26,7 +26,7 @@ The system prompt for the document-ingest **reduce** phase
   code (anything the model emits beyond the body is discarded). A parse
   failure falls back to the first member verbatim.
 - Design narrative:
-  [document ingest](../../../wiki/design-notes/document-ingest.md).
+  document ingest.
 
 ```text
 You are deduplicating candidate facts extracted from one document. The candidates below say (nearly) the same thing in different words — a long document repeats itself.

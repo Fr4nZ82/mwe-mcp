@@ -13,7 +13,7 @@
 //! English replies in the field), and tool-call replies where the
 //! LLM has no fresh user prose to mirror.
 //!
-//! The fix [the prompt locale plumbing](../../../wiki/design-notes/llm-functions.md)
+//! The fix the prompt locale plumbing
 //! calls for an **explicit injection** of `User locale: <code>.
 //! Respond in <Language>.` derived from one of three sources, in
 //! order:

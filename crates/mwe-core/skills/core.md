@@ -155,9 +155,9 @@ The blacklist propagates within ~60 s of a revoke; the
   [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md).
 - Tool surface: the MCP tools across families A–L — full schemas + the
   current count at
-  [`tool reference`](../../../wiki/protocol/tool-reference.md) and
-  `wiki/protocol/mcp-tools.md`.
+  [`tool reference`](../../../docs/protocol/tool-reference.md) and
+  `docs/protocol/mcp-tools.md`.
 - Engineering wiki overview:
-  `wiki/architecture/overview.md`.
+  `docs/architecture/overview.md`.
 - Companion-wikis design note:
-  `wiki/design-notes/companion-wikis.md`.
+  the companion-wikis design note.

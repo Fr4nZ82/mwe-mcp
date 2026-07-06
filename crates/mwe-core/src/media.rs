@@ -9,11 +9,11 @@
 //! `<workdir>/media/<aa>/<sha256>` (sharded by the first two hex chars).
 //! Identical bytes are stored once regardless of how many catalog rows or
 //! wikis reference them. Design SSOT:
-//! [media pipeline](../../../wiki/design-notes/media-pipeline.md); table
+//! media pipeline; table
 //! DDL in [`migrations/0039_media_catalog.sql`](../../../migrations/0039_media_catalog.sql).
 //!
 //! Write ordering is load-bearing for the workdir snapshot
-//! ([backup](../../../wiki/design-notes/backup-and-dr.md)): the blob is
+//! (backup): the blob is
 //! written **before** the catalog row, so a row present in a snapshot's DB
 //! image always finds its blob in the later file copy. An orphan blob
 //! without a row is harmless garbage; a row without a blob would be a
@@ -397,7 +397,7 @@ pub async fn find_by_ids(pool: &SqlitePool, catalog_ids: &[CatalogId]) -> Result
 
 /// Whether `sender_id` (with `sender_groups`) may read this media item —
 /// the same union rule as fact regions
-/// ([redaction policy](../../../wiki/design-notes/redaction-policy.md)),
+/// (redaction policy),
 /// no admin bypass.
 #[must_use]
 pub fn row_visible_to(row: &MediaRow, sender_id: &str, sender_groups: &[String]) -> bool {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Workdir permission auditing — defence-in-depth for the on-disk wiki bytes.
 //!
-//! Per-reader redaction (see [redaction policy](../../../wiki/design-notes/redaction-policy.md))
+//! Per-reader redaction (see redaction policy)
 //! is enforced when the server *renders* a response, but the markdown and
 //! `engine.db` under the workdir are cleartext on disk. The ACL is therefore
 //! only a real boundary when the operating system keeps every principal other

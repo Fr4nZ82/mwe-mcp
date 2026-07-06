@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! JWT issue / verify / revoke per [`jwt-and-session-model.md`](../../../wiki/design-notes/jwt-and-session-model.md).
+//! JWT issue / verify / revoke per `jwt-and-session-model.md`.
 //!
 //! ## Design recap
 //!
@@ -69,7 +69,7 @@ pub const BLACKLIST_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 /// every token issued before the consumer-class field existed continues
 /// to verify unchanged.
 ///
-/// [`tool-reference.md`]: ../../../wiki/protocol/tool-reference.md
+/// [`tool-reference.md`]: ../../../docs/protocol/tool-reference.md
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConsumerClass {

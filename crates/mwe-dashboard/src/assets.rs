@@ -8,7 +8,7 @@
 //!
 //! Pass 1 ships a single hand-written `app.css` so the layout has a
 //! style baseline; passes 2+ may add `manifest.json`, `sw.js`, and
-//! the icons referenced by the [dashboard](../../../wiki/design-notes/dashboard.md).
+//! the icons referenced by the dashboard.
 
 use axum::Router;
 use axum::body::Body;

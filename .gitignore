@@ -36,7 +36,7 @@ Cargo.lock.bak
 # IS committed — it is the source rust-embed pulls in at compile time, and
 # Cargo cannot run the standalone tailwindcss CLI itself. Devs re-run
 # `tailwindcss -i tailwind/app.css -o crates/mwe-dashboard/assets/tailwind.css --minify`
-# after editing tailwind/ (see wiki/development/build-run.md).
+# after editing tailwind/ (see docs/development/build-run.md).
 /static/tailwind.css
 
 # Logs / temp

@@ -3,9 +3,9 @@
 //! revert chassis.
 //!
 //! Wraps the `structure_proposals` table
-//! ([engine DB and migrations](../../../wiki/design-notes/engine-db-and-migrations.md))
+//! (engine DB and migrations)
 //! and ships the 5-state lifecycle described in
-//! [the proposal apply engine](../../../wiki/design-notes/proposal-apply-engine.md)
+//! the proposal apply engine
 //! (5 states; the `confirm_window` policy:
 //! silence = consent, not rejection):
 //!
@@ -65,7 +65,7 @@
 //! ([`apply_proposal`], [`confirm_proposal`], [`revert_proposal`]) are
 //! consumed exclusively by the built-in dashboard, which calls these
 //! functions directly. See
-//! [the tool reference](../../../wiki/protocol/tool-reference.md)
+//! [the tool reference](../../../docs/protocol/tool-reference.md)
 //! for the rationale.
 
 use std::str::FromStr;
@@ -82,7 +82,7 @@ use crate::wiki::WikiTree;
 
 /// Canonical `structure_proposals.kind` string constants.
 ///
-/// Pinned by [the proposal apply engine](../../../wiki/design-notes/proposal-apply-engine.md);
+/// Pinned by the proposal apply engine;
 /// the chassis rejects any other value as `unknown_kind`.
 pub mod kind {
     /// Promote facts paragraph→file or file→sub-wiki (3-stage auto-promotion building block).
@@ -95,7 +95,7 @@ pub mod kind {
     /// audience as a propose-first vote ([`crate::votes`]).
     ///
     /// Part of the write-authority model
-    /// ([identity and ACL](../../../wiki/concepts/identity-and-acl.md)).
+    /// ([identity and ACL](../../../docs/concepts/identity-and-acl.md)).
     /// The proposal opens `pending` (the fact stays active); a NO-majority
     /// within the window rejects it, and silence (or an all-voted quorum with no
     /// NO-majority) applies it — tombstoning the fact.
@@ -1693,7 +1693,7 @@ pub(crate) async fn mark_reverted(
 // ---------- Emit path ----------
 
 /// Default timeout for newly emitted proposals
-/// ([the proposal apply engine](../../../wiki/design-notes/proposal-apply-engine.md)):
+/// (the proposal apply engine):
 /// 24 h from `proposed_at`.
 pub const DEFAULT_EMIT_TIMEOUT: chrono::Duration = chrono::Duration::hours(24);
 

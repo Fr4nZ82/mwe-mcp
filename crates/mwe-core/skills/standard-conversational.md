@@ -407,6 +407,6 @@ opaque id back when calling `wiki_read`.
 - Bootstrap document: [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md).
 - Sibling skills: `core-globalmemory`, `smart-consumer`,
   `smart-codebase`.
-- Engineering wiki: `wiki/protocol/mcp-tools.md`.
-- Lifecycle reference: [engine DB and migrations](../../../wiki/design-notes/engine-db-and-migrations.md) (5-state model in
+- Engineering wiki: `docs/protocol/mcp-tools.md`.
+- Lifecycle reference: engine DB and migrations (5-state model in
   `structure_proposals`).

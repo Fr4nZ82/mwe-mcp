@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Ingest pipeline — `wiki_ingest_message`.
 //!
-//! This is the flagship MCP tool ([ingest pipeline](../../../wiki/design-notes/ingest-pipeline.md)):
+//! This is the flagship MCP tool (ingest pipeline):
 //! the single conversational entry point a consumer LLM agent talks to,
 //! every turn. The orchestrator owns the "messaggio raw → memoria
 //! gestita" loop end-to-end so the agent stays agnostic of structure,
@@ -23,7 +23,7 @@
 //! body, owner, `fact_type`, topics, disambig need). Calling the model
 //! once — instead of intent → routing → seed as three round trips —
 //! keeps latency under the conversational budget the spec calls out
-//! ([ingest pipeline](../../../wiki/design-notes/ingest-pipeline.md)) and keeps cost
+//! (ingest pipeline) and keeps cost
 //! predictable.
 //!
 //! ## Fallback policy
@@ -194,7 +194,7 @@ pub struct IngestRequest {
     /// breaking changes.
     pub metadata: IngestMetadata,
     /// Media items riding this turn, already uploaded out of band via
-    /// `POST /media` ([media pipeline](../../../wiki/design-notes/media-pipeline.md)).
+    /// `POST /media` (media pipeline).
     /// The dispatcher resolves each entry against the media catalog
     /// (the row's `kind` is authoritative) and verifies the caller may
     /// read it before threading it here. Empty for the common
@@ -256,7 +256,7 @@ pub struct IngestMetadata {
 /// Coarse intent classification for one ingest turn.
 ///
 /// Surfaced verbatim back to the consumer for audit / debug visibility
-/// ([tool reference](../../../wiki/protocol/tool-reference.md)).
+/// ([tool reference](../../../docs/protocol/tool-reference.md)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntentKind {
     /// The message carried a new fact — captured into a wiki.
@@ -296,7 +296,7 @@ pub struct DisambigCandidate {
 }
 
 /// Output of [`wiki_ingest_message`]. Matches the JSON shape documented
-/// in [tool reference](../../../wiki/protocol/tool-reference.md).
+/// in [tool reference](../../../docs/protocol/tool-reference.md).
 #[derive(Debug, Clone)]
 pub struct IngestResponse {
     /// What the orchestrator decided. Always present.
@@ -329,7 +329,7 @@ pub struct IngestResponse {
     /// `None` is legal — the agent decides what to say.
     pub suggested_seed: Option<String>,
     /// `fact_id` of the newly captured row. Audit-only — the agent
-    /// must not cross-link to it in chat ([ingest pipeline](../../../wiki/design-notes/ingest-pipeline.md)).
+    /// must not cross-link to it in chat (ingest pipeline).
     pub capture_id: Option<FactId>,
     /// True when the LLM flagged the message as ambiguous and the agent
     /// should ask the user to choose a candidate.
@@ -1958,7 +1958,7 @@ fn normalize_capture_bound(raw: Option<&str>, field: &'static str) -> Option<Str
 /// Returns the number of edits applied.
 /// Whether a recalled hit's wiki is a SMART wiki — per-fragment ACL /
 /// validity edits are refused on smart wikis (their governance is
-/// wiki-level and markerless; see [`smart-wikis`](../../../wiki/design-notes/smart-wikis.md)
+/// wiki-level and markerless; see `smart-wikis`
 /// and roadmap 6j.4). Fails closed: a wiki that cannot be resolved is
 /// treated as smart, so an edit never mutates a row whose family is
 /// unknown.
@@ -2468,7 +2468,7 @@ pub(crate) fn parse_first_json<T: serde::de::DeserializeOwned>(raw: &str) -> Opt
 /// override sits at `<workdir>/prompts/ingest.md`. The verbatim
 /// prompt body lives in `crates/mwe-core/prompts/ingest.md`
 /// (frontmatter + a single ```text ... ``` fenced block); see
-/// [ingest pipeline](../../../wiki/design-notes/ingest-pipeline.md) for the
+/// ingest pipeline for the
 /// design narrative and version history. Referenced from [`prompts::BUNDLED`] so
 /// `mwe-mcp init` materialises it under the workdir.
 pub const BUNDLED_INGEST_PROMPT_MD: &str = include_str!("../prompts/ingest.md");
@@ -3017,7 +3017,7 @@ async fn capture_behaviour_rule(
 }
 
 /// File a fact the agent states about ITSELF — the self side of agent-authored
-/// memory ([ingest pipeline](../../../wiki/design-notes/ingest-pipeline.md)).
+/// memory (ingest pipeline).
 /// The `owner_id: "self"` sentinel on an assistant turn
 /// (prompt Part 12) routes here: the body is filed as a normal fact in the
 /// calling agent's OWN wiki, **owned by the agent** (`owner == sender == the
@@ -3197,7 +3197,7 @@ async fn recall_behaviour_rules(
 /// Stable header of the `rules` field's directives section — the `YOUR
 /// RULES` role section of the injected turn context (the host places the
 /// `rules` field adjacent to the recall block; see the block layout in
-/// `wiki/design-notes/ingest-pipeline.md`).
+/// the ingest-pipeline design note).
 const HDR_YOUR_RULES: &str = "YOUR RULES (standing directives — agent-wide and this user's; \
      apply them in your reply, never relay them):";
 
@@ -4901,7 +4901,7 @@ pub async fn wiki_ingest_message(
     let who_is_speaking = who_is_speaking_section(tree, &request.sender_id);
     // One-shot notice when a non-admin asked for an agent-wide change: the rule
     // was NOT filed; steer the agent to decline politely this turn (the
-    // behaviour-rule governance — `wiki/design-notes/ingest-pipeline.md`). It
+    // behaviour-rule governance — the ingest-pipeline design note). It
     // rides the dedicated `rules` field (it is behaviour guidance), not the
     // recalled memory.
     let notice = agent_wide_denied.then(|| {

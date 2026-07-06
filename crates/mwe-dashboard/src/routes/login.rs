@@ -8,7 +8,7 @@
 //! wrong password, missing `user_credentials` row for a system user)
 //! so the visitor cannot enumerate accounts.
 //!
-//! Per the [JWT & session model](../../../../wiki/design-notes/jwt-and-session-model.md)
+//! Per the JWT & session model
 //! the **email** is the only login field. The admin sets every user's
 //! email when inviting them (the "Add user" form), so the email lives on
 //! `enrollment_users` and the handler resolves it to the canonical

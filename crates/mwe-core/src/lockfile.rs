@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Single-writer lockfile ([single-writer lockfile](../../../wiki/design-notes/single-writer-lockfile.md)).
+//! Single-writer lockfile (single-writer lockfile).
 //!
 //! Enforces the V1 invariant that **at most one `mwe-mcp` process owns a
 //! given workdir at a time**. The mechanism is a kernel advisory lock

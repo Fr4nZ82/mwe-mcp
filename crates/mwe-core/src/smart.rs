@@ -26,7 +26,7 @@
 //! Both gated on `consumer_class=smart` — these tools have no business
 //! on a standard/conversational token.
 //!
-//! See [`tool-reference.md`](../../../wiki/protocol/tool-reference.md)
+//! See [`tool-reference.md`](../../../docs/protocol/tool-reference.md)
 //! for the wire shape + error mapping.
 
 use std::collections::HashMap;

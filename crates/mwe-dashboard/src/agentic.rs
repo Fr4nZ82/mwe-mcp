@@ -3,7 +3,7 @@
 //! (running an LLM loop with function calling) and the whitelisted
 //! subset of `mwe-core`'s `_internal.*` operations.
 //!
-//! Per the [agentic-chat design note](../../../wiki/design-notes/agentic-chat.md),
+//! Per the agentic-chat design note,
 //! the chat panel is an *operative tool on the memory itself*. It composes
 //! `_internal.*` directly because it lives in-process — no MCP, no
 //! JWT, no consumer-delegation gymnastics. ACLs still apply: every
@@ -43,7 +43,7 @@
 //!   the root. The directly moved wiki's `_meta.md.parent_wiki_id` is
 //!   rewritten, the on-disk directory is renamed, and
 //!   `fact_index.source_path` is rebased for every affected row.
-//!   `wiki_id` stays stable per the [memory model](../../../wiki/concepts/memory-model.md)
+//!   `wiki_id` stays stable per the [memory model](../../../docs/concepts/memory-model.md)
 //!   invariant, so `wiki_id`-based cross-links never need rewriting (no-op
 //!   today).
 //! - **Single-fact move**: the write tool `wiki_move_fact` relocates
@@ -170,7 +170,7 @@ pub enum AgenticTool {
     /// refile engine to its sender's home wiki when one exists, falling back
     /// to its owner's home wiki — a fact whose sender and owner both lack one
     /// is tombstoned. **Admin-only**: deleting structure is the operator's
-    /// act (see [identity and ACL](../../../wiki/concepts/identity-and-acl.md)); a smart wiki is refused
+    /// act (see [identity and ACL](../../../docs/concepts/identity-and-acl.md)); a smart wiki is refused
     /// (wiki-level governance). Act-first: the whole deletion is wrapped in
     /// ONE born-applied `bundle` receipt
     /// ([`mwe_core::page::delete_page_direct`]), undoable from the dashboard.
@@ -178,7 +178,7 @@ pub enum AgenticTool {
     WikiDeletePage,
     /// Open a **forget request** for ONE fact the signed-in user does NOT author
     /// — the non-sender owner's path ([`mwe_core::votes::open_forget_request`];
-    /// the write-authority model, [identity and ACL](../../../wiki/concepts/identity-and-acl.md)). The signed-in user must be the fact's `owner`
+    /// the write-authority model, [identity and ACL](../../../docs/concepts/identity-and-acl.md)). The signed-in user must be the fact's `owner`
     /// (subject) or a member of an owning group; a **sender** is refused (they
     /// delete directly via [`Self::WikiForget`]). Propose-first: the fact stays
     /// active while the fact's audience votes ([`Self::StructureProposalVote`]) —
@@ -1060,7 +1060,7 @@ const CONTEXT_SUMMARY_CHARS: usize = 120;
 /// lifts the scope (`recipient = None`, every recipient), the same posture
 /// the facts table and wiki pages already take. `ctx.reveal` is only ever
 /// `true` for an admin (`crate::reveal::active` gates on the role). See
-/// `wiki/design-notes/redaction-policy.md`.
+/// the redaction-policy design note.
 fn proposal_recipient_scope(ctx: &AgenticContext<'_>) -> Option<String> {
     (!ctx.reveal).then(|| format!("user:{}", ctx.sender_ctx.sender_id))
 }
@@ -1927,7 +1927,7 @@ struct WikiDeletePageArgs {
     wiki_id: String,
     page: String,
     /// Admin-only (the governed delete-page path —
-    /// [agentic-chat.md](../../../wiki/design-notes/agentic-chat.md)):
+    /// agentic-chat.md):
     /// tombstone **every** fact, including ones the
     /// admin did not author, with no evacuation. Refused for a non-admin.
     #[serde(default)]
@@ -1948,7 +1948,7 @@ struct WikiDeletePageReport {
 
 /// Delete a page: tombstone the operator's own facts, evacuate foreign-authored
 /// ones to their senders' wikis (the governed delete-page path —
-/// [agentic-chat.md](../../../wiki/design-notes/agentic-chat.md)). Two-level authority — the
+/// agentic-chat.md). Two-level authority — the
 /// operator must be owner-equivalent on the wiki (or admin); the per-fact sender
 /// axis governs each fact inside. Smart wikis are refused.
 async fn dispatch_wiki_delete_page(
@@ -2136,7 +2136,7 @@ fn move_fact_wiki_relative_page(handle: &mwe_core::wiki::WikiHandle, source_path
 /// Admin-only gate for the single-fact move. Re-categorising a fact neither
 /// destroys it nor changes its visibility, so it is the operator's (admin's)
 /// act — and REM's, server-side — never the per-fact owner's (the structure
-/// authority of [the write-authority model](../../../wiki/concepts/identity-and-acl.md)). The
+/// authority of [the write-authority model](../../../docs/concepts/identity-and-acl.md)). The
 /// owner / sender axes gate `delete` / `edit` / `acl_change`, not `move`.
 fn enforce_move_admin(
     ctx: &AgenticContext<'_>,
@@ -2628,7 +2628,7 @@ mod tests {
     /// prompt. The prompt is the only safety surface — there is no code
     /// confirmation gate — so a wired-but-undocumented write tool would
     /// reach the model with no guardrail (see
-    /// [agentic-chat.md](../../../wiki/design-notes/agentic-chat.md)). This
+    /// agentic-chat.md). This
     /// guards against a new tool landing in the registry without a matching
     /// flow block in the prompt.
     #[test]

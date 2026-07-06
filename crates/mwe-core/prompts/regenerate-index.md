@@ -16,13 +16,13 @@ chat panel is a separate prompt at
 it resolves its own `LlmFunction::OperatorChat` slot (which falls back to
 `hub_writer` only when that slot is unset), so the two are decoupled and
 produce very different outputs. See
-[narrative compiler](../../../wiki/design-notes/narrative-compiler.md).
+narrative compiler.
 
 ## Runtime contract
 
 Operational specs that ship next to the prompt body so they can't
 drift from it. Code is the source of truth; the
-[narrative compiler](../../../wiki/design-notes/narrative-compiler.md)
+narrative compiler
 page covers the hub writer's two consumers (this regenerator and the
 compiler's hub-page pass, `compiler::compile_hub_page`).
 
@@ -42,7 +42,7 @@ consumer's responsibility).
 - `{wiki_id}` — canonical wiki id of the parent
 - `{children}` — markdown bullet list of children as **canonical
   wikilinks** (the link grammar of
-  [recall-pipeline.md](../../../wiki/design-notes/recall-pipeline.md)):
+  recall-pipeline.md):
   the REM regenerator feeds `- [[<child wiki_id>]]` wiki hops, the
   compiler's Hub Writer consumer feeds `- [[wiki_id/page-slug]]` page
   hops (via `compiler::plan_page_wikilink`) — either way already
@@ -69,7 +69,7 @@ function-calling.
 |---|---|---|
 | `temperature` | `0.2` | Mildly deterministic — `index.md` is reference prose, not creative writing; small variance avoids the model collapsing on identical wording cycle after cycle. |
 | `max_tokens` | `2000` | The target is 6-12 lines (~200-400 tokens); 2000 is comfortable headroom for a wiki with longer prose in any locale. |
-| `think:false` | implicit | Workhorse default for Qwen 3.x; see [narrative compiler](../../../wiki/design-notes/narrative-compiler.md), runtime section. |
+| `think:false` | implicit | Workhorse default for Qwen 3.x; see narrative compiler, runtime section. |
 
 **Upstream filter** (decides when the model sees the prompt at all):
 the trigger gate in `run_hub_writer` (children present, at least one

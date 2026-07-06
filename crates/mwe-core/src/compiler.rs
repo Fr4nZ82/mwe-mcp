@@ -1433,7 +1433,7 @@ fn is_future(from: &str, now: &str) -> bool {
 }
 
 /// The canonical wikilink for one planned page, per the link grammar
-/// ([recall-pipeline.md §Link grammar](../../../wiki/design-notes/recall-pipeline.md)):
+/// (recall-pipeline.md §Link grammar):
 /// `[[wiki_id/page-slug]]` for a page hop (the slug is the page file's
 /// stem — never the plan slug alone, which would read as a wiki hop to a
 /// wiki that does not exist), collapsing to the bare `[[wiki_id]]` wiki

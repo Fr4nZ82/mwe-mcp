@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Admin-gated group management (see [dashboard](../../../../wiki/design-notes/dashboard.md) +
-//! [memory model](../../../../wiki/concepts/memory-model.md)).
+//! Admin-gated group management (see dashboard +
+//! [memory model](../../../../docs/concepts/memory-model.md)).
 //!
 //! Groups are metadata-only — no invitation, no credentials. The form
 //! shows a checkbox for each existing user so the admin builds the
@@ -382,7 +382,7 @@ async fn delete(
     // 23d: reassign any fact whose `sender` is this group (e.g. one a prior 23d
     // pass auto-attributed to the collective) to its wiki's scope principal, so
     // no active fact points at a vanished sender (the sender-scrub invariant —
-    // wiki/concepts/identity-and-acl.md). Owner/allow that
+    // docs/concepts/identity-and-acl.md). Owner/allow that
     // name this group are out of 23d's scope (sender only). Best-effort — a
     // failure (or absent memory handles) is logged, never blocks the delete.
     if let Some(memory) = state.memory.as_ref() {

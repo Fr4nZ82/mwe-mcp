@@ -48,7 +48,7 @@ The system prompt for **Il Cronista** (compiler stage 3,
   `[[wikilinks]]`). Both link feeds carry the **canonical grammar** —
   `[[wiki_id]]` / `[[wiki_id/page-slug]]`, rendered by
   `compiler::plan_page_wikilink` (see
-  [recall-pipeline.md §Link grammar](../../../wiki/design-notes/recall-pipeline.md))
+  recall-pipeline.md §Link grammar)
   — and the prompt instructs the model to copy them **verbatim**, never to
   mint or restyle one: a link rewritten in the surrounding slug style
   (hyphens flipped to underscores) resolves nowhere — a dead rail for the

@@ -26,7 +26,7 @@
 //!   exists survives disconnection (a reconnect reuses it).
 //!
 //! Current state documented in
-//! `wiki/design-notes/web-agent-oauth.md` (§ Housekeeping).
+//! the web-agent-oauth design note (§ Housekeeping).
 
 use std::collections::{BTreeMap, HashSet};
 

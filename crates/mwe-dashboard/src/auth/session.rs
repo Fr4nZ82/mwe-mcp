@@ -6,7 +6,7 @@
 //!
 //! The cookie is a [`mwe_core::jwt::TokenClaims`] signed with the same
 //! `MWE_TOKEN_SECRET` as every other JWT this deployment issues
-//! ([JWT and session model](../../../../wiki/design-notes/jwt-and-session-model.md)).
+//! (JWT and session model).
 //! Only the TTL and the "where it travels" differ:
 //!
 //! - `sender_id`     — the dashboard user.
@@ -79,7 +79,7 @@ pub struct SessionUser {
     /// `sender_id` claim from the session JWT.
     pub sender_id: String,
     /// Whether the user has the admin role per the
-    /// [JWT and session model](../../../../wiki/design-notes/jwt-and-session-model.md).
+    /// JWT and session model.
     /// Trusted for the 60-minute cookie lifetime.
     pub is_admin: bool,
     /// `jti` of the cookie that authenticated this request — handy for

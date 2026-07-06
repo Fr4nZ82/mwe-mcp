@@ -3,7 +3,7 @@
 //! and **validity edit** verbs.
 //!
 //! The chat ingest path applies these two verbs from a conversational turn
-//! ([ingest pipeline](../../../wiki/design-notes/ingest-pipeline.md)); the
+//! (ingest pipeline); the
 //! dashboard applies the SAME two verbs from a structured operator form. To
 //! keep the act-first orchestration in one place — load nothing extra, write
 //! the engine column (probing the promoted fact row first, then the

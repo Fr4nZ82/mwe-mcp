@@ -25,7 +25,7 @@ LLM agent that *talks to* mwe-mcp over MCP reads
 > end-to-end worked integration, the identity/delegation handshake from the
 > consumer's point of view — is still being hardened against the first real
 > consumers. For the authoritative, lockstep-with-code detail on any topic, follow
-> the links into the [engineering wiki](wiki/index.md).
+> the links into the engineering wiki.
 
 ---
 
@@ -51,8 +51,7 @@ you hold a bearer token minted from its dashboard, an integration is two pieces:
 3. a **bearer token** minted for your agent (Admin → users / tokens). A consumer's
    class (`standard` vs. `smart`) and its identity claims are decided at mint time.
    How identity, delegation, and the access-control model work is in
-   [`wiki/concepts/identity-and-acl.md`](wiki/concepts/identity-and-acl.md) and
-   [`wiki/design-notes/setup-and-identity.md`](wiki/design-notes/setup-and-identity.md).
+   [`docs/concepts/identity-and-acl.md`](docs/concepts/identity-and-acl.md).
 
 The rest of this guide is the per-turn contract a bridge implements, plus where to
 run the consumer safely.
@@ -195,14 +194,14 @@ proposes it rather than leaking a sensitive repo into personal memory.
 | Topic | Where the detail lives |
 |---|---|
 | Standing the server up, configuring its LLM, minting tokens | [`INSTALL.md`](INSTALL.md) |
-| Transport (MCP Streamable HTTP), endpoints, JWT bearer | [`wiki/design-notes/mcp-dispatcher.md`](wiki/design-notes/mcp-dispatcher.md), [`wiki/design-notes/jwt-and-session-model.md`](wiki/design-notes/jwt-and-session-model.md) |
-| Token / identity flow (admin invites → user → consumer) | [`wiki/concepts/identity-and-acl.md`](wiki/concepts/identity-and-acl.md), [`wiki/design-notes/setup-and-identity.md`](wiki/design-notes/setup-and-identity.md) |
-| The tool surface and per-tool I/O contract | [`wiki/protocol/mcp-tools.md`](wiki/protocol/mcp-tools.md), [`wiki/protocol/tool-reference.md`](wiki/protocol/tool-reference.md) |
-| Server config + LLM profiles + secrets | [`wiki/protocol/config-schema.md`](wiki/protocol/config-schema.md) |
-| Deployment topology (server and consumer on separate hosts, remote HTTP) | [`wiki/architecture/runtime-topology.md`](wiki/architecture/runtime-topology.md) |
+| Transport (MCP Streamable HTTP), endpoints, JWT bearer | [`docs/architecture/runtime-topology.md`](docs/architecture/runtime-topology.md) |
+| Token / identity flow (admin invites → user → consumer) | [`docs/concepts/identity-and-acl.md`](docs/concepts/identity-and-acl.md) |
+| The tool surface and per-tool I/O contract | [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md), [`docs/protocol/tool-reference.md`](docs/protocol/tool-reference.md) |
+| Server config + LLM profiles + secrets | [`docs/protocol/config-schema.md`](docs/protocol/config-schema.md) |
+| Deployment topology (server and consumer on separate hosts, remote HTTP) | [`docs/architecture/runtime-topology.md`](docs/architecture/runtime-topology.md) |
 | Consumer-agent runtime behaviour (what *your agent* must do) | [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) |
 | Ready-made host bridges + the bridge-authoring guide | [`agents-bridges/README.md`](agents-bridges/README.md) |
-| Smart vs. standard consumers, smart wikis | [`wiki/design-notes/smart-wikis.md`](wiki/design-notes/smart-wikis.md) |
+| Smart vs. standard consumers, smart wikis | [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) §6–§8 |
 
 ---
 
@@ -323,7 +322,7 @@ below directly.
 
 Structural intent (`dashboard_link`) and the *smart*-consumer
 `wiki_admin_*` family sit on top of this; the full surface is catalogued
-in [`wiki/protocol/mcp-tools.md`](wiki/protocol/mcp-tools.md), and the
+in [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md), and the
 consumer-agent runtime contract (what *the agent itself* must do with
 these fields) is in [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md).
 

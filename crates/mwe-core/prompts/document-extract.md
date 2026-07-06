@@ -36,7 +36,7 @@ The system prompt for the document-ingest **extraction (map)** phase
   job's anchor wiki in code; the per-segment fact cap is a code-side
   resource cap.
 - Design narrative:
-  [document ingest](../../../wiki/design-notes/document-ingest.md).
+  document ingest.
 
 ```text
 You are the fact extractor of a personal wiki memory, reading ONE segment of a longer document. The document's identity is given (title, summary); your job is to mine this segment for atomic facts.

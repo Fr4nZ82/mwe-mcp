@@ -10,7 +10,7 @@ source_of_truth_until_2026_05_22: crates/mwe-core/src/rem.rs (fn subwiki_emergen
 
 Prompt for the REM nightly **page → sub-wiki emergence**
 sub-pass (the second rung of the physical-form scale, see
-[memory model](../../../wiki/concepts/memory-model.md)). A topic **page** that cleared the
+[memory model](../../../docs/concepts/memory-model.md)). A topic **page** that cleared the
 deterministic mass pre-filter
 (`policy.auto_promote_subwiki_min_page_facts`) is shown to the
 `rem_promotions` strong slot, which decides whether the page has grown into a
@@ -22,7 +22,7 @@ fact. The orchestrator calls the prompt through the hybrid loader
 [`mwe_core::prompts::render`]: the override at
 `<workdir>/prompts/rem-subwiki-emergence.md` wins when present,
 otherwise this bundled default. See the
-[REM cycle](../../../wiki/design-notes/rem-cycle.md) page and
+REM cycle page and
 `crates/mwe-core/src/rem.rs`
 (`run_subwiki_emergence_for_wiki`) for the runtime parameters.
 
@@ -30,7 +30,7 @@ otherwise this bundled default. See the
 
 Operational specs that ship next to the prompt body so they can't
 drift from it. Code is the source of truth; the
-[REM cycle](../../../wiki/design-notes/rem-cycle.md) page keeps the design.
+REM cycle page keeps the design.
 
 **Call site**: `crates/mwe-core/src/rem.rs::run_subwiki_emergence_for_wiki`
 — search for `subwiki_emergence_prompt(`. The
@@ -53,7 +53,7 @@ block lives a few lines below the prompt build.
   in Rust at apply time via `derive_slug`.
 - `style` — the emerged wiki's **dominant style default**, stamped onto
   `_meta` (`extra["style"]`). A **hint, not a gate** (see the
-  [memory model](../../../wiki/concepts/memory-model.md)): per-page style still wins when a page deviates. Use `null` (or
+  [memory model](../../../docs/concepts/memory-model.md)): per-page style still wins when a page deviates. Use `null` (or
   omit) when the wiki is **generic** — mixed styles, no default. Outside
   the closed palette ⇒ dropped (generic).
 - `description` — free-text "what goes in here", stamped onto `_meta`

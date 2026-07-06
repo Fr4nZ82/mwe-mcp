@@ -29,7 +29,7 @@
 //!   husk) onto a near-synonym survivor page of the same wiki, delete the
 //!   husk file, and re-home the move in the persisted compilation plan —
 //!   the cure front of semantic page consolidation
-//!   ([rem-cycle.md §Page-merge sub-job](../../../wiki/design-notes/rem-cycle.md#page-merge-sub-job-semantic-page-consolidation)).
+//!   (rem-cycle.md §Page-merge sub-job).
 //!   Selected via `answers.variant = "page_merge"`. The revert recreates
 //!   the husk from the shell stored in the spec.
 //!
@@ -40,7 +40,7 @@
 //!
 //! ## Cross-link rewriting
 //!
-//! The [narrative compiler](../../../wiki/design-notes/narrative-compiler.md)
+//! The narrative compiler
 //! calls for rewriting cross-link text when a `wiki_promote` ends up changing
 //! the parts of the path the wikilink syntax depends on. The
 //! paragraph → file variant keeps the wiki id intact, so no
@@ -1816,7 +1816,7 @@ async fn apply_file_to_subwiki(
         .unwrap_or_else(|| new_slug.as_str())
         .to_owned();
     // Stamp the emergence-decided _meta defaults (see the
-    // [memory model](../../../wiki/concepts/memory-model.md)): a
+    // [memory model](../../../docs/concepts/memory-model.md)): a
     // free-text `description` ("what goes in here") into
     // `extra["summary"]` (the same key the recall abstract uses) and a
     // dominant style **default** into `extra["style"]`.
@@ -2277,7 +2277,7 @@ pub struct ParagraphToFileHints {
     /// active facts sharing the fact's page when the promotion fired.
     /// Surfaced for operator audit; the trigger is mass/ramification,
     /// not a single fact's word count (see the
-    /// [memory model](../../../wiki/concepts/memory-model.md)).
+    /// [memory model](../../../docs/concepts/memory-model.md)).
     pub trigger_page_facts: Option<usize>,
     /// Recall hits in the last 30 days, when known.
     pub recall_count_30d: Option<i64>,
@@ -3293,11 +3293,11 @@ pub struct FileToSubwikiHints {
     /// Page mass that tripped the emergence pre-filter — active facts on
     /// the page when the page→sub-wiki promotion fired. The trigger is
     /// forma fisica (mass/ramification page→folder), not a single fact's
-    /// length (see the [memory model](../../../wiki/concepts/memory-model.md)).
+    /// length (see the [memory model](../../../docs/concepts/memory-model.md)).
     pub trigger_page_facts: Option<usize>,
     /// Total active facts in the parent wiki — the "weigh against the
     /// parent" signal (see the
-    /// [narrative compiler](../../../wiki/design-notes/narrative-compiler.md)):
+    /// narrative compiler):
     /// a page substantial relative to its parent is the one ripe to spin off.
     pub parent_facts: Option<usize>,
     /// Free-form reason string ("REM emergence: page mass 22 of 40 wiki facts").
@@ -3389,7 +3389,7 @@ fn file_to_subwiki_context(
 /// `style` is the emerged wiki's **dominant style default** stamped onto
 /// its `_meta` (`extra["style"]`) — a hint, not a gate: per-page style
 /// still wins when a page deviates (see the
-/// [memory model](../../../wiki/concepts/memory-model.md)). `None`
+/// [memory model](../../../docs/concepts/memory-model.md)). `None`
 /// (or a value outside the closed palette) means the wiki is **generic**
 /// and carries no style default. `description` is the free-text "what
 /// goes in here" stamped onto `_meta` (`extra["summary"]`); its wording

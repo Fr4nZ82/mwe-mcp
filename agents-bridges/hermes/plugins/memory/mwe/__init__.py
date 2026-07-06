@@ -17,7 +17,7 @@ hermes-agent's `MemoryProvider` seam:
   gateway hook plugin) uploads incoming media out of band and spools the
   minted catalog ids to `$HERMES_HOME/mwe-media-spool.json`; `prefetch()`
   drains this sender's fresh entries and attaches them as `attachments`
-  (wiki/design-notes/media-pipeline.md). On a native image turn hermes
+  (the media-pipeline design note). On a native image turn hermes
   hands the provider an empty query — spooled attachments still fire the
   ingest, with the spooled caption (fallback `"[media]"`) as the text.
 - `get_tool_schemas()`/`handle_tool_call()` expose explicit search, the
@@ -63,7 +63,7 @@ _NON_PRIMARY_CONTEXTS = {"subagent", "cron", "flush"}
 # incoming media out of band and spools `{gateway_key, attachments,
 # caption, ts}` entries here; the hook and this provider live in
 # different plugin module namespaces, so the file is the channel
-# (wiki/design-notes/media-pipeline.md).
+# (the media-pipeline design note).
 _SPOOL_FILENAME = "mwe-media-spool.json"
 _SPOOL_TTL_SECONDS = 180.0
 

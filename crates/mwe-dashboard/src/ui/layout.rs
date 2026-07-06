@@ -34,7 +34,7 @@ use crate::auth::SessionUser;
 /// `exp` — so an actively-used tab keeps its sliding session alive even
 /// across a long, all-client-side form (the welcome primer). The endpoint
 /// returns 204; the response is ignored. See the
-/// [JWT & session model](../../../../wiki/design-notes/jwt-and-session-model.md).
+/// JWT & session model.
 const SESSION_KEEPALIVE_JS: &str = "(function(){\
 var url='/dashboard/session/keepalive',last=0,MIN=240000;\
 function ping(){\
@@ -101,7 +101,7 @@ pub fn render_page(title: &str, body: &Markup) -> String {
 /// The HTML shell — `<head>`, top nav, page header, body slot, footer.
 ///
 /// Authenticated pages also embed the persistent right-side chat panel
-/// per the [dashboard frontend](../../../../wiki/design-notes/dashboard-frontend.md), the floating "open chat"
+/// per the dashboard frontend, the floating "open chat"
 /// FAB used when the panel is dismissed, and the small `ui.js` that
 /// drives the hamburger and chat toggles. `chat.js` keeps the chat
 /// content responsibilities (hydration from `localStorage`, agentic
@@ -309,7 +309,7 @@ fn nav_link(href: &str, label: &str) -> Markup {
 }
 
 /// Persistent right-side chat panel rendered on every authenticated
-/// page per the [dashboard frontend](../../../../wiki/design-notes/dashboard-frontend.md).
+/// page per the dashboard frontend.
 ///
 /// The default visibility is driven by the body's `.chat-open` class
 /// (managed at runtime by `ui.js` from `localStorage` + viewport

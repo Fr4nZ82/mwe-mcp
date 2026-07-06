@@ -9,7 +9,7 @@ its local cache via the bot token (`event.media_urls` holds local file
 paths; `event.media_types` the mime strings).
 
 Entry is two-phase, mirroring the server design
-(wiki/design-notes/media-pipeline.md): the bytes travel out of band via
+(the media-pipeline design note): the bytes travel out of band via
 `POST <origin>/media` (multipart, same bearer + act-as as `/mcp`), and
 the minted catalog ids then ride `wiki_ingest_message.attachments` on
 the per-turn ingest performed by the bridge's memory half. The two

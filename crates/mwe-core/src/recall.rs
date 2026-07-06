@@ -844,7 +844,7 @@ pub async fn recall_due_soon(
 
 /// Hard cap on the number of hops [`wiki_multi_hop_facts`] will follow.
 ///
-/// Matches the [memory model](../../../wiki/concepts/memory-model.md)
+/// Matches the [memory model](../../../docs/concepts/memory-model.md)
 /// — prevents pathological wiki graphs from sending the recall pipeline
 /// into a long-running scan.
 pub const MULTI_HOP_HARD_LIMIT: usize = 10;
@@ -929,7 +929,7 @@ pub struct MultiHopOutcome {
 /// One parsed wikilink target, per the canonical link grammar.
 ///
 /// The grammar
-/// ([recall-pipeline.md §Link grammar](../../../wiki/design-notes/recall-pipeline.md)):
+/// (recall-pipeline.md §Link grammar):
 /// `[[wiki_id]]` is a wiki hop, `[[wiki_id/page-slug]]` a page hop
 /// (the slug may itself contain `/` for a nested page), and an
 /// optional `|display` alias is presentation only — it is stripped
@@ -1226,7 +1226,7 @@ mod tests {
         // Owner=alice, sender_of_region=bob — bob must be able to
         // read the region he himself authored on alice's wiki
         // (cross-user attribution invariant, see
-        // [memory model](../../../wiki/concepts/memory-model.md)).
+        // [memory model](../../../docs/concepts/memory-model.md)).
         let row = sample_row(
             "018f1234-5678-7abc-9def-0123456789ab",
             "user:alice",

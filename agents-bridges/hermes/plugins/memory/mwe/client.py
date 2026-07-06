@@ -102,7 +102,7 @@ class MweClient:
         The MCP ingest stays JSON: bytes travel through `POST <origin>/media`
         (multipart/form-data), then ride `wiki_ingest_message.attachments`
         as catalog ids — see the server's media pipeline design
-        (wiki/design-notes/media-pipeline.md). The origin is the MCP url
+        (the media-pipeline design note). The origin is the MCP url
         minus its trailing `/mcp`; the bearer + act-as headers are the same
         as the MCP calls, so the upload is attributed to the same effective
         principal.

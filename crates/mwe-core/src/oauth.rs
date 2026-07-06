@@ -14,7 +14,7 @@
 //!
 //! **Test / personal use only.** This reuses the operator's own Claude
 //! subscription and presents requests as the Claude CLI — never a deployed
-//! product auth mode. SSOT: `wiki/protocol/config-schema.md`
+//! product auth mode. SSOT: `docs/protocol/config-schema.md`
 //! §"Anthropic Claude Code / OAuth auth".
 
 use std::path::{Path, PathBuf};

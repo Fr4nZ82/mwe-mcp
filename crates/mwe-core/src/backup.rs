@@ -7,7 +7,7 @@
 //! their prose renders, styles, and narrative links. The unit of backup
 //! is therefore the **workdir snapshot** — both halves taken together
 //! (discipline + restore procedure:
-//! [backup & DR](../../../wiki/design-notes/backup-and-dr.md)).
+//! backup & DR).
 //!
 //! [`snapshot_workdir`] takes a *hot* snapshot, safe next to a running
 //! `mwe-mcp serve` (no lockfile taken):

@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 While the project is pre-1.0, the public interface (the MCP tool
-surface — see [`wiki/protocol/mcp-tools.md`](wiki/protocol/mcp-tools.md))
+surface — see [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md))
 may break between minor versions — breaking changes are called out
 explicitly.
 
@@ -146,7 +146,7 @@ scaffold into a working product. This is a **documentation-consolidation
 milestone**, not a frozen-API 1.0: the public release with stability
 guarantees is the Phase E target. The repo is now at Phase D
 (first-consumer cutover). For what each capability *is and does*, the
-engineering wiki ([`wiki/index.md`](wiki/index.md)) is the single source
+documentation set (now `docs/`) is the single source
 of truth; the pointers below link the relevant page.
 
 ### Added
@@ -155,69 +155,67 @@ of truth; the pointers below link the relevant page.
   markdown on disk; the `engine.db` sqlite index is fully
   reconstructible by re-walking the filesystem, so deleting it is a
   recoverable operation rather than data loss
-  ([`wiki/concepts/memory-model.md`](wiki/concepts/memory-model.md)).
+  ([`docs/concepts/memory-model.md`](docs/concepts/memory-model.md)).
 - **`wiki_type` registry** with bundled templates and an on-demand
   forge that invents a new template (frontmatter schema + lifecycle
   rules) at apply time
-  ([`wiki/concepts/memory-model.md`](wiki/concepts/memory-model.md)).
+  ([`docs/concepts/memory-model.md`](docs/concepts/memory-model.md)).
 - **Block-level ACL** via inline `{{owner=… allow=… sender=…}}…{{/}}`
   markers, with per-sender redaction applied region-by-region at render
-  time ([`wiki/concepts/identity-and-acl.md`](wiki/concepts/identity-and-acl.md)).
+  time ([`docs/concepts/identity-and-acl.md`](docs/concepts/identity-and-acl.md)).
 - **Multi-user identity.** Users and groups with a single-admin model,
   managed through the dashboard CRUD; one unified JWT shape shared by
   the MCP and dashboard surfaces
-  ([`wiki/concepts/identity-and-acl.md`](wiki/concepts/identity-and-acl.md)).
+  ([`docs/concepts/identity-and-acl.md`](docs/concepts/identity-and-acl.md)).
 - **Write-side flow:** `wiki_capture` / `wiki_supersede` / `wiki_forget`
   / `wiki_link`, with jaccard 6-gram dedup against active facts on
-  capture ([`wiki/protocol/tool-reference.md`](wiki/protocol/tool-reference.md)).
+  capture ([`docs/protocol/tool-reference.md`](docs/protocol/tool-reference.md)).
 - **Hybrid recall:** lexical + semantic (embedding cosine) + wikilink
   multi-hop traversal, ACL-filtered
-  ([`wiki/protocol/tool-reference.md`](wiki/protocol/tool-reference.md)).
+  ([`docs/protocol/tool-reference.md`](docs/protocol/tool-reference.md)).
 - **`wiki_ingest_message` LLM router:** a single LLM call classifies a
   consumer message into capture / supersede / recall / structural-hint /
   skip and routes it to the write-side flow
-  ([`wiki/protocol/tool-reference.md`](wiki/protocol/tool-reference.md)).
+  ([`docs/protocol/tool-reference.md`](docs/protocol/tool-reference.md)).
 - **REM self-reorganization.** A nightly cycle runs lifecycle rules,
   settles overdue structure proposals, and emits dedup / promotion /
   type-forge / archive proposals plus hub regeneration
-  ([`wiki/architecture/overview.md`](wiki/architecture/overview.md)).
+  ([`docs/architecture/overview.md`](docs/architecture/overview.md)).
 - **MCP tool surface over HTTP** — families A–K (identity, capture,
   recall, ingest, structure proposals, audit, smart-wiki admin,
   skills, smart-consumer bootstrap, …). The exact roster lives in
-  [`wiki/protocol/mcp-tools.md`](wiki/protocol/mcp-tools.md); the
+  [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md); the
   proposal-write actions (apply / confirm / revert) are dashboard-only,
   not on the MCP surface.
 - **Smart-wikis + smart-consumer surface:** `wiki_admin_*`
   authoritative writes, the `_briefing.md` channel, cooperative leases,
   an append-only op-log with revert, the `/cite` resolver, and inline
   dashboard comments
-  ([`wiki/protocol/mcp-tools.md`](wiki/protocol/mcp-tools.md)).
+  ([`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)).
 - **Built-in dashboard:** identity console, memory MVP (wiki / fact
   browser), agentic chat panel, admin LLM-config editor, and the
   operational-prompt editor
-  ([`wiki/architecture/overview.md`](wiki/architecture/overview.md)).
+  ([`docs/architecture/overview.md`](docs/architecture/overview.md)).
 - **Configurable internal LLM** with all-local / hybrid / all-api
   profiles across Ollama, Anthropic, and Gemini backends, wired per
   function and per backend through config + the dashboard editor
-  ([`wiki/architecture/runtime-topology.md`](wiki/architecture/runtime-topology.md),
-  [`wiki/protocol/config-schema.md`](wiki/protocol/config-schema.md)).
+  ([`docs/architecture/runtime-topology.md`](docs/architecture/runtime-topology.md),
+  [`docs/protocol/config-schema.md`](docs/protocol/config-schema.md)).
 
 ### Changed
 
-- **Documentation consolidated.** The engineering wiki
-  ([`wiki/index.md`](wiki/index.md)) is now the single source of truth
-  for what the system is and does; the planning corpus
-  ([`wiki/roadmap.md`](wiki/roadmap.md))
-  is forward-only (roadmap + open questions).
+- **Documentation consolidated.** The engineering documentation is now
+  the single source of truth for what the system is and does; the
+  planning corpus is forward-only (roadmap + open questions).
 - Rust toolchain pinned to **1.88** (was 1.85).
 
 ### Removed / Breaking
 
 - **stdio MCP transport removed** — the server is HTTP-only now
-  ([`wiki/architecture/runtime-topology.md`](wiki/architecture/runtime-topology.md)).
+  ([`docs/architecture/runtime-topology.md`](docs/architecture/runtime-topology.md)).
 - **Legacy `enrollment.yaml` loader removed** — identity is created and
   managed through the dashboard first-run wizard + CRUD, not a seed file
-  ([`wiki/concepts/identity-and-acl.md`](wiki/concepts/identity-and-acl.md)).
+  ([`docs/concepts/identity-and-acl.md`](docs/concepts/identity-and-acl.md)).
 - Internally, the `wiki_type` "family" column was refactored to a
   `companion: bool` marker (the live registry reads `companion` via
   `is_companion()`; the old `family TEXT` column is retired).

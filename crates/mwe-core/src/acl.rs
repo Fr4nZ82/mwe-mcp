@@ -96,7 +96,7 @@ pub fn can_read(
 /// Whether `caller` may **delete or edit** the fact directly.
 ///
 /// The write-authority model for `delete` / `edit` / `validity_edit`
-/// ([identity and ACL](../../../wiki/concepts/identity-and-acl.md)):
+/// ([identity and ACL](../../../docs/concepts/identity-and-acl.md)):
 /// only the fact's **sender** (its author / provenance) acts on their own
 /// contribution directly; an admin may act on any fact. A non-sender (even a
 /// non-sender `owner`) is refused here — their path is a request → vote (a
@@ -114,7 +114,7 @@ pub fn can_delete(sender_of_fact: Option<&Principal>, caller: &str, is_admin: bo
 /// bare **user ids**.
 ///
 /// This is the finite electorate a non-sender owner's forget request is put to
-/// ([the write-authority model](../../../wiki/concepts/identity-and-acl.md)).
+/// ([the write-authority model](../../../docs/concepts/identity-and-acl.md)).
 /// The audience is the same effective read-set [`can_read`] checks,
 /// `owner ∪ allow ∪ {sender}`, but resolved to concrete humans: each
 /// [`Principal::Group`] is expanded to its members via
@@ -197,7 +197,7 @@ pub fn sender_owns(owner: &Principal, sender_id: &str, sender_groups: &[String])
 /// at least one principal that was not already in the old set.
 ///
 /// The disclosure signal for the audit row written by the chat
-/// `acl_changes` verb ([ingest pipeline](../../../wiki/design-notes/ingest-pipeline.md)).
+/// `acl_changes` verb (ingest pipeline).
 /// The effective read-set is `{owner} ∪ allow` on each side; a change is a
 /// widening when any principal in the new set is absent from the old set.
 /// `Global` is treated like any other principal here — adding it newly is

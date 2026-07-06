@@ -21,10 +21,9 @@ agent, then let the skills carry the rest.
 ## 0. Audience
 
 This file is for the **LLM client that integrates mwe-mcp via MCP**.
-It is NOT for the agent working on the mwe-mcp codebase itself (that
-one reads [`CLAUDE.md`](CLAUDE.md)). If you find yourself on this
-page while editing files under `crates/mwe-core/` you took a wrong
-turn — close this and open `CLAUDE.md`.
+It is NOT for an agent working on the mwe-mcp codebase itself. If you
+find yourself on this page while editing files under `crates/mwe-core/`
+you took a wrong turn — close this.
 
 ---
 
@@ -231,10 +230,10 @@ hook envelopes for hook-capable hosts remain at
 
 The public MCP surface is organised by **family** (A–K); the exact
 roster and tool count are **canonical in the engineering wiki** at
-[`wiki/protocol/mcp-tools.md`](wiki/protocol/mcp-tools.md) (mirrored
+[`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md) (mirrored
 from the SSOT `schemas::all_tools()` in the code), with the full
 per-tool contract (parameters, returns, errors, side effects) in
-[`wiki/protocol/tool-reference.md`](wiki/protocol/tool-reference.md).
+[`docs/protocol/tool-reference.md`](docs/protocol/tool-reference.md).
 Don't pin a count here — it drifts. What you need to know to
 bootstrap is which family covers which job:
 
@@ -257,7 +256,7 @@ etc.) internally when handling `wiki_ingest_message` or the dashboard
 chat panel. They are **not exposed via MCP** — the dispatcher returns
 `403 not_exposed` on direct calls. The illustrative roster lives
 alongside the public surface in
-[`wiki/protocol/mcp-tools.md`](wiki/protocol/mcp-tools.md); it is
+[`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md); it is
 `mwe-core`'s own seam and is not a stable API.
 
 ---
@@ -307,27 +306,23 @@ Per-class anti-patterns are exhaustive in each skill body.
 
 ## 9. References
 
-The engineering wiki ([`wiki/`](wiki/)) is the single source of truth
-for what the system is and does (lockstep with code):
+The documentation set ([`docs/`](docs/)) is the reference for what the
+system is and does (kept in lockstep with code):
 
-- [`wiki/index.md`](wiki/index.md) — entry point.
-- [`wiki/protocol/mcp-tools.md`](wiki/protocol/mcp-tools.md) —
+- [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md) —
   public tool surface (roster + families).
-- [`wiki/protocol/tool-reference.md`](wiki/protocol/tool-reference.md) —
+- [`docs/protocol/tool-reference.md`](docs/protocol/tool-reference.md) —
   exhaustive shape of every tool (input, output, errors, paging).
-- [`wiki/protocol/config-schema.md`](wiki/protocol/config-schema.md) —
+- [`docs/protocol/config-schema.md`](docs/protocol/config-schema.md) —
   protocol / config overview, auth, transport.
-- [`wiki/concepts/memory-model.md`](wiki/concepts/memory-model.md) —
+- [`docs/concepts/memory-model.md`](docs/concepts/memory-model.md) —
   identity model, wiki structure, ingest classifier philosophy, the
   `structure_proposals` lifecycle.
-- [`wiki/architecture/overview.md`](wiki/architecture/overview.md) —
+- [`docs/architecture/overview.md`](docs/architecture/overview.md) —
   what ships today, per crate.
-- [`wiki/architecture/runtime-topology.md`](wiki/architecture/runtime-topology.md) —
+- [`docs/architecture/runtime-topology.md`](docs/architecture/runtime-topology.md) —
   runtime / cost topology, REM cycle.
-- [`wiki/examples/scenarios.md`](wiki/examples/scenarios.md) —
+- [`docs/examples/scenarios.md`](docs/examples/scenarios.md) —
   end-to-end usage scenarios.
-- [`wiki/design-notes/smart-wikis.md`](wiki/design-notes/smart-wikis.md) —
-  the smart-wiki + smart-consumer design narrative.
-
-Forward work (roadmap, open questions) lives in
-[`wiki/roadmap.md`](wiki/roadmap.md).
+The smart-consumer contract (what a smart agent may and must do) is
+§6–§8 of this document.

@@ -9,7 +9,7 @@
 //! catalog lookup → `acl::can_read` semantics (no admin bypass) → the
 //! content-addressed blob — so the two mounts cannot drift on the
 //! governance call (the shared pieces live in `mwe_core::media`; see
-//! [media pipeline](../../../../wiki/design-notes/media-pipeline.md)).
+//! media pipeline).
 //!
 //! Error posture mirrors the bearer mount: 404 for an unknown id, 403
 //! for a caller outside the row's read set (the embed key in the page

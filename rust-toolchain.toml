@@ -1,7 +1,7 @@
 [toolchain]
 # Pin to the latest stable channel for development; the MSRV (the actual
 # floor) is declared in Cargo.toml `rust-version` — currently 1.88, per
-# wiki/development/conventions.md (MSRV).
+# docs/development/conventions.md (MSRV).
 channel = "stable"
 components = ["rustfmt", "clippy", "rust-src"]
 profile = "default"

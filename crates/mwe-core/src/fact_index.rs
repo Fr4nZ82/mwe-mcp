@@ -2,17 +2,17 @@
 //! `fact_index` — SQLite-backed region-level index.
 //!
 //! One row per region delimited by `{{f=<UUIDv7>}}…{{/}}` markers in the
-//! memory-wiki filesystem ([memory model](../../../wiki/concepts/memory-model.md)).
+//! memory-wiki filesystem ([memory model](../../../docs/concepts/memory-model.md)).
 //! The `.md` files stay authoritative for the prose; for the **region
 //! ACL** the DB is the authoritative source on the read side — redaction
 //! resolves it by fact key via [`page_acl_map`], with the inline marker
 //! attributes as the transition fallback
-//! ([redaction policy](../../../wiki/design-notes/redaction-policy.md)).
+//! (redaction policy).
 //!
 //! See the table DDL in
 //! [`migrations/0001_fact_index.sql`](../../migrations/0001_fact_index.sql)
 //! and the schema reference in
-//! [engine DB and migrations](../../../wiki/design-notes/engine-db-and-migrations.md).
+//! engine DB and migrations.
 //!
 //! This module is the data-access layer: insert, find-active, mark
 //! superseded/forgotten, find-by-id, drop-by-source-path. The full
@@ -110,7 +110,7 @@ pub struct FactIndexRow {
     pub successor_fact_id: Option<FactId>,
     /// Set when `wiki_forget` (or filesystem removal) tombstones the row.
     pub deleted_at: Option<String>,
-    /// Free-form reason matching [engine DB and migrations](../../../wiki/design-notes/engine-db-and-migrations.md):
+    /// Free-form reason matching engine DB and migrations:
     /// `filesystem_removed`, `user_request`, `gdpr_erasure`, …
     pub deleted_reason: Option<String>,
     /// Last wall-clock the row appeared in `wiki_recall` / `wiki_search`
@@ -120,7 +120,7 @@ pub struct FactIndexRow {
     pub recall_count_30d: i64,
     /// Start of the fact's validity interval (ISO 8601). `None` = unknown /
     /// "since forever". Part of the per-fact validity model
-    /// ([memory model](../../../wiki/concepts/memory-model.md)).
+    /// ([memory model](../../../docs/concepts/memory-model.md)).
     /// Additive + inert until the writer populates it.
     pub valid_from: Option<String>,
     /// End of the validity interval (ISO 8601). `None` = OPEN ("true now, no
@@ -156,7 +156,7 @@ pub struct FactIndexRow {
     /// testata description. `None` = unproposed. See [`Self::target_page`].
     pub page_description: Option<String>,
     /// Provenance of an extracted fact: the media-catalog id or URL of the
-    /// source document ([document ingest](../../../wiki/design-notes/document-ingest.md)).
+    /// source document (document ingest).
     /// `None` for ordinary conversational captures. DB-authoritative
     /// metadata — audit/citation surface, never rendered into the page.
     pub source_ref: Option<String>,
@@ -828,7 +828,7 @@ pub async fn restore_acl(
 /// rows have no per-fragment capturer, and a frozen `sender` would
 /// otherwise survive a revoke as a stale extra principal in the read
 /// union (the materialized-provenance invariant is standard-wikis only —
-/// see [marker-grammar §5](../../../wiki/design-notes/marker-grammar.md)).
+/// see marker-grammar §5).
 ///
 /// Returns the number of rows updated.
 ///
@@ -1009,7 +1009,7 @@ pub async fn mark_forgotten_in_wiki(pool: &SqlitePool, wiki_id: &str, reason: &s
 ///
 /// Substitute every active fact's dangling `sender_id` — equal to the
 /// just-removed principal `gone` — with that fact's wiki **scope principal**
-/// ([the write-authority model](../../../wiki/concepts/identity-and-acl.md)), so a contribution
+/// ([the write-authority model](../../../docs/concepts/identity-and-acl.md)), so a contribution
 /// outlives its author as the category's: a fact `franz` authored in the family
 /// wiki becomes `sender = group:famiglia` once `franz` is gone, instead of
 /// pointing at a principal that no longer exists.
@@ -1018,7 +1018,7 @@ pub async fn mark_forgotten_in_wiki(pool: &SqlitePool, wiki_id: &str, reason: &s
 /// ([`crate::wiki::WikiTree::resolve_scope_principal`]). A wiki whose scope is
 /// *itself* `gone` (the removed principal's own identity wiki) is **skipped** —
 /// the substitute would not lift the dangle; those facts belong to the
-/// forget-user pass ([roadmap 5g](../../../wiki/roadmap.md)). A wiki that fails
+/// forget-user pass (roadmap 5g). A wiki that fails
 /// to locate or resolve is logged and skipped, never aborting the removal. Only
 /// active (non-tombstoned) rows are touched. Returns the number reassigned.
 ///
@@ -1329,7 +1329,7 @@ pub async fn latest_page_activity(
 /// default. The render path resolves each region against this map by
 /// fact key first; inline marker attributes are only the fallback for
 /// regions the DB does not know
-/// ([redaction policy](../../../wiki/design-notes/redaction-policy.md)).
+/// (redaction policy).
 ///
 /// The key is `source_path` **alone**, not `(wiki_id, source_path)`: the
 /// redaction unit is the **file**, and `source_path` is workdir-relative
@@ -1538,7 +1538,7 @@ pub async fn find_active_in_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<Vec
 /// Whether `wiki_id` **surfaces** to a reader under derived visibility.
 ///
 /// The enforcement of the
-/// [identity-and-acl §5](../../../wiki/concepts/identity-and-acl.md) rule that a
+/// [identity-and-acl §5](../../../docs/concepts/identity-and-acl.md) rule that a
 /// wiki the reader can read nothing in surfaces nowhere (`sender_id` is the
 /// reader, `sender_groups` their groups).
 ///
@@ -2029,7 +2029,7 @@ pub async fn find_active_by_source_path(
 /// Mirrors the subset of [`NewFact`] that may be mutated in place when
 /// an existing region's body / offsets changed on disk. **Deliberately
 /// carries no ACL fields**: the ACL columns are the authoritative
-/// source ([redaction policy](../../../wiki/design-notes/redaction-policy.md))
+/// source (redaction policy)
 /// and are never rewritten from what a file says — only a dedicated
 /// ACL-edit operation may touch them. `created_at` and the recall
 /// counters are preserved.

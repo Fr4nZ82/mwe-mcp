@@ -10,7 +10,7 @@
 //! TTL would otherwise have the submit bounced to `/login` with their work
 //! lost. The shell layout pings this on user interaction (throttled), so
 //! an active tab keeps its session alive. See the
-//! [JWT & session model](../../../../wiki/design-notes/jwt-and-session-model.md).
+//! JWT & session model.
 
 use axum::Router;
 use axum::http::StatusCode;

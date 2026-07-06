@@ -19,7 +19,7 @@ The orchestrator drives this prompt from
 `mwe_core::prompts::render(...)` so the `{locale}` placeholder in the
 `LANGUAGE` section is substituted with the directive built by
 `mwe_core::locale::render_language_directive`. See also the
-[agentic chat design notes](../../../wiki/design-notes/agentic-chat.md)
+agentic chat design notes
 for the design narrative, the relationship to the
 `LlmFunction::HubWriter` slot (shared with the REM `regenerate_index`
 sub-job), and the changelog.
@@ -28,7 +28,7 @@ sub-job), and the changelog.
 
 Operational specs that ship next to the prompt body so they can't
 drift from it. Code is the source of truth; the
-[agentic chat design notes](../../../wiki/design-notes/agentic-chat.md)
+agentic chat design notes
 keep only the design log (changelog, narrative, pending items).
 
 **Call site**:
@@ -77,7 +77,7 @@ the roster):
 .with_tools(tools)` without setting temperature or `max_tokens`, so
 the backend's defaults apply (workhorse default is `temperature: 0.4`
 for generative tasks, see the
-[LLM functions design notes](../../../wiki/design-notes/llm-functions.md)).
+LLM functions design notes).
 `think:false` is the workhorse default on Qwen 3.x.
 
 **Identity**: the user signed into the dashboard is the deployment

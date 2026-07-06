@@ -52,9 +52,9 @@
 //!   the consumer can drive a manual reindex; we don't block writes
 //!   on it.
 //!
-//! [`protocollo.md §2 + §H`]: ../../../wiki/protocol/tool-reference.md
-//! [`modello-memoria.md §9`]: ../../../wiki/concepts/memory-model.md
-//! [`tool-reference.md §H`]: ../../../wiki/protocol/tool-reference.md
+//! [`protocollo.md §2 + §H`]: ../../../docs/protocol/tool-reference.md
+//! [`modello-memoria.md §9`]: ../../../docs/concepts/memory-model.md
+//! [`tool-reference.md §H`]: ../../../docs/protocol/tool-reference.md
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -933,8 +933,8 @@ pub async fn pull(
 /// the dashboard banner steers the operator through the manual
 /// fall-back. No force, no "revert as new push annotated".
 ///
-/// [`tool-reference.md revert extension`]: ../../../wiki/protocol/tool-reference.md
-/// [`protocollo.md §10.2`]: ../../../wiki/protocol/tool-reference.md
+/// [`tool-reference.md revert extension`]: ../../../docs/protocol/tool-reference.md
+/// [`protocollo.md §10.2`]: ../../../docs/protocol/tool-reference.md
 #[derive(Debug, Error)]
 pub enum RevertError {
     /// `op_id` does not match any row in `wiki_admin_op_log`.
@@ -1239,7 +1239,7 @@ pub async fn op_revert(
 /// §10.2`]): `push_create` / `push_upsert` / `push_snapshot_replace`
 /// are writes; `pull` / `notify` are not.
 ///
-/// [`protocollo.md §10.2`]: ../../../wiki/protocol/tool-reference.md
+/// [`protocollo.md §10.2`]: ../../../docs/protocol/tool-reference.md
 fn is_write_op_kind(op_kind: &str) -> bool {
     op_kind.starts_with("push_")
 }
@@ -1333,7 +1333,7 @@ async fn enforce_admin_auth(
             }
         },
         // Group-owned wiki: a MEMBER of the owning group is owner-equivalent and
-        // may write (the group-ownership model — wiki/concepts/identity-and-acl.md:
+        // may write (the group-ownership model — docs/concepts/identity-and-acl.md:
         // members are owner-equivalent on the group's wiki). The public `global`
         // group has no individual owner, so it stays write-refused.
         Err(AdminError::AmbiguousOwner {

@@ -43,7 +43,7 @@
 //!
 //! [`run_safety_net_loop`] re-runs [`reindex_full`] on a configurable
 //! interval (default 5 minutes per the
-//! [reindex pipeline](../../../wiki/design-notes/reindex-pipeline.md)) so a
+//! reindex pipeline) so a
 //! missed event never permanently de-syncs the index.
 
 use std::collections::HashSet;
@@ -65,7 +65,7 @@ use crate::wiki::{DiscoveredWiki, WikiError, WikiTree};
 
 /// Default cadence of [`run_safety_net_loop`] — the 5-minute window.
 ///
-/// The [reindex pipeline](../../../wiki/design-notes/reindex-pipeline.md) calls it out as the
+/// The reindex pipeline calls it out as the
 /// REM-level full re-scan that catches anything the watcher misses.
 pub const SAFETY_NET_INTERVAL: Duration = Duration::from_secs(5 * 60);
 

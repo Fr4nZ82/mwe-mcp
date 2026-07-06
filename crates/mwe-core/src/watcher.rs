@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Cross-platform filesystem watcher for the memory-wiki SSOT
-//! ([reindex pipeline](../../../wiki/design-notes/reindex-pipeline.md)).
+//! (reindex pipeline).
 //!
 //! ## What it does
 //!

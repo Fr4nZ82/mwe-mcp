@@ -4,7 +4,7 @@
 //! This module is the **data layer** behind the inbound OAuth flow that lets an
 //! OAuth MCP client — the claude.ai web app, or a local CLI like Claude Code —
 //! connect as the user's own *Smart* consumer (see
-//! [`web-agent-oauth.md`](../../../wiki/design-notes/web-agent-oauth.md)).
+//! `web-agent-oauth.md`).
 //! It is pure storage + PKCE: no HTTP, no JWT minting. The transport layer
 //! (`mwe-dashboard`) drives the endpoints, and the access token it hands back is
 //! an ordinary smart JWT ([`crate::jwt::issue`]) the existing `/mcp` middleware

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Inline marker parser. The canonical grammar lives in
-//! [marker grammar](../../../wiki/design-notes/marker-grammar.md); this
+//! marker grammar; this
 //! hand-written scanner is the authoritative implementation.
 //!
 //! Pure function: takes a markdown string, returns a [`ParseOutput`] with an
@@ -312,7 +312,7 @@ pub fn collect_embeds(text: &str) -> Vec<CatalogId> {
 ///
 /// This is the relaxation gate the capture-body validators use: a fact
 /// body may carry its media embeds (rendered by code, see
-/// [media pipeline](../../../wiki/design-notes/media-pipeline.md)) but
+/// media pipeline) but
 /// never region markers, stray braces, or malformed marker fragments —
 /// those stay the LLM-injection failure mode the validators exist to
 /// block.

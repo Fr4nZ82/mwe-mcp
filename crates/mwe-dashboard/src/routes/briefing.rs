@@ -16,7 +16,7 @@
 //! stamp `processed_at` and the dream would then never action-take it; and a
 //! memory edit must never be a user-triggered token-burning click. The comment
 //! stays parked until the next consolidation. See
-//! [the compiler note](../../../../wiki/design-notes/narrative-compiler.md).
+//! the compiler note.
 //!
 //! ## Why a separate route file
 //!

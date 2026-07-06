@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Non-sender owner's **forget request** and the audience vote that resolves it
-//! ([the fact-forget vote](../../../wiki/design-notes/proposal-apply-engine.md#fact-forget-handler)).
+//! (the fact-forget vote).
 //!
 //! "ACL lives only in the fact." A fact's **sender** (its author) deletes their
 //! own contribution directly ([`crate::acl::can_delete`]); an admin acts on any
@@ -535,7 +535,7 @@ pub struct PendingVote {
 /// The pending forget requests `voter_id` is eligible for and has not yet voted
 /// on, within their open windows.
 ///
-/// The pull-only reminder ([fact-forget vote](../../../wiki/design-notes/proposal-apply-engine.md#fact-forget-handler)):
+/// The pull-only reminder (fact-forget vote):
 /// surfaced in a member's recall the next time they interact, never pushed. A
 /// member who never looks consents by silence when the window closes.
 ///

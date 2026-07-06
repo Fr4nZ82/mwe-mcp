@@ -2,11 +2,11 @@
 //! Corpus consistency checks.
 //!
 //! Backing for the `wiki_lint` MCP tool
-//! ([tool-reference.md](../../../wiki/protocol/tool-reference.md)).
+//! ([tool-reference.md](../../../docs/protocol/tool-reference.md)).
 //!
 //! ## Scope
 //!
-//! The MCP `wiki_lint` tool advertises **8 checks** ([mcp-tools.md](../../../wiki/protocol/mcp-tools.md)).
+//! The MCP `wiki_lint` tool advertises **8 checks** ([mcp-tools.md](../../../docs/protocol/mcp-tools.md)).
 //! Four ship today:
 //!
 //! - [`Check::MarkerMalformed`] — re-runs [`crate::parser::parse`] on
@@ -16,7 +16,7 @@
 //! - [`Check::MetaInvalid`] — every wiki directory whose `_meta.md` is
 //!   missing or fails to parse as [`WikiMeta`].
 //! - [`Check::EmbedMissing`] — every `{{embed=…}}` whose catalog row or
-//!   blob is gone ([media pipeline](../../../wiki/design-notes/media-pipeline.md)).
+//!   blob is gone (media pipeline).
 //!
 //! The other four (`broken_crosslinks`, `acl_inconsistent`,
 //! `hub_outdated`, `superseded_chain`) ship in later
@@ -57,7 +57,7 @@ pub enum LintError {
 pub type Result<T> = std::result::Result<T, LintError>;
 
 /// The 8 advertised checks. Order matches
-/// [mcp-tools.md](../../../wiki/protocol/mcp-tools.md).
+/// [mcp-tools.md](../../../docs/protocol/mcp-tools.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Check {

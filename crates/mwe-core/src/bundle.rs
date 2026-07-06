@@ -2,7 +2,7 @@
 //! The `bundle` proposal kind — wrap many born-applied sub-operations into
 //! one revertible receipt.
 //!
-//! A governed page deletion ([the bundle handler](../../../wiki/design-notes/proposal-apply-engine.md#bundle-handler))
+//! A governed page deletion (the bundle handler)
 //! tombstones some facts and evacuates others; on its own each of those is an
 //! independent change. The bundle makes them **one atomic, revertible unit**: a
 //! single `structure_proposals` row (`kind = 'bundle'`, born-applied via

@@ -75,7 +75,7 @@ enum Command {
     /// Bootstrap workdir: create directories, apply migrations, generate
     /// a fresh `MWE_TOKEN_SECRET` if absent. Identity (users, groups,
     /// admin) is created later through the dashboard first-run wizard
-    /// per the [setup wizard and identity model](../../../wiki/design-notes/setup-and-identity.md).
+    /// per the setup wizard and identity model.
     ///
     /// **Optional**: `serve` self-bootstraps the same workdir state on
     /// first boot (directories, migrations, secret). `init` exists for
@@ -86,7 +86,7 @@ enum Command {
         /// Seed `mwe-mcp.config.yaml` with the chosen LLM profile.
         /// Skipped when the file already exists. Accepted values:
         /// `all-local` (default), `hybrid`, `all-api`, `custom`. See
-        /// the [config schema](../../../wiki/protocol/config-schema.md) for the
+        /// the [config schema](../../../docs/protocol/config-schema.md) for the
         /// profile presets.
         #[arg(long, default_value = "all-local")]
         llm_profile: String,
@@ -202,7 +202,7 @@ enum Command {
     /// `/dashboard/accept-invite/<id>`, picks a new password, and
     /// the existing `user_credentials` row (if any) is overwritten
     /// when they submit. The admin never sees the password
-    /// (see the [setup wizard and identity model](../../../wiki/design-notes/setup-and-identity.md)).
+    /// (see the setup wizard and identity model).
     AdminReset {
         /// User id whose credential is being reset. Must exist in
         /// `enrollment_users`.
@@ -367,7 +367,7 @@ async fn main() -> Result<()> {
     };
 
     // Tracing precedence (a rotating file sink extends it — see
-    // ../../../wiki/design-notes/logging.md for the extension rationale):
+    // ../../../the logging design note for the extension rationale):
     //   1. RUST_LOG env var if set — operator override always wins.
     //   2. logging.level from mwe-mcp.config.yaml.
     //   3. info (default).
@@ -473,7 +473,7 @@ async fn main() -> Result<()> {
 ///    so the operator never has to `source` it manually.
 ///
 /// Identity (users, groups, the first admin) is **not** seeded here:
-/// the dashboard owns the identity lifecycle (see [identity-and-acl.md](../../../wiki/concepts/identity-and-acl.md)),
+/// the dashboard owns the identity lifecycle (see [identity-and-acl.md](../../../docs/concepts/identity-and-acl.md)),
 /// and the first-run setup wizard at `/dashboard/setup` creates the
 /// first admin on the next `serve`.
 async fn cmd_init(workdir: &Path, llm_profile: &str, force_config: bool) -> Result<()> {
@@ -2146,7 +2146,7 @@ type TokenBlacklistRow = (
 );
 
 /// List the contents of `token_blacklist`. Per the discussion
-/// captured in CLAUDE.md §7a, "active tokens" are not enumerable
+/// captured in the maintainer notes: "active tokens" are not enumerable
 /// server-side: we list the revocations we persist.
 async fn cmd_token_list(workdir: &Path) -> Result<()> {
     let _lock = lockfile::acquire(workdir).map_err(|e| anyhow!("lockfile: {e}"))?;
@@ -2381,7 +2381,7 @@ fn load_secret_from_env() -> Result<TokenSecret> {
 }
 
 /// Resolve the JWT signing secret for `serve`, self-bootstrapping it on
-/// first boot (roadmap [group 19](../../../wiki/development/build-run.md)).
+/// first boot (roadmap [group 19](../../../docs/development/build-run.md)).
 ///
 /// `serve` no longer requires a prior `mwe-mcp init`: on an empty workdir
 /// it generates a fresh `MWE_TOKEN_SECRET`, persists it to

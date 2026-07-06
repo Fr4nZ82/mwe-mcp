@@ -85,7 +85,7 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 getrandom = "0.2"
 
 # SMTP client for self-service password recovery (roadmap 28). rustls
-# transport only — no OpenSSL (CLAUDE.md §9). Async over the tokio
+# transport only — no OpenSSL (project dependency policy). Async over the tokio
 # executor; `builder` for the typed Message API.
 lettre = { version = "0.11", default-features = false, features = [
     "smtp-transport",

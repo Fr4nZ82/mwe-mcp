@@ -196,6 +196,6 @@ links to a machine-readable `install.md` you can hand to a capable agent.
 
 - Full CLI roster (`serve`, `doctor`, `migrate`, `token-*`, `rem run-cycle`, …),
   building from source and a homelab walkthrough:
-  [`wiki/development/build-run.md`](wiki/development/build-run.md).
+  [`docs/development/build-run.md`](docs/development/build-run.md).
 - The complete config schema (every LLM slot, backend, REM knob, the secrets):
-  [`wiki/protocol/config-schema.md`](wiki/protocol/config-schema.md).
+  [`docs/protocol/config-schema.md`](docs/protocol/config-schema.md).

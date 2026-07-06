@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Argon2id password hashing for the dashboard login flows
-//! (see [JWT and session model](../../../../wiki/design-notes/jwt-and-session-model.md)).
+//! (see JWT and session model).
 //!
 //! The hash format is PHC, which embeds the algorithm id, parameters,
 //! and per-row salt in the string itself — so a future parameter bump

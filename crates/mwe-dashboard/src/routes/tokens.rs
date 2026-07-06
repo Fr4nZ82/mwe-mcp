@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Admin-gated token management.
 //!
-//! Canonical references: [dashboard](../../../../wiki/design-notes/dashboard.md),
-//! [memory model](../../../../wiki/concepts/memory-model.md).
+//! Canonical references: dashboard,
+//! [memory model](../../../../docs/concepts/memory-model.md).
 //!
 //! Five handlers:
 //!
@@ -23,7 +23,7 @@
 //!   existing consumer's `allowed_sender_ids`.
 //! - POST `/tokens/delegation/:consumer_id`         — apply the edit.
 //!
-//! Per the [dashboard](../../../../wiki/design-notes/dashboard.md) design the
+//! Per the dashboard design the
 //! `is_admin` JWT claim is **derived, never toggled in the form**: for a
 //! smart token it inherits the chosen owner's `enrollment_users.is_admin`;
 //! a standard token is always non-admin (its sender is a credential-less
@@ -585,7 +585,7 @@ async fn issue_submit(
     // Diagonal identity model: same shared validator as the CLI
     // (`mwe-mcp token-issue`) so the two never drift — standard ⇒ system
     // user + consumer_id; smart ⇒ owner. See
-    // `wiki/concepts/identity-and-acl.md` §1.
+    // `docs/concepts/identity-and-acl.md` §1.
     if let Err(msg) = enrollment::validate_token_identity(
         &state.pool,
         &claims.sender_id,

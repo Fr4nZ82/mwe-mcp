@@ -4,7 +4,7 @@
 //! A "dream" is one of the three memory-consolidation compositions in
 //! [`crate::dream`] (the cheap `light` promotion, the `compile` narrative pass,
 //! and the `full` nightly REM — see the
-//! [REM cycle](../../../wiki/design-notes/rem-cycle.md) design note). Both the
+//! REM cycle design note). Both the
 //! dashboard (operator-triggered runs) and the server's interval scheduler
 //! (nightly / interval runs) write a row here when a run finishes, so the admin
 //! Dream page can show a history and open each run's full log.

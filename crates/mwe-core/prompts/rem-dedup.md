@@ -21,7 +21,7 @@ distinct? The orchestrator calls the
 prompt through the hybrid loader [`mwe_core::prompts::render`]: the
 override at `<workdir>/prompts/rem-dedup.md` wins when present,
 otherwise this bundled default. See the
-[REM cycle page](../../../wiki/design-notes/rem-cycle.md)
+REM cycle page
 for the narrative and `crates/mwe-core/src/rem.rs` (around the
 `run_revisor_jaccard` call site) for the runtime parameters.
 
@@ -29,7 +29,7 @@ for the narrative and `crates/mwe-core/src/rem.rs` (around the
 
 Operational specs that ship next to the prompt body so they can't
 drift from it. Code is the source of truth; the
-[REM cycle page](../../../wiki/design-notes/rem-cycle.md) keeps the
+REM cycle page keeps the
 design narrative.
 
 **Call site**: `crates/mwe-core/src/rem.rs::run_revisor_jaccard` —
@@ -62,7 +62,7 @@ information).
 |---|---|---|
 | `temperature` | `0.1` | Binary decision, jaccard pre-filter already did the heavy lifting; the model just confirms or denies. |
 | `max_tokens` | `60` | Reply is 18-20 tokens (`{"same": true}` / `{"same": false}`); 60 is comfortable headroom. |
-| `think:false` | implicit | Applies when the revisor slot runs on a local Qwen 3.x backend (the local-workhorse profiles reuse the already-loaded workhorse for this slot); see the [REM cycle page](../../../wiki/design-notes/rem-cycle.md), runtime section. |
+| `think:false` | implicit | Applies when the revisor slot runs on a local Qwen 3.x backend (the local-workhorse profiles reuse the already-loaded workhorse for this slot); see the REM cycle page, runtime section. |
 
 **Upstream filter** (decides when the model sees the prompt at all):
 either deterministic nomination channel — the surface jaccard 6-gram

@@ -311,5 +311,5 @@ for "classify this file".
   one specialises).
 - Bundled type definition:
   `crates/mwe-core/src/bundled_types/wiki-companion.md`.
-- Engineering wiki: `wiki/design-notes/companion-wikis.md`.
-- `_meta` / frontmatter constraints: `wiki/design-notes/companion-wikis.md`.
+- Engineering wiki: the companion-wikis design note.
+- `_meta` / frontmatter constraints: the companion-wikis design note.

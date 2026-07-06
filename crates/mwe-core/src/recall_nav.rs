@@ -53,7 +53,7 @@
 //! `wiki_navigate` tool) run gather → navigate; the funnel also journals its
 //! own route ([`NavigationOutcome::trace`]) for the recall-trace surface
 //! ([`crate::recall_trace`]). See
-//! [the recall pipeline](../../../wiki/design-notes/recall-pipeline.md).
+//! the recall pipeline.
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::path::{Path, PathBuf};
@@ -1305,7 +1305,7 @@ fn sibling_page_candidates(
 
 /// Destinations reachable via `[[wikilinks]]` from freshly collected prose,
 /// following the link grammar
-/// ([recall-pipeline.md §Link grammar](../../wiki/design-notes/recall-pipeline.md)):
+/// (recall-pipeline.md §Link grammar):
 /// a bare `[[wiki_id]]` offers the linked **wiki** with its `_meta` card, a
 /// `[[wiki_id/page-slug]]` page hop **also** offers the linked **page**
 /// directly (its testata card, reader-relative) so the navigator can open it

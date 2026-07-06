@@ -20,7 +20,7 @@ Two things happen as the corpus is ingested:
    **split** on every line here rather than in a separate test. This is the live
    re-confirmation of the v2.6 prompt fix (multi-fact turns used to collapse into
    one fact; see
-   [`../../wiki/design-notes/ingest-pipeline.md`](../../wiki/design-notes/ingest-pipeline.md)
+   `../../the ingest-pipeline design note
    §"strong model").
 
 > **Maintainer: add your own lines before I run this.** Real messages are
@@ -193,7 +193,7 @@ fact landed under; I flag any collapse (N→1), over-split, or mis-route, and no
 where the LLM was borderline (probabilistic — a re-run gauges stability). Pass
 bar for the v2.6 fix: **every multi-fact line splits into several atomic facts,
 never one** (line 10 is the canonical check). Findings fold back into
-[`../../wiki/design-notes/ingest-pipeline.md`](../../wiki/design-notes/ingest-pipeline.md)
+`../../the ingest-pipeline design note
 and the roadmap P1 status, and the run is committed alongside this file.
 
 ### First run (2026-06-01) — PASS
@@ -222,5 +222,4 @@ marker the Cronista dropped** during compile — a compile-fidelity finding to c
 
 ⚠️ **Setup gotcha that cost the first attempt:** a stale `work/prompts/ingest.md`
 (v2.4) override shadowed the bundled v2.6 and made the primer collapse to 1 — the
-reset now wipes `./work/prompts` (see [`instruction.md`](instruction.md) §Reset
-and `CLAUDE.md` §5.bis).
+reset now wipes `./work/prompts` (see [`instruction.md`](instruction.md) §Reset).

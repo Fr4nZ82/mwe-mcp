@@ -3,7 +3,7 @@
 //!
 //! Moves a wiki (and its subtree) to a new parent in the tree while
 //! keeping `wiki_id` stable per the
-//! [memory model](../../../wiki/concepts/memory-model.md)
+//! [memory model](../../../docs/concepts/memory-model.md)
 //! invariant that ids never get rewritten on rename. Sub-wikis ride
 //! along automatically — only the directly moved wiki's `_meta.md`
 //! needs its `parent_wiki_id` rewritten, since descendants reference

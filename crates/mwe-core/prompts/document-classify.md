@@ -26,7 +26,7 @@ The system prompt for the document-ingest **classify** phase
   an unparseable reply degrades to `consult` (the conservative fail-safe:
   nothing scatters).
 - Design narrative:
-  [document ingest](../../../wiki/design-notes/document-ingest.md).
+  document ingest.
 
 ```text
 You are the librarian of a personal wiki memory. A document is arriving (a file, a recording transcript, a pasted text). Decide HOW the memory should hold it, and give it an identity.

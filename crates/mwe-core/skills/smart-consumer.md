@@ -283,7 +283,7 @@ stored.
   the project.
 
 Those conventions are documented in
-`wiki/design-notes/smart-wikis.md` and, for codebases, in the
+the smart-wikis design note and, for codebases, in the
 `smart-codebase` skill — read them once and conform.
 
 ## Day-to-day editing loop
@@ -563,9 +563,9 @@ single-laptop single-token rotation case that motivated it.
 - Sibling skills: `core-globalmemory` (transversal mode, no cwd state),
   `smart-codebase` (codebase-specific conversion + layout
   patterns).
-- Wire-level tool spec: `wiki/protocol/mcp-tools.md` family H.
-- Engineering wiki: `wiki/design-notes/smart-wikis.md`.
-- Lease design: `wiki/design-notes/rem-cycle.md` §"Lease expirer
+- Wire-level tool spec: `docs/protocol/mcp-tools.md` family H.
+- Engineering wiki: the smart-wikis design note.
+- Lease design: the rem-cycle design note §"Lease expirer
   sub-job", `crates/mwe-core/src/wiki_admin_leases.rs`.
-- `_meta` / frontmatter constraints: `wiki/design-notes/smart-wikis.md`
+- `_meta` / frontmatter constraints: the smart-wikis design note
   and the `smart-codebase` skill.

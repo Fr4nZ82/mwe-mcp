@@ -6,13 +6,13 @@
 //! (`journal_mode=WAL`, `foreign_keys=ON`, plus a generous `busy_timeout`
 //! for the brief contention window between writers and concurrent
 //! readers; see
-//! [engine DB and migrations](../../../wiki/design-notes/engine-db-and-migrations.md)),
+//! engine DB and migrations),
 //! and runs every pending migration under
 //! [`migrations/`](../../migrations/).
 //!
 //! The 15 migration files (see `0001_*` through `0015_*`) cover the 8
 //! core tables of the
-//! [engine DB schema](../../../wiki/design-notes/engine-db-and-migrations.md),
+//! engine DB schema,
 //! the three op-log additions (`proposal_ops_log`, `rem_ops_log`,
 //! `token_blacklist`), the alignment column (`0011_revoked_by`), the
 //! three identity tables (`user_credentials`,

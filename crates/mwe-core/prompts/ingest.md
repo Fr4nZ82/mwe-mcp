@@ -15,14 +15,14 @@ embedded by `include_str!` is the floor; an override at
 
 The orchestrator drives this prompt from `wiki_ingest_message`
 (`crates/mwe-core/src/ingest.rs`); see also the
-[ingest pipeline](../../../wiki/design-notes/ingest-pipeline.md) wiki page
+ingest pipeline wiki page
 for the design narrative.
 
 ## Runtime contract
 
 Operational specs that ship next to the prompt body so they can't
 drift from it. Code is the source of truth; the
-[ingest pipeline](../../../wiki/design-notes/ingest-pipeline.md) wiki page
+ingest pipeline wiki page
 keeps the design narrative.
 
 **Call site**: `crates/mwe-core/src/ingest.rs::wiki_ingest_message` —
@@ -79,7 +79,7 @@ the code decides *how*.
 |---|---|---|
 | `temperature` | `0.1` (call site) | Structured deterministic classification on the Ollama/Anthropic path. **On the Gemini backend this is ignored**: Gemini 3 mandates `temperature: 1.0` (sub-1 values loop/degrade) and the backend clamps to it. |
 | `max_tokens` | `4096` (call site) | A multi-fact `extractions` array with verbose per-fact objects must not be clipped on the Anthropic/Ollama path. **On the Gemini backend this is ignored**: it forces `maxOutputTokens: 65536` (combined thinking+output budget). |
-| `format:"json"` | not set (call site) | Robustness comes from `parse_plan`'s brace scanner, not a GBNF grammar constraint. The Gemini `complete()` path additionally does **not** set `responseMimeType` (`want_json=false`) — see the [ingest pipeline](../../../wiki/design-notes/ingest-pipeline.md) wiki page. |
+| `format:"json"` | not set (call site) | Robustness comes from `parse_plan`'s brace scanner, not a GBNF grammar constraint. The Gemini `complete()` path additionally does **not** set `responseMimeType` (`want_json=false`) — see the ingest pipeline wiki page. |
 | `think:false` | mandatory on Qwen 3.x; `thinkingLevel:"minimal"` on Gemini Flash | thinking-leak evidence; Gemini's combined budget would otherwise be eaten by reasoning. |
 
 **Upstream context** (assembled by `build_prompt`, bounded by policy):
@@ -94,7 +94,7 @@ section (the groups the sender belongs to, each with its operator-set
 `scope` prose; cap `policy.max_groups_in_prompt`, default `8`, each
 scope truncated to `policy.max_group_scope_chars`, default `1000`) —
 this is the context the `owner_id` group-routing rule decides on
-(see the [memory model](../../../wiki/concepts/memory-model.md) wiki page),
+(see the [memory model](../../../docs/concepts/memory-model.md) wiki page),
 the `known_users` roster
 (id + aliases, cap `policy.max_users_in_prompt`, default `24`) for
 cross-user attribution, the truncated `available_wikis` list (cap

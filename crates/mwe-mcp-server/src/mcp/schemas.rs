@@ -6,7 +6,7 @@
 //! - `Tool::input_schema` is `Arc<JsonObject>`; we already serialise
 //!   inputs through `serde_json::Value` in the dispatcher.
 //! - The schemas closely follow the wire shape documented in
-//!   [tool-reference.md](../../../../wiki/protocol/tool-reference.md);
+//!   [tool-reference.md](../../../../docs/protocol/tool-reference.md);
 //!   a literal block keeps the schema next to the spec text.
 //! - Tests assert the schema is non-empty + lists the right tool name
 //!   — they would still pass under a macro-derived schema, so the
@@ -38,7 +38,7 @@ fn destructive(t: Tool) -> Tool {
 }
 
 /// The tool surface, in the order documented in
-/// [tool-reference.md](../../../../wiki/protocol/tool-reference.md).
+/// [tool-reference.md](../../../../docs/protocol/tool-reference.md).
 ///
 /// Families A through K:
 /// - A — `wiki_ingest_message`

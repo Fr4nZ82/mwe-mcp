@@ -25,11 +25,11 @@
 //!   first, page render second — a failed page write compensates by
 //!   tombstoning the row, and a crash in between leaves a pending
 //!   render the next compile re-emits; see
-//!   [capture & dedup](../../../wiki/design-notes/capture-and-dedup.md)).
+//!   capture & dedup).
 //!   Multi-step structural writes elsewhere (the REM proposal kinds)
 //!   keep their `proposal_ops_log` journaling.
 //! - **Cross-user attribution constraints.** Per
-//!   [the memory model](../../../wiki/concepts/memory-model.md),
+//!   [the memory model](../../../docs/concepts/memory-model.md),
 //!   when `sender != owner` the sender must have read access to the
 //!   owner's wiki. The check is a later tightening — the agent
 //!   composing the call today is the only writer surface, and it is
@@ -107,7 +107,7 @@ pub enum CaptureError {
     GeneratedFactIdInvalid(#[from] FactIdParseError),
 
     /// Cross-user attribution invariant violation
-    /// (see [capture & dedup](../../../wiki/design-notes/capture-and-dedup.md)):
+    /// (see capture & dedup):
     /// `sender` was supplied and already appears in `allow` (redundant —
     /// the [`can_read`] algorithm auto-grants read to `sender`, so
     /// listing it again is a code-smell that usually signals copy/paste).
@@ -353,7 +353,7 @@ pub async fn wiki_capture(
 /// (`fact_index.source_ref`) onto the fact.
 ///
 /// The document-ingest anchor path
-/// ([document ingest](../../wiki/design-notes/document-ingest.md));
+/// (document ingest);
 /// conversational captures use the plain [`wiki_capture`] (no provenance).
 ///
 /// # Errors
@@ -765,7 +765,7 @@ fn validate_body(body: &str) -> Result<()> {
     }
     // The only marker syntax a body may carry is well-formed self-closing
     // `{{embed=…}}` markers (rendered by code, never by the model — see
-    // [media pipeline](../../../wiki/design-notes/media-pipeline.md)).
+    // media pipeline).
     // Region markers, stray braces and malformed fragments stay rejected.
     if (body.contains("{{") || body.contains("}}"))
         && crate::parser::embed_only_markers(body).is_none()
@@ -777,7 +777,7 @@ fn validate_body(body: &str) -> Result<()> {
 
 /// Enforce the cross-user attribution invariants on a fresh
 /// [`CaptureRequest`]
-/// (see [capture & dedup](../../../wiki/design-notes/capture-and-dedup.md)):
+/// (see capture & dedup):
 ///
 /// 1. When `req.sender` is absent, materialize it to `req.owner`. The
 ///    capturer is the owner (the "user talks about themself" case);
@@ -786,7 +786,7 @@ fn validate_body(body: &str) -> Result<()> {
 ///    provenance. `sender_id = NULL` survives only as the degenerate
 ///    "scrubbed" state (e.g. a deleted user) that falls back to owner at
 ///    read time — see
-///    [marker-grammar §5](../../../wiki/design-notes/marker-grammar.md).
+///    marker-grammar §5.
 /// 2. When `req.sender` is also listed in `req.allow`, refuse. The
 ///    [`can_read`](crate::acl::can_read) algorithm already grants read
 ///    to `sender_of_region`; duplicating it under `allow=` is
@@ -830,7 +830,7 @@ pub(crate) fn new_fact_id() -> Result<FactId> {
 ///
 /// The ACL lives in the `fact_index` columns (the DB is the
 /// authoritative source — see
-/// [redaction policy](../../../wiki/design-notes/redaction-policy.md));
+/// redaction policy);
 /// no write path puts ACL attributes into a marker. Full markers are an
 /// accepted *input* (legacy pages, imported archives) and the *export*
 /// format ([`render_full_marker`]).
@@ -843,7 +843,7 @@ pub(crate) fn render_marker(fact_id: &FactId, body: &str) -> String {
 /// Like the region markers above, embed markers are **rendered by code,
 /// never by the model**: ingest receives the claimed catalog ids as a
 /// structured field and appends the markers itself (see
-/// [media pipeline](../../../wiki/design-notes/media-pipeline.md)).
+/// media pipeline).
 #[must_use]
 pub fn render_embed_marker(catalog_id: &CatalogId) -> String {
     format!("{{{{embed={catalog_id}}}}}")

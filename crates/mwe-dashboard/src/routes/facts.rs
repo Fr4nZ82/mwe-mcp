@@ -21,7 +21,7 @@
 //! - `POST /dashboard/facts/:fact_id/acl` — structured ACL change. Owner
 //!   -or-admin gated, refused on smart wikis (those carry wiki-level ACL,
 //!   not per-fragment — see
-//!   [smart-wikis](../../../../wiki/design-notes/smart-wikis.md)). Calls
+//!   smart-wikis). Calls
 //!   [`mwe_core::operator_edits::acl_change_operator`], posts the
 //!   `structure_applied` notice, and 303-redirects to the born-applied
 //!   receipt's open-in-chat page so the operator lands on the revertible
@@ -29,7 +29,7 @@
 //! - `POST /dashboard/facts/:fact_id/validity` — structured validity edit
 //!   (`valid_from` / `valid_to`). **Owner-or-admin** gated (validity is the
 //!   subject's *update* of a fact about themselves — the write-authority
-//!   model, [identity and ACL](../../../../wiki/concepts/identity-and-acl.md)),
+//!   model, [identity and ACL](../../../../docs/concepts/identity-and-acl.md)),
 //!   the same owner axis as the ACL action; same standard-wiki gate + paper
 //!   trail otherwise, via
 //!   [`mwe_core::operator_edits::validity_edit_operator`].
@@ -456,7 +456,7 @@ async fn edit_form(
     let reveal = crate::reveal::active(&user, &jar);
     let row = load_visible_fact(&state, &user, &fact_id, reveal).await?;
     // Both structured forms gate on the **owner** axis (the write-authority
-    // model — wiki/concepts/identity-and-acl.md): ACL (visibility) is the
+    // model — docs/concepts/identity-and-acl.md): ACL (visibility) is the
     // subject's privacy call, and
     // validity (an *update* of the fact, not a destruction) is likewise the
     // subject's act. Only `delete` keys on `sender` / a vote.
@@ -484,7 +484,7 @@ async fn edit_form(
 /// about themselves: **`acl_change`** (visibility) and **`validity_edit`** (an
 /// *update* of the fact, not a destruction). Both are the owner's call (the
 /// write-authority model —
-/// [identity and ACL](../../../../wiki/concepts/identity-and-acl.md)).
+/// [identity and ACL](../../../../docs/concepts/identity-and-acl.md)).
 /// User-owner only (a group-owned fact's
 /// member updates it via ingest / admin), matching `acl_submit`.
 fn owner_or_admin(user: &SessionUser, row: &FactIndexRow) -> bool {
@@ -493,7 +493,7 @@ fn owner_or_admin(user: &SessionUser, row: &FactIndexRow) -> bool {
 
 /// The sender-or-admin predicate — the **`delete`** (author-direct) gate
 /// (the write-authority model —
-/// [identity and ACL](../../../../wiki/concepts/identity-and-acl.md)):
+/// [identity and ACL](../../../../docs/concepts/identity-and-acl.md)):
 /// only the fact's `sender` (its author) **destroys** their
 /// own contribution directly; an admin may delete any fact. A non-sender owner's
 /// path is a request → vote, opened from the dashboard. *Updates* (edit /
@@ -663,7 +663,7 @@ pub struct ValidityActionForm {
 ///
 /// Gated **owner-OR-admin** + **standard-wikis only** (smart wikis carry
 /// wiki-level ACL, not per-fragment — see
-/// [smart-wikis](../../../../wiki/design-notes/smart-wikis.md)). Calls the
+/// smart-wikis). Calls the
 /// act-first wrapper, posts the `structure_applied` notice mirroring the
 /// chat paper-trail, and 303-redirects to the born-applied receipt's
 /// open-in-chat page so the operator lands on the revertible receipt.
@@ -740,7 +740,7 @@ async fn acl_submit(
 /// `POST /dashboard/facts/:fact_id/validity` — structured, engine-direct
 /// per-fragment validity edit. **Owner-or-admin** gated (validity is the
 /// subject's *update* of a fact about themselves — the write-authority model,
-/// [identity and ACL](../../../../wiki/concepts/identity-and-acl.md)), the
+/// [identity and ACL](../../../../docs/concepts/identity-and-acl.md)), the
 /// same owner axis as [`acl_submit`]; same standard-wiki gate + paper trail.
 async fn validity_submit(
     State(state): State<DashboardState>,
@@ -1133,7 +1133,7 @@ fn split_csv(s: &str) -> Vec<String> {
 /// Deterministic mapper from the form delta to the textual instruction
 /// the agentic chat panel receives.
 ///
-/// Three macro-cases per [the memory model](../../../../wiki/concepts/memory-model.md):
+/// Three macro-cases per [the memory model](../../../../docs/concepts/memory-model.md):
 ///
 /// 1. **Metadata-only change** (topics / `fact_type`, no body): a single
 ///    sentence enumerating the new values. Drives
@@ -1496,7 +1496,7 @@ fn filter_form(filters: &FactsFilters, page_size: usize) -> Markup {
 fn action_cell(user: &SessionUser, row: &FactRow) -> Markup {
     let wiki_link = format!("/dashboard/wiki/{}", row.wiki_id);
     // The delete button is author-direct (the write-authority model —
-    // wiki/concepts/identity-and-acl.md): show it only to
+    // docs/concepts/identity-and-acl.md): show it only to
     // the fact's `sender` or an admin, so a viewer who can merely read the fact
     // is not offered a "delete" that the POST would 403. The POST re-checks
     // sender-or-admin regardless. The active/promoted guard is the outer `@if`.
@@ -1566,7 +1566,7 @@ fn pagination_links(
 /// the page). `can_acl` (owner-or-admin) and `can_validity` (owner-or-admin)
 /// gate the two structured sub-forms per the write-authority model (both the
 /// owner's acts — visibility and update;
-/// [identity and ACL](../../../../wiki/concepts/identity-and-acl.md)), and
+/// [identity and ACL](../../../../docs/concepts/identity-and-acl.md)), and
 /// `is_smart` is the fact's wiki family — together they decide whether each
 /// structured action renders as a live form or as a disabled note (smart wikis
 /// carry no per-fragment ACL / validity).
