@@ -1,8 +1,6 @@
 <div align="center">
 
-# mwe-mcp
-
-### Memory Wiki Engine
+<img src="docs/assets/mwe-banner.gif" alt="mwe-mcp — Memory Wiki Engine" width="100%">
 
 **An agent-agnostic [Model Context Protocol](https://modelcontextprotocol.io) server that gives any AI agent a persistent, structured memory shaped like a human-readable Markdown wiki — multi-user, governed fragment by fragment, aware of *when* things stop being true, and self-organizing while you sleep.**
 
@@ -69,6 +67,9 @@ Same page, same fact, two answers. Zoe isn't on the `team`, so the span is **red
 > **Assistant:** *"Done — marked as bought."*
 
 The two open shopping items **close as completed**, dated. The list page stays current; the purchase event rides to the list's registry page, so history stays navigable without cluttering the list. A recurring item simply reopens the next time someone says "we're out of milk" — a list is a cycle, not a TTL.
+
+<p align="center"><img src="docs/assets/shared-shopping-list.png" alt="A shared shopping list page: open items each attributed to the family member who asked for them; bought items closed with a purchase date" width="90%"></p>
+<p align="center"><sub>A shared list the morning after: open items keep their asker (Frodo asked for coffee, the kid flagged the biscuits), bought items close with a date — narrated, never deleted.</sub></p>
 
 > **Frodo:** *"Forget what I told you about the greenhouse: I dropped the project."*
 > **Assistant:** *"Done — the greenhouse plans are closed, and I noted you abandoned the project."*
@@ -137,6 +138,11 @@ Alice sees that verbatim. Anyone who *isn't* Alice sees the protected span colla
 ```text
 She weighs [redacted] as of May 10, and just cut her hair.
 ```
+
+This is what that looks like live, in the built-in dashboard — the same page opened by its owner and by another member of the household:
+
+<p align="center"><img src="docs/assets/acl-two-readers.png" alt="The same wiki page opened by two users: the owner sees the private span; the other reader sees it replaced by [redacted], with a banner explaining the declassified view" width="100%"></p>
+<p align="center"><sub>Same page, two readers. The engine redacts the protected span <em>before</em> the text reaches anyone — the reader is told the view is declassified, never what was withheld. (Content: the fictional demo household.)</sub></p>
 
 No separate permissions database bolted on top, no per-document walls: visibility is enforced fragment by fragment, sentence by sentence. When you **export** the memory, every marker is expanded to its full self-describing form (`{{owner=… sender=… allow=… f=…}}`), so an archive carries its own governance and can be re-imported anywhere — including into a fresh mwe-mcp.
 
