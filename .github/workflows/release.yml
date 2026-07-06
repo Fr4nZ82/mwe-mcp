@@ -85,6 +85,6 @@ jobs:
           features: local-embedder
           archive: mwe-mcp-$tag-$target
           checksum: sha256
-          include: README.md,LICENSE-MIT,LICENSE-APACHE
+          include: README.md,LICENSE,LICENSING.md
           token: ${{ secrets.GITHUB_TOKEN }}
           dry-run: ${{ github.ref_type != 'tag' }}
