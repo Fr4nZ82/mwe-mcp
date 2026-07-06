@@ -496,7 +496,7 @@ add --transport http mwe-mcp http://127.0.0.1:8742/mcp --scope user`,
 then signs in to mwe-mcp inside Claude Code and approves the connection.
 There is **no token to mint or paste**: the loopback OAuth redirect makes
 the mint stamp `consumer_class=smart` + the `Local` profile (the full
-tool catalog). See `web-agent-oauth.md`.
+tool catalog).
 
 A minimal `enrollment.yaml` (single user, no groups):
 
