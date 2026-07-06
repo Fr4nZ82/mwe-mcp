@@ -199,7 +199,7 @@ channel directory learns the chat then).
 
 With the `mwe-media` hook enabled, media sent to the bot becomes part of
 the memory (the server-side pipeline:
-the media-pipeline design note).
+the [media-pipeline design note](docs/design-notes/media-pipeline.md)).
 Entry is two-phase: when a media message arrives, the hook uploads the
 bytes hermes already downloaded into its cache to `POST <origin>/media`
 (multipart, the same bearer token + act-as as the MCP calls) and spools

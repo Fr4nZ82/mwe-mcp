@@ -75,3 +75,9 @@ Thumbs.db
 /work_qwen_35b/
 /work_gemini_flash/
 __pycache__/
+
+# Maintainer-local material — never tracked in the public repo.
+# Planning, roadmap drafts, decision logs, scratch notes live here
+# locally; the public wiki (docs/) carries only what shipped.
+/planning/
+/notes/

@@ -118,8 +118,8 @@ marker grammar** rather than Obsidian-native block callouts: a block
 callout forces one ACL per paragraph and would shred a single sentence
 into three. The grammar, parser, and the redaction algorithm
 (`render_for_sender`) are documented in
-`../the marker-grammar design note
-and `../the redaction-policy design note;
+[`marker-grammar.md`](../design-notes/marker-grammar.md)
+and [`redaction-policy.md`](../design-notes/redaction-policy.md);
 the identity model that supplies the sender and their groups lives in
 [`identity-and-acl.md`](identity-and-acl.md).
 
@@ -197,7 +197,7 @@ folder). **Per target page** (repeated across facts sharing a page): a
 fact belongs.
 The one per-wiki classifier is the **smart flag**
 marker — "standard" simply means "not smart". See
-`../the smart-wikis design note.
+[`smart-wikis.md`](../design-notes/smart-wikis.md).
 
 ### 4. Personas — the system's own agent is a first-class user
 
@@ -223,7 +223,7 @@ wiki with its **own** memory: what it did, advised, and learned about itself
 — its identity always, its history with the current user scoped to that user. So
 the engine's own author is not just a routing destination for behaviour rules but
 a peer with an emergent, remembered self. See
-`../the ingest-pipeline design note (the
+[`ingest-pipeline.md`](../design-notes/ingest-pipeline.md) (the
 self side of agent-authored memory) and roadmap §27.
 
 > **The author is the engine, not a per-turn agent.** mwe-mcp is
@@ -244,7 +244,7 @@ self side of agent-authored memory) and roadmap §27.
 The deep mechanics of this boundary — how the sender is resolved, how ACL is
 applied on every read — belong to
 [`identity-and-acl.md`](identity-and-acl.md) and
-`../the redaction-policy design note;
+[`redaction-policy.md`](../design-notes/redaction-policy.md);
 keep the framing here at the conceptual level: **the memory does not
 speak; a consumer agent that uses it speaks.**
 
@@ -305,7 +305,7 @@ group then re-reads the region, because the device captured it "for
 them." This generalisation is why `sender` is a full `Principal` and not
 a bare user id. The access-control consequences (effective ACL =
 `owner ∪ allow ∪ {sender}`) are detailed in
-`../the redaction-policy design note.
+[`redaction-policy.md`](../design-notes/redaction-policy.md).
 
 ---
 
@@ -323,14 +323,14 @@ The practical guarantees that follow are listed under pillar 1 (inspect,
 edit-by-hand, backup, migrate). The mechanics of the on-disk layout,
 `_meta.md` frontmatter, and the atomic-write protocol that keeps file and
 index in step are documented in
-`../the wiki-filesystem-ssot design note;
+the storage-model design note (being rewritten);
 the reconciliation that keeps the index aligned after external edits is
-in `../the reindex-pipeline design note.
+in [`reindex-pipeline.md`](../design-notes/reindex-pipeline.md).
 
 The SSOT is not only the published pages. For a **standard** wiki (any
 non-smart type — `wiki-root`, `wiki-user`, `wiki-group`, and every emerged
 sub-wiki;
-see `../the narrative-buffer design note),
+see [`narrative-buffer.md`](../design-notes/narrative-buffer.md)),
 an incoming capture is first staged in a per-wiki on-disk **captures
 journal**, `<wiki_dir>/_captures.md`, which is itself part of the
 filesystem SSOT: `engine.db`'s `capture_buffer` table is a rebuildable
@@ -470,7 +470,7 @@ the surrounding prose; redaction collapses the region bodies, not the
 narrative around them. The mechanics — how the per-region check resolves a
 sender against `owner ∪ allow ∪ {sender}`, and how a fully-redacted page is
 handled — live in [`identity-and-acl.md`](identity-and-acl.md) and
-`../the redaction-policy design note.
+[`redaction-policy.md`](../design-notes/redaction-policy.md).
 
 ### Standard wikis stage captures before they become facts
 
@@ -513,7 +513,7 @@ compiled page. The classifier's supersede proposal rides along as a
 > below. What is **not yet wired** is the REM cadence that runs this chain on a
 > schedule, the deterministic post-compile reviewer, and human-edit
 > reconciliation. The buffer mechanism is documented in full in
-> `../the narrative-buffer design note.
+> [`narrative-buffer.md`](../design-notes/narrative-buffer.md).
 > Smart wikis are unaffected: their captures still
 > become facts synchronously and are never compiled.
 
@@ -553,7 +553,7 @@ prose a non-redundant recall surface.
 
 The full mechanics — the planner stages, the compilation plan shape, the
 dispatch and starvation in detail — are in
-`../the narrative-compiler design note.
+[`narrative-compiler.md`](../design-notes/narrative-compiler.md).
 
 The Cronista writes cohesive narrative (relations made explicit — causality,
 chronology, roles — not a bullet pile), in the wiki type's `prose_tone`, and
@@ -655,7 +655,7 @@ permanently, with a `deleted_reason` for the audit trail.
 
 The capture / supersede / forget / link orchestration and the jaccard
 dedup that short-circuits near-duplicate captures are documented in
-`../the capture-and-dedup design note.
+[`capture-and-dedup.md`](../design-notes/capture-and-dedup.md).
 
 ---
 
@@ -664,11 +664,11 @@ dedup that short-circuits near-duplicate captures are documented in
 | You want to understand… | Read |
 |---|---|
 | How a sender is identified and how ACL is evaluated per-region | [`identity-and-acl.md`](identity-and-acl.md) |
-| The exact `{{…}}…{{/}}` grammar and parser behaviour | `../the marker-grammar design note |
-| How redaction renders a per-sender view of a page | `../the redaction-policy design note |
-| The on-disk layout, `_meta.md`, atomic writes | `../the wiki-filesystem-ssot design note |
-| Capture, supersede, forget, and dedup | `../the capture-and-dedup design note |
-| How standard wikis buffer captures before compilation | `../the narrative-buffer design note |
-| How facts are compiled back into published prose (Il Cronista) | `../the narrative-compiler design note |
-| The smart-wiki family + the `companion: bool` marker | `../the smart-wikis design note |
-| The nightly self-reorganisation | `../the rem-cycle design note |
+| The exact `{{…}}…{{/}}` grammar and parser behaviour | [`marker-grammar.md`](../design-notes/marker-grammar.md) |
+| How redaction renders a per-sender view of a page | [`redaction-policy.md`](../design-notes/redaction-policy.md) |
+| The on-disk layout, `_meta.md`, atomic writes | the storage-model design note (being rewritten) |
+| Capture, supersede, forget, and dedup | [`capture-and-dedup.md`](../design-notes/capture-and-dedup.md) |
+| How standard wikis buffer captures before compilation | [`narrative-buffer.md`](../design-notes/narrative-buffer.md) |
+| How facts are compiled back into published prose (Il Cronista) | [`narrative-compiler.md`](../design-notes/narrative-compiler.md) |
+| The smart-wiki family + the `companion: bool` marker | [`smart-wikis.md`](../design-notes/smart-wikis.md) |
+| The nightly self-reorganisation | [`rem-cycle.md`](../design-notes/rem-cycle.md) |

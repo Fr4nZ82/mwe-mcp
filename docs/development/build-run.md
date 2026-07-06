@@ -103,7 +103,7 @@ are referenced from `tailwind/app.css` via `@font-face`; the SIL OFL
 license file (`OFL.txt`) ships alongside them. SVG marks
 (`mwe-mark.svg`, `mwe-mark-mono.svg`, `mwe-logo.svg`) and the favicon
 linkage live in the same `assets/` directory. See
-the dashboard-frontend design note
+the [dashboard-frontend design note](../design-notes/dashboard-frontend.md)
 for the full client-side architecture.
 
 ## Running the binary
@@ -325,7 +325,7 @@ logging:
 ```
 
 `file_rotation: disabled` recovers the original stderr-only floor; see
-the logging design note for the full
+the [logging design note](../design-notes/logging.md) for the full
 rationale and the extension story.
 
 ## Workdir layout
@@ -335,7 +335,7 @@ rationale and the extension story.
 
 ```
 <workdir>/
-├── engine.db                 # sqlite (see the engine-db-and-migrations design note)
+├── engine.db                 # sqlite (see the [engine-db-and-migrations design note](../design-notes/engine-db-and-migrations.md))
 ├── .mwe-mcp.lock             # single-writer lockfile
 ├── mwe-mcp.config.yaml       # logging level + llm slots + tokens
 ├── mwe-mcp.env               # secrets — chmod 600 on unix

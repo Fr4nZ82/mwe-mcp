@@ -29,8 +29,8 @@ declared on the wiki (§5).
 
 The deep render/evaluator mechanics (the redaction pseudocode, the
 marker grammar) are not duplicated here — they live in
-`../the redaction-policy design note
-and `../the marker-grammar design note.
+[`redaction-policy.md`](../design-notes/redaction-policy.md)
+and [`marker-grammar.md`](../design-notes/marker-grammar.md).
 This page is the *model*; those pages are the *implementation*.
 
 ---
@@ -159,7 +159,7 @@ direct `UPDATE` to change the identity).
 
 An **account** and an **identity** are separate things that map
 one-to-one but live on different axes. This split is documented in
-`../the setup-and-identity design note;
+[`setup-and-identity.md`](../design-notes/setup-and-identity.md);
 the model in one table:
 
 | Concept | What it is | Where it lives | Cost to change |
@@ -190,7 +190,7 @@ middleware (not the dashboard):
   `fact_index` columns (spelled inline only in the export form).
 
 The token/session model is documented in full in
-`../the jwt-and-session-model design note.
+[`jwt-and-session-model.md`](../design-notes/jwt-and-session-model.md).
 
 ### Connection pattern follows `consumer_class` — the diagonal
 
@@ -233,7 +233,7 @@ class closes that footgun by construction. Three places enforce it:
    a human with a login OR a bot's credential-less system user, never both.
 2. **The act-as gate.** The MCP middleware permits `X-MWE-Act-As` only
    for `standard` tokens (`403 act_as_requires_standard` otherwise) —
-   see `../the jwt-and-session-model design note.
+   see [`jwt-and-session-model.md`](../design-notes/jwt-and-session-model.md).
 3. **The binding.** A standard consumer's identity (`sender_id`, a
    system user), its deployment (`consumer_id`, a row in the `consumers`
    registry), and its delegations (`consumer_delegations`) are tied
@@ -397,7 +397,7 @@ authoritative source**: redaction resolves a region's ACL by its `f=`
 key from `fact_index`, falling back to the inline attributes only for
 regions the DB does not know (legacy pages, imported archives — the
 attributed form above remains valid input and is the export format).
-See `../the redaction-policy design note
+See [`redaction-policy.md`](../design-notes/redaction-policy.md)
 and marker grammar §0.
 
 ### `owner` is always an existing principal — non-enrolled subjects
@@ -631,9 +631,9 @@ Two model rules are worth internalising:
 The pseudocode for the inline-marker placement, the prose/embed
 pass-through, the total-redaction collapse, and the owner-of-last-resort
 resolution all live in
-`../the redaction-policy design note;
+[`redaction-policy.md`](../design-notes/redaction-policy.md);
 the marker grammar and parser behaviour live in
-`../the marker-grammar design note.
+[`marker-grammar.md`](../design-notes/marker-grammar.md).
 This page intentionally stops at the model boundary.
 
 ---
@@ -667,7 +667,7 @@ A few clarifications that keep these levels from blurring:
   forge, move, batch edits, recall-and-correct) — not a Q&A about the
   memory's contents. Its writes go through the hard-rule
   confirmation-before-write flow. See
-  `../the agentic-chat design note.
+  [`agentic-chat.md`](../design-notes/agentic-chat.md).
 - **`isAdmin` is a UI gate, not a tool-surface ACL bypass** — see §2.
   On the MCP tool surface the region-level read filter applies to the
   admin like everyone else. The one exception is the dashboard's explicit,

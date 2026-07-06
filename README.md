@@ -342,7 +342,7 @@ Letting an **AI agent** set it up on your behalf? `INSTALL.md` opens by telling 
 - [`INTEGRATING.md`](INTEGRATING.md) — wire your own agent: the per-turn contract, tokens, transports.
 - [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) — the operational contract the *consumer agent itself* follows.
 - [`agents-bridges/`](agents-bridges/) — ready-made bridges (plus the `/bridges` catalog your server serves).
-- [`docs/`](docs/) — the reference set: [concepts](docs/concepts/) (memory model, identity & ACL), [protocol](docs/protocol/) (tool reference, config schema), [architecture](docs/architecture/), [development](docs/development/), [examples](docs/examples/scenarios.md).
+- [`docs/`](docs/) — the engineering wiki: [concepts](docs/concepts/) (memory model, identity & ACL), [protocol](docs/protocol/) (tool reference, config schema), [architecture](docs/architecture/), [design notes](docs/design-notes/) (one page per mechanism — pipelines, REM, marker grammar, redaction), [development](docs/development/), [examples](docs/examples/scenarios.md). Start at the [index](docs/index.md).
 
 ---
 

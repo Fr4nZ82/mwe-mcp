@@ -106,7 +106,7 @@ additional writer. (The stderr discipline is a convention, not a
 transport requirement: mwe-mcp is HTTP-only by design — there is no
 stdio JSON-RPC channel reserving stdout. The `serve` binary prints only
 its readiness line to stdout.)
-See ../the logging design note for the
+See ../the [logging design note](../design-notes/logging.md) for the
 wiring.
 
 The level **resolves by precedence** (`tracing_setup::make_filter`):
@@ -166,7 +166,7 @@ YAML means "this function is not wired in this deployment".
 > `#[deprecated]`, pending the compiler's promotion to a full REM
 > sub-job), and recall does not yet serve the compiled prose. Configure it
 > via the `llm.cronista:` YAML key directly. See
-> `../the narrative-compiler design note.
+> [`narrative-compiler.md`](../design-notes/narrative-compiler.md).
 
 > **Recommendation: point `ingest` at a strong model.** The
 > `ingest` slot drives a heavier classification: cross-user
@@ -306,7 +306,7 @@ as written in YAML are authoritative.
 ### `rem`
 
 Maps to `RemConfig`. Drives the scheduler that runs the nightly REM
-self-reorganization cycle (../the rem-cycle design note)
+self-reorganization cycle (../the [rem-cycle design note](../design-notes/rem-cycle.md))
 inside the long-lived server.
 
 | Key | Type | Default | Notes |
@@ -334,7 +334,7 @@ The default profile is **enabled**: a fresh deployment auto-organises
 its memory without the operator flipping a switch. There are **two**
 schedulers under one `mode`. The **full** REM cycle runs on a 24-hour
 cadence (`interval_secs`) and drives the strong-LLM structural reorg
-(../the rem-cycle design note). The
+(../the [rem-cycle design note](../design-notes/rem-cycle.md)). The
 **light dream** ([`crate::dream_light`](../../crates/mwe-core/src/dream_light.rs))
 runs on the far-more-frequent `light_*` cadence: it drains the captures
 buffer, embedding each buffered capture into `fact_index` so a standard-wiki
@@ -1099,13 +1099,13 @@ Secrets for this example live in the sibling `mwe-mcp.env`:
 
 ## See also
 
-- ../the logging design note — how
+- ../the [logging design note](../design-notes/logging.md) — how
   `logging.level` / `file_rotation` wire into the `tracing` subscriber.
-- ../the rem-cycle design note — what a
+- ../the [rem-cycle design note](../design-notes/rem-cycle.md) — what a
   REM cycle actually does with the scheduler and `RemPolicy` knobs.
-- ../the admin-llm-config design note
+- ../the [admin-llm-config design note](../design-notes/admin-llm-config.md)
   — the dashboard admin page that edits the `llm` slots live.
-- ../the jwt-and-session-model design note
+- ../the [jwt-and-session-model design note](../design-notes/jwt-and-session-model.md)
   — what `MWE_TOKEN_SECRET` signs and the ≥32-byte floor.
 - [../development/build-run.md](../development/build-run.md) — the
   `mwe-mcp init` walkthrough that seeds both files.

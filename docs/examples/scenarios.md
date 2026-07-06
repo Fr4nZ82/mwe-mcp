@@ -31,7 +31,7 @@ Telegram openclaw, anything — talks to mwe-mcp through a tiny surface:
   server's `ingest` LLM slot classifies intent, recalls context, picks
   an owner/ACL, and composes the right sequence of `_internal.*` atomic
   writes — all in one round-trip that returns strict JSON (see
-  `../the ingest-pipeline design note).
+  [`ingest-pipeline.md`](../design-notes/ingest-pipeline.md)).
 - **For structural intent** — restructuring,
   changing a wiki's scope, restoring something archived — the agent
   calls **`dashboard_link(intent, sender, …)`** and hands the resulting
@@ -51,7 +51,7 @@ The full public MCP surface (the conversational + structural tools plus
 the read/event/audit/smart-wiki-admin families) is catalogued in
 [`../protocol/mcp-tools.md`](../protocol/mcp-tools.md); the smart-consumer
 smart-wiki write path that one scenario below exercises is in
-`../the smart-wikis design note.
+[`smart-wikis.md`](../design-notes/smart-wikis.md).
 
 > A note on structural changes. They are **act-first**: REM applies the
 > change directly and the agent receives a `structure_applied` notice
@@ -59,7 +59,7 @@ smart-wiki write path that one scenario below exercises is in
 > agent — is the undo surface; the agent only ever forwards the notice
 > and surfaces the dashboard link. There are no proposal tools on MCP.
 > See
-> `../the proposal-apply-engine design note.
+> [`proposal-apply-engine.md`](../design-notes/proposal-apply-engine.md).
 
 ### The generic shape
 
@@ -345,7 +345,7 @@ the recall result, and the agent gets a degraded
 `context_snippet: "[redacted: 1 block not visible]"` plus a graceful seed
 "I don't have anything I can share about that." There is **no 403 toward
 the agent** — invisibility is opaque by design. The redaction mechanics
-are in `../the redaction-policy design note.
+are in [`redaction-policy.md`](../design-notes/redaction-policy.md).
 
 ### What lands in the memory wiki
 
@@ -420,7 +420,7 @@ flowchart LR
 
 This is one of the REM cycle's write sub-jobs (auto-promote); the full
 sub-job roster and ordering is in
-`../the rem-cycle design note.
+[`rem-cycle.md`](../design-notes/rem-cycle.md).
 
 ### What lands in the memory wiki (same night)
 
@@ -480,7 +480,7 @@ and writes authoritatively through the **family-H `wiki_admin_*`
 tools**, not through `wiki_ingest_message`. The smart family is
 filtered out of `wiki_ingest_message`'s routing and of REM's write
 sub-jobs precisely so the server never tries to "help." See
-`../the smart-wikis design note.
+[`smart-wikis.md`](../design-notes/smart-wikis.md).
 
 ### One-time setup
 

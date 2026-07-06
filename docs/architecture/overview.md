@@ -243,9 +243,9 @@ Module layout under
 | `assets` | `/static/*path` handler over a `rust-embed` of `assets/app.css` | implemented |
 | `routes::*` | One submodule per top-level surface — [`routes/mod.rs`](../../crates/mwe-dashboard/src/routes/mod.rs) is the SSOT for the mounted set: `briefing`, `chat`, `cite`, `smart_view`, `connect`, `facts`, `groups`, `home`, `invitations`, `llm_config`, `login`, `logout`, `prompts`, `proposals`, `redirect`, `settings`, `setup`, `skills_view`, `tokens`, `users`, `welcome`, `wiki_view`. The public (no-auth) tree mounts `redirect`/`setup`/`login`/`invitations`/`cite`/`assets`; everything else lives behind the session-refresh layer. `cite` is also re-exported as a standalone root-mounted `/cite/:bi_id` resolver | implemented |
 
-See the dashboard design note for
+See the [dashboard design note](../design-notes/dashboard.md) for
 the auth model + identity console and
-the dashboard-memory-mvp design note
+the [dashboard-memory-mvp design note](../design-notes/dashboard-memory-mvp.md)
 for the memory slice.
 
 ## Runtime layout — outside the repo
@@ -263,7 +263,7 @@ The workdir contains:
 
 ```
 <workdir>/
-├── engine.db                 # sqlite, see the engine-db-and-migrations design note
+├── engine.db                 # sqlite, see the [engine-db-and-migrations design note](../design-notes/engine-db-and-migrations.md)
 ├── .mwe-mcp.lock             # single-writer lockfile
 ├── mwe-mcp.config.yaml       # validated against schemas/
 └── wikis/                    # memory wikis — markdown SSOT
@@ -296,12 +296,12 @@ Three modules form the runtime safety floor:
   workdir.
 - [`lockfile`](../../crates/mwe-core/src/lockfile.rs) holds a kernel
   advisory lock on `<workdir>/.mwe-mcp.lock` for the lifetime of the
-  process (see the single-writer-lockfile design note
+  process (see the [single-writer-lockfile design note](../design-notes/single-writer-lockfile.md)
   for the cleanup model).
 - [`wal`](../../crates/mwe-core/src/wal.rs) journals every step of a
   `structure_proposal_apply` or REM op into `proposal_ops_log` /
   `rem_ops_log` so a crash mid-step can be detected and rolled back at
-  startup (see the applicative-wal design note).
+  startup (see the [applicative-wal design note](../design-notes/applicative-wal.md)).
 
 The migration files in [`migrations/`](../../migrations/) are
 append-only — schema evolution lands as new
