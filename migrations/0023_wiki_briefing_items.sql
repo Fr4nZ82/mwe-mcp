@@ -21,7 +21,7 @@ CREATE TABLE wiki_briefing_items (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     wiki_id       TEXT NOT NULL,
     source_kind   TEXT NOT NULL,    -- 'user' | 'rem' | 'consumer' | 'dashboard'
-    source_ref    TEXT NOT NULL,    -- e.g. 'user:frodo', 'rem:briefing_dispatcher', 'cc-laptop'
+    source_ref    TEXT NOT NULL,    -- e.g. 'user:fr4nz', 'rem:briefing_dispatcher', 'cc-laptop'
     topic         TEXT NOT NULL,    -- short topic line (≤ 200 chars)
     body          TEXT NOT NULL,    -- markdown body (≤ 4 KB)
     kind          TEXT,             -- observation|reasoning|external (NULL = default observation)

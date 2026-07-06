@@ -10,7 +10,8 @@ confidence-threshold = 0.93
 allow = [
     # Our own workspace crates (mwe-core, mwe-dashboard, mwe-mcp-server,
     # mwe-mcp-tray) — the project license. Dependencies stay permissive-only.
-    "AGPL-3.0",
+    # cargo-deny >= 0.17 wants the full SPDX id (not the bare GNU form).
+    "AGPL-3.0-or-later",
     "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",

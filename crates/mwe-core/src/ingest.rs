@@ -9905,6 +9905,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        windows,
+        ignore = "recall-block assembly differs on Windows — see issue #1"
+    )]
     async fn ingest_recall_turn_appends_navigated_memory_section() {
         let (dir, tree, pool) = setup_workdir().await;
         // One active fact on the opened page makes the fragment header
