@@ -1,6 +1,6 @@
 ---
 name: smart-consumer
-version: 1.9.0
+version: 1.12.0
 description: "Project-bound mode for smart consumers: authoritative management of a project's smart wiki via wiki_admin_push/pull/notify + _briefing.md lifecycle + cooperative lease + graceful degradation on token revoke. Smart wikis are markerless and content-indexed — the consumer writes plain markdown freely (create / edit / move / rename / delete pages), exactly the way this repo's engineering wiki is maintained; the ACL is wiki-level in _meta (no per-fragment markers or ACL — those are the pillar of standard memory wikis only). Superset (group 17): the user↔agent conversation ALSO runs the standard personal-memory pipeline via wiki_ingest_message, joined to the project wiki by provenance links (authored_refs), with a per-message router (drop / personal-fact→standard / document-import / project-wiki / your-operational-wiki). Auto recall+capture, never dump everything into the user's standard memory."
 depends_on: ["core"]
 applies_to:
@@ -215,12 +215,18 @@ fn smart_bootstrap(cwd):
         pages = pages,
     )
 
-    # 5. Persist local state
+    # 5. Persist local state. `local_wiki_root` records WHERE the local
+    #    markdown mirror lives — the directory you edit and push from.
+    #    Default `.mwe/wiki/` for a freshly-seeded wiki; when you instead
+    #    ingested an existing wiki *in place* (e.g. the repo's `wiki/`), it is
+    #    that directory and you never duplicate it into `.mwe/wiki/`
+    #    (see smart-codebase "Ingesting pre-existing docs or a wiki").
     write(".mwe/state.json", {
         "wiki_id": out.wiki_id,
         "last_op_log_head": out.op_log_id,
         "wiki_type": wiki_type,
         "project_id": project_id,
+        "local_wiki_root": ".mwe/wiki/",   # default; an in-place ingest sets it to the existing dir
         "checksums": {page.path: sha256(page.content) for page in pages},
     })
     return out.wiki_id
@@ -235,26 +241,100 @@ Two things to internalise:
   generating, scan `CLAUDE.md` **and `AGENTS.md`** for documentation-style
   rules and resolve them with the user (two options — adopt the mwe standard,
   or stop so they edit the file), logging the choice in `.mwe/state.json`.
-- **Bootstrap is never automatic, and it splits — never fork a duplicate.**
-  The first durable-project-knowledge write-moment *is* the deferred bootstrap.
-  When this cwd is not yet bootstrapped, derive the `project_id` and look it up
-  *even without* a local `.mwe/state.json`:
+- **Run it proactively at session start — but it still proposes, never
+  writes silently.** Don't wait for a "write-moment": the SessionStart nudge
+  tells you to call `smart_bootstrap` on connect, so do the cwd
+  discrimination *then*, and raise the result right away. Derive the
+  `project_id` and look it up *even without* a local `.mwe/state.json`:
   - a wiki already exists for it **on mwe** (bootstrapped on another machine) →
     **propose a sync** (pull → reconcile), never a second wiki;
   - none on mwe, but the repo has an **existing local wiki/docs** the user never
-    ingested → **propose ingesting that** (check-compat → push, or build from
-    docs), so you write into the real wiki, not a parallel one;
+    ingested → **propose onboarding it now** — copy it up in bulk (see
+    "Onboarding an existing wiki" below; **never** a page-by-page read into your
+    context), or build from docs — so you write into the real wiki, not a
+    parallel one;
   - nothing anywhere → **propose creating** a new project wiki.
-  All are proposals — never write silently, never create a duplicate. If the user
-  declines to ingest, keep the wiki **local-only** (edit the files, don't push —
-  it just will not be in mwe recall) or skip; park pending knowledge in your
-  operational wiki meanwhile so it is not lost. See
+  All are proposals you surface on connect — never write silently, never create a
+  duplicate. If the user declines to onboard, keep the wiki **local-only** (edit
+  the files, don't push — it just will not be in mwe recall) or skip; park
+  pending knowledge in your operational wiki meanwhile so it is not lost. See
   [`core-globalmemory`](core-globalmemory.md) "Cwd discrimination".
 - **The `project_id` is stable.** It comes from the VCS origin + the
   repo-relative path of the project root. Renaming the local
   checkout doesn't change it; cloning the same repo on a different
   laptop produces the same id, so two devices of the same user
   converge on the same companion-wiki rather than forking duplicates.
+
+## Onboarding an existing wiki — copy it up in bulk, not through your context
+
+The **first** time you bring a project's existing wiki into mwe you are
+copying many (sometimes large) pages up. Reading each page into your context
+and re-emitting it as a `wiki_admin_push` argument *works*, but the bytes
+pass through you twice — so a big wiki burns tokens for nothing, and a page
+over your file-read ceiling can't be read in one go at all.
+
+**So don't read the pages into your context for the bulk copy.** You have a
+shell — write and run a small script that walks the wiki tree and calls
+`wiki_admin_push` over `/mcp` itself. The bytes go **file → script →
+server**, never through you. This is the single mechanism for onboarding
+*any* existing smart wiki, large or small. (The day-to-day single-page loop
+below is different: a page you just edited is already in your context — push
+it normally. The script is only for the initial bulk copy.)
+
+**The call.** `wiki_admin_push` is an MCP tool; over HTTP it is a JSON-RPC
+`tools/call` on `POST <server>/mcp`:
+
+```
+POST <server>/mcp
+Authorization: Bearer <smart JWT>          # see "Auth" below
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+  "name":"wiki_admin_push",
+  "arguments":{ "mode":"create", "wiki_type":"project", "smart":true,
+                "project_id":"<id>", "pages":[ {"path":"index.md","content":"…"} ] }}}
+```
+
+Call `mode:"create"` first (its result carries the new `wiki_id`), then
+`mode:"upsert", "wiki_id":"<id>"` for the remaining pages **in batches**.
+Each `pages[*]` is `{path, content}` — `path` relative to the wiki root
+(forward slashes), `content` the file bytes verbatim.
+
+A Windows PowerShell sketch — no extra tools, `ConvertTo-Json` escapes the
+content for you (elsewhere the same shape over `bash` + `curl`, using `jq` to
+build the JSON):
+
+```powershell
+$srv=$env:MWE_SERVER; $jwt=$env:MWE_JWT; $root="wiki"; $proj=$env:MWE_PROJECT_ID
+$hdr=@{Authorization="Bearer $jwt"; "Content-Type"="application/json";
+       Accept="application/json, text/event-stream"}
+function Push($a){ $b=@{jsonrpc="2.0";id=1;method="tools/call";
+   params=@{name="wiki_admin_push";arguments=$a}} | ConvertTo-Json -Depth 20
+   Invoke-RestMethod "$srv/mcp" -Method Post -Headers $hdr -Body $b }
+$base=(Resolve-Path $root).Path
+$pages = Get-ChildItem $root -Recurse -Filter *.md | ForEach-Object {
+   @{ path = $_.FullName.Substring($base.Length+1) -replace '\\','/';
+      content = [IO.File]::ReadAllText($_.FullName) } }
+$r  = Push @{mode="create"; wiki_type="project"; smart=$true; project_id=$proj; pages=@($pages[0])}
+$wid= ($r.result.content[0].text | ConvertFrom-Json).wiki_id
+for($i=1; $i -lt $pages.Count; $i+=25){
+   Push @{mode="upsert"; wiki_id=$wid; pages=$pages[$i..([math]::Min($i+24,$pages.Count-1))]} }
+```
+
+**Auth.** The script needs a **smart** Bearer JWT in `$MWE_JWT`. Either reuse
+the OAuth `access_token` your own connection already holds, *if your host
+exposes it* to a shell (short-lived, ~1 h — fine for a one-shot copy); or the
+operator mints one once (`mwe-mcp token-issue --class smart …` on the server,
+or the dashboard token page) and exports it here. The token is the **only**
+setup step on this machine — `mwe-mcp` itself is never installed here; the
+script only speaks HTTP to the remote server.
+
+**After the copy**, record `.mwe/state.json` (`wiki_id`, `local_wiki_root` =
+the existing dir, `last_op_log_head` from the last push) and switch to the
+day-to-day loop. A big `log.md` is copied **whole** (byte-exact); its
+date-structuring / rotation is a follow-up curation pass (see
+`smart-codebase`), not part of the copy.
 
 ## Markerless, content-indexed — write the wiki like local files
 
@@ -286,16 +366,55 @@ Those conventions are documented in
 the smart-wikis design note and, for codebases, in the
 `smart-codebase` skill — read them once and conform.
 
+## Append-only log pages — keep them bounded, rotate by period
+
+An append-only chronological page — your operational wiki's
+`conversations.md`, or a project wiki's decision/change log — grows
+without bound. Two things go wrong for a smart wiki when it does:
+
+- **Recall granularity collapses.** Every push re-chunks the page into
+  heading-delimited sections (above). A monolithic log with few headings
+  embeds as a handful of giant sections, so recall can't home in on the
+  one entry that matters — the whole slab surfaces or nothing does.
+- **It outgrows a single read.** Past a point the page no longer fits in
+  one `read_local`: you must reassemble it from offset-chunks to edit or
+  re-push it, and hand-reassembly is exactly where byte-drift creeps into
+  a "faithful" copy. Nothing warns you — **there is no server-side size
+  cap** (mwe stores a 300 KB page happily); the ceiling you hit is your
+  own file-read tool's.
+
+**Rule.** Keep any single log/changelog page **bounded** — a live page
+should sit comfortably inside one read (well under your read tool's
+ceiling) and split into a dozen-ish sections, not scores of them. When a
+push would take it past that, **rotate by period**: the live page
+(`conversations.md`, `log.md`) keeps only the current period's entries;
+older entries move into a dated, append-only archive
+(`conversations.<YYYY-Qn>.md`, `log.<YYYY>.md`). Push the trimmed live
+page and the archive **together** in one `wiki_admin_push mode: upsert`
+so the move is atomic — the same idiom as `_briefing.md →
+_briefing.archive.md`.
+
+A period boundary (quarter, year) is the natural cut for a chronological
+log; if one period is itself too big, cut finer. Archived pages stay
+recallable — you are bounding each page's mass, not discarding history.
+The codebase specialisation (a project wiki's `log.md` — first-class
+content, structured by date and paged into archives, never dropped) is in
+`smart-codebase`.
+
 ## Day-to-day editing loop
 
 After bootstrap, the loop is `local edit → wiki_admin_push mode:
-upsert`. Three patterns:
+upsert`. All local edits happen under **`state.local_wiki_root`** — the
+local markdown mirror, `.mwe/wiki/` by default but the ingested
+directory (e.g. `wiki/`) when you bootstrapped over an existing wiki in
+place. Three patterns:
 
 ### Single-page edit
 
 ```
-# Local edit happens in .mwe/wiki/modules/auth.md (or wherever)
-new_body = read_local(".mwe/wiki/modules/auth.md")
+# Local edit happens under state.local_wiki_root, e.g.
+#   <local_wiki_root>/modules/auth.md   (default .mwe/wiki/, or the ingested dir)
+new_body = read_local(state.local_wiki_root + "/modules/auth.md")
 
 wiki_admin_push(
     wiki_id = state.wiki_id,
@@ -480,14 +599,14 @@ paths differently:
 | Wire code | Caller behaviour |
 |---|---|
 | `401 invalid_token` | Signature mismatch / clock skew / unknown server. Hard configuration error: surface immediately, do **not** queue local writes. |
-| `401 token_revoked` | JTI in `token_blacklist`. **Keep the local `.mwe/wiki/` cache intact** (no work lost), surface a "token revoked — please issue a new one" prompt to the operator, **continue local editing** until they paste a fresh token. |
+| `401 token_revoked` | JTI in `token_blacklist`. **Keep the local mirror (`state.local_wiki_root`) intact** (no work lost), surface a "token revoked — please issue a new one" prompt to the operator, **continue local editing** until they paste a fresh token. |
 
 When a fresh token arrives, the next `smart_bootstrap` does:
 
 1. `wiki_admin_pull` first — absorbs any `_briefing.md` items that
    landed in the gap (REM Briefing dispatcher findings, openclaw
    forwards, team notifications via `shared_with`).
-2. Diff pulled state vs local `.mwe/wiki/`.
+2. Diff pulled state vs the local mirror (`state.local_wiki_root`).
 3. Replay queued local edits with `wiki_admin_push mode: upsert` (one
    push per page that diverged locally). Optimistic concurrency via
    `expected_op_log_head` short-circuits if a concurrent device
@@ -501,6 +620,7 @@ When a fresh token arrives, the next `smart_bootstrap` does:
     "last_op_log_head": "ol_abc123",
     "wiki_type": "wiki-companion",
     "project_id": "ab12cd34ef56",
+    "local_wiki_root": ".mwe/wiki/",
     "pending_pushes": [
         {"path": "modules/auth.md", "content_sha256": "...", "queued_at": "2026-05-25T08:14:00Z"}
     ]
@@ -547,9 +667,11 @@ single-laptop single-token rotation case that motivated it.
 - ❌ **Long-lived leases.** The cap is 300 s for a reason — a crashed
   laptop holding a 300s lease blocks every other device for up to
   300 s plus REM grace. Default 60 s suffices for any sensible batch.
-- ❌ **Editing files outside `.mwe/wiki/` and expecting them to push.**
+- ❌ **Editing files outside your local mirror and expecting them to push.**
   The push surface accepts page bodies you provide; it does not scan
-  the filesystem. Treat `.mwe/wiki/` as the canonical local mirror.
+  the filesystem. Your local mirror is **`state.local_wiki_root`**
+  (`.mwe/wiki/` by default, or the directory you ingested in place) — edit
+  there, and pass those bodies to `wiki_admin_push`.
 - ❌ **Silently auto-converting `docs/`.** Always confirm the rename
   with the user, never `rm -rf` historical content.
 - ❌ **Ignoring `_briefing.md` at session start.** The whole point of

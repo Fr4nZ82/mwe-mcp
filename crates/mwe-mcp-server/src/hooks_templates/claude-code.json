@@ -15,6 +15,10 @@
     "recall_core_global": {
       "status": "shipped",
       "note": "The model calls it on the first prompt / on a topic shift (steered by the skill). Owner-scoped transversal recall over the user's own wikis. Smart-only."
+    },
+    "wiki_admin_push": {
+      "status": "shipped",
+      "note": "Used to onboard a pre-existing project wiki on connect. For the BULK initial copy the model runs a script (PowerShell/curl) that walks the tree and calls wiki_admin_push over /mcp — the bytes go file->script->server, never through the model context (no token burn, no read-cap). Day-to-day single-page edits are pushed normally. See the smart-consumer skill 'Onboarding an existing wiki'."
     }
   },
   "snippet": {
@@ -25,7 +29,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "echo 'mwe-mcp memory is connected. Load it now: call smart_bootstrap to pull your operational wiki and any briefing, then recall relevant memory before answering. Capture durable facts as you go, routed per the core / smart-consumer skill: project knowledge to the project wiki, your own operating notes to your operational wiki, facts about the user via wiki_ingest_message. Never dump everything into the user standard memory.'",
+              "command": "echo 'mwe-mcp memory is connected. Load it now: call smart_bootstrap to pull your operational wiki and any briefing, then recall relevant memory before answering. If this project has a wiki that is not yet in mwe, propose onboarding it now and copy it up in bulk via a script (per the smart-consumer skill), never page-by-page into your context. Capture durable facts as you go, routed per the core / smart-consumer skill: project knowledge to the project wiki, your own operating notes to your operational wiki, facts about the user via wiki_ingest_message. Never dump everything into the user standard memory.'",
               "timeout": 5
             }
           ]

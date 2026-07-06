@@ -1,6 +1,6 @@
 ---
 name: smart-codebase
-version: 1.2.0
+version: 1.5.0
 description: "Conversion + maintenance pattern for software-project companion-wikis: pre-existing CLAUDE.md/AGENTS.md documentation-rules scan (two options, logged in .mwe/state.json), build-an-mwe-wiki-from-docs / ingest-an-existing-wiki-faithfully (the local copy is never touched), modules/decisions/runbooks/architecture layout, deviation warnings, source_ref discipline, last_synced cadence."
 depends_on: ["core", "smart-consumer"]
 applies_to:
@@ -38,10 +38,11 @@ codebase-specific patterns below won't help.
 ## Folder-structure mapping
 
 The bundled `wiki-companion` type suggests four top-level
-subdirectories under `.mwe/wiki/`. Deviations don't error — they
-**warn** in the `wiki_admin_push` response — but the standard layout
-lets REM's read-side dedup and your team's recall hit the right
-files without surprise:
+subdirectories under your local mirror (`state.local_wiki_root` —
+`.mwe/wiki/` by default, or the directory you ingested in place).
+Deviations don't error — they **warn** in the `wiki_admin_push`
+response — but the standard layout lets REM's read-side dedup and your
+team's recall hit the right files without surprise:
 
 | Folder | What lives there | Page frontmatter convention |
 |---|---|---|
@@ -122,9 +123,21 @@ re-run the bootstrap.
 You **never scan folders on your own initiative** to ingest them. This runs only
 when the **user asks** to bring a project's documentation into mwe, or when a
 write-moment forces the question (see `smart-consumer` → "the first write-moment
-is the deferred bootstrap"). Whatever the shape, the **local copy stays exactly
-as it is** — you read it as *source* and author a fresh `.mwe/wiki/`; you do
-**not** rename, move, or delete the originals. Keep the user aware of every step.
+is the deferred bootstrap"). Whatever the shape, the **originals stay exactly as
+they are** — you never rename, move, or delete them. Keep the user aware of every
+step.
+
+Where the **local mirror** (`state.local_wiki_root` — the directory you edit and
+push from) ends up depends on the shape, and you record it in `.mwe/state.json`
+at bootstrap:
+
+- **Loose `docs/` → build from it:** you author a *fresh* wiki at the default
+  `.mwe/wiki/`, reading `docs/` only as source. `local_wiki_root` stays
+  `.mwe/wiki/`; `docs/` is untouched.
+- **An existing wiki → ingest in place:** the existing directory (e.g. the repo's
+  `wiki/`) **is** the mirror. Set `local_wiki_root` to it and keep editing it
+  there — **never duplicate it into `.mwe/wiki/`**. `.mwe/wiki/` is only the
+  default for a freshly-seeded wiki, not a mandatory location.
 
 Three shapes, decided per project — and if it is ambiguous, **ask**:
 
@@ -149,7 +162,9 @@ fn build_wiki_from_docs(cwd, wiki_type):
     out = wiki_admin_push(project_id=state.project_id, wiki_type=wiki_type,
                           smart=true, mode="create", pages=pages)
     write(".mwe/state.json", { wiki_id: out.wiki_id, last_op_log_head: out.op_log_id,
-                               project_id: state.project_id, source: "docs/" })
+                               project_id: state.project_id,
+                               local_wiki_root: ".mwe/wiki/",   # freshly authored → the default
+                               source: "docs/" })
     return out.wiki_id
 ```
 
@@ -167,6 +182,41 @@ If it conforms, push it **page-for-page as-is** (`mode=create`, then `upsert`).
 Where it needs light conformance (a missing heading, a stray `_meta`), adjust it
 **with the user's awareness** and push. Never force the four-folder layout onto a
 wiki already organised its own way — non-canonical folders only *warn* on push.
+
+**The ingested directory stays the local mirror — do not copy it into
+`.mwe/wiki/`.** Record its path as `local_wiki_root` in `.mwe/state.json` and go
+on editing it in place; from here the day-to-day loop (`smart-consumer` →
+"Day-to-day editing loop") reads and writes under that `local_wiki_root`.
+
+```
+fn ingest_existing_wiki(cwd, wiki_root):          # e.g. wiki_root = "wiki/"
+    confirm_with_user(
+        "I'll copy your existing " + wiki_root + " into mwe as-is (byte-for-byte) "
+        "and keep editing it right there — I won't copy it into .mwe/wiki/. OK?")
+    # Bulk copy runs in a SCRIPT — it reads the files and pushes them over /mcp;
+    # you never pull the pages through your own context (no token burn, no read
+    # ceiling). See smart-consumer "Onboarding an existing wiki — copy it up in bulk".
+    wiki_id, head = run_bulk_copy_script(wiki_root,            # create → upsert in batches
+                                         project_id=state.project_id, wiki_type=wiki_type)
+    write(".mwe/state.json", { wiki_id: wiki_id, last_op_log_head: head,
+                               project_id: state.project_id,
+                               local_wiki_root: wiki_root,     # <-- the existing dir, NOT .mwe/wiki/
+                               source: wiki_root })
+    return wiki_id
+```
+
+**Oversized pages during ingest.** Because the bulk copy runs in a *script*,
+not through your context, a page's size is a non-issue — the script reads a
+350 KB `log.md` as easily as a 2 KB one, byte-for-byte, with no read ceiling
+and no reassembly drift. Two things still hold:
+
+- **Copy verbatim; never paraphrase.** The script emits the file bytes as the
+  page `content` — a faithful copy, not a rewrite of it from memory.
+- **A chronological `log.md` / `CHANGELOG.md` is copied whole, then curated.**
+  It is first-class content — the trail maintainers read to retrace work — so
+  you never drop it. *After* the copy, structure it by date and rotate it into
+  dated period archives behind a live index (see "Change-log page"), as a
+  follow-up pass — not something to skip or split during the copy itself.
 
 ### Both `docs/` and a wiki → decide with the user
 
@@ -276,6 +326,40 @@ historical context survives; REM's recall surfaces both pages when
 the user asks about the underlying topic and the
 `superseded_by` chain lets the user follow the trail.
 
+## Change-log page — first-class, structured by date, rotated (never dropped)
+
+A project wiki often carries a root-level append-only changelog
+(`log.md`, `CHANGELOG.md`, a `decisions/` index) — a chronological trail,
+like this repo's own `wiki/logs.md`. It is **first-class content:**
+maintainers read it to retrace what was done, in order — **never exclude
+it, never atomise it into facts.** Do not dismiss it as "redundant with
+the op-log": mwe's server-side op-log is a low-level audit of *page
+writes*, while a curated changelog is a human narrative of *what changed
+and why* — a different artefact, and the one people actually read.
+
+It just needs the **append-only log-page discipline** from
+`smart-consumer` ("keep them bounded, rotate by period"), plus two
+log-specific habits, because a chronological log is the page most likely
+to breach a single read:
+
+- **Navigated by date, so structure it by date.** A log is recalled by
+  *when*, not by topic. Give each period (or each entry) a dated heading,
+  newest first, so every window is its own heading-delimited section: the
+  maintainer can scan the trail and recall can land on the right window. A
+  wall of undated bullets embeds as one slab and defeats both.
+- **Rotate by period, keep a live index.** The live page holds the current
+  period; older periods roll into dated archives (`log.<YYYY>.md`,
+  `log.<YYYY-Qn>.md`) that the live page **links**, so the timeline stays
+  navigable across the rotation. Push the trimmed live page and the new
+  archive together (atomic). You bound each page's mass without breaking
+  the trail — nothing is discarded.
+
+**Ingesting an existing oversized log:** split it into dated period
+archives at ingest — verbatim, entry-for-entry — behind a live index page
+that links them, rather than pushing one 350 KB slab. This is where the
+general "read oversized pages in offset-chunks, verbatim" rule and the log
+rotation meet: the log survives whole, just paged and navigable.
+
 ## Anti-patterns
 
 - ❌ **One giant `architecture/overview.md` for everything.** Split
@@ -309,7 +393,7 @@ for "classify this file".
 
 - Sibling skill: `smart-consumer` (parent, the cwd-bound mode this
   one specialises).
-- Bundled type definition:
-  `crates/mwe-core/src/bundled_types/wiki-companion.md`.
-- Engineering wiki: the companion-wikis design note.
-- `_meta` / frontmatter constraints: the companion-wikis design note.
+- Bundled `wiki-companion` type (the `wiki_type` stem + smart-consumer
+  detection): `crates/mwe-core/src/smart.rs`.
+- Engineering wiki: the smart-wikis design note.
+- `_meta` / frontmatter constraints: the smart-wikis design note.

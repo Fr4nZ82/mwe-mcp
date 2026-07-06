@@ -189,6 +189,42 @@ proposes it rather than leaking a sensitive repo into personal memory.
 
 ---
 
+## Onboarding an existing project wiki (smart consumers)
+
+When a smart consumer (Claude Code) connects in a repo that **already has a wiki**
+(a markdown tree like this repo's own `wiki/`), it proposes onboarding it **on
+connect** and copies it up to the server as the project wiki — so the same
+knowledge is reachable later from a standard consumer or the dashboard.
+
+The copy is **one uniform step, any size**, and it does **not** run the pages
+through the model. The agent writes and runs a small script (PowerShell
+`Invoke-RestMethod` on Windows, `bash` + `curl` elsewhere) that walks the tree and
+calls `wiki_admin_push` over `POST <server>/mcp` — the file bytes go **straight to
+the server, never through the model context** (no token burn, no file-read
+ceiling). `mwe-mcp` itself is **never installed on the agent's machine**; the
+script only speaks HTTP to the remote server.
+
+The one setup step is a **smart Bearer JWT** the script authenticates with:
+
+- If your host exposes the connection's OAuth `access_token` to a shell, the
+  script reuses that (short-lived, ~1 h — enough for a one-shot copy).
+- Otherwise mint one once and make it available on the agent's machine (e.g. an
+  `MWE_JWT` env var, alongside `MWE_SERVER` = your server origin):
+
+  ```bash
+  mwe-mcp token-issue --sender <user-id> --device onboarding-import --class smart
+  ```
+
+  (or the dashboard token page). The agent derives the `project_id` at bootstrap;
+  after the copy it records `.mwe/state.json` and switches to the day-to-day loop
+  (single-page pushes), with the existing wiki dir staying the local mirror.
+
+A large `log.md`/`CHANGELOG.md` is copied **whole** (byte-exact); the agent may
+later curate it (date-structuring + rotation into dated archives) as a follow-up —
+it is never dropped. See the `smart-consumer` skill, "Onboarding an existing wiki".
+
+---
+
 ## Where the rest of the detail lives
 
 | Topic | Where the detail lives |
