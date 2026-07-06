@@ -1,0 +1,44 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Fr4nZ82/mwe-mcp",
+  "title": "mwe-mcp — Memory Wiki Engine",
+  "description": "Self-hosted multi-user memory for AI agents: a human-readable Markdown wiki with per-fragment ACL.",
+  "version": "1.0.0",
+  "repository": {
+    "url": "https://github.com/Fr4nZ82/mwe-mcp",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/Fr4nZ82/mwe-mcp",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/Fr4nZ82/mwe-mcp/releases/download/v1.0.0/mwe-mcp-v1.0.0-x86_64-unknown-linux-gnu.tar.gz",
+      "version": "1.0.0",
+      "fileSha256": "0f3790b20038536b333513a3dac11bfaf12f6bd806921221567950bd6f87acc9",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://127.0.0.1:8742/mcp"
+      }
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/Fr4nZ82/mwe-mcp/releases/download/v1.0.0/mwe-mcp-v1.0.0-aarch64-apple-darwin.tar.gz",
+      "version": "1.0.0",
+      "fileSha256": "e25b7393b4adc6e50af016a04a7007cbfcd4c52c0c8ed754023a4cd6ebda5eb0",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://127.0.0.1:8742/mcp"
+      }
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/Fr4nZ82/mwe-mcp/releases/download/v1.0.0/mwe-mcp-v1.0.0-x86_64-pc-windows-msvc.zip",
+      "version": "1.0.0",
+      "fileSha256": "57c46d5cfdd59d99c40d8ed27713894f9ae40a6aa4d79c7ad3102d3dae64920b",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://127.0.0.1:8742/mcp"
+      }
+    }
+  ]
+}
