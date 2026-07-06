@@ -2724,11 +2724,11 @@ mod tests {
         // onto the same canonical name.
         assert_eq!(
             canonical_page_path("orari-matteo"),
-            Some("orari_daniel.md".to_owned())
+            Some("orari_matteo.md".to_owned())
         );
         assert_eq!(
             canonical_page_path("Orari Matteo.md"),
-            Some("orari_daniel.md".to_owned())
+            Some("orari_matteo.md".to_owned())
         );
         // Nested paths canonicalise per segment.
         assert_eq!(
@@ -3936,7 +3936,7 @@ mod tests {
         assert_eq!(scopes["user:bruno"], "bruno");
         // Own group: franz IS a member, so his page is in the tag (his own
         // shared context, never foreign to him).
-        assert_eq!(scopes["group:famiglia"], "franz,bruno");
+        assert_eq!(scopes["group:famiglia"], "bruno,franz");
         // Foreign group: franz is NOT a member — his page is absent.
         assert_eq!(scopes["group:condominio"], "bruno");
         // Global: never a foreign subject anywhere.
@@ -3951,7 +3951,7 @@ mod tests {
         let mut signals = CartografoSignals::default();
         signals
             .subject_scopes
-            .insert("group:famiglia".to_owned(), "franz,bruno".to_owned());
+            .insert("group:famiglia".to_owned(), "bruno,franz".to_owned());
         let facts = vec![
             fact(1, "Bruno's therapy", "user:bruno", "famiglia"),
             fact(2, "family shopping", "group:famiglia", "famiglia"),
@@ -3959,7 +3959,7 @@ mod tests {
         let out = describe_facts(&facts, &signals);
         // The user owner falls back to its own page even without a map entry.
         assert!(out.contains("owner=user:bruno identity_pages=bruno"));
-        assert!(out.contains("owner=group:famiglia identity_pages=franz,bruno"));
+        assert!(out.contains("owner=group:famiglia identity_pages=bruno,franz"));
     }
 
     #[test]

@@ -13,7 +13,7 @@ name = "mwe_dashboard"
 path = "src/lib.rs"
 
 [dependencies]
-mwe-core = { path = "../mwe-core", version = "0.18.0" }
+mwe-core = { path = "../mwe-core", version = "1.0.0" }
 
 axum = { workspace = true }
 axum-extra = { workspace = true }
@@ -69,7 +69,7 @@ tempfile = { workspace = true }
 tower = { workspace = true }
 http-body-util = "0.1"
 hyper = { workspace = true }
-mwe-core = { path = "../mwe-core", version = "0.18.0", features = ["test-fakes"] }
+mwe-core = { path = "../mwe-core", version = "1.0.0", features = ["test-fakes"] }
 # Untar the export route's response body in the wiki-export tests.
 tar = { workspace = true }
 # Pinned to the already-transitive copy used by `axum::Form` — the

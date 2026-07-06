@@ -5,12 +5,29 @@ All notable changes to **mwe-mcp** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-While the project is pre-1.0, the public interface (the MCP tool
-surface — see [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md))
-may break between minor versions — breaking changes are called out
-explicitly.
+From 1.0, the public interface (the MCP tool surface, by family — see
+[`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
+semver-governed surface — breaking changes are called out explicitly.
 
 ## [Unreleased]
+
+_Nothing yet._
+
+## 1.0.0 — 2026-07-06
+
+First public release.
+
+### Changed
+
+- **License: AGPL-3.0-or-later** (was `MIT OR Apache-2.0`), with a
+  commercial dual-license available — see [LICENSING.md](LICENSING.md).
+  SPDX headers on all first-party sources; contributions now require a
+  DCO sign-off plus a relicensing grant ([CONTRIBUTING.md](CONTRIBUTING.md)).
+- **Public repository with a fresh history.** The engineering wiki stays
+  in the maintainer's private archive; the user/integrator documentation
+  ships in [`docs/`](docs/).
+- The MCP tool families are declared **stable under semver** from this
+  release.
 
 ### Added
 

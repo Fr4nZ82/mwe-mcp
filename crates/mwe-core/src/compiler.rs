@@ -3230,23 +3230,23 @@ mod tests {
         let mut pages = BTreeMap::new();
         pages.insert("hub".to_owned(), leaf("hub", "famiglia", "index.md"));
         pages.insert(
-            "salute_mario".to_owned(),
+            "salute_bruno".to_owned(),
             leaf(
-                "salute_mario",
+                "salute_bruno",
                 "famiglia-bruno-battaglia",
-                "salute_mario.md",
+                "salute_bruno.md",
             ),
         );
         let mut link_graph = BTreeMap::new();
         link_graph.insert(
             "hub".to_owned(),
-            vec!["salute_mario".to_owned(), "vanished".to_owned()],
+            vec!["salute_bruno".to_owned(), "vanished".to_owned()],
         );
         let plan = CompilationPlan {
             pages,
             merged_pages: Vec::new(),
             link_graph,
-            compilation_order: vec!["hub".to_owned(), "salute_mario".to_owned()],
+            compilation_order: vec!["hub".to_owned(), "salute_bruno".to_owned()],
             generated_at: "t".to_owned(),
             fact_count: 0,
             dirty_pages: Vec::new(),
@@ -3256,12 +3256,12 @@ mod tests {
         };
         let idx = starvation_index(&plan, "hub");
         assert!(
-            idx.contains("- [[famiglia-bruno-battaglia/salute_mario]]: salute_mario desc"),
+            idx.contains("- [[famiglia-bruno-battaglia/salute_bruno]]: salute_bruno desc"),
             "{idx}"
         );
         let links = recommended_links(&plan, "hub");
         assert_eq!(
-            links, "[[famiglia-bruno-battaglia/salute_mario]]",
+            links, "[[famiglia-bruno-battaglia/salute_bruno]]",
             "graph slugs resolve through the plan; a vanished slug is skipped"
         );
     }

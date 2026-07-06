@@ -589,7 +589,7 @@ mod tests {
         .expect("audience");
         // Group expanded; global dropped; sender included; sorted + deduped
         // (franz appears as both owner and a famiglia member → once).
-        assert_eq!(aud, vec!["bilbo", "franz", "nina", "morgana"]);
+        assert_eq!(aud, vec!["bilbo", "franz", "morgana", "nina"]);
     }
 
     #[tokio::test]

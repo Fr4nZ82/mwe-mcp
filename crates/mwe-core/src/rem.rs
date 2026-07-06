@@ -6484,8 +6484,8 @@ mod tests {
         // nominated (leva-2).
         pages.insert("dossier".to_owned(), leaf("dossier", "famiglia", 1));
         pages.insert(
-            "dossier_mario".to_owned(),
-            leaf("dossier_mario", "famiglia-bruno", 2),
+            "dossier_bruno".to_owned(),
+            leaf("dossier_bruno", "famiglia-bruno", 2),
         );
         // A factless leaf is not a merge candidate.
         pages.insert("viaggi_vuota".to_owned(), leaf("viaggi_vuota", "alice", 0));
@@ -6523,7 +6523,7 @@ mod tests {
         );
         assert!(pairs.contains(&("presenza", "presenze")), "{pairs:?}");
         assert!(
-            pairs.contains(&("dossier", "dossier_mario")),
+            pairs.contains(&("dossier", "dossier_bruno")),
             "parent↔sub-wiki kin nominate within the family line: {pairs:?}"
         );
         assert!(
@@ -9297,11 +9297,11 @@ mod tests {
         // The defect: trailing ` ([[wiki/page]])`, whitespace-separated.
         assert_eq!(
             split_trailing_provenance_refs(
-                "Bruno ha il diabete di tipo 2. ([[famiglia/dossier_clinico_mario_2026]])"
+                "Bruno ha il diabete di tipo 2. ([[famiglia/dossier_clinico_bruno_2026]])"
             ),
             Some((
                 "Bruno ha il diabete di tipo 2.".to_owned(),
-                vec!["[[famiglia/dossier_clinico_mario_2026]]".to_owned()],
+                vec!["[[famiglia/dossier_clinico_bruno_2026]]".to_owned()],
             ))
         );
         // Trailing whitespace after the parenthetical is tolerated.
@@ -9358,7 +9358,7 @@ mod tests {
             &tree,
             &pool,
             "alice",
-            "Bruno ha il diabete di tipo 2. ([[famiglia/dossier_clinico_mario_2026]])",
+            "Bruno ha il diabete di tipo 2. ([[famiglia/dossier_clinico_bruno_2026]])",
             "alice",
         )
         .await;
@@ -9395,7 +9395,7 @@ mod tests {
         assert_eq!(row.text, "Bruno ha il diabete di tipo 2.");
         assert_eq!(
             row.authored_refs,
-            vec!["[[famiglia/dossier_clinico_mario_2026]]".to_owned()]
+            vec!["[[famiglia/dossier_clinico_bruno_2026]]".to_owned()]
         );
         assert_eq!(row.embedding, vec![0.9, 0.8, 0.7, 0.6], "text re-embedded");
         assert_eq!(row.region_start, before.region_start, "offsets kept");
@@ -9757,7 +9757,7 @@ mod tests {
             &tree,
             &pool,
             "famiglia-bruno",
-            "dossier_clinico_mario.md",
+            "dossier_clinico_bruno.md",
             "il referto oculistico è pulito",
             "alice",
         )
@@ -9767,14 +9767,14 @@ mod tests {
             &pool,
             &[
                 ("dossier_clinico", std::slice::from_ref(&f1)),
-                ("dossier_clinico_mario", std::slice::from_ref(&f2)),
+                ("dossier_clinico_bruno", std::slice::from_ref(&f2)),
             ],
         )
         .await;
 
         let merge_llm = FakeLlmBackend::new(
             "rev",
-            "{\"merge\": true, \"survivor\": \"dossier_clinico_mario\", \"reason\": \"same dossier\"}",
+            "{\"merge\": true, \"survivor\": \"dossier_clinico_bruno\", \"reason\": \"same dossier\"}",
         );
         let index = load_smart_wiki_index(&tree).expect("index");
         let report = run_page_merge(
@@ -9801,11 +9801,11 @@ mod tests {
         assert_eq!(moved.wiki_id, "famiglia-bruno");
         assert_eq!(
             moved.source_path,
-            "wikis/famiglia/bruno/dossier_clinico_mario.md"
+            "wikis/famiglia/bruno/dossier_clinico_bruno.md"
         );
         let survivor_body = std::fs::read_to_string(
             tree.wikis_dir()
-                .join("famiglia/bruno/dossier_clinico_mario.md"),
+                .join("famiglia/bruno/dossier_clinico_bruno.md"),
         )
         .unwrap();
         assert!(survivor_body.contains(&format!("f={f1}")), "marker moved");

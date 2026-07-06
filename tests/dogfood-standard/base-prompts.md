@@ -210,7 +210,7 @@ lines split as intended**, no collapse, no over-split:
   (`Matteo`→gollum, `nonno Bruno`→bilbo); the private bug (line 15) stayed
   `user:frodo`; the public cue (line 17) → `global`.
 - A light dream compiled the 60 facts into **prose** and topic pages emerged
-  (`spesa_famiglia`, `sport_daniel`, …), inline markers preserved on all but 2.
+  (`spesa_famiglia`, `sport_matteo`, …), inline markers preserved on all but 2.
 
 Variances / findings (not atomization failures): line 24 gave 4 vs an estimated 3
 (a finer split); line 16 routed to `group:famiglia` rather than `group:amici` (a

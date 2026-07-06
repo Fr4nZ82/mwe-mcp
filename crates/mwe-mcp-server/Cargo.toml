@@ -13,8 +13,8 @@ name = "mwe-mcp"
 path = "src/main.rs"
 
 [dependencies]
-mwe-core = { path = "../mwe-core", version = "0.18.0" }
-mwe-dashboard = { path = "../mwe-dashboard", version = "0.18.0" }
+mwe-core = { path = "../mwe-core", version = "1.0.0" }
+mwe-dashboard = { path = "../mwe-dashboard", version = "1.0.0" }
 
 rmcp = { workspace = true }
 axum = { workspace = true }
@@ -44,7 +44,7 @@ sha2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-mwe-core = { path = "../mwe-core", version = "0.18.0", features = ["test-fakes"] }
+mwe-core = { path = "../mwe-core", version = "1.0.0", features = ["test-fakes"] }
 tower = { workspace = true }
 
 [features]
