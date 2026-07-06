@@ -767,8 +767,9 @@ read.
 Scenario 5 (single-user VSCode + Claude Code, smart consumer) and
 Scenario 6 (multi-tenant Slack + VSCode, standard + smart) use the same
 mwe-mcp, the same memory wiki, the same protocol. The design choices
-(filesystem SSOT, block-level ACL, `_internal.*` atomics composed via
-`wiki_ingest_message`, the smart-consumer smart-wiki path, organic REM)
+(human-readable compiled pages, per-fragment ACL, `_internal.*` atomics
+composed via `wiki_ingest_message`, the smart-consumer smart-wiki path,
+organic REM)
 produce a system that adapts naturally to wildly
 different contexts.
 

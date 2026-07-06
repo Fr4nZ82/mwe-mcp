@@ -341,7 +341,7 @@ rationale and the extension story.
 ├── mwe-mcp.env               # secrets — chmod 600 on unix
 ├── logs/                     # daily-rotated tracing logs
 ├── prompts/                  # operator-overridable system prompts
-└── wikis/                    # memory wikis — markdown SSOT
+└── wikis/                    # memory wikis — human-readable markdown surface
 ```
 
 The `prompts/` directory holds one `.md` file per operational system
