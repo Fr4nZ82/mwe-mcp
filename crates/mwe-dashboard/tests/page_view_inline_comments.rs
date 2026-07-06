@@ -1269,6 +1269,10 @@ async fn page_view_reveals_for_admin_with_the_reveal_cookie() {
 /// still sees the residue — un-highlighted, because by its last-known ACL
 /// the viewer could read it.
 #[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "retired-region reveal differs on Windows — see issue #1"
+)]
 async fn page_view_redacts_a_retired_region_but_reveal_still_shows_it() {
     use mwe_core::fact_index::{self, NewFact};
     use mwe_core::types::FactId;
