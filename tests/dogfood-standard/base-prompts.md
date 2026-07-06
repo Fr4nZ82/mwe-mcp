@@ -20,7 +20,7 @@ Two things happen as the corpus is ingested:
    **split** on every line here rather than in a separate test. This is the live
    re-confirmation of the v2.6 prompt fix (multi-fact turns used to collapse into
    one fact; see
-   [`ingest-pipeline.md`](docs/design-notes/ingest-pipeline.md)
+   [`ingest-pipeline.md`](../../docs/design-notes/ingest-pipeline.md)
    §"strong model").
 
 > **Maintainer: add your own lines before I run this.** Real messages are
@@ -193,7 +193,7 @@ fact landed under; I flag any collapse (N→1), over-split, or mis-route, and no
 where the LLM was borderline (probabilistic — a re-run gauges stability). Pass
 bar for the v2.6 fix: **every multi-fact line splits into several atomic facts,
 never one** (line 10 is the canonical check). Findings fold back into
-[`ingest-pipeline.md`](docs/design-notes/ingest-pipeline.md)
+[`ingest-pipeline.md`](../../docs/design-notes/ingest-pipeline.md)
 and the roadmap P1 status, and the run is committed alongside this file.
 
 ### First run (2026-06-01) — PASS

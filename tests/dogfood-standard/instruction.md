@@ -399,4 +399,4 @@ force a full recompile (e.g. to re-verify the compiler), also delete the plan
 - Open findings: the maintainer's internal roadmap (private repo)
 - Chronology: `road-behind/road-behind/road-behind.md` § the relevant date (historical log)
 - Tool surface spec (for the consumer side): `AGENT_INSTRUCTIONS.md`
-- Engineering wiki for the ingest path: the [ingest-pipeline design note](docs/design-notes/ingest-pipeline.md)
+- Engineering wiki for the ingest path: the [ingest-pipeline design note](../../docs/design-notes/ingest-pipeline.md)

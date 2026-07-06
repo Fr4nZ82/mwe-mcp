@@ -395,5 +395,5 @@ for "classify this file".
   one specialises).
 - Bundled `wiki-companion` type (the `wiki_type` stem + smart-consumer
   detection): `crates/mwe-core/src/smart.rs`.
-- Engineering wiki: the [smart-wikis design note](docs/design-notes/smart-wikis.md).
-- `_meta` / frontmatter constraints: the [smart-wikis design note](docs/design-notes/smart-wikis.md).
+- Engineering wiki: the smart-wikis design note.
+- `_meta` / frontmatter constraints: the smart-wikis design note.

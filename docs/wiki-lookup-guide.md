@@ -97,7 +97,7 @@ explaining the split.
 
 - **Inside the wiki:** relative paths from the page —
   `[overview](architecture/overview.md)` from a root page,
-  `[overview](../architecture/overview.md)` from a per-area page.
+  `[overview](architecture/overview.md)` from a per-area page.
 - **Wiki → code:** relative paths to `crates/...` / `migrations/...`.
   Anchor on the file (and, where stable, a symbol) rather than a line
   number — line numbers rot. The code is the ultimate SSOT for
