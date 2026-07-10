@@ -2,7 +2,7 @@
 
 <img src="docs/assets/mwe-banner.gif" alt="mwe-mcp — Memory Wiki Engine" width="100%">
 
-**An agent-agnostic [Model Context Protocol](https://modelcontextprotocol.io) server that gives any AI agent a persistent, structured memory shaped like a human-readable Markdown wiki — multi-user, governed fragment by fragment, aware of *when* things stop being true, and self-organizing while you sleep.**
+**An agent-agnostic [Model Context Protocol](https://modelcontextprotocol.io) server that gives all your AI agents one persistent, structured memory shaped like a human-readable Markdown wiki — multi-user, multi-agent, governed fragment by fragment, aware of *when* things stop being true, and self-organizing while you sleep.**
 
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](#license)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg?logo=rust)](rust-toolchain.toml)
@@ -34,7 +34,7 @@ The result is a memory that a household, a team, or a single developer can all u
 - 🌙 **Nightly self-organization (REM).** While no one is waiting, a background cycle deduplicates facts, merges near-synonym pages, closes completions and contradictions the conversations missed, re-anchors rotting relative dates ("today" → the date it was actually said), lets grown topics emerge into their own wikis, and recompiles it all into prose. Every structural change applies **act-first** with a receipt: you get a notice, and a one-tap revert window — no approval queue to babysit.
 - 🤝 **Smart wikis for coding agents.** A *smart* consumer (e.g. Claude Code inside a repo) authoritatively maintains a project-scoped wiki — architecture decisions, bug trackers, runbooks — with a one-page `_briefing.md` handoff for the next session, cooperative leases, and a revertible op-log.
 - ⚡ **A lean hot path.** Per turn: deterministic I/O, *local* embeddings, one routing call to the internal LLM (plus an optional navigation call when configured). The heavy lifting is batched into the nightly cycle. Latency stays bounded; the bill stays predictable.
-- 🔌 **Truly consumer-agnostic.** Claude Code, Cursor, a Slack bot, your own agent — all talk to the *same* governed memory over MCP. Swap the harness; the memory stays.
+- 🔌 **Truly consumer-agnostic.** Claude Code, Cursor, a Slack bot, your own agent — all talk to the *same* governed memory over MCP, at the same time. Swap a harness, add another; the memory stays one.
 
 > Born as the `memory-wiki-engine` plugin for OpenClaw, extracted into a standalone, agent-agnostic product.
 
@@ -46,7 +46,7 @@ Four short scenes. The agent calls **one** tool per turn (`wiki_ingest_message`)
 
 ### A household that shares *some* things, not all
 
-A family runs one shared memory behind a home assistant. Alice and Bob are on the `team`; Zoe is family but not on the team.
+A family runs one shared memory; every assistant they talk to — the kitchen speaker, a Telegram bot, Claude Code on a laptop — remembers into it and recalls from it. Alice and Bob are on the `team`; Zoe is family but not on the team.
 
 > **Alice:** *"Bob changed jobs, he's at AcmeCorp now."*
 > **Assistant:** *"Noted in Bob's profile."*
@@ -176,11 +176,11 @@ This is why the engine is obsessive about prose quality: **the writing is the re
 
 ## A shared memory for a whole household
 
-Most agent memory is a private notebook: one user, one stream of notes. mwe-mcp is built for the harder, more useful case — **a group of people sharing one assistant.** A family at home, a team at work, a household with a smart speaker in the kitchen.
+Most agent memory is a private notebook: one user, one stream of notes. mwe-mcp is built for the harder, more useful case — **a group of people sharing one memory, through however many assistants they talk to.** A family at home, a team at work, a household with a smart speaker in the kitchen and a bot on the phone.
 
 In that setting the assistant isn't a notepad; it behaves more like a discreet member of the group who *remembers things for everyone* and knows who's allowed to hear what. When Miriam says *"we're out of detergent,"* it lands on the **family** grocery list — Miriam said it, but it belongs to the household. When Alice mentions *"Bob changed jobs,"* it's filed under **Bob**, shared with the team, with a note that Alice is the one who reported it. Ask Bob about his own job and he hears it; ask someone outside the team and there's simply nothing to share.
 
-That's the gap between *storing text* and *keeping a governed memory*: every fact knows **who it's about**, **who said it**, **who may read it**, and **when it holds** — so one shared brain can serve a whole group without leaking across it. The agent you already use becomes that member of the household; mwe-mcp is the brain it shares.
+That's the gap between *storing text* and *keeping a governed memory*: every fact knows **who it's about**, **who said it**, **who may read it**, and **when it holds** — so one shared brain can serve a whole group without leaking across it. The agents you already use become that member of the household — one member, many mouths; mwe-mcp is the brain they share.
 
 ---
 
