@@ -15,9 +15,10 @@
 //! - POST `/users/:id`        — apply the edit. `is_admin` is never
 //!   shown (see the
 //!   dashboard design note).
-//! - POST `/users/:id/delete` — delete the user. CASCADE on
-//!   `enrollment_users(user_id)` clears `user_credentials` +
-//!   `user_invitations`.
+//! - POST `/users/:id/delete` — delete the user via
+//!   [`enrollment::remove_user`]: consumers bound to the identity
+//!   (`consumers.system_user_id`) are dismantled with it, and CASCADE
+//!   clears `user_credentials` + `user_invitations`.
 //! - POST `/users/:id/reinvite` — replace any open invitation for this
 //!   user with a fresh one, email the new link when SMTP is configured,
 //!   and re-render the list with it as a backup.
@@ -636,12 +637,26 @@ async fn delete(
         ));
     }
 
-    // ON DELETE CASCADE on enrollment_users → user_credentials +
-    // user_invitations both clear automatically.
-    sqlx::query("DELETE FROM enrollment_users WHERE user_id = ?")
-        .bind(&user_id)
-        .execute(&state.pool)
-        .await?;
+    // One transactional teardown: consumers bound to this identity
+    // (`consumers.system_user_id`), their delegation grants, the user's
+    // web-agent OAuth rows, then the enrollment row itself (CASCADE takes
+    // credentials, invitations, 2FA, votes).
+    let removal = enrollment::remove_user(&state.pool, &user_id)
+        .await?
+        .ok_or(DashboardError::NotFound)?;
+    if !removal.consumers_dismantled.is_empty() {
+        // Act-as for the dismantled consumers must die on the next call,
+        // not within the cache TTL. Best-effort: the TTL self-heals.
+        if let Err(error) = state.delegations.refresh(&state.pool).await {
+            tracing::warn!(%error, "delegation cache refresh failed after user delete");
+        }
+        tracing::info!(
+            user = %user_id,
+            consumers = ?removal.consumers_dismantled,
+            oauth_rows = removal.oauth_rows_removed,
+            "user delete dismantled bound consumer registrations"
+        );
+    }
 
     // 23d: a contribution outlives its author. Reassign any fact this user
     // authored (sender = user:<id>) to its wiki's scope principal so no active

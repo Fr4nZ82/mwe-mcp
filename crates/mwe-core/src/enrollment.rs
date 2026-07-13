@@ -740,6 +740,98 @@ pub async fn mirror_to_db(pool: &SqlitePool, file: &EnrollmentFile) -> Result<()
     Ok(())
 }
 
+/// What [`remove_user`] tore down besides the `enrollment_users` row —
+/// for the caller's log line.
+#[derive(Debug, Default)]
+pub struct UserRemoval {
+    /// Consumer registrations whose `system_user_id` was the deleted user
+    /// (the diagonal identity model): each went down with its delegation
+    /// grant and its web-agent OAuth rows. The caller should refresh its
+    /// [`crate::delegations::DelegationCache`] when this is non-empty so
+    /// act-as dies immediately instead of within the TTL window.
+    pub consumers_dismantled: Vec<String>,
+    /// Web-agent OAuth rows (codes + refresh) deleted because the user was
+    /// their approving sender.
+    pub oauth_rows_removed: u64,
+}
+
+/// Delete one enrolled user together with everything that hangs off the
+/// identity, in a single transaction:
+///
+/// - **consumers bound via `consumers.system_user_id`** — a plain FK with
+///   no `ON DELETE` action, so a naked user DELETE is rejected by `SQLite`;
+///   a registration whose memory identity is gone means nothing, so the
+///   consumer row, its `consumer_delegations` grant and its web-agent
+///   OAuth rows are torn down with the user;
+/// - **the user's own web-agent OAuth artefacts** (`sender_id = user`) — a
+///   live refresh row would otherwise keep minting access tokens for a
+///   sender that no longer exists;
+/// - **the `enrollment_users` row** — `ON DELETE CASCADE` clears
+///   credentials, invitations, 2FA and proposal votes.
+///
+/// Outstanding JWTs are stateless and cannot be enumerated; they expire at
+/// their TTL. Group member lists and delegation allow-lists naming the
+/// user are left as-is: a stale id in those JSON arrays never matches an
+/// effective sender, which is the documented failure mode
+/// (`crate::delegations`).
+///
+/// Returns `Ok(None)` when no such user exists.
+///
+/// # Errors
+/// - [`sqlx::Error`] for any SQL failure (the transaction rolls back).
+pub async fn remove_user(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<Option<UserRemoval>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let exists: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM enrollment_users WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if exists.is_none() {
+        return Ok(None);
+    }
+
+    let consumers_dismantled: Vec<String> =
+        sqlx::query_scalar("SELECT consumer_id FROM consumers WHERE system_user_id = ?")
+            .bind(user_id)
+            .fetch_all(&mut *tx)
+            .await?;
+    for consumer_id in &consumers_dismantled {
+        for sql in [
+            "DELETE FROM consumer_delegations WHERE consumer_id = ?",
+            "DELETE FROM webagentoauth_codes WHERE consumer_id = ?",
+            "DELETE FROM webagentoauth_refresh WHERE consumer_id = ?",
+            "DELETE FROM consumers WHERE consumer_id = ?",
+        ] {
+            sqlx::query(sql).bind(consumer_id).execute(&mut *tx).await?;
+        }
+    }
+
+    let mut oauth_rows_removed = 0;
+    for sql in [
+        "DELETE FROM webagentoauth_codes WHERE sender_id = ?",
+        "DELETE FROM webagentoauth_refresh WHERE sender_id = ?",
+    ] {
+        oauth_rows_removed += sqlx::query(sql)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+    }
+
+    sqlx::query("DELETE FROM enrollment_users WHERE user_id = ?")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Some(UserRemoval {
+        consumers_dismantled,
+        oauth_rows_removed,
+    }))
+}
+
 /// `user_id` regex: `^[a-z][a-z0-9°]*$`.
 ///
 /// Same rule applied by the bulk mirror writer ([`validate`]) and by
@@ -1108,6 +1200,144 @@ mod tests {
         assert_eq!(gid, "team");
         let members: Vec<String> = serde_json::from_str(&members).expect("members json");
         assert_eq!(members, vec!["alice", "bob"]);
+    }
+
+    #[tokio::test]
+    async fn remove_user_dismantles_bound_consumer() {
+        // The exact shape that used to reject a naked user DELETE on the
+        // `consumers.system_user_id` FK (dashboard 500, 2026-07-11): an
+        // enrolled identity bound as the system user of a registered
+        // consumer, with a delegation grant and a live OAuth refresh row.
+        let pool = crate::db::open_or_init(
+            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
+        )
+        .await
+        .expect("open db");
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('voicebox', 0)")
+            .execute(&pool)
+            .await
+            .expect("user");
+        sqlx::query(
+            "INSERT INTO consumers (consumer_id, consumer_secret, registered_at, system_user_id)
+             VALUES ('voicebox', 'aa', '2026-07-02T00:00:00Z', 'voicebox')",
+        )
+        .execute(&pool)
+        .await
+        .expect("consumer");
+        sqlx::query(
+            "INSERT INTO consumer_delegations
+                (consumer_id, allowed_sender_ids, granted_at, granted_by)
+             VALUES ('voicebox', '[\"alice\"]', '2026-07-02T00:00:00Z', 'alice')",
+        )
+        .execute(&pool)
+        .await
+        .expect("delegation");
+        sqlx::query(
+            "INSERT INTO webagentoauth_refresh
+                (token_hash, client_id, sender_id, consumer_id, wiki_id, created_at, expires_at)
+             VALUES ('h1', 'c1', 'voicebox', 'voicebox', 'w1',
+                     '2026-07-02T00:00:00Z', '2036-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("refresh");
+
+        let removal = remove_user(&pool, "voicebox")
+            .await
+            .expect("remove must succeed")
+            .expect("user existed");
+        assert_eq!(removal.consumers_dismantled, vec!["voicebox"]);
+
+        for (table, n_expected) in [
+            ("enrollment_users", 0i64),
+            ("consumers", 0),
+            ("consumer_delegations", 0),
+            ("webagentoauth_refresh", 0),
+        ] {
+            let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+                .fetch_one(&pool)
+                .await
+                .expect("count");
+            assert_eq!(n, n_expected, "{table} not emptied");
+        }
+    }
+
+    #[tokio::test]
+    async fn remove_user_revokes_own_oauth_leaves_foreign_consumers() {
+        // A human user with web-agent OAuth rows (their claude.ai
+        // connection): deleting the user revokes those rows, but a
+        // consumer the user does NOT system-own stays registered.
+        let pool = crate::db::open_or_init(
+            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
+        )
+        .await
+        .expect("open db");
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('alice', 0)")
+            .execute(&pool)
+            .await
+            .expect("user");
+        sqlx::query(
+            "INSERT INTO consumers (consumer_id, consumer_secret, registered_at)
+             VALUES ('webclient', 'bb', '2026-07-02T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("consumer");
+        sqlx::query(
+            "INSERT INTO webagentoauth_refresh
+                (token_hash, client_id, sender_id, consumer_id, wiki_id, created_at, expires_at)
+             VALUES ('h2', 'c1', 'alice', 'webclient', 'w1',
+                     '2026-07-02T00:00:00Z', '2036-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("refresh");
+        sqlx::query(
+            "INSERT INTO webagentoauth_codes
+                (code_hash, client_id, redirect_uri, code_challenge, sender_id, consumer_id,
+                 wiki_id, created_at, expires_at)
+             VALUES ('ch1', 'c1', 'https://x/cb', 'ch', 'alice', 'webclient', 'w1',
+                     '2026-07-02T00:00:00Z', '2036-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("code");
+
+        let removal = remove_user(&pool, "alice")
+            .await
+            .expect("remove must succeed")
+            .expect("user existed");
+        assert!(removal.consumers_dismantled.is_empty());
+        assert_eq!(removal.oauth_rows_removed, 2, "code + refresh rows");
+
+        let consumers: i64 = sqlx::query_scalar("SELECT count(*) FROM consumers")
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+        assert_eq!(consumers, 1, "unbound consumer must survive");
+        let oauth: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM webagentoauth_refresh)
+                  + (SELECT count(*) FROM webagentoauth_codes)",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(oauth, 0, "the deleted user's OAuth rows must be gone");
+    }
+
+    #[tokio::test]
+    async fn remove_user_missing_returns_none() {
+        let pool = crate::db::open_or_init(
+            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
+        )
+        .await
+        .expect("open db");
+        assert!(
+            remove_user(&pool, "nobody")
+                .await
+                .expect("no sql failure")
+                .is_none()
+        );
     }
 
     #[tokio::test]

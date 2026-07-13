@@ -256,6 +256,25 @@ marker are then materialised automatically the first time the bot's token
 connects (point 3), so the only manual step is the operator-side identity
 + delegation setup.
 
+**Deleting a user dismantles the binding.** Deleting any enrolled user
+(dashboard users page → `enrollment::remove_user`) is one transaction
+that takes down everything hanging off the identity: every consumer
+registered with it as `system_user_id` (the registration row, its
+`consumer_delegations` grant, its web-agent OAuth rows — a registration
+whose memory identity is gone means nothing), the user's own web-agent
+OAuth codes/refresh rows (a live refresh row would otherwise keep
+minting tokens for a vanished sender), and finally the
+`enrollment_users` row (CASCADE clears credentials, invitations, 2FA,
+proposal votes). The dashboard then refreshes the delegation cache so
+act-as dies on the next call, not at the TTL. Outstanding JWTs are
+stateless and simply expire; stale ids left in group member lists or
+delegation allow-lists never match an effective sender. The deleted
+user's *memory* outlives the identity: their wikis stay, and facts they
+authored are re-pointed at the containing wiki's scope principal
+([`fact_index::reassign_sender_to_scope`](../../crates/mwe-core/src/fact_index.rs))
+so no active fact is left with a vanished `sender` — the
+**sender-scrub invariant**.
+
 ### 1.6 Id rules
 
 The id rules are enforced in pure Rust (no `regex` dependency) by

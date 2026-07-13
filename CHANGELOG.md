@@ -13,6 +13,20 @@ semver-governed surface — breaking changes are called out explicitly.
 
 ### Fixed
 
+- **Deleting an enrolled user no longer 500s when the identity is bound
+  to a consumer.** `consumers.system_user_id` is a plain FK with no `ON
+  DELETE` action, so the dashboard's bare `DELETE FROM enrollment_users`
+  was rejected by SQLite for any identity registered as a consumer's
+  system user. Deletion now goes through `enrollment::remove_user`, one
+  transaction that dismantles everything hanging off the identity:
+  consumers system-bound to it (registration row, delegation grant,
+  web-agent OAuth rows), the user's own OAuth codes/refresh rows (a live
+  refresh row would keep minting tokens for a vanished sender), then the
+  enrollment row (CASCADE clears credentials, invitations, 2FA, votes).
+  The delegation cache is refreshed post-commit so act-as dies on the
+  next call. The deleted user's *memory* outlives the identity: their
+  wikis stay, and facts they authored are re-pointed at the containing
+  wiki's scope principal (the sender-scrub invariant).
 - **hermes bridge — the `mwe-truncate` context engine now actually bounds
   the conversation window** (plugin 0.2.0). Its only trigger was hermes's
   `threshold_percent` (0.75 of the model context — a summarization
