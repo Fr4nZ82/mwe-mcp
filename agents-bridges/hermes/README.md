@@ -34,10 +34,16 @@ and no upstream patch:
     provider **fully inactive** — prefetch ingests (a write path), so
     background loops get no memory access rather than polluted capture.
 - **Context half** — `plugins/context_engine/mwe-truncate/`, a
-  `ContextEngine` whose `compress()` **truncates** to a bounded window
-  (protected head + last N messages, tool-call pairing kept intact) with
-  **no summarization pass**: in the sessionless model, per-turn recall
-  replaces the summary.
+  `ContextEngine` whose `compress()` **truncates** to a bounded window of
+  recent **user turns** (the cut lands on a user message, so tool-call
+  pairing survives by construction; a raw message count would keep an
+  unpredictable number of turns once tools fan each turn out into several
+  messages) with **no summarization pass**: in the sessionless model,
+  per-turn recall replaces the summary. A slack of extra turns keeps the
+  prompt prefix stable between cuts (provider prefix caching), and the
+  trigger threshold is capped in absolute tokens — on a million-token
+  context model, a bare percent threshold would let every call carry
+  hundreds of thousands of tokens before the first cut fires.
 - **Media half** — `plugins/gateway/mwe-media/`, a gateway hook plugin on
   hermes's `pre_gateway_dispatch` seam: incoming Telegram media (already
   downloaded by hermes into its local cache) is uploaded out of band to
@@ -130,12 +136,16 @@ The manual equivalent, if you'd rather edit the files directly:
      provider: mwe
      memory_enabled: false        # built-in MEMORY.md (bot's own memory) OFF
      user_profile_enabled: false  # built-in USER.md (user profile) OFF — a SEPARATE flag, also defaults true (the replace decision, see below)
+   compression:
+     in_place: true         # rewrite the session on a cut instead of rotating its id
    context:
      engine: mwe-truncate
      mwe-truncate:          # optional knobs, defaults shown
-       threshold_percent: 0.75
-       protect_first_n: 3
-       protect_last_n: 16
+       protect_last_users: 5      # user turns kept after a cut
+       slack_users: 3             # extra user turns allowed before a cut fires
+       protect_first_n: 0         # non-system messages preserved at the head
+       threshold_tokens_cap: 30000  # trigger ceiling in prompt tokens (0 = percent-only)
+       threshold_percent: 0.75    # share of the model context window
    plugins:
      enabled:
        - mwe-media          # REQUIRED for media capture — see §Media

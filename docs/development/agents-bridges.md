@@ -2,7 +2,7 @@
 title: Agent bridges — the in-repo host-adapter home
 area: development
 status: partial
-last_review: "2026-06-29"
+last_review: "2026-07-13"
 ---
 
 # Agent bridges (`agents-bridges/`)
@@ -139,8 +139,18 @@ Three hermes-agent plugins, stdlib-only, no upstream patch:
 - **`mwe-truncate` context engine** (in-tree by host constraint —
   hermes's engine discovery has no user directory, so install is a
   directory add into `plugins/context_engine/`): `compress()` truncates
-  to a bounded window (protected head + last N, tool-call pairing kept
-  intact) with no summarization pass — recall replaces the summary.
+  to a bounded window of recent **user turns** (default 5 kept, cut at a
+  user-message boundary so tool-call pairing holds by construction, plus
+  a slack of extra turns so the prompt prefix stays cache-stable between
+  cuts) with no summarization pass — recall replaces the summary. The
+  trigger is hermes's token threshold **capped in absolute tokens**
+  (default 30k): the host only hands the engine token counts, and a bare
+  percent-of-context threshold on a million-token model would let every
+  call grow to ~786k tokens before the first cut. A fire that finds
+  nothing beyond the window reports through the host's abort protocol so
+  no session rotation happens on a no-op; deployments pair the engine
+  with `compression.in_place: true` so a real cut rewrites the session
+  instead of rotating its id.
 - **`mwe-media` gateway hook plugin** (standalone, opt-in via
   `plugins.enabled: [mwe-media]`): intercepts hermes's documented
   `pre_gateway_dispatch` seam, where Telegram media already sit in the

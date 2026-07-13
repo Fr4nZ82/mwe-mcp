@@ -11,7 +11,22 @@ semver-governed surface — breaking changes are called out explicitly.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- **hermes bridge — the `mwe-truncate` context engine now actually bounds
+  the conversation window** (plugin 0.2.0). Its only trigger was hermes's
+  `threshold_percent` (0.75 of the model context — a summarization
+  default), so on a million-token model the first cut sat at ~786k prompt
+  tokens: far beyond per-minute provider token quotas, which a long-lived
+  session exhausted first. The window is now counted in recent **user
+  turns** (`protect_last_users`, default 5 — cut at a user-message
+  boundary, so tool-call pairing holds by construction) with a slack
+  (`slack_users`, default 3) that keeps the prompt prefix cache-stable
+  between cuts, and the trigger is capped in absolute tokens
+  (`threshold_tokens_cap`, default 30k). A no-op fire reports through the
+  host's abort protocol instead of rotating the session; pair with
+  hermes's `compression.in_place: true` (see the bridge README). The
+  `protect_last_n` config key is retired (logged and ignored).
 
 ## 1.0.0 — 2026-07-06
 
