@@ -11,6 +11,37 @@ semver-governed surface — breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+## 1.2.0 — 2026-07-14
+
+### Added
+
+- **Deployment timezone for the ingest classifier** — `recall.ingest_timezone`
+  (or the `MWE_INGEST_TIMEZONE` env var) names the users' IANA timezone (e.g.
+  `Europe/Rome`). When set, a bare wall-clock time a user speaks ("alle 16") is
+  read in that zone and converted to UTC for a fact's validity interval,
+  instead of being stamped verbatim as UTC — which drifted every dated
+  commitment by the local offset, so deadlines expired late and stale plans
+  resurfaced as if still current. Unset keeps the prior UTC-only anchor. The
+  DST-aware conversion is delegated to the classifier; no timezone database is
+  compiled in.
+
+### Changed
+
+- **Relationships between people now reach the always-on identity core.** A
+  statement of who someone is to someone else ("X is Y's partner / parent /
+  child") is classified as identity core (`bio` / `high`), extracted
+  reciprocally when both are enrolled, and shielded from dedup and
+  contradiction retirement — so an agent stops confusing who is who across a
+  family or a team.
+
+### Fixed
+
+- **hermes bridge: the per-turn recall block no longer injects
+  `suggested_seed`.** A consumer that brings its own model was handed a
+  pre-drafted reply inside the user turn, which a weaker model could adopt or
+  continue — laundering the ingest classifier's guesses into the agent's
+  replies. The bridge now surfaces only the recalled facts.
+
 ## 1.1.2 — 2026-07-14
 
 ### Fixed
