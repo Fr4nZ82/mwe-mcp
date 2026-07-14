@@ -95,7 +95,9 @@ def main():
         block = provider.prefetch("ciao, sono tornato")
         calls = stub.calls("wiki_ingest_message")
         ok("one ingest per turn", len(calls) == 1, f"got {len(calls)}")
-        ok("recall block returned", "stub" in block and "Reply material" in block)
+        ok("recall block carries the recalled facts", "stub" in block)
+        ok("suggested_seed is NOT injected (hermes writes its own reply)",
+           "Reply material" not in block and "stub seed" not in block)
         ok("act-as = primary human", calls[0]["headers"].get("x-mwe-act-as") == "anna")
         ok("bearer token sent", calls[0]["headers"].get("authorization") == "Bearer test-jwt")
         ok("locale forwarded", calls[0]["arguments"]["metadata"]["locale"] == "it-IT")
