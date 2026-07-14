@@ -3,8 +3,8 @@
 Read this to re-form on how to exercise mwe-mcp's **standard-consumer**
 surface end-to-end against a real local LLM, the way it was first done
 on 2026-05-29. This folder is the reusable apparatus; the dated
-*findings* live in the gitignored historical wing at
-`road-behind/road-behind/dogfood-standard-2026-05-29.md` (local-only).
+*findings* live in the maintainer's private archive and are not part of
+this repo.
 
 > **Update 2026-05-31 (Phase G + diagonal identity).** This runbook now
 > reflects three changes since the first run: (1) **`serve` no longer takes
@@ -16,7 +16,7 @@ on 2026-05-29. This folder is the reusable apparatus; the dated
 > (`POST /dashboard/dream/{light,compile,full}`) on a strong online model.
 > `setup.sh` builds the Baggins cast on the diagonal model; `mcp_client.py`
 > sends `X-MWE-Act-As` from `$MWE_ACT_AS`. The 2026-05-31 findings (incl. the
-> `allow=` marker fix) are in the historical archive (`road-behind/`).
+> `allow=` marker fix) are in the maintainer's private archive.
 
 > **Update 2026-06-01 (ingest v2.6 + base corpus + both bootstrap ways).** The
 > `ingest` prompt is **v2.6**: a message is split into an `extractions[]` array
@@ -395,8 +395,8 @@ force a full recompile (e.g. to re-verify the compiler), also delete the plan
 
 ## Pointers
 
-- Dated findings + verdict: `road-behind/road-behind/dogfood-standard-2026-05-29.md` (gitignored historical wing, local-only)
+- Dated findings + verdict: the maintainer's private archive (not part of this repo)
 - Open findings: the maintainer's internal roadmap (private repo)
-- Chronology: `road-behind/road-behind/road-behind.md` § the relevant date (historical log)
+- Chronology: the maintainer's private historical log
 - Tool surface spec (for the consumer side): `AGENT_INSTRUCTIONS.md`
 - Engineering wiki for the ingest path: the [ingest-pipeline design note](../../docs/design-notes/ingest-pipeline.md)
