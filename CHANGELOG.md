@@ -11,8 +11,13 @@ semver-governed surface — breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+## 1.1.1 — 2026-07-14
+
 ### Fixed
 
+- **The binary self-reports its release version again** — the v1.1.0
+  artifacts printed `1.0.0` because the workspace version was not bumped
+  at release time.
 - **Deleting an enrolled user no longer 500s when the identity is bound
   to a consumer.** `consumers.system_user_id` is a plain FK with no `ON
   DELETE` action, so the dashboard's bare `DELETE FROM enrollment_users`
@@ -41,6 +46,20 @@ semver-governed surface — breaking changes are called out explicitly.
   host's abort protocol instead of rotating the session; pair with
   hermes's `compression.in_place: true` (see the bridge README). The
   `protect_last_n` config key is retired (logged and ignored).
+
+## 1.1.0 — 2026-07-06
+
+*(Section reconstructed after the fact — 1.1.0 shipped without a
+changelog entry; the content below is from the release commit.)*
+
+### Added
+
+- **Proactive smart-consumer wiki onboarding** — onboarding is offered
+  at connect.
+- **Bulk-copy bootstrap** — bulk-copy moves bytes without going through
+  the LLM.
+- **Bounded log pages** — append-only log pages get a rotate-by-period
+  discipline.
 
 ## 1.0.0 — 2026-07-06
 
