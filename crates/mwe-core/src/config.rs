@@ -1458,6 +1458,15 @@ pub struct RecallConfig {
     /// (default 1400).
     #[serde(default)]
     pub max_agent_history_chars: Option<usize>,
+    /// Deployment-wide IANA timezone of the users (e.g. `Europe/Rome`) →
+    /// sets `IngestPolicy::ingest_timezone`. Also settable via the
+    /// `MWE_INGEST_TIMEZONE` env var; this YAML field wins when both are set.
+    /// Unset (and env absent) → the classifier sees only the UTC
+    /// `current_time` anchor, and a wall-clock time the user speaks is stamped
+    /// as UTC (the historical behaviour). Set it for any single-timezone
+    /// deployment so dated commitments land at the right instant.
+    #[serde(default)]
+    pub ingest_timezone: Option<String>,
 }
 
 impl RecallConfig {
@@ -1502,6 +1511,15 @@ impl RecallConfig {
         if let Some(v) = self.max_agent_history_chars {
             p.max_agent_history_chars = v;
         }
+        // Timezone: YAML field wins; otherwise fall back to the
+        // `MWE_INGEST_TIMEZONE` env var so a deployment can enable it with a
+        // single env line. Blank values normalise to `None` (UTC-only anchor).
+        p.ingest_timezone = self
+            .ingest_timezone
+            .clone()
+            .or_else(|| std::env::var("MWE_INGEST_TIMEZONE").ok())
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
         p
     }
 }
@@ -2464,6 +2482,18 @@ mod tests {
         assert_eq!(p.recall_fresh_top_k, def.recall_fresh_top_k);
         // The classifier prompt-budget knobs are not recall settings.
         assert_eq!(p.max_recent_messages, def.max_recent_messages);
+    }
+
+    #[test]
+    fn recall_section_maps_ingest_timezone() {
+        // The YAML field flows into IngestPolicy. It wins over any env var, so
+        // this assertion is deterministic regardless of MWE_INGEST_TIMEZONE.
+        let dir = tempdir().unwrap();
+        let body = "recall:\n  ingest_timezone: Europe/Rome\n";
+        fs::write(Config::path_in(dir.path()), body).unwrap();
+        let cfg = Config::load(dir.path()).expect("load");
+        let p = cfg.recall.resolved_ingest_policy();
+        assert_eq!(p.ingest_timezone.as_deref(), Some("Europe/Rome"));
     }
 
     #[test]

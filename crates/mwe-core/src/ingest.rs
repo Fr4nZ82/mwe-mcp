@@ -437,6 +437,14 @@ pub struct IngestPolicy {
     /// clock. An operator setting (surfaced with the recall-settings
     /// panel).
     pub due_soon_horizon_hours: u32,
+    /// IANA timezone name of the deployment's users (e.g. `Europe/Rome`), or
+    /// `None` when unset. When set, [`build_prompt`] adds a `user_timezone:`
+    /// line so the classifier resolves a bare wall-clock time the user speaks
+    /// ("alle 16") in that zone and converts it to UTC for `valid_from` /
+    /// `valid_to` — instead of stamping the local hour as UTC (a systematic
+    /// +offset error). DST-aware conversion is left to the classifier; no tz
+    /// database is compiled in. `None` keeps the pre-existing UTC-only anchor.
+    pub ingest_timezone: Option<String>,
 }
 
 impl Default for IngestPolicy {
@@ -461,6 +469,7 @@ impl Default for IngestPolicy {
             nav: recall_nav::NavigatorPolicy::default(),
             due_soon_top_k: 3,
             due_soon_horizon_hours: 168, // 7 days
+            ingest_timezone: None,
         }
     }
 }
@@ -2505,13 +2514,28 @@ const CLOSURE_TOPICS_CAP: usize = 3;
 /// `due_at`. UTC ISO-8601 to the second + the English weekday name (so
 /// "giovedì prossimo" is computable). `now` is passed in (not read from
 /// `Utc::now()`) so [`build_prompt`] stays deterministic and unit-testable.
-fn push_reference_time(out: &mut String, now: chrono::DateTime<chrono::Utc>) {
+///
+/// When the deployment declares its users' local `timezone` (IANA name, e.g.
+/// `Europe/Rome`), a second `user_timezone:` line names it. `current_time`
+/// stays UTC; the prompt's time rule then tells the classifier to read a bare
+/// wall-clock time the user speaks ("alle 16") in THAT zone and convert it to
+/// UTC — instead of stamping the local hour verbatim as UTC, a systematic
+/// +offset error on every dated commitment. The DST-aware conversion is left
+/// to the classifier's timezone knowledge; no tz database is compiled in.
+fn push_reference_time(
+    out: &mut String,
+    now: chrono::DateTime<chrono::Utc>,
+    timezone: Option<&str>,
+) {
     let _ = writeln!(
         out,
         "current_time: {} ({})",
         now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         now.format("%A")
     );
+    if let Some(tz) = timezone {
+        let _ = writeln!(out, "user_timezone: {tz}");
+    }
 }
 
 #[allow(clippy::too_many_lines)] // a sequential context-bundle builder; one block per section reads top-to-bottom, splitting hides the layout
@@ -2547,7 +2571,7 @@ fn build_prompt(
              `recalled_memory` already holds.\n",
         );
     }
-    push_reference_time(&mut out, now);
+    push_reference_time(&mut out, now, policy.ingest_timezone.as_deref());
     if let Some(choice) = &request.disambig_choice {
         out.push_str("disambig_choice: ");
         out.push_str(choice);
@@ -6014,6 +6038,39 @@ mod tests {
         assert!(
             prompt.contains("current_time: 2026-06-04T12:00:00Z (Thursday)"),
             "missing reference-time anchor:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn build_prompt_omits_user_timezone_when_unset() {
+        // Default policy has no timezone → the anchor stays UTC-only, byte for
+        // byte the historical behaviour (no `user_timezone:` line).
+        let request = req("alle 16 prendo il pane", "alice");
+        let policy = IngestPolicy::default();
+        let prompt = build_prompt(&request, &[], &[], &[], &[], None, now_fixture(), &policy);
+        assert!(
+            !prompt.contains("user_timezone:"),
+            "unset timezone must not emit a user_timezone line:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn build_prompt_injects_user_timezone_when_set() {
+        // With a declared zone the classifier gets a `user_timezone:` line so
+        // it can convert a wall-clock time the user speaks to UTC.
+        let request = req("alle 16 prendo il pane", "alice");
+        let policy = IngestPolicy {
+            ingest_timezone: Some("Europe/Rome".to_owned()),
+            ..IngestPolicy::default()
+        };
+        let prompt = build_prompt(&request, &[], &[], &[], &[], None, now_fixture(), &policy);
+        assert!(
+            prompt.contains("current_time: 2026-06-04T12:00:00Z (Thursday)"),
+            "the UTC anchor must remain:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("user_timezone: Europe/Rome"),
+            "missing user_timezone line:\n{prompt}"
         );
     }
 

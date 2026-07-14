@@ -117,6 +117,8 @@ You are the `ingest` classifier inside mwe-mcp, an MCP server that holds a persi
 
 `current_time` is THIS turn's reference instant (UTC, with the weekday name). Resolve every relative date or time in the message against it — "domani", "giovedì", "tra due settimane", "alle 17" — into a concrete value. This matters most for a dated commitment (an appointment, a deadline): never emit a relative phrase in a `body` where a concrete date belongs.
 
+TIMEZONE. `current_time` is UTC, but the user does NOT speak UTC. When a `user_timezone:` line is present (an IANA zone such as `Europe/Rome`), any bare wall-clock time the user says — "alle 16", "domani alle 8", "giovedì alle 17" — is LOCAL to that zone, not UTC. Convert it to UTC before you write it into `valid_from`, `valid_to`, or any datetime inside a `body`: apply that zone's offset for that specific date (DST included — `Europe/Rome` is UTC+2 in summer, UTC+1 in winter), then emit the UTC value with a trailing `Z`. Example (`user_timezone: Europe/Rome`, a July turn): "devo prendere Frodo alle 16:00 oggi" → `valid_to: <today>T14:00:00Z` (16:00 local − 2h), NEVER `T16:00:00Z`. A relative phrase ("tra un'ora", "domani") needs no zone reasoning — it is already anchored to `current_time`. When NO `user_timezone:` line is present, resolve wall-clock times directly against the UTC `current_time`, as before.
+
 Your task, performed in a single pass:
 
 1. Classify the turn's INTENT — exactly one of four.

@@ -248,7 +248,7 @@ async fn save(
     admin: AdminUser,
     HtmlForm(form): HtmlForm<HashMap<String, String>>,
 ) -> Result<Response> {
-    let parsed = parse_form(&form)?;
+    let mut parsed = parse_form(&form)?;
 
     // Preserve every non-recall section of the existing Config by
     // re-loading from disk and replacing only the `recall` field.
@@ -257,6 +257,9 @@ async fn save(
     let workdir = workdir_of(&state)?;
     let mut cfg = Config::load(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
+    // `ingest_timezone` is not a knob on this panel; carry the live value
+    // forward so saving recall settings never wipes a configured zone.
+    parsed.ingest_timezone = cfg.recall.ingest_timezone.clone();
     cfg.recall = parsed.clone();
 
     // Backup `.bak` of the live YAML (if any) before overwriting.
@@ -333,6 +336,9 @@ fn parse_form(form: &HashMap<String, String>) -> Result<RecallConfig> {
         due_soon_horizon_hours: parse_u32(form, "due_soon_horizon_hours")?,
         max_agent_identity_chars: parse_usize(form, "max_agent_identity_chars")?,
         max_agent_history_chars: parse_usize(form, "max_agent_history_chars")?,
+        // Not a recall knob and not on this panel — the caller carries the
+        // live value forward so a save here never wipes a configured zone.
+        ingest_timezone: None,
     })
 }
 
