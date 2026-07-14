@@ -11,6 +11,8 @@ semver-governed surface — breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+## 1.1.2 — 2026-07-14
+
 ### Fixed
 
 - **An orphaned identity wiki can now be deleted (admin).** Deleting a
