@@ -1305,6 +1305,18 @@ async fn run_revisor_jaccard(
                 if on_rules_page[new_idx] != on_rules_page[old_idx] {
                     continue;
                 }
+                // Identity-core stickiness: background dedup never retires a
+                // fact from the owner's always-on identity core (role /
+                // relationship / bio, `salience=high`). The loser is
+                // `facts[old_idx]` (the pair sorts newest-first, older side
+                // retired); if that is an identity-core fact, skip the pair so
+                // a relationship like "Frodo è il compagno di Galadriel" is
+                // changed only by an explicit correction, never silently
+                // consolidated away. A structural channel invariant, same
+                // shape as the rules-page guard above — the LLM never sees it.
+                if facts[old_idx].is_identity_core() {
+                    continue;
+                }
                 let score = recall::jaccard_sets(&ngrams[new_idx], &ngrams[old_idx]);
                 // At/above the threshold the pair is write-time dedup
                 // territory (the direct capture scan, and the light dream
@@ -3475,6 +3487,12 @@ async fn run_contradiction_sweep(
             //    owner's explicit closure — never as collateral of a
             //    neighbouring contradiction. Same fence the dedup/refile
             //    sweeps already honour ([`crate::wiki::is_rules_page`]).
+            // 3. An identity-core fact (a role / relationship — `bio` +
+            //    `salience=high`) is sticky: it changes only on the owner's
+            //    explicit correction (the classifier supersede path), never
+            //    as collateral of a background contradiction judgment. The
+            //    same perimeter the dedup revisor honours (leva 3), so who a
+            //    person is to another is never rewritten by the background.
             let lineage = successor_lineage(pool, &seed).await?;
             let mut scored: Vec<(f32, &FactIndexRow)> = open_rows
                 .iter()
@@ -3482,6 +3500,7 @@ async fn run_contradiction_sweep(
                     c.fact_id != seed.fact_id
                         && !lineage.contains(&c.fact_id)
                         && !wiki::is_rules_page(&c.source_path)
+                        && !c.is_identity_core()
                 })
                 .map(|c| (recall::cosine_similarity(&seed.embedding, &c.embedding), c))
                 .collect();
@@ -8852,6 +8871,75 @@ mod tests {
         drop(dir);
     }
 
+    /// Identity-core stickiness (leva 3) in the contradiction sweep: a
+    /// role / relationship fact (`bio` + `salience=high`) is never closed
+    /// as a collateral satellite of a neighbouring contradiction — it
+    /// changes only on an explicit correction. Mirror of the rules-page
+    /// perimeter test above.
+    #[tokio::test]
+    async fn contradiction_sweep_never_closes_an_identity_core_satellite() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let departure = plant_fact(
+            &tree,
+            &pool,
+            "alice",
+            "Partenza per Parigi il 15 giugno",
+            "alice",
+        )
+        .await;
+        let cancellation = plant_fact(
+            &tree,
+            &pool,
+            "alice",
+            "Il viaggio a Parigi è annullato",
+            "alice",
+        )
+        .await;
+        // An identity-core relationship, embedding-similar by construction
+        // (the fake embedder is content-agnostic).
+        let relation =
+            plant_fact(&tree, &pool, "alice", "Bruno è il padre di Alice", "alice").await;
+        sqlx::query("UPDATE fact_index SET fact_type = 'bio', salience = 'high' WHERE fact_id = ?")
+            .bind(relation.as_str())
+            .execute(&pool)
+            .await
+            .expect("mark identity core");
+        fact_index::mark_superseded(&pool, &departure, &cancellation)
+            .await
+            .expect("supersede");
+
+        // A confirm-everything confirmer: if the relation were ever OFFERED
+        // it would fall — the guard must keep it out of the candidate pool.
+        let resp = format!(
+            "{{\"invalidated\":[{{\"target\":\"{}\",\"valid_to\":null}}]}}",
+            relation.as_str()
+        );
+        let llm = FakeLlmBackend::new("confirmer", &resp);
+        let index = load_smart_wiki_index(&tree).expect("index");
+        let report = run_contradiction_sweep(
+            &pool,
+            &tree,
+            &llm,
+            "cycle-core",
+            Utc::now(),
+            &RemPolicy::default(),
+            &index,
+        )
+        .await
+        .expect("sweep");
+
+        let row = fact_index::find_by_id(&pool, &relation)
+            .await
+            .unwrap()
+            .expect("relation row");
+        assert!(
+            row.valid_to.is_none() && row.decay_reason.is_none(),
+            "an identity-core relationship must never fall as a satellite: {report:?}"
+        );
+        drop(dir);
+    }
+
     /// The seed's successor LINEAGE is off-limits transitively: the live
     /// head of a revised-twice fact must not fall as a "satellite" of its
     /// own grandparent (the one-hop exclusion missed exactly this).
@@ -9656,6 +9744,71 @@ mod tests {
         assert_eq!(
             winner.wiki_id, "famiglia-bruno",
             "the survivor stays in its own wiki"
+        );
+        drop(dir);
+    }
+
+    /// Identity-core stickiness (leva 3): the REM dedup revisor never
+    /// retires a fact from a person's always-on identity core
+    /// (`bio` + `salience=high`), even a genuine near-duplicate. A
+    /// relationship like "X è il compagno di Y" changes only on an
+    /// explicit correction, never by silent background consolidation.
+    /// Same near-duplicate pair as `revisor_dedups_across_the_family_line`,
+    /// but the would-be loser is identity-core — so nothing merges.
+    #[tokio::test]
+    async fn revisor_never_retires_an_identity_core_fact() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "famiglia", "Famiglia", "wiki-group");
+        write_sub_wiki(&tree, "famiglia", "bruno", "famiglia-bruno", "alice");
+        tree = WikiTree::open(dir.path()).unwrap();
+        let older = plant_fact_on_page(
+            &tree,
+            &pool,
+            "famiglia",
+            "bruno_battaglia.md",
+            "Bruno Battaglia è il padre di Franz e vive a Ferrara",
+            "alice",
+        )
+        .await;
+        // Mark the older (would-be loser) copy as identity core.
+        sqlx::query("UPDATE fact_index SET fact_type = 'bio', salience = 'high' WHERE fact_id = ?")
+            .bind(older.as_str())
+            .execute(&pool)
+            .await
+            .expect("mark identity core");
+        let _newer = plant_fact_on_page(
+            &tree,
+            &pool,
+            "famiglia-bruno",
+            "anagrafica.md",
+            "Bruno Battaglia è il padre di Franz e vive a Ferrara in centro",
+            "alice",
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new("rev", "{\"same\": true}");
+        let report = run_revisor_jaccard(
+            &pool,
+            &tree,
+            &fake_embedder(),
+            &llm,
+            "cycle-core",
+            &RemPolicy::default(),
+            &load_smart_wiki_index(&tree).expect("index"),
+        )
+        .await
+        .expect("revisor");
+        assert!(
+            report.applied.is_empty(),
+            "no dedup applied — the identity-core loser is skipped: {report:?}"
+        );
+        let loser = fact_index::find_by_id(&pool, &older)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            loser.superseded_at.is_none(),
+            "the identity-core fact stays active — never silently retired"
         );
         drop(dir);
     }

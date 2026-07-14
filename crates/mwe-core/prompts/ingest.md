@@ -217,7 +217,7 @@ The discriminator: is the container the user's REQUEST ("add this to my list"), 
 A fact's `salience` says how always-relevant it is to the owner. It feeds the owner's **base context** — the few facts a consumer should have in mind in *every* interaction, whatever the topic. Set it per extraction:
 
 - `"high"` — must be known in EVERY interaction, regardless of subject. The high bar, reserved for:
-  - **the identity core** — who the person is: their name and any aliases; their role(s); the people they are tied to (relations); their birthdate; where they live; their language and timezone; their contacts (email, phone). This is the always-on identity card — file the WHOLE core as `high`, not just the name.
+  - **the identity core** — who the person is: their name and any aliases; **their role(s) and the people they are tied to (relations — partner, parent, child, sibling, …)**; their birthdate; where they live; their language and timezone; their contacts (email, phone). This is the always-on identity card — file the WHOLE core as `high`, not just the name. A statement of **who someone is to someone else** ("X è il compagno / il figlio / il padre di Y") is *always* identity core: `fact_type: "bio"`, `salience: "high"` — **never** an `episode` or a `normal` fact, even when it surfaces mid-conversation or as a correction. Getting a family role wrong (addressing the partner as the child, or vice versa) is exactly the failure the always-on core exists to prevent, so relationships must reach it. See the **relationships** rule right below Part 6's examples.
   - **health & safety** (allergies, intolerances/coeliac, chronic conditions, medications, disabilities, hard dietary limits);
   - **hard standing constraints** that bind any exchange (a strict accessibility need). A plain conversational directive ("parlami in italiano", "dammi del tu") is NOT `high` — it is a `behaviour_rule` (Part 7b, agent-local); only an explicitly universal form ("con qualunque assistente") is a `high` identity fact.
   - If forgetting it across a conversation could be harmful, rude, or break trust → `high`.
@@ -234,6 +234,19 @@ Examples:
 - "voglio che OGNI assistente mi scriva sempre in italiano" → `salience: "high"` (explicitly universal; the plain "scrivimi in italiano" is instead a `behaviour_rule` — Part 7b, not `high`).
 - "Frodo ha visto Jumanji ieri" → `salience: "normal"` (an episode).
 - "il colore preferito di Matteo è il verde" → `salience: "low"` (trivia).
+
+### Relationships between people — reciprocity & stability
+
+A relationship ties **two** people. File it so it lands in the identity core of **each** person it concerns, and keep it stable:
+
+- **Both people are enrolled** (both appear in `known_users`) → emit **TWO** reciprocal extractions, one per subject, each `owner_id: "user:<that subject>"`, `target_page: "index.md"`, `fact_type: "bio"`, `salience: "high"`, with the **inverse** role on each side (partner↔partner, parent↔child, …). So "Frodo è il compagno di Galadriel" yields *both* «Frodo è il compagno di Galadriel» (owner Frodo) **and** «Galadriel è la compagna di Frodo» (owner Galadriel) — each person's own always-on card then carries the tie, and neither can be mistaken for the other's role.
+- **The other person is NOT enrolled** (a relative, a pet — not in `known_users`) → a **single** `bio`/`high` extraction, owned by the governing principal exactly as any fact about a non-enrolled subject (the enrolled subject the tie hangs off, e.g. `owner_id: "user:frodo"` for "Bilbo è lo zio di Frodo", or the group in scope). **Never** mint the non-enrolled person as a `user:` — subjects are not principals; their name lives in the prose.
+- **Stability — change a relationship only on an explicit correction.** An identity-core relationship is sticky: do **not** re-file one you already see in `recalled_memory` (that is the anti-loop `skip`), and supersede one **only** when the user explicitly restates it differently ("no, Matteo è mio figlio, non il mio compagno") — then set `supersede_target` to the wrong fact on the corrected extraction. Never let a passing mention quietly rewrite who someone is.
+
+Examples:
+- "Galadriel è la mia compagna" (sender Frodo, Galadriel enrolled) → **two** extractions: «Galadriel è la compagna di Frodo» (owner `user:galadriel`, `bio`/`high`) + «Frodo è il compagno di Galadriel» (owner `user:frodo`, `bio`/`high`).
+- "Matteo è mio figlio" (sender Frodo, Matteo enrolled) → **two**: «Matteo è il figlio di Frodo» (owner `user:matteo`, `bio`/`high`) + «Frodo è il padre di Matteo» (owner `user:frodo`, `bio`/`high`).
+- "mio zio Bilbo è ricoverato" (sender Frodo, Bilbo NOT enrolled) → the tie is **one** `bio`/`high` fact «Bilbo è lo zio di Frodo» (owner `user:frodo`); the hospitalisation is a separate `state`/`normal` fact — do not coin `user:bilbo`.
 
 
 ## Part 7 — `engine_rule` (per extraction: is this a standing GOVERNANCE directive for the memory engine?)

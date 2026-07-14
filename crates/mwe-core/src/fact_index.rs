@@ -169,6 +169,25 @@ pub struct FactIndexRow {
     pub authored_refs: Vec<String>,
 }
 
+impl FactIndexRow {
+    /// True when this fact belongs to the owner's **identity core** — the
+    /// always-on base context that identifies *who someone is and how they
+    /// relate to others* (`fact_type = "bio"` AND `salience = "high"`).
+    ///
+    /// The identity core is the small always-on set the ingest classifier
+    /// routes to the owner's `index.md`: name/aliases, **role(s) and the
+    /// people they are tied to (relations)**, birthdate, place, contacts.
+    /// It is deliberately **stable** — automatic background reorganisation
+    /// (the REM dedup revisor) must never silently retire one of these
+    /// facts; only an explicit correction (a user-driven supersede, or a
+    /// dashboard edit) may change it. Callers on automatic-supersede paths
+    /// gate on this predicate; the explicit paths do not.
+    #[must_use]
+    pub fn is_identity_core(&self) -> bool {
+        self.fact_type.as_deref() == Some("bio") && self.salience.as_deref() == Some("high")
+    }
+}
+
 /// Insert payload — the subset of [`FactIndexRow`] a fresh capture
 /// needs to supply.
 ///
@@ -2712,6 +2731,56 @@ mod tests {
             salience: None,
             source_ref: None,
         }
+    }
+
+    // ---------- identity core ----------
+
+    #[tokio::test]
+    async fn is_identity_core_true_only_for_bio_and_high() {
+        let pool = make_pool().await;
+        // bio + high → identity core (a role / relationship).
+        let mut core = sample_new_fact(
+            SAMPLE_UUID_V7_1,
+            "franz",
+            "user:franz",
+            "Frodo è il compagno di Galadriel",
+        );
+        core.fact_type = Some("bio".to_owned());
+        core.salience = Some("high".to_owned());
+        insert_if_absent(&pool, &core).await.unwrap();
+        // bio but normal salience (a bio trivium) → NOT core.
+        let mut trivium = sample_new_fact(
+            SAMPLE_UUID_V7_2,
+            "franz",
+            "user:franz",
+            "Il secondo nome di Franz è Carlo",
+        );
+        trivium.fact_type = Some("bio".to_owned());
+        trivium.salience = Some("normal".to_owned());
+        insert_if_absent(&pool, &trivium).await.unwrap();
+        // high salience but not bio (a health state) → NOT core.
+        let mut health = sample_new_fact(SAMPLE_UUID_V7_3, "franz", "user:franz", "È celiaco");
+        health.fact_type = Some("state".to_owned());
+        health.salience = Some("high".to_owned());
+        insert_if_absent(&pool, &health).await.unwrap();
+
+        let get = |id: &str| {
+            let pool = pool.clone();
+            let id = FactId::parse(id).unwrap();
+            async move { find_by_id(&pool, &id).await.unwrap().unwrap() }
+        };
+        assert!(
+            get(SAMPLE_UUID_V7_1).await.is_identity_core(),
+            "bio + high is the identity core"
+        );
+        assert!(
+            !get(SAMPLE_UUID_V7_2).await.is_identity_core(),
+            "bio + normal is not core (a trivium)"
+        );
+        assert!(
+            !get(SAMPLE_UUID_V7_3).await.is_identity_core(),
+            "high but not bio is not core (health)"
+        );
     }
 
     // ---------- encode/decode embedding ----------
