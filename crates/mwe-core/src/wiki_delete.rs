@@ -25,9 +25,12 @@
 //! audit tombstones (visible under the dashboard "include inactive" filter);
 //! evacuated facts are already safe in their senders' wikis.
 //!
-//! Identity wikis (`wiki-user` / `wiki-group`) are refused here: they are an
-//! account's autobiographical store and are removed through the user/group
-//! deletion flow instead.
+//! Identity wikis (`wiki-user` / `wiki-group`) are refused here **while their
+//! principal is enrolled**: they are an account's autobiographical store and
+//! are removed through the user/group deletion flow instead. Once the
+//! user/group is gone the wiki is an orphan (user deletion keeps the memory —
+//! the sender-scrub invariant) and that flow can never be re-run for it, so
+//! the admin may delete it here like any other wiki.
 //!
 //! Sub-wikis travel with their parent — the disposition pass and the directory
 //! move both cover every wiki id under the target. The trash root is a sibling
@@ -38,6 +41,7 @@ use std::path::PathBuf;
 
 use sqlx::SqlitePool;
 
+use crate::enrollment;
 use crate::fact_index;
 use crate::page::{self, Action, DeletionMode};
 use crate::promote::{self, DirectPromoteError};
@@ -72,9 +76,12 @@ pub enum WikiDeleteError {
     /// No wiki carries the requested id.
     #[error("wiki {0:?} not found")]
     NotFound(WikiId),
-    /// The target is an identity wiki — refused on purpose.
+    /// The target is a living principal's identity wiki — refused on purpose.
     #[error("refusing to delete identity wiki {0:?} (type {1}); remove the user/group instead")]
     Identity(WikiId, String),
+    /// Checking whether the identity wiki's principal is still enrolled failed.
+    #[error("enrollment lookup: {0}")]
+    Enrollment(#[from] sqlx::Error),
     /// Tree traversal / `_meta.md` parse failure.
     #[error("wiki tree: {0}")]
     Wiki(#[from] WikiError),
@@ -96,10 +103,26 @@ pub enum WikiDeleteError {
     },
 }
 
-/// True for the two identity wiki types we refuse to delete here.
+/// True for the two identity wiki types we refuse to delete while their
+/// principal is enrolled.
 #[must_use]
 pub fn is_identity_type(wiki_type: &str) -> bool {
     wiki_type == IDENTITY_WIKI_TYPE || wiki_type == GROUP_IDENTITY_WIKI_TYPE
+}
+
+/// The principal a **root** identity wiki names (`wiki-user` → `user:<id>`,
+/// `wiki-group` → `group:<id>`); `None` for non-identity types.
+///
+/// Same id convention as `WikiTree::resolve_scope_principal`, exposed so the
+/// delete guard and the dashboard can ask "whose identity wiki is this?"
+/// without walking the tree.
+#[must_use]
+pub fn identity_principal(wiki_type: &str, wiki_id: &WikiId) -> Option<Principal> {
+    match wiki_type {
+        IDENTITY_WIKI_TYPE => Some(Principal::User(wiki_id.as_str().to_owned())),
+        GROUP_IDENTITY_WIKI_TYPE => Some(Principal::Group(wiki_id.as_str().to_owned())),
+        _ => None,
+    }
 }
 
 /// The target wiki plus every descendant (inclusive), in walk order.
@@ -151,11 +174,16 @@ pub async fn delete_wiki_subtree(
         .iter()
         .find(|d| &d.meta.wiki_id == target)
         .ok_or_else(|| WikiDeleteError::NotFound(target.clone()))?;
-    if is_identity_type(&root.meta.wiki_type) {
-        return Err(WikiDeleteError::Identity(
-            target.clone(),
-            root.meta.wiki_type.clone(),
-        ));
+    if let Some(principal) = identity_principal(&root.meta.wiki_type, &root.meta.wiki_id) {
+        // The refusal protects a *living* account's store. An orphan —
+        // its user/group already removed — has no other deletion path,
+        // so it falls through to the normal admin delete.
+        if enrollment::principal_exists(pool, &principal).await? {
+            return Err(WikiDeleteError::Identity(
+                target.clone(),
+                root.meta.wiki_type.clone(),
+            ));
+        }
     }
     let root_abs = root.abs_dir.clone();
 
@@ -452,5 +480,65 @@ mod tests {
         assert_eq!(report.facts_tombstoned, 2, "every fact tombstoned");
         assert_eq!(report.facts_evacuated, 0, "tombstone-all never evacuates");
         assert!(!tree.wikis_dir().join("acme").exists());
+    }
+
+    #[tokio::test]
+    async fn living_identity_wiki_is_refused() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed(&tree, "bob", "wiki-user");
+        let tree = WikiTree::open(dir.path()).unwrap();
+        let db_dir = tempdir().unwrap();
+        let pool = crate::db::open_or_init(db_dir.path()).await.unwrap();
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('bob', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let err = delete_wiki_subtree(
+            &pool,
+            &tree,
+            &WikiId::parse("bob").unwrap(),
+            &Principal::User("franz".to_owned()),
+            DeletionMode::TombstoneAll,
+        )
+        .await
+        .expect_err("bob is enrolled — his identity wiki must be refused");
+
+        assert!(
+            matches!(err, super::WikiDeleteError::Identity(..)),
+            "expected the identity refusal, got: {err}"
+        );
+        assert!(tree.wikis_dir().join("bob").exists(), "nothing moved");
+    }
+
+    #[tokio::test]
+    async fn orphan_identity_wiki_is_deletable() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        // An identity wiki whose user is NOT enrolled — the leftover of a
+        // user deletion (memory outlives the identity). No other flow can
+        // remove it, so the admin delete must accept it.
+        seed(&tree, "ghost", "wiki-user");
+        let tree = WikiTree::open(dir.path()).unwrap();
+        let db_dir = tempdir().unwrap();
+        let pool = crate::db::open_or_init(db_dir.path()).await.unwrap();
+        let emb = embedder();
+        capture_owned(&tree, &pool, emb, "ghost", "ghost", "A ghost's note").await;
+
+        let report = delete_wiki_subtree(
+            &pool,
+            &tree,
+            &WikiId::parse("ghost").unwrap(),
+            &Principal::User("franz".to_owned()),
+            DeletionMode::TombstoneAll,
+        )
+        .await
+        .expect("orphan identity wiki deletes like any other");
+
+        assert_eq!(report.wikis_removed, 1);
+        assert_eq!(report.facts_tombstoned, 1);
+        assert!(!tree.wikis_dir().join("ghost").exists());
+        assert!(report.trash_dir.exists(), "husk in trash, recoverable");
     }
 }

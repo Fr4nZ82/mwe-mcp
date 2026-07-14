@@ -476,6 +476,40 @@ pub async fn list_groups(pool: &SqlitePool) -> Result<Vec<EnrolledGroupLite>, sq
         .collect())
 }
 
+/// True when `principal` is currently enrolled — a [`Principal::User`]
+/// with an `enrollment_users` row, or a [`Principal::Group`] with an
+/// `enrollment_groups` row.
+///
+/// The caller that motivates this is the identity-wiki delete guard
+/// ([`crate::wiki_delete`]): an identity wiki is protected while its
+/// principal lives and becomes an orphan — deletable by the admin —
+/// once the user/group is removed.
+///
+/// # Errors
+///
+/// Propagates the underlying `sqlx` error.
+pub async fn principal_exists(
+    pool: &SqlitePool,
+    principal: &crate::types::Principal,
+) -> Result<bool, sqlx::Error> {
+    use crate::types::Principal;
+    let row: Option<i64> = match principal {
+        Principal::User(id) => {
+            sqlx::query_scalar("SELECT 1 FROM enrollment_users WHERE user_id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await?
+        },
+        Principal::Group(id) => {
+            sqlx::query_scalar("SELECT 1 FROM enrollment_groups WHERE group_id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await?
+        },
+    };
+    Ok(row.is_some())
+}
+
 /// Look up the BCP-47 locale the admin configured for `user_id`.
 ///
 /// Returns `Ok(None)` for an unknown user, an empty `user_id`, or a

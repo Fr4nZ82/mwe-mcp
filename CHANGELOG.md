@@ -11,6 +11,17 @@ semver-governed surface — breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An orphaned identity wiki can now be deleted (admin).** Deleting a
+  user keeps their wikis (the sender-scrub invariant), but the
+  identity-wiki guard refused deletion unconditionally ("remove the
+  user/group instead") — a dead end once the user was already gone. The
+  refusal is now scoped to *living* principals: an identity wiki whose
+  user/group is no longer enrolled is deletable from the dashboard like
+  any other wiki, with the same typed-id confirmation and move/tombstone
+  dispositions. (#4)
+
 ## 1.1.1 — 2026-07-14
 
 ### Fixed

@@ -227,10 +227,29 @@ struct DeleteWikiForm {
 
 /// GET `/dashboard/wiki/:id/delete` — admin-only strong-confirmation page.
 ///
+/// True when the wiki is a **living** principal's identity wiki (its
+/// user/group is still enrolled). Drives the delete affordance: a living
+/// identity wiki is removed via the user/group flow, an orphaned one is
+/// deletable here.
+async fn is_live_identity(
+    state: &DashboardState,
+    wiki_type: &str,
+    wiki_id: &WikiId,
+) -> Result<bool> {
+    match wiki_delete::identity_principal(wiki_type, wiki_id) {
+        Some(p) => enrollment::principal_exists(&state.pool, &p)
+            .await
+            .map_err(|e| DashboardError::Internal(format!("principal_exists: {e}"))),
+        None => Ok(false),
+    }
+}
+
 /// Shows the blast radius (sub-wiki count + active facts that will be
-/// tombstoned) and a "type the id to confirm" form. Identity wikis are
-/// refused here with a clear notice (no form) — they are removed through
-/// the user / group deletion flow.
+/// tombstoned) and a "type the id to confirm" form. A living principal's
+/// identity wiki is refused here with a clear notice (no form) — it is
+/// removed through the user / group deletion flow. An **orphaned** identity
+/// wiki (its user/group already deleted) gets the form: no other flow can
+/// remove it.
 async fn delete_confirm(
     State(state): State<DashboardState>,
     admin: AdminUser,
@@ -243,7 +262,10 @@ async fn delete_confirm(
         .iter()
         .find(|d| d.meta.wiki_id == wiki_id)
         .ok_or(DashboardError::NotFound)?;
-    let is_identity = wiki_delete::is_identity_type(&root.meta.wiki_type);
+    // Identity wikis are protected only while their principal is enrolled;
+    // an orphan (user/group already deleted) has no other removal path.
+    let live_identity = is_live_identity(&state, &root.meta.wiki_type, &wiki_id).await?;
+    let orphan_identity = wiki_delete::is_identity_type(&root.meta.wiki_type) && !live_identity;
     let title = root.meta.title.clone();
     let wiki_type = root.meta.wiki_type.clone();
     let smart = root.meta.smart;
@@ -260,13 +282,20 @@ async fn delete_confirm(
 
     let body = html! {
         h2 { "Delete wiki " code { (id) } }
-        @if is_identity {
+        @if live_identity {
             p.flash.flash-error {
                 "This is an identity wiki (" code { (wiki_type) } "). Identity wikis are removed "
                 "through the user / group deletion flow, not deleted here."
             }
             p { a href="/dashboard/wiki" { "Back to the list" } }
         } @else {
+            @if orphan_identity {
+                p.muted {
+                    strong { "Orphaned identity wiki" }
+                    " — its user/group is no longer enrolled (the memory outlived "
+                    "the identity), so this is the only place it can be deleted."
+                }
+            }
             p.muted {
                 "Title: " (title) " · type: " code { (wiki_type) }
                 @if smart { " · " span.badge { "smart" } }
@@ -384,7 +413,9 @@ fn map_wiki_delete_err(e: wiki_delete::WikiDeleteError) -> DashboardError {
         E::NotFound(_) => DashboardError::NotFound,
         E::Identity(_, _) => DashboardError::Validation(e.to_string()),
         E::Wiki(we) => map_wiki_err(we),
-        E::FactIndex(_) | E::Refile(_) | E::Move { .. } => DashboardError::Internal(e.to_string()),
+        E::FactIndex(_) | E::Refile(_) | E::Move { .. } | E::Enrollment(_) => {
+            DashboardError::Internal(e.to_string())
+        },
     }
 }
 
@@ -424,9 +455,10 @@ async fn list(
             .map_err(|e| DashboardError::Internal(format!("groups_for: {e}")))?
     };
 
-    // Per-row tuple: (id, title, type, active fact count, is-identity). The
-    // identity flag drives the delete affordance — identity wikis are
-    // removed through the user/group flow, not deleted here. Smart wikis are
+    // Per-row tuple: (id, title, type, active fact count, live-identity). The
+    // flag drives the delete affordance — a living principal's identity wiki
+    // is removed through the user/group flow, not deleted here, while an
+    // orphaned one (principal already deleted) is deletable. Smart wikis are
     // skipped: they live on the Smart tab (`smart_view::list_smart_wikis`),
     // which surfaces the columns that matter for them (last push, unread
     // briefing) — so each wiki shows up under exactly one tab.
@@ -450,12 +482,13 @@ async fn list(
         let count = fact_index::count_active_in_wiki(&state.pool, d.meta.wiki_id.as_str())
             .await
             .map_err(|e| DashboardError::Internal(format!("count_active_in_wiki: {e}")))?;
+        let live_identity = is_live_identity(&state, &d.meta.wiki_type, &d.meta.wiki_id).await?;
         rows.push((
             d.meta.wiki_id.as_str().to_owned(),
             d.meta.title.clone(),
             d.meta.wiki_type.clone(),
             count,
-            wiki_delete::is_identity_type(&d.meta.wiki_type),
+            live_identity,
         ));
     }
     rows.sort();
@@ -485,7 +518,7 @@ async fn list(
                     @if user.is_admin { th { "Actions" } }
                 } }
                 tbody {
-                    @for (id, title, kind, count, is_identity) in &rows {
+                    @for (id, title, kind, count, live_identity) in &rows {
                         tr {
                             td { a href=(format!("/dashboard/wiki/{id}")) { code { (id) } } }
                             td { (title) }
@@ -493,7 +526,7 @@ async fn list(
                             td { (count) }
                             @if user.is_admin {
                                 td {
-                                    @if *is_identity {
+                                    @if *live_identity {
                                         span.muted
                                             title="Identity wiki — remove via the user / group flow" {
                                             "—"
