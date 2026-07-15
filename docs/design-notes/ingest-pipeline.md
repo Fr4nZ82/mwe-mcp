@@ -161,25 +161,32 @@ The wikis that survive the smart-family filter are routed two ways by the
 target (a prose page the nightly compiler writes) is **buffered**; a live
 `requested_container` is a **direct write**. **"standard" = "not
 smart"** — every wiki that survives the smart-family filter is on the
-smart" path, read from the per-wiki `_meta.md` smart flag rather
+non-smart path, read from the per-wiki `_meta.md` smart flag rather
 than a registry set.
 The full model and the buffer it feeds live in
 [narrative-buffer.md](narrative-buffer.md). **This is the standard /
 standard-wiki perimeter only — the smart path is untouched.**
 
-**The live exception — a requested container** (the model and the buffer it feeds live in [narrative-buffer.md](narrative-buffer.md)).
-Buffering trades immediacy for batched prose: a fact filed for the nightly dream
-is not on its page until the dream runs. That is right for *accumulated
-knowledge* (a detail in a story — "we ran out of milk while shopping") but wrong
-for a container the user *asked to keep right now* (a list, a collection, a named
-note — "add milk to the shopping list"): a shopping list cannot wait an hour. So
-the classifier emits a per-extraction `requested_container` flag, and step 4
-routes a flagged capture down the **direct-write path even into a standard wiki**
-(`route_to_buffer = target_is_standard && !requested_container`) — `wiki_capture`
-creates the page if absent and writes the fact's marker immediately; the dream
-later refines it. The classifier decides — there is no hard-coded gate. Only
-accumulated knowledge (`requested_container: false`, the default) waits in the
-buffer.
+**The two write speeds — narrative sediment vs. live containers** (the model
+and the buffer it feeds live in [narrative-buffer.md](narrative-buffer.md)).
+The split is not a fast path bolted onto an async model as an exception — it
+mirrors the two natures a captured claim can have, and the classifier judges
+which one it is on every extraction. *Accumulated knowledge* (a detail in a
+story — "we ran out of milk while shopping") gains value by consolidating:
+it can ripen in the buffer overnight and come out as compiled prose, and
+nothing about the turn needs it back sooner — recall serves it from the
+buffer's promoted facts either way. An *operational container* (a list, a
+collection, a named note — "add milk to the shopping list") carries a
+**read-your-writes contract**: the user's next question is seconds away
+("what's on the list?"), so waiting for the dream would be wrong *by the
+content's nature*, not slow by implementation. So the classifier emits a
+per-extraction `requested_container` flag, and step 4 routes a flagged
+capture down the **direct-write path even into a standard wiki**
+(`route_to_buffer = target_is_standard && !requested_container`) —
+`wiki_capture` creates the page if absent and writes the fact's marker
+immediately; the dream later refines it. The classifier decides — there is
+no hard-coded gate. Only accumulated knowledge
+(`requested_container: false`, the default) waits in the buffer.
 
 ### Prose-only classification
 
