@@ -334,6 +334,14 @@ mwe-mcp ships as a **single self-contained server binary** — no native depende
 
 Letting an **AI agent** set it up on your behalf? `INSTALL.md` opens by telling the agent which steps are its job (get the binary, start the server) and which stay yours in the browser (the admin, the keys, the token) — so it never asks you for credentials to enter for you.
 
+**Building from source** is deliberately boring: `cargo build --release` needs no
+running database and no prepared query cache (SQL is checked at runtime — there is
+no `DATABASE_URL` step), SQLite is vendored, and TLS is `rustls` (no OpenSSL).
+One flag worth knowing: the bundled Candle embedder rides the `local-embedder`
+feature — `cargo build --release --features local-embedder` — while the default
+build stays lean and expects an external embedding service. The prebuilt release
+binaries ship with the feature on.
+
 ---
 
 ## Documentation

@@ -186,6 +186,37 @@ Snapshot that one folder and you've backed up the whole memory.
 
 ---
 
+## Hardening checklist
+
+The defaults are already conservative; production exposure adds four habits:
+
+1. **Keep the bind on loopback** (`mwe-mcp serve` defaults to
+   `127.0.0.1:8742`) and expose the port through a TLS reverse proxy or an
+   authenticated tunnel (Cloudflare Tunnel, Tailscale, a VPN). Never forward
+   bare HTTP across a network you don't own — every request carries a bearer
+   token.
+2. **Treat tokens as per-consumer credentials.** Mint one token per agent
+   from the dashboard, scope it with its delegation list at mint time, and
+   revoke it there the moment the consumer is retired. The signing secret
+   lives in the workdir's `mwe-mcp.env` — it travels with backups, so backups
+   inherit the workdir's confidentiality requirements.
+3. **Back up the workdir as one unit.** `engine.db` is the authoritative
+   fact store — it is *not* rebuildable from the Markdown — so a backup is
+   only valid when it snapshots **both halves together**. The dashboard's
+   Backup console takes a hot snapshot of the whole workdir on demand; to
+   restore, stop the server and put the snapshot back in place.
+4. **Mind who shares the machine.** Per-reader redaction happens at render
+   time; the files are cleartext on disk. The workdir permission rules and
+   the consumer co-location topology are in
+   [`INTEGRATING.md`](INTEGRATING.md#deployment-security--where-to-run-the-consumer)
+   — `mwe-mcp doctor` audits the current install and prints fixes.
+
+Updates are a binary swap: stop the server, replace the binary (keep the old
+one as a `.bak`), start — pending migrations run at boot, and migrations are
+strictly additive.
+
+---
+
 ## Next: connect an agent
 
 A running server is a memory waiting for a consumer. To wire an AI agent to it

@@ -58,6 +58,40 @@ run the consumer safely.
 
 ---
 
+## stdio-only clients — bridge to the HTTP endpoint
+
+mwe-mcp is **HTTP-only by design**: the model is one long-running, multi-user
+server with per-consumer auth and governance — a per-client stdio child process
+cannot be shared between consumers, authenticated per token, or reached from
+another machine. Clients that only speak stdio still connect fine through a
+local stdio→HTTP proxy such as
+[`mcp-remote`](https://github.com/geelen/mcp-remote):
+
+```json
+{
+  "mcpServers": {
+    "mwe-mcp": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote",
+        "https://your-server:8742/mcp",
+        "--header", "Authorization:${MWE_AUTH}"
+      ],
+      "env": { "MWE_AUTH": "Bearer <your token>" }
+    }
+  }
+}
+```
+
+(The header rides an env var because some clients split `args` entries on
+spaces.) The proxy runs on the client's machine and is just a pipe — the
+security topology below is unchanged, the memory stays behind the HTTP
+boundary. Clients that speak streamable HTTP natively (Claude Code, claude.ai,
+and most current SDKs) skip the shim entirely:
+`claude mcp add --transport http mwe-mcp https://your-server:8742/mcp`.
+
+---
+
 ## The ready-made bridge (Hermes)
 
 The one **per-turn** (standard-consumer) host bridge shipped today wires
