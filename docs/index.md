@@ -21,7 +21,6 @@ last_review: "2026-06-28"
 > for consumer agents is a **memory wiki** (or **consumer wiki**);
 > memory wikis live in a configurable `--workdir` outside the repo,
 > never in `mwe-mcp/wiki/`.
-> See `../CLAUDE.md` for the full glossary.
 
 ## What mwe-mcp does today
 

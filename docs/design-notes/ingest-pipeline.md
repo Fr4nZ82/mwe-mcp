@@ -1184,7 +1184,7 @@ One operational footgun is worth internalising: the loader lets an
 operator override at `<workdir>/prompts/ingest.md` **win** over the bundled
 default, so a *stale* override silently shadows the shipped prompt. A dogfood
 memory reset must therefore also clear `<workdir>/prompts/` — see
-[build-run.md](../development/build-run.md) and `CLAUDE.md §5.bis`.
+[build-run.md](../development/build-run.md).
 
 Env-var overrides follow the
 [config-schema.md](../protocol/config-schema.md) convention

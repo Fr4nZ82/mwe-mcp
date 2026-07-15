@@ -57,8 +57,7 @@ The catalog row carries: `catalog_id` (PK), `sha256`, `kind`, `mime`,
 `original_filename`, timestamps. Like the fact ACL after the
 DB-authoritative move, the catalog is **not rebuildable from the
 markdown** — the workdir snapshot is the recovery story, and a dogfood
-reset must wipe `<workdir>/media/` together with `engine.db`
-(`CLAUDE.md` §5.bis).
+reset must wipe `<workdir>/media/` together with `engine.db`.
 
 ### `catalog_id` minting and the kind vocabulary
 
