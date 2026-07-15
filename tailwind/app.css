@@ -1127,6 +1127,69 @@
   .facts-table.compact tr.inactive { opacity: 0.55; }
   .facts-filter-toggle label { font-weight: 400; cursor: pointer; }
 
+  /* Facts browser pager: `← previous`, an editable "page N of M" jump box, and
+     `next →`, laid out on one wrapping row below the table. The count floats to
+     the far right. */
+  .facts-pagination {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.9rem;
+    font-size: 0.8rem;
+  }
+  .facts-pagination .pager-step {
+    color: var(--p);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .facts-pagination .pager-step:hover { text-decoration: underline; }
+  /* Disabled edge (page 1 has no previous, last page has no next): visibly
+     inert, and click-proof so it reads as "nowhere to go", not "broken". */
+  .facts-pagination .pager-step.is-disabled {
+    color: var(--text-dim);
+    opacity: 0.55;
+    pointer-events: none;
+  }
+  .facts-pagination .pager-jump {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0;
+  }
+  .facts-pagination .pager-of {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .facts-pagination .pager-page {
+    width: 3.5rem;
+    padding: 0.1rem 0.35rem;
+    text-align: right;
+    font: inherit;
+    color: var(--text);
+    background: var(--bg-2);
+    border: 1px solid var(--border-hi);
+    border-radius: var(--radius);
+  }
+  .facts-pagination .pager-go {
+    padding: 0.12rem 0.7rem;
+    font: inherit;
+    color: var(--p);
+    background: var(--bg-2);
+    border: 1px solid var(--border-hi);
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .facts-pagination .pager-go:hover {
+    color: var(--bg);
+    background: var(--p);
+    border-color: var(--p);
+  }
+  .facts-pagination .pager-count { margin-left: auto; }
+
   textarea.prompt-editor {
     font-family: var(--font-mono);
     font-size: 0.85rem;

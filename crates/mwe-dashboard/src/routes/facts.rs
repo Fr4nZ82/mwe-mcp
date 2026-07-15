@@ -81,6 +81,14 @@ const DEFAULT_PAGE_SIZE: usize = 50;
 /// then slices, so an attacker-controlled enormous `page_size` would
 /// otherwise dominate latency).
 const MAX_PAGE_SIZE: usize = 100;
+/// Upper bound on the rows scanned per facts-page render. The handler loads the
+/// full matching window (ACL-projected in-process), counts the visible rows to
+/// derive the real page count, then slices the requested page — that count is
+/// what powers "page N of M" and the correct prev/next enablement. This caps
+/// the scan so a pathologically large workdir cannot dominate latency; a
+/// workdir that exceeds it renders a lower-bound "M+" estimate (see
+/// `total_is_estimate` in [`index`]).
+const MAX_SCAN_ROWS: usize = 5_000;
 /// Body-truncation cap used in the table cell — keeps the row scannable
 /// without scrollbars.
 const BODY_PREVIEW_CHARS: usize = 120;
@@ -368,13 +376,15 @@ async fn index(
 ) -> Result<Html<String>> {
     let (page, page_size) = normalise_pagination(&filters);
 
-    // Naive but correct pagination: ask the recall layer for `page *
-    // page_size` rows (capped by `FactFilters::limit`), then slice
-    // in-process. Pushing offset+limit down into SQL is a later
-    // optimisation — at the workdir sizes we target this is cheap and
-    // keeps the ACL projection in one place.
-    let limit = page.saturating_mul(page_size);
-    let core_filters = filters.to_core_filters(limit);
+    // Load the FULL visible window (ACL-projected in-process), count it to
+    // derive the real page count, then slice the requested page. Loading
+    // everything — rather than `page * page_size` — is what lets the pager show
+    // "page N of M" and enable/disable prev/next against a true total instead of
+    // a heuristic. The `to_core_filters` cap (`MAX_SCAN_ROWS`) keeps that scan
+    // bounded; when it is hit the total is a lower bound (`total_is_estimate`).
+    // Pushing offset+limit into SQL is a later optimisation — at the workdir
+    // sizes we target this is cheap and keeps the ACL projection in one place.
+    let core_filters = filters.to_core_filters(MAX_SCAN_ROWS);
     let sender_groups = enrollment::groups_for(&state.pool, &user.sender_id)
         .await
         .map_err(|e| DashboardError::Internal(format!("enrollment::groups_for: {e}")))?;
@@ -402,33 +412,46 @@ async fn index(
         .await
         .map_err(|e| DashboardError::Internal(format!("wiki_facts_full_for: {e}")))?;
 
+    // When the promoted scan comes back full, more rows may exist beyond the
+    // cap — the total (hence the last page) is then a lower bound.
+    let total_is_estimate = promoted.len() >= MAX_SCAN_ROWS;
+
+    // Fresh captures lead; promoted facts follow. Both are already ACL-filtered
+    // and honour the active filters incl. `sort` / `include_inactive`; the fresh
+    // prefix is small and capped, so it rides at the head of the first page.
+    let mut rows: Vec<FactRow> = fresh.into_iter().map(FactRow::from_capture).collect();
+    rows.extend(promoted.into_iter().map(FactRow::from_fact));
+
+    // Real page count from the visible total (at least one page, even when the
+    // set is empty). Clamp the requested page into range so a stale or
+    // hand-typed `page=` lands on the last page rather than an empty slice.
+    let total = rows.len();
+    let total_pages = total.div_ceil(page_size).max(1);
+    let page = page.min(total_pages);
+    let start = (page - 1).saturating_mul(page_size).min(total);
+    let end = (start + page_size).min(total);
+    let page_rows = &rows[start..end];
+
     tracing::debug!(
         sender_id = %user.sender_id,
         page,
         page_size,
-        fresh = fresh.len(),
-        promoted = promoted.len(),
+        total,
+        total_pages,
+        total_is_estimate,
         "dashboard: /facts loaded ACL-filtered window"
     );
 
-    // Fresh captures lead; promoted facts follow. The "next page" estimate
-    // keys off the promoted count alone — the fresh prefix is small and capped
-    // (it never spans pages), so it must not drive the window. We know there is
-    // a next page when the recall layer returned a full window — i.e. the
-    // in-memory cap was reached. This is a deliberately loose estimate (it
-    // cannot say "exactly 0 more rows") but suffices to enable/disable the link.
-    let has_more_promoted = promoted.len() >= limit;
-    let mut rows: Vec<FactRow> = fresh.into_iter().map(FactRow::from_capture).collect();
-    rows.extend(promoted.into_iter().map(FactRow::from_fact));
-
-    let total_loaded = rows.len();
-    let start = (page - 1).saturating_mul(page_size).min(total_loaded);
-    let end = (start + page_size).min(total_loaded);
-    let page_rows = &rows[start..end];
-    let has_next = has_more_promoted && !page_rows.is_empty();
-
     Ok(Html(render_index(
-        &user, &filters, page, page_size, page_rows, has_next, reveal,
+        &user,
+        &filters,
+        page,
+        page_size,
+        page_rows,
+        total,
+        total_pages,
+        total_is_estimate,
+        reveal,
     )))
 }
 
@@ -1316,13 +1339,16 @@ fn sort_header(filters: &FactsFilters, page_size: usize, token: &str, label: &st
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_index(
     user: &SessionUser,
     filters: &FactsFilters,
     page: usize,
     page_size: usize,
     page_rows: &[FactRow],
-    has_next: bool,
+    total: usize,
+    total_pages: usize,
+    total_is_estimate: bool,
     reveal: bool,
 ) -> String {
     let body = html! {
@@ -1424,7 +1450,7 @@ fn render_index(
             }
         }
 
-        (pagination_links(filters, page, page_size, has_next))
+        (pagination_links(filters, page, page_size, total, total_pages, total_is_estimate))
     };
     layout::authenticated_page("Facts", user, &body)
 }
@@ -1524,11 +1550,20 @@ fn action_cell(user: &SessionUser, row: &FactRow) -> Markup {
     }
 }
 
+/// The facts-browser pager: a `← previous` link, an **editable** page-number
+/// box that jumps straight to the typed page, and a `next →` link. prev/next
+/// are real links only when there is somewhere to go — otherwise a disabled
+/// span — driven by the true `total_pages` the handler computed, so a single
+/// page reads as an explicit "page 1 of 1" rather than a mysteriously dead
+/// button. When the scan cap was hit `total_pages` is a lower bound, rendered
+/// as `M+` with next kept open so the operator can walk past the cap.
 fn pagination_links(
     filters: &FactsFilters,
     page: usize,
     page_size: usize,
-    has_next: bool,
+    total: usize,
+    total_pages: usize,
+    total_is_estimate: bool,
 ) -> Markup {
     let prev_href = (page > 1).then(|| {
         format!(
@@ -1536,26 +1571,90 @@ fn pagination_links(
             filters.to_query_string(page - 1, page_size)
         )
     });
+    // Exact when the whole set was scanned; when the cap was hit keep `next`
+    // open so the operator can page past the lower-bound estimate.
+    let has_next = page < total_pages || total_is_estimate;
     let next_href = has_next.then(|| {
         format!(
             "/dashboard/facts?{}",
             filters.to_query_string(page + 1, page_size)
         )
     });
+    let pages_label = if total_is_estimate {
+        format!("{total_pages}+")
+    } else {
+        total_pages.to_string()
+    };
+    let facts_label = match (total_is_estimate, total) {
+        (true, n) => format!("{n}+ facts"),
+        (false, 1) => "1 fact".to_owned(),
+        (false, n) => format!("{n} facts"),
+    };
+    // Only bound the input when the count is exact; under an estimate the true
+    // last page may be higher, so leave `max` off.
+    let max_attr: Option<String> = (!total_is_estimate).then(|| total_pages.to_string());
     html! {
         nav.facts-pagination {
             @if let Some(href) = prev_href {
-                a href=(href) { "← previous" }
+                a.pager-step href=(href) { "← previous" }
             } @else {
-                span.muted { "← previous" }
+                span.pager-step.is-disabled aria-disabled="true" { "← previous" }
             }
-            " · page " strong { (page) } " · "
+            // Editable page number: a mini GET form that re-submits every active
+            // filter (as hidden inputs) and jumps straight to the typed page.
+            form.pager-jump method="get" action="/dashboard/facts" {
+                (filter_hidden_inputs(filters, page_size))
+                span.pager-of {
+                    "page "
+                    input.pager-page type="number" name="page"
+                        min="1" max=[max_attr] value=(page.to_string())
+                        inputmode="numeric" aria-label="page number";
+                    " of " (pages_label)
+                }
+                button.pager-go type="submit" { "Go" }
+            }
             @if let Some(href) = next_href {
-                a href=(href) { "next →" }
+                a.pager-step href=(href) { "next →" }
             } @else {
-                span.muted { "next →" }
+                span.pager-step.is-disabled aria-disabled="true" { "next →" }
             }
+            span.pager-count.muted { (facts_label) }
         }
+    }
+}
+
+/// Hidden inputs mirroring the active filter set (plus `page_size` and the
+/// sort directive), so the pager's jump form round-trips every filter when it
+/// re-submits with a new `page`. Mirrors the field set of
+/// [`FactsFilters::to_query_string_with_sort`] — minus `page`, which the
+/// visible number input supplies.
+fn filter_hidden_inputs(filters: &FactsFilters, page_size: usize) -> Markup {
+    html! {
+        @if let Some(v) = non_empty(filters.wiki_id.as_deref()) {
+            input type="hidden" name="wiki_id" value=(v);
+        }
+        @if let Some(v) = non_empty(filters.fact_type.as_deref()) {
+            input type="hidden" name="fact_type" value=(v);
+        }
+        @if let Some(v) = non_empty(filters.topic.as_deref()) {
+            input type="hidden" name="topic" value=(v);
+        }
+        @if let Some(v) = non_empty(filters.created_after.as_deref()) {
+            input type="hidden" name="created_after" value=(v);
+        }
+        @if let Some(v) = non_empty(filters.created_before.as_deref()) {
+            input type="hidden" name="created_before" value=(v);
+        }
+        @if let Some(v) = non_empty(filters.sort.as_deref()) {
+            input type="hidden" name="sort" value=(v);
+        }
+        @if let Some(v) = non_empty(filters.dir.as_deref()) {
+            input type="hidden" name="dir" value=(v);
+        }
+        @if filters.include_inactive() {
+            input type="hidden" name="include_inactive" value="1";
+        }
+        input type="hidden" name="page_size" value=(page_size.to_string());
     }
 }
 
@@ -1974,6 +2073,65 @@ mod tests {
     fn url_encode_percent_encodes_specials() {
         assert_eq!(url_encode("ab c+d"), "ab%20c%2Bd");
         assert_eq!(url_encode("plain"), "plain");
+    }
+
+    #[test]
+    fn pager_single_page_disables_both_steps_and_pins_of_one() {
+        // One page of visible facts (franz's real case): prev AND next are inert
+        // spans — the bug the founder saw — but now labelled "of 1" so the dead
+        // state is self-explanatory, plus an editable page box.
+        let html = pagination_links(&FactsFilters::default(), 1, 50, 41, 1, false).into_string();
+        assert_eq!(
+            html.matches("pager-step is-disabled").count(),
+            2,
+            "both prev and next inert on a single page: {html}"
+        );
+        assert!(!html.contains("href="), "no navigable links: {html}");
+        assert!(html.contains("of 1"), "shows total page count: {html}");
+        assert!(html.contains("41 facts"), "shows the visible total: {html}");
+        assert!(
+            html.contains(r#"name="page""#) && html.contains(r#"value="1""#),
+            "renders the editable page input: {html}"
+        );
+    }
+
+    #[test]
+    fn pager_middle_page_links_both_directions_and_preserves_filters() {
+        let filters = FactsFilters {
+            wiki_id: Some("alice".to_owned()),
+            topic: Some("giardinaggio".to_owned()),
+            ..FactsFilters::default()
+        };
+        let html = pagination_links(&filters, 2, 50, 130, 3, false).into_string();
+        assert!(html.contains("page=1"), "previous points at page 1: {html}");
+        assert!(html.contains("page=3"), "next points at page 3: {html}");
+        // The jump form re-submits the active filters as hidden inputs.
+        assert!(
+            html.contains(r#"name="wiki_id" value="alice""#),
+            "wiki_id round-trips: {html}"
+        );
+        assert!(
+            html.contains(r#"name="topic" value="giardinaggio""#),
+            "topic round-trips: {html}"
+        );
+        assert!(html.contains("of 3"), "shows 3 total pages: {html}");
+    }
+
+    #[test]
+    fn pager_capped_scan_reads_as_lower_bound() {
+        // Scan cap hit: totals become lower bounds — "M+", "N+ facts", next kept
+        // open, and no `max` on the input so the operator can page past the cap.
+        let html = pagination_links(&FactsFilters::default(), 100, 50, MAX_SCAN_ROWS, 100, true)
+            .into_string();
+        assert!(html.contains("of 100+"), "estimate marker on pages: {html}");
+        assert!(
+            html.contains("page=101"),
+            "next stays open past the cap: {html}"
+        );
+        assert!(
+            !html.contains("max="),
+            "no upper bound under an estimate: {html}"
+        );
     }
 
     #[test]
