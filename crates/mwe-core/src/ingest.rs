@@ -5060,12 +5060,43 @@ pub async fn wiki_ingest_message(
         due_soon,
     );
 
-    // Cross-consumer recent window (group 43): buffer this turn for the
-    // user's OTHER surfaces, then serve theirs back — the thread of
-    // discourse follows the user. Best-effort on both legs: a buffer
-    // hiccup never touches the turn.
+    // Cross-consumer recent window (group 43): serve the user's thread
+    // from their other surfaces, then buffer this turn for them — the
+    // thread of discourse follows the user. The fetch runs BEFORE the
+    // record so a requester served its own surface can never be handed
+    // the very message it is asking about. Best-effort on both legs: a
+    // buffer hiccup never touches the turn.
+    //
+    // Fresh-session resume (43j, hermes-agent#43008): a requester that
+    // carried NO local window has no context a served thread could
+    // duplicate — a reborn/blank session, or a consumer that keeps no
+    // window at all. Serve it every surface, its own included: its own
+    // channel's tail is exactly the thread the user is continuing. A
+    // requester that brought its window gets only the other surfaces.
     let consumer_surface = request.consumer_id.clone().unwrap_or_default();
     let surface_channel = request.metadata.channel.clone().unwrap_or_default();
+    let surface_filter = if request.recent_messages.is_empty() {
+        crate::recent_window::SurfaceFilter::IncludeRequester
+    } else {
+        crate::recent_window::SurfaceFilter::ExcludeRequester
+    };
+    let recent_window = match crate::recent_window::fetch_window(
+        pool,
+        &request.sender_id,
+        &consumer_surface,
+        request.metadata.channel.as_deref(),
+        surface_filter,
+        policy.recent_window_ttl_hours,
+        policy.recent_window_entries,
+    )
+    .await
+    {
+        Ok(entries) => format_recent_window(&entries, turn_now, policy),
+        Err(e) => {
+            tracing::warn!(error = %e, "recent-window: fetch failed (served empty)");
+            None
+        },
+    };
     if let Err(e) = crate::recent_window::record_exchange(
         pool,
         &request.sender_id,
@@ -5081,22 +5112,6 @@ pub async fn wiki_ingest_message(
     {
         tracing::warn!(error = %e, "recent-window: buffer write failed (turn unaffected)");
     }
-    let recent_window = match crate::recent_window::fetch_window(
-        pool,
-        &request.sender_id,
-        &consumer_surface,
-        request.metadata.channel.as_deref(),
-        policy.recent_window_ttl_hours,
-        policy.recent_window_entries,
-    )
-    .await
-    {
-        Ok(entries) => format_recent_window(&entries, turn_now, policy),
-        Err(e) => {
-            tracing::warn!(error = %e, "recent-window: fetch failed (served empty)");
-            None
-        },
-    };
 
     // Journal the route this recall took (the admin Traces page). Best-effort
     // telemetry: a journal failure is logged and never touches the turn.
@@ -6592,33 +6607,65 @@ mod tests {
         drop(dir);
     }
 
-    /// Cross-consumer recent window (group 43): a turn from one surface is
-    /// served to the user's other surfaces — tagged with its origin and
-    /// relative age — and never echoed back to the surface that spoke it.
+    /// Cross-consumer recent window (group 43 + 43j): a turn from one
+    /// surface is served to the user's other surfaces — tagged with its
+    /// origin and relative age. A requester that brings its own local
+    /// window never gets its surface echoed back; one that brings none (a
+    /// reborn/blank session) resumes its own thread — minus the message it
+    /// is speaking right now.
     #[tokio::test]
-    async fn ingest_recent_window_crosses_surfaces_without_self_echo() {
+    async fn ingest_recent_window_crosses_surfaces_and_resumes_blank_sessions() {
         let (dir, tree, pool) = setup_workdir().await;
         let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\",\"suggested_seed\":\"Ok.\"}");
         let policy = IngestPolicy::default();
+        let salotto_window = vec![RecentMessage {
+            role: MessageRole::User,
+            text: "il pollo è venuto benissimo".to_owned(),
+            timestamp: None,
+        }];
+        // Turn A — first exchange ever: nothing to serve, not even itself
+        // (the fetch runs before the record).
         let mut turn_a = req_consumer("il pollo è venuto benissimo", "alice", "botdeploy");
         turn_a.metadata.channel = Some("salotto".to_owned());
-        wiki_ingest_message(&pool, &tree, fake_embedder(), &llm, None, turn_a, &policy)
+        let resp = wiki_ingest_message(&pool, &tree, fake_embedder(), &llm, None, turn_a, &policy)
             .await
             .expect("turn A");
-        // The same surface asks again: its own words must not come back.
-        let mut again_a = req_consumer("e la torta com'era?", "alice", "botdeploy");
-        again_a.metadata.channel = Some("salotto".to_owned());
-        let resp = wiki_ingest_message(&pool, &tree, fake_embedder(), &llm, None, again_a, &policy)
+        assert!(
+            resp.recent_window.is_none(),
+            "first turn served its own current message: {:?}",
+            resp.recent_window
+        );
+        // Turn A2 — same surface, NO local window (idle-expiry reborn
+        // session, hermes#43008): it resumes its own thread (43j).
+        let mut reborn_a = req_consumer("e la torta com'era?", "alice", "botdeploy");
+        reborn_a.metadata.channel = Some("salotto".to_owned());
+        let resp =
+            wiki_ingest_message(&pool, &tree, fake_embedder(), &llm, None, reborn_a, &policy)
+                .await
+                .expect("turn A2");
+        let window = resp
+            .recent_window
+            .expect("blank session resumes its own thread");
+        assert!(window.contains("il pollo è venuto benissimo"), "{window}");
+        assert!(window.contains("via botdeploy/salotto"), "{window}");
+        // Turn A3 — same surface WITH its local window: its own words must
+        // not come back (the self-echo exclusion).
+        let mut mid_a = req_consumer("aggiungo il rosmarino", "alice", "botdeploy");
+        mid_a.metadata.channel = Some("salotto".to_owned());
+        mid_a.recent_messages = salotto_window.clone();
+        let resp = wiki_ingest_message(&pool, &tree, fake_embedder(), &llm, None, mid_a, &policy)
             .await
-            .expect("turn A2");
+            .expect("turn A3");
         assert!(
             resp.recent_window.is_none(),
             "self-echo served: {:?}",
             resp.recent_window
         );
-        // A different surface of the same consumer sees the live thread.
+        // Turn B — a different surface of the same consumer, window in
+        // hand: it sees the salotto thread, never its own turn.
         let mut turn_b = req_consumer("mettici meno sale la prossima volta", "alice", "botdeploy");
         turn_b.metadata.channel = Some("telegram".to_owned());
+        turn_b.recent_messages = salotto_window;
         let resp = wiki_ingest_message(&pool, &tree, fake_embedder(), &llm, None, turn_b, &policy)
             .await
             .expect("turn B");

@@ -238,7 +238,7 @@ internal pipeline.
   "context_snippet": "…",              // recalled MEMORY pre-formatted for the agent's system prompt (null when empty)
   "rules": "…",                        // standing BEHAVIOUR directives to APPLY this turn — kept apart from memory (null when none)
   "suggested_seed": "…",               // a natural-reply proposal the agent may refine
-  "recent_window": "…",                // the user's live thread from their OTHER surfaces (group 43) — self-labelled, inject verbatim (null when nothing to serve)
+  "recent_window": "…",                // the user's live thread from their other surfaces (group 43) — self-labelled, inject verbatim (null when nothing to serve). A turn sent WITHOUT recent_messages is treated as a blank-context session and served its OWN surface too (fresh-session resume, 43j) — minus the current message
   "capture_id": "018f…",               // fact_id of the new block, if a capture happened (audit-only)
   "needs_disambig": false,             // true when ambiguous candidates need a user choice
   "disambig_candidates": [             // present (possibly empty array) alongside needs_disambig

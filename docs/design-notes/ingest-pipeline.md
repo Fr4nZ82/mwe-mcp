@@ -1282,6 +1282,21 @@ every surface but its own — (consumer, channel) when the label is present,
 the whole consumer when it is not. Guests get nothing and contribute
 nothing; the degraded/fallback paths serve `None`.
 
+**Fresh-session resume (43j).** The self-echo exclusion applies only to a
+requester that *brought its own local window*: the turn's `recent_messages`
+argument is the signal. A turn that carries none has no context a served
+thread could duplicate — a reborn/blank session (hermes idle-expiry,
+upstream hermes-agent#43008) or a consumer that keeps no window at all —
+so it is served every surface **including its own**: its own channel's
+tail is exactly the thread the user is continuing. The fetch runs before
+the turn's own buffer write, so a requester served its own surface is
+never handed the message it is speaking right now. Net effect: a consumer
+on this contract never wakes up amnesiac — the window IS the session
+resume, no host-side support needed. (Known soft edge: a consumer whose
+local window is emptier-lived than its host transcript — hermes after a
+gateway restart — gets one turn of mild reference-tagged duplication,
+self-healing on the next turn.)
+
 ## Test coverage
 
 - **Pure helpers**: 8 tests (intent parser canonical + default, plan

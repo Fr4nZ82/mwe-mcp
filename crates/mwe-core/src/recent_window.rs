@@ -89,18 +89,34 @@ pub async fn record_exchange(
     Ok(())
 }
 
-/// The user's live window minus the requesting surface, oldest first.
+/// Which surfaces of the user's window a requester is served.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceFilter {
+    /// The requester holds its own live context: hide its surface — the
+    /// (consumer, channel) pair when a channel was declared, the whole
+    /// consumer otherwise — so the served section stays purely additive.
+    ExcludeRequester,
+    /// The requester carried NO local context (a reborn/blank session, or
+    /// a consumer that keeps no window at all): serve every surface, its
+    /// own included — there is nothing local a served thread could
+    /// duplicate, and its own channel's tail is exactly the thread the
+    /// user is continuing (fresh-session resume, 43j / hermes#43008).
+    IncludeRequester,
+}
+
+/// The user's live window, oldest first, filtered per [`SurfaceFilter`].
 ///
-/// Self-echo exclusion: when the requester declared a `channel`, only its
-/// own (consumer, channel) pair is excluded — sibling channels of the same
-/// consumer stay visible (the hermes case: one token, many chats). Without
-/// a channel the whole consumer is excluded — conservative, no self-echo at
-/// the cost of sibling-channel visibility.
+/// Self-echo exclusion (the `ExcludeRequester` arm): when the requester
+/// declared a `channel`, only its own (consumer, channel) pair is excluded —
+/// sibling channels of the same consumer stay visible (the hermes case: one
+/// token, many chats). Without a channel the whole consumer is excluded —
+/// conservative, no self-echo at the cost of sibling-channel visibility.
 pub async fn fetch_window(
     pool: &SqlitePool,
     user_id: &str,
     requesting_consumer: &str,
     requesting_channel: Option<&str>,
+    filter: SurfaceFilter,
     ttl_hours: u32,
     limit: usize,
 ) -> Result<Vec<RecentExchange>, sqlx::Error> {
@@ -109,8 +125,20 @@ pub async fn fetch_window(
     }
     let cutoff = (chrono::Utc::now() - chrono::Duration::hours(i64::from(ttl_hours))).to_rfc3339();
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let rows: Vec<(String, String, String, String, String)> = match requesting_channel {
-        Some(channel) => {
+    let rows: Vec<(String, String, String, String, String)> = match (filter, requesting_channel) {
+        (SurfaceFilter::IncludeRequester, _) => {
+            sqlx::query_as(
+                "SELECT consumer_id, channel, author, text, occurred_at FROM recent_exchanges \
+                 WHERE user_id = ? AND occurred_at >= ? \
+                 ORDER BY id DESC LIMIT ?",
+            )
+            .bind(user_id)
+            .bind(&cutoff)
+            .bind(limit)
+            .fetch_all(pool)
+            .await?
+        },
+        (SurfaceFilter::ExcludeRequester, Some(channel)) => {
             sqlx::query_as(
                 "SELECT consumer_id, channel, author, text, occurred_at FROM recent_exchanges \
                  WHERE user_id = ? AND occurred_at >= ? \
@@ -125,7 +153,7 @@ pub async fn fetch_window(
             .fetch_all(pool)
             .await?
         },
-        None => {
+        (SurfaceFilter::ExcludeRequester, None) => {
             sqlx::query_as(
                 "SELECT consumer_id, channel, author, text, occurred_at FROM recent_exchanges \
                  WHERE user_id = ? AND occurred_at >= ? AND consumer_id != ? \
@@ -209,9 +237,17 @@ mod tests {
             .unwrap();
         }
         // Cap 3: only the newest three survive.
-        let got = fetch_window(&pool, "anna", "other", None, 4, 32)
-            .await
-            .unwrap();
+        let got = fetch_window(
+            &pool,
+            "anna",
+            "other",
+            None,
+            SurfaceFilter::ExcludeRequester,
+            4,
+            32,
+        )
+        .await
+        .unwrap();
         let texts: Vec<_> = got.iter().map(|e| e.text.as_str()).collect();
         assert_eq!(texts, vec!["m2", "m3", "m4"]);
         // An expired row is dropped on the next write.
@@ -228,9 +264,17 @@ mod tests {
         )
         .await
         .unwrap();
-        let got = fetch_window(&pool, "anna", "other", None, 4, 32)
-            .await
-            .unwrap();
+        let got = fetch_window(
+            &pool,
+            "anna",
+            "other",
+            None,
+            SurfaceFilter::ExcludeRequester,
+            4,
+            32,
+        )
+        .await
+        .unwrap();
         assert!(got.iter().all(|e| e.text != "old"), "expired row served");
     }
 
@@ -254,20 +298,58 @@ mod tests {
             .unwrap();
         }
         // Channel declared: only the same (consumer, channel) pair is hidden.
-        let got = fetch_window(&pool, "anna", "bot", Some("telegram"), 4, 32)
-            .await
-            .unwrap();
+        let got = fetch_window(
+            &pool,
+            "anna",
+            "bot",
+            Some("telegram"),
+            SurfaceFilter::ExcludeRequester,
+            4,
+            32,
+        )
+        .await
+        .unwrap();
         let texts: Vec<_> = got.iter().map(|e| e.text.as_str()).collect();
         assert_eq!(texts, vec!["dal salotto"]);
         // No channel: the whole consumer is hidden.
-        let got = fetch_window(&pool, "anna", "bot", None, 4, 32)
-            .await
-            .unwrap();
+        let got = fetch_window(
+            &pool,
+            "anna",
+            "bot",
+            None,
+            SurfaceFilter::ExcludeRequester,
+            4,
+            32,
+        )
+        .await
+        .unwrap();
         assert!(got.is_empty());
+        // A requester with no local context is served every surface, its
+        // own included (fresh-session resume, 43j).
+        let got = fetch_window(
+            &pool,
+            "anna",
+            "bot",
+            Some("telegram"),
+            SurfaceFilter::IncludeRequester,
+            4,
+            32,
+        )
+        .await
+        .unwrap();
+        assert_eq!(got.len(), 2);
         // Windows never cross users.
-        let got = fetch_window(&pool, "beppe", "other", None, 4, 32)
-            .await
-            .unwrap();
+        let got = fetch_window(
+            &pool,
+            "beppe",
+            "other",
+            None,
+            SurfaceFilter::ExcludeRequester,
+            4,
+            32,
+        )
+        .await
+        .unwrap();
         assert!(got.is_empty());
     }
 
