@@ -30,6 +30,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # The bridge plugins are stdlib-only, but the smoke drives them through
+      # hermes-agent's REAL plugin seams and hermes_cli.config imports yaml.
+      - run: pip install pyyaml
       - run: python3 agents-bridges/_harness/run_smokes.py --check
       - run: python3 agents-bridges/_harness/run_smokes.py
 
@@ -42,4 +45,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: pip install pyyaml
       - run: python3 agents-bridges/_harness/run_smokes.py --upstream-head
