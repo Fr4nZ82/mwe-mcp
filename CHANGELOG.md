@@ -11,6 +11,22 @@ semver-governed surface — breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+## 1.4.0 — 2026-07-15
+
+### Added
+
+- **Fresh-session resume: a blank-context requester is served its own
+  surface.** A `wiki_ingest_message` turn that carries no `recent_messages`
+  has no local context a served thread could duplicate — a reborn/blank
+  session (e.g. a hermes gateway session silently reset by idle-expiry,
+  upstream hermes-agent#43008) or a consumer that keeps no window at all.
+  Such a turn now receives the cross-consumer recent window **including its
+  own surface**: the thread the user is continuing, minus the message being
+  spoken (the window fetch runs before the turn's own buffer write). Turns
+  that bring their window keep the self-echo exclusion unchanged. A consumer
+  on this contract never wakes up amnesiac — session resume with no
+  host-side support.
+
 ## 1.3.0 — 2026-07-15
 
 ### Added
