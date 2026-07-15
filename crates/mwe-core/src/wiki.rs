@@ -2,10 +2,13 @@
 //! Memory-wiki filesystem surface I/O.
 //!
 //! `mwe-core::wiki` is the single owner of the `<workdir>/wikis/…` directory
-//! tree. Per the [memory model](../../../docs/concepts/memory-model.md)
-//! the filesystem is the source of truth: every internal API in this module
-//! either reads the tree, or rewrites a file atomically while the caller
-//! mirrors the change into the `fact_index` (the DB is a rebuildable cache).
+//! tree — the memory's readable surface. Per the
+//! [memory model](../../../docs/concepts/memory-model.md), authority is
+//! split by wiki family: for standard wikis the `fact_index` is the
+//! authoritative fact store and the files are its prose render; for smart
+//! wikis the page content on disk is what gets indexed. Every internal API
+//! in this module either reads the tree or rewrites a file atomically,
+//! while the caller keeps the `fact_index` in step.
 //!
 //! ## What lives on disk
 //!

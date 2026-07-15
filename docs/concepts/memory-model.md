@@ -335,6 +335,21 @@ family:
   There the files do drive the index, because the consumer owns those
   bytes.
 
+The two families are one principle, not two: **authority follows the
+author**. Engine-curated memory is DB-authoritative because the engine is
+the author (the pages are its render); consumer-authored documentation is
+file-authoritative because the consumer owns those bytes verbatim. Nor is
+the smart family complexity leaking into the standard path — a smart wiki
+is filtered out of the ingest capture routing at the first gate, so a
+standard agent never touches (or pays for) that machinery. It exists
+because a consumer that brings its own model shouldn't pay a **second
+bill** to have its writes re-interpreted by the internal LLM: it authors
+pages directly (`wiki_admin_push`, verbatim, no classifier round-trip)
+and gets one governed home for its project documentation *inside the same
+memory* — so a standard consumer can recall from it (ACL permitting) and
+leave it notes through the briefing channel (`wiki_admin_notify` →
+`_briefing.md`), which the smart consumer drains at its next session.
+
 The operational consequence: `engine.db` is **not a disposable cache** —
 back it up like the files (the dashboard's Backup console and the
 snapshot tooling, `mwe_core::backup`, exist for exactly that). What is
