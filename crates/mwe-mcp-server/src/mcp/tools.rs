@@ -262,12 +262,23 @@ fn parse_ingest_metadata(
         })
         .unwrap_or_default();
 
+    // Opaque surface label for the cross-consumer recent window (group 43):
+    // multi-channel consumers tag their surfaces apart so only the
+    // requesting one is excluded from what the window serves back.
+    let channel = metadata
+        .and_then(|m| m.get("channel"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+
     Ok((
         disambig_choice,
         IngestMetadata {
             locale,
             occurred_at,
             authored_refs,
+            channel,
         },
     ))
 }
@@ -354,6 +365,7 @@ pub(super) async fn call_wiki_ingest_message(
         "context_snippet": resp.context_snippet,
         "rules": resp.rules,
         "suggested_seed": resp.suggested_seed,
+        "recent_window": resp.recent_window,
         "capture_id": resp.capture_id.map(|f| f.as_str().to_owned()),
         "needs_disambig": resp.needs_disambig,
         "disambig_candidates": resp.disambig_candidates
@@ -2746,5 +2758,18 @@ mod tests {
         let meta = json!({ "authored_refs": "not-an-array" });
         let (_d, parsed) = parse_ingest_metadata(Some(&meta)).expect("parse");
         assert!(parsed.authored_refs.is_empty());
+    }
+
+    #[test]
+    fn parse_ingest_metadata_reads_channel() {
+        let (_d, parsed) =
+            parse_ingest_metadata(Some(&json!({ "channel": "  telegram:42  " }))).expect("parse");
+        assert_eq!(parsed.channel.as_deref(), Some("telegram:42"));
+        // Blank normalises to unset; absent stays unset.
+        let (_d, parsed) =
+            parse_ingest_metadata(Some(&json!({ "channel": "   " }))).expect("parse");
+        assert!(parsed.channel.is_none());
+        let (_d, parsed) = parse_ingest_metadata(None).expect("parse");
+        assert!(parsed.channel.is_none());
     }
 }

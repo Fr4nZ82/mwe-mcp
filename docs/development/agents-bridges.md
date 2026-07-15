@@ -122,7 +122,12 @@ Three hermes-agent plugins, stdlib-only, no upstream patch:
   `prefetch()` is the one mechanical `wiki_ingest_message` per turn —
   synchronous by design (the ratified latency trade-off) — and returns the
   recall block, which hermes injects into the current turn's user message
-  after the stable prompt prefix; `sync_turn()` keeps the consumer-owned
+  after the stable prompt prefix; the server's `recent_window` field (the
+  cross-consumer recent window, group 43) is injected verbatim between the
+  rules and the recalled facts, and every ingest carries
+  `metadata.channel` = the gateway key (`<platform>:<user_id>`) so the
+  server can tag this surface and exclude it from what it serves back;
+  `sync_turn()` keeps the consumer-owned
   window locally; `mwe_search` / `mwe_dashboard_link` /
   `mwe_disambig_commit` are proxied through a per-sender act-as client
   pool (`senderMap` routes gateway senders, `primaryUser` is the
@@ -146,11 +151,22 @@ Three hermes-agent plugins, stdlib-only, no upstream patch:
   trigger is hermes's token threshold **capped in absolute tokens**
   (default 30k): the host only hands the engine token counts, and a bare
   percent-of-context threshold on a million-token model would let every
-  call grow to ~786k tokens before the first cut. A fire that finds
-  nothing beyond the window reports through the host's abort protocol so
-  no session rotation happens on a no-op; deployments pair the engine
-  with `compression.in_place: true` so a real cut rewrites the session
-  instead of rotating its id.
+  call grow to ~786k tokens before the first cut. Because the window
+  bounds *turns* and not *weight*, a cut also **snips oversized
+  tool-result contents** in the kept window (`snip_tool_chars`, default
+  4000; copy-on-write, and the tail from the last user message onward is
+  never touched so a mid-loop fire can't snip a result the model is
+  still acting on) — without this, tool-heavy turns (browser snapshots)
+  keep the bounded window permanently above the trigger. A fire that
+  finds nothing to drop and nothing worth snipping reports through the
+  host's abort protocol so no session rotation happens on a no-op.
+  The engine **requires rotation mode** — `compression.in_place` stays
+  `false` (the vanilla default): hermes-agent's in-place path nulls the
+  turn's `conversation_history` and resets its flush bookkeeping after a
+  preflight cut, so the end-of-turn persist re-appends the whole
+  compacted window into the same active transcript, doubling it and
+  replaying old user messages to the model (production incident,
+  2026-07-15).
 - **`mwe-media` gateway hook plugin** (standalone, opt-in via
   `plugins.enabled: [mwe-media]`): intercepts hermes's documented
   `pre_gateway_dispatch` seam, where Telegram media already sit in the

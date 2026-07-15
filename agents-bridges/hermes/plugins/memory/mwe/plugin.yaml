@@ -1,6 +1,6 @@
 name: mwe
-version: 0.1.0
-description: "mwe-mcp persistent memory — one mechanical ingest+recall per turn over MCP (the mwe-mcp hermes bridge, memory half). Stdlib-only, no pip dependencies."
+version: 0.2.0
+description: "mwe-mcp persistent memory — one mechanical ingest+recall per turn over MCP, cross-consumer recent window injected verbatim (the mwe-mcp hermes bridge, memory half). Stdlib-only, no pip dependencies."
 requires_env:
   - MWE_TOKEN
 hooks:

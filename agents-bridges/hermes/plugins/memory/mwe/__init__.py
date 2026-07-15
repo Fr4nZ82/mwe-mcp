@@ -299,8 +299,9 @@ class MweMemoryProvider(MemoryProvider):
             args["recent_messages"] = window
         if attachments:
             args["attachments"] = attachments
-        if self._locale:
-            args["metadata"] = {"locale": self._locale}
+        metadata = self._turn_metadata()
+        if metadata:
+            args["metadata"] = metadata
         try:
             resp = self._client(self._sender).call_tool("wiki_ingest_message", args)
         except Exception as e:
@@ -316,7 +317,8 @@ class MweMemoryProvider(MemoryProvider):
         feed the agent's OWN reply back for extraction so it remembers its half
         of the turn (a deadline it derived, advice it gave, a decision reached).
 
-        The window stays local (the server keeps no transcript). The
+        The window stays local (the server keeps no unbounded transcript —
+        only its own capped, TTL'd recent-exchange buffer, group 43). The
         assistant-pass ingest fires on a daemon thread, under the same
         degradation contract as every memory write: the reply has already gone
         out, so this must never add latency to turn completion nor kill a turn
@@ -341,10 +343,11 @@ class MweMemoryProvider(MemoryProvider):
             }
             if window:
                 args["recent_messages"] = window
-            if self._locale:
-                args["metadata"] = {"locale": self._locale}
+            metadata = self._turn_metadata()
+            if metadata:
+                args["metadata"] = metadata
             self._spawn_assistant_ingest(args)
-        # Window maintenance (local; the server keeps no transcript).
+        # Window maintenance (local; the server keeps no unbounded transcript).
         if (user_content or "").strip():
             self._window.append({"role": "user", "text": user_content, "timestamp": now})
         if reply:
@@ -465,6 +468,19 @@ class MweMemoryProvider(MemoryProvider):
             self._clients[act_as] = client
         return client
 
+    def _turn_metadata(self) -> Dict[str, Any]:
+        """The per-turn metadata keys every ingest variant carries: the
+        deployment locale and the surface label (`channel` = the gateway
+        key), which the server's cross-consumer recent window (mwe-mcp
+        group 43) uses to tag this surface and exclude it from what it
+        serves back."""
+        metadata: Dict[str, Any] = {}
+        if self._locale:
+            metadata["locale"] = self._locale
+        if self._gateway_key:
+            metadata["channel"] = self._gateway_key
+        return metadata
+
     def _render_block(self, text: str, window: List[Dict[str, Any]],
                       resp: Dict[str, Any]) -> str:
         parts: List[str] = []
@@ -477,6 +493,14 @@ class MweMemoryProvider(MemoryProvider):
         rules = (resp.get("rules") or "").strip()
         if rules:
             parts.append(rules)
+        # The user's live thread from their OTHER surfaces (cross-consumer
+        # recent window, group 43). Self-labelled server-side — header,
+        # relative ages and the do-not-re-answer framing included — so it
+        # is injected verbatim, between the directives and the recalled
+        # facts: thread first, memory after.
+        recent = (resp.get("recent_window") or "").strip()
+        if recent:
+            parts.append(recent)
         snippet = (resp.get("context_snippet") or "").strip()
         if snippet:
             parts.append(snippet)
@@ -529,8 +553,7 @@ class MweMemoryProvider(MemoryProvider):
         attachments = self._spool_attachments(self._drain_spool())
         if attachments:
             args["attachments"] = attachments
-        if self._locale:
-            args["metadata"]["locale"] = self._locale
+        args["metadata"].update(self._turn_metadata())
         resp = self._client(self._sender).call_tool("wiki_ingest_message", args)
         self._pending_disambig = None
         return resp

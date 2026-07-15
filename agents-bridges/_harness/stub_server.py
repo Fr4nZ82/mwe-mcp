@@ -46,6 +46,8 @@ DEFAULT_RESPONSES = {
         "intent_classified": "recall",
         "context_snippet": "Recall: (stub) nothing relevant on file.",
         "suggested_seed": "(stub seed — rewrite, never forward verbatim)",
+        "recent_window": "RECENT EXCHANGES ON YOUR OTHER CHANNELS WITH THIS USER "
+                         "(stub): [just now · via bot/salotto] user: ciao dal salotto",
         "capture_id": None,
         "needs_disambig": False,
         "disambig_candidates": [],

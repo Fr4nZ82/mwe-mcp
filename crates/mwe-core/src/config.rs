@@ -1467,6 +1467,21 @@ pub struct RecallConfig {
     /// deployment so dated commitments land at the right instant.
     #[serde(default)]
     pub ingest_timezone: Option<String>,
+    /// Override `IngestPolicy::recent_window_entries` — per-user cap of the
+    /// cross-consumer recent window's buffer (default 32; `0` disables the
+    /// window entirely).
+    #[serde(default)]
+    pub recent_window_entries: Option<usize>,
+    /// Override `IngestPolicy::recent_window_ttl_hours` — how long an
+    /// exchange stays servable (default 4; short by design — the window
+    /// serves the thread of discourse, not history).
+    #[serde(default)]
+    pub recent_window_ttl_hours: Option<u32>,
+    /// Override `IngestPolicy::recent_window_chars` — char budget of the
+    /// rendered `recent_window` section (default 1200; `0` stops serving
+    /// while buffering continues).
+    #[serde(default)]
+    pub recent_window_chars: Option<usize>,
 }
 
 impl RecallConfig {
@@ -1510,6 +1525,15 @@ impl RecallConfig {
         }
         if let Some(v) = self.max_agent_history_chars {
             p.max_agent_history_chars = v;
+        }
+        if let Some(v) = self.recent_window_entries {
+            p.recent_window_entries = v;
+        }
+        if let Some(v) = self.recent_window_ttl_hours {
+            p.recent_window_ttl_hours = v;
+        }
+        if let Some(v) = self.recent_window_chars {
+            p.recent_window_chars = v;
         }
         // Timezone: YAML field wins; otherwise fall back to the
         // `MWE_INGEST_TIMEZONE` env var so a deployment can enable it with a

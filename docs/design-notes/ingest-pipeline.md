@@ -1252,10 +1252,35 @@ The same principle decides where the raw transcript lives. **The
 consumer owns the transcript**: it supplies the sliding window via
 `IngestRequest.recent_messages` (the prompt cap is
 `max_recent_messages = 16`, the "keepTurns×2" window). mwe-mcp keeps
-**no** server-side raw-message archive — the architecture diagram's
-"archive" stage is the consumer's responsibility. This is the
-chosen reading (additive later if a use case ever demands a server-side
-archive); for now the server only sees the window the consumer hands it.
+**no unbounded** server-side raw-message archive — the architecture
+diagram's "archive" stage is the consumer's responsibility. The one
+carve-out (43-P, founder-confirmed 2026-07-15) is the **cross-consumer
+recent window** below: a capped, TTL'd serving buffer, not an archive.
+
+## The cross-consumer recent window (group 43)
+
+The recall block carries facts; the live **thread of discourse** used to
+live only in each consumer's local window — say a thing to the voice
+assistant, continue on Telegram, and the conversation didn't follow. Since
+the server already receives every turn (the user's ingest plus the
+group-27 assistant pass), `mwe_core::recent_window` retains a bounded
+rolling buffer per user (`recent_exchanges`, migration 0060: hard cap
+`recent_window_entries` = 32 AND TTL `recent_window_ttl_hours` = 4, both
+enforced in the write path; never indexed, never embedded, never
+REM-processed; deleted with the user) and every ingest response serves it
+back as the self-labelled **`recent_window`** field — `RECENT EXCHANGES ON
+YOUR OTHER CHANNELS WITH THIS USER (reference — the thread may have moved
+on; do not re-answer these):`, entries tagged `[<relative age> · via
+<consumer>/<channel>] <speaker>: <text>`, oldest first, newest winning the
+`recent_window_chars` (1200) budget. The TTL is short **by design**: the
+window serves the thread, not history — a thread is live on the scale of
+minutes to hours, and anything older has either sedimented into facts
+through the ordinary ingest or expired with the conversation it belonged
+to. Self-echo exclusion keeps the section purely additive: the requester
+declares its surface via the optional `metadata.channel` label and gets
+every surface but its own — (consumer, channel) when the label is present,
+the whole consumer when it is not. Guests get nothing and contribute
+nothing; the degraded/fallback paths serve `None`.
 
 ## Test coverage
 

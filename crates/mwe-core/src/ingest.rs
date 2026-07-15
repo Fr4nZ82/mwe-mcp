@@ -249,6 +249,13 @@ pub struct IngestMetadata {
     /// (roadmap group 17). Empty for a pure-standard turn. Downstream
     /// persistence + reference-not-body consolidation land in 17d.
     pub authored_refs: Vec<String>,
+    /// Opaque surface label the consumer chose for this conversation
+    /// (`telegram:123`, `salotto`, ...). Multi-channel consumers — one
+    /// token, many chats — use it so the cross-consumer recent window
+    /// (group 43) can tag their surfaces apart and exclude only the
+    /// requesting one from what it serves back. Unset → the consumer is
+    /// treated as a single surface.
+    pub channel: Option<String>,
 }
 
 // ---------- Public output types ----------
@@ -328,6 +335,15 @@ pub struct IngestResponse {
     /// Natural-language seed the agent can refine into the final reply.
     /// `None` is legal — the agent decides what to say.
     pub suggested_seed: Option<String>,
+    /// The user's live thread from their OTHER surfaces — the
+    /// cross-consumer recent window (group 43). A self-labelled section
+    /// (`RECENT EXCHANGES ON YOUR OTHER CHANNELS …`) the consumer injects
+    /// verbatim, like [`rules`](Self::rules): entries carry their relative
+    /// age and origin surface, oldest first, newest kept under the char
+    /// budget. `None` when the buffer has nothing for this user, when the
+    /// only exchanges are the requesting surface's own, or when the knobs
+    /// disable the window.
+    pub recent_window: Option<String>,
     /// `fact_id` of the newly captured row. Audit-only — the agent
     /// must not cross-link to it in chat (ingest pipeline).
     pub capture_id: Option<FactId>,
@@ -445,6 +461,20 @@ pub struct IngestPolicy {
     /// +offset error). DST-aware conversion is left to the classifier; no tz
     /// database is compiled in. `None` keeps the pre-existing UTC-only anchor.
     pub ingest_timezone: Option<String>,
+    /// Hard cap on buffered exchanges per user in the cross-consumer
+    /// recent window (group 43). `0` disables the window entirely —
+    /// nothing is buffered, nothing is served.
+    pub recent_window_entries: usize,
+    /// TTL of a buffered exchange, in hours. Short by design (43-P): the
+    /// window serves the *thread of discourse*, not history — a thread is
+    /// live on the scale of minutes to hours; older exchanges have either
+    /// sedimented into facts through the ordinary ingest or expired with
+    /// the conversation they belonged to.
+    pub recent_window_ttl_hours: u32,
+    /// Character budget of the rendered `recent_window` section. Newest
+    /// entries win the budget; the section renders oldest-first. `0`
+    /// disables serving (buffering still happens for other surfaces).
+    pub recent_window_chars: usize,
 }
 
 impl Default for IngestPolicy {
@@ -470,6 +500,9 @@ impl Default for IngestPolicy {
             due_soon_top_k: 3,
             due_soon_horizon_hours: 168, // 7 days
             ingest_timezone: None,
+            recent_window_entries: 32,
+            recent_window_ttl_hours: 4,
+            recent_window_chars: 1_200,
         }
     }
 }
@@ -3237,6 +3270,78 @@ fn format_behaviour_rules(rules: &[(FactId, String)], policy: &IngestPolicy) -> 
     )
 }
 
+/// Stable header of the `recent_window` field — the user's live thread
+/// from their OTHER surfaces (cross-consumer recent window, group 43).
+/// The "do not re-answer" framing is load-bearing: replayed turns at a
+/// context tail invite a model to answer them again.
+const HDR_RECENT_EXCHANGES: &str = "RECENT EXCHANGES ON YOUR OTHER CHANNELS WITH THIS USER \
+     (reference — the thread may have moved on; do not re-answer these):";
+
+/// Per-entry text ceiling inside the `recent_window` section — one
+/// utterance never eats the whole section budget.
+const RECENT_ENTRY_CHARS: usize = 240;
+
+/// Render the cross-consumer recent window as its self-labelled section.
+/// Same discipline as [`fit_bullets`] — whole entries, never a mid-word
+/// cut — but the budget walk runs newest-first while the render stays
+/// oldest-first, so when the budget bites it is the oldest exchanges that
+/// fall off, not the freshest.
+fn format_recent_window(
+    entries: &[crate::recent_window::RecentExchange],
+    now: chrono::DateTime<chrono::Utc>,
+    policy: &IngestPolicy,
+) -> Option<String> {
+    if entries.is_empty() || policy.recent_window_chars == 0 {
+        return None;
+    }
+    let lines: Vec<String> = entries
+        .iter()
+        .map(|e| {
+            let mut text: String = e.text.trim().chars().take(RECENT_ENTRY_CHARS).collect();
+            if text.chars().count() == RECENT_ENTRY_CHARS {
+                text.push('…');
+            }
+            let surface = match (e.consumer_id.as_str(), e.channel.as_str()) {
+                ("", "") => String::from("another channel"),
+                (c, "") => c.to_owned(),
+                ("", ch) => ch.to_owned(),
+                (c, ch) => format!("{c}/{ch}"),
+            };
+            let speaker = match e.author {
+                MessageRole::User => "user",
+                MessageRole::Assistant => "agent",
+            };
+            format!(
+                "[{} · via {surface}] {speaker}: {text}",
+                crate::recent_window::relative_age(&e.occurred_at, now)
+            )
+        })
+        .collect();
+    // Newest-first budget walk over the oldest-first render order.
+    let header_cost = HDR_RECENT_EXCHANGES.chars().count();
+    let mut used = header_cost;
+    let mut keep_from = lines.len();
+    for (i, line) in lines.iter().enumerate().rev() {
+        let cost = line.chars().count() + 3; // "\n- "
+        if used + cost > policy.recent_window_chars && keep_from < lines.len() {
+            break;
+        }
+        if used + cost > policy.recent_window_chars {
+            // Pathological single entry over the whole budget: keep it —
+            // an empty section would hide a live thread entirely.
+            keep_from = i;
+            break;
+        }
+        used += cost;
+        keep_from = i;
+    }
+    fit_bullets(
+        HDR_RECENT_EXCHANGES,
+        lines[keep_from..].iter().map(String::as_str),
+        policy.recent_window_chars,
+    )
+}
+
 /// Cap on agent self-facts pulled per turn for the self-context block — a
 /// safety bound; the identity core + one user's relationship are few.
 const AGENT_SELF_RECALL_CAP: usize = 100;
@@ -3849,6 +3954,10 @@ fn fallback_response(
         // is silent, exactly as it was when it rode `context_snippet`.
         rules: None,
         suggested_seed,
+        // The degraded path serves no window either: it may not even have
+        // a live pool at hand, and a missing section is the contract's
+        // "nothing for you this turn".
+        recent_window: None,
         capture_id: None,
         needs_disambig: false,
         disambig_candidates: Vec::new(),
@@ -4006,6 +4115,9 @@ pub async fn wiki_ingest_message(
             // No canned seed: the fallback's "I've noted that." would be
             // a lie on a turn that stores nothing.
             suggested_seed: None,
+            // Guests are not durable users: nothing is buffered for them
+            // and nothing is served to them.
+            recent_window: None,
             capture_id: None,
             needs_disambig: false,
             disambig_candidates: Vec::new(),
@@ -4948,6 +5060,44 @@ pub async fn wiki_ingest_message(
         due_soon,
     );
 
+    // Cross-consumer recent window (group 43): buffer this turn for the
+    // user's OTHER surfaces, then serve theirs back — the thread of
+    // discourse follows the user. Best-effort on both legs: a buffer
+    // hiccup never touches the turn.
+    let consumer_surface = request.consumer_id.clone().unwrap_or_default();
+    let surface_channel = request.metadata.channel.clone().unwrap_or_default();
+    if let Err(e) = crate::recent_window::record_exchange(
+        pool,
+        &request.sender_id,
+        &consumer_surface,
+        &surface_channel,
+        request.author,
+        &request.text,
+        turn_now,
+        policy.recent_window_entries,
+        policy.recent_window_ttl_hours,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "recent-window: buffer write failed (turn unaffected)");
+    }
+    let recent_window = match crate::recent_window::fetch_window(
+        pool,
+        &request.sender_id,
+        &consumer_surface,
+        request.metadata.channel.as_deref(),
+        policy.recent_window_ttl_hours,
+        policy.recent_window_entries,
+    )
+    .await
+    {
+        Ok(entries) => format_recent_window(&entries, turn_now, policy),
+        Err(e) => {
+            tracing::warn!(error = %e, "recent-window: fetch failed (served empty)");
+            None
+        },
+    };
+
     // Journal the route this recall took (the admin Traces page). Best-effort
     // telemetry: a journal failure is logged and never touches the turn.
     record_ingest_trace(
@@ -5002,6 +5152,7 @@ pub async fn wiki_ingest_message(
         context_snippet,
         rules,
         suggested_seed,
+        recent_window,
         capture_id,
         needs_disambig,
         disambig_candidates,
@@ -6438,6 +6589,50 @@ mod tests {
         assert_eq!(resp.suggested_seed.as_deref(), Some("You're welcome."));
         assert!(resp.capture_id.is_none());
         assert!(resp.llm_used);
+        drop(dir);
+    }
+
+    /// Cross-consumer recent window (group 43): a turn from one surface is
+    /// served to the user's other surfaces — tagged with its origin and
+    /// relative age — and never echoed back to the surface that spoke it.
+    #[tokio::test]
+    async fn ingest_recent_window_crosses_surfaces_without_self_echo() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\",\"suggested_seed\":\"Ok.\"}");
+        let policy = IngestPolicy::default();
+        let mut turn_a = req_consumer("il pollo è venuto benissimo", "alice", "botdeploy");
+        turn_a.metadata.channel = Some("salotto".to_owned());
+        wiki_ingest_message(&pool, &tree, fake_embedder(), &llm, None, turn_a, &policy)
+            .await
+            .expect("turn A");
+        // The same surface asks again: its own words must not come back.
+        let mut again_a = req_consumer("e la torta com'era?", "alice", "botdeploy");
+        again_a.metadata.channel = Some("salotto".to_owned());
+        let resp = wiki_ingest_message(&pool, &tree, fake_embedder(), &llm, None, again_a, &policy)
+            .await
+            .expect("turn A2");
+        assert!(
+            resp.recent_window.is_none(),
+            "self-echo served: {:?}",
+            resp.recent_window
+        );
+        // A different surface of the same consumer sees the live thread.
+        let mut turn_b = req_consumer("mettici meno sale la prossima volta", "alice", "botdeploy");
+        turn_b.metadata.channel = Some("telegram".to_owned());
+        let resp = wiki_ingest_message(&pool, &tree, fake_embedder(), &llm, None, turn_b, &policy)
+            .await
+            .expect("turn B");
+        let window = resp
+            .recent_window
+            .expect("window served to the other surface");
+        assert!(window.starts_with(HDR_RECENT_EXCHANGES), "{window}");
+        assert!(window.contains("il pollo è venuto benissimo"), "{window}");
+        assert!(window.contains("via botdeploy/salotto"), "{window}");
+        assert!(window.contains("just now"), "{window}");
+        assert!(
+            !window.contains("meno sale"),
+            "own turn echoed back: {window}"
+        );
         drop(dir);
     }
 

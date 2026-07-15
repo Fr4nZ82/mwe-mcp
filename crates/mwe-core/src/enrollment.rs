@@ -855,6 +855,13 @@ pub async fn remove_user(
             .rows_affected();
     }
 
+    // The user's cross-consumer recent window buffer (group 43) goes with
+    // them — it is per-user conversational data, TTL'd but not yet expired.
+    sqlx::query("DELETE FROM recent_exchanges WHERE user_id = ?")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
     sqlx::query("DELETE FROM enrollment_users WHERE user_id = ?")
         .bind(user_id)
         .execute(&mut *tx)
@@ -1275,6 +1282,13 @@ mod tests {
         .execute(&pool)
         .await
         .expect("refresh");
+        sqlx::query(
+            "INSERT INTO recent_exchanges (user_id, consumer_id, channel, author, text, occurred_at)
+             VALUES ('voicebox', 'voicebox', 'salotto', 'user', 'ciao', '2026-07-02T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("recent exchange");
 
         let removal = remove_user(&pool, "voicebox")
             .await
@@ -1287,6 +1301,7 @@ mod tests {
             ("consumers", 0),
             ("consumer_delegations", 0),
             ("webagentoauth_refresh", 0),
+            ("recent_exchanges", 0),
         ] {
             let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
                 .fetch_one(&pool)

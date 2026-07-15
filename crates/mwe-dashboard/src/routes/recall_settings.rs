@@ -135,6 +135,29 @@ fn knobs() -> Vec<Knob> {
                 "Recall-block per-user agent-history section: whole bullets fitted, newest first."
                     .to_owned(),
         },
+        Knob {
+            field: "recent_window_entries",
+            label: "Recent window — entries per user",
+            default: def.recent_window_entries.to_string(),
+            help: "Cross-consumer recent window buffer cap. 0 disables the window entirely."
+                .to_owned(),
+        },
+        Knob {
+            field: "recent_window_ttl_hours",
+            label: "Recent window — TTL (hours)",
+            default: def.recent_window_ttl_hours.to_string(),
+            help: "How long an exchange stays servable. Short by design: it serves the live \
+                   thread, not history."
+                .to_owned(),
+        },
+        Knob {
+            field: "recent_window_chars",
+            label: "Recent window — budget (chars)",
+            default: def.recent_window_chars.to_string(),
+            help: "Rendered section budget: newest exchanges win, render stays oldest-first. \
+                   0 stops serving (buffering continues)."
+                .to_owned(),
+        },
     ]
 }
 
@@ -156,6 +179,9 @@ fn override_value(cfg: &RecallConfig, field: &str) -> String {
         "due_soon_horizon_hours" => s(cfg.due_soon_horizon_hours),
         "max_agent_identity_chars" => s(cfg.max_agent_identity_chars),
         "max_agent_history_chars" => s(cfg.max_agent_history_chars),
+        "recent_window_entries" => s(cfg.recent_window_entries),
+        "recent_window_ttl_hours" => s(cfg.recent_window_ttl_hours),
+        "recent_window_chars" => s(cfg.recent_window_chars),
         _ => String::new(),
     }
 }
@@ -259,7 +285,9 @@ async fn save(
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
     // `ingest_timezone` is not a knob on this panel; carry the live value
     // forward so saving recall settings never wipes a configured zone.
-    parsed.ingest_timezone = cfg.recall.ingest_timezone.clone();
+    parsed
+        .ingest_timezone
+        .clone_from(&cfg.recall.ingest_timezone);
     cfg.recall = parsed.clone();
 
     // Backup `.bak` of the live YAML (if any) before overwriting.
@@ -339,6 +367,9 @@ fn parse_form(form: &HashMap<String, String>) -> Result<RecallConfig> {
         // Not a recall knob and not on this panel — the caller carries the
         // live value forward so a save here never wipes a configured zone.
         ingest_timezone: None,
+        recent_window_entries: parse_usize(form, "recent_window_entries")?,
+        recent_window_ttl_hours: parse_u32(form, "recent_window_ttl_hours")?,
+        recent_window_chars: parse_usize(form, "recent_window_chars")?,
     })
 }
 

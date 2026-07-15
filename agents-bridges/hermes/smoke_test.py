@@ -109,6 +109,11 @@ def main():
         ok("act-as = primary human", calls[0]["headers"].get("x-mwe-act-as") == "anna")
         ok("bearer token sent", calls[0]["headers"].get("authorization") == "Bearer test-jwt")
         ok("locale forwarded", calls[0]["arguments"]["metadata"]["locale"] == "it-IT")
+        ok("surface label rides as metadata.channel",
+           calls[0]["arguments"]["metadata"].get("channel") == "cli:")
+        ok("recent_window injected verbatim (thread from other surfaces)",
+           "RECENT EXCHANGES ON YOUR OTHER CHANNELS" in block
+           and "ciao dal salotto" in block)
         ok("turn 1 has no window", "recent_messages" not in calls[0]["arguments"])
 
         # --- turn 2: consumer-owned window threaded ------------------------
