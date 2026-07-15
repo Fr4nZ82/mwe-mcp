@@ -174,8 +174,11 @@ mirrors the two natures a captured claim can have, and the classifier judges
 which one it is on every extraction. *Accumulated knowledge* (a detail in a
 story — "we ran out of milk while shopping") gains value by consolidating:
 it can ripen in the buffer overnight and come out as compiled prose, and
-nothing about the turn needs it back sooner — recall serves it from the
-buffer's promoted facts either way. An *operational container* (a list, a
+nothing about the turn needs it back sooner — recall serves buffered
+captures directly through the fresh slot either way. Batching is also the
+write economics: the compiler renders many ripened facts in one pass
+instead of re-prosing a paragraph on every message. An *operational
+container* (a list, a
 collection, a named note — "add milk to the shopping list") carries a
 **read-your-writes contract**: the user's next question is seconds away
 ("what's on the list?"), so waiting for the dream would be wrong *by the

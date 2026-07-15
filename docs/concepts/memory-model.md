@@ -344,11 +344,15 @@ is filtered out of the ingest capture routing at the first gate, so a
 standard agent never touches (or pays for) that machinery. It exists
 because a consumer that brings its own model shouldn't pay a **second
 bill** to have its writes re-interpreted by the internal LLM: it authors
-pages directly (`wiki_admin_push`, verbatim, no classifier round-trip)
-and gets one governed home for its project documentation *inside the same
-memory* — so a standard consumer can recall from it (ACL permitting) and
-leave it notes through the briefing channel (`wiki_admin_notify` →
-`_briefing.md`), which the smart consumer drains at its next session.
+pages directly (`wiki_admin_push`, verbatim, no classifier round-trip),
+and the nightly REM never reorganises what it wrote — the write-jobs skip
+the smart family entirely (a documentation wiki must stay exactly as its
+author left it; at most REM leaves *observations* on the wiki's briefing
+page). In return it gets one governed home for its project documentation
+*inside the same memory* — so a standard consumer can recall from it (ACL
+permitting) and leave it notes through the briefing channel
+(`wiki_admin_notify` → `_briefing.md`), which the smart consumer drains
+at its next session.
 
 The operational consequence: `engine.db` is **not a disposable cache** —
 back it up like the files (the dashboard's Backup console and the
