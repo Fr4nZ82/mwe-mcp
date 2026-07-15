@@ -11,6 +11,50 @@ semver-governed surface — breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+## 1.3.0 — 2026-07-15
+
+### Added
+
+- **Cross-consumer recent window — the thread of discourse follows the user.**
+  The server now retains a bounded serving buffer of the exchanges the
+  per-turn ingest already receives (per user, hard cap `recent_window_entries`
+  = 32 AND TTL `recent_window_ttl_hours` = 4, enforced in the write path;
+  never indexed, never embedded, never REM-processed; deleted with the user)
+  and every `wiki_ingest_message` response serves it back as the
+  self-labelled `recent_window` field: the user's live thread from their
+  OTHER surfaces, entries tagged with relative age and origin
+  (`[2 min ago · via <consumer>/<channel>] user: …`), oldest first, newest
+  winning the `recent_window_chars` (1200) budget, headed by an explicit
+  do-not-re-answer framing. Consumers declare their surface with the new
+  optional `metadata.channel` label; self-echo is excluded by
+  (consumer, channel) — whole consumer when no label is sent. Windows never
+  cross users. This restates the no-transcript invariant as *no unbounded
+  transcript*: the buffer serves the live thread (minutes-to-hours), while
+  long-range continuity stays with recalled facts.
+- **hermes bridge, memory plugin 0.2.0** — sends the gateway key as
+  `metadata.channel` and injects `recent_window` verbatim between the rules
+  and the recalled facts.
+
+### Fixed
+
+- **hermes bridge: `compression.in_place: true` is withdrawn — rotation mode
+  (the vanilla default) is required.** hermes-agent's in-place compaction
+  path re-appends the whole compacted window into the same active transcript
+  after a preflight cut (its flush bookkeeping resets and the turn's history
+  reference is nulled), doubling the conversation; the model then re-answers
+  the replayed tail — observed live as a Telegram bot answering yesterday's
+  messages. The bridge no longer recommends in-place anywhere; with rotation
+  the same re-append lands in the freshly rotated session, where it is
+  correct behaviour.
+- **mwe-truncate 0.3.0: oversized tool results are snipped on a cut**
+  (`snip_tool_chars`, default 4000). The window bounds *turns*, not *weight* —
+  browser-tool spam kept the bounded window permanently above the compression
+  trigger (fire-abort on every call, one session crash-looping at ~328k
+  tokens). Snipping is copy-on-write (the rotated-out archive keeps full
+  contents) and never touches the tail from the last user message onward; a
+  snip-only pass must save ≥8% or it reports a no-op through the abort
+  protocol.
+
 ## 1.2.0 — 2026-07-14
 
 ### Added
