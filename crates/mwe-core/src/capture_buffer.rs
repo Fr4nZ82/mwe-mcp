@@ -26,7 +26,7 @@
 //! this module — their pages are hand-authored via `wiki_admin_*`. The
 //! perimeter is standard families only.
 //!
-//! ## Filesystem-SSOT invariant
+//! ## Captures-journal invariant
 //!
 //! The durable source of truth for a buffered capture is the per-wiki on-disk
 //! journal `<wiki_dir>/_captures.md` ([`crate::wiki::CAPTURES_FILENAME`]). The
@@ -762,7 +762,7 @@ pub async fn restore_acl(
     Ok(res.rows_affected())
 }
 
-// ---------- filesystem-SSOT rebuild ----------
+// ---------- captures-journal rebuild ----------
 
 /// Rebuild the `capture_buffer` index for one wiki from its durable journal.
 ///
@@ -1369,7 +1369,7 @@ mod tests {
 
     #[tokio::test]
     async fn validity_survives_journal_reindex_round_trip() {
-        // Filesystem-SSOT: the validity interval must be written to the durable
+        // Captures-journal invariant: the validity interval must reach the durable
         // journal and recovered by reindex after a DB wipe — never DB-only.
         let (dir, tree, pool) = setup().await;
         let mut r = req("alice", "A Berlino questa settimana.", "user:alice");
@@ -1406,7 +1406,7 @@ mod tests {
 
     #[tokio::test]
     async fn salience_survives_journal_reindex_round_trip() {
-        // Filesystem-SSOT: the per-fact salience must reach the durable
+        // Captures-journal invariant: the per-fact salience must reach the durable
         // journal (the whitespace-free `sal=` attr) and be recovered by reindex
         // after a DB wipe — never DB-only, so the index-routing signal survives.
         let (dir, tree, pool) = setup().await;
@@ -1473,7 +1473,7 @@ mod tests {
 
     #[tokio::test]
     async fn placement_survives_journal_reindex_round_trip() {
-        // Filesystem-SSOT: the ingest placement style axis (style +
+        // Captures-journal invariant: the ingest placement style axis (style +
         // page_description) must reach the durable journal and be recovered by
         // reindex after a DB wipe — never DB-only. page_description has spaces +
         // a literal '%', so this also pins the percent-escaping of the codec.

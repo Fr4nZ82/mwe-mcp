@@ -27,8 +27,9 @@ last_review: "2026-06-28"
 mwe-mcp gives an LLM agent a persistent, structured memory it reaches over
 MCP. In one server:
 
-- a **filesystem-SSOT memory model** — Obsidian-native markdown on disk,
-  with a reconstructible `engine.db` index alongside;
+- a **file-first memory model** — Obsidian-native markdown on disk as the
+  readable surface, with the authoritative fact store (`fact_index` in
+  `engine.db`) beneath it;
 - **per-fragment ACL** — every marked region of a page carries its own
   owner / audience / sender, authoritative in the DB (`fact_index`; the
   inline marker carries only the region key), redacted per reader at
@@ -73,7 +74,7 @@ If you are new, read in this order:
 
 1. [The memory model](concepts/memory-model.md) — the conceptual front
    door: what mwe-mcp is, the four product pillars, owner-vs-sender
-   attribution, the filesystem-SSOT principle.
+   attribution, the file-first surface principle.
 2. [Identity & ACL](concepts/identity-and-acl.md) — users, groups,
    single-admin, block-level access control, derived wiki visibility.
 3. [Runtime topology & cost model](architecture/runtime-topology.md) —

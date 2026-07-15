@@ -866,7 +866,7 @@ pub async fn reindex_full(
     // retired.
     let discovered = tree.walk()?;
     for d in &discovered {
-        // Filesystem-SSOT recovery: rebuild the captures buffer DB index
+        // Captures-journal recovery: rebuild the captures buffer DB index
         // from the durable per-wiki `_captures.md` journal. Best-effort — a
         // malformed journal must not abort the marker reindex.
         match crate::capture_buffer::reindex_capture_journal(pool, &d.meta.wiki_id, &d.abs_dir)

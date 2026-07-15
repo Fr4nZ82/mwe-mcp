@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Memory-wiki filesystem SSOT.
+//! Memory-wiki filesystem surface I/O.
 //!
 //! `mwe-core::wiki` is the single owner of the `<workdir>/wikis/…` directory
 //! tree. Per the [memory model](../../../docs/concepts/memory-model.md)
@@ -1606,7 +1606,7 @@ pub fn append_engine_rule(handle: &WikiHandle, rule: &str) -> Result<()> {
 
 /// Create the on-disk scaffold for an identity wiki.
 ///
-/// (See the wiki filesystem SSOT.) Writes
+/// (See the wiki filesystem surface.) Writes
 /// `<workdir>/wikis/<id>/_meta.md` (frontmatter) + `index.md` (placeholder
 /// body) + [`rules.md`](RULES_FILENAME) (default user-policy page).
 ///

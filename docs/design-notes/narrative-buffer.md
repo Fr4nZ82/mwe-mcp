@@ -13,7 +13,7 @@ is the **write side** of the narrative compiler. For a
 write the classified claim into the published `.md` page; it stages the
 claim in a per-wiki captures buffer and returns. The nightly compiler
 turns the buffer into prose later. This page documents the buffer write
-path and its filesystem-SSOT invariant, and the
+path and its captures-journal invariant, and the
 [light-dream drain](#promotion--the-light-dream) that promotes
 buffered captures into recallable facts; the prose compiler itself
 is still pending (see [Not yet](#not-yet)).
@@ -195,7 +195,7 @@ threshold signal for the light dream). The write side adds `mark_promoted`
 and `mark_skipped_dup`, the two terminal status transitions the light
 dream stamps.
 
-### Filesystem-SSOT invariant
+### Captures-journal invariant
 
 The table is regenerable from the journals alone. `buffer_capture`
 writes the journal entry first, then upserts the table row with
@@ -206,8 +206,12 @@ record and the row is a derived projection. On a cold start,
 `_captures.md`, parses each entry, and re-inserts the rows (idempotently;
 malformed individual entries are skipped, not fatal). The practical
 consequence: **`rm engine.db` followed by `serve` regenerates every
-buffered row from disk** — exactly the guarantee the rest of the system
-relies on for the `fact_index`.
+buffered row from disk** — a guarantee specific to the buffer: the
+published `fact_index` is NOT rebuilt from disk (the DB is the
+authoritative fact store; see
+[`reindex-pipeline.md`](reindex-pipeline.md)), which is why buffered
+captures get this extra durability leg while published facts get
+backups.
 
 Conversely, the journal must never be mistaken for published content.
 `_captures.md` is excluded from
@@ -313,7 +317,7 @@ The light dream only ever advances `buffered` rows; the insert is
 row, and the status updates are guarded on `status = 'buffered'`. So a
 crash mid-cycle, or a re-run after `rm engine.db` — which rebuilds the
 buffer rows as `buffered` from the journal (the
-[filesystem-SSOT invariant](#filesystem-ssot-invariant)) — simply
+[captures-journal invariant](#captures-journal-invariant)) — simply
 re-promotes idempotently. The stable `capture_id == fact_id` is what
 makes that safe: a second promotion of the same capture finds the fact
 already present and the row already `promoted`, and does nothing.

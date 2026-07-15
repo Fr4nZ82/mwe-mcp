@@ -2,7 +2,7 @@
 //! Capture / supersede / forget / link — first write-side flow.
 //!
 //! This module is the orchestration layer that ties the three
-//! floors (parser, filesystem SSOT, `fact_index`) into the four atomic
+//! floors (parser, filesystem surface, `fact_index`) into the four atomic
 //! internal APIs the `wiki_ingest_message` LLM and the dashboard call:
 //!
 //! - `_internal.wiki_capture` — append a new region to a page, embed

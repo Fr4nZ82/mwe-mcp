@@ -44,8 +44,8 @@ flowchart TB
     end
 
     subgraph Storage["4 — Storage"]
-        FS["Filesystem wikis/<br/>(markdown SSOT)"]
-        DB["engine.db<br/>(fact_index, events, audit, archive)"]
+        FS["Filesystem wikis/<br/>(markdown surface)"]
+        DB["engine.db — authoritative<br/>(fact_index, events, audit, archive)"]
     end
 
     User <--> Consumer
@@ -66,7 +66,7 @@ flowchart TB
 | 1 | **End user** | — | none | Talks over some channel. Does not know mwe-mcp exists. |
 | 2 | **Consumer orchestrator** | the **client LLM** + product-specific tools | client LLM (Sonnet/Opus/GPT-4/Gemini/Llama...) | The application server (home assistant, work copilot, Discord bot, VSCode plugin...). Owns the conversation. Talks to mwe-mcp via MCP over HTTP. |
 | 3 | **mwe-mcp server** | the **internal LLM** + embeddings + REM cron | internal LLM (local or API) + `bge-m3` embeddings | Exposes the MCP tool surface, runs local embeddings on every per-turn call, runs the nightly REM cycle. The internal LLM is chosen and paid for **separately** from the client LLM. |
-| 4 | **Storage** | filesystem SSOT + `engine.db` | none | `wikis/<wiki_id>/` markdown is the source of truth; `engine.db` holds `fact_index`, events, audit, archive. |
+| 4 | **Storage** | markdown surface + `engine.db` | none | `wikis/<wiki_id>/` markdown is the readable surface; `engine.db` is the authoritative fact store (`fact_index`, events, audit, archive). |
 
 The transport is **HTTP only** — the consumer connects to the MCP
 server over HTTP (`127.0.0.1` for a same-host install, a tunnel when

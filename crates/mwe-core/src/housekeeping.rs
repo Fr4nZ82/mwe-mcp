@@ -129,7 +129,7 @@ async fn sweep_dangling_consumers(pool: &SqlitePool, tree: &WikiTree) -> Result<
     // under `wikis/` — is **not** evidence that a consumer is dangling; it
     // means we cannot judge. Fail safe: skip the sweep rather than risk
     // mass-deleting OAuth / registration / delegation rows, which are
-    // DB-authoritative and not rebuildable from the markdown SSOT. (Probing
+    // DB-authoritative and not rebuildable from the markdown surface. (Probing
     // per id with `locate` would instead collapse any such error into "not
     // found" via its own `walk()?`, wrongly judging *every* consumer gone.)
     let present: HashSet<WikiId> = match tree.walk() {
@@ -349,7 +349,7 @@ mod tests {
     /// not turn the sweep into a mass delete. Before the walk-once fix,
     /// `locate` funneled the tree-walk error into "not found" and judged
     /// *every* web-agent consumer dangling — wiping OAuth/delegation state
-    /// that cannot be rebuilt from the markdown SSOT.
+    /// that cannot be rebuilt from the markdown surface.
     #[tokio::test]
     async fn unreadable_tree_never_sweeps_live_consumers() {
         let (pool, tree, _dir) = fixture().await;

@@ -46,7 +46,7 @@
 //!   defect the TS original had — it lost fact identity at render time).
 //! - The plan + registry persist as JSON under `wikis/_plan/` via crash-safe
 //!   `atomic_write`; they are a rebuildable cache (derivable from `fact_index` +
-//!   enrollment), preserving the filesystem-SSOT invariant.
+//!   enrollment), preserving the captures-journal invariant.
 //! - Determinism: pages are keyed in a [`BTreeMap`] and every order-sensitive
 //!   step sorts explicitly, so the plan + its fingerprints are reproducible and
 //!   the dirty set does not churn spuriously.

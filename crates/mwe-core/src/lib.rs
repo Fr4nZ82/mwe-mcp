@@ -2,7 +2,8 @@
 //! mwe-core — headless memory engine.
 //!
 //! Library crate consumed by `mwe-mcp-server` and `mwe-dashboard`. Hosts all
-//! memory logic: filesystem SSOT, sqlite `engine.db`, marker parser, ACL,
+//! memory logic: the markdown surface + the authoritative sqlite `engine.db`
+//! fact store, marker parser, ACL,
 //! recall pipeline, REM (nightly), internal `_internal.*` APIs, lockfile,
 //! applicative WAL, file watcher, slug pipeline.
 

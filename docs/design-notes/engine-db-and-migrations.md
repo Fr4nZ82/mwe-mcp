@@ -21,16 +21,20 @@ A single `SQLite` file at `<workdir>/engine.db`. `mwe-mcp` is its
 **only writer** (single-writer constraint enforced by
 [`single-writer-lockfile.md`](single-writer-lockfile.md); concurrent
 readers — REM, the dashboard, a polling consumer — share the file via
-WAL). Everything in this DB is **rebuildable** from the markdown SSOT
-under `<workdir>/wikis/` via `dream_trigger(mode=reindex)`, except for
-the transitive queues (`wiki_events`, the audit logs) that live only
-here.
+WAL). This DB is the **authoritative fact store**: for a standard wiki,
+`fact_index` owns the facts and the published pages are its prose render,
+so the DB is **not rebuildable** from the markdown surface — the reindex
+sweep repairs offsets and honours deletions, it never creates rows from
+disk ([`reindex-pipeline.md`](reindex-pipeline.md)).
 
-This rebuildability is load-bearing: it means an operator can delete
-`engine.db` after a corruption incident and `mwe-mcp serve` will
-recreate it from scratch, replaying the marker parser over the
-filesystem. (One DB sits outside this story: `media_catalog.db` is a
-*separate*, externally-populated catalog — not covered here.)
+The recovery path is therefore a **backup**, not a re-index: treat
+`engine.db` like the files (the dashboard's Backup console and the
+snapshot tooling, `mwe_core::backup`, exist for exactly that). What *is*
+regenerable from disk: smart-wiki content rows (re-chunked from page
+content) and the `capture_buffer` (replayed from the per-wiki
+`_captures.md` journals — [`narrative-buffer.md`](narrative-buffer.md)).
+(One DB sits outside this story: `media_catalog.db` is a *separate*,
+externally-populated catalog — not covered here.)
 
 ## Pragmas — applied per connection
 
@@ -1014,7 +1018,7 @@ directory. One annotated row per migration:
 | `0031_capture_buffer` | The standard-wiki captures buffer — a rebuildable index over the per-wiki `_captures.md` journal. |
 | `0032_structure_proposals_recipient` | Adds the `recipient_id` addressee column on `structure_proposals` (per-user notice routing). |
 | `0033_fact_index_validity` | Adds the per-fact validity columns `valid_from` / `valid_to` / `decay_reason` + the partial `idx_fact_valid_to` (the per-fact validity model). |
-| `0034_capture_buffer_validity` | Adds `valid_from` / `valid_to` to `capture_buffer` — threads validity through the narrative buffer→promote path so `promote_one` copies it into `fact_index`; mirrored in the `_captures.md` journal (`vf`/`vt`) to keep the filesystem-SSOT rebuild faithful. |
+| `0034_capture_buffer_validity` | Adds `valid_from` / `valid_to` to `capture_buffer` — threads validity through the narrative buffer→promote path so `promote_one` copies it into `fact_index`; mirrored in the `_captures.md` journal (`vf`/`vt`) to keep the captures-journal rebuild faithful. |
 | `0035_placement_axis` | Adds the ingest placement axis `target_page` / `style` / `page_description` to `fact_index` and `style` / `page_description` to `capture_buffer` — carries the classifier's per-claim page/style/description proposal onto the fact so the light dream settles a fact on its ingest page without the strong-model Cartografo; the buffer columns are mirrored in the journal (`style`/`desc`, free-text `desc` percent-escaped). Additive + inert until the light-cadence consumer. |
 | `0036_drop_wiki_types_registry` | Drops the two inert `wiki_type` caches — `wiki_types_registry` (0007–0030) and `skills_custom` (0024). The smart flag lives per-wiki in `_meta.md` (`smart: bool`), and only bundled skills remain. Pure removal; nothing reconstructible is lost (a `rm engine.db` rebuild simply no longer materializes them). |
 | `0037_fact_salience` | Adds the per-fact `salience` column to `fact_index` and `capture_buffer` (journal attr `sal=`) — the always-on base-context axis. |

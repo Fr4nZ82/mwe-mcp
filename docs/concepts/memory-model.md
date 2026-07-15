@@ -21,16 +21,18 @@ codebase rests on.
 
 mwe-mcp is an agent-agnostic **MCP server** that gives any LLM agent a
 persistent, structured memory. The memory is not a hidden vector blob: it
-is a tree of plain Obsidian-native Markdown files on disk that a human can
-open, read, edit, link, and back up. A SQLite index (`engine.db`) sits
-beside the files to make semantic recall and ACL projection fast, but the
-files are the truth and the index is disposable.
+reads as a tree of plain Obsidian-native Markdown files on disk that a
+human can open, read, edit, link, and back up. A SQLite engine
+(`engine.db`) sits beside the files as the **authoritative fact store** —
+facts, ACL, embeddings, lifecycle — while the files are the surface people
+(and their editors) touch.
 
-Structurally the model is **two wiki memory levels** — the Markdown SSOT
-and the `fact_index` cache derived from it — plus an **optional accessory
-media catalog** that a consumer can mount alongside them. The two wiki
-levels are the subject of most of this page; the accessory catalog is
-covered briefly under [the media catalog](#the-media-catalog--an-optional-third-level).
+Structurally the model is **two wiki memory levels** — the readable
+Markdown surface and the authoritative `fact_index` beneath it — plus an
+**optional accessory media catalog** that a consumer can mount alongside
+them. The two wiki levels are the subject of most of this page; the
+accessory catalog is covered briefly under
+[the media catalog](#the-media-catalog--an-optional-third-level).
 
 ---
 
@@ -44,8 +46,10 @@ design commitments.
 
 The dominant pattern for agent memory is "embed every utterance into a
 vector database and retrieve by cosine similarity." mwe-mcp deliberately
-inverts that. The **source of truth is human-readable Markdown prose on
-disk**; vectors live *alongside* it, not *instead* of it.
+inverts that. The **memory's surface is human-readable Markdown prose on
+disk** — every fact has a home in text a person can open and audit;
+vectors and the fact index live *alongside* the prose, never *instead*
+of it.
 
 A memory-wiki page is flowing narrative — the kind of text a person (or
 an LLM about to extract a fact) can read for context — with machine-
@@ -309,53 +313,55 @@ a bare user id. The access-control consequences (effective ACL =
 
 ---
 
-## The filesystem-SSOT principle
+## The file-first surface principle
 
-The Markdown files under `<workdir>/wikis/` are the **single source of
-truth (SSOT)**. `engine.db` — the `fact_index` and its embeddings — is a
-**reconstructible cache**. This is an invariant, not an optimisation:
+The Markdown files under `<workdir>/wikis/` are the memory's **readable
+surface**: every fact has a home in prose a human can open in Obsidian,
+read, link, and audit. Authority sits underneath, and it is split by wiki
+family:
 
-> If `engine.db` is deleted or corrupted, a full re-index that scans the
-> filesystem and recomputes embeddings must *always* be able to rebuild
-> the entire index. The file wins, every time.
+- **Standard wikis** (any non-smart type — `wiki-root`, `wiki-user`,
+  `wiki-group`, and every emerged sub-wiki): the DB is the
+  **authoritative fact store**. `fact_index` owns the facts, their ACL
+  and their lifecycle; the published pages are its **prose render** (the
+  nightly compiler's output). The reindex pipeline keeps render and index
+  aligned after external edits — offsets are repaired, and a hand-deleted
+  marker or page is honoured as the operator's forget gesture — but rows
+  are **never created or rewritten from disk markers**
+  ([`reindex-pipeline.md`](../design-notes/reindex-pipeline.md)).
+- **Smart wikis** (project wikis a smart consumer writes verbatim): the
+  page **content on disk is what gets indexed** — an edit re-chunks and
+  re-embeds the page, with the wiki-level ACL projected onto every row.
+  There the files do drive the index, because the consumer owns those
+  bytes.
 
-The practical guarantees that follow are listed under pillar 1 (inspect,
-edit-by-hand, backup, migrate). The mechanics of the on-disk layout,
-`_meta.md` frontmatter, and the atomic-write protocol that keeps file and
-index in step are documented in
-the storage-model design note (being rewritten);
-the reconciliation that keeps the index aligned after external edits is
-in [`reindex-pipeline.md`](../design-notes/reindex-pipeline.md).
+The operational consequence: `engine.db` is **not a disposable cache** —
+back it up like the files (the dashboard's Backup console and the
+snapshot tooling, `mwe_core::backup`, exist for exactly that). What is
+regenerable from disk is the smart-wiki content rows and the captures
+buffer below — not the standard-wiki fact store.
 
-The SSOT is not only the published pages. For a **standard** wiki (any
-non-smart type — `wiki-root`, `wiki-user`, `wiki-group`, and every emerged
-sub-wiki;
-see [`narrative-buffer.md`](../design-notes/narrative-buffer.md)),
+The surface is not only the published pages. For a **standard** wiki
+(see [`narrative-buffer.md`](../design-notes/narrative-buffer.md)),
 an incoming capture is first staged in a per-wiki on-disk **captures
-journal**, `<wiki_dir>/_captures.md`, which is itself part of the
-filesystem SSOT: `engine.db`'s `capture_buffer` table is a rebuildable
-index over it, so `rm engine.db` + re-index regenerates the buffered rows
-from the journal exactly as it regenerates `fact_index` from the published
-pages. The journal is *excluded* from page enumeration and the marker
-re-index sweep, so its entries are never indexed as published facts. The
-published pages of a standard wiki are themselves *also* excluded from the
-marker sweep, because they are compiler output (see
+journal**, `<wiki_dir>/_captures.md`: the journal is the durable record
+and `engine.db`'s `capture_buffer` table is a rebuildable projection over
+it, so buffered-but-not-yet-promoted captures survive a DB loss. The
+journal is *excluded* from page enumeration and the marker re-index
+sweep, so its entries are never indexed as published facts. The published
+pages of a standard wiki are themselves *also* excluded from any
+marker-driven row creation, because they are compiler output (see
 [the prose compiler](#the-prose-compiler--facts-become-published-prose)).
 See [the region-level fact model](#the-region-level-fact-model)
 for where buffered captures sit relative to facts.
 
 A few invariants worth internalising here:
 
-- **Capture writes the file before the index row.** If the process dies
-  between the two, the watcher / re-index picks up the orphan marker on
-  disk and reconstructs the missing row — the file is always the recovery
-  anchor. The capture path is *not* yet wrapped in an applicative
-  write-ahead log: that journal (so a crash mid-write is replayable
-  step-by-step rather than recovered by the next reindex sweep) is an
-  explicitly deferred item, noted in the
-  [`capture.rs`](../../crates/mwe-core/src/capture.rs) module docs. Today
-  the recovery is the reindex reconciling against the filesystem, not an
-  instantaneous transactional guarantee.
+- **A buffered capture writes the journal before the buffer row.**
+  `buffer_capture` appends the `_captures.md` entry first, then upserts
+  the `capture_buffer` row — the journal is the durable record, the row a
+  derived projection, and a cold start replays the journal idempotently
+  (narrative-buffer).
 - **Forget tombstones the index, then strips the file.** `wiki_forget`
   marks `deleted_at` in `fact_index` (the authoritative half) and then
   excises the retired region's bytes from the page, best-effort — leftover
@@ -395,7 +401,7 @@ ACL projection without re-parsing the file:
 
 | Group | Columns | Purpose |
 |---|---|---|
-| Identity & location | `fact_id` (UUIDv7), `wiki_id`, `source_path`, `region_start`/`region_end` (byte offsets, both nullable) | Find the exact region in the SSOT file. |
+| Identity & location | `fact_id` (UUIDv7), `wiki_id`, `source_path`, `region_start`/`region_end` (byte offsets, both nullable) | Find the exact region in the rendered page file. |
 | Content | `text` (body verbatim, no markers), `embedding` (`f32` BLOB), `embedding_dim` | Recall and audit without touching disk. |
 | Attribution & ACL | `owner_id`, `allow_ids`, `sender_id` | Project the per-sender view. |
 | Taxonomy | `fact_type`, `topics` | Filter and weight recall. |
@@ -602,8 +608,8 @@ not a YAML schema block.
 
 ### The media catalog — an optional third level
 
-The two levels covered so far — the Markdown SSOT and the `fact_index`
-cache derived from it — are the whole memory. mwe-mcp also *designs for* a
+The two levels covered so far — the readable Markdown surface and the
+authoritative `fact_index` — are the whole memory. mwe-mcp also *designs for* a
 third, **optional accessory level**: a media catalog for consumers that
 manage photos, video, or audio.
 
