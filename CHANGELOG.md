@@ -37,6 +37,11 @@ semver-governed surface — breaking changes are called out explicitly.
 
 ### Fixed
 
+- **Dashboard Facts pager: real ACL-projected totals and an editable page
+  box.** Prev/next now derive from the real filtered total instead of a
+  page-size heuristic, the page number is directly editable (jumps preserve
+  the active filters), the disabled state reads "of M", and totals beyond the
+  scan ceiling render as an "M+" estimate.
 - **hermes bridge: `compression.in_place: true` is withdrawn — rotation mode
   (the vanilla default) is required.** hermes-agent's in-place compaction
   path re-appends the whole compacted window into the same active transcript
