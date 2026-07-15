@@ -20,15 +20,40 @@ cut fires. The slack keeps the prompt prefix stable between cuts, so
 provider-side prefix caching keeps working instead of missing on every
 turn.
 
+Tool-result snipping: turns dominated by tool spam (browser snapshots,
+console dumps) can make even the bounded window exceed the trigger — the
+window bounds *turns*, not *weight*. So a compress pass also snips
+oversized tool-result contents (`snip_tool_chars`) inside the kept
+window, copy-on-write, sparing the tail from the last user message onward
+(a mid-loop fire must never snip a result the model is still acting on).
+Originals are never mutated: the rotation path archives the
+pre-compression list, which keeps the full contents. A snip-only pass
+(nothing to drop) only counts as a compression when it saves enough to
+clear the host's material-progress bar; otherwise it reports a no-op
+through the abort protocol below.
+
 The trigger: the host only passes token counts to `should_compress()`, so
 the engine fires on a token threshold — `min(threshold_percent × context
 window, threshold_tokens_cap)`. The cap keeps the trigger orders of
 magnitude below provider per-minute token quotas even on million-token
 context models (0.75 × 1M would otherwise let the conversation grow to
-~786k tokens per call before the first cut). When a fire finds nothing
-outside the protected window to drop, the engine reports the no-op
-through the host's abort protocol (`_last_compress_aborted`) so the host
-skips its session-rotation bookkeeping.
+~786k tokens per call before the first cut). When a fire finds nothing to
+drop outside the protected window and nothing worth snipping inside it,
+the engine reports the no-op through the host's abort protocol
+(`_last_compress_aborted`) so the host skips its session-rotation
+bookkeeping.
+
+⚠️ Session mode: this engine REQUIRES rotation mode — leave
+`compression.in_place` at its vanilla default (false). The in-place
+compaction path of hermes-agent (as of 2026-07) is not safe under
+preflight fires: after an in-place cut the host nulls the turn's
+`conversation_history` and resets its flush-identity bookkeeping, so the
+end-of-turn persist re-appends the whole compacted window into the SAME
+active transcript — doubling it. The doubled tail replays old user
+messages to the model, which then re-answers them (diagnosed 2026-07-15
+on a production deployment). Rotation (the vanilla default) makes that
+re-append land in the freshly rotated session, where it is the correct
+behaviour.
 
 Config (optional), in `config.yaml`:
 
@@ -38,17 +63,15 @@ Config (optional), in `config.yaml`:
         protect_last_users: 5      # user turns kept after a cut
         slack_users: 3             # extra user turns allowed before a cut fires
         protect_first_n: 0         # non-system messages preserved at the head
+        snip_tool_chars: 4000      # tool results above this are snipped on a cut (0 = off)
         threshold_tokens_cap: 30000  # trigger ceiling in prompt tokens (0 = percent-only)
         threshold_percent: 0.75    # share of the model context window
-
-Pair with `compression.in_place: true` so a cut rewrites the session in
-place instead of rotating the session id every few turns.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from agent.context_engine import ContextEngine
 
@@ -73,6 +96,7 @@ class MweTruncateContextEngine(ContextEngine):
         self.protect_first_n = int(_cfg("protect_first_n", 0))
         self.protect_last_users = int(_cfg("protect_last_users", 5))
         self.slack_users = int(_cfg("slack_users", 3))
+        self.snip_tool_chars = int(_cfg("snip_tool_chars", 4_000))
         # The host preflight gate compares len(messages) against
         # protect_first_n + protect_last_n + 1 before it even estimates
         # tokens; expose the widest window (in user turns — every user
@@ -90,6 +114,7 @@ class MweTruncateContextEngine(ContextEngine):
         self.threshold_tokens = 0
         self.context_length = 0
         self.compression_count = 0
+        self.snipped_tool_results = 0
         # Host abort protocol: a truthy _last_compress_aborted after
         # compress() tells conversation_compression to skip the
         # session-rotation bookkeeping and warn instead of rotating.
@@ -143,7 +168,10 @@ class MweTruncateContextEngine(ContextEngine):
         return self.threshold_tokens > 0 and tokens >= self.threshold_tokens
 
     def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:
-        return len(self._droppable_indices(messages)) > 0
+        if self._droppable_indices(messages):
+            return True
+        _, snipped, _ = self._snip_tool_results(messages)
+        return snipped > 0
 
     def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None,
                  focus_topic: str = None, **kwargs: Any) -> List[Dict[str, Any]]:
@@ -153,22 +181,34 @@ class MweTruncateContextEngine(ContextEngine):
         self._last_compress_aborted = False
         self._last_summary_error = None
         drop = self._droppable_indices(messages)
+        kept = [m for i, m in enumerate(messages) if i not in drop]
+        kept, snipped, saved_chars = self._snip_tool_results(kept)
         if not drop:
             # The trigger is token-based but the window is turn-based, so a
-            # fire can land with nothing outside the window (few but heavy
-            # turns). Report through the abort protocol so the host skips
-            # session rotation for this no-op.
-            self._last_compress_aborted = True
-            self._last_summary_error = (
-                "the recent window is already at its turn bound; heavy recent "
-                "turns will age out on their own"
+            # fire can land with nothing outside the window. A snip-only
+            # pass must clear the host's material-progress bar (>5% token
+            # reduction — chars proxy tokens closely enough here, 8% keeps
+            # a margin), or the host would run its session-rotation
+            # bookkeeping for a near-no-op. Otherwise report through the
+            # abort protocol so the host skips rotation for this fire.
+            total_chars = sum(
+                len(m.get("content")) for m in messages
+                if isinstance(m.get("content"), str)
             )
-            return messages
-        kept = [m for i, m in enumerate(messages) if i not in drop]
+            if snipped == 0 or total_chars == 0 or saved_chars < total_chars * 0.08:
+                self._last_compress_aborted = True
+                self._last_summary_error = (
+                    "the recent window is already at its turn bound; heavy recent "
+                    "turns will age out on their own"
+                )
+                return messages
         self.compression_count += 1
+        self.snipped_tool_results += snipped
         logger.info(
-            "mwe-truncate: dropped %d of %d messages (window: first %d + last %d user turns)",
-            len(drop), len(messages), self.protect_first_n, self.protect_last_users)
+            "mwe-truncate: dropped %d of %d messages, snipped %d tool results "
+            "(window: first %d + last %d user turns)",
+            len(drop), len(messages), snipped,
+            self.protect_first_n, self.protect_last_users)
         return kept
 
     def get_status(self) -> Dict[str, Any]:
@@ -178,9 +218,11 @@ class MweTruncateContextEngine(ContextEngine):
             "threshold_tokens": self.threshold_tokens,
             "context_length": self.context_length,
             "compression_count": self.compression_count,
+            "snipped_tool_results": self.snipped_tool_results,
             "protect_first_n": self.protect_first_n,
             "protect_last_users": self.protect_last_users,
             "slack_users": self.slack_users,
+            "snip_tool_chars": self.snip_tool_chars,
         }
 
     # -- internals ---------------------------------------------------------
@@ -217,6 +259,54 @@ class MweTruncateContextEngine(ContextEngine):
         while head and not is_clean_head_end(head[-1]):
             droppable.add(head.pop())
         return droppable
+
+    def _snip_tool_results(
+        self, kept: List[Dict[str, Any]]
+    ) -> Tuple[List[Dict[str, Any]], int, int]:
+        """Snip oversized tool-result contents in the kept window.
+
+        Returns ``(messages, snipped_count, saved_chars)``. Copy-on-write:
+        snipped messages are replaced with shallow copies so the original
+        dicts — which the host flushes into the rotated-out session — keep
+        their full contents. Everything from the last user message onward
+        is spared: a preflight fire inside a tool loop must not snip a
+        result the model is still acting on. Head + tail of the content
+        survive (the tail keeps closing delimiters such as
+        ``</untrusted_tool_result>`` intact).
+        """
+        limit = self.snip_tool_chars
+        if limit < 200:  # 0 (or an absurdly small value) disables snipping
+            return kept, 0, 0
+        last_user = None
+        for i in range(len(kept) - 1, -1, -1):
+            if kept[i].get("role") == "user":
+                last_user = i
+                break
+        if last_user is None:
+            return kept, 0, 0
+        head_keep = (limit * 3) // 5
+        tail_keep = limit // 5
+        out = list(kept)
+        snipped = 0
+        saved = 0
+        for i in range(last_user):
+            m = out[i]
+            if m.get("role") != "tool":
+                continue
+            content = m.get("content")
+            if not isinstance(content, str) or len(content) <= limit:
+                continue
+            removed = len(content) - head_keep - tail_keep
+            replacement = dict(m)
+            replacement["content"] = (
+                content[:head_keep]
+                + f"\n…[mwe-truncate: snipped {removed:,} of {len(content):,} chars]…\n"
+                + content[-tail_keep:]
+            )
+            out[i] = replacement
+            snipped += 1
+            saved += removed
+        return out, snipped, saved
 
 
 def register(ctx) -> None:

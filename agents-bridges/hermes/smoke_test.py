@@ -45,6 +45,14 @@ def fresh_provider(url, **init_kwargs):
     return provider
 
 
+def drain(provider):
+    """Join the provider's daemon-thread writes (the assistant-pass ingest
+    and the memory mirror ride `_mirror_threads`) so call counts read
+    deterministically instead of racing the thread."""
+    for t in getattr(provider, "_mirror_threads", []):
+        t.join(timeout=10)
+
+
 def main():
     (HOME / "mwe.json").write_text(json.dumps({
         "url": "http://127.0.0.1:1/mcp",  # repointed per StubMwe below
@@ -105,10 +113,17 @@ def main():
 
         # --- turn 2: consumer-owned window threaded ------------------------
         provider.sync_turn("ciao, sono tornato", "bentornato!")
+        drain(provider)  # the assistant-pass ingest rides a daemon thread
         provider.prefetch("cosa mi ero segnato per la serra?")
         calls = stub.calls("wiki_ingest_message")
-        ok("still one ingest per turn", len(calls) == 2, f"got {len(calls)}")
-        window = calls[1]["arguments"]["recent_messages"]
+        user_calls = [c for c in calls if c["arguments"].get("author") != "assistant"]
+        agent_calls = [c for c in calls if c["arguments"].get("author") == "assistant"]
+        ok("still one user ingest per turn", len(user_calls) == 2,
+           f"got {len(user_calls)}")
+        ok("assistant reply fed back once (agent-authored memory)",
+           len(agent_calls) == 1
+           and agent_calls[0]["arguments"]["text"] == "bentornato!")
+        window = user_calls[1]["arguments"]["recent_messages"]
         ok("window order + roles",
            [m["role"] for m in window] == ["user", "assistant"]
            and window[0]["text"] == "ciao, sono tornato"
@@ -117,8 +132,11 @@ def main():
         # --- window trim at maxWindow --------------------------------------
         for i in range(5):
             provider.sync_turn(f"u{i}", f"a{i}")
+        drain(provider)
         provider.prefetch("trim check")
-        window = stub.calls("wiki_ingest_message")[-1]["arguments"]["recent_messages"]
+        user_calls = [c for c in stub.calls("wiki_ingest_message")
+                      if c["arguments"].get("author") != "assistant"]
+        window = user_calls[-1]["arguments"]["recent_messages"]
         ok("window trimmed to maxWindow", len(window) == 4,
            f"got {len(window)}")
         ok("window keeps the newest", window[-1]["text"] == "a4")
@@ -399,17 +417,43 @@ def main():
     msgs = [{"role": "system", "content": "sys"}]
     msgs += [{"role": "user", "content": f"m{i}"} if i % 2 == 0
              else {"role": "assistant", "content": f"m{i}"} for i in range(40)]
+    # Defaults: protect_first_n=0, protect_last_users=5, slack_users=3.
+    # 20 user messages > 5+3 fires the cut; the kept tail runs from the
+    # 5th-most-recent user message (m30) to the end.
     out = engine.compress(list(msgs))
     ok("system kept", out[0]["role"] == "system")
     ok("middle dropped, no summary added",
        len(out) < len(msgs) and all(m in msgs for m in out))
     non_system = [m for m in out if m["role"] != "system"]
-    ok("head + tail preserved",
-       non_system[0]["content"] == "m0"
-       and non_system[-1]["content"] == "m39"
-       and len(non_system) == 3 + 16)
-    ok("tail starts on a user message",
-       non_system[3]["content"] == "m24" and non_system[3]["role"] == "user")
+    ok("window = last 5 user turns, tail intact",
+       non_system[-1]["content"] == "m39" and len(non_system) == 10)
+    ok("cut lands on a user message",
+       non_system[0]["content"] == "m30" and non_system[0]["role"] == "user")
+
+    # --- tool-result snipping inside the kept window ------------------------------
+    big = "x" * 9000
+    msgs_snip = [{"role": "system", "content": "sys"}]
+    for i in range(6):  # 6 user turns: under the 5+3 turn bound — nothing to drop
+        msgs_snip += [{"role": "user", "content": f"u{i}"},
+                      {"role": "assistant", "content": "", "tool_calls": [{"id": f"t{i}"}]},
+                      {"role": "tool", "content": big, "tool_call_id": f"t{i}"},
+                      {"role": "assistant", "content": f"a{i}"}]
+    out_snip = engine.compress(list(msgs_snip))
+    ok("snip-only pass fires without a cut",
+       not engine._last_compress_aborted and len(out_snip) == len(msgs_snip))
+    old_tools = [m for m in out_snip[:-4] if m["role"] == "tool"]
+    ok("oversized old tool results snipped",
+       all("[mwe-truncate: snipped" in m["content"] and len(m["content"]) < 9000
+           for m in old_tools))
+    ok("current turn's tool result untouched", out_snip[-2]["content"] == big)
+    ok("snip is copy-on-write — originals keep full contents",
+       all(m["content"] == big for m in msgs_snip if m["role"] == "tool"))
+    small = [{"role": "system", "content": "sys"},
+             {"role": "user", "content": "hi"},
+             {"role": "assistant", "content": "hello"}]
+    res = engine.compress(list(small))
+    ok("nothing to drop or snip reports through the abort protocol",
+       engine._last_compress_aborted and len(res) == len(small))
 
     # tool-pairing safety: no kept tool result may lose its call (or vice versa)
     def no_orphans(kept):

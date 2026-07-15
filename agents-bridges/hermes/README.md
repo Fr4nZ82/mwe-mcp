@@ -137,13 +137,14 @@ The manual equivalent, if you'd rather edit the files directly:
      memory_enabled: false        # built-in MEMORY.md (bot's own memory) OFF
      user_profile_enabled: false  # built-in USER.md (user profile) OFF — a SEPARATE flag, also defaults true (the replace decision, see below)
    compression:
-     in_place: true         # rewrite the session on a cut instead of rotating its id
+     in_place: false        # ⚠️ REQUIRED — see below; false is the vanilla default
    context:
      engine: mwe-truncate
      mwe-truncate:          # optional knobs, defaults shown
        protect_last_users: 5      # user turns kept after a cut
        slack_users: 3             # extra user turns allowed before a cut fires
        protect_first_n: 0         # non-system messages preserved at the head
+       snip_tool_chars: 4000      # tool results above this are snipped on a cut (0 = off)
        threshold_tokens_cap: 30000  # trigger ceiling in prompt tokens (0 = percent-only)
        threshold_percent: 0.75    # share of the model context window
    plugins:
@@ -156,6 +157,17 @@ The manual equivalent, if you'd rather edit the files directly:
    allow-list; without it the `mwe-media` hook is silently skipped and
    Telegram photos/voice/video never reach the memory — only their
    captions survive (via the ordinary text ingest).
+
+   ⚠️ **`compression.in_place` must stay `false`** (the vanilla default —
+   omitting the key is fine). hermes-agent's in-place compaction path (as
+   of 2026-07) nulls the turn's `conversation_history` and resets its
+   flush bookkeeping after a preflight cut, so the end-of-turn persist
+   re-appends the whole compacted window into the same active transcript,
+   doubling it — the model then sees old user messages replayed at the
+   tail of its context and re-answers them. With rotation (the default)
+   that re-append lands in the freshly rotated session, where it is the
+   correct behaviour. The engine keeps cuts rare (`slack_users`) and
+   productive (tool-result snipping), so id rotation stays infrequent.
 
 ## Connecting Telegram (the hermes gateway)
 
