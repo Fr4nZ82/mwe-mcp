@@ -104,12 +104,16 @@ Nothing is invented or silently lost: facts keep their identity, they're relocat
 ## Quickstart
 
 ```bash
-# 1 — get the binary (Linux x86_64 · macOS Apple Silicon · Windows)
+# 1 — get the binary (Linux x86_64 · macOS Apple Silicon)
 curl -fsSL https://raw.githubusercontent.com/Fr4nZ82/mwe-mcp/main/install.sh | sh
 
 # 2 — start the server (MCP endpoint + dashboard on one port)
 mwe-mcp serve
 ```
+
+**On Windows** — open the [latest release](https://github.com/Fr4nZ82/mwe-mcp/releases/latest),
+download `mwe-mcp-<version>-x86_64-pc-windows-msvc.zip` from its **Assets**
+section, unzip it, then run `mwe-mcp.exe serve` from a terminal.
 
 **3 — finish setup in the browser.** Open `http://127.0.0.1:8742/dashboard/setup`: the first-run wizard creates the admin account, your users and groups, and picks how the internal LLM runs — all-local via Ollama, hybrid, or API.
 

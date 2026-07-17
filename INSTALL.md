@@ -40,12 +40,16 @@ curl -fsSL https://raw.githubusercontent.com/Fr4nZ82/mwe-mcp/main/install.sh | s
 ```
 
 This fetches the right prebuilt binary for your OS/arch from the
-[Releases](https://github.com/Fr4nZ82/mwe-mcp/releases)), verifies its SHA-256, and
+[Releases](https://github.com/Fr4nZ82/mwe-mcp/releases), verifies its SHA-256, and
 installs it to `~/.local/bin/mwe-mcp`. Override the install dir with
 `MWE_MCP_BINDIR` or pin a version with `MWE_MCP_VERSION` (default: latest).
 
-**Windows** — download `mwe-mcp-<version>-x86_64-pc-windows-msvc.zip` from the
-[Releases page](https://github.com/Fr4nZ82/mwe-mcp/releases) and unzip it.
+**Windows** — open the [latest release](https://github.com/Fr4nZ82/mwe-mcp/releases/latest),
+download `mwe-mcp-<version>-x86_64-pc-windows-msvc.zip` from its **Assets**
+section, and unzip it. The
+binary is unsigned, so SmartScreen may warn the first time you run it — pick
+"More info → Run anyway", or check the download against its published `.sha256`
+first if you want the reassurance.
 
 Prebuilt binaries are published for **Linux x86_64**, **macOS (Apple Silicon)**,
 and **Windows x86_64**. On any other platform (Intel Mac, ARM Linux, …), build
