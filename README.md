@@ -23,7 +23,7 @@ Ask most agent frameworks where their memory lives and the honest answer is *"in
 
 mwe-mcp starts from the opposite end. **The memory reads like a wiki** — Markdown pages you browse from the built-in dashboard, owned on disk as plain files — while every fact in it is governed individually by the engine: who it's about, who said it, who may read it, and the time window in which it holds. On top of that it adds the machinery a genuinely *shared, long-lived* memory needs and that almost nothing else has: access control *inside a single page*, facts that close gracefully when life moves on, and a background process that keeps the whole thing tidy and well-written over time.
 
-The result is a memory that a household, a team, or a single developer can all use through whatever agent they already have — Claude Code, Cursor, a Telegram bot, your own — while the memory itself stays one governed source of truth.
+The result is a memory that a household, a team, or a single developer can all use through whatever agent they already have — Claude Code in a repo, an LLM assistant reaching them on Telegram or voice, your own — while the memory itself stays one governed source of truth.
 
 - 📄 **A wiki you can read, not a vector dump.** Facts get compiled into flowing Markdown pages — each fact homed on exactly one page, woven into prose that spells out how facts relate. The prose isn't decoration: making relationships explicit is *what makes recall accurate*. Read it from the built-in dashboard; it reads like someone kept notes carefully.
 - 🔒 **Access control per fragment, inside a single page.** One page can mix public, private, and group-restricted spans, redacted **per reader** *before* any text reaches a consumer agent. On disk each protected span carries only a stable key; the governing metadata — owner, sender, audience, validity — lives in the engine's per-fact index and is enforced by code, never by asking a model nicely. Sharing a page never means sharing all of it.
@@ -35,7 +35,7 @@ The result is a memory that a household, a team, or a single developer can all u
 - 🌙 **Nightly self-organization (REM).** While no one is waiting, a background cycle deduplicates facts, merges near-synonym pages, closes completions and contradictions the conversations missed, re-anchors rotting relative dates ("today" → the date it was actually said), lets grown topics emerge into their own wikis, and recompiles it all into prose. Every structural change applies **act-first** with a receipt: you get a notice, and a one-tap revert window — no approval queue to babysit.
 - 🤝 **Smart wikis for coding agents.** A *smart* consumer (e.g. Claude Code inside a repo) authoritatively maintains a project-scoped wiki — architecture decisions, bug trackers, runbooks — with a one-page `_briefing.md` handoff for the next session, cooperative leases, and a revertible op-log.
 - ⚡ **A lean hot path.** Per turn: deterministic I/O, *local* embeddings, one routing call to the internal LLM (plus an optional navigation call when configured). The heavy lifting is batched into the nightly cycle. Latency stays bounded; the bill stays predictable.
-- 🔌 **Truly consumer-agnostic.** Claude Code, Cursor, a Slack bot, your own agent — all talk to the *same* governed memory over MCP, at the same time. Swap a harness, add another; the memory stays one.
+- 🔌 **Truly consumer-agnostic.** Any LLM-driven agent — Claude Code, Cursor, an assistant your users reach on Telegram/Slack/voice, your own — talks to the *same* governed memory over MCP, at the same time. The agent's model composes each reply from the recall block; mwe-mcp governs what that block contains. Swap a harness, add another; the memory stays one.
 
 > Born as the `memory-wiki-engine` plugin for OpenClaw, extracted into a standalone, agent-agnostic product.
 
@@ -47,7 +47,7 @@ Four short scenes. The agent calls **one** tool per turn (`wiki_ingest_message`)
 
 ### A household that shares *some* things, not all
 
-A family runs one shared memory; every assistant they talk to — the kitchen speaker, a Telegram bot, Claude Code on a laptop — remembers into it and recalls from it. Alice and Bob are on the `team`; Zoe is family but not on the team.
+A family runs one shared memory; every assistant they talk to — the voice assistant in the kitchen, an LLM bot on Telegram, Claude Code on a laptop — remembers into it and recalls from it. Alice and Bob are on the `team`; Zoe is family but not on the team.
 
 > **Alice:** *"Bob changed jobs, he's at AcmeCorp now."*
 > **Assistant:** *"Noted in Bob's profile."*
