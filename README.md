@@ -11,7 +11,7 @@
 [![CI](https://github.com/Fr4nZ82/mwe-mcp/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 [![Status](https://img.shields.io/badge/status-1.0-brightgreen.svg)](#how-it-compares)
 
-[Why](#why-mwe-mcp) · [In action](#see-it-in-action) · [Quickstart](#quickstart) · [Time](#a-memory-that-knows-when-things-stop-being-true) · [Recall](#recall-that-walks-the-wiki-not-just-greps-it) · [Shared memory](#a-shared-memory-for-a-whole-household) · [Self-organizing](#a-memory-that-organizes-itself) · [Your data](#your-memory-your-rules) · [Compare](#how-it-compares) · [How it works](#how-it-works) · [Tools](#the-mcp-tool-surface) · [Dashboard](#built-in-dashboard) · [Docs](#documentation)
+[Why](#why-mwe-mcp) · [In action](#see-it-in-action) · [Quickstart](#quickstart) · [Time](#a-memory-that-knows-when-things-stop-being-true) · [Recall](#recall-that-walks-the-wiki-not-just-greps-it) · [Shared memory](#a-shared-memory-for-a-whole-household) · [Self-organizing](#a-memory-that-organizes-itself) · [Your data](#your-memory-your-rules) · [Compare](#how-it-compares) · [How it works](#how-it-works) · [Tools](#tools) · [Dashboard](#built-in-dashboard) · [Docs](#documentation)
 
 </div>
 
@@ -300,9 +300,22 @@ The four actors are the **end user**, the **consumer agent** (its own LLM), the 
 
 ---
 
-## The MCP tool surface
+## Tools
 
 The consumer agent talks to a small surface of **high-level** MCP tools grouped into families. Internal atomic operations (`wiki_capture`, `wiki_supersede`, …) are **never** exposed over MCP — the LLM-driven router and the dashboard compose them internally.
+
+- `wiki_ingest_message` — the one-call-per-turn entrypoint: recall + capture + attribution + validity, composed internally
+- `wiki_ingest_external` — bulk / legacy import with per-message semantic clocks, so history keeps its dates
+- `wiki_read` — ACL-aware page read, redacted per reader
+- `wiki_search` — ACL-aware semantic search, including as-of-a-date queries against validity windows
+- `wiki_navigate` — the navigator walk: pages, links and hubs, the way a person would browse
+- `events_poll` / `events_ack` — cooperative async notices (applied changes, reminders)
+- `dashboard_link` — one-shot signed link into the built-in dashboard
+- `wiki_admin_push` / `wiki_admin_pull` — authoritative smart-wiki writes/reads for coding agents
+- `wiki_admin_notify` — leave a briefing note on another consumer's wiki (the cross-agent relay)
+- `wiki_admin_lease_acquire` / `wiki_admin_lease_release` — cooperative lease across smart consumers
+- `skill_list` / `skill_fetch` — server-served operational skills, etag-cached
+- `smart_bootstrap` / `recall_core_global` — smart-consumer session start and transversal recall
 
 | Family | Purpose |
 |---|---|
