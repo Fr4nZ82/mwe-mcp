@@ -24,14 +24,16 @@ if [ "$REF" != "HEAD" ]; then
     git -C "$SCRATCH/hermes" checkout --quiet "$REF"
 fi
 
-# Install the plugin trio the way an operator does: the memory provider
-# and the gateway media hook into $HERMES_HOME/plugins/ (out-of-tree),
-# the context engine into the checkout's plugins/context_engine/ (its
-# discovery has no user dir). The media hook is opt-in: smoke_test.py
-# writes the matching `plugins.enabled: [mwe-media]` config.yaml.
+# Install the plugin quartet the way an operator does: the memory
+# provider, the gateway media hook and the watchdog into
+# $HERMES_HOME/plugins/ (out-of-tree), the context engine into the
+# checkout's plugins/context_engine/ (its discovery has no user dir).
+# The hook plugins are opt-in: smoke_test.py writes the matching
+# `plugins.enabled: [mwe-media, mwe-watchdog]` config.yaml.
 mkdir -p "$SCRATCH/home/plugins"
 ln -s "$(pwd)/plugins/memory/mwe" "$SCRATCH/home/plugins/mwe"
 ln -s "$(pwd)/plugins/gateway/mwe-media" "$SCRATCH/home/plugins/mwe-media"
+ln -s "$(pwd)/plugins/agent/mwe-watchdog" "$SCRATCH/home/plugins/mwe-watchdog"
 ln -s "$(pwd)/plugins/context_engine/mwe-truncate" "$SCRATCH/hermes/plugins/context_engine/mwe-truncate"
 
 HERMES_HOME="$SCRATCH/home" PYTHONPATH="$SCRATCH/hermes" python3 smoke_test.py

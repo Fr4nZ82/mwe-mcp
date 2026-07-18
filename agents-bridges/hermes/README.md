@@ -2,7 +2,7 @@
 
 This bridge wires [hermes-agent](https://github.com/nousresearch/hermes-agent)
 to a running mwe-mcp server at full fidelity — the per-turn contract (v1) of
-[`INTEGRATING.md`](../../INTEGRATING.md) — as a **plugin trio**, with no fork
+[`INTEGRATING.md`](../../INTEGRATING.md) — as a **plugin quartet**, with no fork
 and no upstream patch:
 
 - **Memory half** — `plugins/memory/mwe/`, a `MemoryProvider`:
@@ -50,8 +50,29 @@ and no upstream patch:
   the server's `POST /media` endpoint and the minted catalog ids ride the
   next per-turn ingest as `attachments`. **Opt-in** — see §Media below;
   without it the bridge captures captions but drops the media itself.
+- **Verification half** — `plugins/agent/mwe-watchdog/`, a hook plugin on
+  hermes's `pre_api_request` seam. The per-turn contract has a host-side
+  blind spot: `prefetch()` returns the recall block, but whether hermes
+  actually injects it into the model request is invisible to the
+  provider, and a drop is **silent** — the turn proceeds and the model
+  answers without memory. The memory half records what it handed over
+  (`$HERMES_HOME/mwe-watchdog-state.json`, keyed by a hash of the turn's
+  user text) and the watchdog checks a `<memory-context>` fence is
+  present in the outgoing request on the turn's first model call: absent
+  → a loud WARNING with a consecutive-miss counter, flagged SYSTEMATIC
+  from the third miss. Diagnosis only — it never mutates the request.
+  **Opt-in** (recommended): add `mwe-watchdog` to `plugins.enabled`.
+  Born from a live incident (2026-07-18): hermes's message-alternation
+  repair compacts the transcript AFTER the injection index is computed
+  (`turn_context.py` sets it before preflight compression /
+  `repair_message_sequence_with_cursor`, and never recomputes), so an
+  affected chat silently lost every recall block for days while capture
+  kept working. Until that host bug is fixed upstream, any turn whose
+  transcript gets compacted between index computation and injection is
+  a **blind turn** — memory captured, recall dropped; the watchdog makes
+  each one visible.
 
-All three are stdlib-only — no pip dependencies.
+All four are stdlib-only — no pip dependencies.
 
 ## Install
 
@@ -66,15 +87,16 @@ curl -fsSL https://<your-mwe-mcp>/bridges/hermes/install.sh | sh
 # Windows (PowerShell):  irm https://<your-mwe-mcp>/bridges/hermes/install.ps1 | iex
 ```
 
-It places all three plugins — `mwe` + `mwe-media` under
+It places all four plugins — `mwe` + `mwe-media` + `mwe-watchdog` under
 `~/.hermes/plugins/`, `mwe-truncate` inside your checkout's
-`plugins/context_engine/` — and prints the three steps that stay yours:
+`plugins/context_engine/` — and prints the four steps that stay yours:
 mint a token, set `memory_enabled: false` **and** `user_profile_enabled:
-false`, restart. Override the runtime
+false`, enable the hook plugins under `plugins.enabled`, restart.
+Override the runtime
 dir with `HERMES_HOME` and the checkout with `HERMES_SRC`. You can also
 hand it to a running hermes — paste it `Read
 https://<your-mwe-mcp>/bridges/hermes/install.md and follow it` and it
-installs its own bridge, then tells you those same three steps (it never
+installs its own bridge, then tells you those same four steps (it never
 handles your token).
 
 **From a source checkout (development).** With the mwe-mcp repo checked
@@ -91,12 +113,14 @@ HERMES=/path/to/hermes-agent
 mkdir -p ~/.hermes/plugins
 ln -s "$BRIDGE/plugins/memory/mwe"                    ~/.hermes/plugins/mwe
 ln -s "$BRIDGE/plugins/gateway/mwe-media"             ~/.hermes/plugins/mwe-media
+ln -s "$BRIDGE/plugins/agent/mwe-watchdog"            ~/.hermes/plugins/mwe-watchdog
 ln -s "$BRIDGE/plugins/context_engine/mwe-truncate"   "$HERMES/plugins/context_engine/mwe-truncate"
 ```
 
-Keep `mwe` and `mwe-media` as **sibling directories** under
-`~/.hermes/plugins/` (the layout above): the media hook reaches the
-vendored HTTP client through its `mwe` sibling.
+Keep `mwe`, `mwe-media` and `mwe-watchdog` as **sibling directories**
+under `~/.hermes/plugins/` (the layout above): the media hook reaches the
+vendored HTTP client through its `mwe` sibling, and the watchdog reads
+the handshake state the memory provider writes next to the spool.
 
 ## Configure
 

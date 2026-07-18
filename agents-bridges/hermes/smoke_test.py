@@ -64,7 +64,9 @@ def main():
     # The media hook plugin is opt-in: hermes's general plugin manager
     # loads a user-installed standalone plugin only when its name is in
     # config.yaml's `plugins.enabled` allow-list.
-    (HOME / "config.yaml").write_text("plugins:\n  enabled:\n    - mwe-media\n")
+    (HOME / "config.yaml").write_text(
+        "plugins:\n  enabled:\n    - mwe-media\n    - mwe-watchdog\n"
+    )
     os.environ["MWE_TOKEN"] = "test-jwt"
 
     # --- discovery through the real seams --------------------------------
@@ -401,6 +403,49 @@ def main():
         ok("budget-skipped album leaves no spool entries",
            json.loads(spool.read_text()) == [])
         stub_mwe_json()  # restore
+
+        # --- watchdog: the verification half ------------------------------------
+        # The memory half records what it handed the host (the handshake
+        # state file); the watchdog's pre_api_request hook verifies the
+        # block actually reached the outgoing model request. Both sides
+        # run the REAL modules over the real state file.
+        ok("watchdog plugin enabled via plugins.enabled",
+           plugin_info.get("mwe-watchdog", {}).get("enabled") is True,
+           f"got {plugin_info.get('mwe-watchdog')}")
+        wd_state = HOME / "mwe-watchdog-state.json"
+        wd_block = gw.prefetch("turno sorvegliato")
+        ok("prefetch writes the handshake entry",
+           wd_state.is_file()
+           and any(e.get("block_chars") == len(wd_block)
+                   for e in json.loads(wd_state.read_text())["entries"]),
+           f"state: {wd_state.is_file() and wd_state.read_text()}")
+
+        def fire_watchdog(fence_present, text="turno sorvegliato"):
+            content = text + (
+                "\n\n<memory-context>\nricordi\n</memory-context>"
+                if fence_present else ""
+            )
+            mgr.invoke_hook(
+                "pre_api_request", api_call_count=1, user_message=text,
+                model="m", session_id="s",
+                request={"body": {"messages": [
+                    {"role": "user", "content": content}]}},
+            )
+            return json.loads(wd_state.read_text()).get("consecutive_misses")
+
+        ok("dropped block → miss counted", fire_watchdog(False) == 1)
+        ok("second drop increments the counter", fire_watchdog(False) == 2)
+        ok("delivered block resets the counter", fire_watchdog(True) == 0)
+        wd_snapshot = wd_state.read_text()
+        mgr.invoke_hook("pre_api_request", api_call_count=2,
+                        user_message="turno sorvegliato",
+                        request={"body": {"messages": []}})
+        ok("non-first api call is a no-op", wd_state.read_text() == wd_snapshot)
+        mgr.invoke_hook("pre_api_request", api_call_count=1,
+                        user_message="turno mai visto dal provider",
+                        request={"body": {"messages": []}})
+        ok("unmatched turn is a no-op (no false alarm)",
+           wd_state.read_text() == wd_snapshot)
 
         # --- non-primary contexts are fully inactive ---------------------------
         sub = fresh_provider(stub.url, agent_context="subagent")

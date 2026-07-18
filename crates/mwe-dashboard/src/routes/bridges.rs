@@ -364,6 +364,10 @@ fn hermes_guide_body(consumer: &str, origin: &str) -> Markup {
             li { "Set " code { "memory_enabled: false" } " and "
                 code { "user_profile_enabled: false" } " in hermes's "
                 code { "config.yaml" } " so mwe-mcp is the only memory." }
+            li { "Enable the hook plugins under " code { "plugins.enabled" } ": "
+                code { "mwe-watchdog" } " (recommended — verifies each turn's "
+                "recall block actually reaches the model) and "
+                code { "mwe-media" } " (if you want media capture)." }
             li { "Restart hermes so it loads the new plugins." }
         }
     }
@@ -387,6 +391,9 @@ fn route_embedded_path(rel: &str) -> Option<(Dest, String)> {
         return Some((Dest::HermesHome, r.to_owned()));
     }
     if let Some(r) = rel.strip_prefix("gateway/") {
+        return Some((Dest::HermesHome, r.to_owned()));
+    }
+    if let Some(r) = rel.strip_prefix("agent/") {
         return Some((Dest::HermesHome, r.to_owned()));
     }
     if rel.starts_with("context_engine/") {
@@ -428,7 +435,7 @@ fn render_install_sh(consumer: &str) -> Option<String> {
     s.push_str(
         "# mwe-mcp hermes bridge installer — self-contained, served by your mwe-mcp server.\n",
     );
-    s.push_str("# Places the three bridge plugins. It never touches your token.\n");
+    s.push_str("# Places the four bridge plugins. It never touches your token.\n");
     s.push_str("set -eu\n\n");
     s.push_str("HERMES_HOME=\"${HERMES_HOME:-$HOME/.hermes}\"\n\n");
     s.push_str("# The context-engine plugin must land inside the hermes-agent checkout.\n");
@@ -468,7 +475,7 @@ fn render_install_sh(consumer: &str) -> Option<String> {
     }
 
     s.push_str(
-        "\nprintf '%s\\n' \"\" \\\n  \"mwe-mcp hermes bridge: plugins installed.\" \\\n  \"  memory + media -> $HERMES_HOME/plugins/\" \\\n  \"  context engine -> $HERMES_SRC/plugins/context_engine/\" \\\n  \"\" \\\n  \"Three steps remain — they are yours (the installer never handles your token):\" \\\n  \"  1. Issue a token from your mwe-mcp dashboard home and set MWE_TOKEN in hermes's .env.\" \\\n  \"  2. Disable hermes's built-in memory (memory_enabled: false AND user_profile_enabled: false) so mwe-mcp is the only memory.\" \\\n  \"  3. Restart hermes so it loads the new plugins.\"\n",
+        "\nprintf '%s\\n' \"\" \\\n  \"mwe-mcp hermes bridge: plugins installed.\" \\\n  \"  memory + media + watchdog -> $HERMES_HOME/plugins/\" \\\n  \"  context engine -> $HERMES_SRC/plugins/context_engine/\" \\\n  \"\" \\\n  \"Four steps remain — they are yours (the installer never handles your token):\" \\\n  \"  1. Issue a token from your mwe-mcp dashboard home and set MWE_TOKEN in hermes's .env.\" \\\n  \"  2. Disable hermes's built-in memory (memory_enabled: false AND user_profile_enabled: false) so mwe-mcp is the only memory.\" \\\n  \"  3. Enable the hook plugins in config.yaml plugins.enabled: mwe-watchdog (recommended) and mwe-media (if you want media capture).\" \\\n  \"  4. Restart hermes so it loads the new plugins.\"\n",
     );
     Some(s)
 }
@@ -480,7 +487,7 @@ fn render_install_ps1(consumer: &str) -> Option<String> {
     }
     let mut s = String::new();
     s.push_str("# mwe-mcp hermes bridge installer (Windows / PowerShell) — self-contained.\n");
-    s.push_str("# Places the three bridge plugins. It never touches your token.\n");
+    s.push_str("# Places the four bridge plugins. It never touches your token.\n");
     s.push_str("$ErrorActionPreference = \"Stop\"\n\n");
     s.push_str("if ($env:HERMES_HOME) { $HermesHome = $env:HERMES_HOME } else { $HermesHome = Join-Path $HOME \".hermes\" }\n");
     s.push_str("if ($env:HERMES_SRC) { $HermesSrc = $env:HERMES_SRC }\n");
@@ -515,10 +522,11 @@ fn render_install_ps1(consumer: &str) -> Option<String> {
 
     s.push_str("\nWrite-Host \"\"\n");
     s.push_str("Write-Host \"mwe-mcp hermes bridge: plugins installed.\"\n");
-    s.push_str("Write-Host \"Three steps remain — they are yours (the installer never handles your token):\"\n");
+    s.push_str("Write-Host \"Four steps remain — they are yours (the installer never handles your token):\"\n");
     s.push_str("Write-Host \"  1. Issue a token from your mwe-mcp dashboard home and set MWE_TOKEN in hermes's .env.\"\n");
     s.push_str("Write-Host \"  2. Disable hermes's built-in memory (memory_enabled: false and user_profile_enabled: false).\"\n");
-    s.push_str("Write-Host \"  3. Restart hermes so it loads the new plugins.\"\n");
+    s.push_str("Write-Host \"  3. Enable the hook plugins in config.yaml plugins.enabled: mwe-watchdog (recommended) and mwe-media (for media capture).\"\n");
+    s.push_str("Write-Host \"  4. Restart hermes so it loads the new plugins.\"\n");
     Some(s)
 }
 
@@ -668,8 +676,8 @@ fn render_install_md_hermes(origin: &str) -> String {
          \n\
          Windows (PowerShell): `irm {origin}/bridges/hermes/install.ps1 | iex`\n\
          \n\
-         That places the three plugins. It does **not** touch the token. Once the\n\
-         files are in place, **tell your operator** to do these three things — do not\n\
+         That places the four plugins. It does **not** touch the token. Once the\n\
+         files are in place, **tell your operator** to do these four things — do not\n\
          attempt them silently, and do not handle the token yourself:\n\
          \n\
          1. Issue a token from the mwe-mcp dashboard home and set `MWE_TOKEN` in\n\
@@ -678,7 +686,11 @@ fn render_install_md_hermes(origin: &str) -> String {
             bot's MEMORY.md) AND `user_profile_enabled: false` (the user's\n\
             USER.md) — two separate flags — so mwe-mcp is the single governed\n\
             memory.\n\
-         3. Restart hermes so it loads the new plugins.\n"
+         3. Enable the hook plugins in `config.yaml` under `plugins.enabled`:\n\
+            `mwe-watchdog` (recommended — verifies each turn's recall block\n\
+            actually reaches the model and logs loudly when the host drops it)\n\
+            and `mwe-media` (if you want media capture).\n\
+         4. Restart hermes so it loads the new plugins.\n"
     )
 }
 
@@ -813,6 +825,10 @@ mod tests {
                 .any(|r| r.starts_with("context_engine/mwe-truncate/")),
             "context_engine/mwe-truncate missing"
         );
+        assert!(
+            rels.iter().any(|r| r.starts_with("agent/mwe-watchdog/")),
+            "agent/mwe-watchdog missing"
+        );
     }
 
     #[test]
@@ -836,6 +852,7 @@ mod tests {
         let sh = render_install_sh("hermes").expect("hermes sh");
         assert!(sh.contains("cat > \"$HERMES_HOME/plugins/mwe/"));
         assert!(sh.contains("cat > \"$HERMES_HOME/plugins/mwe-media/"));
+        assert!(sh.contains("cat > \"$HERMES_HOME/plugins/mwe-watchdog/"));
         assert!(sh.contains("cat > \"$HERMES_SRC/plugins/context_engine/mwe-truncate/"));
         assert!(sh.contains("HERMES_HOME=\"${HERMES_HOME:-$HOME/.hermes}\""));
         assert!(sh.contains("HERMES_SRC=\"$(pwd)\""));
@@ -853,6 +870,7 @@ mod tests {
         assert!(ps.contains("$HermesHome"));
         assert!(ps.contains("$HermesSrc"));
         assert!(ps.contains("Join-Path $HermesSrc \"plugins\""));
+        assert!(ps.contains("mwe-watchdog"));
         assert!(ps.contains("memory_enabled: false"));
         assert!(ps.contains("user_profile_enabled: false"));
     }
@@ -866,6 +884,8 @@ mod tests {
         assert!(md.contains("MWE_TOKEN"));
         assert!(md.contains("memory_enabled: false"));
         assert!(md.contains("user_profile_enabled: false"));
+        assert!(md.contains("mwe-watchdog"));
+        assert!(md.contains("plugins.enabled"));
     }
 
     #[test]
@@ -908,6 +928,7 @@ mod tests {
         assert!(html.contains("install.md"));
         assert!(html.contains("memory_enabled: false"));
         assert!(html.contains("user_profile_enabled: false"));
+        assert!(html.contains("mwe-watchdog"));
         assert!(html.contains("Restart hermes"));
         // The token is issued from the home, not minted here.
         assert!(html.contains("dashboard home"));

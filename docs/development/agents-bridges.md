@@ -113,10 +113,10 @@ when its bridge ships a served installer.
 
 ## Shipped bridges
 
-### hermes (`agents-bridges/hermes/`) — plugin trio, zero fork
+### hermes (`agents-bridges/hermes/`) — plugin quartet, zero fork
 
 The proof-of-concept consumer that validated the per-turn contract live.
-Three hermes-agent plugins, stdlib-only, no upstream patch:
+Four hermes-agent plugins, stdlib-only, no upstream patch:
 
 - **`mwe` memory provider** (out-of-tree, `$HERMES_HOME/plugins/mwe/`):
   `prefetch()` is the one mechanical `wiki_ingest_message` per turn —
@@ -183,6 +183,31 @@ Three hermes-agent plugins, stdlib-only, no upstream patch:
   (the recall block itself is still not injected on native turns — a
   host limitation). A spool entry older than its TTL is dropped, so a
   turn that never fired cannot leak attachments into a later one.
+- **`mwe-watchdog` hook plugin** (standalone, opt-in via
+  `plugins.enabled`, recommended on every deployment): the per-turn
+  contract's **verification half**, on hermes's documented
+  `pre_api_request` seam. The host injects the provider's recall block
+  into the current turn's user message by **index**
+  (`current_turn_user_idx`), computed *before* preflight compression and
+  *before* `repair_message_sequence_with_cursor` — and never recomputed.
+  Any pass that compacts the transcript in between (a repair merging
+  orphaned consecutive user rows, a compression cut) leaves the index
+  stale and the injection silently no-ops: a **blind turn** — capture
+  works, recall never reaches the model, nothing logs (live incident
+  2026-07-18: an accreted merged user blob kept one chat permanently
+  above the truncate threshold, repair fired every turn, and that chat
+  lost every recall block for days). The provider records what it handed
+  the host (`$HERMES_HOME/mwe-watchdog-state.json`, keyed by a hash of
+  the turn text — the file-as-channel pattern again) and the watchdog
+  checks the turn's first outgoing request for the `<memory-context>`
+  fence: missing → loud WARNING with a consecutive-miss counter,
+  escalated to SYSTEMATIC from the third miss (with the session-reset
+  remediation hint). Diagnosis only; it never touches the request. The
+  provider's system-prompt block also hardens the model side: the host's
+  disabled built-in `memory` tool must never be called (it can't be
+  removed per-tool — hermes gates the provider's own `mwe_*` tools on
+  the same `memory` toolset), and facts about people live in the memory
+  server, not the local filesystem.
 
 The offline smoke loads the plugins **through hermes's real discovery
 seams** from a scratch checkout of the pinned upstream and drives the

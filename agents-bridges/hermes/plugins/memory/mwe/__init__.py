@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -66,6 +67,18 @@ _NON_PRIMARY_CONTEXTS = {"subagent", "cron", "flush"}
 # (the media-pipeline design note).
 _SPOOL_FILENAME = "mwe-media-spool.json"
 _SPOOL_TTL_SECONDS = 180.0
+
+# Handshake with the verification half
+# (plugins/agent/mwe-watchdog/__init__.py): prefetch records what it
+# handed the host for the current turn, and the watchdog's
+# `pre_api_request` hook checks that block actually reached the
+# outgoing model request. A host-side injection drop is otherwise
+# silent — the turn proceeds and the model simply answers without
+# memory. Same file-as-channel pattern as the media spool: the two
+# plugins live in different module namespaces.
+_WATCHDOG_STATE_FILENAME = "mwe-watchdog-state.json"
+_WATCHDOG_STATE_TTL_SECONDS = 300.0
+_WATCHDOG_STATE_MAX_ENTRIES = 8
 
 SEARCH_SCHEMA = {
     "name": "mwe_search",
@@ -270,7 +283,12 @@ class MweMemoryProvider(MemoryProvider):
             "save step to perform. When it asks for disambiguation, ask "
             "the user to choose, then call mwe_disambig_commit with the "
             "chosen candidate_id. Use mwe_search only for explicit lookups; "
-            "recall is otherwise automatic."
+            "recall is otherwise automatic. The host's built-in `memory` "
+            "tool is NOT this memory and is disabled in this deployment — "
+            "never call it, it only returns an error. Never search the "
+            "local filesystem for facts about the user, their contacts or "
+            "their projects: the memory server is the source of truth, and "
+            "the place to look is the <memory-context> block or mwe_search."
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -309,7 +327,50 @@ class MweMemoryProvider(MemoryProvider):
             logger.warning("mwe ingest failed — turn proceeds without memory: %s", e)
             self._pending_disambig = None
             return ""
-        return self._render_block(text, window, resp)
+        block = self._render_block(text, window, resp)
+        if block:
+            self._write_watchdog_state(text, block)
+        return block
+
+    def _write_watchdog_state(self, query_text: str, block: str) -> None:
+        """Record the block handed to the host for this turn (verification
+        half handshake — see the module-level watchdog constants).
+
+        Keyed by a hash of the turn's user text so the watchdog can match
+        its `pre_api_request` firing to exactly this prefetch. Best-effort
+        under the degradation contract: a state hiccup never touches the
+        turn.
+        """
+        if self._spool_path is None:
+            return
+        path = self._spool_path.with_name(_WATCHDOG_STATE_FILENAME)
+        now = time.time()
+        entry = {
+            "query_sha": hashlib.sha256(query_text.encode("utf-8")).hexdigest()[:16],
+            "sender": self._sender,
+            "block_chars": len(block),
+            "ts": now,
+        }
+        try:
+            with _spool_lock(path):
+                try:
+                    data = json.loads(path.read_text())
+                except Exception:
+                    data = {}
+                if not isinstance(data, dict):
+                    data = {}
+                entries = [
+                    e for e in (data.get("entries") or [])
+                    if isinstance(e, dict)
+                    and now - float(e.get("ts", 0) or 0) < _WATCHDOG_STATE_TTL_SECONDS
+                ]
+                entries.append(entry)
+                data["entries"] = entries[-_WATCHDOG_STATE_MAX_ENTRIES:]
+                tmp = path.with_name(path.name + ".provider.tmp")
+                tmp.write_text(json.dumps(data, ensure_ascii=False))
+                os.replace(tmp, path)
+        except Exception as e:
+            logger.debug("mwe watchdog-state write failed (non-fatal): %s", e)
 
     def sync_turn(self, user_content: str, assistant_content: str, *,
                   session_id: str = "") -> None:

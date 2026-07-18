@@ -1,5 +1,5 @@
 bridge = "hermes"
-description = "hermes-agent plugin trio (memory provider + truncating context engine + gateway media hook), zero fork"
+description = "hermes-agent plugin quartet (memory provider + truncating context engine + gateway media hook + per-turn contract watchdog), zero fork"
 contract = 1
 
 [upstream]

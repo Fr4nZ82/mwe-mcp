@@ -1,0 +1,9 @@
+name: mwe-watchdog
+version: 0.1.0
+description: "Per-turn contract watchdog: verifies the recall block the mwe memory provider handed to the host actually reached the outgoing model request, and logs a loud warning when host-side injection silently dropped it (the mwe-mcp hermes bridge, verification half). Stdlib-only, no pip dependencies, no network. Opt-in: add mwe-watchdog to plugins.enabled in config.yaml."
+# Explicit kind so hermes never reclassifies this plugin on a source
+# sniff — it must load through the general hook system (twin note in
+# plugins/gateway/mwe-media/plugin.yaml).
+kind: standalone
+provides_hooks:
+  - pre_api_request

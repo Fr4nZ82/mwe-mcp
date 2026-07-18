@@ -97,7 +97,7 @@ and most current SDKs) skip the shim entirely:
 The one **per-turn** (standard-consumer) host bridge shipped today wires
 **[Hermes](https://github.com/NousResearch/hermes-agent)** (Nous Research) to a
 running mwe-mcp at full fidelity — the per-turn contract below, delivered as a
-plugin trio with **no fork and no upstream patch**. You don't wire it by hand: the
+plugin quartet with **no fork and no upstream patch**. You don't wire it by hand: the
 server serves the installer at **`/bridges/hermes`** (one command), and the
 complete step-by-step — plugins, `mwe.json`, the bot token, `config.yaml`, the
 Telegram gateway, media capture — lives in
