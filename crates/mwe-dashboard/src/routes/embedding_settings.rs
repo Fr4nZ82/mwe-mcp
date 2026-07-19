@@ -55,7 +55,7 @@ struct Flash<'a> {
 
 async fn page(State(state): State<DashboardState>, admin: AdminUser) -> Result<Html<String>> {
     let workdir = workdir_of(&state)?;
-    let cfg = Config::load(&workdir)
+    let cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
     Ok(Html(render(admin.session(), &cfg.embedding, None)))
 }
@@ -204,11 +204,13 @@ async fn save(
 ) -> Result<Response> {
     let parsed = parse_form(&form)?;
 
-    // Preserve every non-embedding section by re-loading from disk and
-    // replacing only the `embedding` field. Config::load returns Default
-    // when the file is missing — the first save materialises it.
+    // Preserve every non-embedding section by re-loading from disk (raw
+    // — env overrides are runtime-only and must never be baked into the
+    // file by a save) and replacing only the `embedding` field.
+    // Config::load_raw returns Default when the file is missing — the
+    // first save materialises it.
     let workdir = workdir_of(&state)?;
-    let mut cfg = Config::load(&workdir)
+    let mut cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
     let prev = cfg.embedding.clone();
     cfg.embedding = parsed.clone();

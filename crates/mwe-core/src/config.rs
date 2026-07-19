@@ -1936,11 +1936,18 @@ impl Config {
         workdir.join(CONFIG_FILENAME)
     }
 
-    /// Load the config from `<workdir>/mwe-mcp.config.yaml`.
+    /// Load the config from `<workdir>/mwe-mcp.config.yaml`, with the
+    /// `MWE_LLM_*` env overrides applied — the **effective** runtime
+    /// configuration.
     ///
-    /// Returns [`Config::default`] when the file is absent. Returns a
-    /// [`ConfigError`] when the file exists but is malformed — silent
-    /// fallback would mask operator-side typos.
+    /// Returns [`Config::default`] (plus overrides) when the file is
+    /// absent. Returns a [`ConfigError`] when the file exists but is
+    /// malformed — silent fallback would mask operator-side typos.
+    ///
+    /// Anything that writes the YAML back must round-trip through
+    /// [`Self::load_raw`] instead: env overrides are runtime-only, and
+    /// serializing an override-carrying `Config` would bake them into
+    /// the file permanently.
     ///
     /// # Errors
     ///
@@ -1949,6 +1956,37 @@ impl Config {
     /// - [`ConfigError::InvalidLogLevel`] when `logging.level` is
     ///   neither `info` nor `debug`.
     pub fn load(workdir: &Path) -> Result<Self> {
+        Self::load_with_env(workdir, |k| std::env::var(k).ok())
+    }
+
+    /// [`Self::load`] with an injectable env lookup (tests).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::load`].
+    pub fn load_with_env<F>(workdir: &Path, env: F) -> Result<Self>
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
+        let mut cfg = Self::load_raw(workdir)?;
+        let n = cfg.llm.apply_env_overrides(env);
+        if n > 0 {
+            tracing::info!(overrides = n, "config: applied LLM env overrides");
+        }
+        Ok(cfg)
+    }
+
+    /// Load the file's contents verbatim — **no** env overrides.
+    ///
+    /// The round-trip primitive for anything that writes the YAML back
+    /// (the dashboard section editors): load raw, replace one section,
+    /// serialize — so a runtime-only `MWE_LLM_*` override never gets
+    /// persisted to disk by an unrelated save.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::load`].
+    pub fn load_raw(workdir: &Path) -> Result<Self> {
         let path = Self::path_in(workdir);
         let raw = match fs::read_to_string(&path) {
             Ok(s) => s,
@@ -1957,21 +1995,11 @@ impl Config {
                     config = %path.display(),
                     "config: file absent, falling back to defaults"
                 );
-                let mut cfg = Self::default();
-                let n = cfg.llm.apply_env_overrides(|k| std::env::var(k).ok());
-                if n > 0 {
-                    tracing::info!(overrides = n, "config: applied LLM env overrides");
-                }
-                return Ok(cfg);
+                return Ok(Self::default());
             },
             Err(e) => return Err(e.into()),
         };
-        let mut cfg = Self::parse(&path, &raw)?;
-        let n = cfg.llm.apply_env_overrides(|k| std::env::var(k).ok());
-        if n > 0 {
-            tracing::info!(overrides = n, "config: applied LLM env overrides");
-        }
-        Ok(cfg)
+        Self::parse(&path, &raw)
     }
 
     /// Parse from a raw YAML string. `path` is informational.
@@ -2217,6 +2245,26 @@ mod tests {
         let cfg = Config::load(dir.path()).expect("load");
         assert_eq!(cfg, Config::default());
         assert_eq!(cfg.logging.level, LogLevel::Info);
+    }
+
+    #[test]
+    fn load_raw_never_applies_env_overrides() {
+        let dir = tempdir().unwrap();
+        let body = "llm:\n  ingest:\n    backend: ollama\n    model: qwen3\n";
+        fs::write(Config::path_in(dir.path()), body).unwrap();
+        let env = |k: &str| (k == "MWE_LLM_INGEST_MODEL").then(|| "claude-opus-4-7".to_owned());
+
+        // The effective load honours the override…
+        let effective = Config::load_with_env(dir.path(), env).expect("load_with_env");
+        assert_eq!(
+            effective.llm.ingest.as_ref().unwrap().model,
+            "claude-opus-4-7"
+        );
+
+        // …while the round-trip primitive keeps the file's value, so a
+        // dashboard save can never bake a runtime override into YAML.
+        let raw = Config::load_raw(dir.path()).expect("load_raw");
+        assert_eq!(raw.llm.ingest.as_ref().unwrap().model, "qwen3");
     }
 
     #[test]

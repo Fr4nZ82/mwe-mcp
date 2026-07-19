@@ -93,7 +93,7 @@ fn human_bytes(bytes: u64) -> String {
 
 async fn page(State(state): State<DashboardState>, admin: AdminUser) -> Result<Html<String>> {
     let workdir = workdir_of(&state)?;
-    let cfg = Config::load(&workdir)
+    let cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
     let body = render(admin.session(), cfg.training_spool.enabled, &workdir, None);
     Ok(Html(body))
@@ -185,11 +185,12 @@ async fn save(
     let enabled = form.contains_key("enabled");
 
     // Preserve every other section of the existing Config by re-loading
-    // from disk and replacing only `training_spool`. Config::load
-    // returns Default when the file is missing — the first save
-    // materialises it.
+    // from disk (raw — env overrides are runtime-only and must never be
+    // baked into the file by a save) and replacing only
+    // `training_spool`. Config::load_raw returns Default when the file
+    // is missing — the first save materialises it.
     let workdir = workdir_of(&state)?;
-    let mut cfg = Config::load(&workdir)
+    let mut cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
     cfg.training_spool.enabled = enabled;
 

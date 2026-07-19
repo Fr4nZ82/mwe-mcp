@@ -1030,12 +1030,16 @@ fn model_list_for(backend: &str) -> &'static str {
 // ---------- POST /admin/llm-config ----------
 
 /// Persist a parsed [`LlmConfig`] and hot-reload it. Re-loads the on-disk
-/// `Config` (preserving every non-`llm` section), backs up the live YAML,
-/// atomic-writes, then swaps the in-memory copy. Shared by [`save`] and
-/// [`apply_profile`]. Order matters — disk first, so a crash after the swap
-/// still boots with the new YAML.
+/// `Config` raw (preserving every non-`llm` section exactly as the file
+/// has it — env overrides are runtime-only and must never ride a save to
+/// disk), backs up the live YAML, atomic-writes, then swaps the
+/// in-memory copy. Note the `llm` section itself is what-you-see-is-
+/// what-you-save: the form renders the runtime snapshot, so values an
+/// operator saw and saved are persisted deliberately. Shared by [`save`]
+/// and [`apply_profile`]. Order matters — disk first, so a crash after
+/// the swap still boots with the new YAML.
 fn persist_llm_config(memory: &MemoryHandles, parsed: LlmConfig) -> Result<()> {
-    let mut cfg = Config::load(&memory.workdir)
+    let mut cfg = Config::load_raw(&memory.workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
     cfg.llm = parsed.clone();
 

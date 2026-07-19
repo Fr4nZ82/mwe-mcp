@@ -11,6 +11,15 @@ semver-governed surface — breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dashboard saves no longer persist `MWE_LLM_*` env overrides.** The
+  config gains a `load_raw` round-trip primitive (file contents
+  verbatim, no env overlay); every dashboard section editor now loads
+  through it, so saving an unrelated panel can never bake a
+  runtime-only override into the YAML. The LLM-config editor remains
+  deliberately what-you-see-is-what-you-save.
+
 ## 1.4.1 — 2026-07-19
 
 ### Added

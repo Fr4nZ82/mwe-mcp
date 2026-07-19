@@ -60,8 +60,8 @@ fn admin_email_config(state: &DashboardState, user: &SessionUser) -> Result<Opti
     if !user.is_admin {
         return Ok(None);
     }
-    let cfg =
-        Config::load(workdir).map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
+    let cfg = Config::load_raw(workdir)
+        .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
     Ok(Some(cfg.email))
 }
 

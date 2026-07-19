@@ -931,6 +931,14 @@ string — set `_MODEL` too.) The override coverage today is limited to
 the `llm.*` subtree; other subtrees (e.g. `rem.schedule.interval_secs`)
 are **not** env-overridable yet.
 
+Overrides are **runtime-only** — they are never written back to the
+YAML. Anything that persists the config (the dashboard section editors)
+round-trips through `Config::load_raw`, which skips the overlay, so a
+save from an unrelated panel cannot bake an ephemeral override into the
+file. The one deliberate exception is the LLM-config editor itself:
+its form renders the *effective* runtime values, and saving persists
+exactly what the operator saw on screen.
+
 > Note the distinction: `api_key_env` (and `MWE_LLM_*_API_KEY_ENV`)
 > holds the **name** of the variable that holds the key. The key itself
 > lives in `mwe-mcp.env`. Two layers of indirection on purpose — the

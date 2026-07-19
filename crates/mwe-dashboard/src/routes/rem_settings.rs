@@ -196,7 +196,7 @@ async fn page(State(state): State<DashboardState>, admin: AdminUser) -> Result<H
     // The runtime handle holds the resolved policy; the Option-shaped
     // overrides this form edits live in the YAML, so read them there.
     let workdir = workdir_of(&state)?;
-    let cfg = Config::load(&workdir)
+    let cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
     let body = render(admin.session(), &cfg.rem.policy, None);
     Ok(Html(body))
@@ -281,11 +281,12 @@ async fn save(
 
     // Preserve every non-REM-policy section of the existing Config by
     // re-loading from disk and replacing only the `rem.policy` field
-    // (`rem.schedule` stays as the operator wrote it). Config::load
-    // returns Default when the file is missing — the first save
-    // materialises it.
+    // (`rem.schedule` stays as the operator wrote it). Raw load — env
+    // overrides are runtime-only and must never be baked into the file
+    // by a save; Config::load_raw returns Default when the file is
+    // missing — the first save materialises it.
     let workdir = workdir_of(&state)?;
-    let mut cfg = Config::load(&workdir)
+    let mut cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
     cfg.rem.policy = parsed.clone();
 

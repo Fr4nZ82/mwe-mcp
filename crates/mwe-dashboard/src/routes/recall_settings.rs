@@ -277,11 +277,12 @@ async fn save(
     let mut parsed = parse_form(&form)?;
 
     // Preserve every non-recall section of the existing Config by
-    // re-loading from disk and replacing only the `recall` field.
-    // Config::load returns Default when the file is missing — the
-    // first save materialises it.
+    // re-loading from disk (raw — env overrides are runtime-only and
+    // must never be baked into the file by a save) and replacing only
+    // the `recall` field. Config::load_raw returns Default when the
+    // file is missing — the first save materialises it.
     let workdir = workdir_of(&state)?;
-    let mut cfg = Config::load(&workdir)
+    let mut cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
     // `ingest_timezone` is not a knob on this panel; carry the live value
     // forward so saving recall settings never wipes a configured zone.

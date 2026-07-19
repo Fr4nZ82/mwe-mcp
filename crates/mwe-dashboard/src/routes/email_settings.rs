@@ -209,10 +209,11 @@ async fn save(
     let parsed = parse_form(&form)?;
     let enabled = parsed.enabled;
 
-    // Preserve every non-email section by re-loading from disk and
-    // replacing only the `email` field.
+    // Preserve every non-email section by re-loading from disk (raw —
+    // env overrides are runtime-only and must never be baked into the
+    // file by a save) and replacing only the `email` field.
     let workdir = workdir_of(&state)?;
-    let mut cfg = Config::load(&workdir)
+    let mut cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
     cfg.email = parsed;
 
@@ -248,7 +249,7 @@ async fn send_test(
         .ok_or_else(|| DashboardError::Validation("enter a recipient address".to_owned()))?;
 
     let workdir = workdir_of(&state)?;
-    let cfg = Config::load(&workdir)
+    let cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
 
     let result = crate::email::send_test_email(&cfg.email, &to).await;
