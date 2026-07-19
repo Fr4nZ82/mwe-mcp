@@ -190,7 +190,7 @@ For each **family line** ([family scope](#family-scope--the-consolidation-passes
    behaviour rule dedups rule-vs-rule only — if it lost against an
    episodic restatement, its content would survive only off `rules.md`,
    outside the behaviour-rules channel
-   ([ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-to-the-consumers-own-wiki)).
+   ([ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-by-scope-outside-fact-memory)).
    A structural channel invariant, not a semantic gate — rule-vs-rule
    pairs still go to the LLM.
 4. Ask the `rem_dedup_semantic` LLM with a strict-JSON prompt:
@@ -588,7 +588,7 @@ the safety net).
    per-user behaviour rule embeds toward its *user's* wiki by nature, and
    a confirmed move would eject it from the behaviour-rules channel — the
    refile twin of the compiler-door skip
-   ([ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-to-the-consumers-own-wiki));
+   ([ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-by-scope-outside-fact-memory));
    rules facts still count in the similarity pools. Reviewer-fed first,
    then fresh facts (inside `policy.closure_sweep_window`), then
    newest-first, capped by `policy.refile_sweep_cap` (default 5; `0`

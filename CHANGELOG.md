@@ -31,6 +31,23 @@ semver-governed surface — breaking changes are called out explicitly.
   A new `promote: always | never` dial on both tools forces the
   decision either way, disposition-style; guests, `dashboard_command`
   and assistant-authored turns never promote.
+- **Behaviour-rule scopes — the user's rule for every assistant
+  (roadmap 42).** The `behaviour_scope` axis grows a third value,
+  `user-global`: a directive the user explicitly addresses to every
+  assistant they talk to ("voglio che TUTTI gli assistenti mi parlino
+  in italiano") now files in the **sender's own identity-wiki
+  `rules.md`** (owner = the sender, no admin gate — it binds only
+  their conversations) and the `rules` channel of every consumer
+  serving that user surfaces it, the bindingless smart consumer
+  included. Order pinned in `YOUR RULES`, most specific last:
+  agent-wide → user-global → per-user. The classifier sees the union
+  with fact ids and scope tags, so a revision supersedes across all
+  three sources — but only the admin may supersede an agent-wide rule
+  (a non-admin's revision files additively at its own scope). This
+  retires the old salience-`high` workaround for cross-assistant
+  directives, and the governance read (`sender_rules`) now strips fact
+  regions from the user's `rules.md` so a user-global rule never leaks
+  into the classifier's policy section.
 
 ### Fixed
 

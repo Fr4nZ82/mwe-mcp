@@ -2,7 +2,7 @@
 title: Tool reference — per-tool I/O contract
 area: protocol
 status: implemented
-last_review: "2026-07-02"
+last_review: "2026-07-19"
 ---
 
 # Tool reference
@@ -275,10 +275,12 @@ never as an `Err`.
   cross-links.
 - `rules` is **behaviour-only and structurally separate from
   `context_snippet`** (ingest pipeline):
-  it carries the served user's standing behaviour directives (how the agent
-  should converse / operate with them, recalled from the agent's own
-  `rules.md`) plus, leading, any one-shot governance notice (e.g. an
-  agent-wide change refused for a non-admin this turn). The consumer
+  it carries the standing behaviour directives in force for the served user —
+  agent-wide, then the user's **user-global** rules (the ones they set for
+  every assistant, recalled from their own identity-wiki `rules.md`), then
+  their per-user rules for this agent (the agent's own `rules.md`) — plus,
+  leading, any one-shot governance notice (e.g. an agent-wide change refused
+  for a non-admin this turn). The consumer
   **applies** these as instructions, never relays them. Privacy/sharing
   never rides this field — it is enforced memory-side by the per-fragment
   ACL, so the agent cannot leak what recall never surfaces. `null` when the

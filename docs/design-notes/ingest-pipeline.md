@@ -2,7 +2,7 @@
 title: Ingest pipeline — wiki_ingest_message
 area: design-notes
 status: implemented
-last_review: "2026-07-05"
+last_review: "2026-07-19"
 ---
 
 # Ingest pipeline
@@ -691,10 +691,11 @@ Standing **behaviour directives** are not memory and never ride
 `IngestResponse.rules`
 ([`assemble_rules_block`](../../crates/mwe-core/src/ingest.rs), roadmap 29d), so
 the consumer can tell a binding rule apart from a remembered fact and **apply**
-it (rather than relay it). It carries the served user's behaviour rules — the
-agent-wide rules then the user's own per-user rules, recalled from the agent's
-own `rules.md` (see
-[Agent behaviour rules](#agent-behaviour-rules--routed-to-the-consumers-own-wiki))
+it (rather than relay it). It carries the behaviour rules in force for the
+served user, order pinned and most specific last — the agent-wide rules, then
+the user's **user-global** rules (their own identity-wiki `rules.md`, roadmap
+42), then the user's per-user rules for this agent (see
+[Agent behaviour rules](#agent-behaviour-rules--routed-by-scope-outside-fact-memory))
 — led by a one-shot **notice** when a non-admin's agent-wide change was refused
 this turn. The directives section is **self-labelled** with the stable
 `YOUR RULES (…)` role header (apply-don't-relay wording included), one rule
@@ -815,10 +816,13 @@ near-verbatim; injecting the scope is what lets the model route on meaning.
 
 Where `sender_groups` is *operator* knowledge, `rules.md` is the *user's
 own* standing **engine policy**: a prose page
-([`wiki::RULES_FILENAME`](../../crates/mwe-core/src/wiki.rs)) holding
-**only governance rules for the memory engine** — two families,
-*privacy/sharing* and *do-not-store* (behaviour rules like "address me
-formally" belong to the **consumer's** own wiki, not here). It is
+([`wiki::RULES_FILENAME`](../../crates/mwe-core/src/wiki.rs)) whose free
+prose holds **governance rules for the memory engine** — two families,
+*privacy/sharing* and *do-not-store*. Per-agent behaviour rules like
+"address me formally" belong to the **consumer's** own wiki, not here; the
+user's **user-global** behaviour rules (roadmap 42) *do* share this page,
+but as `{{f=…}}` fact regions the governance read strips — they ride the
+dedicated rules channel, never the policy prose. The governance half is
 *all prose, no metadata*: no rule is ever materialised onto the
 wiki-level `scope` primitive (maintainer 2026-06-08
 "tutto-prosa-nei-file"); enforcement is the soft read below. `rules.md`
@@ -829,7 +833,9 @@ per-message.
 **Read side.** The orchestrator reads the **sender's**
 `rules.md` best-effort
 ([`ingest::sender_rules`](../../crates/mwe-core/src/ingest.rs): locate the
-sender's identity wiki, read the page; absent/unreadable → `None`) and
+sender's identity wiki, read the page's free prose — fact regions
+stripped, so a user-global behaviour rule is never injected as policy or
+twice; absent/unreadable/no prose → `None`) and
 `build_prompt` injects it as a `sender_rules:` section (truncated to
 `policy.max_sender_rules_chars`, default 1500; `(none)` when absent). The
 bundled prompt body tells the model to **honour the privacy/sharing rules
@@ -863,48 +869,59 @@ policy prose, appended verbatim and read straight back to them as
 wizard** is just a 3-step prompt composer over this same path;
 it materialises nothing.
 
-## Agent behaviour rules — routed to the consumer's own wiki
+## Agent behaviour rules — routed by scope, outside fact memory
 
-A **behaviour rule** is a directive about *how the calling agent converses or
+A **behaviour rule** is a directive about *how an agent converses or
 operates* — as opposed to a *fact about the user* (the normal pipeline) or a
-*governance rule for the memory engine* (the user's own `rules.md`, read back as
-`sender_rules`). It is the **fourth ingest destination**, and unlike the other
-three it lands in the **consumer agent's own wiki**, not the user's — so it
-shapes how the agent behaves without polluting the user's fact memory. The body
-is stored in the **imperative** ("Usa sempre Claude Code", "Dammi del tu"), not
-the third person — the agent reads it and acts on it.
+*governance rule for the memory engine* (the user's own `rules.md` prose, read
+back as `sender_rules`). It is the **fourth ingest destination**, and unlike
+the other three it never pollutes the user's fact memory: it lands on a
+reserved `rules.md` page — the **consumer agent's own wiki** for the two
+agent-scoped kinds, the **sender's identity wiki** for the user-global kind
+(roadmap 42). The body is stored in the **imperative** ("Usa sempre Claude
+Code", "Dammi del tu"), not the third person — the agent reads it and acts on
+it.
 
 **Scope is read from the addressee, and scope is the governance.** Every
 behaviour rule carries a `behaviour_scope` the classifier sets from the
-grammatical addressee (Part 7b), and scope alone drives owner + authority:
+grammatical addressee (Part 7b), and scope alone drives home + owner +
+authority:
 
 - **per-user** — addressed to the speaker (*"-mi / con me / le mie"*) or a bare
-  imperative with no audience: how the agent behaves WITH THIS USER. It touches
-  only them, so **anyone may set one**; filed `owner = the user`, recalled only
-  for that user.
+  imperative with no audience: how THIS agent behaves WITH THIS USER. It touches
+  only them, so **anyone may set one**; filed in the agent's wiki,
+  `owner = the user`, recalled only for that user on that agent.
 - **agent-wide** — impersonal / universal (*"con tutti / con chiunque"*, or a
   how-the-agent-works directive with no per-speaker scope): how the agent behaves
-  for EVERYONE. So it is **admin-only**; filed `owner = the agent`, recalled for
-  every user.
+  for EVERYONE. So it is **admin-only**; filed in the agent's wiki,
+  `owner = the agent`, recalled for every user.
+- **user-global** — the user explicitly addresses EVERY assistant they talk to
+  (*"tutti gli assistenti", "con qualunque assistente", "chiunque tu sia"*):
+  how every assistant behaves WITH THIS USER. It binds only their own
+  conversations, so **anyone may set one**; filed in the **sender's identity
+  wiki**, `owner = the sender`, recalled by every consumer serving them —
+  whichever consumer happened to hear it.
 
-So a user shapes how the agent behaves *with them*, but only the operator
-(`enrollment_users.is_admin` — one per deployment) may change how the agent
-behaves *for everybody*. The classifier only *classifies* the scope from the
-addressee; the engine enforces authority. *soul vs operational* (style vs tools)
-is an **optional content tag** that routes nothing — scope comes from the
-addressee alone, so every quadrant is expressible: *"per le mie cose usa
-claude-code"* is operational AND per-user → anyone may set it, `owner = the
-user`.
+So a user shapes how the agent behaves *with them* — on one agent or on all of
+theirs — but only the operator (`enrollment_users.is_admin` — one per
+deployment) may change how one agent behaves *for everybody*. The classifier
+only *classifies* the scope from the addressee; the engine enforces authority.
+*soul vs operational* (style vs tools) is an **optional content tag** that
+routes nothing — scope comes from the addressee alone, so every quadrant is
+expressible: *"per le mie cose usa claude-code"* is operational AND per-user →
+anyone may set it, `owner = the user`.
 
 **Recognition.** The classifier marks an extraction `behaviour_rule: true` and
 tags `behaviour_scope` (Part 7b); the LLM decides, no keyword gate, and defaults a
 bare imperative to **per-user** (the open side). A `THE BOUNDARY` clause keeps a
 directive-to-the-agent ("usa il Max quando lanci Claude Code") distinct from a
-fact about the user ("Franz ha il Max", normal pipeline). A directive is promoted
-to a user-wide always-on identity fact (`salience: "high"`) only when the user
-makes it explicitly universal across assistants ("voglio che TUTTI gli
-assistenti…"); the first-login wizard / dashboard identity fields are the other
-explicit-global route. Two more clauses guard the rule's durability and its
+fact about the user ("Franz ha il Max", normal pipeline). A directive the user
+makes explicitly universal across assistants ("voglio che TUTTI gli
+assistenti…") stays a behaviour rule too — `behaviour_scope: "user-global"`,
+**never** a `salience: "high"` identity fact (roadmap 42 retired that
+workaround: a directive to assistants is conduct, not knowledge about the
+user); the first-login wizard / dashboard identity fields remain the
+identity-card route. Two more clauses guard the rule's durability and its
 referents: **standing vs one-shot** — a behaviour rule must outlive the exchange,
 so a command consumed by the very next reply ("di' solo: collegamento voce
 funzionante", a channel test) is conversation, never a rule, and stores nothing;
@@ -922,48 +939,65 @@ conversational gag). A privacy directive is **one** engine/ACL rule — the
 consumer-side silence is the automatic consequence of ACL-filtered recall (the
 agent cannot leak what it never recalls), not a second stored rule.
 
-**Write side.** The orchestrator resolves the calling consumer's own wiki — its
-bound **system user**
+**Write side.** For the two agent-scoped kinds the orchestrator resolves the
+calling consumer's own wiki — its bound **system user**
 ([`consumers::system_user_for`](../../crates/mwe-core/src/consumers.rs), keyed by
 the `consumer_id` threaded through `IngestRequest` from the auth layer) — and
 files the rule there as a **live** fact on its **`rules.md`** page (roadmap 29c —
 reclaiming the dead scaffolded slot; in the *agent's* wiki this page holds
 behaviour facts, no collision since `sender_rules` never reads an agent wiki, the
-agent never being a sender). Ownership is the scope
+agent never being a sender). A **user-global** rule skips the consumer
+resolution entirely: its home is the **sender's identity wiki** `rules.md`,
+alongside the governance prose (the page contract anticipates both — prose plus
+`{{f=…}}` regions). Home + ownership are the scope
 ([`ingest::capture_behaviour_rule`](../../crates/mwe-core/src/ingest.rs) taking a
 `BehaviourScope`):
 
-- **per-user** → `owner = the served user`, so different users' rules are distinct
-  facts and owner-scoped dedup
+- **per-user** → the agent's wiki, `owner = the served user`, so different
+  users' rules are distinct facts and owner-scoped dedup
   ([capture-and-dedup.md](capture-and-dedup.md)) never folds one user's into
   another's (while still folding a user's own repeat).
-- **agent-wide** → `owner = the agent`, one policy deduped across the agent's own
-  standing rules. The dispatch reaches this write only after confirming the
-  sender is the admin
+- **agent-wide** → the agent's wiki, `owner = the agent`, one policy deduped
+  across the agent's own standing rules. The dispatch reaches this write only
+  after confirming the sender is the admin
   ([`enrollment::is_admin`](../../crates/mwe-core/src/enrollment.rs)). A
   **non-admin's agent-wide directive is refused**: nothing is filed, and the
   `rules` field carries a one-shot notice steering the agent to decline politely
   this turn (their own per-user preference it may still honour).
+- **user-global** → the sender's identity wiki, `owner = the sender` — the same
+  open authority as per-user (their own conversations only), with reach across
+  every consumer serving them.
 
-The user **revises** a rule by superseding it: the rules in force are shown to
-the classifier with their `fact_id`s, and a `supersede_target` among them routes
-through `wiki_supersede` instead of an additive write. The prompt guards the
+The user **revises** a rule by superseding it: the rules in force — all three
+sources — are shown to the classifier with their `fact_id`s and scope tokens,
+and a `supersede_target` among them routes through `wiki_supersede` instead of
+an additive write (cross-wiki safe: the new region lands in its own scope's
+home, the old one is stripped from its page wherever it lives). Authority
+follows the target too: **only the admin may supersede an agent-wide rule** — a
+non-admin's revision of the floor drops the supersede and files their directive
+additively at its own scope, leaving the floor intact. The prompt guards the
 verb (the same restatement guard as the completion sweep): a supersede requires
 the new text to **change** the directive — the user merely *repeating* a rule
 already in force is a dedup case, folded against the existing rule, never a
 supersede. When no consumer wiki resolves — a **smart** consumer *is* its user —
-it falls back to the sender's own wiki, and those rules surface through the
-normal recall path rather than the dedicated field below.
+the agent-scoped write falls back to the sender's own wiki, where per-user and
+user-global deliberately collapse: everything on that page is the user's own
+everywhere-set, served through the user-global source of the dedicated channel.
 
-**Read side.** Recall for a turn served to user *X* surfaces, from the agent's
-own `rules.md` page
+**Read side.** Recall for a turn served to user *X* unions the three sources
 ([`ingest::recall_behaviour_rules`](../../crates/mwe-core/src/ingest.rs) over
 the dedicated
 [`fact_index::find_behaviour_rules`](../../crates/mwe-core/src/fact_index.rs)
-query): the **agent-wide** rules (`owner = the agent`, the floor — applied for
-everyone) then **X's own per-user** rules (`owner = user:X`, more specific).
-They are returned in the dedicated [`rules`](#the-rules-field--behaviour-directives-kept-apart-from-memory)
-field (roadmap 29d), structurally apart from the recalled facts, so the agent
+query), order pinned and most specific last: the **agent-wide** rules (the
+agent's wiki, `owner = the agent` — the floor, applied for everyone), then
+**X's user-global** rules (X's identity wiki, `owner = user:X` — their
+everywhere-set), then **X's per-user** rules for this agent (the agent's wiki,
+`owner = user:X`). A smart consumer (no distinct agent wiki) draws only the
+user-global source. They are returned in the dedicated
+[`rules`](#the-rules-field--behaviour-directives-kept-apart-from-memory)
+field (roadmap 29d), flat — the per-rule scope rides only the classifier
+injection (`agent_behaviour_rules`, for supersede targeting), not the consumer
+section — and structurally apart from the recalled facts, so the agent
 applies "how to behave with me" as an instruction rather than mistaking it for
 memory. The page-scope keeps the agent's own self-facts (roadmap 27d,
 `owner = agent` on its content pages) out of this channel, and the agent-wide
@@ -1009,9 +1043,10 @@ content.
 
 **Governance stays controllable.** A per-user rule is `owner = the user`, so it
 stays visible and correctable by that user from the dashboard facts browser — it
-leaves the user's *fact* memory without leaving the user's *control*. An
-agent-wide rule is `owner = the agent`, the agent's standing operation, editable
-by the admin who set it.
+leaves the user's *fact* memory without leaving the user's *control*. A
+user-global rule lives in the user's own identity wiki, owned by them — the most
+direct control of all. An agent-wide rule is `owner = the agent`, the agent's
+standing operation, editable by the admin who set it.
 
 ## The assistant pass — the agent remembers its own turn (agent-authored memory)
 

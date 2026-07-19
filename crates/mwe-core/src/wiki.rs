@@ -1542,23 +1542,27 @@ pub struct IdentityWikiCreation {
 }
 
 /// Default body of a freshly-seeded [`RULES_FILENAME`].
-/// **Engine-rules only**: `rules.md` holds the standing
-/// *governance* policy the memory engine honours — who may see your facts
-/// (privacy & sharing) and what must never be stored (do-not-store). Behaviour
-/// rules ("address me formally") are NOT here — they belong to the consumer's
-/// own wiki, so the "## Behaviour" section was dropped. Neutral on purpose:
-/// the decided default posture is "the agent
+/// The scaffold prose covers the *governance* policy the memory engine
+/// honours — who may see your facts (privacy & sharing) and what must never
+/// be stored (do-not-store). Per-agent behaviour rules ("address me
+/// formally") are NOT here — they belong to the consumer's own wiki — but a
+/// USER-GLOBAL behaviour rule (one the user sets for every assistant,
+/// roadmap 42) is filed on this page as a `{{f=…}}` fact region, alongside
+/// the prose. Neutral on purpose: the decided default posture is "the agent
 /// decides, as now" — no conservative ACL override is baked in
 /// (no hardcoded gates). The
 /// body is flat prose: the ingest write-path ([`append_engine_rule`]) appends
-/// each new rule as a bullet, and the whole file is injected verbatim as the
-/// classifier's `sender_rules`, so layout is not load-bearing.
+/// each new rule as a bullet, and the file's free prose (fact regions
+/// stripped) is injected as the classifier's `sender_rules`, so layout is
+/// not load-bearing.
 const RULES_DEFAULT_BODY: &str = "# Rules\n\n\
 Your standing policy for this memory. Every assistant that uses this memory \
 respects what you write here — it lives with the memory, not inside any one \
 assistant. Two kinds of rules belong here: who may see your facts (privacy & \
 sharing), and what must never be stored (do-not-store). Leave this file \
-untouched to let the assistant decide for you; add a line to tighten it.\n";
+untouched to let the assistant decide for you; add a line to tighten it. \
+Rules you set in chat for every assistant at once (\"always answer me in \
+Italian, whoever you are\") are also kept here, managed automatically.\n";
 
 /// Append one engine-rule to a wiki's [`RULES_FILENAME`], as a prose bullet.
 ///

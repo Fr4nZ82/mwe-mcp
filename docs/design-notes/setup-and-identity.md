@@ -2,7 +2,7 @@
 title: Setup wizard and identity model
 area: design-notes
 status: implemented
-last_review: "2026-06-28"
+last_review: "2026-07-19"
 ---
 
 # Setup wizard and identity model
@@ -102,12 +102,14 @@ shape every caller relies on, for both user and group actor-wikis.
 Step 5 seeds [`rules.md`](../../crates/mwe-core/src/wiki.rs) (`RULES_FILENAME`),
 the user-facing **engine-policy page**: the user's
 standing **governance** rules in natural language — privacy/sharing + do-not-store
-only (behaviour rules belong to the consumer's own wiki). The seeded
+(per-agent behaviour rules belong to the consumer's own wiki; the user's
+**user-global** behaviour rules do live on this page, as `{{f=…}}` fact
+regions the governance read strips — roadmap 42). The seeded
 default is **neutral** — no conservative ACL override is baked in (decided posture:
 "the agent decides, as now"); the user tightens it by writing rules, which the
 ingest **reads** (`sender_rules`) and **writes** (an `engine_rule` extraction is
-appended here, not filed as a fact). It is *all prose, no metadata*:
-nothing is materialised onto `scope`. The file is written only
+appended here, not filed as a fact). The governance half is *all prose, no
+metadata*: nothing is materialised onto `scope`. The file is written only
 at creation, so the idempotent re-run preserves a user-edited file. See
 [ingest-pipeline.md](ingest-pipeline.md) "User policy".
 
@@ -229,12 +231,13 @@ Italian") that an assistant must hold in mind in every interaction.
 
 A **behaviour** rule under step 2 (a name & preferred tone) is
 deliberately **out of scope** for the wizard. A tone directive is for
-the *consumer* agent, not the memory engine, so it belongs in the
-consumer's own wiki, not `rules.md` — the engine routes it there from a
+the *consumer* agent, not the memory engine — the engine routes it from a
 chat turn via the `behaviour_rule` destination (see
-[ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-to-the-consumers-own-wiki)),
-keyed by the caller's consumer identity threaded through
-`wiki_ingest_message`.
+[ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-by-scope-outside-fact-memory)):
+into the consumer's own wiki when it is agent-local (keyed by the caller's
+consumer identity threaded through `wiki_ingest_message`), or onto this same
+`rules.md` as a fact region when the user sets it for every assistant
+(`user-global`, roadmap 42).
 
 ### Composing the message
 

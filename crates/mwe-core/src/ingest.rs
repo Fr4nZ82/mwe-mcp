@@ -792,12 +792,14 @@ struct LlmExtraction {
     #[serde(default)]
     behaviour_rule: bool,
     /// Behaviour-rule scope (only read when `behaviour_rule` is `true`),
-    /// read from the grammatical addressee (roadmap 29b).
+    /// read from the grammatical addressee (roadmap 29b + 42).
     /// `"per-user"` (or absent) = addressed to the speaker ("-mi / con me / le
     /// mie", or a bare imperative) — open to any user, filed per-user.
     /// `"agent-wide"` = impersonal / universal ("con tutti", or a how-the-agent-
     /// works directive with no per-speaker scope) — admin-only, filed
-    /// owner = agent. Default on omission: per-user (the open side).
+    /// owner = agent. `"user-global"` = explicitly every-assistant ("tutti gli
+    /// assistenti") — open to any user, filed in THEIR identity wiki. Default
+    /// on omission: per-user (the open side).
     /// See [`CaptureUnit::behaviour_scope`] and the dispatch in [`run`].
     #[serde(default)]
     behaviour_scope: Option<String>,
@@ -847,17 +849,18 @@ struct CaptureUnit<'a> {
     /// sender's `rules.md` as prose, never filed as a fact.
     engine_rule: bool,
     /// Behaviour-rule routing flag (see
-    /// [`LlmIngestPlan::behaviour_rule`]). `true` → the body is filed in the
-    /// calling agent's own wiki (attributed to the sender), never in the
-    /// user's wiki.
+    /// [`LlmIngestPlan::behaviour_rule`]). `true` → the body is filed on the
+    /// scope's home rules page (the calling agent's wiki, or the sender's
+    /// identity wiki for user-global), never as a fact about the user.
     behaviour_rule: bool,
     /// Behaviour-rule scope discriminator (only read when `behaviour_rule`),
-    /// read from the addressee (roadmap 29b).
+    /// read from the addressee (roadmap 29b + 42).
     /// `Some("per-user")` / `None` → addressed to the speaker → any user may
-    /// set it, filed owner = user.
+    /// set it, filed owner = user in the agent's wiki.
     /// `Some("agent-wide")` → impersonal / universal → admin-only, filed
-    /// owner = agent. The engine, not the model, enforces authority (the model
-    /// never sees who is admin).
+    /// owner = agent. `Some("user-global")` → explicitly every-assistant →
+    /// any user, filed owner = user in THEIR identity wiki. The engine, not
+    /// the model, enforces authority (the model never sees who is admin).
     behaviour_scope: Option<&'a str>,
     topics: &'a [String],
     body: Option<&'a str>,
@@ -2890,16 +2893,22 @@ pub(crate) fn available_wikis(tree: &WikiTree, cap: usize) -> Result<Vec<Availab
     Ok(out)
 }
 
-/// Read the sender's `rules.md` user-policy, best-effort.
+/// Read the sender's `rules.md` user-policy — governance PROSE only,
+/// best-effort.
 ///
 /// The sender's identity wiki is `wiki_id == sender_id`; its `rules.md`
-/// ([`crate::wiki::RULES_FILENAME`]) holds the standing privacy/sharing +
-/// behaviour rules the classifier honours when it assigns per-fact ACL. Returns
-/// `None` — and the prompt's `sender_rules` section reads `(none)`, so the
-/// classifier decides ACL as it did before — for a sender with no identity wiki,
-/// no `rules.md` (older wikis), an empty/whitespace file, or any read
-/// error. Best-effort by design: a policy is an aid to the ACL decision, never a
-/// hard gate, so it must never fail the ingest (pillar: the LLM decides).
+/// ([`crate::wiki::RULES_FILENAME`]) holds the standing privacy/sharing policy
+/// the classifier honours when it assigns per-fact ACL. Since roadmap 42 the
+/// same page also carries the user's USER-GLOBAL behaviour rules as `{{f=…}}`
+/// fact regions — those reach the classifier separately, with `fact_id`s, via
+/// `agent_behaviour_rules` ([`push_behaviour_rules_section`]), so the regions
+/// are stripped here: only the free prose is the governance policy, and no
+/// rule is injected twice (or under the wrong section). Returns `None` — and
+/// the prompt's `sender_rules` section reads `(none)`, so the classifier
+/// decides ACL as it did before — for a sender with no identity wiki, no
+/// `rules.md` (older wikis), a file with no prose, or any read error.
+/// Best-effort by design: a policy is an aid to the ACL decision, never a hard
+/// gate, so it must never fail the ingest (pillar: the LLM decides).
 fn sender_rules(tree: &WikiTree, sender_id: &str) -> Option<String> {
     let id = WikiId::parse(sender_id).ok()?;
     let body = tree
@@ -2907,7 +2916,15 @@ fn sender_rules(tree: &WikiTree, sender_id: &str) -> Option<String> {
         .ok()?
         .read_page(Path::new(crate::wiki::RULES_FILENAME))
         .ok()?;
-    (!body.trim().is_empty()).then_some(body)
+    let prose: String = crate::parser::parse(&body)
+        .events
+        .into_iter()
+        .filter_map(|e| match e {
+            crate::parser::ParseEvent::Prose { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    (!prose.trim().is_empty()).then_some(prose)
 }
 
 /// Append an engine-rule to the sender's `rules.md`.
@@ -2934,14 +2951,16 @@ fn append_sender_rule(tree: &WikiTree, sender_id: &str, rule: &str) -> Result<bo
     Ok(true)
 }
 
-/// Page in the calling agent's own wiki where behaviour rules are filed
-/// (the ingest prompt's Part 7b). Unified with the engine-policy page name
-/// (roadmap 29c): in the *agent's* wiki this `rules.md` holds behaviour
-/// facts, reclaiming the dead scaffolded slot — no collision, since
-/// [`sender_rules`] (the engine-policy reader) never runs for the agent (it
-/// is never a sender). One page per agent wiki; the per-fact `owner`
-/// scopes each rule (the served user for a per-user rule, the agent for an
-/// agent-wide one).
+/// Page where behaviour rules are filed (the ingest prompt's Part 7b).
+/// Unified with the engine-policy page name (roadmap 29c): in the *agent's*
+/// wiki this `rules.md` holds the per-user and agent-wide behaviour facts —
+/// no collision, since [`sender_rules`] (the engine-policy reader) never runs
+/// for the agent (it is never a sender). In the *user's* identity wiki the
+/// same page carries their USER-GLOBAL behaviour facts alongside the
+/// governance prose (roadmap 42) — [`sender_rules`] reads the prose only and
+/// skips the fact regions. The per-fact `owner` scopes each rule (the served
+/// user for a per-user or user-global rule, the agent for an agent-wide one);
+/// the home wiki tells per-user and user-global apart.
 const BEHAVIOUR_RULES_PAGE: &str = crate::wiki::RULES_FILENAME;
 
 /// The governance scope of a behaviour-rule — who may set it and how widely it
@@ -2953,48 +2972,73 @@ const BEHAVIOUR_RULES_PAGE: &str = crate::wiki::RULES_FILENAME;
 enum BehaviourScope {
     /// Addressed to the speaker ("-mi / con me / le mie", or a bare imperative
     /// with no audience): shapes how the agent behaves WITH THIS USER. Open to
-    /// **anyone** — it only touches them; filed `owner = the user`, recalled
-    /// only for that user. The default when the addressee is unclear.
+    /// **anyone** — it only touches them; filed `owner = the user` in the
+    /// calling agent's wiki, recalled only for that user on that agent. The
+    /// default when the addressee is unclear.
     PerUser,
     /// Impersonal / universal ("con tutti / con chiunque", or a how-the-agent-
     /// works directive with no per-speaker scope): changes the agent's
     /// behaviour for EVERYONE. **Admin-only**; filed `owner = the agent`,
     /// recalled for every user.
     AgentWide,
+    /// Explicitly addressed to EVERY assistant the user talks to ("tutti gli
+    /// assistenti", "con qualunque assistente", "chiunque tu sia"): the user's
+    /// own standing rule for all their consumers (roadmap 42). Open to
+    /// **anyone** — it binds only their own conversations; filed `owner = the
+    /// sender` in the sender's IDENTITY wiki, recalled by every consumer
+    /// serving them.
+    UserGlobal,
 }
 
 impl BehaviourScope {
-    /// Map the classifier's `behaviour_scope` string to a scope. Only an
-    /// explicit `"agent-wide"` reaches everyone (and is therefore admin-gated);
+    /// Map the classifier's `behaviour_scope` string to a scope. Only the
+    /// explicit wire tokens widen the reach — `"agent-wide"` (everyone on this
+    /// agent, admin-gated) and `"user-global"` (this user on every agent);
     /// anything else — including absent or a bare imperative — defaults to
-    /// **per-user**, the open side that touches only the speaker (roadmap 29b).
+    /// **per-user**, the open side that touches only the speaker on this one
+    /// agent (roadmap 29b).
     fn from_hint(hint: Option<&str>) -> Self {
-        if hint == Some("agent-wide") {
-            Self::AgentWide
-        } else {
-            Self::PerUser
+        match hint {
+            Some("agent-wide") => Self::AgentWide,
+            Some("user-global") => Self::UserGlobal,
+            _ => Self::PerUser,
+        }
+    }
+
+    /// The classifier's wire token for this scope — used when the existing
+    /// rules are injected back into the prompt, so the model restates the
+    /// right scope when it revises one.
+    const fn as_hint(self) -> &'static str {
+        match self {
+            Self::PerUser => "per-user",
+            Self::AgentWide => "agent-wide",
+            Self::UserGlobal => "user-global",
         }
     }
 }
 
-/// File a behaviour-rule fact in the CALLING AGENT's own wiki, scoped by
-/// governance.
+/// File a behaviour-rule fact on the `rules.md` page its scope calls home
+/// (roadmap 29c + 42), written LIVE (direct path) so it is in effect on the
+/// next turn.
 ///
-/// The write side of the behaviour-rule loop: the body is filed as a fact in
-/// the consumer agent's own wiki — resolved from [`IngestRequest::consumer_id`]
-/// via [`crate::consumers::system_user_for`] — on the `rules.md` page (roadmap
-/// 29c), written LIVE (direct path) so it is in effect on the next turn. Falls
-/// back to the sender's own wiki when no consumer binding resolves (a smart
-/// consumer IS its user, so its own wiki is the sender's).
-///
-/// `scope` decides ownership, which decides reach (see [`recall_behaviour_rules`]):
-/// - [`BehaviourScope::PerUser`] → `owner = the sender` (the user who dictated
-///   it), so different users' per-user rules stay distinct facts and recall
-///   pulls only the served user's own — "how the agent behaves WITH ME".
-/// - [`BehaviourScope::AgentWide`] → `owner = the agent`, so the rule is the
-///   agent's standing operation, recalled for **every** user. The dispatch in
-///   [`run`] only reaches here for an agent-wide rule after confirming the
-///   sender is the admin ([`crate::enrollment::is_admin`]).
+/// `scope` decides BOTH the home wiki and the ownership, which together decide
+/// reach (see [`recall_behaviour_rules`]):
+/// - [`BehaviourScope::PerUser`] → the CALLING AGENT's own wiki — resolved
+///   from [`IngestRequest::consumer_id`] via
+///   [`crate::consumers::system_user_for`], falling back to the sender's own
+///   wiki when no binding resolves (a smart consumer IS its user) — with
+///   `owner = the sender`, so different users' per-user rules stay distinct
+///   facts and recall pulls only the served user's own — "how the agent
+///   behaves WITH ME".
+/// - [`BehaviourScope::AgentWide`] → the agent's wiki, `owner = the agent`, so
+///   the rule is the agent's standing operation, recalled for **every** user.
+///   The dispatch in [`run`] only reaches here for an agent-wide rule after
+///   confirming the sender is the admin ([`crate::enrollment::is_admin`]).
+/// - [`BehaviourScope::UserGlobal`] → the SENDER's identity wiki, `owner = the
+///   sender` — the user's own rule for every assistant serving them, recalled
+///   by every consumer regardless of which one heard it. On a smart consumer
+///   the per-user fallback and this home coincide (its wiki IS the user's), so
+///   the two scopes deliberately collapse there.
 ///
 /// Returns the new `fact_id`, or `None` when no target wiki could be located
 /// (the rule is dropped, mirroring the best-effort posture of [`append_sender_rule`]).
@@ -3008,32 +3052,38 @@ async fn capture_behaviour_rule(
     supersede: Option<&FactId>,
 ) -> Result<Option<FactId>> {
     let sender = request.sender_id.as_str();
-    // Target wiki: the calling agent's OWN wiki when a system-user binding
-    // resolves (a standard/bot consumer); otherwise the sender's own wiki (a
-    // smart consumer IS its user). Resolution is best-effort — a DB miss falls
-    // back rather than failing the turn.
-    let bound = match request.consumer_id.as_deref() {
-        Some(cid) => crate::consumers::system_user_for(pool, cid)
-            .await
-            .ok()
-            .flatten(),
-        None => None,
-    };
-    let target = match bound {
-        Some(sys) if sys != sender => sys,
-        _ => sender.to_owned(),
+    // Target wiki: a USER-GLOBAL rule lives in the sender's own identity wiki
+    // whoever is calling; the agent-scoped rules live in the calling agent's
+    // OWN wiki when a system-user binding resolves (a standard/bot consumer),
+    // else the sender's own wiki (a smart consumer IS its user). Resolution is
+    // best-effort — a DB miss falls back rather than failing the turn.
+    let target = if scope == BehaviourScope::UserGlobal {
+        sender.to_owned()
+    } else {
+        let bound = match request.consumer_id.as_deref() {
+            Some(cid) => crate::consumers::system_user_for(pool, cid)
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        };
+        match bound {
+            Some(sys) if sys != sender => sys,
+            _ => sender.to_owned(),
+        }
     };
     let Ok(wiki_id) = WikiId::parse(&target) else {
         return Ok(None);
     };
-    // Ownership IS the scope. PER-USER ⇒ owned by the USER who dictated it, so
-    // different users' rules are distinct facts (owner-scoped dedup never folds
-    // franz's into bilbo's) and recall pulls only the served user's own.
-    // AGENT-WIDE ⇒ owned by the AGENT itself: one policy for everyone, recalled
-    // for every user, deduped across the agent's own standing rules. Either way
-    // owner == the principal ⇒ no separate sender attribution.
+    // Ownership IS the scope. PER-USER and USER-GLOBAL ⇒ owned by the USER who
+    // dictated it, so different users' rules are distinct facts (owner-scoped
+    // dedup never folds franz's into bilbo's) and recall pulls only the served
+    // user's own — the home wiki tells the two apart. AGENT-WIDE ⇒ owned by
+    // the AGENT itself: one policy for everyone, recalled for every user,
+    // deduped across the agent's own standing rules. Either way owner == the
+    // principal ⇒ no separate sender attribution.
     let owner = match scope {
-        BehaviourScope::PerUser => Principal::User(sender.to_owned()),
+        BehaviourScope::PerUser | BehaviourScope::UserGlobal => Principal::User(sender.to_owned()),
         BehaviourScope::AgentWide => Principal::User(target.clone()),
     };
     let page_description = match scope {
@@ -3044,6 +3094,11 @@ async fn capture_behaviour_rule(
         BehaviourScope::AgentWide => {
             "How this agent behaves for everyone — tone, tools, workflow, \
              standing cautions (agent-wide behaviour rules set by the admin)."
+        },
+        BehaviourScope::UserGlobal => {
+            "This user's standing rules for EVERY assistant serving them \
+             (user-global behaviour rules), alongside their governance policy \
+             prose."
         },
     };
 
@@ -3209,45 +3264,56 @@ async fn behaviour_rows_on_page(
 }
 
 /// Recall the behaviour rules in force for THIS turn — the read side of the
-/// behaviour-rule loop. Two scopes, both on the agent's own wiki:
-/// **agent-wide** (`owner = the agent`) applies for every user, and
-/// **per-user** (`owner = the served user`) applies only when that user is
-/// speaking. Returns `(fact_id, body)` so the consumer applies them every turn
-/// and the classifier can supersede one. Empty for a smart consumer (no distinct
-/// agent wiki — those rules are the user's own facts, recalled normally);
-/// best-effort otherwise. Agent-wide rules lead (the agent's standing
-/// operation, the floor), then the served user's per-user rules (more specific).
+/// behaviour-rule loop. Three scopes, two homes (roadmap 42):
+/// **agent-wide** (the agent's wiki, `owner = the agent`) applies for every
+/// user of this agent; **user-global** (the SENDER's identity wiki, `owner =
+/// the sender`) applies on every consumer serving this user; **per-user** (the
+/// agent's wiki, `owner = the served user`) applies only to this user on this
+/// agent. Returns `(fact_id, body, scope)` so the consumer applies them every
+/// turn and the classifier can supersede any of the three (the scope gates who
+/// may — see the dispatch in [`run`]). Order pinned, most specific last:
+/// agent-wide (the floor) → user-global → per-user. A smart consumer (no
+/// distinct agent wiki) gets only the user-global set — its wiki IS the
+/// user's, so everything on that rules page is the user's own everywhere-rule.
+/// Best-effort throughout.
 async fn recall_behaviour_rules(
     pool: &SqlitePool,
     request: &IngestRequest,
-) -> Vec<(FactId, String)> {
-    let Some(consumer_id) = request.consumer_id.as_deref() else {
-        return Vec::new();
-    };
-    let Some(agent_wiki) = crate::consumers::system_user_for(pool, consumer_id)
-        .await
-        .ok()
-        .flatten()
-    else {
-        return Vec::new();
-    };
-    if agent_wiki == request.sender_id {
-        // The bot is acting as itself — its behaviour rules are its own facts,
-        // surfaced by the normal recall path, not this dedicated channel.
-        return Vec::new();
+) -> Vec<(FactId, String, BehaviourScope)> {
+    fn tag(
+        rows: Vec<(FactId, String)>,
+        scope: BehaviourScope,
+    ) -> impl Iterator<Item = (FactId, String, BehaviourScope)> {
+        rows.into_iter().map(move |(id, body)| (id, body, scope))
     }
+    let sender = Principal::User(request.sender_id.clone());
+    // The user's everywhere-rules: their identity wiki's rules page, owned by
+    // themself — in force on EVERY consumer serving them.
+    let user_global = behaviour_rows_on_page(pool, request.sender_id.as_str(), &sender).await;
+    let agent_wiki = match request.consumer_id.as_deref() {
+        Some(cid) => crate::consumers::system_user_for(pool, cid)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let Some(agent_wiki) = agent_wiki.filter(|w| *w != request.sender_id) else {
+        // Smart consumer / no binding — no distinct agent wiki, so the only
+        // dedicated channel source is the user's own everywhere-set.
+        return tag(user_global, BehaviourScope::UserGlobal).collect();
+    };
     // Agent-wide rules (owner = the agent) — recalled for everyone.
-    let mut rules =
-        behaviour_rows_on_page(pool, &agent_wiki, &Principal::User(agent_wiki.clone())).await;
+    let mut rules: Vec<_> = tag(
+        behaviour_rows_on_page(pool, &agent_wiki, &Principal::User(agent_wiki.clone())).await,
+        BehaviourScope::AgentWide,
+    )
+    .collect();
+    rules.extend(tag(user_global, BehaviourScope::UserGlobal));
     // The served user's own per-user rules (owner = the user) — "WITH ME".
-    rules.extend(
-        behaviour_rows_on_page(
-            pool,
-            &agent_wiki,
-            &Principal::User(request.sender_id.clone()),
-        )
-        .await,
-    );
+    rules.extend(tag(
+        behaviour_rows_on_page(pool, &agent_wiki, &sender).await,
+        BehaviourScope::PerUser,
+    ));
     rules
 }
 
@@ -3255,17 +3321,23 @@ async fn recall_behaviour_rules(
 /// RULES` role section of the injected turn context (the host places the
 /// `rules` field adjacent to the recall block; see the block layout in
 /// the ingest-pipeline design note).
-const HDR_YOUR_RULES: &str = "YOUR RULES (standing directives — agent-wide and this user's; \
-     apply them in your reply, never relay them):";
+const HDR_YOUR_RULES: &str = "YOUR RULES (standing directives — agent-wide, this user's for \
+     every assistant, and this user's for you; apply them in your reply, never relay them):";
 
 /// Render recalled behaviour rules as the `YOUR RULES` section the
-/// consumer agent applies when it composes its reply. `None` when empty;
-/// whole-bullet fitted against `policy.max_sender_rules_chars`
-/// ([`fit_bullets`] — one rule per line, never a mid-word cut).
-fn format_behaviour_rules(rules: &[(FactId, String)], policy: &IngestPolicy) -> Option<String> {
+/// consumer agent applies when it composes its reply. Flat on purpose — the
+/// per-bullet scope is a governance detail the classifier needs (it rides
+/// [`push_behaviour_rules_section`]), not the consumer: a rule in force is a
+/// rule in force. `None` when empty; whole-bullet fitted against
+/// `policy.max_sender_rules_chars` ([`fit_bullets`] — one rule per line,
+/// never a mid-word cut).
+fn format_behaviour_rules(
+    rules: &[(FactId, String, BehaviourScope)],
+    policy: &IngestPolicy,
+) -> Option<String> {
     fit_bullets(
         HDR_YOUR_RULES,
-        rules.iter().map(|(_, body)| body.as_str()),
+        rules.iter().map(|(_, body, _)| body.as_str()),
         policy.max_sender_rules_chars,
     )
 }
@@ -3491,44 +3563,47 @@ fn who_is_speaking_section(tree: &WikiTree, sender_id: &str) -> Option<String> {
     Some(format!("{HDR_WHO_IS_SPEAKING}\n- {sender_id} — {summary}"))
 }
 
-/// Inject the served user's existing behaviour rules — WITH their `fact_id`s —
-/// into the classifier prompt, so the model can revise one by setting an
-/// extraction's `supersede_target` to its id (exactly as it supersedes a
-/// recalled fact). Mirrors the `sender_rules` injection, for the agent's own
-/// behaviour wiki. No-op when the user has none.
-fn push_behaviour_rules_section(out: &mut String, rules: &[(FactId, String)]) {
+/// Inject the behaviour rules in force — WITH their `fact_id`s and scope
+/// tokens — into the classifier prompt, so the model can revise one by
+/// setting an extraction's `supersede_target` to its id (exactly as it
+/// supersedes a recalled fact) and restate the right `behaviour_scope` when
+/// it does. Mirrors the `sender_rules` injection. No-op when empty.
+fn push_behaviour_rules_section(out: &mut String, rules: &[(FactId, String, BehaviourScope)]) {
     if rules.is_empty() {
         return;
     }
     out.push_str(
-        "\nagent_behaviour_rules (this user's standing directives for how YOU converse; \
-         to revise one, set an extraction's supersede_target to its fact_id):\n",
+        "\nagent_behaviour_rules (the standing directives in force for this user, each with \
+         its scope; to revise one, set an extraction's supersede_target to its fact_id):\n",
     );
-    for (id, body) in rules {
+    for (id, body, scope) in rules {
         out.push_str("  - [");
         out.push_str(id.as_str());
-        out.push_str("] ");
+        out.push_str("] (");
+        out.push_str(scope.as_hint());
+        out.push_str(") ");
         out.push_str(body.trim());
         out.push('\n');
     }
 }
 
-/// Resolve a behaviour-rule extraction's `supersede_target` against the served
-/// user's existing behaviour rules (anti-hallucination, like
-/// [`validate_supersede_target`] for recalled facts). `None` when unset, or
-/// when the model named an id it was not shown (logged, then treated as
-/// additive).
+/// Resolve a behaviour-rule extraction's `supersede_target` against the
+/// behaviour rules in force this turn — any of the three scope sources
+/// (anti-hallucination, like [`validate_supersede_target`] for recalled
+/// facts). Returns the target WITH its scope, so the dispatch can admin-gate
+/// the revision of an agent-wide rule. `None` when unset, or when the model
+/// named an id it was not shown (logged, then treated as additive).
 fn behaviour_supersede_target(
     unit: &CaptureUnit<'_>,
-    behaviour_rules: &[(FactId, String)],
-) -> Option<FactId> {
+    behaviour_rules: &[(FactId, String, BehaviourScope)],
+) -> Option<(FactId, BehaviourScope)> {
     let raw = unit
         .supersede_target
         .map(str::trim)
         .filter(|s| !s.is_empty())?;
     let id = FactId::parse(raw).ok()?;
-    if behaviour_rules.iter().any(|(rid, _)| *rid == id) {
-        Some(id)
+    if let Some((_, _, scope)) = behaviour_rules.iter().find(|(rid, _, _)| *rid == id) {
+        Some((id, *scope))
     } else {
         tracing::warn!(
             supersede_target = raw,
@@ -4178,9 +4253,10 @@ pub async fn wiki_ingest_message(
     // honours their privacy/sharing rules when it assigns per-fact ACL.
     // Best-effort — absent/unreadable → the classifier decides as before.
     let sender_policy = sender_rules(tree, &request.sender_id);
-    // The served user's existing behaviour rules (the agent's own wiki, owned
-    // by this user) — surfaced to the classifier WITH fact_ids so it can
-    // supersede one, and reused below as the recall block's leading slot.
+    // The behaviour rules in force for this user (all three scopes — agent's
+    // wiki + the sender's identity wiki, roadmap 42) — surfaced to the
+    // classifier WITH fact_ids and scopes so it can supersede one, and reused
+    // below as the recall block's leading slot.
     let behaviour_rules = recall_behaviour_rules(pool, &request).await;
     // Roadmap 27 — agent-authored memory. When this turn is the consumer
     // agent's OWN reply fed back for extraction, any fact it derives must carry
@@ -4413,39 +4489,56 @@ pub async fn wiki_ingest_message(
                 // A behaviour-rule is a standing directive about how the
                 // CALLING AGENT should converse or operate — neither a fact
                 // about the user nor an engine governance rule. The classifier
-                // flags it and tags its scope; the orchestrator files it in the
-                // consumer agent's OWN wiki, never in the user's fact memory.
-                // GOVERNANCE (behaviour-rule scope from the addressee, prompt
-                // Part 7b — roadmap 29b):
+                // flags it and tags its scope; the orchestrator files it on
+                // the scope's home rules page, never in the user's fact
+                // memory. GOVERNANCE (behaviour-rule scope from the addressee,
+                // prompt Part 7b — roadmap 29b + 42):
                 //  - PER-USER (addressed to the speaker, or a bare imperative)
-                //    is open to anyone — filed owner=user, recalled only for
-                //    them.
+                //    is open to anyone — filed owner=user in the agent's wiki,
+                //    recalled only for them on this agent.
                 //  - AGENT-WIDE (impersonal / universal) changes the agent for
                 //    EVERYONE → ADMIN-ONLY, filed owner=agent. A non-admin's
                 //    agent-wide directive is refused (not filed); a one-shot
                 //    notice on the `rules` field tells the agent to decline.
+                //  - USER-GLOBAL (explicitly every-assistant) is open to
+                //    anyone — the user's own rule, filed owner=user in THEIR
+                //    identity wiki, recalled by every consumer serving them.
                 // Written live so it takes effect next turn; revised in place
-                // when the user supersedes one the classifier was shown.
+                // when the user supersedes one the classifier was shown — but
+                // only the admin may revise an AGENT-WIDE rule (a non-admin's
+                // revision files at its own scope, leaving the floor intact).
                 if unit.behaviour_rule {
                     let Some(rule) = unit.body.map(str::trim).filter(|b| !b.is_empty()) else {
                         tracing::warn!("ingest: behaviour_rule extraction has no body — dropped");
                         continue;
                     };
                     let scope = BehaviourScope::from_hint(unit.behaviour_scope);
-                    if scope == BehaviourScope::AgentWide
-                        && !crate::enrollment::is_admin(pool, request.sender_id.as_str())
+                    let mut supersede = behaviour_supersede_target(unit, &behaviour_rules);
+                    let touches_everyone = scope == BehaviourScope::AgentWide
+                        || matches!(supersede, Some((_, BehaviourScope::AgentWide)));
+                    let authorized = !touches_everyone
+                        || crate::enrollment::is_admin(pool, request.sender_id.as_str())
                             .await
-                            .unwrap_or(false)
-                    {
-                        agent_wide_denied = true;
+                            .unwrap_or(false);
+                    if !authorized {
+                        if scope == BehaviourScope::AgentWide {
+                            agent_wide_denied = true;
+                            tracing::info!(
+                                sender_id = request.sender_id.as_str(),
+                                rule,
+                                "ingest: agent-wide behaviour-rule from non-admin — refused (admin-only)"
+                            );
+                            continue;
+                        }
+                        // The new rule is the sender's own; only the supersede
+                        // reached for the agent-wide floor — drop it, file
+                        // the rule additively at its own scope.
                         tracing::info!(
                             sender_id = request.sender_id.as_str(),
-                            rule,
-                            "ingest: agent-wide behaviour-rule from non-admin — refused (admin-only)"
+                            "ingest: non-admin supersede of an agent-wide rule — kept additive"
                         );
-                        continue;
+                        supersede = None;
                     }
-                    let supersede = behaviour_supersede_target(unit, &behaviour_rules);
                     match capture_behaviour_rule(
                         tree,
                         pool,
@@ -4453,7 +4546,7 @@ pub async fn wiki_ingest_message(
                         &request,
                         rule,
                         scope,
-                        supersede.as_ref(),
+                        supersede.as_ref().map(|(id, _)| id),
                     )
                     .await?
                     {
@@ -4464,7 +4557,7 @@ pub async fn wiki_ingest_message(
                                 fact_id = fact_id.as_str(),
                                 scope = ?scope,
                                 rule,
-                                "ingest: behaviour-rule filed in the calling agent's own wiki"
+                                "ingest: behaviour-rule filed on its scope's rules page"
                             );
                             captured_any = true;
                             if capture_id.is_none() {
@@ -5016,9 +5109,9 @@ pub async fn wiki_ingest_message(
             },
         }
     }
-    // Behaviour rules the served user dictated to THIS agent — the `YOUR
-    // RULES` section of the dedicated `rules` field. Read from the agent's
-    // own wiki, scoped to this sender — never the user's fact memory.
+    // The behaviour rules in force for this user — the `YOUR RULES` section
+    // of the dedicated `rules` field. All three scopes (agent's wiki + the
+    // sender's identity wiki, roadmap 42) — never the user's fact memory.
     // Re-read post-write so a rule SET this turn is already in effect for the
     // consumer's reply (the classifier above saw the pre-write set, which is
     // what it supersedes against).
@@ -5372,6 +5465,55 @@ mod tests {
                 .unwrap()
                 .contains("keep health private")
         );
+
+        // A user-global behaviour rule lives on the same page as a `{{f=…}}`
+        // region (roadmap 42) — the governance read strips it: the rule
+        // reaches the classifier via `agent_behaviour_rules` (with its
+        // fact_id), never as policy prose.
+        handle
+            .write_page(
+                Path::new(crate::wiki::RULES_FILENAME),
+                "# Rules\n\nkeep health private\n\n\
+                 {{f=018f1234-5678-7abc-9def-0123456789ab}}Parlami in italiano.{{/}}\n",
+            )
+            .unwrap();
+        let got = sender_rules(&tree, "alice").unwrap();
+        assert!(got.contains("keep health private"));
+        assert!(
+            !got.contains("Parlami in italiano."),
+            "fact regions must be stripped from the governance prose: {got}"
+        );
+
+        // A page holding ONLY regions has no governance prose → None.
+        handle
+            .write_page(
+                Path::new(crate::wiki::RULES_FILENAME),
+                "{{f=018f1234-5678-7abc-9def-0123456789ab}}Parlami in italiano.{{/}}\n",
+            )
+            .unwrap();
+        assert!(sender_rules(&tree, "alice").is_none());
+    }
+
+    #[test]
+    fn behaviour_scope_from_hint_maps_wire_tokens() {
+        assert_eq!(
+            BehaviourScope::from_hint(Some("agent-wide")),
+            BehaviourScope::AgentWide
+        );
+        assert_eq!(
+            BehaviourScope::from_hint(Some("user-global")),
+            BehaviourScope::UserGlobal
+        );
+        // The open per-user side is the default for everything else.
+        assert_eq!(
+            BehaviourScope::from_hint(Some("per-user")),
+            BehaviourScope::PerUser
+        );
+        assert_eq!(
+            BehaviourScope::from_hint(Some("galaxy-wide")),
+            BehaviourScope::PerUser
+        );
+        assert_eq!(BehaviourScope::from_hint(None), BehaviourScope::PerUser);
     }
 
     // ---------- intent parsing ----------
@@ -7028,7 +7170,7 @@ mod tests {
     /// Behaviour-rule recall is scoped to the served user by per-fact `sender`
     /// attribution: two users' directives coexist in the one agent wiki without
     /// bleeding into each other, and a caller with no consumer id (a smart
-    /// consumer) draws nothing from this dedicated channel.
+    /// consumer) draws only the user-global source — nothing per-user leaks.
     #[tokio::test]
     async fn behaviour_rule_recall_is_scoped_to_the_sender() {
         let (dir, tree, pool) = setup_agent_workdir().await;
@@ -7070,23 +7212,25 @@ mod tests {
 
         let alice = recall_behaviour_rules(&pool, &req_consumer("?", "alice", "botdeploy")).await;
         assert_eq!(
-            alice.iter().map(|(_, b)| b.as_str()).collect::<Vec<_>>(),
+            alice.iter().map(|(_, b, _)| b.as_str()).collect::<Vec<_>>(),
             vec!["Rispondi sempre in modo conciso."],
             "alice recalls only her own behaviour rule"
         );
         let bilbo = recall_behaviour_rules(&pool, &req_consumer("?", "bilbo", "botdeploy")).await;
         assert_eq!(
-            bilbo.iter().map(|(_, b)| b.as_str()).collect::<Vec<_>>(),
+            bilbo.iter().map(|(_, b, _)| b.as_str()).collect::<Vec<_>>(),
             vec!["Dai del lei all'utente."],
             "bilbo recalls only his own behaviour rule"
         );
-        // A caller with no consumer binding (a smart consumer) gets nothing
-        // from the dedicated channel — its rules are its user's own facts.
+        // A caller with no consumer binding (a smart consumer) draws only the
+        // user-global source — and alice has no everywhere-rules in her own
+        // identity wiki, so the channel is empty (her per-user rule lives in
+        // the AGENT's wiki and binds that agent only).
         assert!(
             recall_behaviour_rules(&pool, &req("?", "alice"))
                 .await
                 .is_empty(),
-            "the dedicated behaviour channel needs a consumer binding"
+            "per-user rules never leak to a consumer without the agent wiki binding"
         );
         drop(dir);
     }
@@ -7139,7 +7283,7 @@ mod tests {
 
         let rules = recall_behaviour_rules(&pool, &req_consumer("?", "alice", "botdeploy")).await;
         assert_eq!(
-            rules.iter().map(|(_, b)| b.as_str()).collect::<Vec<_>>(),
+            rules.iter().map(|(_, b, _)| b.as_str()).collect::<Vec<_>>(),
             vec!["Rispondi pure in modo prolisso."],
             "supersede replaces the old directive in place"
         );
@@ -7199,7 +7343,7 @@ mod tests {
         // Recalled for a DIFFERENT, non-admin user — proving agent-wide reach.
         let bilbo = recall_behaviour_rules(&pool, &req_consumer("?", "bilbo", "botdeploy")).await;
         assert_eq!(
-            bilbo.iter().map(|(_, b)| b.as_str()).collect::<Vec<_>>(),
+            bilbo.iter().map(|(_, b, _)| b.as_str()).collect::<Vec<_>>(),
             vec!["Per i task pesanti delega a Claude Code."],
             "an agent-wide rule is recalled for EVERY user, not just the admin"
         );
@@ -7254,6 +7398,215 @@ mod tests {
                 .unwrap_or_default()
                 .contains("reserved to the admin"),
             "the `rules` field tells the agent to decline (an agent-wide change is admin-only)"
+        );
+        drop(dir);
+    }
+
+    /// A USER-GLOBAL behaviour-rule (explicitly every-assistant, roadmap 42)
+    /// is filed in the SENDER's identity wiki, owned by the sender — and the
+    /// rules channel serves it to every consumer serving that user, the
+    /// bindingless smart consumer included. No admin gate: it binds only the
+    /// user's own conversations.
+    #[tokio::test]
+    async fn user_global_rule_lands_in_sender_wiki_and_reaches_every_consumer() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\"behaviour_rule\":true,\
+             \"behaviour_scope\":\"user-global\",\
+             \"body\":\"Parlami in italiano.\"}]}",
+        );
+        let policy = IngestPolicy::default();
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req_consumer("ogni assistente mi parli in italiano", "alice", "botdeploy"),
+            &policy,
+        )
+        .await
+        .expect("ingest user-global");
+
+        // Home: the sender's own identity wiki — the agent wiki stays clean.
+        let in_agent = fact_index::find_by_filters(
+            &pool,
+            &fact_index::FactFilters {
+                wiki_id: Some("samvisebot".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            in_agent.is_empty(),
+            "a user-global rule never lands in the calling agent's wiki"
+        );
+        let rows = fact_index::find_by_filters(
+            &pool,
+            &fact_index::FactFilters {
+                wiki_id: Some("alice".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1, "exactly one rule in alice's identity wiki");
+        assert_eq!(rows[0].owner_id, Principal::User("alice".into()));
+        assert!(rows[0].source_path.ends_with("rules.md"));
+
+        // Served through the channel on a bound consumer…
+        let via_agent =
+            recall_behaviour_rules(&pool, &req_consumer("?", "alice", "botdeploy")).await;
+        assert_eq!(
+            via_agent
+                .iter()
+                .map(|(_, b, s)| (b.as_str(), *s))
+                .collect::<Vec<_>>(),
+            vec![("Parlami in italiano.", BehaviourScope::UserGlobal)],
+            "the user's everywhere-rule reaches a bound consumer"
+        );
+        // …and on a bindingless (smart) consumer alike.
+        let smart = recall_behaviour_rules(&pool, &req("?", "alice")).await;
+        assert_eq!(
+            smart.iter().map(|(_, b, _)| b.as_str()).collect::<Vec<_>>(),
+            vec!["Parlami in italiano."],
+            "the user's everywhere-rule reaches a consumer with no agent wiki binding"
+        );
+        // Never for another user — it is alice's own rule.
+        let bilbo = recall_behaviour_rules(&pool, &req_consumer("?", "bilbo", "botdeploy")).await;
+        assert!(
+            bilbo.is_empty(),
+            "another user's channel never carries alice's user-global rule"
+        );
+        drop(dir);
+    }
+
+    /// The `YOUR RULES` order is pinned, most specific last: agent-wide (the
+    /// floor) → user-global (the user's everywhere-set) → per-user (this
+    /// agent, this user).
+    #[tokio::test]
+    async fn rules_channel_order_is_agent_wide_then_user_global_then_per_user() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        // alice is the operator/admin, so her agent-wide rule files.
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('alice', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let policy = IngestPolicy::default();
+        for (scope, body) in [
+            ("per-user", "Rispondi conciso."),
+            ("user-global", "Parlami in italiano."),
+            ("agent-wide", "Non dare consigli medici."),
+        ] {
+            let llm = FakeLlmBackend::new(
+                "fake",
+                format!(
+                    "{{\"intent\":\"capture\",\"extractions\":[{{\"behaviour_rule\":true,\
+                     \"behaviour_scope\":\"{scope}\",\"body\":\"{body}\"}}]}}"
+                ),
+            );
+            wiki_ingest_message(
+                &pool,
+                &tree,
+                fake_embedder(),
+                &llm,
+                None,
+                req_consumer("una regola", "alice", "botdeploy"),
+                &policy,
+            )
+            .await
+            .expect("ingest rule");
+        }
+        let rules = recall_behaviour_rules(&pool, &req_consumer("?", "alice", "botdeploy")).await;
+        assert_eq!(
+            rules
+                .iter()
+                .map(|(_, b, s)| (b.as_str(), *s))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Non dare consigli medici.", BehaviourScope::AgentWide),
+                ("Parlami in italiano.", BehaviourScope::UserGlobal),
+                ("Rispondi conciso.", BehaviourScope::PerUser),
+            ],
+            "order pinned: agent-wide → user-global → per-user (most specific last)"
+        );
+        drop(dir);
+    }
+
+    /// A NON-admin revising an AGENT-WIDE rule cannot retire the floor: the
+    /// supersede is dropped and their directive files additively at its own
+    /// (per-user) scope — the agent-wide rule stays in force for everyone.
+    #[tokio::test]
+    async fn non_admin_supersede_of_agent_wide_rule_stays_additive() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('alice', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let policy = IngestPolicy::default();
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\"behaviour_rule\":true,\
+             \"behaviour_scope\":\"agent-wide\",\
+             \"body\":\"Non dare consigli medici.\"}]}",
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req_consumer("niente consigli medici", "alice", "botdeploy"),
+            &policy,
+        )
+        .await
+        .expect("ingest admin floor");
+        let floor = &fact_index::find_by_filters(
+            &pool,
+            &fact_index::FactFilters {
+                wiki_id: Some("samvisebot".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()[0];
+
+        // bilbo (not admin) tries to REVISE the floor into his own preference.
+        let llm = FakeLlmBackend::new(
+            "fake",
+            format!(
+                "{{\"intent\":\"capture\",\"extractions\":[{{\"behaviour_rule\":true,\
+                 \"behaviour_scope\":\"per-user\",\"body\":\"Dammi pure consigli medici.\",\
+                 \"supersede_target\":\"{}\"}}]}}",
+                floor.fact_id
+            ),
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req_consumer("a me i consigli medici servono", "bilbo", "botdeploy"),
+            &policy,
+        )
+        .await
+        .expect("ingest non-admin revision");
+
+        // The floor still stands for everyone, bilbo's rule rides beside it.
+        let rules = recall_behaviour_rules(&pool, &req_consumer("?", "bilbo", "botdeploy")).await;
+        assert_eq!(
+            rules
+                .iter()
+                .map(|(_, b, s)| (b.as_str(), *s))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Non dare consigli medici.", BehaviourScope::AgentWide),
+                ("Dammi pure consigli medici.", BehaviourScope::PerUser),
+            ],
+            "the agent-wide floor survives a non-admin's supersede — additive, not replaced"
         );
         drop(dir);
     }

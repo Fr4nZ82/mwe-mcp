@@ -302,7 +302,8 @@ below directly.
    navigated prose), and `UPCOMING` (imminent commitments). A separate
    first-level **`rules`** field
    carries standing **behaviour directives** (how this agent should converse
-   / operate with the served user, recalled from the agent's own memory) plus
+   / operate with the served user — the agent's own rules plus any rule the
+   user set for *every* assistant they talk to) plus
    any one-shot governance notice — kept structurally apart from the memory so
    a binding rule is never mistaken for a remembered fact. **Inject `rules`
    too, verbatim and adjacent to the block** — the field is self-labelled

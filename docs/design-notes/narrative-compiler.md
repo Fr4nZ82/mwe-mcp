@@ -408,7 +408,7 @@ together and adds the incremental bookkeeping:
   behaviour rules owned by the rules pipeline and read by
   `recall_behaviour_rules` keyed on that path — re-homing one onto `index.md`
   would silently drop it from the behaviour-rule channel
-  ([ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-to-the-consumers-own-wiki)).
+  ([ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-by-scope-outside-fact-memory)).
 - It **carries over** prior assignments for facts that still exist, and
   classifies **only the new facts** through the Cartografo — last night's
   structural verdicts are not re-litigated.

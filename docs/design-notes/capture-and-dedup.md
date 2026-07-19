@@ -78,7 +78,7 @@ buffer write side is documented in
    candidate's are `rules.md`, or neither is — a behaviour rule dedups
    rule-vs-rule; a rule skipped as a "duplicate" of an ordinary fact would
    never reach `rules.md`, so the behaviour-rules channel would never serve
-   it, see [ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-to-the-consumers-own-wiki)),
+   it, see [ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-by-scope-outside-fact-memory)),
    then compute jaccard 6-gram of `body` vs `row.text`, take the max score.
    - If `max ≥ dedup_threshold` (default
      [`DEFAULT_DEDUP_THRESHOLD = 0.85`](../../crates/mwe-core/src/recall.rs))
