@@ -81,3 +81,6 @@ __pycache__/
 # locally; the public wiki (docs/) carries only what shipped.
 /planning/
 /notes/
+
+# mwe-mcp smart-consumer state (per-machine: wiki_id, op-log head, checksums)
+/.mwe/
