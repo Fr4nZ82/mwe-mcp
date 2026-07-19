@@ -193,6 +193,17 @@ operational chat + first-login welcome wizard**.
   Dream console reads at each trigger — no restart caveat. The dream
   *cadence* (`rem.schedule:`) stays YAML-only; semantic judgment stays
   with the LLM sub-jobs.
+- **Training spool** — `/dashboard/admin/training-spool` admin-only
+  toggle for the
+  [`training_spool:` config section](../protocol/config-schema.md#training_spool):
+  the prompt/completion pair recorder behind every LLM slot (the
+  distillation dataset — [llm-functions.md §6](llm-functions.md)).
+  Checkbox + the on-disk spool inventory (per-day JSONL files with
+  sizes). Same atomic-YAML save mechanics as the recall/REM editors;
+  the hot-flip happens on the process-wide spool handle, checked per
+  LLM call — no restart. The page states the privacy stance: the spool
+  holds raw prompts, including recalled memory content, and stays on
+  the host.
 - **Embedding settings** — `/dashboard/admin/embedding` admin-only editor
   for the [`embedding:` config section](../protocol/config-schema.md#embedding):
   backend selector (`ollama` / `bundled` / `openai`), `model`, Ollama

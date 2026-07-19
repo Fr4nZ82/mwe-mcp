@@ -357,14 +357,38 @@ impl LlmFunctionConfig {
     /// `None` if unset. Production callers use the `std::env::var`
     /// variant via [`Self::build_backend`].
     ///
+    /// Every built backend is passed through
+    /// [`crate::training_spool::maybe_wrap`]: when the server has
+    /// installed a process-wide training spool, the backend records
+    /// its prompt/completion pairs (per-call enabled check — the
+    /// dashboard toggle is honoured without a rebuild); without an
+    /// installed spool this is a passthrough.
+    ///
     /// # Errors
     ///
     /// Same as [`Self::build_backend`].
+    pub fn build_backend_with_env<F>(
+        &self,
+        function: LlmFunction,
+        env: F,
+    ) -> Result<Box<dyn crate::llm::LlmBackend>>
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
+        let inner = self.build_backend_raw_with_env(function, env)?;
+        Ok(crate::training_spool::maybe_wrap(
+            inner,
+            function,
+            &self.backend,
+        ))
+    }
+
+    /// The dispatch itself — one arm per backend tag, spool-free.
     #[allow(
         clippy::too_many_lines,
         reason = "flat dispatch match — one arm per backend; splitting hurts readability"
     )]
-    pub fn build_backend_with_env<F>(
+    fn build_backend_raw_with_env<F>(
         &self,
         function: LlmFunction,
         mut env: F,
@@ -1842,6 +1866,22 @@ impl EmailConfig {
     }
 }
 
+// ---------- Training spool ----------
+
+/// `training_spool:` section — the prompt/completion training-pair
+/// spool (see [`crate::training_spool`]).
+///
+/// Off by default: the spool holds raw prompts, which embed recalled
+/// memory content, so turning it on is an explicit operator choice
+/// (dashboard panel or YAML).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrainingSpoolConfig {
+    /// Record internal-LLM prompt/completion pairs to
+    /// `<workdir>/training-spool/`. Hot-toggleable from the dashboard.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 // ---------- Config ----------
 
 /// Top-level config object.
@@ -1879,6 +1919,10 @@ pub struct Config {
     /// `document:` section — the document-ingest pipeline's resource knobs.
     #[serde(default)]
     pub document: DocumentConfig,
+    /// `training_spool:` section — the prompt/completion training-pair
+    /// spool. See [`TrainingSpoolConfig`].
+    #[serde(default)]
+    pub training_spool: TrainingSpoolConfig,
     /// Every other key in the YAML, preserved verbatim so we never
     /// strip an operator's settings during a round-trip.
     #[serde(flatten)]

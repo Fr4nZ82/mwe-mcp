@@ -491,3 +491,40 @@ direction is: keep the robust parser as primary; instrument the
 parse-failure rate in production; if it exceeds 5%, adopt
 `format:"json"` as a second line of defence, scoped to the backends
 that support it.
+
+## 6. The training spool — teacher traces for local-slot distillation
+
+The slots are narrow, repetitive, structured tasks — exactly the shape
+where a small local model fine-tuned on traces from a strong API
+"teacher" approaches the teacher's quality. The blocker for such a
+fine-tune is the dataset, and production generates it for free: every
+API-backed slot call is a ready-made `(prompt, completion)` training
+pair. [`mwe-core::training_spool`](../../crates/mwe-core/src/training_spool.rs)
+captures them.
+
+- **Seam** — `LlmFunctionConfig::build_backend` wraps every backend it
+  builds in a recording decorator (`SpoolingBackend`) when the server
+  has installed the process-wide spool at startup (same `OnceLock`
+  idiom as the OAuth login store). No call site knows about it; every
+  slot and transport (MCP ingest, REM cycle, dashboard chat) is
+  covered.
+- **Record** — one JSON line per successful call into
+  `<workdir>/training-spool/YYYY-MM-DD.jsonl`: slot, backend tag,
+  model id, the full request (system + prompt, or messages + tools on
+  the chat path), the full response, finish reason, token usage.
+  Prompts are recorded verbatim — a truncated prompt is useless as a
+  training pair. Image attachments ride as MIME types only. Health
+  probes and failed calls are never recorded.
+- **Toggle** — `training_spool.enabled` in the YAML (default **off**),
+  hot-flippable from the dashboard Training-spool panel
+  ([dashboard.md](dashboard.md)); the decorator checks the flag per
+  call. Recording is best-effort: an I/O failure logs a warning and
+  never fails the turn (same doctrine as the recall-trace journal).
+- **Privacy** — the spool embeds recalled memory content of every user
+  the deployment serves. It never leaves the machine, but the operator
+  must treat the directory like the wikis themselves and scrub before
+  a dataset leaves the host.
+
+The consumers of the spool (dataset filtering, the golden-set eval
+harness, the distillation run itself) are offline tooling, not part of
+the server — this page documents only the recorder that ships.

@@ -76,8 +76,9 @@ hot-reloadable today.
 
 ## Top-level sections
 
-Only six sections are materialised into typed Rust structs today:
-`logging`, `llm`, `embedding`, `rem`, `recall`, `document`. The schema documents several more —
+Only eight sections are materialised into typed Rust structs today:
+`logging`, `llm`, `embedding`, `email`, `rem`, `recall`, `document`,
+`training_spool`. The schema documents several more —
 `deployment_id`, `storage`, `features`, `http`, `budget`,
 `rate_limits` — and these **parse without error** but are currently
 carried opaquely in `Config::extra` (forward-compat passthrough),
@@ -487,6 +488,36 @@ default.
 | `classify_sample_chars` | int | `6000` | Document prefix the disposition classifier sees. |
 | `merge_threshold` | float | `0.90` | Embedding cosine at/above which candidates cluster for the reduce merge. |
 | `max_document_chars` | int | `1500000` | Hard input cap at enqueue. |
+
+### `training_spool`
+
+Maps to `TrainingSpoolConfig` and gates
+[`mwe-core::training_spool`](../../crates/mwe-core/src/training_spool.rs)
+— the prompt/completion recorder behind every LLM slot. When enabled,
+each internal-LLM exchange (any slot, any backend) is appended as one
+JSON line — slot, backend tag, model id, full request, full response,
+token usage — to a per-day file under `<workdir>/training-spool/`.
+Purpose: the strong API slots act as teachers and their traces become
+the distillation dataset for fine-tuning the local slot models. Health
+probes and failed calls are never recorded; image attachments are
+recorded as MIME types only (no base64 payload).
+
+```yaml
+training_spool:
+  enabled: false              # default off — the spool holds raw prompts
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | Hot-toggleable from the dashboard [Training-spool panel](../design-notes/dashboard.md) — the save rewrites this key and flips the running recorder in place, no restart. |
+
+The spool holds raw prompts, which embed recalled memory content of
+every user the deployment serves — treat the directory like the wikis
+themselves (deliberate backups, deliberate pruning; scrub before
+sharing a dataset). Wiring: `LlmFunctionConfig::build_backend` wraps
+every backend it builds in the recording decorator whenever the server
+has installed the process-wide spool handle at startup; the enabled
+flag is checked per call.
 
 ### `embedding`
 
@@ -1060,6 +1091,12 @@ embedding:
   device: cpu                 # bundled only: cpu (default) | gpu
   dimensions: 1024            # vector size (ollama; bge-m3 = 1024)
   # model_dir: /opt/models/bge-m3   # bundled only: offline weights dir
+
+# ── training spool (off by default; holds raw prompts) ────────────────
+training_spool:
+  enabled: false              # record LLM prompt/completion pairs to
+                              # <workdir>/training-spool/ (distillation
+                              # dataset; dashboard-toggleable at runtime)
 
 # ── features (PARSED-BUT-INERT in config.rs: check the consuming code) ─
 features:

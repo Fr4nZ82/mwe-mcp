@@ -398,6 +398,16 @@ async fn main() -> Result<()> {
     // share one store. Test/personal use only (see mwe_core::oauth).
     mwe_core::oauth::install_global_store(Arc::new(mwe_core::oauth::default_store(&cli.workdir)));
 
+    // Install the process-wide training spool (captures the workdir).
+    // Every LLM backend built through `build_backend` records its
+    // prompt/completion pairs into it when enabled — the flag starts
+    // from `training_spool.enabled` in the YAML and is hot-toggled by
+    // the dashboard panel. Installed for every subcommand so `serve`
+    // and the `rem` CLI runs spool alike.
+    mwe_core::training_spool::install_global(Arc::new(
+        mwe_core::training_spool::TrainingSpool::new(&cli.workdir, config.training_spool.enabled),
+    ));
+
     match cli.command {
         Command::Init {
             llm_profile,

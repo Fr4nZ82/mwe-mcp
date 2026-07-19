@@ -76,6 +76,7 @@ pub mod scope;
 pub mod skills;
 pub mod slug;
 pub mod smart;
+pub mod training_spool;
 pub mod types;
 pub mod votes;
 pub mod wal;

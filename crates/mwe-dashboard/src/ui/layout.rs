@@ -228,6 +228,9 @@ fn header(user: Option<&SessionUser>) -> Markup {
                         // viewer (the last few recalls, whole route).
                         (nav_link("/dashboard/admin/recall-traces", "Traces"))
                         (nav_link("/dashboard/admin/rem-settings", "REM"))
+                        // Admin "Spool" — the training-pair recorder
+                        // (distillation dataset toggle + inventory).
+                        (nav_link("/dashboard/admin/training-spool", "Spool"))
                         (nav_link("/dashboard/admin/health", "Health"))
                         (nav_link("/dashboard/admin/backup", "Backup"))
                         // Admin "Dream" — the on-demand console + run history
