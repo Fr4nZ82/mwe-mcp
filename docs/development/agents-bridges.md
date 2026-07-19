@@ -198,11 +198,16 @@ Four hermes-agent plugins, stdlib-only, no upstream patch:
   above the truncate threshold, repair fired every turn, and that chat
   lost every recall block for days). The provider records what it handed
   the host (`$HERMES_HOME/mwe-watchdog-state.json`, keyed by a hash of
-  the turn text — the file-as-channel pattern again) and the watchdog
-  checks the turn's first outgoing request for the `<memory-context>`
-  fence: missing → loud WARNING with a consecutive-miss counter,
-  escalated to SYSTEMATIC from the third miss (with the session-reset
-  remediation hint). Diagnosis only; it never touches the request. The
+  the whitespace-trimmed turn text — the provider's canonical form, and
+  the file-as-channel pattern again) and the watchdog checks the
+  `<memory-context>` fence is present in the **last user message** of
+  the turn's first outgoing request (the current turn's message — the
+  host injects at API-call time only, so history never retains old
+  fences; a fence on an earlier user message is a stale index landing
+  on the wrong message and counts as a miss): missing → loud WARNING
+  with a consecutive-miss counter, escalated to SYSTEMATIC from the
+  third miss (with the session-reset remediation hint). Diagnosis only;
+  it never touches the request. The
   provider's system-prompt block also hardens the model side: the host's
   disabled built-in `memory` tool must never be called (it can't be
   removed per-tool — hermes gates the provider's own `mwe_*` tools on

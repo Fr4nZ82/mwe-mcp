@@ -57,10 +57,15 @@ and no upstream patch:
   provider, and a drop is **silent** — the turn proceeds and the model
   answers without memory. The memory half records what it handed over
   (`$HERMES_HOME/mwe-watchdog-state.json`, keyed by a hash of the turn's
-  user text) and the watchdog checks a `<memory-context>` fence is
-  present in the outgoing request on the turn's first model call: absent
-  → a loud WARNING with a consecutive-miss counter, flagged SYSTEMATIC
-  from the third miss. Diagnosis only — it never mutates the request.
+  whitespace-trimmed user text) and the watchdog checks a
+  `<memory-context>` fence is present in the **last user message** of
+  the outgoing request on the turn's first model call — that is the
+  current turn's message, the one hermes injects into; injection is
+  API-call-time only, so history never retains old fences, and a fence
+  on an earlier user message is a stale injection index, not delivery.
+  Absent → a loud WARNING with a consecutive-miss counter, flagged
+  SYSTEMATIC from the third miss. Diagnosis only — it never mutates the
+  request.
   **Opt-in** (recommended): add `mwe-watchdog` to `plugins.enabled`.
   Born from a live incident (2026-07-18): hermes's message-alternation
   repair compacts the transcript AFTER the injection index is computed

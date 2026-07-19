@@ -436,6 +436,36 @@ def main():
         ok("dropped block → miss counted", fire_watchdog(False) == 1)
         ok("second drop increments the counter", fire_watchdog(False) == 2)
         ok("delivered block resets the counter", fire_watchdog(True) == 0)
+        # Regression: gateways hand hermes raw text — the provider hashes
+        # it stripped, so the watchdog must hash the same normalisation
+        # or a padded turn never matches its handshake (a silent
+        # verification gap, the very thing the watchdog exists to close).
+        mgr.invoke_hook(
+            "pre_api_request", api_call_count=1,
+            user_message="  turno sorvegliato\n",
+            model="m", session_id="s",
+            request={"body": {"messages": [
+                {"role": "user", "content": "  turno sorvegliato\n"}]}},
+        )
+        ok("whitespace-padded turn still matches the handshake (miss counted)",
+           json.loads(wd_state.read_text()).get("consecutive_misses") == 1)
+        # Regression: a fence on an EARLIER user message is not delivery —
+        # history never retains old fences (host injection is
+        # API-call-time only), so that shape is a stale injection index
+        # landing on the wrong message.
+        mgr.invoke_hook(
+            "pre_api_request", api_call_count=1,
+            user_message="turno sorvegliato",
+            model="m", session_id="s",
+            request={"body": {"messages": [
+                {"role": "user",
+                 "content": "vecchio turno\n\n<memory-context>\nstantio"
+                            "\n</memory-context>"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "turno sorvegliato"}]}},
+        )
+        ok("fence only on an earlier user message counts as a miss",
+           json.loads(wd_state.read_text()).get("consecutive_misses") == 2)
         wd_snapshot = wd_state.read_text()
         mgr.invoke_hook("pre_api_request", api_call_count=2,
                         user_message="turno sorvegliato",

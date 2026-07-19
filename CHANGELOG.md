@@ -19,6 +19,14 @@ semver-governed surface — breaking changes are called out explicitly.
   through it, so saving an unrelated panel can never bake a
   runtime-only override into the YAML. The LLM-config editor remains
   deliberately what-you-see-is-what-you-save.
+- **hermes `mwe-watchdog` 0.2.0 — two verification gaps closed.** The
+  watchdog now hashes the whitespace-trimmed turn text (the memory
+  provider's canonical form), so a padded gateway message can no longer
+  silently skip its handshake entry; and it requires the
+  `<memory-context>` fence on the request's **last user message** —
+  host injection is API-call-time only, so a fence on an earlier
+  message is a stale injection index landing on the wrong turn and now
+  counts as a miss.
 
 ## 1.4.1 — 2026-07-19
 

@@ -346,6 +346,9 @@ class MweMemoryProvider(MemoryProvider):
         path = self._spool_path.with_name(_WATCHDOG_STATE_FILENAME)
         now = time.time()
         entry = {
+            # `query_text` is prefetch's stripped text — the watchdog
+            # hashes the same normalisation (user_message.strip()); the
+            # two sides must keep hashing identical strings to match.
             "query_sha": hashlib.sha256(query_text.encode("utf-8")).hexdigest()[:16],
             "sender": self._sender,
             "block_chars": len(block),

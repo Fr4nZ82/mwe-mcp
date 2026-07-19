@@ -17,9 +17,14 @@ This plugin closes the loop, zero fork:
   the turn's user text — the file is the channel, twin note there).
 - This hook fires on hermes's documented `pre_api_request` seam with
   the sanitised outgoing request. On the turn's FIRST model call it
-  matches the state entry and checks a `<memory-context>` fence is
-  present in a user message. Present → reset the miss counter (log the
-  recovery if one was running). Absent → a loud WARNING with a
+  matches the state entry (hash of the whitespace-trimmed turn text —
+  the provider's canonical form) and checks a `<memory-context>` fence
+  is present in the request's LAST user message: that is the current
+  turn's message, the one the host injects into, and history never
+  retains old fences (injection is API-call-time only). Present → reset
+  the miss counter (log the recovery if one was running). Absent — or
+  present only on an earlier user message, i.e. a stale injection index
+  landed on the wrong message — → a loud WARNING with a
   consecutive-miss counter; from the third consecutive miss the message
   flags the drop as SYSTEMATIC and points at the known host pathologies
   (message repair / preflight compression shifting the injection index).
@@ -106,7 +111,13 @@ def _check(kwargs: Dict[str, Any]) -> None:
     path = _hermes_home() / _STATE_FILENAME
     if not path.is_file():
         return
-    sha = hashlib.sha256(user_message.encode("utf-8")).hexdigest()[:16]
+    # TWIN of the provider's canonical form: prefetch() hashes the turn
+    # text stripped (`(query or "").strip()` in plugins/memory/mwe/) and
+    # hermes hands both sides the same raw string (`original_user_message`),
+    # so hash the same normalisation — a whitespace-padded message would
+    # otherwise never match its handshake entry and skip verification
+    # silently.
+    sha = hashlib.sha256(user_message.strip().encode("utf-8")).hexdigest()[:16]
     now = time.time()
     with _state_lock(path):
         try:
@@ -132,11 +143,24 @@ def _check(kwargs: Dict[str, Any]) -> None:
         messages = body.get("messages") if isinstance(body, dict) else None
         if not isinstance(messages, list):
             return  # request shape unknown — no verdict is better than a false one
-        delivered = any(
-            isinstance(m, dict)
-            and m.get("role") == "user"
-            and _FENCE in _flatten(m.get("content"))
-            for m in messages
+        # The injected block rides the CURRENT turn's user message, which
+        # on the turn's first API call is the last user message of the
+        # outgoing request. Verified against the host source: injection
+        # is API-call-time only (agent/conversation_loop.py never mutates
+        # the stored transcript), so no fence survives into history — a
+        # fence on an EARLIER user message is not delivery but a stale
+        # injection index landing on the wrong message, the exact
+        # pathology this watchdog exists to expose. Count it as a miss.
+        last_user = next(
+            (
+                m
+                for m in reversed(messages)
+                if isinstance(m, dict) and m.get("role") == "user"
+            ),
+            None,
+        )
+        delivered = last_user is not None and _FENCE in _flatten(
+            last_user.get("content")
         )
         if delivered:
             prior = int(data.get("consecutive_misses") or 0)
