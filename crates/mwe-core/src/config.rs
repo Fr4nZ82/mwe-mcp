@@ -79,6 +79,13 @@ pub enum ConfigError {
         value: String,
     },
 
+    /// `backup.mode` value was not one of the accepted choices.
+    #[error("config backup.mode {value:?}: expected `interval` or `disabled`")]
+    InvalidBackupMode {
+        /// The offending value.
+        value: String,
+    },
+
     /// An `llm.<function>` sub-section names an `backend` that this
     /// build cannot construct.
     ///
@@ -1882,6 +1889,99 @@ pub struct TrainingSpoolConfig {
     pub enabled: bool,
 }
 
+// ---------- Backup ----------
+
+/// `backup:` section — automatic workdir snapshots (roadmap 4d).
+///
+/// On by default: a live deployment holds real memory, and the daily
+/// snapshot is the floor of the recovery story. The scheduler persists
+/// its last-run stamp in `engine_meta`, so a restart never re-fires a
+/// snapshot that already happened inside the interval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupConfig {
+    /// Scheduler mode (`interval` or `disabled`).
+    #[serde(default)]
+    pub mode: BackupScheduleMode,
+    /// Distance between consecutive automatic snapshots. Default:
+    /// `86_400` seconds (24 hours).
+    #[serde(default = "default_backup_interval_secs")]
+    pub interval_secs: u64,
+    /// Delay before the scheduler's first due-check after startup.
+    /// Default: 600 seconds (10 minutes).
+    #[serde(default = "default_backup_initial_delay_secs")]
+    pub initial_delay_secs: u64,
+    /// Snapshots home. Absent → a sibling of the workdir named
+    /// `<workdir-name>-snapshots` (must stay outside the workdir — the
+    /// snapshot refuses an overlapping destination).
+    #[serde(default)]
+    pub dir: Option<PathBuf>,
+    /// Automatic (`auto-*`) snapshots kept; older ones are pruned after
+    /// each successful run. Manual and safety snapshots are never
+    /// pruned. `0` disables pruning (keep everything). Default: 7.
+    #[serde(default = "default_backup_retention_auto")]
+    pub retention_auto: u32,
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            mode: BackupScheduleMode::Interval,
+            interval_secs: default_backup_interval_secs(),
+            initial_delay_secs: default_backup_initial_delay_secs(),
+            dir: None,
+            retention_auto: default_backup_retention_auto(),
+        }
+    }
+}
+
+impl BackupConfig {
+    /// The snapshots home this config points at, with the sibling-dir
+    /// default applied.
+    #[must_use]
+    pub fn snapshots_dir(&self, workdir: &Path) -> PathBuf {
+        self.dir
+            .clone()
+            .unwrap_or_else(|| crate::backup::default_snapshots_dir(workdir))
+    }
+
+    /// Resolve into the runtime schedule the backup scheduler (and the
+    /// dashboard console's hot-swap handle) consumes.
+    #[must_use]
+    pub fn resolved_schedule(&self, workdir: &Path) -> crate::backup::BackupSchedule {
+        crate::backup::BackupSchedule {
+            enabled: self.mode == BackupScheduleMode::Interval,
+            interval_secs: self.interval_secs.max(1),
+            dir: self.snapshots_dir(workdir),
+            retention_auto: self.retention_auto,
+        }
+    }
+}
+
+/// `mode` enum for [`BackupConfig`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackupScheduleMode {
+    /// Periodic due-check ticker; a snapshot fires when the persisted
+    /// last-run stamp is older than `interval_secs`.
+    #[default]
+    Interval,
+    /// Automatic snapshots off; the operator drives backups through the
+    /// dashboard console or the `mwe-mcp backup` CLI.
+    Disabled,
+}
+
+const fn default_backup_interval_secs() -> u64 {
+    86_400
+}
+
+const fn default_backup_initial_delay_secs() -> u64 {
+    600
+}
+
+const fn default_backup_retention_auto() -> u32 {
+    7
+}
+
 // ---------- Config ----------
 
 /// Top-level config object.
@@ -1923,6 +2023,10 @@ pub struct Config {
     /// spool. See [`TrainingSpoolConfig`].
     #[serde(default)]
     pub training_spool: TrainingSpoolConfig,
+    /// `backup:` section — automatic workdir snapshots. See
+    /// [`BackupConfig`].
+    #[serde(default)]
+    pub backup: BackupConfig,
     /// Every other key in the YAML, preserved verbatim so we never
     /// strip an operator's settings during a round-trip.
     #[serde(flatten)]
@@ -2020,6 +2124,7 @@ impl Config {
         Self::validate_log_level(&value)?;
         Self::validate_log_file_rotation(&value)?;
         Self::validate_rem_schedule_mode(&value)?;
+        Self::validate_backup_mode(&value)?;
         let cfg: Self = serde_yaml::from_value(value).map_err(|e| ConfigError::Parse {
             path: path.to_path_buf(),
             detail: format!("schema: {e}"),
@@ -2093,6 +2198,29 @@ impl Config {
             Ok(())
         } else {
             Err(ConfigError::InvalidRemScheduleMode {
+                value: s.to_owned(),
+            })
+        }
+    }
+
+    fn validate_backup_mode(value: &serde_yaml::Value) -> Result<()> {
+        let Some(mode) = value
+            .as_mapping()
+            .and_then(|m| m.get(serde_yaml::Value::String("backup".into())))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|m| m.get(serde_yaml::Value::String("mode".into())))
+        else {
+            return Ok(());
+        };
+        let Some(s) = mode.as_str() else {
+            return Err(ConfigError::InvalidBackupMode {
+                value: format!("{mode:?}"),
+            });
+        };
+        if matches!(s, "interval" | "disabled") {
+            Ok(())
+        } else {
+            Err(ConfigError::InvalidBackupMode {
                 value: s.to_owned(),
             })
         }
@@ -2622,6 +2750,46 @@ mod tests {
         let def = crate::ingest::IngestPolicy::default();
         assert_eq!(p.nav.max_hops, def.nav.max_hops);
         assert_eq!(p.due_soon_horizon_hours, def.due_soon_horizon_hours);
+    }
+
+    #[test]
+    fn backup_section_defaults_to_daily_on() {
+        let dir = tempdir().unwrap();
+        fs::write(Config::path_in(dir.path()), "logging:\n  level: info\n").unwrap();
+        let cfg = Config::load(dir.path()).expect("load");
+        assert_eq!(cfg.backup, BackupConfig::default());
+        assert_eq!(cfg.backup.mode, BackupScheduleMode::Interval);
+        assert_eq!(cfg.backup.interval_secs, 86_400);
+        assert_eq!(cfg.backup.retention_auto, 7);
+
+        let schedule = cfg.backup.resolved_schedule(Path::new("/srv/mwe/work"));
+        assert!(schedule.enabled);
+        assert_eq!(schedule.dir, PathBuf::from("/srv/mwe/work-snapshots"));
+    }
+
+    #[test]
+    fn backup_section_parses_overrides() {
+        let dir = tempdir().unwrap();
+        let body = "backup:\n  mode: disabled\n  interval_secs: 3600\n  dir: /mnt/backups/mwe\n  retention_auto: 3\n";
+        fs::write(Config::path_in(dir.path()), body).unwrap();
+        let cfg = Config::load(dir.path()).expect("load");
+        assert_eq!(cfg.backup.mode, BackupScheduleMode::Disabled);
+        let schedule = cfg.backup.resolved_schedule(Path::new("/srv/mwe/work"));
+        assert!(!schedule.enabled);
+        assert_eq!(schedule.interval_secs, 3600);
+        assert_eq!(schedule.dir, PathBuf::from("/mnt/backups/mwe"));
+        assert_eq!(schedule.retention_auto, 3);
+    }
+
+    #[test]
+    fn backup_load_rejects_unknown_mode_explicitly() {
+        let dir = tempdir().unwrap();
+        fs::write(Config::path_in(dir.path()), "backup:\n  mode: cron\n").unwrap();
+        let err = Config::load(dir.path()).expect_err("must reject");
+        match err {
+            ConfigError::InvalidBackupMode { value } => assert_eq!(value, "cron"),
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]

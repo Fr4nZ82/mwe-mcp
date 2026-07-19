@@ -449,6 +449,33 @@ pub struct DashboardState {
     /// and the last outcome so the topnav indicator can animate and then
     /// show the result. The synchronous no-JS path does not touch it.
     pub dream_status: Arc<Mutex<DreamStatus>>,
+
+    /// Automatic-snapshot schedule (`backup:` config section, resolved).
+    /// Shared behind `Arc<RwLock>` with the server's backup scheduler
+    /// (which reads it fresh at each due-check) so a save from the
+    /// Backup console applies without a restart. `None` on the
+    /// identity-only / test builds (the scheduler idles).
+    pub backup_schedule: Arc<RwLock<Option<mwe_core::backup::BackupSchedule>>>,
+
+    /// Handle to request a process restart from the Backup console
+    /// (staged recovery needs a boot to apply). `None` outside the full
+    /// `mwe-mcp serve` build — the restart button is then hidden.
+    pub restart: Option<RestartHandle>,
+}
+
+/// Restart plumbing `mwe-mcp serve` wires into the dashboard.
+///
+/// The graceful-shutdown broadcast plus a flag the main loop checks
+/// after the joins to exit with the deliberate non-zero restart code
+/// (the provisioned systemd unit is `Restart=on-failure`, so a clean
+/// exit would stay down).
+#[derive(Clone)]
+pub struct RestartHandle {
+    /// The serve loop's shutdown fan-out — sending starts the same
+    /// graceful teardown as ctrl-c.
+    pub shutdown: tokio::sync::broadcast::Sender<()>,
+    /// Set before sending so the main loop knows to exit non-zero.
+    pub requested: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Live status of the most recent background Dream run, surfaced to the
@@ -498,6 +525,8 @@ impl DashboardState {
             recall: Arc::new(RwLock::new(RecallConfig::default())),
             claude_login: Arc::new(Mutex::new(None)),
             dream_status: Arc::new(Mutex::new(DreamStatus::default())),
+            backup_schedule: Arc::new(RwLock::new(None)),
+            restart: None,
         }
     }
 
@@ -533,6 +562,41 @@ impl DashboardState {
     #[must_use]
     pub fn with_recall(self, recall: Arc<RwLock<RecallConfig>>) -> Self {
         Self { recall, ..self }
+    }
+
+    /// Builder-style attachment of the **shared** backup-schedule
+    /// handle (`backup:` config section, resolved) — `mwe-mcp serve`
+    /// passes the same `Arc` it hands the backup scheduler so the
+    /// Backup console's save applies at the next due-check.
+    #[must_use]
+    pub fn with_backup_schedule(
+        self,
+        backup_schedule: Arc<RwLock<Option<mwe_core::backup::BackupSchedule>>>,
+    ) -> Self {
+        Self {
+            backup_schedule,
+            ..self
+        }
+    }
+
+    /// Builder-style attachment of the restart plumbing (serve build
+    /// only).
+    #[must_use]
+    pub fn with_restart(self, restart: RestartHandle) -> Self {
+        Self {
+            restart: Some(restart),
+            ..self
+        }
+    }
+
+    /// Replace the live backup schedule in place — the Backup console
+    /// calls this right after the YAML save (write disk first, then
+    /// swap, same ordering as the other section editors).
+    pub fn replace_backup_schedule(&self, fresh: mwe_core::backup::BackupSchedule) {
+        *self
+            .backup_schedule
+            .write()
+            .expect("backup schedule rwlock poisoned") = Some(fresh);
     }
 
     /// Snapshot the operator recall settings. Owned value so the caller

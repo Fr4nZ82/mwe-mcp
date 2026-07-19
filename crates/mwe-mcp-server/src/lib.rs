@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod backup_scheduler;
 pub mod env_loader;
 pub mod http_connect;
 pub mod http_media;

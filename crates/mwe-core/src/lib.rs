@@ -68,6 +68,7 @@ pub mod recall_log;
 pub mod recall_nav;
 pub mod recall_trace;
 pub mod recent_window;
+pub mod recovery;
 pub mod reindex;
 pub mod rem;
 pub mod render;

@@ -2,7 +2,7 @@
 title: Configuration reference — mwe-mcp.config.yaml + mwe-mcp.env
 area: protocol
 status: implemented
-last_review: "2026-07-02"
+last_review: "2026-07-20"
 ---
 
 # Configuration reference
@@ -76,9 +76,9 @@ hot-reloadable today.
 
 ## Top-level sections
 
-Only eight sections are materialised into typed Rust structs today:
+Only nine sections are materialised into typed Rust structs today:
 `logging`, `llm`, `embedding`, `email`, `rem`, `recall`, `document`,
-`training_spool`. The schema documents several more —
+`training_spool`, `backup`. The schema documents several more —
 `deployment_id`, `storage`, `features`, `http`, `budget`,
 `rate_limits` — and these **parse without error** but are currently
 carried opaquely in `Config::extra` (forward-compat passthrough),
@@ -518,6 +518,33 @@ sharing a dataset). Wiring: `LlmFunctionConfig::build_backend` wraps
 every backend it builds in the recording decorator whenever the server
 has installed the process-wide spool handle at startup; the enabled
 flag is checked per call.
+
+### `backup`
+
+Maps to `BackupConfig` and drives the automatic-snapshot scheduler
+([`mwe_mcp_server::backup_scheduler`](../../crates/mwe-mcp-server/src/backup_scheduler.rs))
+— the daily hot workdir snapshot plus retention pruning. Full story:
+[backup & DR](../design-notes/backup-and-dr.md). Editable from the
+dashboard [Backup console](../design-notes/dashboard.md); a save
+hot-swaps the running schedule (the scheduler re-reads it at each
+five-minute due-check), except `initial_delay_secs`, which is read once
+at boot.
+
+```yaml
+backup:
+  mode: interval              # default on — daily snapshots
+  interval_secs: 86400
+  retention_auto: 7
+  # dir: /mnt/backups/mwe     # default: <workdir-name>-snapshots sibling
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `mode` | `interval` \| `disabled` | `interval` | Automatic snapshots on/off. Manual snapshots (console, CLI) always work. An unknown value is a load-time error. |
+| `interval_secs` | int (seconds) | `86400` (24 h) | Distance between automatic snapshots. The last-run stamp is persisted in `engine_meta`, so a restart never re-fires a snapshot inside the interval. |
+| `initial_delay_secs` | int (seconds) | `600` (10 min) | Warm-up before the scheduler's first due-check after startup. Boot-only (not hot-swapped). |
+| `dir` | path \| _unset_ | _unset_ → `<workdir-name>-snapshots` sibling | The snapshots home: automatic (`auto-*`), console-suggested manual (`manual-*`), and staged-recovery safety (`pre-restore-*` / `pre-reset-*`) snapshots. Must be **outside** the workdir. Snapshots contain secrets and cleartext memory — keep it owner-only. |
+| `retention_auto` | int | `7` | `auto-*` snapshots kept; older ones are pruned after each successful run. `0` keeps everything. Manual, safety, and foreign snapshots are never pruned. |
 
 ### `embedding`
 
@@ -1105,6 +1132,14 @@ training_spool:
   enabled: false              # record LLM prompt/completion pairs to
                               # <workdir>/training-spool/ (distillation
                               # dataset; dashboard-toggleable at runtime)
+
+# ── automatic snapshots (on by default; see backup-and-dr.md) ──────────
+backup:
+  mode: interval              # interval | disabled
+  interval_secs: 86400        # daily
+  initial_delay_secs: 600     # warm-up before the first due-check (boot-only)
+  retention_auto: 7           # auto-* snapshots kept; 0 keeps all
+  # dir: /mnt/backups/mwe     # default: <workdir-name>-snapshots sibling
 
 # ── features (PARSED-BUT-INERT in config.rs: check the consuming code) ─
 features:

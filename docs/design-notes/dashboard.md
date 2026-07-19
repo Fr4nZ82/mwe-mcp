@@ -2,7 +2,7 @@
 title: Dashboard — architecture and auth model
 area: design-notes
 status: implemented
-last_review: "2026-06-26"
+last_review: "2026-07-20"
 ---
 
 # Dashboard — architecture and auth model
@@ -250,14 +250,23 @@ operational chat + first-login welcome wizard**.
   it never contends with `serve` (which is why the boot-failure-triage
   checks `doctor` keeps — lockfile, secret-from-env, JWT self-test — stay
   CLI-only).
-- **Backup** — `/dashboard/admin/backup` admin-only "Backup now" trigger:
-  a hot workdir snapshot via `mwe_core::backup::snapshot_workdir` (the
-  same point-in-time copy the CLI `mwe-mcp backup --out` produces, safe
-  next to the live server — no lockfile). The form prefills a timestamped
-  destination outside the workdir and reports what was written; it warns
-  that the snapshot contains `mwe-mcp.env` (the secret + API keys) and the
-  cleartext memory wiki, so it must land in an owner-only location. The
-  `backup` CLI stays for cron / server-off operation. ("Run REM now" — the
+- **Backup** — `/dashboard/admin/backup` admin-only recovery console
+  (full story: [backup & DR](backup-and-dr.md)): the `backup:` section
+  editor (automatic-snapshot mode/interval/retention/home, saved with a
+  `.bak` and hot-swapped into the scheduler's shared handle), the
+  "Snapshot now" trigger (a hot snapshot via
+  `mwe_core::backup::snapshot_workdir`, prefilled into the snapshots
+  home as `manual-<ts>`; the CLI `mwe-mcp backup --out` stays for
+  cron / server-off use), the snapshots-on-disk listing with per-row
+  **Restore…** / **Delete**, and the **Memory reset** danger zone (type
+  `RESET` to confirm). Restore and reset are *staged*: they write the
+  one-shot `recovery-pending.json` marker that the next boot applies
+  under the lockfile, safety snapshot first — the pending request shows
+  as a cancellable banner, with a "Restart now" button when the serve
+  build wired the restart handle (graceful shutdown, exit code 75 so a
+  `Restart=on-failure` unit relaunches). The page warns that snapshots
+  contain `mwe-mcp.env` (the secret + API keys) and the cleartext
+  memory wiki, so the home must be owner-only. ("Run REM now" — the
   other maintenance trigger — is the admin **Dream** console.)
 
 Not yet shipped: audit / costs dashboard pages, full
@@ -292,7 +301,7 @@ trees merged into one and mounted under `/dashboard`:
   replay viewer (`recall_traces`), the admin REM-settings editor
   (`rem_settings`), the admin embedding-settings editor
   (`embedding_settings`), the admin live-diagnostics page (`health`),
-  the admin "Backup now" trigger (`backup`), the admin **Dream** console
+  the admin Backup & recovery console (`backup`), the admin **Dream** console
   (`dream` — on-demand `mwe_core::dream` triggers; the slow `compile` /
   `full` run as background tasks that a topnav indicator follows via
   `GET /dashboard/dream/status`, while a no-JS submit still gets the

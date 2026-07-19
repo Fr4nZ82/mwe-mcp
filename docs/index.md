@@ -204,7 +204,9 @@ If you are new, read in this order:
   migration ledger (`mwe-core::db`).
 - [backup-and-dr.md](design-notes/backup-and-dr.md) — the workdir
   snapshot as the unit of backup (`mwe-mcp backup`): hot `VACUUM INTO` +
-  file copy, the DB-before-files skew rule, the restore procedure.
+  file copy, the DB-before-files skew rule, the automatic-snapshot
+  scheduler (`backup:` config), and staged recovery (dashboard restore /
+  memory reset with the auto-safety snapshot).
 - [enrollment-loader.md](design-notes/enrollment-loader.md) — the
   `mwe-core::enrollment` identity validator + DB mirror behind the
   dashboard's user/group CRUD (`validate`, `mirror_to_db`, `groups_for`).

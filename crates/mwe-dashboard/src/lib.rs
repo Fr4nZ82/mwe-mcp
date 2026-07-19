@@ -40,6 +40,7 @@ pub mod ui;
 
 pub use state::{
     BackendForError, DashboardConfig, DashboardState, LlmBackendOverrides, MemoryHandles,
+    RestartHandle,
 };
 
 use axum::Router;

@@ -119,7 +119,7 @@ flags are sub-command specific.
 then everything else in the dashboard. `serve` self-bootstraps the workdir
 (dirs + migrations + secret) on first boot, and the admin completes
 identity, LLM/embedding/recall config, token issuing, live diagnostics,
-and the "Run REM now" / "Backup now" maintenance triggers from the web UI.
+and the "Run REM now" / Backup & recovery maintenance surfaces from the web UI.
 The CLI keeps only what must run **when the dashboard or server cannot
 help**, grouped by role:
 

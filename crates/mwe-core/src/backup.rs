@@ -32,6 +32,7 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::db::ENGINE_DB_FILENAME;
@@ -41,6 +42,225 @@ use crate::watcher::MARKER_SUFFIX;
 /// Name of the logs directory inside a workdir — operational output,
 /// excluded from snapshots.
 const LOGS_DIR_NAME: &str = "logs";
+
+/// `engine_meta` key: unix-seconds stamp of the last automatic
+/// snapshot attempt.
+///
+/// The scheduler compares it against `backup.interval_secs` at each
+/// due-check, so a restart never re-fires a snapshot inside the
+/// interval.
+pub const META_LAST_AUTO_UNIX: &str = "backup.last_auto_unix";
+
+/// `engine_meta` key holding the JSON [`AutoSnapshotReport`] of the last
+/// automatic run — the Backup console's status line.
+pub const META_LAST_AUTO_REPORT: &str = "backup.last_auto_report";
+
+/// Outcome of one automatic snapshot run, persisted as JSON under
+/// [`META_LAST_AUTO_REPORT`] so the dashboard can show it after the
+/// fact (the scheduler has no other operator-visible surface).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoSnapshotReport {
+    /// `true` when the snapshot completed.
+    pub ok: bool,
+    /// RFC-3339 completion (or failure) stamp.
+    pub at: String,
+    /// Destination directory of the snapshot (empty on early failures).
+    pub dest: String,
+    /// One-line summary on success, or the error message on failure.
+    pub detail: String,
+}
+
+/// Resolved runtime schedule of the automatic-snapshot loop.
+///
+/// What [`crate::config::BackupConfig::resolved_schedule`] produces and
+/// the server's backup scheduler consumes. Shared behind `Arc<RwLock>`
+/// with the dashboard Backup console so a settings save hot-applies at
+/// the next due-check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupSchedule {
+    /// `false` = the loop idles (no snapshots, no pruning).
+    pub enabled: bool,
+    /// Distance between consecutive automatic snapshots, in seconds.
+    pub interval_secs: u64,
+    /// Snapshots home (auto, manual-suggested, and safety snapshots).
+    pub dir: PathBuf,
+    /// Automatic snapshots kept by the post-run prune; `0` keeps all.
+    pub retention_auto: u32,
+}
+
+/// Default snapshots home: `<workdir-name>-snapshots`, a sibling of
+/// the workdir.
+///
+/// Guaranteed outside the workdir (the snapshot guard refuses an
+/// overlapping destination) and on the same filesystem by default.
+#[must_use]
+pub fn default_snapshots_dir(workdir: &Path) -> PathBuf {
+    let name = workdir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("mwe-mcp");
+    workdir
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{name}-snapshots"))
+}
+
+/// Provenance class of a snapshot in the snapshots home, derived from
+/// its directory-name prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotKind {
+    /// `auto-*` — written by the scheduler; subject to retention.
+    Auto,
+    /// `manual-*` — the dashboard console's suggested naming; never
+    /// pruned.
+    Manual,
+    /// `pre-restore-*` / `pre-reset-*` — the automatic safety snapshot
+    /// a staged recovery takes before destroying anything; never
+    /// pruned.
+    Safety,
+    /// Anything else (e.g. a CLI `--out` the operator pointed here);
+    /// never pruned.
+    Other,
+}
+
+impl SnapshotKind {
+    fn of(name: &str) -> Self {
+        if name.starts_with("auto-") {
+            Self::Auto
+        } else if name.starts_with("manual-") {
+            Self::Manual
+        } else if name.starts_with("pre-restore-") || name.starts_with("pre-reset-") {
+            Self::Safety
+        } else {
+            Self::Other
+        }
+    }
+
+    /// Short badge label for operator-facing listings.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Manual => "manual",
+            Self::Safety => "safety",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// One snapshot found in the snapshots home.
+#[derive(Debug, Clone)]
+pub struct SnapshotEntry {
+    /// Directory name (unique within the home).
+    pub name: String,
+    /// Absolute path of the snapshot directory.
+    pub path: PathBuf,
+    /// Provenance class (from the name prefix).
+    pub kind: SnapshotKind,
+    /// Total bytes across the snapshot's files.
+    pub bytes: u64,
+    /// Modification time of the snapshot's `engine.db` copy — the
+    /// moment the snapshot was taken (the DB is written first).
+    pub taken_at: Option<std::time::SystemTime>,
+}
+
+/// True when `path` is a directory that looks like a workdir snapshot —
+/// it carries an `engine.db` copy at its top level.
+#[must_use]
+pub fn is_snapshot_dir(path: &Path) -> bool {
+    path.join(ENGINE_DB_FILENAME).is_file()
+}
+
+/// Enumerate the snapshots in `dir`, newest first.
+///
+/// A missing home is an empty list, not an error (nothing has been
+/// snapshotted yet). Non-snapshot entries (files, directories without
+/// an `engine.db`) are skipped.
+///
+/// # Errors
+///
+/// [`BackupError::Io`] for filesystem failures other than a missing
+/// `dir`.
+pub fn list_snapshots(dir: &Path) -> Result<Vec<SnapshotEntry>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(it) => it,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if !is_snapshot_dir(&path) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let taken_at = std::fs::metadata(path.join(ENGINE_DB_FILENAME))
+            .and_then(|m| m.modified())
+            .ok();
+        out.push(SnapshotEntry {
+            kind: SnapshotKind::of(&name),
+            bytes: dir_size(&path)?,
+            name,
+            path,
+            taken_at,
+        });
+    }
+    // Newest first. The timestamp-suffixed names sort with their
+    // mtimes, but mtime also orders foreign names correctly.
+    out.sort_by_key(|s| std::cmp::Reverse(s.taken_at));
+    Ok(out)
+}
+
+/// Remove the oldest `auto-*` snapshots beyond `keep` (`0` = keep all).
+///
+/// Only the scheduler's own snapshots are candidates — manual, safety,
+/// and foreign snapshots are never touched. Returns the removed names.
+///
+/// # Errors
+///
+/// [`BackupError::Io`] for filesystem failures.
+pub fn prune_auto_snapshots(dir: &Path, keep: u32) -> Result<Vec<String>> {
+    if keep == 0 {
+        return Ok(Vec::new());
+    }
+    let mut auto: Vec<SnapshotEntry> = list_snapshots(dir)?
+        .into_iter()
+        .filter(|s| s.kind == SnapshotKind::Auto)
+        .collect();
+    if auto.len() <= keep as usize {
+        return Ok(Vec::new());
+    }
+    // `list_snapshots` is newest-first; everything past `keep` goes.
+    let mut removed = Vec::new();
+    for entry in auto.split_off(keep as usize) {
+        std::fs::remove_dir_all(&entry.path)?;
+        removed.push(entry.name);
+    }
+    Ok(removed)
+}
+
+/// A fresh `<prefix>-<UTC timestamp>` snapshot name.
+#[must_use]
+pub fn snapshot_name(prefix: &str) -> String {
+    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    format!("{prefix}-{ts}")
+}
+
+/// Total bytes of the files under `path` (recursive).
+fn dir_size(path: &Path) -> Result<u64> {
+    let mut total = 0;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            total += dir_size(&entry.path())?;
+        } else if ft.is_file() {
+            total += entry.metadata()?.len();
+        }
+    }
+    Ok(total)
+}
 
 /// Errors raised by [`snapshot_workdir`].
 #[derive(Debug, Error)]
@@ -152,7 +372,9 @@ async fn vacuum_into(src: &Path, dest: &Path) -> Result<()> {
 /// Recursively copy the workdir tree, skipping operational state that
 /// must not travel with a snapshot: the live DB + its WAL/SHM sidecars
 /// (replaced by the `VACUUM INTO` copy), the single-writer lockfile,
-/// `logs/`, and in-flight `*.mwe-write-in-progress` markers.
+/// `logs/`, a pending staged-recovery marker (restoring a snapshot that
+/// embeds one would re-trigger the recovery in a loop), and in-flight
+/// `*.mwe-write-in-progress` markers.
 fn copy_tree(src: &Path, dest: &Path, top_level: bool, report: &mut BackupReport) -> Result<()> {
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
@@ -161,6 +383,7 @@ fn copy_tree(src: &Path, dest: &Path, top_level: bool, report: &mut BackupReport
         if top_level
             && (name_str == LOGS_DIR_NAME
                 || name_str == LOCKFILE_NAME
+                || name_str == crate::recovery::RECOVERY_FILENAME
                 || name_str.starts_with(ENGINE_DB_FILENAME))
         {
             continue;
@@ -303,5 +526,83 @@ mod tests {
             .await
             .expect_err("must reject");
         assert!(matches!(err, BackupError::NoEngineDb(_)));
+    }
+
+    #[tokio::test]
+    async fn snapshot_excludes_pending_recovery_marker() {
+        let work = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let _pool = seed_workdir(work.path()).await;
+        std::fs::write(
+            work.path().join(crate::recovery::RECOVERY_FILENAME),
+            "{\"action\":\"reset\"}",
+        )
+        .unwrap();
+
+        let dest = out.path().join("snap");
+        snapshot_workdir(work.path(), &dest).await.unwrap();
+        assert!(
+            !dest.join(crate::recovery::RECOVERY_FILENAME).exists(),
+            "a snapshot must never embed a staged-recovery marker"
+        );
+    }
+
+    #[test]
+    fn default_snapshots_dir_is_a_sibling() {
+        let dir = default_snapshots_dir(Path::new("/srv/mwe/work"));
+        assert_eq!(dir, Path::new("/srv/mwe/work-snapshots"));
+    }
+
+    #[test]
+    fn snapshot_kind_from_prefix() {
+        assert_eq!(
+            SnapshotKind::of("auto-20260720T010000Z"),
+            SnapshotKind::Auto
+        );
+        assert_eq!(SnapshotKind::of("manual-x"), SnapshotKind::Manual);
+        assert_eq!(SnapshotKind::of("pre-restore-x"), SnapshotKind::Safety);
+        assert_eq!(SnapshotKind::of("pre-reset-x"), SnapshotKind::Safety);
+        assert_eq!(SnapshotKind::of("my-backup"), SnapshotKind::Other);
+    }
+
+    /// A snapshot home with mixed provenance: listing finds only real
+    /// snapshots, and the prune touches only the oldest `auto-*` ones.
+    #[tokio::test]
+    async fn list_and_prune_respect_provenance() {
+        let work = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _pool = seed_workdir(work.path()).await;
+
+        for name in ["auto-a", "auto-b", "auto-c", "manual-m", "pre-reset-s"] {
+            snapshot_workdir(work.path(), &home.path().join(name))
+                .await
+                .unwrap();
+        }
+        // Noise: a stray file and a non-snapshot directory.
+        std::fs::write(home.path().join("notes.txt"), "x").unwrap();
+        std::fs::create_dir_all(home.path().join("not-a-snapshot")).unwrap();
+
+        let listed = list_snapshots(home.path()).unwrap();
+        assert_eq!(listed.len(), 5, "noise skipped");
+        assert!(listed.iter().all(|s| s.bytes > 0));
+
+        let removed = prune_auto_snapshots(home.path(), 1).unwrap();
+        assert_eq!(removed.len(), 2, "3 autos, keep 1");
+        assert!(removed.iter().all(|n| n.starts_with("auto-")));
+        let left = list_snapshots(home.path()).unwrap();
+        assert_eq!(left.len(), 3);
+        assert_eq!(
+            left.iter().filter(|s| s.kind == SnapshotKind::Auto).count(),
+            1
+        );
+        // keep=0 disables pruning.
+        assert!(prune_auto_snapshots(home.path(), 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn missing_snapshots_home_lists_empty() {
+        let home = tempfile::tempdir().unwrap();
+        let gone = home.path().join("never-created");
+        assert!(list_snapshots(&gone).unwrap().is_empty());
     }
 }

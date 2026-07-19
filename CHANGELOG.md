@@ -13,6 +13,30 @@ semver-governed surface — breaking changes are called out explicitly.
 
 ### Added
 
+- **Recovery surfaces — automatic snapshots, dashboard restore, safe
+  memory reset (roadmap 4d).** A new `backup:` config section (on by
+  default: daily, retention 7) drives an automatic-snapshot scheduler:
+  a due-check loop that hot-snapshots the whole workdir into a
+  snapshots home (default: the `<workdir-name>-snapshots` sibling),
+  prunes the oldest `auto-*` snapshots beyond the retention, persists
+  its last-run stamp in `engine_meta` (a restart never re-fires inside
+  the interval), and reports its outcome to the dashboard. The Backup
+  console grows into the full recovery surface: settings editor
+  (hot-swapped, `.bak`-guarded), the snapshots-on-disk listing with
+  provenance badges, per-snapshot **Restore…** / **Delete**, and a
+  type-`RESET`-to-confirm **Memory reset**. Restore and reset are
+  **staged**: a one-shot `recovery-pending.json` marker (excluded from
+  snapshots) that the next boot applies under the lockfile — automatic
+  safety snapshot first, refusal-leaves-untouched, outcome persisted
+  for the console — because a live server cannot safely replace its
+  own open workdir. Reset wipes the memory tables and the
+  `wikis/`/`media/`/`training-spool/` trees while preserving accounts,
+  enrollment, consumers, tokens, 2FA/OAuth state, custom skills,
+  config, env and prompt overrides; identity wikis are re-scaffolded
+  empty and `profile_initialized` is cleared so the welcome wizard
+  re-seeds each profile. A "Restart now" button applies a pending
+  recovery from the dashboard: graceful shutdown, then exit code 75
+  (`EX_TEMPFAIL`) so a `Restart=on-failure` systemd unit relaunches.
 - **Verbatim source promotion — pasted text becomes a cited document
   (roadmap 46).** The server now backstops the media-first routing:
   document-shaped inline text is promoted to the media rail — the text

@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+use mwe_mcp_server::backup_scheduler;
 use mwe_mcp_server::env_loader::{self, WriteOutcome};
 use mwe_mcp_server::mcp;
 use mwe_mcp_server::rem_scheduler;
@@ -1492,11 +1493,37 @@ async fn cmd_serve_http(
 
     let (state, dashboard_state) = bootstrap_state(workdir, config).await?;
 
+    // One broadcast channel fans the shutdown signal out to every
+    // long-lived task that needs to exit cleanly: axum's graceful
+    // shutdown future, the schedulers, and the workers. Capacity 1 is
+    // enough — the signal fires once, and each subscriber wakes up on
+    // its own copy independently of the others. Created before the
+    // router assembly because the dashboard's Backup console carries a
+    // restart handle wired to the same channel (a staged recovery needs
+    // a boot to apply).
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let ctrl_c_tx = shutdown_tx.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_err() {
+            warn!("failed to install ctrl-c handler; serving without graceful shutdown");
+            return;
+        }
+        info!("mwe-mcp serve: ctrl-c received, broadcasting shutdown");
+        let _ = ctrl_c_tx.send(());
+    });
+    let restart_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let dashboard_state = dashboard_state.with_restart(mwe_dashboard::RestartHandle {
+        shutdown: shutdown_tx.clone(),
+        requested: restart_requested.clone(),
+    });
+
     // Shared REM policy handle: the same `Arc` the dashboard state (REM
     // settings editor + Dream console) holds, cloned out before the
     // router assembly consumes `dashboard_state`, so the scheduler below
     // reads a settings save at its next cycle start — no restart.
     let rem_policy = dashboard_state.rem_policy.clone();
+    // Same for the backup schedule (Backup console ↔ backup scheduler).
+    let backup_schedule = dashboard_state.backup_schedule.clone();
 
     let mcp_state_for_router = state.clone();
     let mcp_state_for_factory = Arc::new(state.clone());
@@ -1580,22 +1607,6 @@ async fn cmd_serve_http(
         .await
         .with_context(|| format!("binding {addr}"))?;
 
-    // One broadcast channel fans the ctrl-c signal out to every
-    // long-lived task that needs to exit cleanly: axum's graceful
-    // shutdown future + the REM scheduler. Capacity 1 is enough — the
-    // signal fires once, and each subscriber wakes up on its own copy
-    // independently of the others.
-    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
-    let ctrl_c_tx = shutdown_tx.clone();
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_err() {
-            warn!("failed to install ctrl-c handler; serving without graceful shutdown");
-            return;
-        }
-        info!("mwe-mcp serve: ctrl-c received, broadcasting shutdown");
-        let _ = ctrl_c_tx.send(());
-    });
-
     // Runtime housekeeping: drain the residue the inline paths cannot
     // reach retroactively — expired authorization codes, stale refresh
     // rows, web-agent consumers whose smart wiki was deleted.
@@ -1656,6 +1667,20 @@ async fn cmd_serve_http(
         llms.clone(),
         async move {
             let _ = light_shutdown_rx.recv().await;
+        },
+    );
+
+    // Backup scheduler: the automatic-snapshot due-check loop (`backup:`
+    // config section). Always armed — a disabled schedule idles, and the
+    // Backup console can enable it without a restart.
+    let mut backup_shutdown_rx = shutdown_tx.subscribe();
+    let backup_handle = backup_scheduler::spawn(
+        config.backup.initial_delay_secs,
+        backup_schedule,
+        state.pool.clone(),
+        workdir.to_path_buf(),
+        async move {
+            let _ = backup_shutdown_rx.recv().await;
         },
     );
 
@@ -1730,9 +1755,32 @@ async fn cmd_serve_http(
         Ok(Err(e)) => warn!(error = %e, "document worker: task panicked on shutdown"),
         Err(_) => warn!("document worker: did not exit within 5s timeout"),
     }
+    match tokio::time::timeout(std::time::Duration::from_secs(5), backup_handle).await {
+        Ok(Ok(())) => info!("backup scheduler: joined cleanly"),
+        Ok(Err(e)) => warn!(error = %e, "backup scheduler: task panicked on shutdown"),
+        Err(_) => warn!("backup scheduler: did not exit within 5s timeout"),
+    }
+
+    // A dashboard-requested restart exits with the deliberate non-zero
+    // code so a `Restart=on-failure` systemd unit relaunches the
+    // process (a clean exit would stay down). Unsupervised runs just
+    // stop — the Backup console says so before offering the button.
+    if restart_requested.load(std::sync::atomic::Ordering::SeqCst) {
+        info!(
+            code = RESTART_EXIT_CODE,
+            "mwe-mcp serve: restart requested from the dashboard — exiting for the supervisor"
+        );
+        std::process::exit(RESTART_EXIT_CODE);
+    }
 
     Ok(())
 }
+
+/// Exit code of a dashboard-requested restart: `EX_TEMPFAIL` (75) —
+/// "temporary failure, retry" — chosen so the provisioned
+/// `Restart=on-failure` systemd unit relaunches the process while a
+/// deliberate stop (ctrl-c, `systemctl stop`) still exits clean.
+const RESTART_EXIT_CODE: i32 = 75;
 
 /// Run `LlmBackend::health_check` on every slot the operator has wired
 /// in `mwe-mcp.config.yaml > llm:`.
@@ -1812,18 +1860,62 @@ async fn health_check_llm_slots(config: &mwe_core::config::LlmConfig) -> Result<
     }
 }
 
+/// Run the WAL apply driver over both stale proposal ops and stale REM
+/// ops with a [`NoopInverse`] (a floor — per-kind inverses are wired
+/// later).
+async fn sweep_stale_wal(pool: &sqlx::SqlitePool) -> Result<()> {
+    let rb_props = wal::rollback_stale_proposals(pool, DEFAULT_STALE_AFTER, &NoopInverse).await?;
+    let rb_rems = wal::rollback_stale_rems(pool, DEFAULT_STALE_AFTER, &NoopInverse).await?;
+    if rb_props.rolled_back + rb_rems.rolled_back > 0 {
+        warn!(
+            proposal_ops = rb_props.rolled_back,
+            rem_ops = rb_rems.rolled_back,
+            "WAL recovery: stale ops swept (NoopInverse)"
+        );
+    } else {
+        info!("WAL recovery: clean");
+    }
+    Ok(())
+}
+
+/// Apply a staged dashboard recovery (restore / memory reset), if one
+/// is pending: under the lockfile, before anything opens the DB or the
+/// wiki tree — the only moment nothing else has a handle on the
+/// workdir. A refusal boots normally with the workdir untouched; a
+/// mid-apply failure is fatal (the error names the automatic safety
+/// snapshot). See [`mwe_core::recovery`].
+async fn apply_staged_recovery(workdir: &Path, config: &Config) -> Result<()> {
+    let snapshots_dir = config.backup.snapshots_dir(workdir);
+    match mwe_core::recovery::apply_pending(workdir, &snapshots_dir).await {
+        Ok(None) => {},
+        Ok(Some(outcome)) if outcome.ok => info!(
+            action = %outcome.action,
+            detail = %outcome.detail,
+            "staged recovery applied at boot"
+        ),
+        Ok(Some(outcome)) => warn!(
+            action = %outcome.action,
+            detail = %outcome.detail,
+            "staged recovery refused — workdir untouched"
+        ),
+        Err(e) => return Err(anyhow!("staged recovery: {e}")),
+    }
+    Ok(())
+}
+
 /// Shared startup helper used by both transports.
 ///
 /// 1. Health-check every configured LLM slot (no silent fallbacks).
 /// 2. Acquire the workdir lockfile (a static leak — held until process
 ///    exits; not needed once we expose stop signals).
-/// 3. Open + migrate `engine.db`.
-/// 4. Load `MWE_TOKEN_SECRET` and prime the blacklist cache.
-/// 5. Run the WAL apply driver with a [`NoopInverse`] over both stale
+/// 3. Apply a staged recovery, if the dashboard left one pending.
+/// 4. Open + migrate `engine.db`.
+/// 5. Load `MWE_TOKEN_SECRET` and prime the blacklist cache.
+/// 6. Run the WAL apply driver with a [`NoopInverse`] over both stale
 ///    proposal ops and stale REM ops (a floor — per-kind inverses
 ///    are wired later).
-/// 6. Open the memory-wiki tree.
-/// 7. Build the shared `McpState` and the matching `DashboardState`
+/// 7. Open the memory-wiki tree.
+/// 8. Build the shared `McpState` and the matching `DashboardState`
 ///    (cloned from the same handles).
 async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, DashboardState)> {
     // Every configured LLM slot must be reachable before we
@@ -1839,23 +1931,15 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
     // explicitly is wired later.
     Box::leak(Box::new(lock));
 
+    apply_staged_recovery(workdir, config).await?;
+
     let pool = db::open_or_init(workdir)
         .await
         .context("opening engine.db")?;
 
     let secret = ensure_secret(workdir).context("resolving MWE_TOKEN_SECRET")?;
 
-    let rb_props = wal::rollback_stale_proposals(&pool, DEFAULT_STALE_AFTER, &NoopInverse).await?;
-    let rb_rems = wal::rollback_stale_rems(&pool, DEFAULT_STALE_AFTER, &NoopInverse).await?;
-    if rb_props.rolled_back + rb_rems.rolled_back > 0 {
-        warn!(
-            proposal_ops = rb_props.rolled_back,
-            rem_ops = rb_rems.rolled_back,
-            "WAL recovery: stale ops swept (NoopInverse)"
-        );
-    } else {
-        info!("WAL recovery: clean");
-    }
+    sweep_stale_wal(&pool).await?;
 
     let blacklist = Arc::new(BlacklistCache::new());
     blacklist.refresh(&pool).await?;
@@ -1989,7 +2073,13 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
             workdir: workdir.to_path_buf(),
         })
         .with_rem_policy(rem_policy)
-        .with_recall(recall_settings);
+        .with_recall(recall_settings)
+        // Backup-schedule handle, same hot-swap idiom: the Backup
+        // console swaps it in place; the backup scheduler reads it
+        // fresh at each due-check.
+        .with_backup_schedule(std::sync::Arc::new(std::sync::RwLock::new(Some(
+            config.backup.resolved_schedule(workdir),
+        ))));
     Ok((state, dashboard_state))
 }
 
