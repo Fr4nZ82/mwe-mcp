@@ -11,6 +11,34 @@ semver-governed surface — breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+## 1.4.1 — 2026-07-19
+
+### Added
+
+- **Training spool — teacher traces for local-slot distillation.** When
+  `training_spool.enabled` is on (default off), every internal-LLM
+  exchange — any slot, any backend, every transport (MCP ingest, REM
+  cycle, dashboard chat) — is recorded verbatim as one JSON line (slot,
+  backend, model, full request, full response, finish reason, token
+  usage) into per-day files under `<workdir>/training-spool/`. The
+  strong API slots act as teachers; their traces become the dataset for
+  fine-tuning the local workhorse on mwe-mcp's own structured tasks.
+  Recording is a decorator inside `build_backend` (no call-site
+  changes), best-effort (an I/O failure never fails the turn); health
+  probes and failed calls are excluded, images ride as MIME-only. New
+  admin dashboard panel `/admin/training-spool` ("Spool" in the nav):
+  checkbox with the atomic-YAML + `.bak` save idiom, hot-flip of the
+  running recorder (no restart), on-disk inventory, and the privacy
+  stance (the spool embeds recalled memory content — it stays on the
+  host; scrub before sharing a dataset). See
+  [`llm-functions.md` §6](docs/design-notes/llm-functions.md).
+- **hermes bridge: `mwe-watchdog` verification plugin (trio → quartet).**
+  Out-of-tree hermes plugin that verifies the mwe recall block actually
+  reaches the model each turn — born from a silent memory-blackout
+  incident where the host's stale injection index dropped the
+  `<memory-context>` block after transcript repair. See
+  [`agents-bridges.md`](docs/development/agents-bridges.md).
+
 ## 1.4.0 — 2026-07-15
 
 ### Added
