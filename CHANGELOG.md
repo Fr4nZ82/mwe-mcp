@@ -11,6 +11,27 @@ semver-governed surface — breaking changes are called out explicitly.
 
 ## [Unreleased]
 
+### Added
+
+- **Verbatim source promotion — pasted text becomes a cited document
+  (roadmap 46).** The server now backstops the media-first routing:
+  document-shaped inline text is promoted to the media rail — the text
+  is materialised verbatim as a content-addressed blob +
+  `media_catalog` row (kind `doc`, `text/plain`) and the document
+  pipeline runs against it, so extracted facts cite `source_ref =
+  catalog_id` and the dashboard serves the preserved original, exactly
+  like an uploaded file. Two doors, one deterministic shape heuristic
+  (email headers, forwarded banners, quote/markup density,
+  greeting/sign-off, size): `wiki_ingest_external source.type=inline`
+  (response: `promoted_catalog_id`; `dry_run` reports `would_promote`)
+  and an oversized `wiki_ingest_message` turn — the paste-into-chat
+  case — which is archived + enqueued as a document job while the
+  conversational ingest sees a bounded excerpt plus the promoted
+  document as a linked attachment (response: `document_promoted`).
+  A new `promote: always | never` dial on both tools forces the
+  decision either way, disposition-style; guests, `dashboard_command`
+  and assistant-authored turns never promote.
+
 ### Fixed
 
 - **Dashboard saves no longer persist `MWE_LLM_*` env overrides.** The

@@ -117,6 +117,11 @@ struct IngestArgs {
     metadata: Option<Value>,
     #[serde(default)]
     attachments: Vec<AttachmentArg>,
+    /// `always` | `never` — forces the paste-into-chat promotion
+    /// backstop (roadmap 46c); absent = oversized document-shaped
+    /// user turns are promoted automatically.
+    #[serde(default)]
+    promote: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -283,19 +288,118 @@ fn parse_ingest_metadata(
     ))
 }
 
-pub(super) async fn call_wiki_ingest_message(
+/// What the paste-into-chat promotion hands back to the turn ingest.
+struct TurnPromotion {
+    /// Bounded head excerpt + hand-off note the conversational
+    /// pipeline ingests instead of the full paste.
+    text_stub: String,
+    /// The promoted document riding the turn as a linked attachment
+    /// (the existing media-on-a-turn seam).
+    attachment: ingest::IngestAttachment,
+    /// The `document_promoted` response block.
+    receipt: Value,
+}
+
+/// Verbatim source promotion, the paste-into-chat door (roadmap 46c).
+///
+/// An oversized document-shaped user turn is archived verbatim on the
+/// media rail and extracted by the document pipeline; the
+/// conversational ingest then sees a bounded excerpt plus the
+/// attachment link, so the thread stays coherent without
+/// double-extracting the body. `None` = the turn is not a promotion
+/// candidate: guests never mint permanent state (their turns are
+/// ephemeral by design), the dashboard command surface is exempt, and
+/// assistant-authored feedback turns never carry a paste.
+async fn maybe_promote_turn(
     state: &McpState,
     identity: &IdentityProfile,
-    args: Value,
-) -> Result<Value, ToolError> {
-    let args: IngestArgs = parse_args(&args)?;
-    forbid_sender_mismatch(identity, args.sender_id.as_deref())?;
-    if args.text.trim().is_empty() {
-        return Err(ToolError::new(
-            ToolErrorClass::InvalidInput,
-            "text must not be empty",
-        ));
+    text: &str,
+    promote: Option<mwe_core::document::PromoteHint>,
+    author: MessageRole,
+    context_hint: ContextHint,
+    metadata: &IngestMetadata,
+) -> Result<Option<TurnPromotion>, ToolError> {
+    // The stub keeps enough head for thread coherence; the hand-off
+    // note tells the classifier not to re-extract.
+    const PROMOTED_TURN_HEAD_CHARS: usize = 400;
+
+    if !matches!(author, MessageRole::User)
+        || matches!(context_hint, ContextHint::DashboardCommand)
+        || mwe_core::enrollment::is_guest(&identity.sender_id)
+        || !mwe_core::document::should_promote_turn(
+            text,
+            promote,
+            &mwe_core::document::PromotionPolicy::default(),
+        )
+    {
+        return Ok(None);
     }
+
+    let owner: mwe_core::types::Principal = format!("user:{}", identity.sender_id)
+        .parse()
+        .map_err(|e| {
+            ToolError::new(
+                ToolErrorClass::InternalError,
+                format!("effective sender: {e}"),
+            )
+        })?;
+    let row = promote_text_to_media(state, identity, &owner, text, None).await?;
+    let outcome = mwe_core::document::enqueue(
+        &state.pool,
+        &state.document_policy,
+        mwe_core::document::EnqueueRequest {
+            source_kind: "media".into(),
+            source_ref: Some(row.catalog_id.as_str().to_owned()),
+            text: text.to_owned(),
+            title_hint: row.caption.clone(),
+            disposition: None,
+            format: None,
+            occurred_at: metadata.occurred_at.map(|d| d.to_rfc3339()),
+            owner,
+            allow: Vec::new(),
+            sender: None,
+            force: false,
+        },
+    )
+    .await
+    .map_err(|e| map_document_err(&e))?;
+
+    let total_chars = text.chars().count();
+    let head: String = text.chars().take(PROMOTED_TURN_HEAD_CHARS).collect();
+    let text_stub = format!(
+        "{head}…\n\n[mwe: the full pasted text ({total_chars} chars) was archived verbatim \
+         as document {} and queued for document ingestion — this excerpt is context only]",
+        row.catalog_id
+    );
+    let receipt = json!({
+        "catalog_id": row.catalog_id.as_str(),
+        "job_id": outcome.job_id,
+        "existing": outcome.existing,
+    });
+    Ok(Some(TurnPromotion {
+        text_stub,
+        attachment: ingest::IngestAttachment {
+            catalog_id: row.catalog_id.clone(),
+            kind: row.kind.clone(),
+            caption: row.caption.clone(),
+            description: Some("pasted document promoted to the media rail".into()),
+        },
+        receipt,
+    }))
+}
+
+/// Parse the enum-shaped dials of one ingest turn, rejecting unknown
+/// tokens as invalid input.
+fn parse_turn_dials(
+    args: &IngestArgs,
+) -> Result<
+    (
+        ContextHint,
+        MessageRole,
+        Option<mwe_core::document::PromoteHint>,
+    ),
+    ToolError,
+> {
     let context_hint = match args.context_hint.as_deref() {
         Some("dashboard_command") => ContextHint::DashboardCommand,
         Some("import") => ContextHint::Import,
@@ -311,12 +415,66 @@ pub(super) async fn call_wiki_ingest_message(
             return Err(invalid_input(format!("unknown author: {other}")));
         },
     };
+    let promote = args
+        .promote
+        .as_deref()
+        .map(|s| {
+            mwe_core::document::PromoteHint::parse(s)
+                .ok_or_else(|| invalid_input(format!("unknown promote: {s}")))
+        })
+        .transpose()?;
+    Ok((context_hint, author, promote))
+}
+
+pub(super) async fn call_wiki_ingest_message(
+    state: &McpState,
+    identity: &IdentityProfile,
+    args: Value,
+) -> Result<Value, ToolError> {
+    let args: IngestArgs = parse_args(&args)?;
+    forbid_sender_mismatch(identity, args.sender_id.as_deref())?;
+    if args.text.trim().is_empty() {
+        return Err(ToolError::new(
+            ToolErrorClass::InvalidInput,
+            "text must not be empty",
+        ));
+    }
+    let (context_hint, author, promote) = parse_turn_dials(&args)?;
     let recent_messages = parse_recent_messages(args.recent_messages)?;
     let (disambig_choice, metadata) = parse_ingest_metadata(args.metadata.as_ref())?;
-    let attachments = resolve_attachments(state, identity, args.attachments).await?;
+    let mut attachments = resolve_attachments(state, identity, args.attachments).await?;
+
+    // The slot gate sits before the promotion backstop: promotion mints
+    // permanent state and enqueues a document job, so refuse first if no
+    // worker could ever run it.
+    let llm_slot = state.llm_config.slot(LlmFunction::Ingest).ok_or_else(|| {
+        ToolError::new(
+            ToolErrorClass::ServiceUnavailable,
+            "llm.ingest not configured in mwe-mcp.config.yaml",
+        )
+    })?;
+
+    // Verbatim source promotion, the paste-into-chat door (roadmap 46c).
+    let promotion = maybe_promote_turn(
+        state,
+        identity,
+        &args.text,
+        promote,
+        author,
+        context_hint,
+        &metadata,
+    )
+    .await?;
+    let (text, document_promoted) = match promotion {
+        Some(p) => {
+            attachments.push(p.attachment);
+            (p.text_stub, Some(p.receipt))
+        },
+        None => (args.text, None),
+    };
 
     let request = IngestRequest {
-        text: args.text,
+        text,
         author,
         sender_id: identity.sender_id.clone(),
         consumer_id: identity.consumer_id.clone(),
@@ -335,12 +493,6 @@ pub(super) async fn call_wiki_ingest_message(
         .read()
         .expect("recall settings rwlock poisoned")
         .resolved_ingest_policy();
-    let llm_slot = state.llm_config.slot(LlmFunction::Ingest).ok_or_else(|| {
-        ToolError::new(
-            ToolErrorClass::ServiceUnavailable,
-            "llm.ingest not configured in mwe-mcp.config.yaml",
-        )
-    })?;
     let llm = llm_slot
         .build_backend(LlmFunction::Ingest)
         .map_err(|e| ToolError::new(ToolErrorClass::ServiceUnavailable, format!("llm: {e}")))?;
@@ -375,17 +527,18 @@ pub(super) async fn call_wiki_ingest_message(
         "llm_used": resp.llm_used,
         "took_ms": resp.took_ms,
     });
-    if let Some(block) = pending_attention {
-        payload
-            .as_object_mut()
-            .expect("json! root is an object")
-            .insert("pending_attention".into(), block);
-    }
-    if let Some(block) = pending_votes {
-        payload
-            .as_object_mut()
-            .expect("json! root is an object")
-            .insert("pending_votes".into(), block);
+    let extra_blocks = [
+        ("pending_attention", pending_attention),
+        ("pending_votes", pending_votes),
+        ("document_promoted", document_promoted),
+    ];
+    for (key, block) in extra_blocks {
+        if let Some(block) = block {
+            payload
+                .as_object_mut()
+                .expect("json! root is an object")
+                .insert(key.into(), block);
+        }
     }
     Ok(payload)
 }
@@ -1448,6 +1601,11 @@ struct WikiIngestExternalArgs {
     /// The document's semantic clock (ISO-8601).
     #[serde(default)]
     occurred_at: Option<String>,
+    /// `always` | `never` — forces the inline→media promotion backstop
+    /// (roadmap 46); absent = the shape heuristic decides. Meaningful
+    /// for `source.type == "inline"` only.
+    #[serde(default)]
+    promote: Option<String>,
     #[serde(default)]
     dry_run: bool,
     /// Bypass the (text, owner) idempotency check.
@@ -1477,6 +1635,69 @@ fn map_document_err(e: &mwe_core::document::DocumentError) -> ToolError {
     }
 }
 
+/// First non-empty line of `text`, capped at 80 chars — the synthesized
+/// caption of a promoted blob (what the dashboard media list shows).
+fn first_line_excerpt(text: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let mut s: String = line.chars().take(80).collect();
+    if line.chars().count() > 80 {
+        s.push('…');
+    }
+    Some(s)
+}
+
+/// Verbatim source promotion, the mechanics (roadmap 46b): materialise
+/// pasted text as a content-addressed blob + `media_catalog` row (kind
+/// `doc`, mime `text/plain`) so the document rail cites a real
+/// original. The blob bytes are the text verbatim — the blob's sha256
+/// and the document job's `text_sha256` must keep hashing the same
+/// bytes so the two dedup layers move together, and retries stay
+/// idempotent on both. Ordering is blob → row → job (the job is the
+/// caller's next step): a failure after the row leaves only an orphan
+/// catalog entry that the next attempt dedups onto.
+async fn promote_text_to_media(
+    state: &McpState,
+    identity: &IdentityProfile,
+    owner: &mwe_core::types::Principal,
+    text: &str,
+    title_hint: Option<&str>,
+) -> Result<mwe_core::media::MediaRow, ToolError> {
+    let caption = title_hint
+        .map(str::to_owned)
+        .or_else(|| first_line_excerpt(text));
+    let outcome = mwe_core::media::store_media(
+        &state.pool,
+        &state.workdir,
+        mwe_core::media::NewMedia {
+            bytes: text.as_bytes().to_vec(),
+            kind: "doc".into(),
+            // Must stay re-readable by the media arm's textual-mime
+            // check (`text/*`), or the pipeline would refuse its own
+            // artifact on a later re-resolution.
+            mime: "text/plain".into(),
+            owner: owner.clone(),
+            uploaded_by_consumer: identity.consumer_id.clone(),
+            caption,
+            description: Some("promoted verbatim from pasted inline text".into()),
+            original_filename: None,
+        },
+    )
+    .await
+    .map_err(|e| {
+        ToolError::new(
+            ToolErrorClass::InternalError,
+            format!("verbatim promotion: {e}"),
+        )
+    })?;
+    tracing::info!(
+        catalog_id = %outcome.row.catalog_id,
+        deduplicated = outcome.deduplicated,
+        size_bytes = outcome.row.size_bytes,
+        "document: inline text promoted to the media rail"
+    );
+    Ok(outcome.row)
+}
+
 /// The resolved source of one document-ingest call: text + provenance +
 /// the ACL the extracted facts inherit.
 struct ResolvedDocumentSource {
@@ -1489,10 +1710,47 @@ struct ResolvedDocumentSource {
     allow: Vec<mwe_core::types::Principal>,
 }
 
+/// Verbatim source promotion inside source resolution (roadmap 46).
+///
+/// Document-shaped inline text is backstopped onto the media rail so
+/// the original stays citable; the resolved source then looks exactly
+/// like a caller-uploaded `source.type=media` — the media-gated
+/// machinery downstream (embed marker, blob-ACL widening, fact-detail
+/// link) engages on its own.
+async fn resolve_promoted_inline(
+    state: &McpState,
+    identity: &IdentityProfile,
+    args: &WikiIngestExternalArgs,
+    effective_owner: mwe_core::types::Principal,
+    content: String,
+) -> Result<ResolvedDocumentSource, ToolError> {
+    let row = promote_text_to_media(
+        state,
+        identity,
+        &effective_owner,
+        &content,
+        args.title.as_deref(),
+    )
+    .await?;
+    Ok(ResolvedDocumentSource {
+        source_kind: "media".into(),
+        source_ref: Some(row.catalog_id.as_str().to_owned()),
+        text: content,
+        title_hint: args.title.clone().or(row.caption),
+        occurred_at: args
+            .occurred_at
+            .clone()
+            .or_else(|| Some(row.created_at.clone())),
+        owner: row.owner_id,
+        allow: row.allow_ids,
+    })
+}
+
 async fn resolve_document_source(
     state: &McpState,
     identity: &IdentityProfile,
     args: &WikiIngestExternalArgs,
+    promote_to_media: bool,
 ) -> Result<ResolvedDocumentSource, ToolError> {
     let effective_owner: mwe_core::types::Principal = format!("user:{}", identity.sender_id)
         .parse()
@@ -1507,6 +1765,10 @@ async fn resolve_document_source(
             let content = args.source.content.clone().ok_or_else(|| {
                 invalid_input("source.content required when source.type == 'inline'")
             })?;
+            if promote_to_media {
+                return resolve_promoted_inline(state, identity, args, effective_owner, content)
+                    .await;
+            }
             Ok(ResolvedDocumentSource {
                 source_kind: "inline".into(),
                 source_ref: None,
@@ -1644,6 +1906,36 @@ async fn ingest_external_dry_run(
     }))
 }
 
+/// Validate the `promote` dial and make the 46a promotion decision.
+///
+/// Made before source resolution so a dry run can report
+/// `would_promote` without minting anything. The forced dial wins;
+/// absent = the shape heuristic decides. `promote` on a non-inline
+/// source is caller confusion — rejected loudly.
+fn inline_promotion_decision(args: &WikiIngestExternalArgs) -> Result<bool, ToolError> {
+    use mwe_core::document;
+
+    let promote = args
+        .promote
+        .as_deref()
+        .map(|s| {
+            document::PromoteHint::parse(s)
+                .ok_or_else(|| invalid_input(format!("unknown promote: {s}")))
+        })
+        .transpose()?;
+    if promote.is_some() && args.source.kind != "inline" {
+        return Err(invalid_input(
+            "promote applies to source.type == 'inline' only",
+        ));
+    }
+    Ok(args.source.kind == "inline"
+        && document::should_promote_inline(
+            args.source.content.as_deref().unwrap_or(""),
+            promote,
+            &document::PromotionPolicy::default(),
+        ))
+}
+
 pub(super) async fn call_wiki_ingest_external(
     state: &McpState,
     identity: &IdentityProfile,
@@ -1674,11 +1966,13 @@ pub(super) async fn call_wiki_ingest_external(
             "occurred_at must be ISO-8601/RFC-3339, got `{at}`"
         )));
     }
+    let would_promote = inline_promotion_decision(&args)?;
 
     // Source validation first (a `file` source must answer 501 regardless
     // of LLM availability), then the slot gate: the pipeline runs on the
     // ingest slot, so refuse rather than queueing a job no worker can run.
-    let resolved = resolve_document_source(state, identity, &args).await?;
+    let resolved =
+        resolve_document_source(state, identity, &args, would_promote && !args.dry_run).await?;
     let llm_slot = state.llm_config.slot(LlmFunction::Ingest).ok_or_else(|| {
         ToolError::new(
             ToolErrorClass::ServiceUnavailable,
@@ -1690,9 +1984,15 @@ pub(super) async fn call_wiki_ingest_external(
         .map_err(|e| ToolError::new(ToolErrorClass::InternalError, format!("sender: {e}")))?;
 
     if args.dry_run {
-        return ingest_external_dry_run(state, llm_slot, &resolved, disposition, format).await;
+        let mut out =
+            ingest_external_dry_run(state, llm_slot, &resolved, disposition, format).await?;
+        out.as_object_mut()
+            .expect("dry-run json root is an object")
+            .insert("would_promote".into(), json!(would_promote));
+        return Ok(out);
     }
 
+    let promoted_catalog_id = would_promote.then(|| resolved.source_ref.clone()).flatten();
     let sender = (resolved.owner != effective_sender).then_some(effective_sender);
     let outcome = document::enqueue(
         &state.pool,
@@ -1713,7 +2013,7 @@ pub(super) async fn call_wiki_ingest_external(
     )
     .await
     .map_err(|e| map_document_err(&e))?;
-    Ok(json!({
+    let mut out = json!({
         "job_id": outcome.job_id,
         "status": if outcome.existing { "existing" } else { "queued" },
         "existing": outcome.existing,
@@ -1723,7 +2023,13 @@ pub(super) async fn call_wiki_ingest_external(
         } else {
             "queued — the worker classifies (consult/dossier/dissolve), extracts, and notifies via events_poll (document_ingested)"
         },
-    }))
+    });
+    if let Some(catalog_id) = promoted_catalog_id {
+        out.as_object_mut()
+            .expect("json! root is an object")
+            .insert("promoted_catalog_id".into(), json!(catalog_id));
+    }
+    Ok(out)
 }
 
 // ============================================================

@@ -229,6 +229,7 @@ internal pipeline.
 | `context_hint` | enum `conversation` \| `dashboard_command` \| `import` | no (default `conversation`) | Hints the intent classifier. An unknown value → `400 invalid_input`. |
 | `metadata` | object | no | Free-form. The dispatcher honours five keys: `disambig_choice` (string, the second-turn commit), `locale` (BCP-47 tag — an explicit LANGUAGE directive that overrides the per-user `enrollment_users.locale` default), `occurred_at` (ISO-8601 instant the message was originally uttered — the turn's semantic clock for backlog replays/imports: relative dates, validity windows and the due-soon horizon resolve against it instead of the server clock, while operational timestamps stay wall-clock; malformed → `400 invalid_input`), `authored_refs` (array of plain `[[wiki_id/page]]` wikilinks — a smart consumer echoes the `authored_refs` its preceding `wiki_admin_push` returned so personal memory links to the project page instead of duplicating its body; blank/non-string entries ignored — group 17), and `channel` (opaque surface label, e.g. `telegram:42` — multi-channel consumers tag their surfaces apart so the cross-consumer recent window, group 43, excludes only the requesting surface from `recent_window`; blank normalises to unset). |
 | `attachments` | `array<{ catalog_id, kind?, caption?, description? }>` | no | Media riding this turn (media pipeline). Bytes travel out of band: upload via `POST /media` first, pass the minted `catalog_id` here. Every id must parse (`400 invalid_input`), exist (`400 invalid_input`) and be readable by the effective sender (`403 sender_unauthorized`); the catalog row's `kind` is authoritative. Undescribed photos ride the classifier call as images; a `description` is trusted as the consumer's own vision. The captured fact's body carries the code-rendered `{{embed=…}}` marker; unclaimed attachments are filed by a deterministic fallback so catalogued media on an accepted turn is never dead — but `text` must still be non-empty (send the caption or a `[media]` placeholder for a captionless photo). |
+| `promote` | enum `always` \| `never` | no | **Verbatim source promotion** override (the paste-into-chat backstop): absent = an oversized document-shaped user turn (non-guest, not `dashboard_command`, `author=user`) is auto-promoted — archived verbatim as a `doc` blob + catalog row, enqueued as a document job, and ingested as a bounded excerpt plus the attachment link. `always` forces it, `never` forbids it. An unknown value → `400 invalid_input`. |
 
 **Output**
 
@@ -251,6 +252,11 @@ internal pipeline.
     "applied_pending_confirm_count": 1,
     "dashboard_path": "/dashboard/proposals",
     "note": "scoped_to_recipient"
+  },
+  "document_promoted": {               // present ONLY when the paste-into-chat backstop fired
+    "catalog_id": "c-2026-07-19-doc-001.txt",
+    "job_id": "0198…",                 // the enqueued document job
+    "existing": false                  // true when job dedup absorbed a retry
   }
 }
 ```
@@ -743,7 +749,8 @@ document ingest.
 | `format` | enum `prose` \| `dialogue` | no | Forces the segmentation shape; `dialogue` threads per-utterance timestamps into per-fact validity. |
 | `title` | string | no | Title hint (e.g. the original filename). |
 | `occurred_at` | iso8601 | no | The document's semantic clock (relative dates resolve against it). Defaults to the catalog row's timestamp for `media`. |
-| `dry_run` | boolean | no (default `false`) | Classify + segment synchronously, write nothing. |
+| `promote` | enum `always` \| `never` | no | Inline only: forces (or forbids) **verbatim source promotion**; absent = document-shaped inline text is auto-promoted to the media rail (blob + catalog row, kind `doc`) so facts cite the preserved original. |
+| `dry_run` | boolean | no (default `false`) | Classify + segment synchronously, write nothing (reports `would_promote`). |
 | `force` | boolean | no (default `false`) | Bypass the (document, owner) idempotency check. |
 
 **Output (enqueue)**
@@ -758,9 +765,14 @@ document ingest.
 }
 ```
 
+A promoted inline enqueue additionally carries
+`promoted_catalog_id` — the minted catalog id the extracted facts will
+cite.
+
 **Output (`dry_run`)**: the classifier's proposal — `disposition`,
 `format`, `title`, `target_wiki_id`, `document_page`, `summary`,
-`segments_planned` — with nothing written.
+`segments_planned`, `would_promote` — with nothing written (a dry run
+never mints a catalog row).
 
 **Errors**: `400 invalid_input` (unknown enum, empty/oversized text,
 non-textual blob without `text`, missing `catalog_id`/`content`),
@@ -771,9 +783,14 @@ would never run), `501 not_implemented_phase_c` (`file`/`git`/`url`).
 **Caveats**
 
 - Enqueue is idempotent by (document sha256, owner) across non-failed
-  jobs; `force` mints a fresh job.
+  jobs; `force` mints a fresh job. A promoted inline retry is
+  idempotent on both layers (the blob bytes are the text verbatim, so
+  blob dedup and job dedup key on the same content).
 - ACL: extracted facts inherit the source catalog row's **current** read
-  set; inline sources are owner-only for the effective sender.
+  set; un-promoted inline sources are owner-only for the effective
+  sender (a promoted one starts owner-only too — its fresh catalog row
+  has an empty allow list — and then widens with the anchor's read set
+  like any media source).
 - Corpus→pages import (a document becoming *its own pages* in its own
   container) is a deferred extension
   (extensions); real bulk wiki import

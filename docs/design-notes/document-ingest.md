@@ -2,7 +2,7 @@
 title: Document ingest — long-form content that is not a conversational turn
 area: design-notes
 status: implemented
-last_review: "2026-07-04"
+last_review: "2026-07-19"
 ---
 
 # Document ingest — `mwe-core::document` + `wiki_ingest_external`
@@ -51,13 +51,16 @@ The verb was completed in place (no new tool id). Sources:
   bytes, mirroring `attachments[].description`: extraction-from-bytes is
   a deployment capability, and PDF & co. arrive through the seam.
 - **`inline`** — the document text in the call (the recorder-transcript
-  case for a source connector).
+  case for a source connector). Document-shaped inline text is
+  **auto-promoted to the media rail** so the verbatim original stays
+  citable — see [verbatim source promotion](#verbatim-source-promotion--the-promote-dial).
 - **`file` / `git` / `url`** — still `501 not_implemented_phase_c`.
 
 Optional fields: `disposition`, `format` (`prose` | `dialogue`),
 `title`, `occurred_at` (the document's **semantic clock** — relative
 dates inside the document resolve against it; defaults to the catalog
-row's timestamp for `media` sources), `dry_run`, `force`. Exact I/O in
+row's timestamp for `media` sources), `promote` (`always` | `never`),
+`dry_run`, `force`. Exact I/O in
 the [tool reference](../protocol/tool-reference.md#wiki_ingest_external).
 
 The call returns an **async job receipt** (`job_id`, `status`)
@@ -66,6 +69,50 @@ configured (no job that can never run). Enqueue is **idempotent** by
 (document sha256, owner) across non-failed jobs unless `force`.
 Completion is a `document_ingested` notice on `events_poll` (job id,
 resolved disposition, title, document page, facts buffered, source ref).
+
+## Verbatim source promotion — the promote dial
+
+The media rail used to engage only when the caller chose it, and a
+document-shaped text *pasted into the conversation* (a forwarded email,
+a report body) landed as `source_kind=inline`: no `source_ref`, nothing
+to cite, the verbatim original gone. The server now backstops the
+choice: a document-shaped inline ingest is **promoted to the media
+rail** — the text is materialised verbatim as a content-addressed blob
++ `media_catalog` row (kind `doc`, mime `text/plain`, owner = the
+effective sender, caption = the title hint or the first line) — and the
+job proceeds exactly as a `source.type=media` call: facts cite
+`source_ref = catalog_id`, the anchor page carries the `{{embed=…}}`,
+the blob ACL widens to the anchor's read set, and the dashboard serves
+the cited original.
+
+Two doors, one shape heuristic
+(`mwe_core::document::looks_like_document` — deterministic, no LLM):
+
+- **`wiki_ingest_external source.type=inline`** — promoted when the
+  text is document-shaped; the response carries `promoted_catalog_id`,
+  and `dry_run` reports `would_promote` without minting anything.
+- **An oversized `wiki_ingest_message` turn** (the paste-into-chat
+  case) — additionally pre-gated on `message_min_chars`, so ordinary
+  chat never qualifies. The turn is archived + enqueued as a document
+  job, and the conversational ingest sees a bounded head excerpt plus
+  the promoted document as a linked attachment (the existing
+  media-on-a-turn seam): the thread stays coherent without
+  double-extracting the body. Guests never promote (their turns are
+  ephemeral by design); `dashboard_command` and assistant-authored
+  turns are exempt. The response carries `document_promoted`
+  (`catalog_id`, `job_id`, `existing`).
+
+The heuristic (`PromotionPolicy`, conservative compile-time defaults):
+under `min_chars` (600) never; at/above `unconditional_chars` (4000)
+always; in between one structural signal suffices — email header
+cluster, forwarded/quoted-reply banner, `>`-quote density, markdown
+density, or a greeting/sign-off pair. The **`promote` dial** (`always`
+| `never`) forces the decision in either direction,
+disposition-style: the caller's explicit gesture wins, absence
+delegates to the heuristic. Idempotency is two-layer and aligned by
+construction: the blob bytes are the text verbatim, so the catalog's
+(blob sha256, owner) dedup and the job's (text sha256, owner) dedup
+move together on retries.
 
 ## The job — checkpointed phases, one worker
 
@@ -122,7 +169,8 @@ on the **`ingest` LLM slot** (workhorse tier — same slot, no new config).
 6. **File** — reduced facts land in the **capture buffer**
    ([narrative buffer](narrative-buffer.md)) with
    `source_kind = "document"` and `source_ref` = the catalog id / url
-   (or `document-job:<id>` for inline) — promotion copies the
+   (or `document-job:<id>` for un-promoted inline — a promoted job
+   carries a real catalog id) — promotion copies the
    provenance onto `fact_index.source_ref`. The **claim text stays
    clean** — no inline `[[link]]` suffix (it would pollute embeddings
    and dedup and freeze prose the Cronista cannot restyle); for

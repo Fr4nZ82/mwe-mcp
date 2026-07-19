@@ -167,6 +167,263 @@ impl DocFormat {
     }
 }
 
+// ---------- Verbatim source promotion (the promote dial) ----------
+
+/// Caller override for the inline→media promotion backstop.
+///
+/// Pasted document-shaped text is materialised as a content-addressed
+/// blob + catalog row so the verbatim original stays citable like an
+/// uploaded file. Mirrors the [`Disposition`] dial: a forced value
+/// wins, absent = the heuristic decides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromoteHint {
+    /// Promote regardless of shape or size.
+    Always,
+    /// Never promote — keep the text an uncited inline source.
+    Never,
+}
+
+impl PromoteHint {
+    /// Wire-stable lowercase token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Never => "never",
+        }
+    }
+
+    /// Parse the wire token. `None` for an unknown value.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "always" => Some(Self::Always),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+}
+
+/// Thresholds of the promotion heuristic.
+///
+/// Deliberately conservative compile-time defaults (no YAML knob yet):
+/// the threshold decides how much ordinary conversation gets silently
+/// archived verbatim, so it starts at "clearly a document" and loosens
+/// only on live-watch evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromotionPolicy {
+    /// Below this many characters the heuristic never fires (an
+    /// explicit `promote: always` still wins).
+    pub min_chars: usize,
+    /// At/above this many characters the text is document-shaped by
+    /// size alone — no structural signal required.
+    pub unconditional_chars: usize,
+    /// Extra pre-gate for the conversational door
+    /// (`wiki_ingest_message`): only an *oversized* turn is a paste
+    /// candidate — ordinary chat, however long-winded, stays on the
+    /// per-turn pipeline.
+    pub message_min_chars: usize,
+}
+
+impl Default for PromotionPolicy {
+    fn default() -> Self {
+        Self {
+            min_chars: 600,
+            unconditional_chars: 4_000,
+            message_min_chars: 2_000,
+        }
+    }
+}
+
+/// The promotion decision for `wiki_ingest_external source.type=inline`.
+#[must_use]
+pub fn should_promote_inline(
+    text: &str,
+    hint: Option<PromoteHint>,
+    policy: &PromotionPolicy,
+) -> bool {
+    match hint {
+        Some(PromoteHint::Always) => true,
+        Some(PromoteHint::Never) => false,
+        None => looks_like_document(text, policy),
+    }
+}
+
+/// The promotion decision for a `wiki_ingest_message` turn: the same
+/// shape heuristic behind the oversized-turn pre-gate.
+#[must_use]
+pub fn should_promote_turn(
+    text: &str,
+    hint: Option<PromoteHint>,
+    policy: &PromotionPolicy,
+) -> bool {
+    match hint {
+        Some(PromoteHint::Always) => true,
+        Some(PromoteHint::Never) => false,
+        None => {
+            text.chars().count() >= policy.message_min_chars && looks_like_document(text, policy)
+        },
+    }
+}
+
+/// Document-shaped: long enough, and either unconditionally long or
+/// carrying at least one structural signal.
+///
+/// Signals: email headers, forwarded markers, quote or markup density,
+/// greeting/sign-off pair. Purely deterministic — no LLM in the gate.
+#[must_use]
+pub fn looks_like_document(text: &str, policy: &PromotionPolicy) -> bool {
+    let n = text.chars().count();
+    if n < policy.min_chars {
+        return false;
+    }
+    if n >= policy.unconditional_chars {
+        return true;
+    }
+    email_header_cluster(text)
+        || forwarded_marker(text)
+        || quote_line_density(text)
+        || markup_density(text)
+        || greeting_signoff(text)
+}
+
+/// ≥2 *distinct* header-shaped lines (`From:` / `Subject:` / …, English
+/// or Italian) within the first 30 lines — the canonical pasted-email
+/// head.
+fn email_header_cluster(text: &str) -> bool {
+    const HEADERS: &[&str] = &[
+        "from:",
+        "to:",
+        "cc:",
+        "subject:",
+        "date:",
+        "sent:",
+        "reply-to:",
+        "da:",
+        "a:",
+        "oggetto:",
+        "data:",
+        "inviato:",
+    ];
+    let mut hits: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for line in text.lines().take(30) {
+        let l = line.trim_start().to_lowercase();
+        if let Some(h) = HEADERS.iter().find(|h| l.starts_with(**h)) {
+            hits.insert(h);
+        }
+    }
+    hits.len() >= 2
+}
+
+/// Forwarded / quoted-reply banners, English and Italian.
+fn forwarded_marker(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    if lower.contains("-----original message-----")
+        || lower.contains("---------- forwarded message")
+        || lower.contains("messaggio originale")
+        || lower.contains("messaggio inoltrato")
+    {
+        return true;
+    }
+    // "On <date>, <someone> wrote:" / "Il giorno <data>, <qualcuno> ha scritto:"
+    text.lines().any(|line| {
+        let t = line.trim().to_lowercase();
+        (t.starts_with("on ") && t.ends_with(" wrote:"))
+            || (t.starts_with("il giorno ") && t.ends_with(" ha scritto:"))
+    })
+}
+
+/// ≥30% of non-empty lines are `>`-quoted (min 8 lines) — a quoted
+/// reply chain.
+fn quote_line_density(text: &str) -> bool {
+    let (mut non_empty, mut quoted) = (0usize, 0usize);
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.is_empty() {
+            continue;
+        }
+        non_empty += 1;
+        if t.starts_with('>') {
+            quoted += 1;
+        }
+    }
+    non_empty >= 8 && quoted * 10 >= non_empty * 3
+}
+
+/// ≥25% of non-empty lines carry markdown structure (min 8 lines) —
+/// a pasted report/manual, not chat prose.
+fn markup_density(text: &str) -> bool {
+    fn numbered_item(t: &str) -> bool {
+        t.split_once(". ").is_some_and(|(n, _)| {
+            !n.is_empty() && n.len() <= 3 && n.chars().all(|c| c.is_ascii_digit())
+        })
+    }
+    let (mut non_empty, mut structured) = (0usize, 0usize);
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.is_empty() {
+            continue;
+        }
+        non_empty += 1;
+        if t.starts_with('#')
+            || t.starts_with("- ")
+            || t.starts_with("* ")
+            || t.starts_with('|')
+            || t.starts_with("```")
+            || numbered_item(t)
+        {
+            structured += 1;
+        }
+    }
+    non_empty >= 8 && structured * 4 >= non_empty
+}
+
+/// Letter shape: a greeting on the first non-empty line AND a sign-off
+/// within the last six.
+fn greeting_signoff(text: &str) -> bool {
+    const GREET: &[&str] = &[
+        "dear ",
+        "hi ",
+        "hello ",
+        "gentile ",
+        "gentilissim",
+        "buongiorno",
+        "buonasera",
+        "salve",
+        "spett",
+    ];
+    const SIGN: &[&str] = &[
+        "regards",
+        "best regards",
+        "kind regards",
+        "sincerely",
+        "best,",
+        "cheers",
+        "cordiali saluti",
+        "distinti saluti",
+        "cordialmente",
+        "in fede",
+        "un saluto",
+        "saluti",
+    ];
+    let Some(first) = text.lines().map(str::trim).find(|l| !l.is_empty()) else {
+        return false;
+    };
+    let first = first.to_lowercase();
+    if !GREET.iter().any(|g| first.starts_with(g)) {
+        return false;
+    }
+    text.lines()
+        .rev()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .take(6)
+        .any(|l| {
+            let l = l.to_lowercase();
+            SIGN.iter().any(|s| l.starts_with(s))
+        })
+}
+
 // ---------- Policy ----------
 
 /// Resource knobs of the pipeline. Caps and cadences only — never a
@@ -1832,6 +2089,87 @@ mod tests {
 
     fn policy() -> DocumentPolicy {
         DocumentPolicy::default()
+    }
+
+    #[test]
+    fn promote_hint_tokens_roundtrip() {
+        for h in [PromoteHint::Always, PromoteHint::Never] {
+            assert_eq!(PromoteHint::parse(h.as_str()), Some(h));
+        }
+        assert_eq!(PromoteHint::parse("maybe"), None);
+    }
+
+    #[test]
+    fn promotion_heuristic_shapes() {
+        let p = PromotionPolicy::default();
+
+        // Short chat never promotes, whatever its shape.
+        assert!(!looks_like_document("ciao, ci vediamo domani alle 9?", &p));
+
+        // Mid-band plain prose without structural signals stays inline.
+        let plain = "word ".repeat(200); // ~1000 chars, no structure
+        assert!(!looks_like_document(&plain, &p));
+
+        // Mid-band email shape promotes: distinct header lines.
+        let email = format!(
+            "From: anna@example.com\nTo: bruno@example.com\nSubject: Q3 report\n\n{}",
+            "body line here. ".repeat(60)
+        );
+        assert!(looks_like_document(&email, &p));
+
+        // Forwarded banner alone is a signal.
+        let fwd = format!(
+            "---------- Forwarded message ----------\n{}",
+            "content sentence. ".repeat(60)
+        );
+        assert!(looks_like_document(&fwd, &p));
+
+        // Markdown-dense mid-band text promotes.
+        let md = "# Title\n\n- item one\n- item two\n- item three\n- item four\n- item five\n- item six\n- item seven\n- item eight\n"
+            .repeat(8);
+        assert!(looks_like_document(&md, &p));
+
+        // Letter shape: greeting + sign-off.
+        let letter = format!(
+            "Gentile dott. Rossi,\n\n{}\n\nCordiali saluti,\nAnna",
+            "riga della lettera. ".repeat(50)
+        );
+        assert!(looks_like_document(&letter, &p));
+
+        // Size alone crosses the unconditional bar.
+        let huge = "plain sentence with no structure at all. ".repeat(120); // ~4900
+        assert!(looks_like_document(&huge, &p));
+    }
+
+    #[test]
+    fn promotion_doors_and_hints() {
+        let p = PromotionPolicy::default();
+        let email_mid = format!(
+            "From: anna@example.com\nSubject: nota\n\n{}",
+            "body. ".repeat(150)
+        ); // ~1000 chars: document-shaped, but under the turn pre-gate
+        assert!(should_promote_inline(&email_mid, None, &p));
+        assert!(!should_promote_turn(&email_mid, None, &p));
+
+        let email_big = format!(
+            "From: anna@example.com\nSubject: nota\n\n{}",
+            "body. ".repeat(400)
+        ); // ~2400 chars: clears the turn pre-gate too
+        assert!(should_promote_turn(&email_big, None, &p));
+
+        // The forced dial wins in both directions, on both doors.
+        assert!(should_promote_inline("hi", Some(PromoteHint::Always), &p));
+        assert!(should_promote_turn("hi", Some(PromoteHint::Always), &p));
+        assert!(!should_promote_inline(
+            &email_big,
+            Some(PromoteHint::Never),
+            &p
+        ));
+        assert!(!should_promote_turn(
+            &email_big,
+            Some(PromoteHint::Never),
+            &p
+        ));
     }
 
     #[test]

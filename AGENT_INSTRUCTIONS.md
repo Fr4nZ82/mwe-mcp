@@ -52,6 +52,14 @@ depends on your `consumer_class` claim:
   "ricordati tutto" → `dissolve`). You get a `job_id` receipt at once
   and a `document_ingested` notice on `events_poll` when it lands —
   relay it.
+  **The server backstops this routing**: document-shaped text — pasted
+  into the chat (an oversized turn) or sent as `source.type=inline` —
+  is auto-promoted to the media rail (verbatim blob + `catalog_id`), so
+  the original stays preserved and citable even when the caller misses
+  the gesture. The `promote: always | never` dial overrides the
+  heuristic in either direction; when a turn response carries
+  `document_promoted`, tell the user their document was archived and is
+  being read into memory.
 - **Smart consumers** (Claude Code, Cowork, Codex — own subscription
   LLM): bring their own classification budget. `wiki_search` for
   recall, `wiki_admin_push/pull` for authoritative smart-wiki

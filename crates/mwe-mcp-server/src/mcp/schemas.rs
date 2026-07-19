@@ -193,7 +193,8 @@ fn wiki_ingest_message() -> Tool {
                             "description": { "type": "string", "description": "Consumer-supplied description (own vision / host-side recognizer). When present the server trusts it and does not run its own vision pass." }
                         }
                     }
-                }
+                },
+                "promote": { "type": "string", "enum": ["always", "never"], "description": "Paste-into-chat backstop override: `always` forces / `never` forbids promoting this turn's text to the media rail as a verbatim cited document. Absent = an oversized document-shaped user turn (non-guest, not dashboard_command) is promoted automatically; the response then carries `document_promoted` and the turn is ingested as a bounded excerpt plus the attachment link." }
             }
         }),
     )
@@ -415,7 +416,8 @@ fn wiki_ingest_external() -> Tool {
                 "format": { "type": "string", "enum": ["prose", "dialogue"], "description": "Forces the segmentation shape; dialogue threads per-utterance timestamps to per-fact validity." },
                 "title": { "type": "string", "description": "Title hint (e.g. the original filename)." },
                 "occurred_at": { "type": "string", "description": "The document's semantic clock (ISO-8601); relative dates inside the document resolve against it. Defaults to the catalog row's timestamp for media sources." },
-                "dry_run": { "type": "boolean", "default": false, "description": "Classify + segment synchronously, write nothing." },
+                "promote": { "type": "string", "enum": ["always", "never"], "description": "Inline sources only: forces (or forbids) verbatim source promotion. Absent = document-shaped inline text is auto-promoted to the media rail (content-addressed blob + catalog id) so extracted facts cite the preserved original; the response then carries `promoted_catalog_id`." },
+                "dry_run": { "type": "boolean", "default": false, "description": "Classify + segment synchronously, write nothing (reports `would_promote`)." },
                 "force": { "type": "boolean", "default": false, "description": "Bypass the (document, owner) idempotency check." }
             }
         }),

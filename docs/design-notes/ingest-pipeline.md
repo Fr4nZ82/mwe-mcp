@@ -562,6 +562,27 @@ The similarity surfaces (embedding, n-gram dedup, the fresh-slot
 re-embed) compare marker-stripped text — the catalog id is a key, not
 prose; the stored body keeps the marker.
 
+## Pasted documents — the oversized turn promotes itself (roadmap 46)
+
+The inverse gesture of an attachment: the document arrives *as* the
+turn text (a forwarded email, a pasted report). Before the
+conversational pipeline runs, the dispatcher applies the verbatim
+source promotion backstop
+([document-ingest §promotion](document-ingest.md#verbatim-source-promotion--the-promote-dial)):
+an **oversized document-shaped user turn** (deterministic shape
+heuristic behind a `message_min_chars` pre-gate; the caller's
+`promote: always | never` dial wins) is materialised verbatim as a
+`doc` blob + catalog row and enqueued as a **document job**, and the
+turn the per-turn pipeline actually ingests becomes a bounded head
+excerpt + a hand-off note, with the promoted document riding the same
+turn as a linked attachment (the seam above — embed marker, ACL
+widening and the no-stranding fallback all apply unchanged). One paste,
+two coherent memories: the conversational fact "sent this document"
+with the link, and the document's own consult/dossier/dissolve
+lifecycle citing the preserved original. Guests never promote;
+`dashboard_command` and assistant-authored turns are exempt; the
+response carries `document_promoted`.
+
 ## The recall block — recalled memory (the `rules` field is separate)
 
 `context_snippet` is the **recall block** of recalled **memory** only —
