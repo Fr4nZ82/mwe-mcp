@@ -9,6 +9,42 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## 1.4.7 — 2026-07-20
+
+### Fixed
+
+- **Nightly memory reorganization (REM) was silently inert for every
+  standard wiki.** The auto-promote pass that splits an over-long page into
+  sections or a dedicated sub-wiki skipped every candidate
+  (`candidates_examined: 0`), so structure never emerged organically. Its
+  skip-gate matched a `wiki_promote` proposal by kind plus a blind substring
+  of the fact id — but that kind is overloaded: routine fact-lifecycle
+  operations (validity close, refile, ACL change) share it, so any page
+  holding one ever-touched fact was permanently marked "already promoted."
+  The gate now counts only genuine page-promotion receipts (paragraph→page,
+  page→sub-wiki), scoped to the receipt's own source page, so a fact that
+  later migrated onto another page no longer freezes it.
+
+- **The agent could "rename itself" from a mis-heard command.** Ingest read
+  the agent's name used as a form of address inside an unrelated command
+  ("Gandalf, turn it down" — mis-transcribed) as an explicit rename. A naming
+  rule now changes the agent's name only on an explicit naming predicate
+  ("your name is X"); a vocative address never renames (ingest prompt v2.40),
+  with no edit-distance heuristic.
+
+- **A user's or group's fact could be filed into an agent's own wiki**,
+  fragmenting that principal's memory across two wikis. The capture planner
+  now redirects a non-`self` fact aimed at an agent wiki to the owner's own
+  wiki (or drops it rather than misfiling), via a new per-wiki `is_agent`
+  signal. Owner (audience) and physical wiki stay decoupled otherwise.
+
+### Changed
+
+- **The agent's self-memory (its "diary") is now organized per served user.**
+  Relationship self-facts are written to a per-user page
+  (`esperienze_<user>.md`) and identity self-facts to the agent's index,
+  instead of accumulating on one heterogeneous catch-all page.
+
 ## 1.4.6 — 2026-07-20
 
 ### Added
