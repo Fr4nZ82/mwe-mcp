@@ -3559,6 +3559,14 @@ async fn recall_agent_self(
     };
     let mut identity = Vec::new();
     let mut relationship = Vec::new();
+    // Fact ids actually surfaced this turn, so the agent-self path bumps recall
+    // hits like the normal recall path ([`fact_index::bump_recall_hits`]).
+    // Without this every self-fact stays `recall_count_30d = 0` /
+    // `last_recall_at = NULL` forever — the agent's autobiography IS injected
+    // each turn but reads as never-used, and recall-weighted REM (the
+    // paragraph-split scorer) treats the whole agent wiki as cold
+    // (item 47-i6 / Finding F).
+    let mut surfaced: Vec<FactId> = Vec::new();
     for row in rows {
         // The agent's agent-wide behaviour-rules are owner=agent too, but they
         // are policy, not self-knowledge — they belong to the behaviour-rule
@@ -3577,9 +3585,15 @@ async fn recall_agent_self(
         // partner tag (exclusive at capture — `capture_agent_self_fact`).
         if row.salience.as_deref() == Some("high") || row.fact_type.as_deref() == Some("bio") {
             identity.push(text);
+            surfaced.push(row.fact_id.clone());
         } else if row.topics.iter().any(|t| t == &request.sender_id) {
             relationship.push(text);
+            surfaced.push(row.fact_id.clone());
         }
+    }
+    // Best-effort: a recall-tracking miss must never break the recall block.
+    if let Err(e) = fact_index::bump_recall_hits(pool, &surfaced).await {
+        tracing::warn!(error = %e, "ingest: agent self-recall hit-bump failed (best-effort)");
     }
     AgentSelf {
         summary,
@@ -9804,6 +9818,82 @@ mod tests {
             block.find(HDR_WHO_YOU_ARE).unwrap() < block.find(HDR_YOUR_HISTORY).unwrap(),
             "identity leads the history: {block}"
         );
+        drop(dir);
+    }
+
+    /// Finding F / 47-i6: `recall_agent_self` surfaces the agent's self-facts
+    /// every turn, so it must also bump their recall hit counters like the
+    /// normal recall path — otherwise self-memory reads as never-used forever
+    /// and recall-weighted REM treats the whole agent wiki as cold.
+    #[tokio::test]
+    async fn ingest_agent_self_recall_bumps_hit_counters() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        let policy = IngestPolicy::default();
+
+        // Seed a relationship self-fact (tagged with the served user).
+        let seed_llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\"owner_id\":\"self\",\
+              \"target_page\":\"diario.md\",\"body\":\"L'agente ha aiutato Alice con la pratica INPS.\",\
+              \"fact_type\":\"episode\",\"salience\":\"normal\"}]}",
+        );
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &seed_llm,
+            None,
+            IngestRequest {
+                author: MessageRole::Assistant,
+                ..req_consumer("ho aiutato Alice", "alice", "botdeploy")
+            },
+            &policy,
+        )
+        .await
+        .expect("seed relationship");
+
+        let before: i64 = sqlx::query_scalar(
+            "SELECT recall_count_30d FROM fact_index \
+             WHERE \"text\" LIKE '%pratica INPS%' AND superseded_at IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        // A user turn surfaces the agent's self-memory into the recall block.
+        let user_llm =
+            FakeLlmBackend::new("fake", "{\"intent\":\"recall\",\"context_snippet\":\"\"}");
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &user_llm,
+            None,
+            req_consumer("cosa sai?", "alice", "botdeploy"),
+            &policy,
+        )
+        .await
+        .expect("user turn");
+
+        let after: i64 = sqlx::query_scalar(
+            "SELECT recall_count_30d FROM fact_index \
+             WHERE \"text\" LIKE '%pratica INPS%' AND superseded_at IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            after > before,
+            "surfacing the self-fact must bump its recall hit counter (before={before}, after={after})"
+        );
+        let stamped: Option<String> = sqlx::query_scalar(
+            "SELECT last_recall_at FROM fact_index \
+             WHERE \"text\" LIKE '%pratica INPS%' AND superseded_at IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(stamped.is_some(), "last_recall_at must be stamped");
         drop(dir);
     }
 
