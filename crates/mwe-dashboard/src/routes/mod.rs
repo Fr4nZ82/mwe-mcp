@@ -44,6 +44,7 @@ mod recall_settings;
 mod recall_traces;
 mod redirect;
 mod rem_settings;
+mod server_settings;
 mod settings;
 mod setup;
 mod skills_view;
@@ -85,6 +86,7 @@ pub fn build(state: DashboardState) -> Router {
         .merge(training_spool::router())
         .merge(embedding_settings::router())
         .merge(email_settings::router())
+        .merge(server_settings::router())
         .merge(health::router())
         .merge(backup::router())
         .merge(welcome::router())

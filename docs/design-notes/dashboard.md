@@ -226,6 +226,20 @@ operational chat + first-login welcome wizard**.
   test email" button. Same atomic-YAML save as the admin editors; off by
   default; hidden when the server runs without memory handles. Full flow in
   [JWT & session model §recovery and 2FA](jwt-and-session-model.md#password-recovery-and-two-factor-authentication).
+- **Server settings** — admin-only **sections of the Settings page**
+  (`/dashboard/settings/me`, module `server_settings`; each form POSTs to
+  its own `/dashboard/settings/*` endpoint) for the YAML config that has
+  no page of its own. Four sections, same atomic-YAML save (`.bak` +
+  `load_raw` round-trip) as the other editors: **Ingest timezone**
+  (`recall.ingest_timezone`, IANA name — **hot**, swapped into the shared
+  recall handle so the next ingest turn stamps wall-clock times in the
+  right zone; the `MWE_INGEST_TIMEZONE` env var stays the fallback);
+  **Dream cadence** (`rem.schedule:` — mode, full/light intervals and
+  initial delays, the light-dream backlog trigger); **Logging**
+  (`logging:` — level, file rotation, file path); **Document pipeline**
+  (`document:` — segmenting, extraction caps, worker cadence). The last
+  three are read once at boot, so their forms say **applies at the next
+  restart** and point at the Backup console's Restart button.
 - **Two-factor (TOTP)** — `/dashboard/settings/2fa` is the per-user
   enrollment surface (any signed-in user); the Settings page carries the
   admin **require-2FA-for-all** toggle and the edit-user page the per-user
@@ -299,7 +313,9 @@ trees merged into one and mounted under `/dashboard`:
   admin LLM config editor (`llm_config`), the admin recall-settings
   editor (`recall_settings`), the admin recall-traces journal + 3D
   replay viewer (`recall_traces`), the admin REM-settings editor
-  (`rem_settings`), the admin embedding-settings editor
+  (`rem_settings`), the admin server-settings sections on the Settings
+  page (`server_settings` — ingest timezone, dream cadence, logging,
+  document pipeline), the admin embedding-settings editor
   (`embedding_settings`), the admin live-diagnostics page (`health`),
   the admin Backup & recovery console (`backup`), the admin **Dream** console
   (`dream` — on-demand `mwe_core::dream` triggers; the slow `compile` /

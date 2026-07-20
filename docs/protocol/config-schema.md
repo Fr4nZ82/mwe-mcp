@@ -108,7 +108,9 @@ transport requirement: mwe-mcp is HTTP-only by design — there is no
 stdio JSON-RPC channel reserving stdout. The `serve` binary prints only
 its readiness line to stdout.)
 See ../the [logging design note](../design-notes/logging.md) for the
-wiring.
+wiring. Editable from the **Logging** section of the Settings page
+(`/dashboard/settings/me`, admin-only); the tracing stack is installed
+once at startup, so a save applies at the next restart.
 
 The level **resolves by precedence** (`tracing_setup::make_filter`):
 
@@ -375,8 +377,10 @@ The `rem.policy:` knobs are editable from the dashboard at
 recall-settings editor): the save rewrites this section atomically
 **and hot-swaps the running policy** — the interval scheduler snapshots
 the shared handle at each cycle start and the Dream console at each
-trigger, so no restart is needed. The `rem.schedule:` cadence stays
-YAML-only.
+trigger, so no restart is needed. The `rem.schedule:` cadence is the
+**Dream cadence** section of the Settings page
+(`/dashboard/settings/me`, admin-only); the schedulers are built once
+at boot, so a cadence save applies at the next restart.
 
 #### REM policy knobs — `RemPolicy` (auto-promote thresholds configurable)
 
@@ -442,7 +446,10 @@ Editable from the dashboard at **`/dashboard/admin/recall-settings`**
 (admin-only): the save rewrites this section atomically **and hot-swaps
 the running settings** — both transports (MCP dispatcher and dashboard
 chat) read the shared handle per turn, so no restart is needed (unlike
-the LLM slots, which the MCP transport clones at boot).
+the LLM slots, which the MCP transport clones at boot). The one
+exception is `ingest_timezone`, which is not a knob on that panel — it
+is the **Ingest timezone** section of the Settings page
+(`/dashboard/settings/me`), hot-swapped through the same handle.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
@@ -476,7 +483,9 @@ the document-ingest pipeline
 (`wiki_ingest_external` + the document worker). **Resources only** —
 the disposition and the extraction are LLM judgments, never a knob.
 Every key is optional; an omitted key keeps the `DocumentPolicy`
-default.
+default. Editable from the **Document pipeline** section of the
+Settings page (`/dashboard/settings/me`, admin-only); the policy is
+resolved once at boot, so a save applies at the next restart.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|

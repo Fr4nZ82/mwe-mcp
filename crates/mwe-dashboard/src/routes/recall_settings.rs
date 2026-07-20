@@ -18,8 +18,9 @@
 //! which link to open, when to stop — lives in the operator-overridable
 //! `navigator` prompt, never in a knob. The navigator's *model tier* is
 //! the `navigator` LLM slot in the [LLM config editor](llm_config); the
-//! dream cadence stays in the YAML `rem.schedule:` section, while the
-//! dream *policy* has its own [REM settings panel](super::rem_settings).
+//! dream cadence (`rem.schedule:`) is on the Settings page
+//! ([`super::server_settings`]), while the dream *policy* has its own
+//! [REM settings panel](super::rem_settings).
 
 use std::collections::HashMap;
 use std::fs;
@@ -284,7 +285,8 @@ async fn save(
     let workdir = workdir_of(&state)?;
     let mut cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
-    // `ingest_timezone` is not a knob on this panel; carry the live value
+    // `ingest_timezone` is not a knob on this panel (it lives on the
+    // Settings page, `super::server_settings`); carry the live value
     // forward so saving recall settings never wipes a configured zone.
     parsed
         .ingest_timezone

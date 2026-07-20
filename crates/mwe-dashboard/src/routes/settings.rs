@@ -9,8 +9,11 @@
 //!
 //! For an admin the page also carries the deployment-wide require-2FA
 //! toggle, the **Admin reveal** checkbox — the single, dashboard-wide
-//! ACL-bypass switch (see [`crate::reveal`]) — and the Email (SMTP)
-//! editor ([`super::email_settings`], which owns its POST endpoints).
+//! ACL-bypass switch (see [`crate::reveal`]) — the Email (SMTP) editor
+//! ([`super::email_settings`]), and the server-settings sections for
+//! the YAML config that has no page of its own — ingest timezone,
+//! dream cadence, logging, document pipeline
+//! ([`super::server_settings`]; both modules own their POST endpoints).
 //! `POST /dashboard/settings/reveal` flips the cookie and returns here.
 
 use axum::Router;
@@ -20,7 +23,7 @@ use axum::routing::{get, post};
 use axum_extra::extract::cookie::CookieJar;
 use chrono::Utc;
 use maud::{Markup, html};
-use mwe_core::config::{Config, EmailConfig};
+use mwe_core::config::Config;
 use serde::Deserialize;
 
 use crate::auth::SessionUser;
@@ -50,10 +53,11 @@ async fn admin_global_require(state: &DashboardState, user: &SessionUser) -> Res
     }
 }
 
-/// The `email:` config section for the embedded SMTP editor. `None` for
-/// non-admins, and when the server runs without memory handles (no
-/// workdir to read the YAML from — e.g. auth-only test routers).
-fn admin_email_config(state: &DashboardState, user: &SessionUser) -> Result<Option<EmailConfig>> {
+/// The whole raw YAML config for the embedded admin editors (SMTP +
+/// the server-settings sections). `None` for non-admins, and when the
+/// server runs without memory handles (no workdir to read the YAML
+/// from — e.g. auth-only test routers).
+fn admin_config(state: &DashboardState, user: &SessionUser) -> Result<Option<Config>> {
     let Some(workdir) = state.memory.as_ref().map(|m| &m.workdir) else {
         return Ok(None);
     };
@@ -62,7 +66,7 @@ fn admin_email_config(state: &DashboardState, user: &SessionUser) -> Result<Opti
     }
     let cfg = Config::load_raw(workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
-    Ok(Some(cfg.email))
+    Ok(Some(cfg))
 }
 
 /// Build the whole Settings page for `user`, loading every piece that
@@ -78,12 +82,12 @@ pub(super) async fn render_page(
 ) -> Result<Html<String>> {
     let reveal_on = crate::reveal::active(user, jar);
     let global_2fa = admin_global_require(state, user).await?;
-    let email = admin_email_config(state, user)?;
+    let cfg = admin_config(state, user)?;
     Ok(Html(render(
         user,
         reveal_on,
         global_2fa,
-        email.as_ref(),
+        cfg.as_ref(),
         error,
         success,
     )))
@@ -245,7 +249,7 @@ fn render(
     user: &SessionUser,
     reveal_on: bool,
     global_2fa: bool,
-    email: Option<&EmailConfig>,
+    cfg: Option<&Config>,
     error: Option<&str>,
     success: Option<&str>,
 ) -> String {
@@ -290,8 +294,9 @@ fn render(
         @if user.is_admin {
             (global_require_section(global_2fa))
             (reveal_section(reveal_on))
-            @if let Some(cfg) = email {
-                (super::email_settings::section(cfg))
+            @if let Some(cfg) = cfg {
+                (super::email_settings::section(&cfg.email))
+                (super::server_settings::sections(cfg))
             }
         }
     };

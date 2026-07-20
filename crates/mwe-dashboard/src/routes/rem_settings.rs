@@ -20,8 +20,9 @@
 //! Only **resources** are configured here (per-cycle caps, mass bars,
 //! the briefing grace): semantic judgment — what to merge, promote, or
 //! rewrite — stays with the LLM sub-jobs, never in a knob. The dream
-//! *cadence* (light/full intervals) stays in the YAML `rem.schedule:`
-//! section; the sub-jobs' model tiers are the slots in the
+//! *cadence* (`rem.schedule:` — light/full intervals) is the Dream
+//! cadence section of the Settings page ([`super::server_settings`]);
+//! the sub-jobs' model tiers are the slots in the
 //! [LLM config editor](super::llm_config).
 
 use std::collections::HashMap;
@@ -258,8 +259,9 @@ fn render(
 
         p.muted {
             "Related dials elsewhere: the " strong { "dream cadence" }
-            " (light/full intervals) is the " code { "rem.schedule:" }
-            " section of the YAML; the sub-jobs' " strong { "model tiers" }
+            " (light/full intervals — " code { "rem.schedule:" } ") is on the "
+            a href="/dashboard/settings/me" { "Settings page" }
+            "; the sub-jobs' " strong { "model tiers" }
             " are the slots in the "
             a href="/dashboard/admin/llm-config" { "LLM config editor" }
             "; the per-turn recall resources are the "

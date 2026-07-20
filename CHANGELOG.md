@@ -13,6 +13,20 @@ semver-governed surface — breaking changes are called out explicitly.
 
 ### Added
 
+- **Server-settings sections on the Settings page — no more YAML-only
+  config.** Every typed config section without a dashboard surface is
+  now an admin-only section of `/dashboard/settings/me`, closing the
+  gap survey: **Ingest timezone** (`recall.ingest_timezone`, hot —
+  swapped into the shared recall handle so the next ingest turn stamps
+  wall-clock times in the deployment's zone), **Dream cadence**
+  (`rem.schedule:` — mode, full/light intervals and initial delays,
+  the light-dream backlog trigger), **Logging** (`logging:` — level,
+  file rotation, file path), and **Document pipeline** (`document:` —
+  segmenting, extraction caps, worker cadence, merge threshold). Same
+  atomic `.bak`-guarded `load_raw` round-trip as the other editors;
+  the boot-read sections say so and point at the Backup console's
+  Restart button. The REM-settings and recall-settings panels now
+  cross-link instead of declaring those keys YAML-only.
 - **Recovery surfaces — automatic snapshots, dashboard restore, safe
   memory reset (roadmap 4d).** A new `backup:` config section (on by
   default: daily, retention 7) drives an automatic-snapshot scheduler:
