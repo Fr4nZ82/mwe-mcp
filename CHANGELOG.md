@@ -9,6 +9,18 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## 1.4.8 — 2026-07-20
+
+### Fixed
+
+- **The agent's own memory now counts as "used" when it is used.** The
+  agent's self-memory (identity + history with the current user) is injected
+  into every turn, but the injection path never updated the recall counters —
+  every self-fact read as never-recalled forever, hiding real usage from
+  metrics and from recall-weighted REM decisions. The agent-self recall path
+  now bumps `last_recall_at` / `recall_count_30d` for each fact it surfaces,
+  exactly like the standard recall path.
+
 ## 1.4.7 — 2026-07-20
 
 ### Fixed
