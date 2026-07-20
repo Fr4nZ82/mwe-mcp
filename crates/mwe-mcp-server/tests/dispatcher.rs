@@ -69,6 +69,7 @@ async fn fixture_with_llm(
         )),
         workdir: dir.path().to_path_buf(),
         document_policy: mwe_core::document::DocumentPolicy::default(),
+        reindex_tx: None,
     };
     let identity = IdentityProfile {
         sender_id: "alice".into(),
@@ -1158,6 +1159,64 @@ async fn wiki_admin_push_accepts_mark_processed_field_and_surfaces_marked_in_out
     assert!(
         processed_at.is_some(),
         "row must be flipped to processed by the dispatcher path"
+    );
+}
+
+#[tokio::test]
+async fn wiki_admin_push_queues_section_indexing_when_reindex_channel_is_wired() {
+    let (state, identity, _dir, wiki_id) = smart_fixture_with_smart_wiki().await;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let state = McpState {
+        reindex_tx: Some(tx),
+        ..state
+    };
+
+    let out = call(
+        &state,
+        &identity,
+        "wiki_admin_push",
+        json!({
+            "mode": "upsert",
+            "wiki_id": wiki_id.as_str(),
+            "pages": [{"path": "notes.md", "content": "# Notes\n"}],
+        }),
+    )
+    .await
+    .expect("push must succeed");
+
+    assert_eq!(
+        out["section_indexing"],
+        json!("queued"),
+        "with a wired reindex channel the ack must not embed inline"
+    );
+    match rx.try_recv().expect("one queued change") {
+        mwe_core::watcher::WatchedChange::Touched(p) => {
+            assert!(p.ends_with("notes.md"), "queued path: {}", p.display());
+        },
+        other => panic!("expected Touched, got {other:?}"),
+    }
+    assert!(rx.try_recv().is_err(), "exactly one page was pushed");
+}
+
+#[tokio::test]
+async fn wiki_admin_push_indexes_inline_without_reindex_channel() {
+    let (state, identity, _dir, wiki_id) = smart_fixture_with_smart_wiki().await;
+    let out = call(
+        &state,
+        &identity,
+        "wiki_admin_push",
+        json!({
+            "mode": "upsert",
+            "wiki_id": wiki_id.as_str(),
+            "pages": [{"path": "notes.md", "content": "# Notes\n"}],
+        }),
+    )
+    .await
+    .expect("push must succeed");
+    assert_eq!(
+        out["section_indexing"],
+        json!("inline"),
+        "no channel (tests, degraded boot) → synchronous indexing as before"
     );
 }
 

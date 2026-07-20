@@ -2252,13 +2252,31 @@ pub(super) async fn call_wiki_admin_push(
     )
     .await
     .map_err(|e| admin_error_to_tool_error(&e))?;
-    // Markerless smart wikis are content-indexed: section-index each
-    // touched page now so recall sees it without waiting for the
-    // filesystem watcher. Best-effort — the watcher + safety-net sweep
-    // are the backstop, so an index hiccup never fails a committed push.
+    // Markerless smart wikis are content-indexed: hand each touched page
+    // to the reindex queue (the watcher's channel — the marker protocol
+    // hides our own writes from the watcher itself) and ack immediately.
+    // Embedding large pages inline would hold the HTTP response past
+    // proxy timeouts (Cloudflare cuts at ~100 s) — the client would see
+    // an error on a committed push and retry, multiplying the embedding
+    // work; the single queue worker serialises those retries into
+    // near-free idempotent re-runs instead. Best-effort either way — the
+    // safety-net sweep is the backstop, so an index hiccup never fails a
+    // committed push. Without a queue handle (tests, degraded boot) we
+    // index inline as before.
+    let mut section_indexing = "queued";
     if let Ok(handle) = state.tree.locate(&resp.wiki_id) {
         for rel in &affected {
             let abs = handle.abs_dir().join(rel);
+            // Touched covers deletes too: `reindex_file` re-derives from
+            // disk state and cleans up sections of a missing file.
+            let queued = state.reindex_tx.as_ref().is_some_and(|tx| {
+                tx.send(mwe_core::watcher::WatchedChange::Touched(abs.clone()))
+                    .is_ok()
+            });
+            if queued {
+                continue;
+            }
+            section_indexing = "inline";
             if let Err(e) = mwe_core::reindex::reindex_file(
                 &state.pool,
                 &state.tree,
@@ -2282,6 +2300,10 @@ pub(super) async fn call_wiki_admin_push(
         "warnings": resp.warnings,
         "marked_processed": resp.marked_processed,
         "authored_refs": resp.authored_refs,
+        // "queued": section-indexing (embedding included) runs in the
+        // background — recall over brand-new sections may lag by the
+        // queue depth. "inline": indexed before this ack.
+        "section_indexing": section_indexing,
     }))
 }
 

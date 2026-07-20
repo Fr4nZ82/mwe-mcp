@@ -402,6 +402,7 @@ mod tests {
             )),
             workdir: dir.path().to_path_buf(),
             document_policy: mwe_core::document::DocumentPolicy::default(),
+            reindex_tx: None,
         };
         (state, secret, pool, dir)
     }

@@ -913,9 +913,17 @@ is written verbatim.
   "op_log_id": "wol_2026-05-26-001",
   "warnings": [ "page 'misc/notes.md' deviates from the recommended folder_structure; allowed but flagged" ],
   "marked_processed": [ "bi_42" ],
-  "authored_refs": [ "[[alice-acme/index]]", "[[alice-acme/modules/auth]]" ]
+  "authored_refs": [ "[[alice-acme/index]]", "[[alice-acme/modules/auth]]" ],
+  "section_indexing": "queued"
 }
 ```
+
+`section_indexing` reports how the touched pages reach the section index:
+`"queued"` (normal serve) — they were handed to the background reindex
+queue and this ack returned immediately, so recall over brand-new
+sections may lag by the queue depth; `"inline"` — indexed synchronously
+before the ack (fallback when the queue is not wired: tests, degraded
+boot). Either way the push itself is already committed.
 
 `authored_refs` is one `[[wiki_id/page]]` provenance breadcrumb per written
 page (`_meta.md` and deletes excluded). A smart consumer echoes these into the

@@ -88,7 +88,7 @@ async fn third_party_write_triggers_reindex_insert() {
     let pool = make_pool().await;
     let embedder = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
 
-    let (watcher, rx) = WikiWatcher::start(tree.wikis_dir()).expect("start watcher");
+    let (watcher, _tx, rx) = WikiWatcher::start(tree.wikis_dir()).expect("start watcher");
     let _watcher_keep = watcher; // hold across the test
 
     let _loop_handle =
@@ -145,7 +145,7 @@ async fn write_with_held_marker_is_suppressed_by_filter() {
     let pool = make_pool().await;
     let embedder = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
 
-    let (watcher, rx) = WikiWatcher::start(tree.wikis_dir()).expect("start watcher");
+    let (watcher, _tx, rx) = WikiWatcher::start(tree.wikis_dir()).expect("start watcher");
     let _watcher_keep = watcher;
     let _loop_handle =
         reindex::spawn_watcher_loop(pool.clone(), Arc::new(tree.clone()), embedder.clone(), rx);
@@ -190,7 +190,7 @@ async fn third_party_delete_hard_drops_index_rows() {
     assert_eq!(seeded.len(), 1);
     let fact_id = seeded[0].fact_id.clone();
 
-    let (watcher, rx) = WikiWatcher::start(tree.wikis_dir()).expect("start watcher");
+    let (watcher, _tx, rx) = WikiWatcher::start(tree.wikis_dir()).expect("start watcher");
     let _watcher_keep = watcher;
     let _loop_handle =
         reindex::spawn_watcher_loop(pool.clone(), Arc::new(tree.clone()), embedder.clone(), rx);

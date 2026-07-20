@@ -1557,6 +1557,9 @@ async fn cmd_serve_http(
             mcp_state_for_router.clone(),
             mcp::auth::jwt_auth_middleware,
         ))
+        // Outermost layer so every /mcp response — auth rejections
+        // included — carries an explicit charset.
+        .layer(axum::middleware::from_fn(mcp_utf8_charset))
         .with_state(mcp_state_for_router);
 
     let app = Router::new()
@@ -2022,8 +2025,12 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
     // Arm the filesystem watcher + spawn the reindex consumer +
     // safety-net loop. The watcher handle is leaked so it outlives this
     // function for the program lifetime; a clean shutdown that drops it
-    // explicitly is wired later.
-    spawn_reindex_pipeline(pool.clone(), tree.clone(), embedder.clone())?;
+    // explicitly is wired later. The returned sender feeds the same
+    // reindex queue — `wiki_admin_push` enqueues its pages there instead
+    // of embedding inline on the request path (the marker protocol hides
+    // our own writes from the watcher, so without it push-written pages
+    // would wait for the safety-net sweep).
+    let reindex_tx = spawn_reindex_pipeline(pool.clone(), tree.clone(), embedder.clone())?;
 
     // One shared handle for the operator recall settings: the dashboard
     // recall-settings editor swaps it in place and both transports (MCP
@@ -2048,6 +2055,7 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
         recall: recall_settings.clone(),
         workdir: workdir.to_path_buf(),
         document_policy: config.document.resolved_policy(),
+        reindex_tx: Some(reindex_tx),
     };
     let dashboard_state = DashboardState::new(pool, secret, blacklist, delegations)
         .with_memory(MemoryHandles {
@@ -2083,22 +2091,56 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
     Ok((state, dashboard_state))
 }
 
+/// Stamp `charset=utf-8` onto bare `/mcp` response `Content-Type`s.
+///
+/// JSON is UTF-8 by definition (RFC 8259), so the parameter is redundant
+/// for a correct client — but naive HTTP stacks (PowerShell 5.1, older
+/// Java) decode a parameter-less body as ISO-8859-1 and mojibake every
+/// non-ASCII byte. Explicit is free; a Content-Type that already carries
+/// a charset (or any other type) passes through untouched.
+async fn mcp_utf8_charset(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let mut resp = next.run(req).await;
+    let stamped = match resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some("application/json") => Some("application/json; charset=utf-8"),
+        Some("text/event-stream") => Some("text/event-stream; charset=utf-8"),
+        _ => None,
+    };
+    if let Some(ct) = stamped {
+        resp.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static(ct),
+        );
+    }
+    resp
+}
+
 /// Arm the [`WikiWatcher`] over `<workdir>/wikis/`, spawn the reindex
 /// consumer that forwards every watched change to
 /// [`reindex::reindex_file`], and spawn a parallel safety-net loop that
 /// re-runs [`reindex::reindex_full`] every [`SAFETY_NET_INTERVAL`].
 ///
-/// The returned `()` discards both join handles intentionally: the
-/// watcher loop terminates when the channel closes (which only happens
-/// at process exit since we leak the watcher), and the safety-net loop
-/// runs forever; neither needs join-on-shutdown wiring yet.
+/// Returns the queue's second producer handle — `McpState.reindex_tx` —
+/// so `wiki_admin_push` can enqueue its own written pages (the marker
+/// protocol hides self-writes from the watcher). Both join handles are
+/// discarded intentionally: the watcher loop terminates when the channel
+/// closes (which only happens at process exit since we leak the
+/// watcher), and the safety-net loop runs forever; neither needs
+/// join-on-shutdown wiring yet.
 fn spawn_reindex_pipeline(
     pool: sqlx::SqlitePool,
     tree: WikiTree,
     embedder: Arc<dyn Embedder>,
-) -> Result<()> {
+) -> Result<tokio::sync::mpsc::UnboundedSender<mwe_core::watcher::WatchedChange>> {
     let wikis_dir = tree.wikis_dir().to_path_buf();
-    let (watcher, rx) = WikiWatcher::start(&wikis_dir).context("starting filesystem watcher")?;
+    let (watcher, tx, rx) =
+        WikiWatcher::start(&wikis_dir).context("starting filesystem watcher")?;
     // Leak the watcher: drop tears down the underlying `notify` thread.
     Box::leak(Box::new(watcher));
 
@@ -2124,7 +2166,7 @@ fn spawn_reindex_pipeline(
         safety_net_seconds = SAFETY_NET_INTERVAL.as_secs(),
         "watcher: armed and reindex consumer + safety net spawned"
     );
-    Ok(())
+    Ok(tx)
 }
 
 /// Mint a JWT and print the encoded token to stdout. The
@@ -2542,6 +2584,58 @@ fn rfc3339(unix_secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `/mcp` charset middleware stamps `charset=utf-8` onto bare
+    /// `application/json` responses and leaves other types untouched —
+    /// PS 5.1-class clients decode a parameter-less body as ISO-8859-1.
+    #[tokio::test]
+    async fn mcp_utf8_charset_stamps_bare_json_and_leaves_the_rest() {
+        use tower::ServiceExt as _;
+        let app = Router::new()
+            .route(
+                "/json",
+                axum::routing::get(|| async {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        "{}",
+                    )
+                }),
+            )
+            .route(
+                "/plain",
+                axum::routing::get(|| async {
+                    ([(axum::http::header::CONTENT_TYPE, "text/plain")], "x")
+                }),
+            )
+            .layer(axum::middleware::from_fn(mcp_utf8_charset));
+
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get("/json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.headers()[axum::http::header::CONTENT_TYPE],
+            "application/json; charset=utf-8"
+        );
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::get("/plain")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.headers()[axum::http::header::CONTENT_TYPE],
+            "text/plain"
+        );
+    }
 
     /// On an empty workdir the secret is generated, returned for
     /// immediate use, and persisted to `mwe-mcp.env` so the next boot

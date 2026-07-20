@@ -48,6 +48,12 @@ single-writer lockfile precludes a second process on the same workdir.
 |---|---|---|---|
 | Streamable HTTP | `POST /mcp` (rmcp Tower service) | `Authorization: Bearer <JWT>` | [`cmd_serve_http`](../../crates/mwe-mcp-server/src/main.rs) |
 
+Every `/mcp` response (auth rejections included) carries an explicit
+`charset=utf-8` on its `Content-Type` (`mcp_utf8_charset` middleware in
+`main.rs`): JSON is UTF-8 by definition, but naive HTTP stacks
+(PowerShell 5.1, older Java) decode a parameter-less body as ISO-8859-1
+and mojibake non-ASCII text.
+
 `auth::jwt_auth_middleware` verifies the bearer via
 [`mwe_core::jwt::verify`](../../crates/mwe-core/src/jwt.rs) (signature +
 `exp` + blacklist cache), attaches the resulting [`IdentityProfile`] to

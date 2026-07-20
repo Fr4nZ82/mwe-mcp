@@ -225,10 +225,22 @@ impl WikiWatcher {
     /// protocol. The internal channel is unbounded — the watcher does
     /// not back-pressure the OS event loop, since dropping events on
     /// re-index is much worse than ballooning the queue briefly.
-    pub fn start(root: &Path) -> Result<(Self, mpsc::UnboundedReceiver<WatchedChange>)> {
+    ///
+    /// The returned sender is a second producer into the same channel:
+    /// the marker protocol suppresses the server's *own* writes from the
+    /// event stream, so a server-side writer that wants its pages
+    /// re-indexed (e.g. `wiki_admin_push`) enqueues them here explicitly
+    /// instead of indexing inline on the request path.
+    pub fn start(
+        root: &Path,
+    ) -> Result<(
+        Self,
+        mpsc::UnboundedSender<WatchedChange>,
+        mpsc::UnboundedReceiver<WatchedChange>,
+    )> {
         let (tx, rx) = mpsc::unbounded_channel::<WatchedChange>();
-        let inner = build_watcher(root, tx)?;
-        Ok((Self { _inner: inner }, rx))
+        let inner = build_watcher(root, tx.clone())?;
+        Ok((Self { _inner: inner }, tx, rx))
     }
 }
 
@@ -412,7 +424,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn watcher_delivers_create_event_on_untouched_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (_w, mut rx) = WikiWatcher::start(dir.path()).expect("start");
+        let (_w, _tx, mut rx) = WikiWatcher::start(dir.path()).expect("start");
 
         let target = dir.path().join("note.md");
         std::fs::write(&target, "hello").expect("write");
@@ -432,7 +444,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn watcher_ignores_marker_file_events() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (_w, mut rx) = WikiWatcher::start(dir.path()).expect("start");
+        let (_w, _tx, mut rx) = WikiWatcher::start(dir.path()).expect("start");
 
         // Write a marker file. The watcher must not forward an event
         // for the marker itself.
@@ -456,7 +468,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn watcher_suppresses_target_events_while_marker_is_fresh() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (_w, mut rx) = WikiWatcher::start(dir.path()).expect("start");
+        let (_w, _tx, mut rx) = WikiWatcher::start(dir.path()).expect("start");
 
         let target = dir.path().join("note.md");
         let _marker = WriteMarker::acquire(&target).expect("acquire");

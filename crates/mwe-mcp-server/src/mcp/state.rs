@@ -104,6 +104,17 @@ pub struct McpState {
     /// resolved once at boot — shared by the `wiki_ingest_external`
     /// handler and the document worker.
     pub document_policy: mwe_core::document::DocumentPolicy,
+    /// Producer handle into the reindex queue (the same channel the
+    /// filesystem watcher feeds — see `spawn_reindex_pipeline`).
+    /// `wiki_admin_push` enqueues its touched pages here so
+    /// section-indexing (embedding included) happens off the request
+    /// path: a bulk import of large pages must not hold the HTTP
+    /// response past a proxy timeout (Cloudflare cuts at ~100 s), and
+    /// the single queue worker serialises duplicate work that
+    /// concurrent client retries would otherwise multiply. `None`
+    /// (tests, degraded boot without the watcher) falls back to inline
+    /// synchronous indexing.
+    pub reindex_tx: Option<tokio::sync::mpsc::UnboundedSender<mwe_core::watcher::WatchedChange>>,
 }
 
 impl std::fmt::Debug for McpState {

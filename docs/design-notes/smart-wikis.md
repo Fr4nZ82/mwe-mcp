@@ -119,9 +119,11 @@ rows keep `sender_id = NULL`: they have no per-fragment capturer, and the
 [marker-grammar §5](marker-grammar.md#5-cross-user-attribution)). The
 re-stamp (`fact_index::reproject_wiki_acl`) clears `sender_id` alongside
 owner/allow, so a revoke leaves no stale sender in the read union. A
-`wiki_admin_push` section-indexes its touched pages synchronously so the
-content is recallable immediately; the filesystem watcher is the
-backstop. Per-fragment markers/ACL are the pillar of **standard** memory
+`wiki_admin_push` enqueues its touched pages onto the reindex queue and
+acks immediately (embedding runs off the request path — a bulk import of
+large pages must not hold the HTTP response past a proxy timeout); the
+safety-net sweep is the backstop. See
+[reindex-pipeline.md](reindex-pipeline.md#smart-wikis--indexing-on-push-queued). Per-fragment markers/ACL are the pillar of **standard** memory
 wikis only (the founding ACL-per-fragment idea — see
 [redaction-policy.md](redaction-policy.md)).
 
@@ -336,8 +338,8 @@ shows the strict policy is too aggressive); chained
 revert-of-revert chains in the UI (the button is hidden on system
 rows by design); fact-index re-indexing inside `op_revert` itself
 (the watcher pipeline picks up the restored files asynchronously;
-`push` additionally section-indexes its touched pages synchronously, see
-[reindex-pipeline.md](reindex-pipeline.md#smart-wikis--synchronous-indexing-on-push)).
+`push` additionally enqueues its touched pages onto the reindex queue, see
+[reindex-pipeline.md](reindex-pipeline.md#smart-wikis--indexing-on-push-queued)).
 
 **Optimistic concurrency is enforced** on `upsert`: a push carrying
 `expected_op_log_head` is rejected with `409 conflicting_op_log_head`

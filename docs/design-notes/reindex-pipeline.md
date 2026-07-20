@@ -52,7 +52,7 @@ unchanged tree mutates zero rows the second time. For smart wikis a page
 whose section texts and projected ACL already match the stored rows is a
 no-op; that property is what makes the race documented under
 [marker filter](#marker-filter--inotify-race) acceptable, and what keeps
-the synchronous push-path index (below) from churning on a re-push. The
+the push-path index queue (below) from churning on a re-push. The
 retirement strips are idempotent by convergence (an excised region's row
 settles its offsets to NULL, so re-runs find nothing), and the boot
 reconcile is idempotent by construction (a consistent row is never
@@ -94,7 +94,7 @@ score, distinct `fact_id`):
 
 - **Atomic drop+insert.** The drop and the inserts run in a single transaction
   ([`fact_index::replace_source_path_rows`](../../crates/mwe-core/src/fact_index.rs)).
-  Multiple reindexers can target the same page at once — the synchronous push
+  Multiple reindexers can target the same page at once — the push-enqueued
   index, the watcher (which *does* observe the server's own write, see the
   [marker filter](#marker-filter--inotify-race)), the safety-net sweep — and
   because SQLite serializes writers, a second reindex's drop catches the first's
@@ -120,20 +120,34 @@ sees the wiki's content because every section row carries them in
 the next reindex (the safety-net tick re-stamps, since the ACL drift
 fails the no-op check).
 
-## Smart wikis — synchronous indexing on push
+## Smart wikis — indexing on push (queued)
 
-A markerless smart page has no markers for the watcher to key on, and
-recall must see pushed content immediately (and deterministically in
-tests, where no watcher runs). So
+The marker protocol hides the server's own `atomic_write`s from the
+watcher, so push-written pages would otherwise wait for the safety-net
+sweep. Instead
 [`call_wiki_admin_push`](../../crates/mwe-mcp-server/src/mcp/tools.rs)
-section-indexes each touched page (writes + deletes) **synchronously
-after the push commits**, by calling `reindex_file` per page. This is
-best-effort: the filesystem watcher + the safety-net sweep are the
-backstop, so an index hiccup never fails a committed push, and the
-re-index is idempotent so a later watcher event is a no-op. When the
-watcher event is not merely *later* but **overlaps** the synchronous
-index, the atomic drop+insert (above) is what keeps the two from
-accumulating duplicate rows.
+**enqueues** each touched page (writes + deletes, as
+`WatchedChange::Touched` — `reindex_file` re-derives from disk either
+way) onto the same channel the watcher feeds (`McpState.reindex_tx`, the
+second producer handle returned by `spawn_reindex_pipeline`) and acks
+immediately, reporting `"section_indexing": "queued"` in the response.
+
+Off-request-path indexing is load-bearing for bulk imports: embedding a
+100+ section page inline held the HTTP response for minutes, tripping
+proxy timeouts (Cloudflare cuts at ~100 s) on a push the origin had
+already committed — the client saw an error, retried, and every
+concurrent retry re-embedded the same sections from scratch. The single
+queue worker serialises those retries instead: by the time a duplicate
+queue entry runs, the first pass has stored its vectors and the re-run
+is an idempotent no-op.
+
+Still best-effort: the safety-net sweep is the backstop, an index hiccup
+never fails a committed push, and the atomic drop+insert (above) keeps
+an overlapping watcher event (the out-of-window marker race) from
+accumulating duplicate rows. Without a queue handle (`reindex_tx: None`
+— tests, degraded boot without a watcher) the handler falls back to the
+old inline synchronous indexing and reports `"section_indexing":
+"inline"`, which keeps recall-after-push deterministic in tests.
 
 ## Diff algorithm — standard wikis (offset-and-existence repair)
 
@@ -277,6 +291,9 @@ out-of-window race is documented but not asserted (it would be flaky).
 2. `WikiWatcher::start` creates the `notify` watch on
    `<workdir>/wikis/`; the watcher value is leaked (`Box::leak`) so its
    `Drop` does not tear down the `notify` thread before process exit.
+   It also hands back a second producer into the event channel — stored
+   as `McpState.reindex_tx`, the queue `wiki_admin_push` enqueues its
+   own written pages on (see [indexing on push](#smart-wikis--indexing-on-push-queued)).
 3. `spawn_watcher_loop` + `spawn_safety_net_loop` are fired with a
    shared `Arc<WikiTree>` + `Arc<dyn Embedder>`.
 
