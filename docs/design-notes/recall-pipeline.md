@@ -239,7 +239,11 @@ Two consumers resolve the grammar:
   the wiki root — with the legacy bare slug resolved in the tree order above
   (`recall_nav::resolve_bare_slug_wiki`). Candidates stay reader-gated
   (`reader_can_read_in`) and a
-  page hop is vetted against the filesystem before it is offered. The
+  page hop is vetted against the filesystem before it is offered —
+  Obsidian-style (`wiki::resolve_page_case_insensitive`): byte-exact
+  first, else the unique ASCII-case-insensitive match, so a link whose
+  case drifted from the filename resolves the same way it does on the
+  consumer's local mirror instead of dying as a dead rail. The
   wiki-granular projection `extract_wikilink_wiki_ids` backs the structural
   hop graph (`wiki_multi_hop_facts`) and the REM back-pressure/backlink
   sweeps.

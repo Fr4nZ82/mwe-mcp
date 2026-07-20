@@ -1626,7 +1626,11 @@ fn authored_ref_resolves(tree: &WikiTree, r: &str) -> bool {
         None | Some("") => true,
         Some(slug) => {
             let rel = std::path::PathBuf::from(format!("{slug}.md"));
-            crate::wiki::is_safe_page_path(&rel) && handle.abs_dir().join(&rel).is_file()
+            // Obsidian-style existence check: byte-exact first, else the
+            // unique case-insensitive match — same resolution the recall
+            // navigator applies to page hops.
+            crate::wiki::is_safe_page_path(&rel)
+                && crate::wiki::resolve_page_case_insensitive(handle.abs_dir(), &rel).is_some()
         },
     }
 }

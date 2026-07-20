@@ -151,7 +151,7 @@ pub enum WikiError {
     },
 
     /// Page path escaped its containing wiki (`..` traversal, absolute
-    /// path, or component outside `[a-z0-9._-]`). Rejected before any
+    /// path, or component outside `[A-Za-z0-9._-]`). Rejected before any
     /// filesystem access.
     #[error("page path {path:?} is not safe inside a wiki")]
     UnsafePagePath {
@@ -1203,8 +1203,9 @@ pub fn workdir_relative_source_path(workdir: &Path, abs_path: &Path) -> String {
 /// Reject paths that try to leave the wiki directory.
 ///
 /// Accepts:
-/// - one or more components, each `[a-z0-9._-]+` (so `.md`, `index.md`,
-///   `recipes/pasta-al-pomodoro.md` all work)
+/// - one or more components, each `[A-Za-z0-9._-]+` (so `.md`, `index.md`,
+///   `recipes/pasta-al-pomodoro.md`, `Setup.md` all work — smart wikis
+///   imported from a local vault keep their original casing byte-for-byte)
 /// - no leading separator
 /// - no `..` or `.` components
 ///
@@ -1212,6 +1213,12 @@ pub fn workdir_relative_source_path(workdir: &Path, abs_path: &Path) -> String {
 /// also want a stable, Obsidian-friendly charset for the on-disk filenames
 /// so the file watcher and re-index pipeline never have to escape weird
 /// codepoints in queries.
+///
+/// Case is accepted but **collisions are not**: the page-creation paths
+/// pair this check with [`page_path_case_hazard`] +
+/// [`page_case_conflict`] so two paths differing only by ASCII case can
+/// never coexist — they would be the SAME file on a smart consumer's
+/// case-insensitive local mirror (Windows/macOS Obsidian).
 #[must_use]
 pub fn is_safe_page_path(p: &Path) -> bool {
     if p.is_absolute() {
@@ -1228,13 +1235,9 @@ pub fn is_safe_page_path(p: &Path) -> bool {
                 if name.is_empty() {
                     return false;
                 }
-                let all_ok = name.bytes().all(|b| {
-                    b.is_ascii_lowercase()
-                        || b.is_ascii_digit()
-                        || b == b'-'
-                        || b == b'_'
-                        || b == b'.'
-                });
+                let all_ok = name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.');
                 if !all_ok {
                     return false;
                 }
@@ -1252,6 +1255,141 @@ pub fn is_safe_page_path(p: &Path) -> bool {
         }
     }
     count > 0
+}
+
+/// Case hazards a page path carries on its own, independent of the disk.
+///
+/// Two shapes: a component that is an ASCII-case variant of a reserved
+/// filename ([`META_FILENAME`], [`RULES_FILENAME`],
+/// [`crate::briefing::BRIEFING_FILENAME`]), or a `.md` extension not
+/// spelled in lowercase.
+///
+/// Both would be accepted by [`is_safe_page_path`] yet misbehave later:
+/// `_Meta.md` is a normal page to the server but the same file as
+/// `_meta.md` on a case-insensitive mirror, and `notes.MD` breaks the
+/// link grammar — the `[[wiki/slug]]` convention strips and re-appends
+/// a byte-exact lowercase `.md` (see `wiki_link` / `authored_refs`), so
+/// a link to that page would never round-trip.
+///
+/// Byte-exact reserved names are deliberately NOT flagged: their
+/// writability is per-caller policy (`wiki_admin_push` refuses
+/// `_meta.md` but accepts `rules.md` / `_briefing.md`).
+#[must_use]
+pub fn page_path_case_hazard(rel: &Path) -> Option<String> {
+    let reserved = [
+        META_FILENAME,
+        RULES_FILENAME,
+        crate::briefing::BRIEFING_FILENAME,
+    ];
+    for comp in rel.components() {
+        let std::path::Component::Normal(s) = comp else {
+            continue;
+        };
+        let Some(name) = s.to_str() else {
+            continue;
+        };
+        for r in reserved {
+            if name != r && name.eq_ignore_ascii_case(r) {
+                return Some(format!(
+                    "{name:?} is a case variant of the reserved filename {r:?}"
+                ));
+            }
+        }
+    }
+    let name = rel.file_name()?.to_str()?;
+    if name.len() > 3 {
+        let ext = &name[name.len() - 3..];
+        if ext.eq_ignore_ascii_case(".md") && ext != ".md" {
+            return Some(format!(
+                "{name:?} spells the .md extension as {ext:?} — the link grammar strips/appends a byte-exact lowercase `.md`, so links to this page would never resolve; use `.md`"
+            ));
+        }
+    }
+    None
+}
+
+/// Scan for an on-disk entry that collides with `rel` on a
+/// case-insensitive filesystem: the first path component matching an
+/// existing sibling ASCII-case-insensitively without being byte-equal.
+///
+/// The server stores wikis on a case-sensitive filesystem, but smart
+/// consumers replicate them onto Windows/macOS mirrors where `Setup.md`
+/// and `setup.md` are the SAME file — letting both exist server-side
+/// would make the next mirror pull silently clobber one with the other.
+/// Page-creation paths refuse the write and echo the existing spelling
+/// back to the caller instead.
+///
+/// Best-effort: an unreadable directory yields `None` (the write that
+/// follows will surface the real IO error).
+#[must_use]
+pub fn page_case_conflict(abs_dir: &Path, rel: &Path) -> Option<String> {
+    let mut cur = abs_dir.to_path_buf();
+    let mut prefix = PathBuf::new();
+    for comp in rel.components() {
+        let std::path::Component::Normal(s) = comp else {
+            return None;
+        };
+        if cur.join(s).exists() {
+            cur.push(s);
+            prefix.push(s);
+            continue;
+        }
+        let entries = std::fs::read_dir(&cur).ok()?;
+        let name = s.to_string_lossy();
+        for e in entries.flatten() {
+            let existing = e.file_name();
+            if existing.to_string_lossy().eq_ignore_ascii_case(&name) {
+                let found = prefix.join(&existing).to_string_lossy().replace('\\', "/");
+                return Some(format!(
+                    "case-collides with existing `{found}` — a case-insensitive mirror treats them as the same file; reuse that exact spelling"
+                ));
+            }
+        }
+        // Nothing at this level, so no deeper component can exist either.
+        return None;
+    }
+    None
+}
+
+/// Resolve `rel` under `abs_dir` the way a case-insensitive filesystem
+/// (Obsidian on Windows/macOS) would.
+///
+/// Byte-exact match first, else the UNIQUE ASCII-case-insensitive match
+/// at each level. Returns the on-disk relative path, or `None` when a
+/// component is missing, ambiguous, or the final target is not a file.
+///
+/// Keeps server-side wikilink resolution in lockstep with the local
+/// mirror: a link whose case drifted from the filename still resolves
+/// instead of silently dropping as a dead rail.
+#[must_use]
+pub fn resolve_page_case_insensitive(abs_dir: &Path, rel: &Path) -> Option<PathBuf> {
+    let mut cur = abs_dir.to_path_buf();
+    let mut resolved = PathBuf::new();
+    for comp in rel.components() {
+        let std::path::Component::Normal(s) = comp else {
+            return None;
+        };
+        if cur.join(s).exists() {
+            cur.push(s);
+            resolved.push(s);
+            continue;
+        }
+        let name = s.to_string_lossy();
+        let mut matched: Option<std::ffi::OsString> = None;
+        for e in std::fs::read_dir(&cur).ok()?.flatten() {
+            let f = e.file_name();
+            if f.to_string_lossy().eq_ignore_ascii_case(&name) {
+                if matched.is_some() {
+                    return None;
+                }
+                matched = Some(f);
+            }
+        }
+        let m = matched?;
+        cur.push(&m);
+        resolved.push(&m);
+    }
+    cur.is_file().then_some(resolved)
 }
 
 // ---------- `_internal.*` thin wrappers ----------
@@ -2667,7 +2805,6 @@ mod tests {
             "../escape.md",
             "/abs/escape.md",
             "deep/../escape.md",
-            "Caps.md",
             "weird name.md",
             ".hidden.md",
         ] {
@@ -2677,6 +2814,10 @@ mod tests {
                 "{bad}"
             );
         }
+        // Uppercase is safe (smart wikis keep imported casing) — a
+        // missing `Caps.md` is a 404, not an unsafe path.
+        let res = h.read_page(Path::new("Caps.md"));
+        assert!(matches!(res, Err(WikiError::PageNotFound { .. })));
     }
 
     // ---------- resolve_scope_principal ----------
@@ -2873,6 +3014,8 @@ mod tests {
         assert!(is_safe_page_path(Path::new("intro.md")));
         assert!(is_safe_page_path(Path::new("recipes/pasta.md")));
         assert!(is_safe_page_path(Path::new("adr-024/proposal.md")));
+        assert!(is_safe_page_path(Path::new("Caps.md")));
+        assert!(is_safe_page_path(Path::new("Docs/API-Reference.md")));
     }
 
     #[test]
@@ -2881,8 +3024,73 @@ mod tests {
         assert!(!is_safe_page_path(Path::new("..")));
         assert!(!is_safe_page_path(Path::new("../escape.md")));
         assert!(!is_safe_page_path(Path::new("/abs/escape.md")));
-        assert!(!is_safe_page_path(Path::new("Caps.md")));
         assert!(!is_safe_page_path(Path::new("space name.md")));
         assert!(!is_safe_page_path(Path::new(".hidden")));
+        assert!(!is_safe_page_path(Path::new("città.md")));
+    }
+
+    // ---------- case hazards / conflicts ----------
+
+    #[test]
+    fn case_hazard_flags_reserved_variants_and_upper_md_extension() {
+        assert!(page_path_case_hazard(Path::new("_Meta.md")).is_some());
+        assert!(page_path_case_hazard(Path::new("sub/_META.md")).is_some());
+        assert!(page_path_case_hazard(Path::new("RULES.md")).is_some());
+        assert!(page_path_case_hazard(Path::new("_Briefing.md")).is_some());
+        assert!(page_path_case_hazard(Path::new("notes.MD")).is_some());
+        assert!(page_path_case_hazard(Path::new("notes.Md")).is_some());
+        // Byte-exact reserved names are caller policy, not a hazard.
+        assert!(page_path_case_hazard(Path::new("_meta.md")).is_none());
+        assert!(page_path_case_hazard(Path::new("rules.md")).is_none());
+        assert!(page_path_case_hazard(Path::new("_briefing.md")).is_none());
+        assert!(page_path_case_hazard(Path::new("Setup.md")).is_none());
+        assert!(page_path_case_hazard(Path::new("Docs/Overview.md")).is_none());
+    }
+
+    #[test]
+    fn case_conflict_detects_existing_case_variants() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("setup.md"), "x").unwrap();
+        std::fs::create_dir(dir.join("recipes")).unwrap();
+        std::fs::write(dir.join("recipes/pasta.md"), "x").unwrap();
+
+        // Same name, different case → conflict naming the existing file.
+        let c = page_case_conflict(dir, Path::new("Setup.md")).unwrap();
+        assert!(c.contains("setup.md"), "{c}");
+        // Directory component case variant → conflict too.
+        assert!(page_case_conflict(dir, Path::new("Recipes/tarta.md")).is_some());
+        // Byte-exact target (exists or not) → no conflict.
+        assert!(page_case_conflict(dir, Path::new("setup.md")).is_none());
+        assert!(page_case_conflict(dir, Path::new("recipes/pasta.md")).is_none());
+        assert!(page_case_conflict(dir, Path::new("recipes/risotto.md")).is_none());
+        assert!(page_case_conflict(dir, Path::new("brand-new.md")).is_none());
+        // Nested path under a missing directory → nothing to collide with.
+        assert!(page_case_conflict(dir, Path::new("new-dir/page.md")).is_none());
+    }
+
+    #[test]
+    fn resolve_case_insensitive_prefers_exact_then_unique_fold() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir(dir.join("Docs")).unwrap();
+        std::fs::write(dir.join("Docs/Setup.md"), "x").unwrap();
+
+        // Exact hit resolves as-is.
+        assert_eq!(
+            resolve_page_case_insensitive(dir, Path::new("Docs/Setup.md")),
+            Some(PathBuf::from("Docs/Setup.md"))
+        );
+        // Case-drifted link resolves to the on-disk spelling.
+        assert_eq!(
+            resolve_page_case_insensitive(dir, Path::new("docs/setup.md")),
+            Some(PathBuf::from("Docs/Setup.md"))
+        );
+        // Missing target stays unresolved; a directory is not a page.
+        assert!(resolve_page_case_insensitive(dir, Path::new("docs/other.md")).is_none());
+        assert!(resolve_page_case_insensitive(dir, Path::new("docs")).is_none());
+        // Two entries differing only by case → ambiguous, refuse.
+        std::fs::write(dir.join("Docs/SETUP.md"), "x").unwrap();
+        assert!(resolve_page_case_insensitive(dir, Path::new("docs/setup.md")).is_none());
     }
 }

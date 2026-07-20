@@ -254,7 +254,7 @@ fn wiki_read() -> Tool {
             "properties": {
                 "wiki_id": { "type": "string" },
                 "sender_id": { "type": "string" },
-                "path": { "type": "string", "description": "Page path relative to the wiki directory (default `index.md`). Safe relative paths only (lowercase, no traversal)." },
+                "path": { "type": "string", "description": "Page path relative to the wiki directory (default `index.md`). Safe relative paths only (`[A-Za-z0-9._-]` components, no traversal)." },
                 "include_archived": { "type": "boolean", "default": false },
                 "format": { "type": "string", "enum": ["markdown", "json_blocks"], "default": "markdown" }
             }

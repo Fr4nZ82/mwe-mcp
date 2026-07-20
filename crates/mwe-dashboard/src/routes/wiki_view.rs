@@ -1192,16 +1192,21 @@ pub fn resolve_wikilink_href(
 }
 
 /// The view-route href for page `slug` of the wiki at `abs_dir` — `None`
-/// unless the slug maps to a safe path whose file exists.
+/// unless the slug maps to a safe path whose file exists. Existence is
+/// checked Obsidian-style (byte-exact first, else the unique
+/// case-insensitive match, per
+/// [`mwe_core::wiki::resolve_page_case_insensitive`]) and the href
+/// carries the on-disk spelling.
 fn page_href(abs_dir: &std::path::Path, wiki_id: &str, slug: &str) -> Option<String> {
     let rel = PathBuf::from(format!("{slug}.md"));
-    if !mwe_core::wiki::is_safe_page_path(&rel) || !abs_dir.join(&rel).is_file() {
+    if !mwe_core::wiki::is_safe_page_path(&rel) {
         return None;
     }
+    let resolved = mwe_core::wiki::resolve_page_case_insensitive(abs_dir, &rel)?;
     Some(format!(
         "/dashboard/wiki/{}/view/{}",
         encode_path_segments(wiki_id),
-        encode_path_segments(&format!("{slug}.md"))
+        encode_path_segments(&resolved.to_string_lossy().replace('\\', "/"))
     ))
 }
 

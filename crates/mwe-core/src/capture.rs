@@ -95,6 +95,20 @@ pub enum CaptureError {
         path: PathBuf,
     },
 
+    /// Creating this page would collide with an existing page or a
+    /// reserved filename on a case-insensitive filesystem (the smart
+    /// consumer's local mirror), or its `.md` extension is not spelled
+    /// in the byte-exact lowercase form the link grammar strips and
+    /// re-appends. Refused at create time so the server and the mirror
+    /// can never disagree about which file it is.
+    #[error("capture page path {path:?}: {reason}")]
+    PageCaseConflict {
+        /// The offending path the caller supplied.
+        path: PathBuf,
+        /// What it collides with, in caller-echoable prose.
+        reason: String,
+    },
+
     /// Fact id supplied by [`wiki_supersede`] did not resolve to a row
     /// in `fact_index`.
     #[error("capture: previous fact_id {0} not found in fact_index")]
@@ -375,6 +389,19 @@ pub async fn wiki_capture_with_source(
     }
     normalize_sender_attribution(&mut req)?;
     let handle = tree.locate(&req.wiki_id)?;
+    // When the capture would CREATE the page file, refuse names that a
+    // case-insensitive mirror would collapse onto an existing entry or
+    // a reserved file, and `.md` spelled in a case the index ignores.
+    // Appends to an existing byte-exact page carry no such risk.
+    if !handle.abs_dir().join(&req.page).is_file()
+        && let Some(reason) = crate::wiki::page_path_case_hazard(&req.page)
+            .or_else(|| crate::wiki::page_case_conflict(handle.abs_dir(), &req.page))
+    {
+        return Err(CaptureError::PageCaseConflict {
+            path: req.page.clone(),
+            reason,
+        });
+    }
     let wiki_id_str = req.wiki_id.as_str().to_owned();
     tracing::debug!(
         wiki_id = %wiki_id_str,
@@ -730,6 +757,17 @@ pub fn wiki_link(
 
     let handle = tree.locate(in_wiki)?;
     let abs_page = handle.abs_dir().join(in_page);
+    // Same create-time guard as `wiki_capture`: a link append may forge
+    // the source page, and a case-colliding name must never reach disk.
+    if !abs_page.is_file()
+        && let Some(reason) = crate::wiki::page_path_case_hazard(in_page)
+            .or_else(|| crate::wiki::page_case_conflict(handle.abs_dir(), in_page))
+    {
+        return Err(CaptureError::PageCaseConflict {
+            path: in_page.to_path_buf(),
+            reason,
+        });
+    }
     let link_target = target_page.map_or_else(
         || format!("[[{target_wiki}]]"),
         |p| {
@@ -1172,6 +1210,48 @@ mod tests {
         // NULL would read as a pending render to the reindex sweep).
         assert_eq!(row.region_start, Some(region_start));
         assert_eq!(row.region_end, Some(region_end));
+    }
+
+    #[tokio::test]
+    async fn capture_refuses_case_colliding_new_page() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed_alice(&tree);
+        let pool = make_pool().await;
+
+        // Seed `intro.md`, then try to create its case twin: one file on
+        // a case-insensitive mirror, so the capture must refuse.
+        wiki_capture(&tree, &pool, embedder(), sample_request("I love pasta"))
+            .await
+            .expect("seed capture");
+        let mut twin = sample_request("Pizza is fine too");
+        twin.page = PathBuf::from("Intro.md");
+        let err = wiki_capture(&tree, &pool, embedder(), twin)
+            .await
+            .expect_err("case twin must refuse");
+        assert!(
+            matches!(err, CaptureError::PageCaseConflict { .. }),
+            "{err:?}"
+        );
+
+        // A reserved-filename case variant is refused even on empty disk.
+        let mut meta_variant = sample_request("sneaky");
+        meta_variant.page = PathBuf::from("_Meta.md");
+        let err = wiki_capture(&tree, &pool, embedder(), meta_variant)
+            .await
+            .expect_err("reserved case variant must refuse");
+        assert!(
+            matches!(err, CaptureError::PageCaseConflict { .. }),
+            "{err:?}"
+        );
+
+        // A fresh uppercase page with no twin lands byte-faithfully.
+        let mut fresh = sample_request("Notes on the Big Rewrite");
+        fresh.page = PathBuf::from("Rewrite-Notes.md");
+        wiki_capture(&tree, &pool, embedder(), fresh)
+            .await
+            .expect("fresh uppercase page");
+        assert!(dir.path().join("wikis/alice/Rewrite-Notes.md").is_file());
     }
 
     /// DB-row-first write order: when the page write fails after the

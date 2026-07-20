@@ -1382,17 +1382,24 @@ fn linked_wiki_candidates(
                 let rel = PathBuf::from(format!("{slug}.md"));
                 // Vet the page half: safe path + the file actually exists
                 // (a mutant / stale link is a dead rail, not a candidate) +
-                // never the channel-only rules page.
-                if !wiki::is_safe_page_path(&rel)
-                    || is_rules_page_path(&rel)
-                    || !d.abs_dir.join(&rel).is_file()
-                {
+                // never the channel-only rules page. Existence is checked
+                // Obsidian-style — byte-exact first, else the unique
+                // case-insensitive match — so a link whose case drifted
+                // from the filename resolves the same way it does on the
+                // consumer's local mirror instead of dying silently.
+                if !wiki::is_safe_page_path(&rel) {
                     continue;
                 }
-                let (summary, keywords) = reader_page_card(d, &rel, reader_card);
+                let Some(resolved) = wiki::resolve_page_case_insensitive(&d.abs_dir, &rel) else {
+                    continue;
+                };
+                if is_rules_page_path(&resolved) {
+                    continue;
+                }
+                let (summary, keywords) = reader_page_card(d, &resolved, reader_card);
                 out.push(Candidate {
                     wiki_id: link.wiki_id,
-                    page: Some(rel),
+                    page: Some(resolved),
                     origin: "link",
                     summary,
                     keywords,

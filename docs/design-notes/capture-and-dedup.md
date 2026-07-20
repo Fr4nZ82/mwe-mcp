@@ -65,8 +65,13 @@ buffer write side is documented in
 
 1. **Validate**: body non-empty, no literal `{{` / `}}` (markers are
    managed by mwe-mcp, never by the caller); page path passes
-   `is_safe_page_path`.
-2. **Locate**: resolve the `wiki_id` to a `WikiHandle`.
+   `is_safe_page_path` (`[A-Za-z0-9._-]` components, no traversal).
+2. **Locate**: resolve the `wiki_id` to a `WikiHandle`. When the capture
+   would **create** the page file, refuse a path that a case-insensitive
+   mirror would collapse onto an existing entry or a reserved file
+   (`wiki::page_path_case_hazard` + `wiki::page_case_conflict` →
+   `PageCaseConflict`); appends to an existing byte-exact page skip the
+   check.
 3. **Embed**: call the supplied `Arc<dyn Embedder>` on the body. A
    remote-embedder failure short-circuits *before* any durable write.
 4. **Dedup**: fetch every active fact in the wiki **owned by the same
@@ -187,6 +192,7 @@ in the roadmap):
 | `EmptyBody` | body trims to empty |
 | `BodyContainsMarker` | body contains `{{` or `}}` literally |
 | `UnsafePagePath { path }` | `is_safe_page_path` rejected the page |
+| `PageCaseConflict { path, reason }` | creating the page would case-collide with an existing entry / reserved file on a case-insensitive mirror, or the `.md` extension is not lowercase |
 | `PreviousFactNotFound(FactId)` | `wiki_supersede` against an unknown id |
 | `Wiki(WikiError)` | underlying filesystem error |
 | `FactIndex(FactIndexError)` | underlying DB error |

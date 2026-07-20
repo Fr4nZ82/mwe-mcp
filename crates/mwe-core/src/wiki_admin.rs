@@ -56,7 +56,7 @@
 //! [`modello-memoria.md §9`]: ../../../docs/concepts/memory-model.md
 //! [`tool-reference.md §H`]: ../../../docs/protocol/tool-reference.md
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -651,6 +651,12 @@ async fn push_create(
         ));
     }
 
+    // Vet every page path BEFORE the wiki directory is forged: a bad
+    // path surfacing later (inside `write_pages`) would leave a
+    // half-made wiki on disk that the transaction rollback cannot
+    // remove.
+    validate_push_pages(&req.pages)?;
+
     // Parse + dedupe `mark_processed` ids *before* any write.
     // On `Create` the new wiki was empty an instant ago, so a non-empty
     // list always points at briefing items that don't belong here —
@@ -769,6 +775,10 @@ async fn push_upsert(
             });
         }
     }
+
+    // Vet every page path before the pre-image snapshot joins them to
+    // the wiki directory (and before any write).
+    validate_push_pages(&req.pages)?;
 
     // Parse + dedupe `mark_processed` ids up front so a
     // malformed string fails before the on-disk wiki is touched.
@@ -1537,20 +1547,19 @@ pub async fn resolve_read_access(
     Ok(ReadAccessOutcome::Denied { owner })
 }
 
-fn write_pages(
-    dir: &Path,
-    pages: &[PushPage],
-    ops: &mut PushOpsApplied,
-    allow_overwrite: bool,
-) -> Result<(), AdminError> {
-    let mut seen = HashSet::new();
+/// Request-shape validation for the `pages` of a push, run BEFORE any
+/// disk write — `push_create` in particular must reject a bad path
+/// before forging the wiki directory, or the failed create leaves a
+/// half-made wiki on disk that the transaction rollback cannot remove.
+///
+/// Per page: safe path, no `_meta.md`, no case variant of a reserved
+/// filename or of the `.md` extension
+/// ([`crate::wiki::page_path_case_hazard`]), and no two pages in the
+/// same request whose paths differ only by ASCII case — they would be
+/// one file on a smart consumer's case-insensitive local mirror.
+fn validate_push_pages(pages: &[PushPage]) -> Result<(), AdminError> {
+    let mut seen: HashMap<String, &str> = HashMap::with_capacity(pages.len());
     for page in pages {
-        if !seen.insert(page.path.clone()) {
-            return Err(AdminError::InvalidInput(format!(
-                "duplicate page path in push: {}",
-                page.path
-            )));
-        }
         let pb = PathBuf::from(&page.path);
         if !crate::wiki::is_safe_page_path(&pb) {
             return Err(AdminError::InvalidInput(format!(
@@ -1563,11 +1572,51 @@ fn write_pages(
                 "{META_FILENAME} cannot be written via wiki_admin_push"
             )));
         }
+        if let Some(hazard) = crate::wiki::page_path_case_hazard(&pb) {
+            return Err(AdminError::InvalidInput(format!(
+                "page {}: {hazard}",
+                page.path
+            )));
+        }
+        if let Some(prev) = seen.insert(page.path.to_ascii_lowercase(), &page.path) {
+            let msg = if prev == page.path {
+                format!("duplicate page path in push: {}", page.path)
+            } else {
+                format!(
+                    "pages {prev} and {} differ only by case — a case-insensitive mirror treats them as the same file",
+                    page.path
+                )
+            };
+            return Err(AdminError::InvalidInput(msg));
+        }
+    }
+    Ok(())
+}
+
+/// Write `pages` under `dir`. Request-shape validation (safe paths,
+/// reserved names, intra-request duplicates) already ran in
+/// [`validate_push_pages`]; this function only arbitrates against the
+/// CURRENT disk state — the overwrite policy and case collisions with
+/// existing entries ([`crate::wiki::page_case_conflict`]).
+fn write_pages(
+    dir: &Path,
+    pages: &[PushPage],
+    ops: &mut PushOpsApplied,
+    allow_overwrite: bool,
+) -> Result<(), AdminError> {
+    for page in pages {
+        let pb = PathBuf::from(&page.path);
         let abs = dir.join(&pb);
         let existed = abs.exists();
         if existed && !allow_overwrite {
             return Err(AdminError::InvalidInput(format!(
                 "page {} already exists (create mode forbids overwrite)",
+                page.path
+            )));
+        }
+        if !existed && let Some(conflict) = crate::wiki::page_case_conflict(dir, &pb) {
+            return Err(AdminError::InvalidInput(format!(
+                "page {}: {conflict}",
                 page.path
             )));
         }
@@ -2001,6 +2050,124 @@ mod tests {
         .await
         .expect_err("second must reject");
         assert!(matches!(err, AdminError::InvalidInput(_)));
+    }
+
+    #[tokio::test]
+    async fn create_keeps_uppercase_page_paths_byte_faithful() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        let mut req = create_smart_wiki_request("lnprint");
+        req.pages = vec![
+            page("Docs/Setup.md", "# Setup\n"),
+            page("README.md", "# readme\n"),
+        ];
+        let resp = push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
+            .await
+            .expect("uppercase pages create");
+        let handle = tree.locate(&resp.wiki_id).expect("locate");
+        assert!(handle.abs_dir().join("Docs/Setup.md").is_file());
+        assert!(handle.abs_dir().join("README.md").is_file());
+    }
+
+    #[tokio::test]
+    async fn create_rejects_bad_page_paths_before_forging_the_wiki() {
+        // Atomicity: every page path is vetted BEFORE `_meta.md` lands on
+        // disk, so a failed create leaves no half-made wiki directory.
+        let (_dir, tree, pool) = seeded_tree().await;
+        for bad in [
+            "../escape.md", // traversal
+            "_Meta.md",     // case variant of a reserved filename
+            "notes.MD",     // .md extension the index would never pick up
+        ] {
+            let mut req = create_smart_wiki_request("lnprint");
+            req.pages.push(page(bad, "x"));
+            let err = push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
+                .await
+                .expect_err("must reject");
+            assert!(matches!(err, AdminError::InvalidInput(_)), "{bad}: {err:?}");
+            let parent = tree.locate(&WikiId::parse("alice").unwrap()).unwrap();
+            assert!(
+                !parent.abs_dir().join("lnprint").exists(),
+                "{bad}: failed create must not forge the wiki directory"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn create_rejects_pages_differing_only_by_case() {
+        // `Setup.md` and `setup.md` are one file on a case-insensitive
+        // mirror — the request is contradictory, refuse it whole.
+        let (_dir, tree, pool) = seeded_tree().await;
+        let mut req = create_smart_wiki_request("lnprint");
+        req.pages = vec![page("Setup.md", "a"), page("setup.md", "b")];
+        let err = push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
+            .await
+            .expect_err("case twins must reject");
+        match err {
+            AdminError::InvalidInput(msg) => assert!(msg.contains("case"), "{msg}"),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn upsert_rejects_case_collision_with_existing_entries() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        let resp = push(
+            &pool,
+            &tree,
+            &alice_smart(),
+            ActorKind::SmartConsumer,
+            create_smart_wiki_request("lnprint"),
+        )
+        .await
+        .expect("create");
+        let upsert = |pages: Vec<PushPage>| PushRequest {
+            mode: PushMode::Upsert,
+            wiki_id: Some(resp.wiki_id.clone()),
+            parent_wiki_id: None,
+            slug: None,
+            title: None,
+            wiki_type: None,
+            smart: false,
+            project_id: None,
+            pages,
+            deletes: Vec::new(),
+            mark_processed: Vec::new(),
+            expected_op_log_head: None,
+        };
+        // File-level collision: `Index.md` vs the existing `index.md`.
+        let err = push(
+            &pool,
+            &tree,
+            &alice_smart(),
+            ActorKind::SmartConsumer,
+            upsert(vec![page("Index.md", "x")]),
+        )
+        .await
+        .expect_err("file case collision must reject");
+        assert!(matches!(err, AdminError::InvalidInput(_)), "{err:?}");
+        // Directory-level collision: `Modules/` vs the existing `modules/`.
+        let err = push(
+            &pool,
+            &tree,
+            &alice_smart(),
+            ActorKind::SmartConsumer,
+            upsert(vec![page("Modules/extra.md", "x")]),
+        )
+        .await
+        .expect_err("dir case collision must reject");
+        assert!(matches!(err, AdminError::InvalidInput(_)), "{err:?}");
+        // Byte-exact overwrite and a fresh uppercase page both pass.
+        let ok = push(
+            &pool,
+            &tree,
+            &alice_smart(),
+            ActorKind::SmartConsumer,
+            upsert(vec![page("index.md", "v2"), page("Changelog.md", "x")]),
+        )
+        .await
+        .expect("byte-exact + fresh page upsert");
+        assert_eq!(ok.ops_applied.updated, 1);
+        assert_eq!(ok.ops_applied.created, 1);
     }
 
     #[tokio::test]

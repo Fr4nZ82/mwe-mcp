@@ -198,13 +198,29 @@ documents when each gate fires.
    pages in any non-smart wiki from the
    same editor surface that handles smart wikis.
 
+**Page-path rules (both modes).** Every `pages[].path` is vetted by
+`validate_push_pages` **before any disk write**: safe path
+(`is_safe_page_path` — `[A-Za-z0-9._-]` components, uppercase welcome
+so an imported vault keeps its casing byte-for-byte), no `_meta.md`, no
+ASCII-case variant of a reserved filename (`_Meta.md`, `RULES.md`,
+`_Briefing.md`) or of the `.md` extension
+(`wiki::page_path_case_hazard`), and no two pages in one request whose
+paths differ only by case. At write time, creating a page whose path
+case-collides with an existing on-disk entry (`Index.md` vs `index.md`,
+`Modules/` vs `modules/`) is refused with the existing spelling echoed
+back (`wiki::page_case_conflict`) — the server disk is case-sensitive
+but the consumer's local mirror usually is not, and two case-twin
+entries would silently clobber each other on the next pull.
+
 **`mode: create`**:
 [`push_create`](../../crates/mwe-core/src/wiki_admin.rs) derives a
 fresh `wiki_id` via `WikiId::child_of(parent, slug)`, stamps
 `scope = User(caller.sender_id)` + `project_id` into
 `_meta.md.extra`, writes every page via `atomic_write`, refuses
 duplicates (404 if the wiki_id already exists is a sanity
-backstop — the slug derivation should not collide).
+backstop — the slug derivation should not collide). Page paths are
+validated **before** `_meta.md` is forged, so a rejected request
+leaves no half-made wiki directory on disk.
 
 **`mode: upsert`**:
 [`push_upsert`](../../crates/mwe-core/src/wiki_admin.rs) writes the

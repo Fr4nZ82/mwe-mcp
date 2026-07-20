@@ -1019,13 +1019,14 @@ enum CapturePlanError {
 /// 1. the model omits the extension (`"lista_spesa"`) — without a
 ///    trailing `.md` the capture writes an extension-less file that
 ///    Obsidian ignores and `wiki_read` (index-only) never surfaces;
-/// 2. the model emits a name that is not a safe slug (`"Argo"`,
-///    uppercase) — [`is_safe_page_path`] rejects it and the capture
-///    errors out to the consumer with an opaque internal error;
+/// 2. the model emits a name with characters outside the safe charset
+///    (`"lista spesa"`, `"attività"`) — [`is_safe_page_path`] rejects it
+///    and the capture errors out to the consumer with an opaque
+///    internal error;
 /// 3. the model spells the *same* topic differently across turns
-///    (`"lista-spesa"` vs `"lista_spesa"`) — both spellings pass
-///    [`is_safe_page_path`], so one topic fragments into duplicate
-///    near-identical pages.
+///    (`"lista-spesa"` vs `"lista_spesa"`, `"Argo"` vs `"argo"`) — all
+///    spellings pass [`is_safe_page_path`], so one topic fragments into
+///    duplicate near-identical pages.
 ///
 /// Policy: canonicalise through
 /// [`crate::planner::canonical_page_path`] (one canonical spelling per
