@@ -9,6 +9,23 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## [Unreleased]
+
+### Added
+
+- **Per-user timezone — two users, two places, both right.** One
+  deployment-wide `recall.ingest_timezone` is wrong the moment two
+  users live in different zones (London and Sydney hear "tomorrow
+  at 9" eleven hours apart), so the reference-time zone now resolves
+  **per sender**: `enrollment_users.timezone` (new migration 0061) wins
+  over the deployment default, which stays as the fallback; unset both,
+  spoken times read as UTC as before. The admin sets it on the users
+  page (create + edit); the welcome wizard's existing timezone question
+  now also lands in the column (it previously became only a memory
+  fact — the stamping plumbing reads the column, never the memory).
+  A per-turn zone from the consumer (device time, covers travel) is a
+  tracked protocol extension.
+
 ## 1.4.5 — 2026-07-20
 
 ### Added

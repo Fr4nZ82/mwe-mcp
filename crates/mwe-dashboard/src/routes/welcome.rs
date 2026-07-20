@@ -180,6 +180,21 @@ async fn submit(
         }
     };
 
+    // The typed timezone also lands in `enrollment_users.timezone` —
+    // the column that drives reference-time stamping at ingest. The
+    // primer clause records it as a memory *fact*, but the stamping
+    // plumbing reads the column, never the memory. Light shape check
+    // only; a non-timezone-looking value still completes the wizard
+    // and just skips the column (the primer fact remains).
+    let tz = form.timezone.trim();
+    if !tz.is_empty() && tz.len() <= 64 && !tz.chars().any(char::is_whitespace) {
+        sqlx::query("UPDATE enrollment_users SET timezone = ? WHERE user_id = ?")
+            .bind(tz)
+            .bind(&user.sender_id)
+            .execute(&state.pool)
+            .await?;
+    }
+
     // Mark the wizard done so subsequent logins go straight to home.
     sqlx::query("UPDATE user_credentials SET profile_initialized = 1 WHERE user_id = ?")
         .bind(&user.sender_id)

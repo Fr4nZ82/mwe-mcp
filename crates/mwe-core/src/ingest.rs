@@ -2574,7 +2574,7 @@ fn push_reference_time(
     }
 }
 
-#[allow(clippy::too_many_lines)] // a sequential context-bundle builder; one block per section reads top-to-bottom, splitting hides the layout
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // a sequential context-bundle builder; one block per section reads top-to-bottom, splitting hides the layout — and each per-sender input is one section, so the argument list IS the section list
 fn build_prompt(
     request: &IngestRequest,
     recall_hits: &[RecallHit],
@@ -2582,6 +2582,7 @@ fn build_prompt(
     sender_groups: &[(String, Option<String>)],
     known_users: &[enrollment::EnrolledUserLite],
     sender_rules: Option<&str>,
+    sender_timezone: Option<&str>,
     now: chrono::DateTime<chrono::Utc>,
     policy: &IngestPolicy,
 ) -> String {
@@ -2607,7 +2608,13 @@ fn build_prompt(
              `recalled_memory` already holds.\n",
         );
     }
-    push_reference_time(&mut out, now, policy.ingest_timezone.as_deref());
+    // Reference-time zone, most specific wins: the sender's own zone
+    // (enrollment) over the deployment default (`recall.ingest_timezone`).
+    push_reference_time(
+        &mut out,
+        now,
+        sender_timezone.or(policy.ingest_timezone.as_deref()),
+    );
     if let Some(choice) = &request.disambig_choice {
         out.push_str("disambig_choice: ");
         out.push_str(choice);
@@ -4237,6 +4244,15 @@ pub async fn wiki_ingest_message(
             .await
             .map_err(|e| IngestError::Recall(RecallError::Db(e)))?,
     };
+    // Timezone resolution (reference-time stamping): the sender's own
+    // zone (`enrollment_users.timezone` — users page / welcome wizard)
+    // wins over the deployment-wide `recall.ingest_timezone` fallback
+    // applied inside `build_prompt`; absent both, spoken wall-clock
+    // times are read as UTC. A per-turn zone from the consumer (device
+    // time, covers travel) is a tracked protocol extension.
+    let sender_timezone = enrollment::timezone_for(pool, &request.sender_id)
+        .await
+        .map_err(|e| IngestError::Recall(RecallError::Db(e)))?;
     let language_directive = locale::render_language_directive(resolved_locale.as_deref());
     let system_prompt = prompts::render(
         "ingest",
@@ -4298,6 +4314,7 @@ pub async fn wiki_ingest_message(
         &sender_groups_scoped,
         &known_users,
         sender_policy.as_deref(),
+        sender_timezone.as_deref(),
         turn_now,
         policy,
     );
@@ -6031,7 +6048,17 @@ mod tests {
         let policy = IngestPolicy::default();
         let hit_id = "018f1234-5678-7abc-9def-0123456789ab";
         let hits = vec![sample_recall_hit(hit_id)];
-        let prompt = build_prompt(&request, &hits, &[], &[], &[], None, now_fixture(), &policy);
+        let prompt = build_prompt(
+            &request,
+            &hits,
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            now_fixture(),
+            &policy,
+        );
         assert!(prompt.contains("recalled_memory:"));
         assert!(
             prompt.contains(&format!("fact_id: {hit_id}")),
@@ -6058,6 +6085,7 @@ mod tests {
             &[],
             &[],
             &[],
+            None,
             None,
             now_fixture(),
             &policy,
@@ -6097,6 +6125,7 @@ mod tests {
             &groups,
             &[],
             None,
+            None,
             now_fixture(),
             &policy,
         );
@@ -6124,7 +6153,17 @@ mod tests {
         let policy = IngestPolicy::default();
 
         // Absent → explicit (none).
-        let none = build_prompt(&request, &[], &[], &[], &[], None, now_fixture(), &policy);
+        let none = build_prompt(
+            &request,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            now_fixture(),
+            &policy,
+        );
         assert!(none.contains("sender_rules:\n  (none)"));
 
         // Present → the policy body is injected verbatim under the section.
@@ -6136,6 +6175,7 @@ mod tests {
             &[],
             &[],
             Some(rules),
+            None,
             now_fixture(),
             &policy,
         );
@@ -6151,6 +6191,7 @@ mod tests {
             &[],
             &[],
             Some(&long),
+            None,
             now_fixture(),
             &policy,
         );
@@ -6183,6 +6224,7 @@ mod tests {
             &[],
             &known,
             None,
+            None,
             now_fixture(),
             &policy,
         );
@@ -6197,7 +6239,17 @@ mod tests {
     fn build_prompt_renders_none_when_no_known_users() {
         let request = req("ciao", "alice");
         let policy = IngestPolicy::default();
-        let prompt = build_prompt(&request, &[], &[], &[], &[], None, now_fixture(), &policy);
+        let prompt = build_prompt(
+            &request,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            now_fixture(),
+            &policy,
+        );
         assert!(prompt.contains("known_users:\n  (none)"));
     }
 
@@ -6208,7 +6260,17 @@ mod tests {
     fn build_prompt_renders_none_when_sender_has_no_groups() {
         let request = req("ciao", "alice");
         let policy = IngestPolicy::default();
-        let prompt = build_prompt(&request, &[], &[], &[], &[], None, now_fixture(), &policy);
+        let prompt = build_prompt(
+            &request,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            now_fixture(),
+            &policy,
+        );
         assert!(prompt.contains("sender_groups:\n  (none)"));
     }
 
@@ -6230,6 +6292,7 @@ mod tests {
             &[],
             &groups,
             &[],
+            None,
             None,
             now_fixture(),
             &policy,
@@ -6322,6 +6385,7 @@ mod tests {
             &[],
             &[],
             None,
+            None,
             now_fixture(),
             &policy,
         );
@@ -6342,7 +6406,17 @@ mod tests {
         // date ("giovedì alle 17") into a concrete `due_at` for a wiki-cron.
         let request = req("giovedì alle 17 dal dentista", "alice");
         let policy = IngestPolicy::default();
-        let prompt = build_prompt(&request, &[], &[], &[], &[], None, now_fixture(), &policy);
+        let prompt = build_prompt(
+            &request,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            now_fixture(),
+            &policy,
+        );
         assert!(
             prompt.contains("current_time: 2026-06-04T12:00:00Z (Thursday)"),
             "missing reference-time anchor:\n{prompt}"
@@ -6355,7 +6429,17 @@ mod tests {
         // byte the historical behaviour (no `user_timezone:` line).
         let request = req("alle 16 prendo il pane", "alice");
         let policy = IngestPolicy::default();
-        let prompt = build_prompt(&request, &[], &[], &[], &[], None, now_fixture(), &policy);
+        let prompt = build_prompt(
+            &request,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            now_fixture(),
+            &policy,
+        );
         assert!(
             !prompt.contains("user_timezone:"),
             "unset timezone must not emit a user_timezone line:\n{prompt}"
@@ -6371,7 +6455,17 @@ mod tests {
             ingest_timezone: Some("Europe/Rome".to_owned()),
             ..IngestPolicy::default()
         };
-        let prompt = build_prompt(&request, &[], &[], &[], &[], None, now_fixture(), &policy);
+        let prompt = build_prompt(
+            &request,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            now_fixture(),
+            &policy,
+        );
         assert!(
             prompt.contains("current_time: 2026-06-04T12:00:00Z (Thursday)"),
             "the UTC anchor must remain:\n{prompt}"
@@ -6379,6 +6473,39 @@ mod tests {
         assert!(
             prompt.contains("user_timezone: Europe/Rome"),
             "missing user_timezone line:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn build_prompt_sender_timezone_wins_over_deployment_default() {
+        // Two users of the same deployment can live in different zones
+        // (the founder in London, another user in Sydney): the sender's
+        // own zone (`enrollment_users.timezone`) overrides the
+        // deployment-wide `recall.ingest_timezone`; without one, the
+        // deployment default still applies.
+        let request = req("ricordamelo domani alle 9", "carol");
+        let policy = IngestPolicy {
+            ingest_timezone: Some("Europe/London".to_owned()),
+            ..IngestPolicy::default()
+        };
+        let prompt = build_prompt(
+            &request,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            Some("Australia/Sydney"),
+            now_fixture(),
+            &policy,
+        );
+        assert!(
+            prompt.contains("user_timezone: Australia/Sydney"),
+            "sender zone must win:\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("Europe/London"),
+            "deployment default must not leak alongside:\n{prompt}"
         );
     }
 
@@ -6392,7 +6519,17 @@ mod tests {
             timestamp: None,
         });
         let policy = IngestPolicy::default();
-        let prompt = build_prompt(&request, &[], &[], &[], &[], None, now_fixture(), &policy);
+        let prompt = build_prompt(
+            &request,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            now_fixture(),
+            &policy,
+        );
         // The truncated body should end with the ellipsis sentinel.
         assert!(prompt.contains('…'));
     }
@@ -6411,7 +6548,17 @@ mod tests {
             max_recent_messages: 3,
             ..IngestPolicy::default()
         };
-        let prompt = build_prompt(&request, &[], &[], &[], &[], None, now_fixture(), &policy);
+        let prompt = build_prompt(
+            &request,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            now_fixture(),
+            &policy,
+        );
         // We should see only the last 3 (m7, m8, m9), not the earlier ones.
         assert!(prompt.contains("m7"));
         assert!(prompt.contains("m9"));
@@ -9316,7 +9463,17 @@ mod tests {
     fn build_prompt_marks_assistant_authored_turn_only() {
         let policy = IngestPolicy::default();
         let user_req = req("ciao", "alice");
-        let user_prompt = build_prompt(&user_req, &[], &[], &[], &[], None, now_fixture(), &policy);
+        let user_prompt = build_prompt(
+            &user_req,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            now_fixture(),
+            &policy,
+        );
         assert!(
             !user_prompt.contains("author:"),
             "a user turn injects no author line — the default path is untouched"
@@ -9326,7 +9483,17 @@ mod tests {
             author: MessageRole::Assistant,
             ..req("la mia risposta", "alice")
         };
-        let asst_prompt = build_prompt(&asst_req, &[], &[], &[], &[], None, now_fixture(), &policy);
+        let asst_prompt = build_prompt(
+            &asst_req,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            now_fixture(),
+            &policy,
+        );
         assert!(
             asst_prompt.contains("author: assistant"),
             "an assistant turn injects the author line"
@@ -10278,6 +10445,7 @@ mod tests {
                 aliases: Vec::new(),
                 is_admin: false,
                 locale: Some("en-US".to_owned()),
+                timezone: None,
             }],
             groups: Vec::new(),
         };
@@ -10333,6 +10501,7 @@ mod tests {
                 aliases: Vec::new(),
                 is_admin: false,
                 locale: Some("it-IT".to_owned()),
+                timezone: None,
             }],
             groups: Vec::new(),
         };

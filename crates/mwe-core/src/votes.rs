@@ -637,6 +637,7 @@ mod tests {
             aliases: Vec::new(),
             is_admin: false,
             locale: None,
+            timezone: None,
         }
     }
 

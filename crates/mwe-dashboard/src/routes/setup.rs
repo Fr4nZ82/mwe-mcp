@@ -86,6 +86,7 @@ pub async fn submit(
             aliases: Vec::new(),
             is_admin: true,
             locale: None,
+            timezone: None,
         }],
         groups: Vec::new(),
     };

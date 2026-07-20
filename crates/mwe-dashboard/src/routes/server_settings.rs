@@ -94,15 +94,18 @@ pub(super) fn sections(cfg: &Config) -> Markup {
 fn timezone_section(current: Option<&str>) -> Markup {
     html! {
         section.ingest-timezone-settings {
-            h2 { "Ingest timezone" }
+            h2 { "Ingest timezone (deployment default)" }
             p.muted {
-                "IANA timezone of the deployment's users (e.g. "
-                code { "Europe/Rome" } ") — the " code { "recall.ingest_timezone" }
-                " key. The ingest classifier stamps wall-clock times the user "
-                "speaks (\"domani alle 9\") in this zone; unset, they are read "
-                "as UTC. Hot: applies from the next ingest turn, no restart. "
-                "The " code { "MWE_INGEST_TIMEZONE" } " env var is the "
-                "fallback when this is unset."
+                "Default IANA timezone (e.g. " code { "Europe/Rome" } ") — the "
+                code { "recall.ingest_timezone" } " key. The ingest classifier "
+                "stamps wall-clock times the user speaks (\"domani alle 9\") in "
+                "this zone; unset, they are read as UTC. A user's " strong { "own" }
+                " timezone — set on the " a href="/dashboard/users" { "users page" }
+                " or by the welcome wizard — always wins over this default, so "
+                "users in different places each get their zone. Hot: applies "
+                "from the next ingest turn, no restart. The "
+                code { "MWE_INGEST_TIMEZONE" } " env var is the fallback when "
+                "this is unset."
             }
             form action="/dashboard/settings/ingest-timezone" method="post" {
                 p {

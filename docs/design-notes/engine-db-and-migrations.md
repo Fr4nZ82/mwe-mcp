@@ -2,7 +2,7 @@
 title: engine.db and the migrations layer — design notes
 area: design-notes
 status: implemented
-last_review: "2026-07-03"
+last_review: "2026-07-20"
 ---
 
 # `engine.db` and the migrations layer
@@ -382,7 +382,11 @@ CREATE TABLE enrollment_users (
     -- added by 0050 (explicit agent marker — a consumer agent's OWN identity,
     -- e.g. the system user a standard token binds; mutually exclusive with a
     -- user_credentials login, enforced in both directions):
-    is_agent INTEGER NOT NULL DEFAULT 0
+    is_agent INTEGER NOT NULL DEFAULT 0,
+    -- added by 0061 (per-user IANA zone for ingest reference-time stamping;
+    -- wins over the deployment-wide `recall.ingest_timezone`; set from the
+    -- users page or the welcome wizard):
+    timezone TEXT
 );
 -- 0046 dropped the cosmetic free-prose blurbs: enrollment_users.profile
 -- and enrollment_groups.description. The wiki title is now the id; a
@@ -1044,6 +1048,8 @@ directory. One annotated row per migration:
 | `0057_recall_traces` | The `recall_traces` journal — one row per recall run (`source` ingest/navigate, `sender_id`, versioned JSON `payload` = `mwe_core::recall_trace::RecallTrace`: hits, entry-point fan, per-hop funnel journal, injected block verbatim), written by the ingest turn and the `wiki_navigate` tool, pruned to the newest 10; behind the admin Traces page + 3D replay viewer — see [recall-pipeline.md](recall-pipeline.md#recall-traces--the-last-10-journal). |
 | `0058_recall_log` | Self-correcting REM's detection floor — `recall_log` (one lean row per ingest turn: surfaced fact ids + navigated page paths, 30-day prune), `recall_misses` (one row per judge-free restated-known-fact miss, 90-day prune), and the `capture_buffer.recall_log_id` turn linkage the promotion-time detector reads — see [recall-pipeline.md](recall-pipeline.md#the-hindsight-log--the-judge-free-miss-signal). |
 | `0059_recall_repair` | The repair stages on top of 0058 — `recall_log.topics` (the turn's classifier seeds, the query side of a gate replay), `recall_misses.{status,resolution,seed_topics}` (the miss lifecycle `new → repaired \| queued \| discarded \| stale` + the receipt anchor), and the status index — consumed by the REM [recall-repair sub-job](rem-cycle.md#recall-repair-sub-job--self-correcting-rems-repair-stage). |
+| `0060_recent_exchanges` | The `recent_exchanges` buffer behind the cross-consumer recent window (group 43) — a bounded, TTL'd per-user serving buffer of the exchanges the per-turn ingest already receives (`user_id`, `consumer_id`, `channel`, `author`, `text`, `occurred_at` + the per-user index). **Not** a transcript store: never indexed, never embedded, never REM-processed; cap and TTL enforced in the write path (`mwe_core::recent_window`). |
+| `0061_enrollment_users_timezone` | Per-user IANA `timezone` on `enrollment_users` for ingest reference-time stamping — the sender's zone wins over the deployment-wide `recall.ingest_timezone` (two users of one deployment can live in different places). Set from the users page or the welcome wizard; a per-turn zone from the consumer is a tracked protocol extension. |
 
 ## How the runtime gets here
 

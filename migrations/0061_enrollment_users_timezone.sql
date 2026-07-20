@@ -1,0 +1,25 @@
+-- 0061_enrollment_users_timezone — optional per-user IANA timezone for reference-time stamping
+--
+-- Source of truth: [engine DB and migrations](../wiki/design-notes/engine-db-and-migrations.md).
+--
+-- The ingest classifier stamps wall-clock times the user speaks
+-- ("tomorrow at 9") against a reference timezone. One deployment-wide
+-- zone (`recall.ingest_timezone`) is wrong the moment two users are in
+-- different places, so the zone resolves per sender, in order:
+--
+--   1. this column (`enrollment_users.timezone`), the per-user zone
+--      the admin (users page) or the user (welcome wizard) configured,
+--   2. `recall.ingest_timezone` — the deployment-wide default,
+--   3. unset → the classifier sees only the UTC `current_time` anchor
+--      (the historical behaviour).
+--
+-- A per-turn zone supplied by the consumer (device time, covers
+-- travel) is a tracked protocol extension, not this column.
+--
+-- Nullable + no default: an unset value falls through to the
+-- deployment default, preserving today's semantics everywhere the
+-- column is not populated. IANA names are stored verbatim
+-- (`Europe/Rome`, `Australia/Sydney`, ...); the value reaches the
+-- classifier prompt as-is.
+
+ALTER TABLE enrollment_users ADD COLUMN timezone TEXT;

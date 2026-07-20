@@ -2,7 +2,7 @@
 title: Ingest pipeline — wiki_ingest_message
 area: design-notes
 status: implemented
-last_review: "2026-07-19"
+last_review: "2026-07-20"
 ---
 
 # Ingest pipeline
@@ -209,9 +209,15 @@ files with a concrete date in its `body`. The instant is the turn's **semantic
 clock**, resolved once per turn: `metadata.occurred_at` when the consumer set
 it (a backlog replay or import re-lives the turn at utterance time — relative
 dates, validity windows and the due-soon window all read the same clock),
-otherwise the server's now. Operational timestamps (`created_at`) stay
-wall-clock: the audit trail records when the engine saw the message, not when
-it was uttered.
+otherwise the server's now. A `user_timezone:` line rides along when a zone
+resolves, most specific wins: the **sender's own** zone
+(`enrollment_users.timezone` — users page / welcome wizard; two users of one
+deployment can live in different places) over the deployment-wide
+`recall.ingest_timezone`; absent both, spoken wall-clock times are read as UTC
+(the historical behaviour). A per-turn zone from the consumer (device time,
+covers travel) is a tracked protocol extension. Operational timestamps
+(`created_at`) stay wall-clock: the audit trail records when the engine saw
+the message, not when it was uttered.
 
 > **Forward direction (decided 2026-06-03, not yet built).** The standalone
 > proposal **GUI page** (`/dashboard/proposals` with its questionnaire/apply

@@ -58,8 +58,8 @@ pub fn router() -> Router<DashboardState> {
 type UserListRow = (String, i64, Option<String>, Option<String>, Option<String>);
 
 /// Raw tuple from the edit-form load query (`email`, `aliases` JSON,
-/// `is_admin`).
-type EditUserRow = (Option<String>, Option<String>, i64, i64);
+/// `is_admin`, `require_2fa`, `timezone`).
+type EditUserRow = (Option<String>, Option<String>, i64, i64, Option<String>);
 
 /// Row shape used by the listing page.
 #[derive(Debug)]
@@ -193,6 +193,27 @@ pub struct NewUserSubmission {
     pub email: String,
     #[serde(default)]
     pub aliases: String,
+    /// Optional IANA timezone (`Europe/Rome`) — where this user lives.
+    /// Used to stamp wall-clock times they speak during ingest; empty →
+    /// the deployment-wide `recall.ingest_timezone` applies.
+    #[serde(default)]
+    pub timezone: String,
+}
+
+/// Light shape check for a typed IANA timezone field: empty → `None`;
+/// otherwise a single token of at most 64 chars. The value reaches the
+/// classifier prompt verbatim, so "obviously not a timezone" is the
+/// gate — full IANA validation is deliberately not attempted (same
+/// stance as the deployment-wide field on the Settings page).
+fn parse_timezone_field(raw: &str) -> std::result::Result<Option<String>, String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    if t.len() > 64 || t.chars().any(char::is_whitespace) {
+        return Err("Timezone must be a single IANA name like Europe/Rome.".to_owned());
+    }
+    Ok(Some(t.to_owned()))
 }
 
 async fn new_form(admin: AdminUser) -> Html<String> {
@@ -218,6 +239,13 @@ async fn new_submit(
         return Ok(Html(render_new_form(admin.session(), &form, Some(&msg))).into_response());
     }
 
+    let timezone = match parse_timezone_field(&form.timezone) {
+        Ok(tz) => tz,
+        Err(msg) => {
+            return Ok(Html(render_new_form(admin.session(), &form, Some(&msg))).into_response());
+        },
+    };
+
     let aliases = parse_aliases(&form.aliases);
     let aliases_json = serde_json::to_string(&aliases)
         .map_err(|e| DashboardError::Internal(format!("encoding aliases: {e}")))?;
@@ -229,12 +257,13 @@ async fn new_submit(
 
     let mut tx = state.pool.begin().await?;
     sqlx::query(
-        "INSERT INTO enrollment_users (user_id, email, aliases, is_admin)
-         VALUES (?, ?, ?, 0)",
+        "INSERT INTO enrollment_users (user_id, email, aliases, is_admin, timezone)
+         VALUES (?, ?, ?, 0, ?)",
     )
     .bind(user_id)
     .bind(email)
     .bind(&aliases_json)
+    .bind(timezone.as_deref())
     .execute(&mut *tx)
     .await?;
     sqlx::query(
@@ -332,6 +361,12 @@ fn render_new_form(
             (components::text_field_ac("email", "Email", "email", &form.email, true, "off"))
             p.help.muted { "The user signs in with this email. Required, and only you (the admin) can change it later." }
             (components::text_field("aliases", "Aliases (comma-separated)", "text", &form.aliases, false))
+            (components::text_field("timezone", "Timezone (IANA, optional)", "text", &form.timezone, false))
+            p.help.muted {
+                "Where this user lives, e.g. " code { "Europe/Rome" } " or "
+                code { "Australia/Sydney" } ". Times they speak (\"tomorrow at 9\") "
+                "are read in this zone; empty = the deployment-wide default."
+            }
             (components::submit("Create user + invitation link"))
         }
 
@@ -438,6 +473,9 @@ pub struct EditUserSubmission {
     pub email: String,
     #[serde(default)]
     pub aliases: String,
+    /// Optional IANA timezone — see [`NewUserSubmission::timezone`].
+    #[serde(default)]
+    pub timezone: String,
     /// Admin "require 2FA on this account" checkbox — present only when
     /// checked (roadmap 28).
     #[serde(default)]
@@ -450,12 +488,14 @@ async fn edit_form(
     Path(user_id): Path<String>,
 ) -> Result<Html<String>> {
     let row: Option<EditUserRow> = sqlx::query_as(
-        "SELECT email, aliases, is_admin, require_2fa FROM enrollment_users WHERE user_id = ?",
+        "SELECT email, aliases, is_admin, require_2fa, timezone
+           FROM enrollment_users WHERE user_id = ?",
     )
     .bind(&user_id)
     .fetch_optional(&state.pool)
     .await?;
-    let (email, aliases_json, is_admin, require_2fa) = row.ok_or(DashboardError::NotFound)?;
+    let (email, aliases_json, is_admin, require_2fa, timezone) =
+        row.ok_or(DashboardError::NotFound)?;
     let aliases: Vec<String> = aliases_json
         .as_deref()
         .map(|s| serde_json::from_str(s).unwrap_or_default())
@@ -463,6 +503,7 @@ async fn edit_form(
     let pre = EditUserSubmission {
         email: email.unwrap_or_default(),
         aliases: aliases.join(", "),
+        timezone: timezone.unwrap_or_default(),
         require_2fa: (require_2fa != 0).then(|| "1".to_owned()),
     };
     let twofa_enabled = crate::twofa::is_enabled(&state.pool, &user_id).await?;
@@ -493,35 +534,49 @@ async fn edit_submit(
 
     let require_2fa = form.require_2fa.is_some();
     let email = form.email.trim();
-    if let Some(msg) = validate_email_for_account(&state, email, Some(&user_id)).await? {
-        // Re-render the edit form with what the admin typed, plus the error.
+    // Re-render the edit form with what the admin typed, plus the error.
+    let reject = |msg: &str, twofa_enabled: bool| {
         let pre = EditUserSubmission {
             email: form.email.clone(),
             aliases: form.aliases.clone(),
+            timezone: form.timezone.clone(),
             require_2fa: require_2fa.then(|| "1".to_owned()),
         };
-        let twofa_enabled = crate::twofa::is_enabled(&state.pool, &user_id).await?;
-        return Ok(Html(render_edit_form(
+        Html(render_edit_form(
             admin.session(),
             &user_id,
             is_admin_raw != 0,
             &pre,
             twofa_enabled,
-            Some(&msg),
+            Some(msg),
         ))
-        .into_response());
+        .into_response()
+    };
+    if let Some(msg) = validate_email_for_account(&state, email, Some(&user_id)).await? {
+        let twofa_enabled = crate::twofa::is_enabled(&state.pool, &user_id).await?;
+        return Ok(reject(&msg, twofa_enabled));
     }
+    let timezone = match parse_timezone_field(&form.timezone) {
+        Ok(tz) => tz,
+        Err(msg) => {
+            let twofa_enabled = crate::twofa::is_enabled(&state.pool, &user_id).await?;
+            return Ok(reject(&msg, twofa_enabled));
+        },
+    };
 
     let aliases = parse_aliases(&form.aliases);
     let aliases_json = serde_json::to_string(&aliases)
         .map_err(|e| DashboardError::Internal(format!("encoding aliases: {e}")))?;
 
     sqlx::query(
-        "UPDATE enrollment_users SET email = ?, aliases = ?, require_2fa = ? WHERE user_id = ?",
+        "UPDATE enrollment_users
+            SET email = ?, aliases = ?, require_2fa = ?, timezone = ?
+          WHERE user_id = ?",
     )
     .bind(email)
     .bind(&aliases_json)
     .bind(i64::from(require_2fa))
+    .bind(timezone.as_deref())
     .bind(&user_id)
     .execute(&state.pool)
     .await?;
@@ -565,6 +620,12 @@ fn render_edit_form(
             (components::text_field_ac("email", "Email", "email", &form.email, true, "off"))
             p.help.muted { "The user's sign-in email. You are the only one who can change it." }
             (components::text_field("aliases", "Aliases (comma-separated)", "text", &form.aliases, false))
+            (components::text_field("timezone", "Timezone (IANA, optional)", "text", &form.timezone, false))
+            p.help.muted {
+                "Where this user lives, e.g. " code { "Europe/Rome" } " or "
+                code { "Australia/Sydney" } ". Times they speak (\"tomorrow at 9\") "
+                "are read in this zone; empty = the deployment-wide default."
+            }
             p {
                 label for="require_2fa" {
                     input id="require_2fa" name="require_2fa" type="checkbox" value="1"

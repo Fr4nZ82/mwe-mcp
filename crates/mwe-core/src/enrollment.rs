@@ -61,6 +61,13 @@ pub struct UserEntry {
     /// admin or the welcome wizard populates it.
     #[serde(default)]
     pub locale: Option<String>,
+    /// Optional IANA timezone (`Europe/Rome`, `Australia/Sydney`, ...)
+    /// used to stamp wall-clock times this user speaks during ingest.
+    /// When unset, the deployment-wide `recall.ingest_timezone`
+    /// applies; unset both, spoken times are read as UTC (migration
+    /// 0061).
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 /// A single group entry
@@ -533,6 +540,29 @@ pub async fn locale_for(pool: &SqlitePool, user_id: &str) -> Result<Option<Strin
     Ok(row.flatten().filter(|s| !s.trim().is_empty()))
 }
 
+/// Look up the IANA timezone configured for `user_id` (admin users
+/// page, or the user's own welcome wizard).
+///
+/// Returns `Ok(None)` for an unknown user, an empty `user_id`, or a
+/// NULL/blank column — all collapse to "no per-user zone", so the
+/// ingest reference-time stamping falls back to the deployment-wide
+/// `recall.ingest_timezone` (and, absent that, to the UTC-only
+/// anchor). Same shape as [`locale_for`], its per-user sibling.
+///
+/// # Errors
+/// - [`sqlx::Error`] for any SQL failure.
+pub async fn timezone_for(pool: &SqlitePool, user_id: &str) -> Result<Option<String>, sqlx::Error> {
+    if user_id.is_empty() {
+        return Ok(None);
+    }
+    let row: Option<Option<String>> =
+        sqlx::query_scalar("SELECT timezone FROM enrollment_users WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.flatten().filter(|s| !s.trim().is_empty()))
+}
+
 /// True when `user_id` is a **system user**.
 ///
 /// A system user is enrolled but has no `user_credentials` account (so it
@@ -726,13 +756,14 @@ pub async fn mirror_to_db(pool: &SqlitePool, file: &EnrollmentFile) -> Result<()
     for user in &file.users {
         let aliases_json = serde_json::to_string(&user.aliases)?;
         sqlx::query(
-            "INSERT INTO enrollment_users (user_id, aliases, is_admin, locale)
-             VALUES (?, ?, ?, ?)",
+            "INSERT INTO enrollment_users (user_id, aliases, is_admin, locale, timezone)
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&user.id)
         .bind(aliases_json)
         .bind(i64::from(user.is_admin))
         .bind(user.locale.as_deref())
+        .bind(user.timezone.as_deref())
         .execute(&mut *tx)
         .await?;
     }
@@ -947,6 +978,7 @@ mod tests {
             aliases: Vec::new(),
             is_admin: false,
             locale: None,
+            timezone: None,
         }
     }
 
@@ -956,6 +988,7 @@ mod tests {
             aliases: aliases.iter().map(|s| (*s).to_owned()).collect(),
             is_admin: false,
             locale: None,
+            timezone: None,
         }
     }
 
@@ -976,12 +1009,14 @@ mod tests {
                     aliases: vec!["Alice".into(), "ali".into()],
                     is_admin: false,
                     locale: Some("it-IT".into()),
+                    timezone: None,
                 },
                 UserEntry {
                     id: "bob".into(),
                     aliases: Vec::new(),
                     is_admin: true,
                     locale: None,
+                    timezone: None,
                 },
             ],
             groups: vec![GroupEntry {
@@ -1431,6 +1466,7 @@ mod tests {
                 aliases: Vec::new(),
                 is_admin: true,
                 locale: None,
+                timezone: None,
             }],
             groups: Vec::new(),
         };
@@ -1788,6 +1824,40 @@ mod tests {
 
         let v = locale_for(&pool, "ghost").await.expect("lookup ghost");
         assert!(v.is_none(), "whitespace-only locale must collapse to None");
+    }
+
+    /// `timezone_for` mirrors `locale_for`: a configured zone
+    /// round-trips through the enrollment mirror, an unset / unknown /
+    /// whitespace value collapses to `None` (fall back to the
+    /// deployment-wide `recall.ingest_timezone`).
+    #[tokio::test]
+    async fn timezone_for_round_trips_and_collapses_blank_to_none() {
+        let pool = crate::db::open_or_init(
+            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
+        )
+        .await
+        .expect("open db");
+
+        let mut file = canonical_file();
+        file.users[0].timezone = Some("Australia/Sydney".to_owned());
+        validate(&file).expect("validate");
+        mirror_to_db(&pool, &file).await.expect("mirror");
+
+        let alice = timezone_for(&pool, "alice").await.expect("lookup alice");
+        assert_eq!(alice.as_deref(), Some("Australia/Sydney"));
+        let bob = timezone_for(&pool, "bob").await.expect("lookup bob");
+        assert!(bob.is_none(), "bob has no timezone configured");
+        let ghost = timezone_for(&pool, "ghost").await.expect("lookup ghost");
+        assert!(ghost.is_none());
+        let anon = timezone_for(&pool, "").await.expect("lookup empty");
+        assert!(anon.is_none());
+
+        sqlx::query("UPDATE enrollment_users SET timezone = '   ' WHERE user_id = 'bob'")
+            .execute(&pool)
+            .await
+            .expect("blank bob");
+        let bob = timezone_for(&pool, "bob").await.expect("lookup bob");
+        assert!(bob.is_none(), "whitespace-only timezone collapses to None");
     }
 
     /// The explicit `is_agent` marker (migration 0050) round-trips, and the

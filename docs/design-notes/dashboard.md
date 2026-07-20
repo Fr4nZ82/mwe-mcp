@@ -231,9 +231,11 @@ operational chat + first-login welcome wizard**.
   its own `/dashboard/settings/*` endpoint) for the YAML config that has
   no page of its own. Four sections, same atomic-YAML save (`.bak` +
   `load_raw` round-trip) as the other editors: **Ingest timezone**
-  (`recall.ingest_timezone`, IANA name — **hot**, swapped into the shared
-  recall handle so the next ingest turn stamps wall-clock times in the
-  right zone; the `MWE_INGEST_TIMEZONE` env var stays the fallback);
+  (`recall.ingest_timezone`, IANA name — the deployment **default**,
+  outranked by a user's own `enrollment_users.timezone` from the users
+  CRUD / welcome wizard; **hot**, swapped into the shared recall handle
+  so the next ingest turn stamps wall-clock times in the right zone;
+  the `MWE_INGEST_TIMEZONE` env var stays the fallback);
   **Dream cadence** (`rem.schedule:` — mode, full/light intervals and
   initial delays, the light-dream backlog trigger); **Logging**
   (`logging:` — level, file rotation, file path); **Document pipeline**

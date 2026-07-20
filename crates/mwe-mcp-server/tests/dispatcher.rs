@@ -414,18 +414,21 @@ async fn wiki_read_projects_acl_per_sender() {
                 aliases: Vec::new(),
                 is_admin: false,
                 locale: None,
+                timezone: None,
             },
             UserEntry {
                 id: "bob".into(),
                 aliases: Vec::new(),
                 is_admin: false,
                 locale: None,
+                timezone: None,
             },
             UserEntry {
                 id: "carol".into(),
                 aliases: Vec::new(),
                 is_admin: false,
                 locale: None,
+                timezone: None,
             },
         ],
         groups: vec![GroupEntry {
@@ -1319,18 +1322,21 @@ async fn forget_fixture() -> (McpState, IdentityProfile, tempfile::TempDir) {
                     aliases: Vec::new(),
                     is_admin: false,
                     locale: None,
+                    timezone: None,
                 },
                 UserEntry {
                     id: "bob".into(),
                     aliases: Vec::new(),
                     is_admin: false,
                     locale: None,
+                    timezone: None,
                 },
                 UserEntry {
                     id: "carol".into(),
                     aliases: Vec::new(),
                     is_admin: false,
                     locale: None,
+                    timezone: None,
                 },
             ],
             groups: vec![GroupEntry {

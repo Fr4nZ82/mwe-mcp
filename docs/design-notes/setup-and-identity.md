@@ -2,7 +2,7 @@
 title: Setup wizard and identity model
 area: design-notes
 status: implemented
-last_review: "2026-07-19"
+last_review: "2026-07-20"
 ---
 
 # Setup wizard and identity model
@@ -255,7 +255,7 @@ chokepoint as a single ingest call.
 | `birthday` | "sono nato il X" |
 | `address` | "vivo a X" |
 | `language` | "la mia lingua principale è X" |
-| `timezone` | "il mio fuso orario è X" |
+| `timezone` | "il mio fuso orario è X" — **and** the value lands in `enrollment_users.timezone` (light shape check), the column that drives per-sender reference-time stamping at ingest; the admin can edit it later from the users page |
 | `pronouns` | "i miei pronomi sono X" |
 | `phone` | "il mio numero di telefono è X" |
 | `occupation` | "lavoro come X" |
@@ -378,12 +378,15 @@ slot and retry.
   subsequent edits to the profile fact happen by editing
   `wikis/<user_id>/index.md` directly (or via the `/dashboard/wiki/:id`
   edit flow).
-- **No typed per-user profile schema** (display_name, avatar,
-  timezone). The enrollment row carries no free-prose blurb: the wizard
-  captures identity data into the wiki **as facts**, not into a
-  structured column promoted to notifications, SSO, and the like. A
-  group's only operator prose is its `scope` (what the ingest
-  classifier routes on).
+- **No typed per-user profile schema** (display_name, avatar, …). The
+  enrollment row carries no free-prose blurb: the wizard captures
+  identity data into the wiki **as facts**, not into structured columns
+  promoted to notifications, SSO, and the like. The two exceptions are
+  the columns the *engine plumbing* needs deterministically — `locale`
+  (prompt LANGUAGE directive) and `timezone` (per-sender reference-time
+  stamping, migration 0061) — which the wizard and the users page also
+  populate. A group's only operator prose is its `scope` (what the
+  ingest classifier routes on).
 
 These gaps are planned future work — see the
 roadmap.
