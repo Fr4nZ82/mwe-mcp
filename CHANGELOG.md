@@ -9,7 +9,7 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
-## [Unreleased]
+## 1.4.5 — 2026-07-20
 
 ### Added
 
