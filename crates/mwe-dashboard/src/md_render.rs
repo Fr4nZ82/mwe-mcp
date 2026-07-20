@@ -47,7 +47,11 @@
 //!    page view from the segmented render, one per fact-backed region)
 //!    become small superscript anchors to the fact's record. Both stay
 //!    literal inside code, and both are inert without a context (the
-//!    chat-reply render never linkifies).
+//!    chat-reply render never linkifies). Regular markdown links go
+//!    through the context's `resolve_md_link` hook so wiki-relative
+//!    `page.md` destinations can be repointed at the `/view/` route
+//!    (browser-relative resolution breaks on the wiki home URL); an
+//!    unresolved destination is kept as authored.
 //!
 //! The exported entry points:
 //!
@@ -80,6 +84,14 @@ pub struct PageRenderContext<'a> {
     /// resolver is expected to build it from validated, URL-encoded
     /// components).
     pub resolve_wikilink: &'a dyn Fn(&str) -> Option<String>,
+    /// Rewrite one regular markdown link destination (the `(…)` part of
+    /// `[label](target)`) to an in-dashboard href. The page surfaces use
+    /// this to point wiki-relative `page.md` links at the canonical
+    /// `/view/` route — the wiki home renders at `/dashboard/wiki/:id`,
+    /// where the browser would resolve them against `/dashboard/wiki/`
+    /// into dead URLs. Return `None` to keep the author's destination
+    /// untouched (absolute URLs, `#anchors`, unresolved targets).
+    pub resolve_md_link: &'a dyn Fn(&str) -> Option<String>,
     /// Rewrite `{{factref=<fact_id>}}` markers into superscript anchors
     /// to `/dashboard/facts/<id>/edit` (the fact's record). Enabled only
     /// on renders whose input was annotated from the segmented render.
@@ -251,7 +263,7 @@ where
                                 inner_text.push_str(t);
                             }
                             flush_text_run(&mut inner_run, &mut inner, ctx);
-                            inner.push(other);
+                            inner.push(rewrite_link_dest(other, ctx));
                         },
                     }
                 }
@@ -305,7 +317,7 @@ where
             },
             // Drop raw HTML from source — safety by construction.
             Event::Html(_) | Event::InlineHtml(_) => {},
-            other => out_events.push(other),
+            other => out_events.push(rewrite_link_dest(other, ctx)),
         }
     }
     flush_text_run(&mut text_run, &mut out_events, ctx);
@@ -313,6 +325,31 @@ where
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, out_events.into_iter());
     html
+}
+
+/// Route one event through the markdown-link rewriter: a `Tag::Link`
+/// start under a [`PageRenderContext`] gets its destination swapped
+/// when `resolve_md_link` resolves it; every other event (and every
+/// context-less render) passes through untouched.
+fn rewrite_link_dest<'a>(event: Event<'a>, ctx: Option<&PageRenderContext<'_>>) -> Event<'a> {
+    let Some(ctx) = ctx else { return event };
+    match event {
+        Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => {
+            let dest_url = (ctx.resolve_md_link)(&dest_url).map_or(dest_url, CowStr::from);
+            Event::Start(Tag::Link {
+                link_type,
+                dest_url,
+                title,
+                id,
+            })
+        },
+        other => other,
+    }
 }
 
 /// The next rewritable token in a text run.
@@ -743,9 +780,17 @@ e un documento {{embed=c-2026-06-12-doc-001.pdf}}.\n",
         }
     }
 
+    /// A fixed relative-link resolver: only `concepts/memory-model.md`
+    /// is a known page of the rendering wiki.
+    fn test_md_link_resolver(dest: &str) -> Option<String> {
+        (dest == "concepts/memory-model.md")
+            .then(|| "/dashboard/wiki/alice/view/concepts/memory-model.md".to_owned())
+    }
+
     fn render_linkified(body: &str) -> String {
         let ctx = PageRenderContext {
             resolve_wikilink: &test_resolver,
+            resolve_md_link: &test_md_link_resolver,
             fact_refs: true,
         };
         render_page(body, false, &ctx, |_| None)
@@ -765,6 +810,34 @@ e un documento {{embed=c-2026-06-12-doc-001.pdf}}.\n",
             "page hop: {html}"
         );
         assert!(!html.contains("[["), "brackets must be consumed: {html}");
+    }
+
+    #[test]
+    fn relative_md_links_rewrite_to_the_view_route() {
+        let html = render_linkified(
+            "[The memory model](concepts/memory-model.md) vs \
+             [ext](https://example.com/x.md) vs [anchor](#top).\n",
+        );
+        assert!(
+            html.contains(
+                r#"href="/dashboard/wiki/alice/view/concepts/memory-model.md">The memory model</a>"#
+            ),
+            "relative page link repoints at the view route: {html}"
+        );
+        assert!(
+            html.contains(r#"href="https://example.com/x.md""#),
+            "unresolved (external) destination stays as authored: {html}"
+        );
+        assert!(
+            html.contains(r##"href="#top""##),
+            "in-page anchor stays as authored: {html}"
+        );
+        // The context-less render never rewrites.
+        let plain = render("[The memory model](concepts/memory-model.md)\n");
+        assert!(
+            plain.contains(r#"href="concepts/memory-model.md""#),
+            "{plain}"
+        );
     }
 
     #[test]
@@ -899,6 +972,7 @@ e un documento {{embed=c-2026-06-12-doc-001.pdf}}.\n",
         use mwe_core::render::{ACL_REVEAL_INLINE_CLOSE, ACL_REVEAL_INLINE_OPEN};
         let ctx = PageRenderContext {
             resolve_wikilink: &test_resolver,
+            resolve_md_link: &test_md_link_resolver,
             fact_refs: true,
         };
         let input = format!(

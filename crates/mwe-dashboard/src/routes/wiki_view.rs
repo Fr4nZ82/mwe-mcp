@@ -634,7 +634,7 @@ async fn view(
             rendered_index_body.as_ref(),
             &user.sender_id,
             reveal,
-            &|target| resolve_wikilink_href(&link_index, Some(wiki_id.as_str()), target),
+            &link_index,
         ))
 
         h2 { "Pages" }
@@ -680,7 +680,7 @@ fn render_index_preview(
     rendered: Option<&render::SegmentedRenderOutput>,
     sender_id: &str,
     reveal: bool,
-    resolve_wikilink: &dyn Fn(&str) -> Option<String>,
+    link_index: &std::collections::BTreeMap<String, PathBuf>,
 ) -> Markup {
     let Some(rendered) = rendered else {
         return html! {
@@ -691,6 +691,19 @@ fn render_index_preview(
                 "children + at least one active fact. Capture a fact to seed it."
             }
         };
+    };
+    let resolve_wikilink =
+        |target: &str| resolve_wikilink_href(link_index, Some(wiki_id.as_str()), target);
+    // The wiki home serves at `/dashboard/wiki/:id` — without the rewrite
+    // the browser would resolve a relative `page.md` link against
+    // `/dashboard/wiki/`, a dead URL.
+    let resolve_md_link = |dest: &str| {
+        resolve_relative_page_href(
+            link_index.get(wiki_id.as_str())?,
+            wiki_id.as_str(),
+            "",
+            dest,
+        )
     };
     html! {
         @if reveal && rendered.blocks_revealed > 0 {
@@ -726,7 +739,8 @@ fn render_index_preview(
                 &annotate_fact_refs(&rendered.segments),
                 reveal,
                 &md_render::PageRenderContext {
-                    resolve_wikilink,
+                    resolve_wikilink: &resolve_wikilink,
+                    resolve_md_link: &resolve_md_link,
                     fact_refs: true,
                 },
                 |_| None,
@@ -907,6 +921,10 @@ async fn view_page(
     // owner-or-admin. A non-owner reader never sees a link that would 404.
     let can_edit_meta = may_edit_page_meta(&state.pool, memory, &wiki_id, &user).await?;
 
+    // Relative markdown links resolve against this page's directory,
+    // same as the browser would — but rewritten to the canonical view
+    // route with the on-disk case spelling.
+    let base_rel_dir = page_path.rsplit_once('/').map_or("", |(dir, _)| dir);
     let body = render_view_page_body(
         &wiki_id,
         &page_path,
@@ -922,6 +940,14 @@ async fn view_page(
             reveal,
         },
         &|target| resolve_wikilink_href(&link_index, Some(wiki_id.as_str()), target),
+        &|dest| {
+            resolve_relative_page_href(
+                link_index.get(wiki_id.as_str())?,
+                wiki_id.as_str(),
+                base_rel_dir,
+                dest,
+            )
+        },
     );
 
     let title = format!("View — {}/{}", wiki_id.as_str(), page_path);
@@ -1198,16 +1224,84 @@ pub fn resolve_wikilink_href(
 /// [`mwe_core::wiki::resolve_page_case_insensitive`]) and the href
 /// carries the on-disk spelling.
 fn page_href(abs_dir: &std::path::Path, wiki_id: &str, slug: &str) -> Option<String> {
-    let rel = PathBuf::from(format!("{slug}.md"));
-    if !mwe_core::wiki::is_safe_page_path(&rel) {
+    page_view_href(abs_dir, wiki_id, &PathBuf::from(format!("{slug}.md")))
+}
+
+/// Shared tail of [`page_href`] and [`resolve_relative_page_href`]: the
+/// view-route href for the page at wiki-relative `rel` (`.md` included)
+/// — `None` unless the path is safe and its file exists.
+fn page_view_href(
+    abs_dir: &std::path::Path,
+    wiki_id: &str,
+    rel: &std::path::Path,
+) -> Option<String> {
+    if !mwe_core::wiki::is_safe_page_path(rel) {
         return None;
     }
-    let resolved = mwe_core::wiki::resolve_page_case_insensitive(abs_dir, &rel)?;
+    let resolved = mwe_core::wiki::resolve_page_case_insensitive(abs_dir, rel)?;
     Some(format!(
         "/dashboard/wiki/{}/view/{}",
         encode_path_segments(wiki_id),
         encode_path_segments(&resolved.to_string_lossy().replace('\\', "/"))
     ))
+}
+
+/// Resolve one regular markdown link destination found in wiki prose to
+/// the canonical `/view/` route. Only wiki-relative `.md` targets are
+/// rewritten: the wiki home serves at `/dashboard/wiki/:id`, where the
+/// browser would resolve `concepts/page.md` against `/dashboard/wiki/`
+/// into a dead URL; rewriting on the `/view/*path` surface too keeps one
+/// canonical href (on-disk case spelling) everywhere. `base_rel_dir` is
+/// the rendering page's wiki-relative directory (`""` at the wiki root).
+/// Everything else returns `None` and the destination stays exactly as
+/// authored: absolute paths, scheme'd URLs (`https:`, `mailto:` …),
+/// bare `#anchors`, query-carrying or non-`.md` targets, `..` escapes
+/// above the wiki root (a cross-wiki hop is a wikilink's job), and
+/// targets whose file does not exist — the same dead-rail posture as
+/// [`resolve_wikilink_href`], never inventing a broken href.
+pub fn resolve_relative_page_href(
+    abs_dir: &std::path::Path,
+    wiki_id: &str,
+    base_rel_dir: &str,
+    dest: &str,
+) -> Option<String> {
+    if dest.is_empty() || dest.starts_with('/') || dest.starts_with('#') {
+        return None;
+    }
+    // A `:` before any `/` / `#` / `?` marks a scheme'd absolute URL.
+    if dest
+        .split(['/', '#', '?'])
+        .next()
+        .unwrap_or("")
+        .contains(':')
+    {
+        return None;
+    }
+    let (path_part, fragment) = match dest.split_once('#') {
+        Some((p, f)) => (p, Some(f)),
+        None => (dest, None),
+    };
+    if path_part.contains('?') || !path_part.to_ascii_lowercase().ends_with(".md") {
+        return None;
+    }
+    // Normalize `.` / `..` against the page's directory.
+    let mut segs: Vec<&str> = base_rel_dir.split('/').filter(|s| !s.is_empty()).collect();
+    for seg in path_part.split('/') {
+        match seg {
+            "" => return None,
+            "." => {},
+            ".." => {
+                segs.pop()?;
+            },
+            s => segs.push(s),
+        }
+    }
+    let mut href = page_view_href(abs_dir, wiki_id, &PathBuf::from(segs.join("/")))?;
+    if let Some(f) = fragment {
+        href.push('#');
+        href.push_str(f);
+    }
+    Some(href)
 }
 
 /// Percent-encode each `/`-separated segment of `path` (RFC 3986
@@ -1360,6 +1454,7 @@ fn render_view_page_body(
     layout: &CommentLayout,
     flags: PageViewFlags,
     resolve_wikilink: &dyn Fn(&str) -> Option<String>,
+    resolve_md_link: &dyn Fn(&str) -> Option<String>,
 ) -> Markup {
     let PageViewFlags {
         comment_mode,
@@ -1393,6 +1488,7 @@ fn render_view_page_body(
     };
     let ctx = md_render::PageRenderContext {
         resolve_wikilink,
+        resolve_md_link,
         fact_refs: true,
     };
     let rendered_html = md_render::render_page(annotated_text, reveal, &ctx, inject);
@@ -2652,6 +2748,71 @@ mod tests {
         );
         assert_eq!(
             resolve_wikilink_href(&index, Some("alice"), "../secret"),
+            None
+        );
+    }
+
+    // ---------- relative markdown-link href resolution ----------
+
+    #[test]
+    fn resolve_relative_page_href_rewrites_wiki_relative_md_targets() {
+        let (_dir, index) = link_index_fixture();
+        let alice = &index["alice"];
+        // From the wiki root (the home page's base).
+        assert_eq!(
+            resolve_relative_page_href(alice, "alice", "", "notes.md").as_deref(),
+            Some("/dashboard/wiki/alice/view/notes.md")
+        );
+        assert_eq!(
+            resolve_relative_page_href(alice, "alice", "", "modules/auth.md").as_deref(),
+            Some("/dashboard/wiki/alice/view/modules/auth.md")
+        );
+        // From a nested page's directory: sibling and `..` hops.
+        assert_eq!(
+            resolve_relative_page_href(alice, "alice", "modules", "auth.md").as_deref(),
+            Some("/dashboard/wiki/alice/view/modules/auth.md")
+        );
+        assert_eq!(
+            resolve_relative_page_href(alice, "alice", "modules", "../notes.md").as_deref(),
+            Some("/dashboard/wiki/alice/view/notes.md")
+        );
+        // `./` and case variants normalize to the on-disk spelling.
+        assert_eq!(
+            resolve_relative_page_href(alice, "alice", "", "./Modules/Auth.MD").as_deref(),
+            Some("/dashboard/wiki/alice/view/modules/auth.md")
+        );
+        // A fragment rides along on the rewritten href.
+        assert_eq!(
+            resolve_relative_page_href(alice, "alice", "", "notes.md#history").as_deref(),
+            Some("/dashboard/wiki/alice/view/notes.md#history")
+        );
+    }
+
+    #[test]
+    fn resolve_relative_page_href_leaves_everything_else_as_authored() {
+        let (_dir, index) = link_index_fixture();
+        let alice = &index["alice"];
+        for dest in [
+            "",
+            "#top",                     // bare in-page anchor
+            "/dashboard/wiki/alice",    // site-absolute
+            "https://example.com/x.md", // scheme'd URL
+            "mailto:bob@example.com",   // scheme'd, no path
+            "notes.md?raw=1",           // query-carrying
+            "notes.txt",                // non-.md target
+            "missing.md",               // known-shape, dead file
+            "../secret.md",             // escapes the wiki root
+            "modules//auth.md",         // empty segment
+        ] {
+            assert_eq!(
+                resolve_relative_page_href(alice, "alice", "", dest),
+                None,
+                "{dest} must stay as authored"
+            );
+        }
+        // `..` above the root from a nested base is still an escape.
+        assert_eq!(
+            resolve_relative_page_href(alice, "alice", "modules", "../../secret.md"),
             None
         );
     }

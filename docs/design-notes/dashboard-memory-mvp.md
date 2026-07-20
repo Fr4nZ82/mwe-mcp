@@ -261,6 +261,22 @@ emitted as text events (pulldown escapes them — an alias cannot inject HTML)
 and hrefs are percent-encoded per segment. The chat-reply render keeps no
 link context — `[[…]]` stays literal there.
 
+**Relative markdown links.** A regular `[label](concepts/page.md)` link in
+wiki prose is rewritten at render time to the canonical page-view route
+(`wiki_view::resolve_relative_page_href` via the `PageRenderContext`'s
+`resolve_md_link` hook): the destination is resolved against the rendering
+page's wiki-relative directory (`.`/`..` normalized), case-insensitively
+against the disk (the href carries the on-disk spelling), with a `#fragment`
+riding along. Without the rewrite the wiki home — which serves at
+`/dashboard/wiki/:id`, not under `/view/` — would hand the raw relative href
+to the browser, which resolves it against `/dashboard/wiki/` into a dead URL.
+Anything that is not a wiki-relative `.md` target stays exactly as authored:
+absolute paths, scheme'd URLs, bare `#anchors`, query-carrying or non-`.md`
+targets, `..` escapes above the wiki root, and targets whose file does not
+exist (the wikilink resolver's dead-rail posture — never invent a broken
+href). The fact record's body render resolves against its wiki's root; the
+chat-reply render has no context and never rewrites.
+
 **Region → source-fact click-through.** Each fact region the viewer can read
 carries a small superscript anchor (`§`, `sup.fact-ref`) at the region's end,
 linking to that fact's **record** — `/dashboard/facts/:fact_id/edit`, the

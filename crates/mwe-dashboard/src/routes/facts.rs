@@ -1705,8 +1705,21 @@ fn rendered_fact_body(state: &DashboardState, row: &FactIndexRow) -> Markup {
             let index = wiki_view::wikilink_index(&memory.tree);
             let resolve =
                 |target: &str| wiki_view::resolve_wikilink_href(&index, Some(&row.wiki_id), target);
+            // Relative `page.md` links in fact text resolve against the
+            // fact's own wiki root (this record serves under
+            // `/dashboard/facts/`, so browser-relative resolution would
+            // point nowhere useful).
+            let resolve_md = |dest: &str| {
+                wiki_view::resolve_relative_page_href(
+                    index.get(&row.wiki_id)?,
+                    &row.wiki_id,
+                    "",
+                    dest,
+                )
+            };
             let ctx = md_render::PageRenderContext {
                 resolve_wikilink: &resolve,
+                resolve_md_link: &resolve_md,
                 fact_refs: false,
             };
             md_render::render_page(&row.text, false, &ctx, |_| None)
