@@ -964,6 +964,17 @@ enum CapturePlanError {
     /// to a skip response with a clear warn log.
     #[error("target_wiki_id `{id}` is not one of the available wikis ({available})")]
     TargetWikiNotAvailable { id: String, available: String },
+    /// A non-`self` fact (owned by a user or group) named an AGENT's own wiki
+    /// as its `target_wiki_id`. The agent wiki is reserved for the agent's
+    /// `owner_id:"self"` autobiography (roadmap 27); a user/group fact there
+    /// fragments that principal's memory across two wikis (item 47-x2 /
+    /// Finding D). When the owner's own wiki is in the window the plan is
+    /// redirected there; when it is not, the extraction is dropped with this
+    /// error rather than misfiled.
+    #[error(
+        "target_wiki_id `{target}` is an agent wiki; a {owner}-owned fact cannot be filed there and no owner home wiki was in the window"
+    )]
+    TargetIsAgentWiki { target: String, owner: String },
     /// `supersede_target` carried a string that is not a well-formed
     /// `FactId`. Same demote-to-skip treatment as
     /// [`Self::TargetWikiNotAvailable`].
@@ -1050,7 +1061,7 @@ fn validate_capture_plan(
     let target_wiki_str = unit
         .target_wiki_id
         .ok_or(CapturePlanError::MissingTargetWiki)?;
-    let wiki_id = WikiId::parse(target_wiki_str)?;
+    let mut wiki_id = WikiId::parse(target_wiki_str)?;
     if !available.iter().any(|w| w.wiki_id == target_wiki_str) {
         let listed = available
             .iter()
@@ -1071,6 +1082,41 @@ fn validate_capture_plan(
         Some(s) => Principal::from_str(s)?,
         None => Principal::User(request.sender_id.clone()),
     };
+    // Guard (item 47-x2): a non-`self` fact must never be physically filed into
+    // an AGENT's own wiki — that space is the agent's `owner_id:"self"`
+    // autobiography (roadmap 27). owner↔wiki are otherwise DECOUPLED by design
+    // (a group-owned fact may live in a user wiki and vice versa — 47-x2a), so
+    // this fires ONLY when the target wiki is flagged `is_agent`. `self` and
+    // behaviour-rule facts are handled before this function and never reach here,
+    // so every owner arriving is a user/group. Redirect to the owner's OWN wiki
+    // when it is in the window; otherwise drop this extraction rather than
+    // fragment the principal's memory across two wikis (Finding D).
+    if available
+        .iter()
+        .find(|w| w.wiki_id == target_wiki_str)
+        .is_some_and(|w| w.is_agent)
+    {
+        let home = match &owner {
+            Principal::User(id) | Principal::Group(id) => id.as_str(),
+        };
+        match available.iter().find(|w| w.wiki_id == home && !w.is_agent) {
+            Some(w) => {
+                tracing::warn!(
+                    from = %target_wiki_str,
+                    to = %w.wiki_id,
+                    owner = %owner,
+                    "ingest: non-self fact targeted an agent wiki — redirected to the owner's own wiki (47-x2)"
+                );
+                wiki_id = WikiId::parse(w.wiki_id.as_str())?;
+            },
+            None => {
+                return Err(CapturePlanError::TargetIsAgentWiki {
+                    target: target_wiki_str.to_owned(),
+                    owner: owner.to_string(),
+                });
+            },
+        }
+    }
     let allow: std::result::Result<Vec<Principal>, _> = unit
         .allow_ids
         .iter()
@@ -2881,6 +2927,11 @@ pub(crate) struct AvailableWiki {
     /// never buffered; everything else is the standard-wiki path the
     /// narrative compiler writes.
     pub(crate) smart: bool,
+    /// Per-wiki `is_agent` flag from `_meta.md`: true for an AGENT's own wiki
+    /// (a `wiki-user` stamped `is_agent: true`, e.g. `hermes1`), reserved for
+    /// the agent's `owner_id:"self"` autobiography. The x2 guard reads it to
+    /// keep user/group facts out of the agent wiki.
+    pub(crate) is_agent: bool,
 }
 
 pub(crate) fn available_wikis(tree: &WikiTree, cap: usize) -> Result<Vec<AvailableWiki>> {
@@ -2892,6 +2943,7 @@ pub(crate) fn available_wikis(tree: &WikiTree, cap: usize) -> Result<Vec<Availab
             wiki_type: d.meta.wiki_type.clone(),
             scope: d.meta.scope.clone(),
             smart: d.meta.smart,
+            is_agent: d.meta.is_agent,
         });
         if out.len() >= cap {
             break;
@@ -3137,6 +3189,25 @@ async fn capture_behaviour_rule(
 
 /// File a fact the agent states about ITSELF — the self side of agent-authored
 /// memory (ingest pipeline).
+/// Which page a `self` fact lands on (item 47-x3). The engine decides — not
+/// the model's proposed `target_page` — mirroring how a self-fact's wiki is
+/// already engine-pinned to the agent's own wiki. An IDENTITY fact
+/// (user-agnostic, injected every turn) stays on the agent's index, where REM
+/// consolidates identity. A RELATIONSHIP fact goes to a per-served-user page
+/// `esperienze_<user>.md`, so the agent's history with each user grows in its
+/// own space instead of piling into one heterogeneous catch-all
+/// (`esperienze_agente.md`, the Finding-C monolith the classifier used to
+/// invent). A relationship fact with no served user degrades to the index.
+/// Recall is page-agnostic (`recall_agent_self` buckets by the served-user
+/// topic tag, not the page), so this write-time routing is invisible to reads.
+fn agent_self_fact_page(is_identity: bool, sender_id: &str, default: &Path) -> PathBuf {
+    if is_identity || sender_id.is_empty() {
+        default.to_path_buf()
+    } else {
+        normalize_capture_page(Some(&format!("esperienze_{sender_id}.md")), default)
+    }
+}
+
 /// The `owner_id: "self"` sentinel on an assistant turn
 /// (prompt Part 12) routes here: the body is filed as a normal fact in the
 /// calling agent's OWN wiki, **owned by the agent** (`owner == sender == the
@@ -3205,9 +3276,10 @@ async fn capture_agent_self_fact(
     {
         topics.push(request.sender_id.clone());
     }
+    let page = agent_self_fact_page(is_identity, &request.sender_id, &policy.default_page);
     let cap_req = CaptureRequest {
         wiki_id,
-        page: PathBuf::from(unit.target_page.unwrap_or("index.md")),
+        page,
         body: body.to_owned(),
         // OWNED BY THE AGENT — this is its own self-knowledge, not about the
         // user. owner == the agent ⇒ no separate sender attribution.
@@ -5858,7 +5930,56 @@ mod tests {
             wiki_type: "wiki-user".to_owned(),
             scope: None,
             smart: false,
+            is_agent: false,
         }
+    }
+
+    /// An `AvailableWiki` flagged as an agent's own wiki (item 47-x2 tests).
+    fn sample_agent_available(id: &str) -> AvailableWiki {
+        AvailableWiki {
+            is_agent: true,
+            ..sample_available(id)
+        }
+    }
+
+    #[test]
+    fn validate_capture_plan_redirects_non_self_fact_off_agent_wiki() {
+        let request = req("some fact", "morgana");
+        let policy = IngestPolicy::default();
+        // hermes1 is an agent wiki; morgana (the owner's own wiki) is in the window.
+        let available = vec![
+            sample_agent_available("hermes1"),
+            sample_available("morgana"),
+        ];
+        // owner user:morgana, but the model aimed the fact at the agent wiki.
+        let plan = parse_plan(
+            "{\"intent\":\"capture\",\"target_wiki_id\":\"hermes1\",\
+             \"owner_id\":\"user:morgana\",\"body\":\"Morgana prefers herbal tea\"}",
+        )
+        .expect("plan parses");
+        let cap = validate_capture_plan(&first_unit(&plan), &request, &policy, &available, true)
+            .expect("a redirect must succeed");
+        assert_eq!(
+            cap.wiki_id.as_str(),
+            "morgana",
+            "a user-owned fact aimed at an agent wiki must be redirected to the owner's own wiki"
+        );
+
+        // With no resolvable home wiki in the window, the extraction is dropped
+        // rather than misfiled into the agent wiki.
+        let available_no_home = vec![sample_agent_available("hermes1")];
+        let err = validate_capture_plan(
+            &first_unit(&plan),
+            &request,
+            &policy,
+            &available_no_home,
+            true,
+        )
+        .expect_err("no resolvable home → drop");
+        assert!(
+            matches!(err, CapturePlanError::TargetIsAgentWiki { .. }),
+            "expected TargetIsAgentWiki, got {err:?}"
+        );
     }
 
     // ---------- supersede_target validation ----------
@@ -6303,6 +6424,30 @@ mod tests {
     }
 
     #[test]
+    fn agent_self_fact_page_routes_identity_to_index_relationship_per_user() {
+        let default = Path::new("index.md");
+        // Identity self-facts are user-agnostic → the agent's index (item 47-x3).
+        assert_eq!(
+            agent_self_fact_page(true, "morgana", default),
+            PathBuf::from("index.md")
+        );
+        // Relationship self-facts → a per-served-user page, flat slug.
+        assert_eq!(
+            agent_self_fact_page(false, "morgana", default),
+            PathBuf::from("esperienze_morgana.md")
+        );
+        assert_eq!(
+            agent_self_fact_page(false, "frodo", default),
+            PathBuf::from("esperienze_frodo.md")
+        );
+        // A relationship fact with no served user degrades to the index.
+        assert_eq!(
+            agent_self_fact_page(false, "", default),
+            PathBuf::from("index.md")
+        );
+    }
+
+    #[test]
     fn normalize_capture_page_handles_untrusted_target_page() {
         let default = Path::new("index.md");
 
@@ -6376,6 +6521,7 @@ mod tests {
             wiki_type: "wiki-user".into(),
             scope: Some("Alice's personal notes and work".into()),
             smart: false,
+            is_agent: false,
         }];
         let policy = IngestPolicy::default();
         let prompt = build_prompt(

@@ -1,8 +1,8 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts + a `closures[]` array closing existing facts' validity + an `acl_changes[]` array changing who can read an existing fact + a `validity_edits[]` array correcting an existing fact's dates; the extractions array is the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-page `style` and `page_description`, a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.39
-default_version_at_bootstrap: v2.39
+version: 2.40
+default_version_at_bootstrap: v2.40
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -303,6 +303,8 @@ STANDING vs ONE-SHOT — a behaviour_rule must OUTLIVE this exchange. A rule is 
 
 WHO IS BEING NAMED — resolve the deixis before writing a naming rule. The stored `body` is read back COLD, with no conversation around it, so every pronoun must have an unmistakable referent. "Chiamami X" as a `body` means the AGENT must address the SENDER as X — write it only when the user asked to BE CALLED X ("chiamami Franz"). When the user instead NAMES THE AGENT ("ti chiamerò Hermes", "ti chiamo Sam", "il tuo nome è Aria"), restate it from the agent's side — `body: "Il tuo nome per questo utente è Hermes."` — NEVER "Chiamami Hermes.", which inverts the referent and instructs the agent to rename the USER. The same discipline applies to every "io/tu/mi/ti" in a rule body: resolve it, or rephrase without it.
 
+EXPLICIT NAMING vs VOCATIVE ADDRESS — a naming rule is created or changed ONLY by an EXPLICIT NAMING PREDICATE: a clause whose whole job is to assign the name — "ti chiami X", "il tuo nome è X", "ti chiamerò X", "ti chiamo X", "d'ora in poi sei X", "chiamati X". The agent's name used merely as a FORM OF ADDRESS — a vocative to summon its attention before an unrelated request ("Gandalf, abbassa il volume", "Gandalf, che traffico c'è stamattina?", "ok Sam, procedi pure") — carries NO naming intent: it NEVER emits or changes a naming rule, and the rest of the message is processed on its own merits. This holds EVEN WHEN the addressed name differs from the stored one — a mis-heard or mistyped vocative ("Gandalfa, ..." heard for "Gandalf, ...") is address, not a rename. Do NOT reason from spelling proximity in EITHER direction: the discriminator is the PRESENCE OF A NAMING PREDICATE, never how close two spellings are. So an explicit "chiamati Gandalfa" DOES rename even though it is one letter from the current "Gandalf"; and a bare "Gandalfa, abbassa" does NOT rename even though only one letter changed. When the sole occurrence of a name in the turn is vocative, emit no naming rule.
+
 Examples:
 - "rispondimi sempre in modo conciso" → `behaviour_rule: true`, `behaviour_scope: "per-user"`, `body: "Rispondi sempre in modo conciso."`
 - "te l'ho già detto, non dimenticarti le scadenze!" → `behaviour_rule: true`, `behaviour_scope: "per-user"`, `body: "Non dimenticare mai le scadenze già comunicate."` (a correction/reprimand → the lesson, filed in the agent's own wiki).
@@ -313,6 +315,9 @@ Examples:
 - "d'ora in poi comportati come un pirata" → `behaviour_rule: true`, `behaviour_scope: "per-user"`, `body: "Comportati come un pirata."` (a persona, addressed to this exchange → per-user).
 - "di' solo: collegamento voce funzionante" → NOT a behaviour_rule and NOT a fact: a one-shot command (a channel test), satisfied by the next reply → `skip`, store nothing.
 - "ti chiamerò Hermes" (or "ti chiamo Hermessino 😊") → `behaviour_rule: true`, `behaviour_scope: "per-user"`, `body: "Il tuo nome per questo utente è Hermes."` — the user names the AGENT; never store it as "Chiamami Hermes." (inverted referent).
+- "Gandalf, abbassa il volume" (or the ASR-mangled "Gandalfa, abbassa") → NOT a naming rule and NOT a fact: the leading name is vocative ADDRESS and "abbassa il volume" is a one-shot command satisfied by the next reply → `skip`, store nothing — the name is left unchanged.
+- "Gandalf, che traffico c'è stamattina?" → NOT a naming rule: the name is address, the request is the traffic question → answer it, store no naming fact.
+- "d'ora in poi chiamati Gandalfa" (or "il tuo nome è Gandalfa") → `behaviour_rule: true`, `behaviour_scope: "per-user"`, `body: "Il tuo nome per questo utente è Gandalfa."` — an EXPLICIT naming predicate renames, even one letter from the current name.
 - "voglio che OGNI assistente mi parli in italiano" → `behaviour_rule: true`, `behaviour_scope: "user-global"`, `body: "Parlami in italiano."` (explicitly every assistant → the user's everywhere-rule).
 - "chiunque tu sia, dammi del tu" → `behaviour_rule: true`, `behaviour_scope: "user-global"`, `body: "Dammi del tu."`
 - "usa sempre Claude Code per i lavori pesanti" → `behaviour_rule: true`, `behaviour_scope: "agent-wide"`, `body: "Usa sempre Claude Code per i compiti pesanti."` (impersonal — how the agent works → admin-only).
