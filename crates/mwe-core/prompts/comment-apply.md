@@ -2,7 +2,7 @@
 name: comment-apply
 description: turns parked dashboard comments on a narrative page into precise fact ops (correct / remove / add / move) over that page's facts; an `add` carries its own owner_id/allow_ids decided under the ingest rules (subject + audience from the comment, the page's wiki scope, and the commenter's group scopes)
 version: 1.2
-default_version_at_bootstrap: v1.0
+default_version_at_bootstrap: v1.2
 ---
 
 # Prompt: comment-apply
