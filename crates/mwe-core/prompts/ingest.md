@@ -1,8 +1,8 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts + a `closures[]` array closing existing facts' validity + an `acl_changes[]` array changing who can read an existing fact + a `validity_edits[]` array correcting an existing fact's dates; the extractions array is the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-page `style` and `page_description`, a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.41
-default_version_at_bootstrap: v2.41
+version: 2.42
+default_version_at_bootstrap: v2.42
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -109,6 +109,13 @@ truncated text. The recall `fact_id` **is** injected (see
 model can populate an extraction's `supersede_target` against ids it
 has actually seen — a correction whose subject is surfaced by recall
 is turned into a supersede rather than an additive capture.
+
+**Editing note**: the worked examples inside the prompt body are
+bullet lists, never fenced code blocks, on purpose — the loader
+(`mwe_core::prompts::extract_fenced_text`) extracts the first fenced
+`text` block it finds, so an inner code fence would terminate the
+prompt body early. For the same reason this wrapper must never spell
+the fence opener literally before the real one below.
 
 ## System prompt
 
@@ -325,7 +332,6 @@ Examples:
 - "usa sempre Claude Code per i lavori pesanti" → `behaviour_rule: true`, `behaviour_scope: "agent-wide"`, `body: "Usa sempre Claude Code per i compiti pesanti."` (impersonal — how the agent works → admin-only).
 - "per le MIE richieste delega a Claude Code" → `behaviour_rule: true`, `behaviour_scope: "per-user"`, `body: "Per le richieste di questo utente, delega a Claude Code."` (operational but addressed to me → per-user, anyone may set).
 - "Franz ha l'abbonamento Claude Max" → NOT a behaviour_rule: a normal fact about the user (he owns it); the directive "usa il Max quando lanci Claude Code" WOULD be one (impersonal → `behaviour_scope: "agent-wide"`).
-- "voglio che tutti i miei assistenti mi parlino sempre in italiano" → NOT a behaviour_rule: a `salience: "high"` identity fact ("Preferisce sempre l'italiano, con qualunque assistente.").
 - "tieni privata la mia salute" → NOT a behaviour_rule: an `engine_rule` (privacy → ACL).
 - "non dire a mia moglie quanto guadagno" → NOT a behaviour_rule: an `engine_rule` (privacy/sharing → the salary's ACL; recall never surfaces it for the wife).
 
@@ -525,7 +531,7 @@ RESTATEMENT is not a supersede. A supersede requires the new `body` to CHANGE th
 
 ## Worked examples — intent disambiguation
 
-These anchor the boundaries between `structural` (reshape a container), `capture` (record a fact), and the public-fact case. Same strict JSON output schema as above; only the load-bearing fields are listed inline. They are bullet lists, not fenced blocks, on purpose (an inner code fence would terminate this prompt body early).
+These anchor the boundaries between `structural` (reshape a container), `capture` (record a fact), and the public-fact case. Same strict JSON output schema as above; only the load-bearing fields are listed inline.
 
 **A — explicit request to create a memory container → `structural`**
 - `current_message`: "Voglio un quaderno per le ricette."
@@ -569,19 +575,19 @@ These anchor the boundaries between `structural` (reshape a container), `capture
 
 These anchor the `wiki-group` vs ACL `group:*` routing rule above. Each maps the discriminator (stewardship) to a concrete extraction.
 
-**Case 1 — sender is `group:<scope>` (Rule 1a, device-channel)**
+**Case 1 — sender is `group:<scope>` (device-channel)**
 - Input: `sender_id`: `group:famiglia`; `current_message`: "Riccardo, ricordati la pasta dopo cena"; `available_wikis` includes `wiki-group-famiglia-reminders`.
 - Output: `intent`: `"capture"`, `extractions`: one element →
   - `target_wiki_id`: `"wiki-group-famiglia-reminders"`, `owner_id`: `"group:famiglia"`, `allow_ids`: `[]`, `fact_type`: `"plan"`, `topics`: `["reminder", "cena", "pasta"]`, `body`: `"Promemoria per Riccardo: pasta dopo cena."`
 - Reasoning: the capture comes through a shared family device, no individual is the steward. Route to the family group wiki; `owner_id: "group:famiglia"` matches the wiki scope.
 
-**Case 2 — collective list, no single steward (Rule 1b, emergent collective entity)**
+**Case 2 — collective list, no single steward (emergent collective entity)**
 - Input: `sender_id`: `user:frodo`; `current_message`: "aggiungo detersivo alla lista spesa"; `available_wikis` includes `wiki-group-famiglia-spesa`.
 - Output: `intent`: `"capture"`, `extractions`: one element →
   - `target_wiki_id`: `"wiki-group-famiglia-spesa"`, `owner_id`: `"group:famiglia"`, `allow_ids`: `[]`, `fact_type`: `"plan"`, `topics`: `["spesa", "detersivo"]`, `body`: `"Manca il detersivo."`
 - Reasoning: the sender is one user but the entity ("lista spesa famiglia") is intrinsically collective. The inline marker still records `sender=user:frodo`, but the region `owner_id` is the group.
 
-**Case 3 — single steward, group reads (Rule 2, announcement-to-group)**
+**Case 3 — single steward, group reads (announcement-to-group)**
 - Input: `sender_id`: `user:frodo`; `current_message`: "ho organizzato un picnic per sabato alle 3"; `available_wikis` includes `wiki-frodo-calendario` (`scope`: "Frodo's appointments and plans; the family follows his shared commitments").
 - Output: `intent`: `"capture"`, `extractions`: one element →
   - `target_wiki_id`: `"wiki-frodo-calendario"`, `owner_id`: `"user:frodo"`, `allow_ids`: `["group:famiglia"]`, `fact_type`: `"plan"`, `topics`: `["picnic", "famiglia", "weekend"]`, `body`: `"Picnic organizzato per sabato alle 15:00."`
