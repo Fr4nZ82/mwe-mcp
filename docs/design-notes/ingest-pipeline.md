@@ -1173,6 +1173,18 @@ can never mint an `owner_id` for a principal that does not exist. The
 roster is capped at `policy.max_users_in_prompt` (default 24, alphabetical
 by id) to bound the context budget on large deployments.
 
+Resolution is strictly **one-way**: it maps names and aliases the sender
+actually wrote onto roster entries, never the reverse. The prompt's
+relationships rules («Explicitly stated ONLY — never inferred», anchored
+by the `bundled_ingest_prompt_carries_the_explicit_relationship_gate`
+test) forbid the classifier from picking a roster entry as the identity
+of a person the message leaves unnamed ("viene anche mio fratello"): a
+relationship between two people is filed only when the sender states the
+tie in so many words and names the other person in the turn's text.
+An unnamed relative yields at most a single sender-side fact with the
+identity left open — never an identification, never a reciprocal write
+onto another user's page.
+
 `known_users` is the identity-context sibling of `sender_groups`:
 together they give the classifier the full picture it needs to route
 `owner_id` to a group or to a third party. Their arrival closes the

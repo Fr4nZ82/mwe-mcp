@@ -8128,6 +8128,22 @@ mod tests {
         );
     }
 
+    /// The bundled ingest prompt carries the explicit-relationship gate: a
+    /// person the message leaves unnamed is never identified with a
+    /// `known_users` entry, and relationship facts require the sender to
+    /// state the tie explicitly.
+    #[test]
+    fn bundled_ingest_prompt_carries_the_explicit_relationship_gate() {
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("Explicitly stated ONLY — never inferred"),
+            "the explicit-relationship gate is gone from the bundled prompt"
+        );
+        assert!(
+            BUNDLED_INGEST_PROMPT_MD.contains("it never runs in reverse"),
+            "the no-reverse-alias-resolution guard is gone from the bundled prompt"
+        );
+    }
+
     /// A single turn can carry BOTH an engine-rule and an ordinary fact. The
     /// rule is appended to `rules.md`; the fact still routes normally (buffered
     /// for the standard `alice` wiki) and surfaces as the turn's `capture_id`.
