@@ -37,14 +37,16 @@ use crate::auth::SessionUser;
 use crate::state::DashboardState;
 use crate::ui::layout;
 
-/// The hermes bridge plugin tree, embedded from the in-repo bridge
-/// directory. Python build artifacts (`__pycache__`/`*.pyc`) are
-/// filtered out in [`plugin_files`] rather than via rust-embed's
-/// `#[exclude]` (which would pull in the `include-exclude` feature and
-/// its glob dependencies for no real gain), so they never reach a
-/// consumer's checkout.
+/// The hermes bridge tree (plugins + gateway hooks + cron scripts),
+/// embedded from the in-repo bridge directory. Python build artifacts
+/// (`__pycache__`/`*.pyc`) are filtered out in [`plugin_files`] rather
+/// than via rust-embed's `#[exclude]` (which would pull in the
+/// `include-exclude` feature and its glob dependencies for no real
+/// gain), so they never reach a consumer's checkout; non-runtime files
+/// (README, smokes, the manifest) are dropped by
+/// [`route_embedded_path`] returning `None`.
 #[derive(RustEmbed)]
-#[folder = "$CARGO_MANIFEST_DIR/../../agents-bridges/hermes/plugins/"]
+#[folder = "$CARGO_MANIFEST_DIR/../../agents-bridges/hermes/"]
 struct HermesBridge;
 
 /// Catalog of bridged consumers, in display order. A consumer appears
@@ -334,8 +336,12 @@ fn hermes_guide_body(consumer: &str, origin: &str) -> Markup {
         pre.endpoint-display { (curl) }
         p.muted { "Windows (PowerShell): " code { (ps) } }
         p.muted {
-            "Where the files land: the memory + media plugins go to "
-            code { "~/.hermes/plugins/" } ", and the context-engine plugin goes "
+            "Where the files land: the memory + media + watchdog plugins go to "
+            code { "~/.hermes/plugins/" } ", the reverse-channel gateway hook to "
+            code { "~/.hermes/hooks/mwe-events/" }
+            " (auto-discovered — it delivers " code { "fact_minted_for_you" }
+            " notices to their recipients), the daily-digest script to "
+            code { "~/.hermes/scripts/" } ", and the context-engine plugin goes "
             "into the hermes-agent checkout you run the command from. You normally "
             "don't set anything — but if your layout differs, two environment "
             "variables override the defaults: " code { "HERMES_HOME" }
@@ -369,6 +375,9 @@ fn hermes_guide_body(consumer: &str, origin: &str) -> Markup {
                 "recall block actually reaches the model) and "
                 code { "mwe-media" } " (if you want media capture)." }
             li { "Restart hermes so it loads the new plugins." }
+            li { "Optional — the daily memory digest: "
+                code { "hermes cron create \"0 9 * * *\" … --script mwe-daily-digest.py --deliver telegram" }
+                " (the full prompt is in the script's header and the bridge README)." }
         }
     }
 }
@@ -377,27 +386,34 @@ fn hermes_guide_body(consumer: &str, origin: &str) -> Markup {
 // Installer generators
 // ---------------------------------------------------------------------
 
-/// Where an embedded plugin file lands on the consumer box.
+/// Where an embedded bridge file lands on the consumer box.
 enum Dest {
-    /// `$HERMES_HOME/plugins/` — the out-of-tree runtime plugin dir.
+    /// Under `$HERMES_HOME/` — the out-of-tree runtime dir (the
+    /// relative path carries its own `plugins/` / `hooks/` /
+    /// `scripts/` prefix).
     HermesHome,
-    /// `$HERMES_SRC/plugins/` — inside the hermes checkout.
+    /// Under `$HERMES_SRC/` — inside the hermes checkout.
     HermesSrc,
 }
 
 /// Route an embedded path to its destination base + relative path.
+/// `None` drops non-runtime files (README, smokes, the manifest).
 fn route_embedded_path(rel: &str) -> Option<(Dest, String)> {
-    if let Some(r) = rel.strip_prefix("memory/") {
-        return Some((Dest::HermesHome, r.to_owned()));
+    // The three out-of-tree plugin families flatten into
+    // `$HERMES_HOME/plugins/<name>/` — hermes's user plugin dir has no
+    // family subdirectories.
+    for family in ["plugins/memory/", "plugins/gateway/", "plugins/agent/"] {
+        if let Some(r) = rel.strip_prefix(family) {
+            return Some((Dest::HermesHome, format!("plugins/{r}")));
+        }
     }
-    if let Some(r) = rel.strip_prefix("gateway/") {
-        return Some((Dest::HermesHome, r.to_owned()));
-    }
-    if let Some(r) = rel.strip_prefix("agent/") {
-        return Some((Dest::HermesHome, r.to_owned()));
-    }
-    if rel.starts_with("context_engine/") {
+    if rel.starts_with("plugins/context_engine/") {
         return Some((Dest::HermesSrc, rel.to_owned()));
+    }
+    // Gateway hooks (`hooks/<name>/HOOK.yaml` + `handler.py`) and cron
+    // `--script` files keep their tree under `$HERMES_HOME/`.
+    if rel.starts_with("hooks/") || rel.starts_with("scripts/") {
+        return Some((Dest::HermesHome, rel.to_owned()));
     }
     None
 }
@@ -453,8 +469,8 @@ fn render_install_sh(consumer: &str) -> Option<String> {
             continue;
         };
         let base = match dest {
-            Dest::HermesHome => "$HERMES_HOME/plugins",
-            Dest::HermesSrc => "$HERMES_SRC/plugins",
+            Dest::HermesHome => "$HERMES_HOME",
+            Dest::HermesSrc => "$HERMES_SRC",
         };
         let full = format!("{base}/{dest_rel}");
         let parent = full.rsplit_once('/').map_or(full.as_str(), |(p, _)| p);
@@ -475,7 +491,7 @@ fn render_install_sh(consumer: &str) -> Option<String> {
     }
 
     s.push_str(
-        "\nprintf '%s\\n' \"\" \\\n  \"mwe-mcp hermes bridge: plugins installed.\" \\\n  \"  memory + media + watchdog -> $HERMES_HOME/plugins/\" \\\n  \"  context engine -> $HERMES_SRC/plugins/context_engine/\" \\\n  \"\" \\\n  \"Four steps remain — they are yours (the installer never handles your token):\" \\\n  \"  1. Issue a token from your mwe-mcp dashboard home and set MWE_TOKEN in hermes's .env.\" \\\n  \"  2. Disable hermes's built-in memory (memory_enabled: false AND user_profile_enabled: false) so mwe-mcp is the only memory.\" \\\n  \"  3. Enable the hook plugins in config.yaml plugins.enabled: mwe-watchdog (recommended) and mwe-media (if you want media capture).\" \\\n  \"  4. Restart hermes so it loads the new plugins.\"\n",
+        "\nprintf '%s\\n' \"\" \\\n  \"mwe-mcp hermes bridge: files installed.\" \\\n  \"  memory + media + watchdog -> $HERMES_HOME/plugins/\" \\\n  \"  reverse-channel hook -> $HERMES_HOME/hooks/mwe-events/ (auto-discovered)\" \\\n  \"  daily digest script -> $HERMES_HOME/scripts/mwe-daily-digest.py\" \\\n  \"  context engine -> $HERMES_SRC/plugins/context_engine/\" \\\n  \"\" \\\n  \"Four steps remain — they are yours (the installer never handles your token):\" \\\n  \"  1. Issue a token from your mwe-mcp dashboard home and set MWE_TOKEN in hermes's .env.\" \\\n  \"  2. Disable hermes's built-in memory (memory_enabled: false AND user_profile_enabled: false) so mwe-mcp is the only memory.\" \\\n  \"  3. Enable the hook plugins in config.yaml plugins.enabled: mwe-watchdog (recommended) and mwe-media (if you want media capture).\" \\\n  \"  4. Restart hermes so it loads the new plugins.\" \\\n  \"Optional: the daily memory digest cron — see the header of mwe-daily-digest.py.\"\n",
     );
     Some(s)
 }
@@ -505,8 +521,8 @@ fn render_install_ps1(consumer: &str) -> Option<String> {
             continue;
         };
         let base_var = match dest {
-            Dest::HermesHome => "(Join-Path $HermesHome \"plugins\")",
-            Dest::HermesSrc => "(Join-Path $HermesSrc \"plugins\")",
+            Dest::HermesHome => "$HermesHome",
+            Dest::HermesSrc => "$HermesSrc",
         };
         s.push_str("Write-PluginFile ");
         s.push_str(base_var);
@@ -521,12 +537,13 @@ fn render_install_ps1(consumer: &str) -> Option<String> {
     }
 
     s.push_str("\nWrite-Host \"\"\n");
-    s.push_str("Write-Host \"mwe-mcp hermes bridge: plugins installed.\"\n");
+    s.push_str("Write-Host \"mwe-mcp hermes bridge: files installed (plugins, the mwe-events reverse-channel hook, the daily digest script).\"\n");
     s.push_str("Write-Host \"Four steps remain — they are yours (the installer never handles your token):\"\n");
     s.push_str("Write-Host \"  1. Issue a token from your mwe-mcp dashboard home and set MWE_TOKEN in hermes's .env.\"\n");
     s.push_str("Write-Host \"  2. Disable hermes's built-in memory (memory_enabled: false and user_profile_enabled: false).\"\n");
     s.push_str("Write-Host \"  3. Enable the hook plugins in config.yaml plugins.enabled: mwe-watchdog (recommended) and mwe-media (for media capture).\"\n");
     s.push_str("Write-Host \"  4. Restart hermes so it loads the new plugins.\"\n");
+    s.push_str("Write-Host \"Optional: the daily memory digest cron — see the header of mwe-daily-digest.py.\"\n");
     Some(s)
 }
 
@@ -676,7 +693,10 @@ fn render_install_md_hermes(origin: &str) -> String {
          \n\
          Windows (PowerShell): `irm {origin}/bridges/hermes/install.ps1 | iex`\n\
          \n\
-         That places the four plugins. It does **not** touch the token. Once the\n\
+         That places the four plugins, the `mwe-events` reverse-channel gateway\n\
+         hook (auto-discovered from `~/.hermes/hooks/` — it delivers\n\
+         `fact_minted_for_you` notices to their recipients), and the daily-digest\n\
+         cron script. It does **not** touch the token. Once the\n\
          files are in place, **tell your operator** to do these four things — do not\n\
          attempt them silently, and do not handle the token yourself:\n\
          \n\
@@ -690,7 +710,11 @@ fn render_install_md_hermes(origin: &str) -> String {
             `mwe-watchdog` (recommended — verifies each turn's recall block\n\
             actually reaches the model and logs loudly when the host drops it)\n\
             and `mwe-media` (if you want media capture).\n\
-         4. Restart hermes so it loads the new plugins.\n"
+         4. Restart hermes so it loads the new plugins (the gateway hook\n\
+            needs no enabling — the hooks directory is discovered on start).\n\
+         \n\
+         Optional fifth, for a once-a-day memory recap: the cron command in the\n\
+         header of `~/.hermes/scripts/mwe-daily-digest.py`.\n"
     )
 }
 
@@ -813,27 +837,42 @@ mod tests {
         }
         let rels: Vec<String> = plugin_files().into_iter().map(|(r, _)| r).collect();
         assert!(
-            rels.iter().any(|r| r.starts_with("memory/mwe/")),
-            "memory/mwe missing: {rels:?}"
-        );
-        assert!(
-            rels.iter().any(|r| r.starts_with("gateway/mwe-media/")),
-            "gateway/mwe-media missing"
+            rels.iter().any(|r| r.starts_with("plugins/memory/mwe/")),
+            "plugins/memory/mwe missing: {rels:?}"
         );
         assert!(
             rels.iter()
-                .any(|r| r.starts_with("context_engine/mwe-truncate/")),
-            "context_engine/mwe-truncate missing"
+                .any(|r| r.starts_with("plugins/gateway/mwe-media/")),
+            "plugins/gateway/mwe-media missing"
         );
         assert!(
-            rels.iter().any(|r| r.starts_with("agent/mwe-watchdog/")),
-            "agent/mwe-watchdog missing"
+            rels.iter().any(|r| r.starts_with("hooks/mwe-events/")),
+            "hooks/mwe-events missing"
+        );
+        assert!(
+            rels.iter().any(|r| r == "scripts/mwe-daily-digest.py"),
+            "scripts/mwe-daily-digest.py missing"
+        );
+        assert!(
+            rels.iter()
+                .any(|r| r.starts_with("plugins/context_engine/mwe-truncate/")),
+            "plugins/context_engine/mwe-truncate missing"
+        );
+        assert!(
+            rels.iter()
+                .any(|r| r.starts_with("plugins/agent/mwe-watchdog/")),
+            "plugins/agent/mwe-watchdog missing"
         );
     }
 
     #[test]
     fn delimiter_never_collides_with_plugin_source() {
         for (rel, content) in plugin_files() {
+            // Only routed files travel inside heredocs/here-strings;
+            // README/smokes/manifest never reach an installer.
+            if route_embedded_path(&rel).is_none() {
+                continue;
+            }
             for line in content.lines() {
                 assert_ne!(
                     line, SH_DELIM,
@@ -853,7 +892,14 @@ mod tests {
         assert!(sh.contains("cat > \"$HERMES_HOME/plugins/mwe/"));
         assert!(sh.contains("cat > \"$HERMES_HOME/plugins/mwe-media/"));
         assert!(sh.contains("cat > \"$HERMES_HOME/plugins/mwe-watchdog/"));
+        assert!(sh.contains("cat > \"$HERMES_HOME/hooks/mwe-events/handler.py"));
+        assert!(sh.contains("cat > \"$HERMES_HOME/hooks/mwe-events/HOOK.yaml"));
+        assert!(sh.contains("cat > \"$HERMES_HOME/scripts/mwe-daily-digest.py"));
         assert!(sh.contains("cat > \"$HERMES_SRC/plugins/context_engine/mwe-truncate/"));
+        assert!(
+            !sh.contains("README.md") && !sh.contains("smoke_test.py"),
+            "non-runtime bridge files must not ride the installer"
+        );
         assert!(sh.contains("HERMES_HOME=\"${HERMES_HOME:-$HOME/.hermes}\""));
         assert!(sh.contains("HERMES_SRC=\"$(pwd)\""));
         assert!(sh.contains("Issue a token"));
@@ -869,7 +915,9 @@ mod tests {
         let ps = render_install_ps1("hermes").expect("hermes ps1");
         assert!(ps.contains("$HermesHome"));
         assert!(ps.contains("$HermesSrc"));
-        assert!(ps.contains("Join-Path $HermesSrc \"plugins\""));
+        assert!(ps.contains("\"plugins/context_engine/mwe-truncate/"));
+        assert!(ps.contains("\"hooks/mwe-events/handler.py\""));
+        assert!(ps.contains("\"scripts/mwe-daily-digest.py\""));
         assert!(ps.contains("mwe-watchdog"));
         assert!(ps.contains("memory_enabled: false"));
         assert!(ps.contains("user_profile_enabled: false"));

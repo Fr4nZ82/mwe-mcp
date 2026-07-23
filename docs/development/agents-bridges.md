@@ -113,10 +113,11 @@ when its bridge ships a served installer.
 
 ## Shipped bridges
 
-### hermes (`agents-bridges/hermes/`) — plugin quartet, zero fork
+### hermes (`agents-bridges/hermes/`) — plugin quartet + reverse channel, zero fork
 
 The proof-of-concept consumer that validated the per-turn contract live.
-Four hermes-agent plugins, stdlib-only, no upstream patch:
+Four hermes-agent plugins plus a gateway hook and a cron script,
+stdlib-only, no upstream patch:
 
 - **`mwe` memory provider** (out-of-tree, `$HERMES_HOME/plugins/mwe/`):
   `prefetch()` is the one mechanical `wiki_ingest_message` per turn —
@@ -213,11 +214,41 @@ Four hermes-agent plugins, stdlib-only, no upstream patch:
   removed per-tool — hermes gates the provider's own `mwe_*` tools on
   the same `memory` toolset), and facts about people live in the memory
   server, not the local filesystem.
+- **`mwe-events` gateway hook + `mwe-daily-digest.py` cron script** —
+  the **reverse-channel half** (the consumer-push leg of
+  `INTEGRATING.md` step 8; roadmap 3j). The hook rides hermes's
+  documented `gateway:startup` hooks seam (`$HERMES_HOME/hooks/`,
+  auto-discovered — no allow-list): one daemon thread polls
+  `events_poll` every ~30 s, kind-filtered to `fact_minted_for_you`,
+  with the bridge token (consumer id decoded from the token payload —
+  the claim the server validates anyway). Routing is `senderMap` read
+  in reverse, explicit `telegram:<id>` entries only — the
+  `primaryUser` fallback deliberately never applies to a personal
+  notice. Delivery is **agent-mediated by design** (the founder's
+  2026-07-23 ruling: the recipient gets the content itself, phrased by
+  the agent): each notice becomes a one-shot cron job via hermes's own
+  `cron.jobs.create_job` + `trigger_job` — prompt = the fact bodies
+  framed as pass-through material (recipient's language; never imply
+  the recipient took part; add nothing) + `deliver:
+  telegram:<chat>` — which the gateway's scheduler tick (≤60 s) runs;
+  the memory provider is inactive on cron contexts, so the delivery
+  run cannot re-ingest itself. `events_ack` fires only after the job
+  is durably in `jobs.json` (at-least-once); an unroutable recipient
+  retries ~10 minutes (the hook re-reads `mwe.json` each tick, so a
+  live `senderMap` fix lands) and is then acked away with an ERROR.
+  Every **other** event kind batches into the daily digest script
+  (drain → counts by kind → ack → print; `NO_EVENTS` → the cron
+  prompt's `[SILENT]` contract), created once with `hermes cron create
+  "0 9 * * *" … --script mwe-daily-digest.py`. The two drains share
+  one consumer and stay disjoint by kind filter. Knobs in `mwe.json`:
+  `eventsEnabled`, `eventsPollSeconds`, `dashboardUrl`.
 
 The offline smoke loads the plugins **through hermes's real discovery
 seams** from a scratch checkout of the pinned upstream and drives the
 contract mechanics — including the media hook → upload → spool →
-ingest-attachments chain — against the recording stub; it prints its
+ingest-attachments chain and the reverse channel (notice → one-shot job
+persisted by hermes's real `cron.jobs` → ack; unroutable retry/cap;
+digest counts + `NO_EVENTS`) — against the recording stub; it prints its
 own assertion count (the SSOT — don't mirror it here). The live smoke
 (`smoke_live.py`) scripts a short conversation against a real server.
 Operator docs: [`agents-bridges/hermes/README.md`](../../agents-bridges/hermes/README.md).

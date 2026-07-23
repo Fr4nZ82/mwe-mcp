@@ -416,10 +416,11 @@ Copy-paste client configs for specific MCP hosts, the exact
 identity-claim handshake from the consumer's perspective, error/retry
 semantics, and versioning/compatibility guarantees land as the surface
 stabilises toward 1.0, driven by the first real consumers. The
-**proactive out-of-turn delivery** in step 8 is specified but not yet
-drained by every shipped bridge — today's Hermes gateway does not poll
-`events_poll`, so its structural notices currently reach the user only
-via the next-turn `pending_attention` reminder; wiring the poll/push
-daemon is tracked on the roadmap (§3). If you're
+**proactive out-of-turn delivery** in step 8 now ships in the hermes
+bridge (the `mwe-events` gateway hook drains `fact_minted_for_you`
+per-recipient and the daily-digest cron script batches the system
+kinds — see the bridge README §Reverse channel); other bridges still
+rely on the next-turn `pending_attention` reminder until they wire
+their own poll/ack loop. If you're
 integrating now and hit a gap, open an issue — real integration friction
 is exactly what we want to capture here.

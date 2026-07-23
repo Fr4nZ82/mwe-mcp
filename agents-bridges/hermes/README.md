@@ -76,8 +76,19 @@ and no upstream patch:
   transcript gets compacted between index computation and injection is
   a **blind turn** — memory captured, recall dropped; the watchdog makes
   each one visible.
+- **Reverse-channel half** — `hooks/mwe-events/` (a gateway hook on the
+  documented `gateway:startup` seam) + `scripts/mwe-daily-digest.py` (a
+  cron `--script`): the consumer-push leg of `INTEGRATING.md` step 8.
+  The hook polls `events_poll` every ~30 s from inside the gateway and
+  turns each **`fact_minted_for_you`** notice (facts another user's
+  conversation minted for an enrolled recipient — the payload carries
+  the fact bodies) into a **one-shot cron job** through hermes's own
+  `cron.jobs` API: the agent composes the message in the recipient's
+  language and hermes delivers it to their private Telegram chat
+  (`deliver: telegram:<chat>`). The digest script batches every other
+  event kind into a once-a-day recap. See §Reverse channel below.
 
-All four are stdlib-only — no pip dependencies.
+All bridge pieces are stdlib-only — no pip dependencies.
 
 ## Install
 
@@ -94,7 +105,10 @@ curl -fsSL https://<your-mwe-mcp>/bridges/hermes/install.sh | sh
 
 It places all four plugins — `mwe` + `mwe-media` + `mwe-watchdog` under
 `~/.hermes/plugins/`, `mwe-truncate` inside your checkout's
-`plugins/context_engine/` — and prints the four steps that stay yours:
+`plugins/context_engine/` — plus the `mwe-events` reverse-channel hook
+under `~/.hermes/hooks/` (auto-discovered, no enabling needed) and the
+digest script under `~/.hermes/scripts/`, and prints the four steps that
+stay yours:
 mint a token, set `memory_enabled: false` **and** `user_profile_enabled:
 false`, enable the hook plugins under `plugins.enabled`, restart.
 Override the runtime
@@ -115,10 +129,12 @@ into the checkout's plugin directory (a directory add, not a fork):
 BRIDGE=/path/to/mwe-mcp/agents-bridges/hermes
 HERMES=/path/to/hermes-agent
 
-mkdir -p ~/.hermes/plugins
+mkdir -p ~/.hermes/plugins ~/.hermes/hooks ~/.hermes/scripts
 ln -s "$BRIDGE/plugins/memory/mwe"                    ~/.hermes/plugins/mwe
 ln -s "$BRIDGE/plugins/gateway/mwe-media"             ~/.hermes/plugins/mwe-media
 ln -s "$BRIDGE/plugins/agent/mwe-watchdog"            ~/.hermes/plugins/mwe-watchdog
+ln -s "$BRIDGE/hooks/mwe-events"                      ~/.hermes/hooks/mwe-events
+ln -s "$BRIDGE/scripts/mwe-daily-digest.py"           ~/.hermes/scripts/mwe-daily-digest.py
 ln -s "$BRIDGE/plugins/context_engine/mwe-truncate"   "$HERMES/plugins/context_engine/mwe-truncate"
 ```
 
@@ -314,6 +330,62 @@ each file is already bounded by the upload timeout, but a multi-item
 album against an unresponsive server would otherwise stall the gateway
 for files × timeout, so once the budget is spent the remaining files are
 skipped (one warning, the turn proceeds).
+
+## Reverse channel — proactive delivery to the affected human
+
+Everything above fires when a user speaks. mwe-mcp also emits notices on
+its event queue when memory changes and a **different** human should
+know — the flagship being `fact_minted_for_you`: Anna's conversation
+with the assistant produced facts that belong to Bruno (a checklist for
+him, a plan he must act on), and Bruno should *hear about it*, content
+included, not stumble on it at his next recall. The reverse-channel half
+closes that loop, all on supported hermes surface:
+
+- **`hooks/mwe-events/`** — discovered from `~/.hermes/hooks/` at
+  gateway start (no config needed), it runs one daemon thread that polls
+  `events_poll` (~30 s, kind-filtered to `fact_minted_for_you`) with the
+  bridge token; the consumer id is read from the token's own payload.
+  Each notice routes recipient → chat through `senderMap` **in
+  reverse** — explicit `telegram:<id>` entries only, the `primaryUser`
+  fallback never applies (a personal notice must not land in someone
+  else's chat) — and becomes a **one-shot cron job** (hermes's own
+  `cron.jobs` API): the job's prompt carries the fact bodies and the
+  delivery rules (recipient's language; the content came *through* the
+  sender — never imply the recipient took part; add nothing), its
+  `deliver` targets the recipient's private chat, and the gateway's own
+  scheduler runs it within its ≤60 s tick. `events_ack` fires only
+  **after** the job is durably in `jobs.json` — at-least-once, end to
+  end. A recipient with no `telegram:` mapping is retried for ~10
+  minutes (fix `senderMap` live — the hook re-reads it each tick), then
+  acked away with an ERROR log; the facts remain in their memory either
+  way. Optional `mwe.json` knobs: `eventsEnabled: false` (kill-switch),
+  `eventsPollSeconds` (default 30, floor 5).
+- **`scripts/mwe-daily-digest.py`** — every *other* event kind
+  (reorganizations, auto-applied proposals, finished documents, compile
+  streaks…) is deliberately **not** pushed per event: it batches into a
+  once-a-day recap — how many memory changes, of what type, plus the
+  dashboard link (`dashboardUrl` in `mwe.json`; set it to your public
+  origin — the MCP `url` is often loopback). Create the job once:
+
+  ```bash
+  hermes cron create "0 9 * * *" \
+    "If the script output is NO_EVENTS reply exactly [SILENT]. Otherwise \
+  compose a short daily memory recap in the operator's language from the \
+  script output: how many changes and of what type, one line each, then \
+  offer the dashboard link. Add nothing else. Do not use tools." \
+    --script mwe-daily-digest.py \
+    --name "mwe daily digest" \
+    --deliver telegram
+  ```
+
+  The script drains and acks what it summarised, so each notice rides
+  exactly one digest; the two drains share the consumer and stay
+  disjoint by kind filter.
+
+Telegram's cold-initiate rule still applies (a bot cannot message a
+human who never wrote to it first): in practice every mapped sender has
+already opened the chat, and an unreachable recipient degrades exactly
+like an unmapped one.
 
 ## Smokes
 

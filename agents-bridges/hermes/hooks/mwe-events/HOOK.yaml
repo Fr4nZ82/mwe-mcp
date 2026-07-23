@@ -1,0 +1,8 @@
+name: mwe-events
+description: >
+  mwe-mcp bridge, reverse-channel half — polls events_poll every ~30s from
+  inside the gateway and turns each fact_minted_for_you notice into a
+  one-shot cron job that has the agent compose and deliver the content to
+  its recipient's private chat. Ack only after the job is durably enqueued.
+events:
+  - gateway:startup

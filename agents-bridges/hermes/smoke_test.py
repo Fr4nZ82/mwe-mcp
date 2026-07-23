@@ -557,6 +557,112 @@ def main():
     ok("no orphan tool pairing at the cut", no_orphans(kept2),
        f"kept sequence: {[(m['role'], bool(m.get('tool_calls'))) for m in kept2[:6]]}")
 
+    # --- reverse channel: the mwe-events hook + the daily digest ---------------
+    # The hook module is loaded by path (it lives under hooks/, not the
+    # plugin tree) and its tick is exercised directly — the gateway seam
+    # it rides (`gateway:startup` → daemon thread) is one `handle()` call
+    # away and the thread would only add nondeterminism here.
+    import base64
+    import importlib.util as ilu
+    import subprocess
+
+    spec = ilu.spec_from_file_location(
+        "mwe_events_handler", BRIDGE / "hooks" / "mwe-events" / "handler.py")
+    hook = ilu.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+
+    fake_jwt = ("x." + base64.urlsafe_b64encode(
+        json.dumps({"consumer_id": "smokebot"}).encode()).decode().rstrip("=") + ".y")
+    ok("consumer id read from the token payload",
+       hook._consumer_id_from_token(fake_jwt) == "smokebot")
+    ok("garbage token yields no consumer id",
+       hook._consumer_id_from_token("test-jwt") == "")
+
+    routes = hook._reverse_sender_map(
+        {"senderMap": {"telegram:42": "bruno", "bruno": "bruno",
+                       "voice:9": "anna", "telegram:43": "bruno"}})
+    ok("reverse routing: telegram entries only, first per user wins",
+       routes == {"bruno": "42"})
+
+    from cron import jobs as cron_jobs
+    with StubMwe() as stub2:
+        (HOME / "mwe.json").write_text(json.dumps({
+            "url": stub2.url, "primaryUser": "anna",
+            "senderMap": {"telegram:42": "bruno"}, "locale": "it-IT"}))
+        client = hook._load_client_class(HOME)(stub2.url, fake_jwt)
+        minted = {
+            "event_id": 7, "kind": "fact_minted_for_you", "wiki_id": "casa",
+            "payload": {
+                "recipient_id": "user:bruno", "from_user_id": "anna",
+                "origin": "assistant_turn",
+                "facts": [{"fact_id": "f1", "wiki_id": "casa",
+                           "body": "bruno deve controllare il libretto"}]},
+        }
+        stub2.responses["events_poll"] = {"events": [minted], "has_more": False}
+        attempts = {}
+        delivered, pending = hook._tick_once(client, "smokebot", routes, "it-IT", attempts)
+        ok("routable notice → delivery enqueued", delivered == 1 and pending == 0)
+        polls = stub2.calls("events_poll")
+        ok("poll is kind-filtered to fact_minted_for_you",
+           polls[0]["arguments"].get("kinds") == ["fact_minted_for_you"])
+        acks = stub2.calls("events_ack")
+        ok("acked only after the durable enqueue",
+           len(acks) == 1 and acks[0]["arguments"]["event_ids"] == [7])
+        job = next((j for j in cron_jobs.list_jobs()
+                    if str(j.get("name", "")).startswith("mwe-notice-7-")), None)
+        ok("one-shot cron job persisted for the recipient's chat",
+           job is not None and job["schedule"]["kind"] == "once"
+           and job["deliver"] == "telegram:42")
+        ok("job prompt carries the content and the pass-through framing",
+           "bruno deve controllare il libretto" in job["prompt"]
+           and "through anna" in job["prompt"]
+           and "took no part" in job["prompt"])
+
+        # Unroutable recipient: retried without ack, acked away at the cap.
+        stub2.responses["events_poll"] = {
+            "events": [{"event_id": 8, "kind": "fact_minted_for_you",
+                        "payload": {"recipient_id": "user:zoe", "facts": []}}],
+            "has_more": False}
+        delivered, pending = hook._tick_once(client, "smokebot", routes, "", attempts)
+        ok("unroutable notice is NOT acked (retries next tick)",
+           delivered == 0 and pending == 1 and len(stub2.calls("events_ack")) == 1)
+        attempts[8] = hook._MAX_ROUTE_ATTEMPTS - 1
+        hook._tick_once(client, "smokebot", routes, "", attempts)
+        ok("unroutable notice acked away at the attempt cap",
+           stub2.calls("events_ack")[-1]["arguments"]["event_ids"] == [8]
+           and 8 not in attempts)
+
+        # The daily digest script: drains the system kinds, prints counts,
+        # acks what it summarised; [SILENT] contract via NO_EVENTS.
+        stub2.responses["events_poll"] = {"events": [
+            {"event_id": 21, "kind": "structure_applied",
+             "payload": {"variant": "paragraph_split"}},
+            {"event_id": 22, "kind": "structure_applied",
+             "payload": {"variant": "paragraph_split"}},
+            {"event_id": 23, "kind": "document_ingested", "payload": {}},
+        ], "has_more": False}
+        env = dict(os.environ, MWE_TOKEN=fake_jwt)
+        digest = subprocess.run(
+            [sys.executable, str(BRIDGE / "scripts" / "mwe-daily-digest.py")],
+            capture_output=True, text=True, env=env, timeout=60)
+        ok("digest summarises counts by kind",
+           "MWE MEMORY DIGEST" in digest.stdout
+           and "total changes: 3" in digest.stdout
+           and "structure_applied: 2" in digest.stdout
+           and "paragraph_split×2" in digest.stdout, digest.stdout + digest.stderr)
+        ok("digest offers the dashboard link", "/dashboard" in digest.stdout)
+        ok("digest polls only the system kinds (minted stays with the hook)",
+           "fact_minted_for_you"
+           not in stub2.calls("events_poll")[-1]["arguments"]["kinds"])
+        ok("digest acks what it summarised",
+           stub2.calls("events_ack")[-1]["arguments"]["event_ids"] == [21, 22, 23])
+        stub2.responses["events_poll"] = {"events": [], "has_more": False}
+        digest = subprocess.run(
+            [sys.executable, str(BRIDGE / "scripts" / "mwe-daily-digest.py")],
+            capture_output=True, text=True, env=env, timeout=60)
+        ok("quiet day prints NO_EVENTS (the [SILENT] contract)",
+           digest.stdout.strip() == "NO_EVENTS")
+
     print(f"\nhermes bridge offline smoke OK — {PASSED} assertions")
 
 
