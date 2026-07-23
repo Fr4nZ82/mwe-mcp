@@ -169,7 +169,7 @@ touchpoint for one is its briefing (see
 | `WikiMoveFact` | **write** | Move ONE fact on the operator's instruction — to another page of the same wiki (`promote::apply_paragraph_to_file_direct`) or into another wiki (`promote::apply_fact_refile_direct`, landing on the dest `index.md`). Same act-first engine the REM cross-wiki refile sweep + the comment-apply `move` op use. **Admin-only** (`enforce_move_admin`): a move re-categorises — it neither destroys the fact nor changes who can read it — so it is the operator's / REM's structure act, not the owner's. Smart source/dest refused. |
 | `WikiDeletePage` | **write** | Delete a page, governed by the per-fragment **sender**: the deleter's own facts are tombstoned; a foreign-authored fact evacuates intact to its sender's home wiki when one exists, falling back to its owner's — a fact whose sender and owner both lack a home wiki is tombstoned ([`page::decide`](../../crates/mwe-core/src/page.rs)) — all wrapped in one revertible [`bundle`](proposal-apply-engine.md#bundle-handler). **Admin-only** — deleting structure (a page or wiki) is the operator's act; smart wikis refused. There is **no member vote** over a deletion (the admin/deleter's dashboard undo is the only post-deletion lever). The disposition is **move** (the sender-keyed default) or **tombstone all** (`delete_all_facts`, informed confirmation required). |
 | `WikiRequestForget` | **write** | Open a **fact-forget request** for ONE fact the signed-in user does **not** author — the non-sender owner's path (the `fact_forget` [proposal kind](proposal-apply-engine.md#fact-forget-handler)). Caller must be the fact's `owner` (subject) or an owning-group member (or admin); a **sender** is refused and pointed at `WikiForget`. **Propose-first**: the fact stays active while its [`audience`](../../crates/mwe-core/src/acl.rs) votes (`StructureProposalVote`) — a NO-majority blocks it, silence forgets it; a sole-reader request forgets immediately. A smart-wiki target is refused (forget votes are per-fact governance; smart governance is wiki-level). [`votes::open_forget_request`](../../crates/mwe-core/src/votes.rs). |
-| `StructureProposalRevert` | **write** | Undo a previously-applied proposal — the inverse of `StructureProposalApply`. Reuses the [`revert_proposal`](proposal-apply-engine.md) chassis. Headline: undo an act-first structured-wiki emergence ("annulla la lista") — the emerged wiki is deleted, unless it has since accumulated new facts (the "in use" guard refuses). Also the deleter's / admin's undo of a page-deletion `bundle`. |
+| `StructureProposalRevert` | **write** | Undo a previously-applied proposal — the inverse of `StructureProposalApply`. Reuses the [`revert_proposal`](proposal-apply-engine.md) chassis. Headline: undo an applied `wiki_promote` — e.g. a page the REM promoted into its own sub-wiki, refused when the sub-wiki has since accumulated new content (`revert_file_to_subwiki`'s in-use guard). Also the deleter's / admin's undo of a page-deletion `bundle`. |
 | `StructureProposalConfirm` | **write** | Confirm a sweep auto-applied proposal so it sticks — the counterpart of `StructureProposalRevert` on the `applied_pending_confirm → applied` edge. Thin shim over the [`confirm_proposal`](proposal-apply-engine.md) chassis (which gates by recipient/admin internally, so no separate pre-check); mints the `revert_token` + opens the 7-day window. |
 | `StructureProposalVote` | **write** | Cast the signed-in member's vote (`yes`/`no`) on a pending **fact-forget request**. Votes **as** `sender_ctx.sender_id` (no voter argument → no impersonation); [`votes::cast_vote`](../../crates/mwe-core/src/votes.rs) refuses anyone outside the eligible set / the requester / a re-vote, tallies, and — propose-first — **blocks** the request on a NO majority **over the eligible set** (the fact's audience minus the requester; the fact stays), **applies** the forget on an all-voted quorum with no NO majority. The pull-only `pending_votes` recall reminder routes a member here — the proposal read tools are recipient-scoped to the requester, so a voter cannot browse the request from the panel. |
 
@@ -236,27 +236,6 @@ asking the user to confirm-or-revert.
 The revert dispatches to the per-kind inverse via the
 [`proposal-apply-engine.md`](proposal-apply-engine.md) chassis
 (auto-promotion, dedup merge), each guarded by its own handler.
-
-### Recognising structured-wiki requests
-
-`structure_proposal_revert` plus the pre-existing `wiki_change_scope` are *capabilities*;
-the connective tissue that turns a natural-language request into the right call is
-**in the prompt, not in code**. The `agentic-chat-panel` system prompt carries a
-dedicated **"Operating on structured wikis"** section. It is prompt-only (no new tool, whitelist
-unchanged) and does two things:
-
-- **Frames** what a structured wiki is — the lists / cron / contacts family hold
-  *records* (each item a small YAML map of schema fields); they are operated on, not
-  authored as prose — so the model orients before acting.
-- **Maps the operator's wording to the existing tool** (without restating each flow,
-  which already lives in the prompt's "Write tools" section): undo a
-  just-emerged structured wiki → `structure_proposal_revert` (relaying the "in use"
-  refusal as a steer to *modify* instead of delete); move it to another scope →
-  `wiki_change_scope`.
-
-The section reaffirms the HARD RULE in this context (both are write tools — explicit
-confirmation in the current turn; on a vague request, inspect with the read tools and end
-with a confirmation prompt).
 
 ## System prompt — what teaches the LLM the contract
 
