@@ -1882,6 +1882,25 @@ async fn process_job(
             // extractor's `allow_ids` (group/wiki scope + document cues).
             let fact_owner_fallback = sender.clone().unwrap_or_else(|| owner.clone());
             let (fact_owner, fact_allow) = candidate_acl(cand, &fact_owner_fallback);
+            // Engine floor of the 2026-06-30 subject-owner ruling (the
+            // dangling principal of that incident was coined on THIS
+            // path): the extractor prompt carries the `known_users`
+            // roster, but nothing enforced that the owner it emits is
+            // enrollment-backed. An unknown owner falls back to the
+            // uploader, exactly like an absent or malformed one. Fail-open
+            // on a DB error.
+            let fact_owner = if crate::enrollment::principal_exists(pool, &fact_owner)
+                .await
+                .unwrap_or(true)
+            {
+                fact_owner
+            } else {
+                tracing::warn!(
+                    owner = %fact_owner,
+                    "document: extracted owner is not an enrolled principal — re-owned to the uploader"
+                );
+                fact_owner_fallback.clone()
+            };
             let page = normalize_capture_page(cand.target_page.as_deref(), Path::new("index.md"));
             let body = cand.body.trim().to_owned();
             // Dossier provenance rides `authored_refs` — the code-built
@@ -2346,6 +2365,13 @@ mod tests {
         let wikis = dir.path().join("wikis");
         std::fs::create_dir_all(&wikis).unwrap();
         write_wiki(&wikis, "alice", "Alice", "wiki-user");
+        // The extracted fact below is owned by Gimli: subject owners must be
+        // enrollment-backed (the engine re-owns a coined principal to the
+        // uploader — see `dossier_unenrolled_owner_falls_back_to_uploader`).
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('gimli', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         let embedder: Arc<dyn Embedder> = Arc::new(
             crate::embedder::FakeEmbedder::with_fixed_embedding("fake", vec![0.1, 0.2, 0.3, 0.4]),
@@ -2465,6 +2491,62 @@ mod tests {
                 .await
                 .expect("event");
         assert_eq!(kind, "document_ingested");
+        drop(dir);
+    }
+
+    /// Engine floor of the 2026-06-30 subject-owner ruling on the document
+    /// path — the one where the original dangling principal was
+    /// coined: an extractor-emitted owner that enrollment does not back is
+    /// re-owned to the uploader instead of minting a principal no reader
+    /// matches.
+    #[tokio::test]
+    async fn dossier_unenrolled_owner_falls_back_to_uploader() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(&wikis).unwrap();
+        write_wiki(&wikis, "alice", "Alice", "wiki-user");
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        let embedder: Arc<dyn Embedder> = Arc::new(
+            crate::embedder::FakeEmbedder::with_fixed_embedding("fake", vec![0.1, 0.2, 0.3, 0.4]),
+        );
+        // `legolas` is never enrolled: the extractor coined him.
+        let llm = ScriptedLlm::new(&[
+            r#"{"disposition":"dossier","format":"prose","title":"Meeting X","page_slug":"meeting_x.md","target_wiki_id":"alice","summary":"Riunione sul viaggio.","page_description":"dossier del meeting","style":"prosa","topics":["meeting"]}"#,
+            r#"{"facts":[{"body":"Legolas prenota il viaggio entro venerdì.","target_wiki_id":"alice","target_page":"viaggio.md","owner_id":"user:legolas","allow_ids":[],"fact_type":"commitment","topics":["viaggio"]}]}"#,
+        ]);
+        enqueue(
+            &pool,
+            &policy(),
+            EnqueueRequest {
+                source_kind: "inline".into(),
+                source_ref: None,
+                text: "Meeting: Legolas prenota il viaggio entro venerdì.".into(),
+                title_hint: None,
+                disposition: None,
+                format: None,
+                occurred_at: Some("2026-06-12T10:00:00Z".into()),
+                owner: "user:alice".parse().unwrap(),
+                allow: Vec::new(),
+                sender: None,
+                force: false,
+            },
+        )
+        .await
+        .expect("enqueue");
+        let ran = run_one_job(&pool, &tree, &embedder, &llm, dir.path(), &policy())
+            .await
+            .expect("run");
+        assert!(ran);
+        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+            .await
+            .expect("buffered");
+        assert_eq!(buffered.len(), 1);
+        assert_eq!(
+            buffered[0].owner,
+            "user:alice".parse::<Principal>().unwrap(),
+            "an unenrolled extracted owner must fall back to the uploader"
+        );
         drop(dir);
     }
 

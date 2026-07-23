@@ -821,7 +821,10 @@ struct LlmExtraction {
 /// A single fact to file this turn — a borrowed, source-agnostic view over
 /// either one [`LlmExtraction`] or the legacy top-level single-fact fields.
 /// Both [`validate_capture_plan`] and [`validate_supersede_target`] operate on
-/// this so the router can loop uniformly over one or many facts.
+/// this so the router can loop uniformly over one or many facts. `Copy` (all
+/// fields are borrows) so the filing loop can detach a local view and clear a
+/// field the enrollment guard rejects without touching the plan.
+#[derive(Clone, Copy)]
 struct CaptureUnit<'a> {
     target_wiki_id: Option<&'a str>,
     target_page: Option<&'a str>,
@@ -4721,30 +4724,55 @@ pub async fn wiki_ingest_message(
                     continue;
                 }
 
-                let supersede_target = match validate_supersede_target(unit, &request, &recall_hits)
+                // Engine floor of the 2026-06-30 subject-owner ruling (the
+                // dangling-principal incident): the `known_users`
+                // roster in the prompt steers the classifier away from
+                // coining an owner for a non-enrolled subject, but nothing
+                // enforced it — a dangling `user:<x>` owner matches no
+                // reader and splits the subject across homes on re-ingest.
+                // Clearing the field routes the unit through the sender
+                // default in the validators below, the ruling's own
+                // fallback. Fail-open on a DB error: the guard protects
+                // against a coined principal, not against an outage.
+                let mut unit = *unit;
+                if let Some(raw) = unit.owner_id
+                    && let Ok(principal) = Principal::from_str(raw)
+                    && !enrollment::principal_exists(pool, &principal)
+                        .await
+                        .unwrap_or(true)
                 {
-                    Ok(target) => target,
-                    Err(err) => {
-                        tracing::warn!(error = %err, "ingest: supersede_target invalid");
-                        if legacy {
-                            return Ok(fallback_with_unclaimed_media(
-                                pool,
-                                tree,
-                                &request,
-                                &available,
-                                policy,
-                                &recall_hits,
-                                start.elapsed(),
-                                true,
-                                &claimed_attachments,
-                            )
-                            .await);
-                        }
-                        continue;
-                    },
-                };
+                    tracing::warn!(
+                        owner = raw,
+                        sender_id = request.sender_id.as_str(),
+                        "ingest: owner is not an enrolled principal — re-owned to the sender"
+                    );
+                    unit.owner_id = None;
+                }
+
+                let supersede_target =
+                    match validate_supersede_target(&unit, &request, &recall_hits) {
+                        Ok(target) => target,
+                        Err(err) => {
+                            tracing::warn!(error = %err, "ingest: supersede_target invalid");
+                            if legacy {
+                                return Ok(fallback_with_unclaimed_media(
+                                    pool,
+                                    tree,
+                                    &request,
+                                    &available,
+                                    policy,
+                                    &recall_hits,
+                                    start.elapsed(),
+                                    true,
+                                    &claimed_attachments,
+                                )
+                                .await);
+                            }
+                            continue;
+                        },
+                    };
                 let mut cap_req =
-                    match validate_capture_plan(unit, &request, policy, &available, legacy) {
+                    match validate_capture_plan(&unit, &request, policy, &available, legacy) {
                         Ok(req) => req,
                         Err(err) => {
                             tracing::warn!(error = %err, "ingest: capture plan invalid");
@@ -7167,6 +7195,80 @@ mod tests {
         assert_eq!(row.text, "alice prefers coffee black");
         assert_eq!(row.fact_type.as_deref(), Some("preference"));
         assert_eq!(row.topics, vec!["coffee".to_owned()]);
+        drop(dir);
+    }
+
+    /// Engine floor of the 2026-06-30 subject-owner ruling (the
+    /// dangling-principal incident): a classifier-emitted owner
+    /// that enrollment does not back is re-owned to the sender — the
+    /// ruling's own fallback — instead of minting a principal no reader
+    /// matches.
+    #[tokio::test]
+    async fn ingest_unenrolled_owner_reowns_to_sender() {
+        let (dir, tree, pool) = setup_workdir().await;
+        // `aragorn` is never enrolled: the classifier coined him.
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"owner_id\":\"user:aragorn\",\"body\":\"aragorn arrives on Friday\",\"fact_type\":\"plan\",\"topics\":[\"visit\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let policy = IngestPolicy::default();
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("aragorn arrives on Friday", "alice"),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+        let cap_id = resp.capture_id.expect("captured");
+        let row = fact_index::find_by_id(&pool, &cap_id)
+            .await
+            .expect("find")
+            .expect("inserted row");
+        assert_eq!(
+            row.owner_id,
+            Principal::User("alice".to_owned()),
+            "an unenrolled owner must fall back to the sender"
+        );
+        drop(dir);
+    }
+
+    /// Counterpart of [`ingest_unenrolled_owner_reowns_to_sender`]: an
+    /// enrolled third-party subject is a legitimate owner (the subject
+    /// axis — reciprocal relationship facts, a fact filed for another
+    /// family member) and must pass the guard untouched.
+    #[tokio::test]
+    async fn ingest_enrolled_third_party_owner_is_kept() {
+        let (dir, tree, pool) = setup_workdir().await;
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('morgana', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"owner_id\":\"user:morgana\",\"body\":\"morgana arrives on Friday\",\"fact_type\":\"plan\",\"topics\":[\"visit\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let policy = IngestPolicy::default();
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("morgana arrives on Friday", "alice"),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+        let cap_id = resp.capture_id.expect("captured");
+        let row = fact_index::find_by_id(&pool, &cap_id)
+            .await
+            .expect("find")
+            .expect("inserted row");
+        assert_eq!(
+            row.owner_id,
+            Principal::User("morgana".to_owned()),
+            "an enrolled third-party owner must be kept"
+        );
         drop(dir);
     }
 

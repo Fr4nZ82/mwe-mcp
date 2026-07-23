@@ -770,6 +770,19 @@ is expected noise, and `validate_capture_plan` strips it — capture's
 `SenderRedundantInAllow` lint stays strict for hand-written callers but
 can never kill an ingest turn.
 
+A second normalization is the **enrollment guard on `owner_id`** (the
+engine floor under the 2026-06-30 subject-owner ruling): an owner that
+parses as a `Principal` but that enrollment does not back — a principal
+the classifier coined despite the prompt's `known_users` roster — is
+cleared before validation
+([`enrollment::principal_exists`](../../crates/mwe-core/src/enrollment.rs),
+fail-open on a DB error, `warn`-logged), so the unit re-owns to the
+sender default. An **enrolled** third-party subject (a reciprocal
+relationship fact, a fact filed for another family member) passes
+untouched — the owner axis is the subject, not the interlocutor. The
+document path applies the same guard on its filing loop
+([document-ingest.md](document-ingest.md)).
+
 A pathological LLM that asks to capture into `user:bob`'s wiki when
 `sender=alice` is **not rejected** at this layer — the
 cross-user-attribution invariant lives in

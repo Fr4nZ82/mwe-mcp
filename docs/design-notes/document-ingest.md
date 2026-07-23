@@ -200,7 +200,12 @@ on the **`ingest` LLM slot** (workhorse tier — same slot, no new config).
   `allow` (audience) are decided **per fact by the extractor** under the
   ingest rules (default `owner = user:<uploader>`, `allow = []`; widened
   from the group/wiki `scope` signals and the document's own cues), never
-  derived from where it lands. Its `sender` stays the uploader. The
+  derived from where it lands. An extractor-emitted `owner` that
+  enrollment does not back is re-owned to the uploader
+  (`enrollment::principal_exists`, fail-open on a DB error) — the engine
+  floor under the prompt's `known_users` roster, closing the path where
+  the 2026-06-30 dangling principal was coined. Its `sender` stays the
+  uploader. The
   **anchor** fact (the document's own identity page, `consult`/`dossier`)
   keeps the job's `owner` + the explicit `allow` that rode the upload — no
   placement-derived widening. The blob's read set still widens
