@@ -3,7 +3,6 @@ name: rem-dedup
 description: REM revisor — binary dedup confirmer between two facts (pair nominated by the jaccard band or the embedding-cosine channel), each shown with the page it lives on
 version: 1.2
 default_version_at_bootstrap: v1.2
-source_of_truth_until_2026_05_22: crates/mwe-core/src/rem.rs (fn revisor_prompt)
 ---
 
 # Prompt: rem-dedup

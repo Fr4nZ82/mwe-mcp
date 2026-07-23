@@ -2,7 +2,7 @@
 name: rem-promotions
 description: REM auto-promote scorer — per-page paragraph→page split decision (whole page in, moved facts out)
 version: 2.0
-default_version_at_bootstrap: v1.0
+default_version_at_bootstrap: v2.0
 source_of_truth: crates/mwe-core/src/rem.rs (fn paragraph_split_prompt)
 ---
 

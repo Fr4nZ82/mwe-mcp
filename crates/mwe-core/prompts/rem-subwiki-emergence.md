@@ -2,8 +2,7 @@
 name: rem-subwiki-emergence
 description: REM page→sub-wiki emergence scorer — decide whether a whole topic page has grown into a subject area that deserves its own sub-wiki
 version: 1.1
-default_version_at_bootstrap: v1.0
-source_of_truth_until_2026_05_22: crates/mwe-core/src/rem.rs (fn subwiki_emergence_prompt)
+default_version_at_bootstrap: v1.1
 ---
 
 # Prompt: rem-subwiki-emergence
