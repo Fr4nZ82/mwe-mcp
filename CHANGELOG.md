@@ -9,6 +9,42 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## 1.5.0 — 2026-07-23
+
+### Added
+
+- **The reverse channel now tells the affected human.** When a turn (or a
+  document upload) files a fact owned by an enrolled user who was *not* the
+  human of that conversation, the engine emits a new `fact_minted_for_you`
+  event carrying the fact bodies themselves — batched one notice per
+  beneficiary — so a consumer can deliver the content to its subject instead
+  of leaving them to stumble on it at their next recall. This is the server
+  half of the consumer-push contract (`INTEGRATING.md` step 8).
+- **hermes bridge: the reverse-channel half, zero fork.** A `mwe-events`
+  gateway hook (auto-discovered from `$HERMES_HOME/hooks/`) drains
+  `fact_minted_for_you` every ~30 s and delivers each notice to its
+  recipient's private chat as an agent-composed message, routed through a
+  one-shot cron job on hermes's own scheduler; a `mwe-daily-digest.py` cron
+  script batches every other event kind into a once-a-day recap. Built
+  entirely on supported hermes seams — no upstream patch.
+
+### Fixed
+
+- **A fact can no longer be owned by a principal that does not exist.** Both
+  ingest paths (conversational and document) now check the classifier-emitted
+  owner against enrollment before filing: an owner that resolves to no
+  registered user/group is re-owned to the sender (or the uploader), closing
+  the gap that let a fabricated subject take ownership of a memory. An
+  enrolled third party — the legitimate subject of a fact about someone
+  else — passes untouched.
+- **Owner attribution on assistant turns follows the subject, not the
+  speaker (ingest prompt v2.43).** Advice the agent synthesises *for* an
+  enrolled user is owned by that user, decided deliberately via a necessity
+  test rather than guessed from a mention; and the fact body narrates the
+  advice passing through the sender instead of asserting an interaction with
+  the absent subject (the wording that made a relayed plan read as a false
+  memory).
+
 ## 1.4.8 — 2026-07-20
 
 ### Fixed
