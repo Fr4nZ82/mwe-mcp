@@ -1090,9 +1090,17 @@ poison (noise, opinions, regenerable world knowledge, feedback loops). Part 12 i
 gated hard on the `author: assistant` context line `build_prompt` injects — on a
 normal turn it is ignored and the prompt is byte-identical to before. When armed,
 it classifies each thing the reply states into six kinds and keeps three:
-**episodic sediment** ("discussed X, concluded Y, on D") and **personalised
-advice / a decision** tied to this user — both `owner_id: user:<sender>` — plus
-the **self-fact** (`owner_id: "self"`, below). Filler, generic regenerable
+**episodic sediment** ("discussed X, concluded Y, on D" — `owner_id:
+user:<sender>`) and **personalised advice / a decision** — owned by its
+**subject**: the sender in the normal case, another **enrolled** user when the
+turn explicitly establishes that person must know and act on it (the
+`owner_id` section's ABOUT-includes-FOR necessity test; the owner axis is the
+subject, not the interlocutor) — plus the **self-fact** (`owner_id: "self"`,
+below). When the owner is not the sender, the prompt's **beneficiary rule**
+governs the body wording: the fact says the advice *passed through* the sender
+(«ha spiegato a X cosa Y deve controllare»), never that the agent interacted
+with the absent subject — a delivery that never happened must not be asserted
+(the notification leg is the reverse channel's job, roadmap 3j). Filler, generic regenerable
 knowledge, and **recall echoes** (anything `recalled_memory` already holds — you
 recalled it, you did not derive it) are skipped; the default is hard-skip. The
 canonical echo is **identification** — the reply reciting the user's identity

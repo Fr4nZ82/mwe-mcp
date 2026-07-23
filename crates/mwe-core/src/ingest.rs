@@ -7272,6 +7272,38 @@ mod tests {
         drop(dir);
     }
 
+    /// The assistant-turn face of the same contract (prompt v2.43: the
+    /// owner axis is the subject, not the interlocutor): advice the agent
+    /// synthesised FOR an enrolled third user — the necessity test — files
+    /// owned by that user, exactly as on a user turn.
+    #[tokio::test]
+    async fn ingest_assistant_turn_keeps_enrolled_beneficiary_owner() {
+        let (dir, tree, pool) = setup_workdir().await;
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('morgana', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"owner_id\":\"user:morgana\",\"body\":\"the agent walked alice through what morgana must check at the viewing\",\"fact_type\":\"plan\",\"topics\":[\"viewing\"],\"requested_container\":true,\"suggested_seed\":\"ok\"}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let policy = IngestPolicy::default();
+        let mut request = req("checklist for the used-car viewing", "alice");
+        request.author = MessageRole::Assistant;
+        let resp = wiki_ingest_message(&pool, &tree, fake_embedder(), &llm, None, request, &policy)
+            .await
+            .expect("ingest");
+        let cap_id = resp.capture_id.expect("captured");
+        let row = fact_index::find_by_id(&pool, &cap_id)
+            .await
+            .expect("find")
+            .expect("inserted row");
+        assert_eq!(
+            row.owner_id,
+            Principal::User("morgana".to_owned()),
+            "assistant-turn advice for an enrolled beneficiary is owned by the beneficiary"
+        );
+        drop(dir);
+    }
+
     /// Group 17 (17a) — a smart consumer is a SUPERSET of a standard one: its
     /// user↔agent conversation still runs the standard personal-memory
     /// pipeline. The project (smart) wiki it authors via `wiki_admin_*` is
