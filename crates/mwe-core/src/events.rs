@@ -46,9 +46,9 @@ use thiserror::Error;
 
 /// Wire-stable identifiers for event kinds.
 ///
-/// Emitted by REM. New variants are additive — the `kind` column is
-/// `TEXT`, so a future consumer that does not know a kind just receives
-/// the JSON payload and decides what to do.
+/// Emitted by REM and the ingest paths. New variants are additive — the
+/// `kind` column is `TEXT`, so a future consumer that does not know a
+/// kind just receives the JSON payload and decides what to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
@@ -114,6 +114,22 @@ pub enum EventKind {
     /// queries, and the gate outcome when a candidate repair was tried)
     /// and the operator decides.
     RecallTuningProposed,
+    /// Ingest filed a fact **owned by an enrolled human who was not the
+    /// human of that turn** (or, on the document path, not the
+    /// uploader) — the delivery half of the subject-owner axiom: the
+    /// beneficiary should be TOLD a fact was minted for them out of
+    /// someone else's conversation, not discover it on their next
+    /// recall. Batched per (beneficiary, ingest call): one event carries
+    /// every fact the turn minted for that user, so a five-fact turn is
+    /// one notice, not five pings. The payload carries `recipient_id`
+    /// (`user:`-prefixed), `from_user_id` (bare id of the human whose
+    /// turn or upload minted it), `origin` (`user_turn` |
+    /// `assistant_turn` | `document`), a `facts` array (`fact_id`,
+    /// `wiki_id`, `body` — the content itself, so the bridge's agent can
+    /// deliver it without a recall round-trip), and a `dashboard_path`.
+    /// Only real humans are addressed: group-owned facts are communal
+    /// and agent principals (`is_agent`) have no inbox.
+    FactMintedForYou,
 }
 
 impl EventKind {
@@ -128,6 +144,7 @@ impl EventKind {
             Self::DocumentIngested => "document_ingested",
             Self::CompileFailureStreak => "compile_failure_streak",
             Self::RecallTuningProposed => "recall_tuning_proposed",
+            Self::FactMintedForYou => "fact_minted_for_you",
         }
     }
 }
@@ -492,6 +509,7 @@ mod tests {
             EventKind::CompileFailureStreak.as_str(),
             "compile_failure_streak"
         );
+        assert_eq!(EventKind::FactMintedForYou.as_str(), "fact_minted_for_you");
     }
 
     #[tokio::test]

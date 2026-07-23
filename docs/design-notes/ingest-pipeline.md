@@ -783,6 +783,25 @@ untouched — the owner axis is the subject, not the interlocutor. The
 document path applies the same guard on its filing loop
 ([document-ingest.md](document-ingest.md)).
 
+The subject-owner axiom has a **delivery half**: a fact that files
+owned by an enrolled user who is not the human of the conversation is
+news *to that user*, and the recipient must not have to stumble on it
+via recall. The filing loop accumulates such facts per beneficiary and,
+after the loop, emits one **`fact_minted_for_you`** event per recipient
+on the reverse channel (`events_poll`) — batched, so a turn that mints
+five facts for the same user is one notice, not five. The payload
+carries the fact bodies themselves (the consumer's agent delivers the
+content, not a pointer), `from_user_id` (the human whose turn minted
+them — on an assistant turn `request.sender_id` stays the interlocutor;
+the roadmap-27 flip touches only the fact's `sender` axis), and
+`origin` (`user_turn` | `assistant_turn`). A dedup-skipped direct write
+emits nothing (nothing new was minted), group-owned facts are communal,
+and agent principals are skipped (`is_agent` — no inbox). Emission is
+non-fatal: a lost notice never demotes the turn. The document path
+mirrors this per job ([document-ingest.md](document-ingest.md));
+draining and out-of-turn delivery are the bridge's job
+(`INTEGRATING.md` step 8 — the hermes poll/ack daemon is roadmap 3j).
+
 A pathological LLM that asks to capture into `user:bob`'s wiki when
 `sender=alice` is **not rejected** at this layer — the
 cross-user-attribution invariant lives in

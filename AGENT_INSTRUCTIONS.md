@@ -126,7 +126,13 @@ For each MCP call the bot picks one of:
   `X-MWE-Act-As: <that user>` — then relay the returned single-use URL
   (pointing at the notice's `dashboard_path`, the undo surface) to that
   human (e.g. on Telegram). On a `null` recipient, fall back to the
-  admin.
+  admin. A `fact_minted_for_you` notice routes the same way but is a
+  **delivery, not a pointer**: its `facts[].body` array carries the
+  content another user's turn minted for the recipient, so phrase and
+  send the content itself in the recipient's language ("Alice worked
+  out with me what you should check at the viewing: …"), naming
+  `from_user_id` as the person it came through — never as someone the
+  recipient already spoke to.
 - **Acting as the bot itself.** Omit the header. The effective
   sender stays the bot's synthetic id; captures and recall resolve
   against the bot's own wiki.

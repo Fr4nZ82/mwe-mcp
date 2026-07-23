@@ -32,7 +32,7 @@ use crate::events::{self, EventKind};
 use crate::ingest::{available_wikis, normalize_capture_page, parse_first_json};
 use crate::llm::{CompletionRequest, LlmBackend, LlmError};
 use crate::prompts;
-use crate::types::{CatalogId, Principal, WikiId};
+use crate::types::{CatalogId, FactId, Principal, WikiId};
 use crate::wiki::WikiTree;
 
 /// `capture_buffer.source_kind` value stamped on facts this pipeline files.
@@ -1724,6 +1724,13 @@ async fn process_job(
     }
 
     // Phase: extract (map) — consult skips straight to done.
+    // Reverse-channel accumulator (`fact_minted_for_you`): facts this
+    // document minted for an enrolled user other than the uploader,
+    // keyed by that beneficiary so the whole job emits at most one
+    // notice per recipient — alongside, never instead of, the
+    // uploader's own `document_ingested` below.
+    let mut minted_for: std::collections::BTreeMap<String, Vec<(FactId, String, String)>> =
+        std::collections::BTreeMap::new();
     if !matches!(disposition, Disposition::Consult) {
         // The uploader's groups (id + scope prose) — the audience signal the
         // extractor reads when deciding each fact's `allow_ids`, the same
@@ -1903,6 +1910,15 @@ async fn process_job(
             };
             let page = normalize_capture_page(cand.target_page.as_deref(), Path::new("index.md"));
             let body = cand.body.trim().to_owned();
+            // Reverse-channel snapshot before `body` moves into the
+            // request: a user-owned fact whose owner is not the uploader
+            // is news to that user.
+            let minted_beneficiary = match &fact_owner {
+                Principal::User(u) if fact_owner != fact_owner_fallback => {
+                    Some((u.clone(), body.clone()))
+                },
+                _ => None,
+            };
             // Dossier provenance rides `authored_refs` — the code-built
             // wikilink to the document page (the model never writes links,
             // and the claim text stays clean: no inline `[[…]]` suffix
@@ -1915,7 +1931,7 @@ async fn process_job(
             } else {
                 Vec::new()
             };
-            capture_buffer::buffer_capture_with_source(
+            let buffered = capture_buffer::buffer_capture_with_source(
                 tree,
                 pool,
                 CaptureRequest {
@@ -1942,6 +1958,13 @@ async fn process_job(
                     .or_else(|| Some(format!("document-job:{}", job.job_id))),
             )
             .await?;
+            if let Some((beneficiary, notice_body)) = minted_beneficiary {
+                minted_for.entry(beneficiary).or_default().push((
+                    buffered.capture_id,
+                    wiki_str.clone(),
+                    notice_body,
+                ));
+            }
             sqlx::query(
                 "UPDATE document_jobs SET facts_buffered = facts_buffered + 1, updated_at = ? WHERE job_id = ?",
             )
@@ -1982,6 +2005,69 @@ async fn process_job(
         &payload,
     )
     .await?;
+    // Reverse-channel notices: the uploader heard `document_ingested`
+    // above; each enrolled third user whose facts this document minted
+    // hears `fact_minted_for_you` — content included, so the bridge's
+    // agent can deliver it without a recall round-trip. Agent principals
+    // are skipped (no inbox), which also covers the lookup failing open.
+    // Non-fatal: a lost notice never fails the job. A job resumed after
+    // a crash reports only the facts buffered since the resume — the
+    // notice is a courtesy; `facts_buffered` stays the audit count.
+    let uploader = sender.clone().unwrap_or_else(|| owner.clone());
+    let from_user_id = match &uploader {
+        Principal::User(u) => Some(u.as_str()),
+        Principal::Group(_) => None,
+    };
+    for (recipient, facts) in minted_for {
+        if crate::enrollment::is_agent(pool, &recipient)
+            .await
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let Some((first_id, first_wiki, _)) = facts.first() else {
+            continue;
+        };
+        let payload = serde_json::json!({
+            "recipient_id": format!("user:{recipient}"),
+            "from_user_id": from_user_id,
+            "origin": "document",
+            "job_id": job.job_id,
+            "title": job.resolved_title,
+            "facts": facts
+                .iter()
+                .map(|(id, wiki, body)| {
+                    serde_json::json!({
+                        "fact_id": id.as_str(),
+                        "wiki_id": wiki,
+                        "body": body,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "dashboard_path": format!("/dashboard/wiki/{first_wiki}"),
+        });
+        if let Err(err) = events::insert_event(
+            pool,
+            EventKind::FactMintedForYou,
+            Some(first_wiki.as_str()),
+            Some(first_id.as_str()),
+            &payload,
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %err,
+                recipient = recipient.as_str(),
+                "document: fact-minted-for-you notice failed"
+            );
+        } else {
+            tracing::info!(
+                recipient = recipient.as_str(),
+                facts = facts.len(),
+                "document: fact-minted-for-you notice emitted"
+            );
+        }
+    }
     tracing::info!(
         job_id = job.job_id,
         disposition = disposition.as_str(),
@@ -2484,13 +2570,17 @@ mod tests {
             "sender stays the uploader"
         );
 
-        // Completion notice emitted.
-        let (kind,): (String,) =
-            sqlx::query_as("SELECT kind FROM wiki_events ORDER BY id DESC LIMIT 1")
-                .fetch_one(&pool)
-                .await
-                .expect("event");
-        assert_eq!(kind, "document_ingested");
+        // Completion notice emitted — and, because the extracted fact's
+        // owner (gimli) is an enrolled user other than the uploader, the
+        // beneficiary's reverse-channel notice follows it.
+        let kinds: Vec<(String,)> = sqlx::query_as("SELECT kind FROM wiki_events ORDER BY id ASC")
+            .fetch_all(&pool)
+            .await
+            .expect("events");
+        assert_eq!(
+            kinds.iter().map(|(k,)| k.as_str()).collect::<Vec<_>>(),
+            vec!["document_ingested", "fact_minted_for_you"]
+        );
         drop(dir);
     }
 
@@ -2546,6 +2636,70 @@ mod tests {
             buffered[0].owner,
             "user:alice".parse::<Principal>().unwrap(),
             "an unenrolled extracted owner must fall back to the uploader"
+        );
+        drop(dir);
+    }
+
+    /// Reverse channel on the document path: a fact the extractor owns to
+    /// an enrolled user other than the uploader emits a
+    /// `fact_minted_for_you` notice for that user — alongside the
+    /// uploader's own `document_ingested`.
+    #[tokio::test]
+    async fn dossier_beneficiary_fact_emits_minted_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(&wikis).unwrap();
+        write_wiki(&wikis, "alice", "Alice", "wiki-user");
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        let embedder: Arc<dyn Embedder> = Arc::new(
+            crate::embedder::FakeEmbedder::with_fixed_embedding("fake", vec![0.1, 0.2, 0.3, 0.4]),
+        );
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('gimli', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let llm = ScriptedLlm::new(&[
+            r#"{"disposition":"dossier","format":"prose","title":"Meeting X","page_slug":"meeting_x.md","target_wiki_id":"alice","summary":"Riunione sul viaggio.","page_description":"dossier del meeting","style":"prosa","topics":["meeting"]}"#,
+            r#"{"facts":[{"body":"Gimli prenota il viaggio entro venerdì.","target_wiki_id":"alice","target_page":"viaggio.md","owner_id":"user:gimli","allow_ids":[],"fact_type":"commitment","topics":["viaggio"]}]}"#,
+        ]);
+        enqueue(
+            &pool,
+            &policy(),
+            EnqueueRequest {
+                source_kind: "inline".into(),
+                source_ref: None,
+                text: "Meeting: Gimli prenota il viaggio entro venerdì.".into(),
+                title_hint: None,
+                disposition: None,
+                format: None,
+                occurred_at: Some("2026-06-12T10:00:00Z".into()),
+                owner: "user:alice".parse().unwrap(),
+                allow: Vec::new(),
+                sender: None,
+                force: false,
+            },
+        )
+        .await
+        .expect("enqueue");
+        let ran = run_one_job(&pool, &tree, &embedder, &llm, dir.path(), &policy())
+            .await
+            .expect("run");
+        assert!(ran);
+        let rows: Vec<(Option<String>,)> =
+            sqlx::query_as("SELECT payload FROM wiki_events WHERE kind = 'fact_minted_for_you'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), 1, "one enrolled beneficiary, one notice");
+        let payload: serde_json::Value =
+            serde_json::from_str(rows[0].0.as_deref().unwrap()).unwrap();
+        assert_eq!(payload["recipient_id"], "user:gimli");
+        assert_eq!(payload["from_user_id"], "alice");
+        assert_eq!(payload["origin"], "document");
+        assert_eq!(
+            payload["facts"][0]["body"], "Gimli prenota il viaggio entro venerdì.",
+            "the notice carries the content itself"
         );
         drop(dir);
     }

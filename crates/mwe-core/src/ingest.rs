@@ -1933,6 +1933,75 @@ async fn emit_closure_paper_trail(
     }
 }
 
+/// Emit one [`EventKind::FactMintedForYou`] per beneficiary of this turn
+/// — the server half of the consumer-push contract (INTEGRATING step 8).
+///
+/// A beneficiary is a user principal that OWNS a fact this turn filed
+/// while not being the conversation's human (`request.sender_id`). The
+/// caller batches per owner, so a turn yields at most one event per
+/// recipient no matter how many facts it minted. The payload carries the
+/// fact bodies themselves — the delivery ruling (2026-07-23) wants the
+/// CONTENT to reach the recipient, not a pointer, so the bridge's agent
+/// needs no recall round-trip. Agent principals are skipped here (no
+/// inbox — their facts are their own diary), which also covers the
+/// `is_agent` lookup failing open. Non-fatal: a failed insert is
+/// warn-logged and never demotes the turn.
+async fn emit_beneficiary_notices(
+    pool: &SqlitePool,
+    request: &IngestRequest,
+    via_assistant: bool,
+    notices: std::collections::BTreeMap<String, Vec<(FactId, WikiId, String)>>,
+) {
+    for (recipient, facts) in notices {
+        if enrollment::is_agent(pool, &recipient)
+            .await
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let Some((first_id, first_wiki, _)) = facts.first() else {
+            continue;
+        };
+        let payload = serde_json::json!({
+            "recipient_id": format!("user:{recipient}"),
+            "from_user_id": request.sender_id.as_str(),
+            "origin": if via_assistant { "assistant_turn" } else { "user_turn" },
+            "facts": facts
+                .iter()
+                .map(|(id, wiki, body)| {
+                    serde_json::json!({
+                        "fact_id": id.as_str(),
+                        "wiki_id": wiki.as_str(),
+                        "body": body,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "dashboard_path": format!("/dashboard/wiki/{}", first_wiki.as_str()),
+        });
+        if let Err(err) = events::insert_event(
+            pool,
+            EventKind::FactMintedForYou,
+            Some(first_wiki.as_str()),
+            Some(first_id.as_str()),
+            &payload,
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %err,
+                recipient = recipient.as_str(),
+                "ingest: fact-minted-for-you notice failed"
+            );
+        } else {
+            tracing::info!(
+                recipient = recipient.as_str(),
+                facts = facts.len(),
+                "ingest: fact-minted-for-you notice emitted"
+            );
+        }
+    }
+}
+
 /// Why a requested validity edit was refused (warn-and-skip — a bad edit
 /// never demotes the turn; the twin of [`ClosurePlanError`]).
 #[derive(Debug, Error)]
@@ -4550,6 +4619,15 @@ pub async fn wiki_ingest_message(
                 plan.capture_units()
             };
             let mut captured_any = false;
+            // Reverse-channel accumulator (the server half of the
+            // consumer-push contract, INTEGRATING step 8): facts this turn
+            // filed for an enrolled user who is NOT the human of the
+            // conversation, keyed by that beneficiary so one turn emits at
+            // most one notice per recipient. Emitted after the loop.
+            let mut beneficiary_notices: std::collections::BTreeMap<
+                String,
+                Vec<(FactId, WikiId, String)>,
+            > = std::collections::BTreeMap::new();
             for unit in &units {
                 // Surface the per-fact validity interval + per-page
                 // style/description the classifier deduced.
@@ -4858,6 +4936,13 @@ pub async fn wiki_ingest_message(
                     cap_req.sender = Some(agent.clone());
                 }
 
+                // Reverse-channel snapshot, taken before `cap_req` moves
+                // into the filing call: the notice body is the prose
+                // BEFORE the embed markers (media stays behind the
+                // dashboard, the notice carries clean text).
+                let notice_body = cap_req.body.clone();
+                let notice_wiki = cap_req.wiki_id.clone();
+
                 // Media this extraction claims: validate against the
                 // turn's attachment window, append the code-rendered
                 // embed markers to the body (inside the future region,
@@ -4889,6 +4974,11 @@ pub async fn wiki_ingest_message(
                 // sets the flag — no hard-coded gate.
                 let route_to_buffer = target_is_standard && !unit.requested_container;
 
+                // Cleared when the direct path's write-time dedup proves
+                // nothing new filed — a restated fact is no news to its
+                // beneficiary. Buffer-time dedup resolves later in the
+                // light dream, so a buffered capture always counts.
+                let mut filed_fresh = true;
                 let this_id: FactId = if route_to_buffer {
                     let buffered = capture_buffer::buffer_capture(
                         tree,
@@ -4977,6 +5067,7 @@ pub async fn wiki_ingest_message(
                         similarity,
                     } = &outcome.action
                     {
+                        filed_fresh = false;
                         direct_dedup_hits.push((
                             matched_fact_id.clone(),
                             *similarity,
@@ -4999,11 +5090,43 @@ pub async fn wiki_ingest_message(
                     .await;
                 }
 
+                // Reverse-channel accumulation: a fact owned by a user who
+                // is not the human of this conversation is news TO that
+                // user (`request.sender_id` stays the interlocutor on an
+                // assistant turn — the roadmap-27 flip touches only the
+                // fact's `sender` axis above).
+                if filed_fresh
+                    && let Principal::User(owner_uid) = &media_acl.0
+                    && owner_uid != &request.sender_id
+                {
+                    beneficiary_notices
+                        .entry(owner_uid.clone())
+                        .or_default()
+                        .push((this_id.clone(), notice_wiki, notice_body));
+                }
+
                 // Surface the first filed fact as the turn's anchor id.
                 if capture_id.is_none() {
                     capture_id = Some(this_id);
                 }
                 captured_any = true;
+            }
+
+            // Reverse-channel emission: one `fact_minted_for_you` event
+            // per beneficiary of this turn, drained by the bridge over
+            // `events_poll`. Non-fatal like every notice — a lost event
+            // never demotes the turn.
+            if !beneficiary_notices.is_empty() {
+                // `origin` reflects the turn's ROLE, not the provenance
+                // axis: an assistant turn whose consumer binding did not
+                // resolve still minted the fact out of the agent's reply.
+                emit_beneficiary_notices(
+                    pool,
+                    &request,
+                    request.author == MessageRole::Assistant,
+                    beneficiary_notices,
+                )
+                .await;
             }
 
             // The closure half of the turn — completion / forget gestures
@@ -7301,6 +7424,117 @@ mod tests {
             Principal::User("morgana".to_owned()),
             "assistant-turn advice for an enrolled beneficiary is owned by the beneficiary"
         );
+        // The delivery half: the beneficiary is told, and the notice says
+        // the fact came out of the agent's own reply.
+        let rows: Vec<(Option<String>,)> =
+            sqlx::query_as("SELECT payload FROM wiki_events WHERE kind = 'fact_minted_for_you'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), 1, "one beneficiary, one notice");
+        let payload: serde_json::Value =
+            serde_json::from_str(rows[0].0.as_deref().unwrap()).unwrap();
+        assert_eq!(payload["recipient_id"], "user:morgana");
+        assert_eq!(payload["from_user_id"], "alice");
+        assert_eq!(payload["origin"], "assistant_turn");
+        drop(dir);
+    }
+
+    /// Reverse channel, user-turn face: facts filed for an enrolled third
+    /// user emit ONE `fact_minted_for_you` event per beneficiary and turn
+    /// — batched (two facts, one notice) and content-bearing (the bridge's
+    /// agent delivers the body without a recall round-trip). The sender's
+    /// own fact in the same turn emits nothing.
+    #[tokio::test]
+    async fn ingest_beneficiary_facts_batch_into_one_minted_notice() {
+        let (dir, tree, pool) = setup_workdir().await;
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('morgana', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let json = "{\"intent\":\"capture\",\"extractions\":[\
+            {\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+             \"owner_id\":\"user:morgana\",\"body\":\"morgana handles the viewing on Friday\",\
+             \"fact_type\":\"plan\",\"topics\":[\"viewing\"],\"requested_container\":true},\
+            {\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+             \"owner_id\":\"user:morgana\",\"body\":\"morgana must bring the service booklet\",\
+             \"fact_type\":\"plan\",\"topics\":[\"viewing\"],\"requested_container\":true},\
+            {\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+             \"owner_id\":\"user:alice\",\"body\":\"alice sold her bike\",\
+             \"fact_type\":\"episode\",\"topics\":[\"bike\"],\"requested_container\":true}],\
+            \"suggested_seed\":\"ok\"}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let policy = IngestPolicy::default();
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("viewing logistics", "alice"),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+        let rows: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT wiki_id, payload FROM wiki_events WHERE kind = 'fact_minted_for_you'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "two facts for one beneficiary batch into one notice"
+        );
+        assert_eq!(rows[0].0.as_deref(), Some("alice"));
+        let payload: serde_json::Value =
+            serde_json::from_str(rows[0].1.as_deref().unwrap()).unwrap();
+        assert_eq!(payload["recipient_id"], "user:morgana");
+        assert_eq!(payload["from_user_id"], "alice");
+        assert_eq!(payload["origin"], "user_turn");
+        let facts = payload["facts"].as_array().unwrap();
+        assert_eq!(facts.len(), 2, "the sender's own fact rides no notice");
+        assert_eq!(
+            facts[0]["body"], "morgana handles the viewing on Friday",
+            "the notice carries the content itself"
+        );
+        drop(dir);
+    }
+
+    /// An agent principal never gets a minted-for-you ping: it has no
+    /// inbox to drain — a fact cross-filed under an agent owner is that
+    /// agent's own diary, not a delivery.
+    #[tokio::test]
+    async fn ingest_agent_owned_fact_emits_no_minted_notice() {
+        let (dir, tree, pool) = setup_workdir().await;
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, is_admin, is_agent) VALUES ('bot', 0, 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"owner_id\":\"user:bot\",\"body\":\"the bot tracks the pantry stock\",\"fact_type\":\"plan\",\"topics\":[\"pantry\"],\"requested_container\":true,\"suggested_seed\":\"ok\"}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let policy = IngestPolicy::default();
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("pantry tracking", "alice"),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM wiki_events WHERE kind = 'fact_minted_for_you'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0, "agent principals have no inbox");
         drop(dir);
     }
 

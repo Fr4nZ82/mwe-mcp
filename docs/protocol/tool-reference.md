@@ -347,10 +347,20 @@ Drain pending events for a registered consumer.
 `auto_applied` (REM), `document_ingested` (a document-ingest job
 finished — payload: `job_id`, resolved `disposition` and `title`, the
 anchor `document_page` when one exists, `facts_buffered`, `source_ref`,
-`recipient_id`), and `compile_failure_streak` (the narrative compiler
+`recipient_id`), `compile_failure_streak` (the narrative compiler
 failed/degraded the same page in consecutive compile passes — payload:
 `slug`, `source_path`, `consecutive`, `last_error`, `dashboard_path`;
-see the failure ledger).
+see the failure ledger), and `fact_minted_for_you` (ingest filed one or
+more facts owned by an enrolled human who was not the human of that
+turn / the uploader — payload: `recipient_id` (`user:`-prefixed
+beneficiary), `from_user_id` (bare id of the human whose turn or upload
+minted them), `origin` (`user_turn` | `assistant_turn` | `document`,
+plus `job_id`/`title` on the document path), `facts` (array of
+`fact_id`/`wiki_id`/`body` — the content rides the notice so the
+consumer's agent can deliver it without a recall round-trip), and
+`dashboard_path`; batched per (beneficiary, turn), so one turn emits at
+most one event per recipient; group-owned facts and agent principals
+never emit it).
 The `kind` column is `TEXT`, so new kinds are additive —
 a consumer that does not recognise a kind just receives the JSON payload
 and decides what to do. `structure_applied` is the **notice** for a
@@ -373,10 +383,10 @@ token with no `consumer_id` tried to poll).
   event to its destination, the consumer **must** call `events_ack` to
   stop re-delivery.
 - **Recipient routing (0032):** the `structure_applied`,
-  `dedup_proposed`, and `auto_applied` payloads carry a
-  `recipient_id` field — the addressee as a `Principal` wire string
-  (`"user:<id>"`), or `null` when the change is unaddressed
-  (admin-fallback). A multi-human consumer (one bot serving several
+  `dedup_proposed`, `auto_applied`, and `fact_minted_for_you` payloads
+  carry a `recipient_id` field — the addressee as a `Principal` wire
+  string (`"user:<id>"`), or `null` when the change is unaddressed
+  (admin-fallback; `fact_minted_for_you` is always addressed). A multi-human consumer (one bot serving several
   users via act-as) reads `recipient_id`, strips the `user:` prefix, and
   routes the notification (e.g. a Telegram message carrying a
   `dashboard_link`) to that specific human; on `null` it falls back to

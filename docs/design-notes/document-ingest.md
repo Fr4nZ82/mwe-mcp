@@ -210,7 +210,14 @@ on the **`ingest` LLM slot** (workhorse tier — same slot, no new config).
   keeps the job's `owner` + the explicit `allow` that rode the upload — no
   placement-derived widening. The blob's read set still widens
   monotonically to the anchor's at `GET` time (the media catalog's own
-  ACL).
+  ACL). A fact whose surviving owner is an **enrolled user other than
+  the uploader** additionally rides the reverse channel: after the job's
+  own `document_ingested` notice, one **`fact_minted_for_you`** event
+  per beneficiary carries those facts' bodies (`origin: "document"`,
+  plus `job_id`/`title`), so the consumer's agent can deliver the
+  content to its subject; agent principals are skipped, emission is
+  non-fatal, and a job resumed after a crash reports only the facts
+  buffered since the resume (`facts_buffered` stays the audit count).
 
 ## Configuration
 

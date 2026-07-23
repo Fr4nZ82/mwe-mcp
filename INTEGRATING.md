@@ -357,7 +357,13 @@ below directly.
    also emits notices when *it* acts and the user should know: REM
    applied a structural change directly (`structure_applied`), a dedup
    proposal auto-applied (`auto_applied`), a merge awaits an answer
-   (`dedup_proposed`), a document finished ingest (`document_ingested`).
+   (`dedup_proposed`), a document finished ingest (`document_ingested`),
+   and — the one notice addressed to a *different* human than the one
+   who spoke — a turn or upload minted facts owned by another enrolled
+   user (`fact_minted_for_you`: the payload carries the fact bodies, so
+   your agent delivers the content itself — "Alice worked out with the
+   assistant what you should check at the viewing: …" — not a bare
+   pointer).
    Poll them with `events_poll`, hand each to your agent, then
    `events_ack` the ids so the server stops re-delivering. A structural
    payload carries `recipient_id` (the addressed human — strip the
