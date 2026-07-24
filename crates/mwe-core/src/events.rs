@@ -38,8 +38,6 @@
 //! consumer X" iff `acks->>X` is absent. Filtering happens server-side
 //! via `SQLite`'s JSON1 `json_extract`.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use thiserror::Error;
@@ -413,11 +411,27 @@ pub async fn poll_events(
 ///   the caller surfaces them as the `unknown` field of the tool
 ///   response per the [tool reference](../../../docs/protocol/tool-reference.md) for `events_ack`.
 ///
+/// ## Concurrency — why this transaction writes first
+///
+/// Each id is stamped with a single `UPDATE` that patches the `acks` JSON
+/// **in place** via `json_set`; we never `SELECT` the blob into Rust and
+/// write it back. That ordering is load-bearing. A `BEGIN DEFERRED`
+/// transaction that reads before it writes acquires only a *read snapshot*
+/// on its first `SELECT` and must *upgrade* to the write lock at the
+/// `UPDATE`. If any other connection commits in the gap — e.g. a concurrent
+/// [`poll_events`] stamping `last_seen_at`, or an ingest inserting an event
+/// — `SQLite` refuses the upgrade with `SQLITE_BUSY_SNAPSHOT`, surfaced as
+/// `(code: 5) database is locked`. Crucially the `busy_timeout` handler
+/// (see [`crate::db::open_or_init`]) **cannot** retry a snapshot conflict,
+/// so it fails *instantly* rather than waiting its turn. With a
+/// consumer polling every 30s the read→write window was hit on almost every
+/// ack. Writing first takes the write lock at the first `UPDATE` with no
+/// snapshot to invalidate, so `busy_timeout` serialises contending writers
+/// the normal way.
+///
 /// # Errors
 ///
 /// - [`EventsError::Db`] for any SQL failure.
-/// - [`EventsError::Json`] if a stored `acks` blob is malformed (schema
-///   drift; we never write malformed JSON ourselves).
 pub async fn ack_events(
     pool: &SqlitePool,
     consumer_id: &str,
@@ -431,27 +445,27 @@ pub async fn ack_events(
 
     let mut tx = pool.begin().await?;
     for &id in event_ids {
-        let row: Option<(String,)> = sqlx::query_as("SELECT acks FROM wiki_events WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
-        let Some((acks_json,)) = row else {
+        // Patch `acks[consumer_id] = now` in place. `COALESCE(NULLIF(...))`
+        // guards the (defensive) empty-string / NULL blob so `json_set`
+        // always receives valid JSON. A missing row updates zero rows and
+        // is reported as `unknown`; an existing row always reports one
+        // changed row, so a re-ack stays idempotent (acked = 1).
+        let affected = sqlx::query(
+            "UPDATE wiki_events
+                SET acks = json_set(COALESCE(NULLIF(acks, ''), '{}'), '$.' || ?, ?)
+              WHERE id = ?",
+        )
+        .bind(consumer_id)
+        .bind(&now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if affected == 0 {
             outcome.unknown.push(id);
-            continue;
-        };
-        let mut acks: BTreeMap<String, String> = if acks_json.is_empty() {
-            BTreeMap::new()
         } else {
-            serde_json::from_str(&acks_json)?
-        };
-        acks.insert(consumer_id.to_owned(), now.clone());
-        let updated = serde_json::to_string(&acks)?;
-        sqlx::query("UPDATE wiki_events SET acks = ? WHERE id = ?")
-            .bind(&updated)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        outcome.acked += 1;
+            outcome.acked += 1;
+        }
     }
     tx.commit().await?;
 
@@ -822,6 +836,82 @@ mod tests {
             .await
             .unwrap();
         assert!(out.events.is_empty());
+    }
+
+    /// Regression guard for the `SQLITE_BUSY_SNAPSHOT` deadlock that broke
+    /// `events_ack` in production (v1.5.0). The pre-fix body ran
+    /// `SELECT`-then-`UPDATE` inside a deferred transaction: the `SELECT`
+    /// pinned a read snapshot, and if another connection committed a write
+    /// before the `UPDATE` could upgrade to the write lock, `SQLite` rejected
+    /// the upgrade with `(code: 5) database is locked` — a conflict
+    /// `busy_timeout` cannot retry, so it failed instantly.
+    ///
+    /// This forces that interleaving deterministically: a second connection
+    /// holds the write lock (`BEGIN IMMEDIATE` + an uncommitted write), we
+    /// launch the ack (which — pre-fix — takes its read snapshot and then
+    /// parks waiting for the lock), then commit the blocker so the WAL
+    /// advances past the ack's snapshot. A read-first ack wakes into a stale
+    /// snapshot and fails; the write-first body takes its snapshot only when
+    /// it finally acquires the write lock, so it must succeed. The pool's
+    /// default capacity (10) lets the blocker and the ack hold distinct
+    /// connections concurrently.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn ack_events_survives_write_committed_after_it_started() {
+        let pool = fresh_pool().await;
+        register_dummy_consumer(&pool, "samvise").await;
+        register_dummy_consumer(&pool, "poller").await;
+        let id = insert_event(
+            &pool,
+            EventKind::StructureApplied,
+            None,
+            None,
+            &serde_json::Value::Null,
+        )
+        .await
+        .unwrap();
+
+        // Blocker: hold the write lock on a distinct connection with an
+        // uncommitted write, so the ack that follows cannot take the write
+        // lock until we commit — and that commit advances the WAL.
+        let mut blocker = pool.acquire().await.unwrap();
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *blocker)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE consumers SET last_seen_at = ? WHERE consumer_id = ?")
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind("poller")
+            .execute(&mut *blocker)
+            .await
+            .unwrap();
+
+        // Launch the ack while the write lock is held. Pre-fix it reads its
+        // snapshot now and parks on the UPDATE; post-fix it parks on the
+        // UPDATE with no snapshot taken yet.
+        let ack_pool = pool.clone();
+        let ids = vec![id];
+        let ack = tokio::spawn(async move { ack_events(&ack_pool, "samvise", &ids).await });
+
+        // Let the ack task run its SELECT (pre-fix) and block on the UPDATE.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+        // Commit the blocker: releases the write lock AND advances the WAL
+        // past any snapshot the ack pinned before this point.
+        sqlx::query("COMMIT").execute(&mut *blocker).await.unwrap();
+        drop(blocker);
+
+        let out = ack
+            .await
+            .unwrap()
+            .expect("ack must not fail with a stale-snapshot lock error");
+        assert_eq!(out.acked, 1);
+        assert!(out.unknown.is_empty());
+
+        // And the stamp actually landed: nothing pending for the consumer.
+        let pending = poll_events(&pool, "samvise", None, &[], DEFAULT_POLL_TOP_K)
+            .await
+            .unwrap();
+        assert!(pending.events.is_empty());
     }
 
     #[tokio::test]

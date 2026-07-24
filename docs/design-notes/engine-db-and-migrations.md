@@ -45,13 +45,34 @@ externally-populated catalog — not covered here.)
 |---|---|---|
 | `journal_mode` | `WAL` | SQLite's WAL mode lets the single writer commit without blocking concurrent readers. Without it, readers serialize behind any writer and the audit/dashboard paths stall under load. |
 | `foreign_keys` | `ON` | SQLite ships with FKs *off* for historical compatibility. We always want them enforced — the `ON DELETE CASCADE` rules on the identity tables (a user delete dropping their credential row) need the runtime to honor them. |
-| `busy_timeout` | `5000` ms | Single-writer is enforced at the OS level (the lockfile), but within one process the brief window between a checkpoint and a competing reader can still race. A 5s wait turns `SQLITE_BUSY` from "user-visible error" into "imperceptible pause". |
+| `busy_timeout` | `5000` ms | The lockfile enforces single-*process*, but each process runs a multi-connection `SqlitePool` (default cap 10), so its own async tasks — ingest, REM, an `events_poll` stamping `last_seen_at`, an `events_ack` — are concurrent writers. A 5s wait turns the transient `SQLITE_BUSY` of two connections contending for the WAL write lock from a user-visible error into an imperceptible pause. **Caveat:** it does *not* cover `SQLITE_BUSY_SNAPSHOT` — see the write-first rule below. |
 
 WAL mode also writes a sidecar `engine.db-wal` and `engine.db-shm`
 into the workdir. Both are part of the durable state — a backup tool
 that snapshots only `engine.db` will surface inconsistent reads on
 restore. The canonical backup procedure uses `VACUUM INTO`, which
 produces a single self-consistent file.
+
+### Multi-statement writes must write first
+
+`busy_timeout` retries the *ordinary* `SQLITE_BUSY` (two connections
+contending for the WAL write lock), but it cannot retry
+`SQLITE_BUSY_SNAPSHOT`. That variant arises when a `BEGIN DEFERRED`
+transaction — what `pool.begin()` issues — runs a `SELECT` *before* its
+first write: the `SELECT` pins a read snapshot, and if any other
+connection commits before the transaction upgrades to the write lock,
+SQLite refuses the upgrade outright. It surfaces as `(code: 5) database
+is locked` and fails *instantly* rather than waiting its turn. A
+multi-connection pool with a consumer polling every 30s hits this
+reliably — it silently broke `events_ack` end-to-end in v1.5.0 (acks
+never landed; the event queue could not drain).
+
+The discipline: **a write transaction must take the write lock before it
+reads.** Either make its first statement a write (e.g. patch a row in
+place with `json_set` and derive existence from `rows_affected` instead
+of a prior `SELECT`), or open it with `BEGIN IMMEDIATE`. Read-then-write
+inside one `pool.begin()` is the footgun; `events::ack_events` is the
+worked example of the write-first form.
 
 ## Canonical schema
 
@@ -227,6 +248,13 @@ recipient_id, revert_deadline, dashboard_path, … }`,
 ack tracking possible: an event acked by *every* registered consumer is
 eligible for the optional retention sweep (default **30 days**), while
 an event nobody acked stays indefinitely.
+
+`events_ack` stamps `acks[consumer_id]` with a single in-place `json_set`
+`UPDATE` per event id — never a read-then-write — so the ack transaction
+takes the WAL write lock up front (see
+[Multi-statement writes must write first](#multi-statement-writes-must-write-first)).
+A missing row updates nothing and is reported back as `unknown`; an
+existing row always counts one changed row, so a re-ack stays idempotent.
 
 ### `tool_executions` — audit trail (0003)
 
