@@ -735,7 +735,9 @@ pub async fn reject_if_agent(pool: &SqlitePool, user_id: &str) -> Result<(), Str
 /// `enrollment_groups` with the given file. Assumes the file has
 /// already passed [`validate`].
 pub async fn mirror_to_db(pool: &SqlitePool, file: &EnrollmentFile) -> Result<(), EnrollmentError> {
-    let mut tx = pool.begin().await?;
+    // Reads `preserved_agents` before the wholesale delete/re-insert, so
+    // IMMEDIATE avoids the read→write snapshot upgrade (`database is locked`).
+    let mut tx = crate::db::begin_immediate(pool).await?;
 
     // Preserve the explicit `is_agent` markers (migration 0050) across this
     // full-replace: the EnrollmentFile (a dashboard form / yaml import) carries
@@ -848,7 +850,9 @@ pub async fn remove_user(
     pool: &SqlitePool,
     user_id: &str,
 ) -> Result<Option<UserRemoval>, sqlx::Error> {
-    let mut tx = pool.begin().await?;
+    // Reads existence + the consumer list before the cascade of deletes, so
+    // IMMEDIATE avoids the read→write snapshot upgrade (`database is locked`).
+    let mut tx = crate::db::begin_immediate(pool).await?;
     let exists: Option<i64> =
         sqlx::query_scalar("SELECT 1 FROM enrollment_users WHERE user_id = ?")
             .bind(user_id)

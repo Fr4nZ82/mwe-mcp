@@ -420,7 +420,9 @@ pub async fn rotate_refresh_token(
     ttl: Duration,
 ) -> Result<(String, RefreshGrant)> {
     let token_hash = hash_secret(refresh_token);
-    let mut tx = pool.begin().await?;
+    // Write-first (validates then revokes/issues): IMMEDIATE avoids the
+    // read→write snapshot upgrade that would surface as `database is locked`.
+    let mut tx = crate::db::begin_immediate(pool).await?;
     let row: Option<(String, String, String, String, String)> = sqlx::query_as(
         "SELECT client_id, sender_id, consumer_id, wiki_id, expires_at
          FROM webagentoauth_refresh

@@ -115,6 +115,38 @@ pub async fn meta_set(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Result
     Ok(())
 }
 
+/// Begin a **write** transaction that takes the WAL write lock up front
+/// (`BEGIN IMMEDIATE`) instead of sqlx's default `BEGIN DEFERRED`.
+///
+/// Use this for any multi-statement transaction that writes. A deferred
+/// transaction that runs a `SELECT` before its first write pins a read
+/// snapshot and must *upgrade* to the write lock at the first
+/// `UPDATE`/`INSERT`/`DELETE`; if another connection commits in that gap,
+/// `SQLite` rejects the upgrade with `SQLITE_BUSY_SNAPSHOT` — surfaced as
+/// `(code: 5) database is locked` — and `busy_timeout` cannot retry a
+/// snapshot conflict, so it fails *instantly* rather than waiting. The
+/// multi-connection pool makes concurrent writers real (an `events_poll`
+/// stamps `last_seen_at` every 30s), so this is not theoretical: it silently
+/// broke `events_ack` in v1.5.0. Taking the write lock at `BEGIN` removes the
+/// upgrade entirely; `busy_timeout` then serialises contenders normally. See
+/// `docs/design-notes/engine-db-and-migrations.md` →
+/// "Multi-statement writes must write first".
+///
+/// Do **not** use this for a transaction that awaits slow non-DB work
+/// (network / LLM / filesystem) between begin and commit — it would hold the
+/// write lock for that whole span and serialise every other writer. Keep
+/// such work outside the transaction instead.
+///
+/// # Errors
+///
+/// As [`sqlx::Error`] — including if the connection failed to begin the
+/// transaction.
+pub async fn begin_immediate(
+    pool: &SqlitePool,
+) -> sqlx::Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
+    pool.begin_with("BEGIN IMMEDIATE").await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
