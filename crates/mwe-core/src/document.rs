@@ -820,6 +820,39 @@ fn hard_split(s: &str, max: usize) -> Vec<String> {
     out
 }
 
+/// Append `body` to the packing buffer, honouring both size knobs:
+/// `segment_max_chars` splits an oversized block, `segment_target_chars`
+/// closes the buffer before it grows past the packing target.
+///
+/// Both bodies a paragraph can carry — a plain paragraph, and the lines
+/// that ride along with a heading on the same block — go through here, so
+/// neither can bypass the cap.
+fn pack(
+    out: &mut Vec<Segment>,
+    buf: &mut String,
+    heading: Option<&String>,
+    body: &str,
+    policy: &DocumentPolicy,
+) {
+    for piece in hard_split(body, policy.segment_max_chars) {
+        if !buf.is_empty()
+            && buf.chars().count() + piece.chars().count() > policy.segment_target_chars
+        {
+            let done = buf.trim();
+            if !done.is_empty() {
+                out.push(Segment {
+                    heading: heading.cloned(),
+                    content: done.to_owned(),
+                    occurred_at: None,
+                });
+            }
+            buf.clear();
+        }
+        buf.push_str(&piece);
+        buf.push_str("\n\n");
+    }
+}
+
 fn segment_prose(text: &str, policy: &DocumentPolicy) -> Vec<Segment> {
     // Heading chain: a stack of (level, title) — `## B` under `# A`
     // renders as "A › B" in the segment context.
@@ -862,23 +895,21 @@ fn segment_prose(text: &str, policy: &DocumentPolicy) -> Vec<Segment> {
                     .join(" › "),
             );
             // Any prose lines following the heading inside the same
-            // paragraph stay with it.
+            // paragraph stay with it — packed and hard-split like any
+            // other body. A heading whose text follows on the very next
+            // line (no blank line between) makes the whole block ONE
+            // paragraph: a changelog entry, a table, a dense list. Pushing
+            // that straight into the buffer bypassed `segment_max_chars`
+            // entirely and was how a 6 994-character section reached the
+            // index.
             let rest: String = trimmed.lines().skip(1).collect::<Vec<_>>().join("\n");
-            if !rest.trim().is_empty() {
-                buf.push_str(rest.trim());
-                buf.push_str("\n\n");
+            let rest = rest.trim();
+            if !rest.is_empty() {
+                pack(&mut out, &mut buf, buf_heading.as_ref(), rest, policy);
             }
             continue;
         }
-        for piece in hard_split(trimmed, policy.segment_max_chars) {
-            if !buf.is_empty()
-                && buf.chars().count() + piece.chars().count() > policy.segment_target_chars
-            {
-                flush(&mut out, &mut buf, &buf_heading);
-            }
-            buf.push_str(&piece);
-            buf.push_str("\n\n");
-        }
+        pack(&mut out, &mut buf, buf_heading.as_ref(), trimmed, policy);
     }
     flush(&mut out, &mut buf, &buf_heading);
     out

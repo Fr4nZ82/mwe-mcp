@@ -9,6 +9,22 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## Unreleased
+
+### Fixed
+
+- **The section cap was bypassed by a heading whose body starts on the
+  next line.** The prose segmenter splits on blank lines, so a heading
+  followed immediately by its text — a changelog entry, a table, a dense
+  list — is a *single* paragraph; the heading branch pushed those
+  trailing lines into the packing buffer without ever applying
+  `segment_max_chars`. Only the plain-paragraph branch enforced it. Both
+  bodies now go through the same packing helper, so the cap holds for
+  every shape. Observed on the reference store immediately after the
+  1.5.2 deploy: two pages of that shape kept sections of 6 994 and 5 239
+  characters through a full re-cut. Document ingest shares the segmenter
+  and gains the same guarantee, which its own knob already promised.
+
 ## 1.5.2 — 2026-07-26
 
 ### Added

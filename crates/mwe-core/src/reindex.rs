@@ -2344,9 +2344,19 @@ mod tests {
         let pool = make_pool().await;
         let embedder = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
 
-        // One heading, one unbroken paragraph — the shape that produced
-        // prod's 5 239-char section. Nothing but the hard cap can split it.
-        let body = format!("# Log\n\n{}\n", "parola ".repeat(1_500));
+        // Two shapes, both of which reached production oversized:
+        // (1) a heading, a blank line, one unbroken paragraph; (2) a
+        // heading whose body starts on the NEXT LINE — a changelog entry,
+        // a table, a dense list — which makes heading and body a single
+        // paragraph. Shape (2) used to bypass the cap entirely: the
+        // heading branch pushed its trailing lines into the buffer
+        // without splitting them, which is how a 6 994-char section got
+        // indexed.
+        let body = format!(
+            "# Log\n\n{}\n\n## Changelog\n{}\n",
+            "parola ".repeat(1_500),
+            "voce di changelog molto lunga\n".repeat(300),
+        );
         let page = wiki_dir.join("log.md");
         write_page(&wiki_dir, "log.md", &body);
 
@@ -2358,8 +2368,15 @@ mod tests {
             .await
             .unwrap();
         assert!(rows.len() > 1, "an oversized paragraph must be split");
+        assert!(
+            rows.iter().any(|r| r
+                .heading_path
+                .as_deref()
+                .is_some_and(|h| h.ends_with("Changelog"))),
+            "the heading-attached body must be indexed under its heading"
+        );
         // The heading path is prefixed to the body, hence the slack.
-        let slack = "Log\n\n".len();
+        let slack = "Log › Changelog\n\n".chars().count();
         for row in &rows {
             assert!(
                 row.text.chars().count() <= crate::document::SECTION_MAX_CHARS + slack,
