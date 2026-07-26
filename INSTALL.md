@@ -166,6 +166,10 @@ through everything — no YAML to hand-edit, no credentials to hand to anyone el
    currently accepts an underscore that the wiki layer rejects, so an id with `_`
    enrolls but its identity wiki silently fails to create.
 
+   > **Connecting Claude Code?** Skip the token: it signs in over OAuth instead
+   > (see [Next: connect an agent](#next-connect-an-agent)). You still need the
+   > user created here.
+
 That's it — you have a running, governed memory.
 
 ---
@@ -194,8 +198,9 @@ Snapshot that one folder and you've backed up the whole memory.
 
 The defaults are already conservative; production exposure adds four habits:
 
-1. **Keep the bind on loopback** (`mwe-mcp serve` defaults to
-   `127.0.0.1:8742`) and expose the port through a TLS reverse proxy or an
+1. **Keep the bind on loopback** (both the exposure prompt and the
+   non-interactive default resolve to `127.0.0.1:8742`) and expose the port
+   through a TLS reverse proxy or an
    authenticated tunnel (Cloudflare Tunnel, Tailscale, a VPN). Never forward
    bare HTTP across a network you don't own — every request carries a bearer
    token.
@@ -223,17 +228,28 @@ strictly additive.
 
 ## Next: connect an agent
 
-A running server is a memory waiting for a consumer. To wire an AI agent to it
-over MCP, continue with **[`INTEGRATING.md`](INTEGRATING.md)**. The only
-ready-made bridge today is **[Hermes](https://github.com/NousResearch/hermes-agent)**
-(Nous Research) — its step-by-step setup is in
-[`agents-bridges/hermes/README.md`](agents-bridges/hermes/README.md).
+A running server is a memory waiting for a consumer, and your server **serves the
+setup itself**: visit `/bridges` for the copy-paste setup per consumer (the
+install address is tailored to how you reached the server), or use the
+**Bridges** tab once signed in. Two consumers are covered point-and-click today:
 
-Your running server also **serves the bridge installer**: visit `/bridges` for
-the one-command, copy-paste setup per consumer (the install address is tailored
-to how you reached the server), or use the **Bridges** tab once signed in. The
-public front page at `/` points an agent straight at the catalog, and each entry
-links to a machine-readable `install.md` you can hand to a capable agent.
+- **Claude Code** (`/bridges/claude-code`) — one command plus an OAuth sign-in,
+  with **no token to mint or paste**:
+
+  ```bash
+  claude mcp add --transport http mwe-mcp http://127.0.0.1:8742/mcp --scope user
+  ```
+
+  It connects as a *smart* consumer and authors its own project wikis.
+- **[Hermes](https://github.com/NousResearch/hermes-agent)** (Nous Research,
+  `/bridges/hermes`) — the ready-made **per-turn** plugin bridge for a standard
+  consumer, installed with one command. Its step-by-step setup is in
+  [`agents-bridges/hermes/README.md`](agents-bridges/hermes/README.md).
+
+The public front page at `/` points an agent straight at the catalog, and each
+entry links to a machine-readable `install.md` you can hand to a capable agent.
+To wire a host we don't ship a bridge for, the per-turn contract is in
+**[`INTEGRATING.md`](INTEGRATING.md)**.
 
 ## More
 

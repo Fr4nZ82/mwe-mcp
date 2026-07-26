@@ -7,10 +7,11 @@ steps).
 
 **If you just want to connect a ready-made consumer, the running server walks you
 through it — you may not need this guide.** Open the **Bridges** tab in the
-dashboard (or `/bridges` unauthenticated) for the one-command, copy-paste setup
-per supported host; the public front page at `/` points a capable agent straight
-at a machine-readable `install.md` it can run itself. Today the one ready-made
-bridge is **Hermes** (Nous Research).
+dashboard (or `/bridges` unauthenticated) for the copy-paste setup per supported
+host; the public front page at `/` points a capable agent straight at a
+machine-readable `install.md` it can run itself. Two hosts are covered
+point-and-click today: **Claude Code** (smart consumer, one command + OAuth) and
+**Hermes** (Nous Research — the ready-made per-turn plugin bridge).
 
 This guide is what's left once that path doesn't fit: the **per-turn contract** to
 write a bridge for a host we don't ship, the **deployment-security rules** for
@@ -20,11 +21,12 @@ LLM agent that *talks to* mwe-mcp over MCP reads
 [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) instead.
 
 > **What is solid vs. what is still moving.** The **per-turn contract** a host
-> bridge implements (below) is concrete and lockstep with the code. The remaining
-> consumer-side detail — copy-paste client configs for specific MCP hosts, an
-> end-to-end worked integration, the identity/delegation handshake from the
-> consumer's point of view — is still being hardened against the first real
-> consumers. For the authoritative, lockstep-with-code detail on any topic, follow
+> bridge implements (below) is concrete and lockstep with the code, and the two
+> hosts in the `/bridges` catalog have working copy-paste setup. The remaining
+> consumer-side detail — an end-to-end worked integration for a host we don't
+> ship, the identity/delegation handshake from the consumer's point of view — is
+> still being hardened against real consumers. For the authoritative,
+> lockstep-with-code detail on any topic, follow
 > the links into the engineering wiki.
 
 ---
@@ -40,8 +42,10 @@ you hold a bearer token minted from its dashboard, an integration is two pieces:
   `wiki_ingest_message`.
 - **Pick or write a host bridge** — the thin adapter in your stack that implements
   the [per-turn contract](#the-per-turn-contract-v1--wiring-a-host-bridge) below.
-  Ready-made bridges live under [`agents-bridges/`](agents-bridges/README.md);
-  today the one production bridge is **[Hermes](#the-ready-made-bridge-hermes)**.
+  Ready-made **per-turn** bridges live under
+  [`agents-bridges/`](agents-bridges/README.md); today the one production bridge
+  there is **[Hermes](#the-ready-made-bridge-hermes)**. A *smart* consumer like
+  Claude Code needs no per-turn bridge at all — it connects natively over OAuth.
 
 **Prerequisites — all set up in [`INSTALL.md`](INSTALL.md):**
 
@@ -88,7 +92,8 @@ spaces.) The proxy runs on the client's machine and is just a pipe — the
 security topology below is unchanged, the memory stays behind the HTTP
 boundary. Clients that speak streamable HTTP natively (Claude Code, claude.ai,
 and most current SDKs) skip the shim entirely:
-`claude mcp add --transport http mwe-mcp https://your-server:8742/mcp`.
+`claude mcp add --transport http mwe-mcp https://your-server:8742/mcp --scope user`
+(then sign in over OAuth — see [below](#the-ready-made-bridge-hermes)).
 
 ---
 
@@ -226,7 +231,7 @@ proposes it rather than leaking a sensitive repo into personal memory.
 ## Onboarding an existing project wiki (smart consumers)
 
 When a smart consumer (Claude Code) connects in a repo that **already has a wiki**
-(a markdown tree like this repo's own `wiki/`), it proposes onboarding it **on
+(a markdown tree like this repo's own `docs/`), it proposes onboarding it **on
 connect** and copies it up to the server as the project wiki — so the same
 knowledge is reachable later from a standard consumer or the dashboard.
 
@@ -412,10 +417,10 @@ navigation off entirely by leaving the `navigator` slot unconfigured.
 
 ### Still being hardened
 
-Copy-paste client configs for specific MCP hosts, the exact
-identity-claim handshake from the consumer's perspective, error/retry
-semantics, and versioning/compatibility guarantees land as the surface
-stabilises toward 1.0, driven by the first real consumers. The
+Copy-paste client configs now ship for the two hosts in the `/bridges`
+catalog; the exact identity-claim handshake from the consumer's
+perspective, error/retry semantics, and versioning/compatibility
+guarantees are still being driven by real consumers. The
 **proactive out-of-turn delivery** in step 8 now ships in the hermes
 bridge (the `mwe-events` gateway hook drains `fact_minted_for_you`
 per-recipient and the daily-digest cron script batches the system
