@@ -11,5 +11,16 @@ rustflags = [
     "-A", "clippy::missing_panics_doc",
 ]
 
+[alias]
+# The binary you deploy. `--features local-embedder` compiles the bge-m3
+# model into the binary, which every deployment configured with
+# `embedding.backend: bundled` requires — and a plain `cargo build
+# --release` fails only at RUNTIME, after the migrations and the boot
+# passes have already run, leaving systemd to restart-loop a service
+# that still reports itself active. Deploy with `cargo prod` so the flag
+# cannot be forgotten. (Sanity check: the right binary is ~34 MB, one
+# without the feature ~28 MB.)
+prod = "build --release --features local-embedder"
+
 [net]
 git-fetch-with-cli = true

@@ -97,7 +97,7 @@ claude mcp add --transport http mwe-mcp http://127.0.0.1:8742/mcp --scope user
 
 Every other consumer gets tailored copy-paste setup from the `/bridges` catalog your own server serves.
 
-mwe-mcp ships as a **single self-contained binary** with the embedder bundled in, a vendored SQLite and `rustls` (no OpenSSL), serving both the MCP endpoint and the dashboard on one port. Building from source is deliberately boring: `cargo build --release` needs no running database and no prepared query cache. Add `--features local-embedder` for the bundled Candle embedder, which is what the prebuilt releases ship with.
+mwe-mcp ships as a **single self-contained binary** with the embedder bundled in, a vendored SQLite and `rustls` (no OpenSSL), serving both the MCP endpoint and the dashboard on one port. Building from source is deliberately boring: `cargo build --release` needs no running database and no prepared query cache. For a binary you will actually deploy use **`cargo prod`** (aliased in `.cargo/config.toml` to `build --release --features local-embedder`): it compiles the Candle embedder in, which is what the prebuilt releases ship with and what a `embedding.backend: bundled` config needs at runtime.
 
 Deployment topologies, LLM profiles and security posture are in [`INSTALL.md`](INSTALL.md). The per-turn contract your agent implements is in [`INTEGRATING.md`](INTEGRATING.md).
 

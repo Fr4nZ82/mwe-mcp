@@ -61,10 +61,27 @@ cargo test    --workspace --all-targets
 cargo clippy  --workspace --all-targets -- -D warnings
 cargo fmt     --all
 cargo doc     --workspace --no-deps --open
+cargo prod    # the binary you deploy — see below
 ```
 
 CI runs these on every push (see
 [`development/conventions.md`](conventions.md) — *CI/CD* section).
+
+### `cargo prod` — the deployable binary
+
+[`.cargo/config.toml`](../../.cargo/config.toml) aliases `prod` to
+`build --release --features local-embedder`. Use it whenever you build a
+binary that will actually serve something.
+
+The flag compiles the bge-m3 model **into** the binary, which every
+deployment configured with `embedding.backend: bundled` requires. Get it
+wrong and nothing complains at build time: the binary starts, applies the
+migrations, runs the boot passes, and only then exits with
+`config embedding: backend 'bundled' requires a build with the
+'local-embedder' feature` — after which systemd restart-loops a service
+that still reports itself `active`. The alias exists so the flag cannot
+be left out by habit. Sanity check before installing: a correct binary is
+**~34 MB**, one without the feature **~28 MB**.
 
 ## Dashboard assets (Tailwind v4)
 
