@@ -109,7 +109,7 @@ Legend: `✓` strong or unique · `⚠` partial or different approach · `✗` a
 
 | Axis | mwe-mcp | OpenHuman | agentmemory | Hermes | OpenClaw |
 | --- | --- | --- | --- | --- | --- |
-| Human-readable substrate (files you can open, edit, git-version) | ✓ Markdown wiki, governance in an engine index beside it | ✓ Markdown chunks + SQLite | ✗ REST store | ⚠ Not for direct editing | ⚠ `USER.md`, not a structured KB |
+| Human-readable substrate (memory you can open and read, not a blob) | ✓ Markdown wiki, governance in an engine index beside it | ✓ Markdown in an Obsidian vault, hand-authored | ✗ REST store | ⚠ Internal memory, not a readable KB | ⚠ `USER.md`, not a structured KB |
 | **Fragment-level ACL** (one page mixes public / private / group) | **✓ Unique**, per-reader redaction *before* injection | ✗ Single-user | ✗ | ✗ | ⚠ Coarse per-workspace |
 | **Owner / sender attribution** | **✓ Unique**, owner=Bob, sender=Alice | ✗ | ✗ | ✗ | ✗ |
 | Multi-user | ✓ Shared *and governed* | ✗ Single-user | ⚠ Namespacing, no ACL | ✗ Single-user | ⚠ Isolation, not sharing |
@@ -122,6 +122,8 @@ Legend: `✓` strong or unique · `⚠` partial or different approach · `✗` a
 | Consumer-agnostic (any MCP client, same governed memory) | ✓ Neutral MCP service + ACL governance | ⚠ Bound to its agent | ✓ Shared store, no ACL | ⚠ Bound to its framework | ⚠ Bound to the harness |
 | Proven maturity | ⚠ Live multi-user household deployment plus daily coding-agent use since spring 2026, young next to the incumbents | ✓ Thousands of users | ✓ Several deployments | ✓ 100k+ stars | ✓ Category leader |
 | License | AGPL-3.0 | GPL-3.0 | MIT | MIT | MIT |
+
+**What the first row does not claim.** On the memory proper the compiler owns the prose, so you correct a fact from the dashboard (per-fact records, inline comments, an operative chat that applies structured changes), not by rewriting a paragraph in an editor. That is what keeps the prose and the governance index in step. Deleting a marked region by hand does work as a forget, and the reindex pass reconciles it. Project wikis authored by coding agents are the other way round: those are filesystem-authored and hand-editable.
 
 > **Honest disclosure:** the `✓` rows describe capabilities designed, implemented and exercised end-to-end, on a multi-week multi-user replay corpus and on a live deployment running since spring 2026. Not yet on years of organic production data at scale. The MCP tool families are a stable surface under semver.
 
