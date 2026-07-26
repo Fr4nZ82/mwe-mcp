@@ -360,6 +360,148 @@ pub async fn find_candidates_in_wikis(
     raw.into_iter().map(decode_section).collect()
 }
 
+// ---------- Browser view (no embeddings) ----------
+
+/// One section as the operator's browser sees it — **without** its
+/// embedding.
+///
+/// The vector is ~4 KB per row and useless to a table view, so the
+/// listing query leaves it in the DB: rendering a page of sections must
+/// not pull megabytes of float.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SectionSummary {
+    /// Workdir-relative page path.
+    pub source_path: String,
+    /// Position on the page.
+    pub section_ord: i64,
+    /// Containing smart wiki.
+    pub wiki_id: String,
+    /// Heading chain, when the section sits under one.
+    pub heading_path: Option<String>,
+    /// The indexed text.
+    pub text: String,
+    /// First time this position was indexed.
+    pub created_at: String,
+    /// Last time this position's content changed.
+    pub updated_at: String,
+    /// Last time it surfaced in a recall top-K.
+    pub last_recall_at: Option<String>,
+    /// Rolling 30-day recall counter.
+    pub recall_count_30d: i64,
+}
+
+/// Filters for [`browse`]. All optional, composed in AND.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BrowseFilter {
+    /// Exact `wiki_id`.
+    pub wiki_id: Option<String>,
+    /// Substring of `source_path`.
+    pub path_contains: Option<String>,
+    /// Substring of the indexed text.
+    pub text_contains: Option<String>,
+    /// Hard cap on rows scanned. `0` = no cap.
+    pub limit: usize,
+}
+
+/// List sections of the wikis in `wiki_ids`, ordered by wiki, page, then
+/// position — the operator's read-only browser over the section index.
+///
+/// Read access is the caller's to resolve, once per wiki, exactly as in
+/// [`find_candidates_in_wikis`]: pass only the ids the viewer may read.
+/// An empty `wiki_ids` returns no rows without touching the DB.
+///
+/// # Errors
+///
+/// `sqlx::Error`.
+pub async fn browse(
+    pool: &SqlitePool,
+    wiki_ids: &[String],
+    filter: &BrowseFilter,
+) -> Result<Vec<SectionSummary>> {
+    if wiki_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", wiki_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut sql = format!(
+        r#"SELECT source_path, section_ord, wiki_id, heading_path, "text",
+                  created_at, updated_at, last_recall_at, recall_count_30d
+             FROM wiki_sections
+            WHERE wiki_id IN ({placeholders})"#
+    );
+    let mut binds: Vec<String> = wiki_ids.to_vec();
+    if let Some(w) = &filter.wiki_id {
+        sql.push_str(" AND wiki_id = ?");
+        binds.push(w.clone());
+    }
+    if let Some(p) = &filter.path_contains {
+        sql.push_str(" AND source_path LIKE ? ESCAPE '\\'");
+        binds.push(format!("%{}%", escape_like(p)));
+    }
+    if let Some(t) = &filter.text_contains {
+        sql.push_str(" AND \"text\" LIKE ? ESCAPE '\\'");
+        binds.push(format!("%{}%", escape_like(t)));
+    }
+    sql.push_str(" ORDER BY wiki_id ASC, source_path ASC, section_ord ASC");
+    if filter.limit > 0 {
+        sql.push_str(" LIMIT ?");
+        binds.push(filter.limit.to_string());
+    }
+
+    let mut q = sqlx::query_as::<_, RawSectionSummary>(&sql);
+    for b in &binds {
+        q = q.bind(b);
+    }
+    let raw = q.fetch_all(pool).await?;
+    Ok(raw.into_iter().map(SectionSummary::from).collect())
+}
+
+/// Escape the `LIKE` wildcards in operator-supplied filter text, so a
+/// literal `%` or `_` searches for itself instead of matching everything.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+#[derive(sqlx::FromRow)]
+struct RawSectionSummary {
+    source_path: String,
+    section_ord: i64,
+    wiki_id: String,
+    heading_path: Option<String>,
+    text: String,
+    created_at: String,
+    updated_at: String,
+    last_recall_at: Option<String>,
+    recall_count_30d: i64,
+}
+
+impl From<RawSectionSummary> for SectionSummary {
+    fn from(raw: RawSectionSummary) -> Self {
+        Self {
+            source_path: raw.source_path,
+            section_ord: raw.section_ord,
+            wiki_id: raw.wiki_id,
+            heading_path: raw.heading_path,
+            text: raw.text,
+            created_at: raw.created_at,
+            updated_at: raw.updated_at,
+            last_recall_at: raw.last_recall_at,
+            recall_count_30d: raw.recall_count_30d,
+        }
+    }
+}
+
+impl SectionSummary {
+    /// Stable `"<source_path>#<section_ord>"` handle.
+    #[must_use]
+    pub fn handle(&self) -> String {
+        format!("{}#{}", self.source_path, self.section_ord)
+    }
+}
+
 /// Distinct `(wiki_id, source_path)` pairs currently indexed — the input
 /// of the deleted-page sweep, which drops the sections of any page that
 /// no longer exists on disk.
@@ -714,6 +856,105 @@ mod tests {
         assert_eq!(indexed_pages(&pool).await.unwrap().len(), 1);
         assert_eq!(drop_wiki_sections(&pool, "alice-proj").await.unwrap(), 1);
         assert!(indexed_pages(&pool).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn browse_filters_compose_and_skip_the_embedding() {
+        let pool = pool().await;
+        let a = "wikis/alice/proj/auth.md";
+        let b = "wikis/alice/proj/billing.md";
+        replace_page_sections(
+            &pool,
+            a,
+            &[section(a, 0, "JWT rotation"), section(a, 1, "MFA codes")],
+        )
+        .await
+        .unwrap();
+        replace_page_sections(&pool, b, &[section(b, 0, "invoice numbering")])
+            .await
+            .unwrap();
+
+        let all = browse(&pool, &["alice-proj".to_owned()], &BrowseFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
+        // Ordered by wiki, page, position.
+        assert_eq!(all[0].source_path, a);
+        assert_eq!(all[0].section_ord, 0);
+        assert_eq!(all[2].source_path, b);
+        assert_eq!(all[0].handle(), format!("{a}#0"));
+
+        let by_path = browse(
+            &pool,
+            &["alice-proj".to_owned()],
+            &BrowseFilter {
+                path_contains: Some("billing".to_owned()),
+                ..BrowseFilter::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_path.len(), 1);
+
+        let by_text = browse(
+            &pool,
+            &["alice-proj".to_owned()],
+            &BrowseFilter {
+                text_contains: Some("MFA".to_owned()),
+                ..BrowseFilter::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_text.len(), 1);
+        assert_eq!(by_text[0].section_ord, 1);
+
+        let capped = browse(
+            &pool,
+            &["alice-proj".to_owned()],
+            &BrowseFilter {
+                limit: 2,
+                ..BrowseFilter::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(capped.len(), 2);
+
+        // An unreadable wiki set yields nothing without touching the DB.
+        assert!(
+            browse(&pool, &[], &BrowseFilter::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn browse_treats_like_wildcards_as_literals() {
+        let pool = pool().await;
+        let page = "wikis/alice/proj/index.md";
+        replace_page_sections(
+            &pool,
+            page,
+            &[section(page, 0, "100% coverage"), section(page, 1, "plain")],
+        )
+        .await
+        .unwrap();
+
+        // A bare `%` must search for the character, not match every row.
+        let hits = browse(
+            &pool,
+            &["alice-proj".to_owned()],
+            &BrowseFilter {
+                text_contains: Some("100%".to_owned()),
+                ..BrowseFilter::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].text.contains("100%"));
     }
 
     #[tokio::test]

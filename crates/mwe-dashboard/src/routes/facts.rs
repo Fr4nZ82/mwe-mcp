@@ -1352,17 +1352,11 @@ fn render_index(
     reveal: bool,
 ) -> String {
     let body = html! {
-        // Under reveal the list is no longer "facts you can read" — it is
-        // every user's facts — so the banner replaces the default intro.
-        @if reveal {
-            (crate::reveal::banner())
-        } @else {
-            p.muted {
-                "Filtered list of every fact you can read. Filters compose in AND, "
-                "and " code { "topic" } " takes a single term (multi-topic upcoming). "
-                "Arrowed headers sort; click a " code { "fact_id" } " to copy it."
-            }
-        }
+        // Standard / smart split, mirroring the wiki explorer's tabs: this
+        // page browses `fact_index`, the Sections tab browses
+        // `wiki_sections`. Each row lives under exactly one tab.
+        (super::sections_view::corpus_tabs(/* sections_active */ false))
+        (index_intro(reveal))
 
         (filter_form(filters, page_size))
 
@@ -1453,6 +1447,25 @@ fn render_index(
         (pagination_links(filters, page, page_size, total, total_pages, total_is_estimate))
     };
     layout::authenticated_page("Facts", user, &body)
+}
+
+/// The page's lead paragraph. Under the reveal lens the list is no longer
+/// "facts you can read" but every user's facts, so the banner replaces it.
+fn index_intro(reveal: bool) -> Markup {
+    html! {
+        @if reveal {
+            (crate::reveal::banner())
+        } @else {
+            p.muted {
+                "Filtered list of every fact you can read — the governed memory of "
+                "your standard wikis. Smart-wiki documentation is indexed as "
+                a href="/dashboard/facts/sections" { "sections" }
+                " instead. Filters compose in AND, "
+                "and " code { "topic" } " takes a single term (multi-topic upcoming). "
+                "Arrowed headers sort; click a " code { "fact_id" } " to copy it."
+            }
+        }
+    }
 }
 
 fn filter_form(filters: &FactsFilters, page_size: usize) -> Markup {
@@ -1991,7 +2004,10 @@ fn date_part(bound: &str) -> &str {
 /// Percent-encode a query-string value. Keeps the implementation
 /// dependency-free — we only need the unreserved set per RFC 3986 plus
 /// a handful of safe punctuation, anything else gets `%HH`.
-fn url_encode(value: &str) -> String {
+///
+/// Shared with the sibling [`super::sections_view`] tab so both halves of
+/// the memory browser build their pager links the same way.
+pub(super) fn url_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for b in value.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {

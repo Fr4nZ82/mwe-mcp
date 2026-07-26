@@ -2,7 +2,7 @@
 title: Dashboard memory MVP — wiki explorer + proposals + chat
 area: design-notes
 status: implemented
-last_review: "2026-07-02"
+last_review: "2026-07-26"
 ---
 
 # Dashboard memory MVP
@@ -50,6 +50,7 @@ needs at runtime:
 | `GET  /dashboard/proposals/:id/open-in-chat` | primer landing (review/apply, or modify/undo for emergences) | session | same |
 | `GET  /dashboard/chat` | form | session | [`routes/chat.rs`](../../crates/mwe-dashboard/src/routes/chat.rs) |
 | `POST /dashboard/chat` | submit | session | same |
+| `GET  /dashboard/facts/sections` | read-only listing of the smart-wiki section index | session (per-wiki ACL) | [`routes/sections_view.rs`](../../crates/mwe-dashboard/src/routes/sections_view.rs) |
 
 The home page (`/dashboard/home`) gained four KPI tiles (wiki count,
 active facts, pending proposals, MCP calls in last 24 h) plus a
@@ -452,6 +453,20 @@ any filesystem mutation, then `fs::rename`s, rewrites
 ACL-widening warning on this path are not yet implemented (planned —
 see the roadmap).
 
+### The memory browser — two tabs, one per corpus
+
+The engine indexes two different things, so the browser has two tabs, the
+same way the wiki explorer splits Standard from Smart
+(`sections_view::corpus_tabs`, rendered at the top of both pages):
+
+| Tab | Route | Table | Posture |
+|---|---|---|---|
+| **Facts** | `/dashboard/facts` | `fact_index` | The governed memory of standard wikis. Editable: ACL, validity, supersede, forget. |
+| **Sections** | `/dashboard/facts/sections` | `wiki_sections` | What was indexed from smart-wiki pages. **Read-only.** |
+
+Each row lives under exactly one tab: a smart wiki has no `fact_index`
+rows, and a standard wiki has no sections.
+
 ### Facts browser
 
 `GET /dashboard/facts` is a paginated browser (filters on `wiki_id` /
@@ -510,6 +525,37 @@ fresh prefix is small and capped, so it never spans pages. This mirrors
 the consumer-side mid-range bridge (`recall_fresh_captures`): a claim is
 recallable the moment it is captured, and now visible in the dashboard
 from that moment too.
+
+### Sections browser
+
+`GET /dashboard/facts/sections`
+([`sections_view`](../../crates/mwe-dashboard/src/routes/sections_view.rs))
+is the smart-family half: the read-only listing of `wiki_sections` — what
+the engine chunked and embedded out of the pages a smart consumer
+authored. Filters on `wiki_id` / page-path substring / text substring
+(operator text is `LIKE`-escaped, so a literal `%` searches for itself);
+same 1-based pagination and `MAX_SCAN_ROWS` lower-bound total as the
+Facts tab. The listing query
+([`sections::browse`](../../crates/mwe-core/src/sections.rs)) deliberately
+leaves the **embedding** in the DB: at ~4 KB a row it is useless to a
+table and would make a page of sections megabytes of float.
+
+Columns are the ones that mean something for a chunk of a document: wiki,
+page (deep-linked to `/dashboard/wiki/:id/view/*path` — the actionable
+surface), position on the page, heading chain, a truncated preview, and
+the recall signals (`recall_count_30d` / `last_recall_at`).
+
+**Read-only by construction, not by policy.** A section has no lifecycle
+to act on: it is re-derived from its page on every reindex, so there is
+nothing to supersede, forget, re-own or date. The operator's lever is the
+page — edit it (or have the smart consumer push it) and the index
+follows.
+
+Access is resolved **per wiki**, from the `smart_wikis` registry (owner ∪
+`_meta.shared_with`), the same set `recall::search_sections` uses — a
+section is readable because its *wiki* is. The admin-reveal lens lifts it
+exactly as on the Facts tab. An account with no readable smart wiki gets
+an explicit empty state rather than a bare empty table.
 
 The edit page (`GET /dashboard/facts/:fact_id/edit`) opens on the fact's
 **record** — a reading-width page (the `authenticated_reading_page`

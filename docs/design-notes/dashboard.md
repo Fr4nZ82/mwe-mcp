@@ -306,7 +306,8 @@ trees merged into one and mounted under `/dashboard`:
   to `/dashboard/login` on any verify failure): `home`, `logout`, and
   the per-concern routers merged in — identity (`users`, `groups`,
   `tokens`, `settings`), the welcome wizard (`welcome`), memory
-  (`proposals`, `wiki_view`, `smart_view`, `facts`, `briefing`),
+  (`proposals`, `wiki_view`, `smart_view`, `facts`, `sections_view`,
+  `briefing`),
   the media alias (`media` — `GET /dashboard/media/:catalog_id`, the
   cookie-authenticated byte serving behind inline embeds; per-media
   ACL, no admin bypass — see
