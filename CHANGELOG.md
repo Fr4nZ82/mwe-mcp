@@ -9,6 +9,80 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## 1.5.2 — 2026-07-26
+
+### Added
+
+- **Smart-wiki documentation moved out of the fact store** (migration
+  `0062`, plus `0063`). A project wiki's pages are chunked into
+  `wiki_sections`, with read access held once per wiki in `smart_wikis`,
+  instead of one governed `fact_index` row per chunk. On the reference
+  store that was 72% of the fact table and **75.6% of the characters** a
+  conversational turn spent on recall; a turn now recalls facts only, and
+  a sharing change is a one-row write instead of one row per section. The
+  data move is an idempotent boot pass that copies embeddings verbatim —
+  no re-embedding, no migration downtime.
+- **Project awareness: the everyday agent learns that a project exists.**
+  A smart consumer writes short **signposts** into its owner's own wiki
+  through the new `wiki_admin_signpost` (H family) — one plain-language
+  description per project, plus one activity line per day over a rolling
+  5-day window, on a reserved `projects.md`. Length caps are enforced
+  server-side and an over-long field is refused with its measured length,
+  never truncated; rewriting an unchanged signpost is a no-op, and
+  `wiki_admin_push` answers with a `signpost_hint` when something is
+  missing. When a signpost surfaces in a turn, that project's
+  documentation can be opened for that turn — so a question that never
+  names the project can still reach it.
+- **The dig is a judgement, not a threshold** (ingest prompt v2.45). The
+  classifier now answers, in the JSON it already returns, whether a
+  signposted project's documentation would help answer this turn — at no
+  extra model call. Built this way because the threshold version was
+  measured first and no similarity signal separated "a customer says the
+  content is frozen" (needs the docs) from "I have an appointment at that
+  customer" (does not).
+- **Dashboard: a Sections tab** in the memory browser, the smart half of
+  the corpus, mirroring the Standard/Smart split of the wiki explorer.
+
+### Changed
+
+- **The nightly cycle stops re-buying the verdict it already has**
+  (migration `0064`). Every REM confirmer asks about a stable piece of
+  the corpus and mostly hears "no", and nothing recorded that "no": a
+  single cycle spent its whole confirm budget re-judging the same pairs,
+  so the backlog past the cap had never been examined once. Negative
+  verdicts are now memoized for all seven confirmers, keyed by a hash
+  over the slot's model id plus the rendered prompt — an edited fact, an
+  edited prompt or a repointed model all invalidate themselves, with no
+  hand-bumped cache constant. Positives are never stored. The same budget
+  now drains the backlog instead of circling it.
+- **The compiler stops re-buying its own standing brief** (`cronista`
+  v1.14). Input, not output, was ~70% of a page's compile cost, and 97%
+  of that input was the same brief and page index re-sent per page. The
+  prompt now ships in two halves — the shared block as a cacheable system
+  prompt, the page's own facts on the user turn — with a 1-hour cache
+  window, because a compile run outlives the 5-minute default. A rejected
+  request (invalid / auth) no longer buys a retry.
+- **`rem-promotions` v2.1** presents facts as positional handles instead
+  of UUIDs (~18 tokens of noise per fact on the most expensive slot);
+  raw ids still resolve.
+- **Sections are cut for retrieval, not for extraction.** Smart-wiki
+  pages are chunked at 1 200/2 000 characters instead of the
+  document-ingest 3 000/4 500 they used to borrow. A section is ranked by
+  one embedding and quoted whole into a bounded recall slot, and at
+  ingest sizes one oversized hit consumed the entire slot on its own —
+  25% of sections were larger than the slot, the largest 6 994
+  characters. The re-cut needs no migration: the next reindex sweep
+  re-chunks any page whose stored cut no longer matches.
+
+### Fixed
+
+- **A documentation paragraph can no longer be filed as a fact about the
+  user.** The rule forbidding it had been placed inside the prompt
+  section that applies only to assistant-authored turns, whose opening
+  line tells the model to ignore the whole part otherwise — so it was
+  inactive on exactly the turns that carry documentation. It is now a
+  turn-level rule.
+
 ## 1.5.0 — 2026-07-23
 
 ### Added
