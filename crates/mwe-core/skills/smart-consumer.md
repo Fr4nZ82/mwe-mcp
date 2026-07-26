@@ -1,6 +1,6 @@
 ---
 name: smart-consumer
-version: 1.13.1
+version: 1.14.0
 description: "Project-bound mode for smart consumers: authoritative management of a project's smart wiki via wiki_admin_push/pull/notify + project signposts (wiki_admin_signpost, so the user's standard memory knows the project exists) + _briefing.md lifecycle + cooperative lease + graceful degradation on token revoke. Smart wikis are markerless and content-indexed — the consumer writes plain markdown freely (create / edit / move / rename / delete pages), exactly the way this repo's engineering wiki is maintained; the ACL is wiki-level in _meta (no per-fragment markers or ACL — those are the pillar of standard memory wikis only). Superset (group 17): the user↔agent conversation ALSO runs the standard personal-memory pipeline via wiki_ingest_message, joined to the project wiki by provenance links (authored_refs), with a per-message router (drop / personal-fact→standard / document-import / project-wiki / your-operational-wiki). Auto recall+capture, never dump everything into the user's standard memory."
 depends_on: ["core"]
 applies_to:
@@ -373,6 +373,28 @@ stored.
 Those conventions are documented in
 the smart-wikis design note and, for codebases, in the
 `smart-codebase` skill — read them once and conform.
+
+## `conversations.md` — one dated entry per working session
+
+Your operational wiki holds a `conversations.md`: newest first, **one dated
+entry per working session**. It is what lets the next session start where
+this one stopped instead of reconstructing it from the code, and it is
+yours to keep — nobody will ask you for it.
+
+**When to write it.** Not "as you go": that names no moment, and a rule
+without a moment does not fire. Write the entry when the session has
+produced something durable **and** you reach a natural close — a piece of
+work finished, a decision taken, or the user signalling the end. Do not
+wait to be asked, and do not save it for a tidy final turn that may never
+come: a session that ends unwritten is one the next session has to
+reconstruct. When in doubt, write it; a short entry costs one push.
+
+**What goes in it:** what you built or decided and why, and — the part that
+pays for itself — **what you got wrong**, stated plainly, so the next
+session does not repeat it. **What stays out:** facts about the *user*
+(those go to `wiki_ingest_message`) and project knowledge or project
+decisions (those go to the project wiki). This page is your own working
+memory, not a duplicate of either.
 
 ## Append-only log pages — keep them bounded, rotate by period
 
