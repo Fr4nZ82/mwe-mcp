@@ -368,6 +368,21 @@ families now live in **different tables** (`wiki_sections` vs
 descriptive: the section table can be emptied and rebuilt from the pages
 without touching a single governed fact.
 
+The separation has one deliberate bridge. Because a conversational turn
+recalls facts only, a project the user never *names* would be invisible
+to their everyday agent — the memory cannot connect a dot it cannot see.
+So a smart consumer writes **signposts** into its owner's own wiki: a
+short description of what the project is, plus one line per day of what
+happened, on the reserved page `projects.md`
+([`signposts`](../../crates/mwe-core/src/signposts.rs)). They are facts,
+governed like any other, and they are deliberately *pointers rather than
+records* — when one surfaces in a turn, recall opens that project's
+sections for that turn; what was actually done stays in the project
+wiki. Both reserved pages, `rules.md` and `projects.md`, are **channel
+pages**: written by a dedicated deterministic path and fenced out of
+every structural sweep, so nothing reorganises them behind their
+channel's back.
+
 The surface is not only the published pages. For a **standard** wiki
 (see [`narrative-buffer.md`](../design-notes/narrative-buffer.md)),
 an incoming capture is first staged in a per-wiki on-disk **captures

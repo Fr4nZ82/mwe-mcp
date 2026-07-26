@@ -126,6 +126,61 @@ pub fn is_rules_page(source_path: &str) -> bool {
         .is_some_and(|n| n == std::ffi::OsStr::new(RULES_FILENAME))
 }
 
+/// Filename of the per-actor **project signposts** page
+/// (`<wiki_dir>/projects.md`), roadmap group 48.
+///
+/// Home of the *signposts*: one short non-technical description per
+/// project the actor owns, plus a handful of by-day activity lines. They
+/// exist so a standard consumer knows those projects exist at all — the
+/// smart-wiki corpora are invisible to a conversational turn's facts-only
+/// recall ([`crate::recall::recall_facts`]) — and so that a surfaced
+/// signpost can open its project's documentation
+/// ([`crate::recall::recall_project_docs`]).
+///
+/// A signpost is **not a record**: the project's own wiki holds what was
+/// actually done, and answering from the signpost would answer from a
+/// summary of a summary. It is a pointer whose job is to cause the
+/// deepening, which is why the descriptions are capped short and the
+/// chronology is a rolling window rather than a log.
+///
+/// Written only by the deterministic channel
+/// ([`crate::signposts`]) — never by the ingest classifier, never by the
+/// compiler — and, like [`RULES_FILENAME`], fenced out of every structural
+/// sweep ([`is_channel_page`]). Unlike `rules.md` it stays **recallable**
+/// and navigable: delivery through ordinary recall is the entire point.
+pub const PROJECTS_FILENAME: &str = "projects.md";
+
+/// True when `source_path` is a wiki's reserved signposts page
+/// [`PROJECTS_FILENAME`]. Keyed on the file name, like [`is_rules_page`],
+/// so a content page named `my_projects.md` is not caught.
+#[must_use]
+pub fn is_projects_page(source_path: &str) -> bool {
+    std::path::Path::new(source_path)
+        .file_name()
+        .is_some_and(|n| n == std::ffi::OsStr::new(PROJECTS_FILENAME))
+}
+
+/// True when `source_path` is one of the reserved **channel pages** —
+/// [`RULES_FILENAME`] or [`PROJECTS_FILENAME`].
+///
+/// A channel page's facts are written by a dedicated deterministic path
+/// and read back by a dedicated reader, so the engine's structural sweeps
+/// must leave them exactly where they are: the compiler never gathers them
+/// (they would orphan onto `index.md` and fall out of their channel), the
+/// REM refile never nominates them, the contradiction and completion
+/// sweeps never use them as satellites or evidence, and dedup pairs never
+/// cross the boundary (both sides on a channel page, or neither — else a
+/// restatement of a signpost by an ordinary fact would swallow it).
+///
+/// This is the predicate for *that perimeter only*. The two pages differ
+/// on delivery — rules reach the consumer through the `rules` field and
+/// never as recalled memory, signposts reach it through recall and nothing
+/// else — so delivery-side filters keep keying on [`is_rules_page`].
+#[must_use]
+pub fn is_channel_page(source_path: &str) -> bool {
+    is_rules_page(source_path) || is_projects_page(source_path)
+}
+
 /// Errors raised by the wiki I/O layer.
 #[derive(Debug, Error)]
 pub enum WikiError {

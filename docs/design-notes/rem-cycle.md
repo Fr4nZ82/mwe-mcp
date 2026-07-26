@@ -161,6 +161,59 @@ the family is the same subject's own tree; per-fragment ACL travels
 untouched with every move (`move_to_wiki` keeps owner/allow/sender).
 Pinned by `family_scopes_partition_by_directory_nesting_not_id`.
 
+## The verdict memo — why `examined` now means `asked`
+
+Every confirmer sweep in the cycle asks the model one question about a
+**stable** piece of the corpus, and the overwhelmingly common answer is
+"no". Nothing recorded that "no", so each night re-bought the same
+verdicts at the same price — and because the per-cycle caps are spent
+in walk order, the tail of the candidate list was never reached at all.
+Measured on the dogfood workdir: 156 nominable dedup pairs corpus-wide
+against a 120-confirm cap, 2 merges a night, and 36 pairs that had never
+been judged once; the paragraph-split pass re-sent 19 byte-identical
+pages to the strong model for the same verdict it had given the night
+before.
+
+[`rem_verdicts`](../../crates/mwe-core/src/rem_verdicts.rs) is the fix:
+a `(kind, key_hash)` row meaning *this exact question, on this exact
+content, judged by this exact model and prompt, already came back
+negative*. The seven confirmers that carry it are the revisor dedup
+pair, the paragraph split, the sub-wiki emergence pass, the page merge,
+and the completion / contradiction / refile sweeps.
+
+- **The key is the rendered prompt** (hashed together with the slot's
+  `model_id`). That one input carries every invalidation axis for free:
+  edit a fact and the prompt changes; edit the bundled prompt or its
+  workdir override and the prompt changes; repoint the slot at another
+  model in `mwe-mcp.config.yaml` and the model id changes. A memo cannot
+  outlive the thing it was a verdict about, and there is no hand-bumped
+  cache-busting constant to keep in sync.
+- **Only negatives are stored.** A positive verdict merges, moves, or
+  closes facts — which changes the content the key is derived from.
+  Positives self-invalidate; recording them would be dead weight.
+- **Noise is bucketed out of the key, never out of the prompt.** The
+  split prompt carries each fact's exact 30-day recall count, which
+  moves without the page moving, so its key hashes the same template
+  with counts rendered as bands (`none`/`low`/`medium`/`high`); the
+  emergence key rounds the parent wiki's fact total down to a multiple
+  of 10 for the same reason. The model always sees the exact numbers —
+  the canonical rendering is a key, never a request body.
+- **The check runs before the cap**, so a settled question cannot
+  consume a confirm budget that exists to reach unasked ones. This is
+  the coverage half of the change: the same 120-confirm budget now
+  drains the whole backlog in two nights instead of never.
+- **Bounded and re-openable.** `RemPolicy::verdict_memo_ttl` (default 90
+  days) is swept at cycle start, before any sub-job reads the table, so
+  an expired verdict is re-asked in *this* cycle. The TTL is not a
+  correctness lever — the key already self-invalidates — it bounds the
+  table and buys every settled question an eventual second opinion.
+
+Read `RemCycleReport.verdict_memo_rows` / `verdict_memo_purged`
+alongside each sub-job's `examined` counter: **`examined` now counts
+questions actually put to the model**, memo hits never reach it. A
+sub-job whose `examined` count stays high across quiet nights is the
+signal that something in its key is churning when it should not.
+
 ## Revisor / Conciliatore sub-job
 
 For each **family line** ([family scope](#family-scope--the-consolidation-passes-unit-leva-2)):
@@ -184,15 +237,17 @@ For each **family line** ([family scope](#family-scope--the-consolidation-passes
      band. The vectors are already on the `fact_index` rows — no
      embedder call.
 
-   A pair is nominable only when **both sides are `rules.md` facts or
-   neither is**
-   ([`wiki::is_rules_page`](../../crates/mwe-core/src/wiki.rs)): a
+   A pair is nominable only when **both sides sit on a reserved channel
+   page (`rules.md`, `projects.md`) or neither does**
+   ([`wiki::is_channel_page`](../../crates/mwe-core/src/wiki.rs)): a
    behaviour rule dedups rule-vs-rule only — if it lost against an
    episodic restatement, its content would survive only off `rules.md`,
    outside the behaviour-rules channel
-   ([ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-by-scope-outside-fact-memory)).
-   A structural channel invariant, not a semantic gate — rule-vs-rule
-   pairs still go to the LLM.
+   ([ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-by-scope-outside-fact-memory));
+   the same fence keeps a project signpost from folding into an ordinary
+   fact that restates it ([smart-wikis.md](smart-wikis.md)). A structural
+   channel invariant, not a semantic gate — same-page pairs still go to
+   the LLM.
 4. Ask the `rem_dedup_semantic` LLM with a strict-JSON prompt:
    `{"same": true|false}`. Each side is framed with the page it lives
    on (`wiki_id · source_path`, the `{new_page}`/`{old_page}`
@@ -219,7 +274,10 @@ The pair scanner short-circuits when `RevisorReport.applied`
 hits `revisor_cap` (default 30), and caps LLM confirms across both
 nomination channels at `revisor_examined_cap` (default 120) — a
 resource guard, logged when it trips (never a silent truncation);
-remaining pairs wait for the next cycle. It also tracks
+remaining pairs wait for the next cycle. A pair the
+[verdict memo](#the-verdict-memo--why-examined-now-means-asked) has
+already settled is skipped **before** the cap is consulted, so the
+budget only ever buys verdicts nobody holds yet. It also tracks
 `loser_fact_id` values already merged in the current cycle so a chain
 of similar facts is collapsed at most once per pass — the next cycle
 picks up any residual.
@@ -348,12 +406,22 @@ in every wiki:
    multiple nights, and a page the emergence pass just moved wholesale
    is left alone.
 3. Show the **whole page** to the `rem_promotions` LLM
-   (`paragraph_split_prompt`): every fact annotated with its id and
+   (`paragraph_split_prompt`): every fact annotated with a short
+   positional handle (`[n1]`, `[n2]`, …) and its
    30-day recall count, so the model weighs **mass and recall
    together** — one sub-topic that outgrew its siblings and/or is hot is
    the candidate. Strict-JSON verdict:
-   `{"split": true|false, "fact_ids": ["<id>", …], "target_page": "<filename.md>"}`.
-4. Validate the named facts in Rust (each must be on the page; the set
+   `{"split": true|false, "fact_ids": ["n1", "n3", …], "target_page": "<filename.md>"}`.
+   The handle replaces the fact's UUID: the model never reasons over an
+   id, it only echoes one back to name what moves, and a UUID costs ~18
+   tokens of pure noise per fact on the strong slot this pass runs on
+   (~30% of the prompt on a mass-40 page). `resolve_split_handle` maps
+   the answer back by position and **still accepts a raw fact id**, so an
+   operator prompt override that presents ids keeps working and a model
+   that echoes an id anyway is not read as a hallucination. A
+   `{"split": false}` verdict is recorded in the
+   [verdict memo](#the-verdict-memo--why-examined-now-means-asked).
+4. Validate the named handles in Rust (each must resolve on the page; the set
    must be a **proper, non-empty subset** — moving everything is a
    rename, not a split: that is the page→sub-wiki rung) and call
    `promote::apply_paragraph_to_file_direct` with the LLM's
@@ -501,9 +569,10 @@ view ([`run_completion_sweep`](../../crates/mwe-core/src/rem.rs)).
 1. **Evidence**: every active fact of a non-smart wiki whose
    `created_at` falls inside `policy.closure_sweep_window`
    (default 48 h) — bounding the sweep to what just landed, so the
-   corpus is never re-judged wholesale. The reserved `rules.md` policy
-   page is fenced out on **both axes** (structural perimeter, like the
-   dedup rules-boundary): a standing directive is policy, not an event —
+   corpus is never re-judged wholesale. The reserved channel pages
+   (`rules.md`, `projects.md`) are fenced out on **both axes**
+   (structural perimeter, like the dedup channel boundary): a standing
+   directive is policy, not an event, and a signpost is a pointer —
    it completes nothing (the live incident: one user's naming rule read
    as evidence "completing" another user's parallel naming rule), and it
    is never completed by neighbouring evidence — a rule leaves the
@@ -583,8 +652,9 @@ the safety net).
      **nominates only** — a resource cap, never a "belongs elsewhere"
      threshold ([[feedback-no-hardcoded-gates-llm-decides]]).
 
-   A `rules.md` fact is **never nominated** by either feed
-   ([`wiki::is_rules_page`](../../crates/mwe-core/src/wiki.rs)): a
+   A **channel-page** fact (`rules.md`, `projects.md`) is **never
+   nominated** by either feed
+   ([`wiki::is_channel_page`](../../crates/mwe-core/src/wiki.rs)): a
    per-user behaviour rule embeds toward its *user's* wiki by nature, and
    a confirmed move would eject it from the behaviour-rules channel — the
    refile twin of the compiler-door skip

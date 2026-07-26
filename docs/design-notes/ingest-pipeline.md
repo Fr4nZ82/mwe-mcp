@@ -626,13 +626,16 @@ places adjacent to this block (the hermes bridge leads with it).
    `max_agent_history_chars` (default 1400).
 4. **`RELEVANT MEMORY`** — the flat hit-list rebuilt from the step-1
    hits ([`format_snippet`]; carries the `Recent (not yet consolidated):`
-   fresh slot and, when the message **named a project**, the
+   fresh slot and the
    `Project documentation (reference — never file this as a fact):`
-   slot — see [recall-pipeline.md](recall-pipeline.md#the-named-project-exception)).
+   slot, which opens when the message **names a project** (before the
+   classifier) or when a project **signpost surfaced** and the classifier
+   judged the docs worth opening (after it) — see
+   [recall-pipeline.md](recall-pipeline.md#the-project-docs-slot--two-entry-points-at-two-different-stages)).
    The recalled facts themselves are **facts only**: smart-wiki
    documentation lives in another table and only enters through that one
-   labelled, name-triggered slot, which is why an ordinary conversational
-   turn is no longer buried under project docs. The label is
+   labelled slot, which is why an ordinary conversational turn is no
+   longer buried under project docs. The label is
    load-bearing — the ingest prompt's REFERENCE, NOT MEMORY rule keys on
    it so a documentation paragraph is never filed back as a fact about
    the sender. It is
@@ -732,8 +735,23 @@ containing `{` or `}` are handled with a state machine, not regex
 (`parse_plan_handles_nested_braces_in_strings` test).
 
 The deserialiser accepts unknown fields silently (forward-compat) and
-defaults every optional field. Required: only `intent`. The per-fact
-fields are validated through `CaptureUnit` — one per `extractions`
+defaults every optional field. Required: only `intent`.
+
+One turn-level field is a **judgement rather than data**:
+`needs_project_docs` (prompt v2.45, roadmap 48i). When the recall block
+carried a project **signpost**, the classifier answers whether reading
+that project's documentation would help *answer this turn* — true for a
+symptom or a capability question, false when the project is merely
+around the message (an invoice, an appointment, an errand). The
+orchestrator then runs the second half of the project-docs slot
+([recall-pipeline.md](recall-pipeline.md#why-the-second-gate-is-a-judgement-and-not-a-threshold)).
+It defaults to `false`, so an older prompt or any fallback plan simply
+never digs — the expensive direction is never the default. It is a
+judgement because it was first built as a similarity threshold and
+measured: no similarity signal separates the two cases, and the model
+already runs, so the field is free.
+
+The per-fact fields are validated through `CaptureUnit` — one per `extractions`
 element, or one synthesised from the legacy top-level fields — so the
 reconstruction below applies uniformly whether the plan is multi-fact
 or single-fact:

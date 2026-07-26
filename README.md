@@ -11,7 +11,7 @@
 [![CI](https://github.com/Fr4nZ82/mwe-mcp/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 [![Status](https://img.shields.io/badge/status-1.5-brightgreen.svg)](CHANGELOG.md)
 
-[Why](#why-this-exists) · [The demo](#same-page-two-readers-two-answers) · [Quickstart](#quickstart) · [Compare](#how-it-compares) · [How it works](#how-it-works) · [Docs](#documentation)
+[Why](#why-this-exists) · [The demo](#same-page-two-readers-two-answers) · [Quickstart](#quickstart) · [Where it fits](#where-this-fits) · [How it works](#how-it-works) · [Docs](#documentation)
 
 </div>
 
@@ -101,33 +101,15 @@ mwe-mcp ships as a **single self-contained binary** with the embedder bundled in
 
 Deployment topologies, LLM profiles and security posture are in [`INSTALL.md`](INSTALL.md). The per-turn contract your agent implements is in [`INTEGRATING.md`](INTEGRATING.md).
 
-## How it compares
+## Where this fits
 
-Read against the design target *"a household that shares some things but not others"*, against single-user memory systems (OpenHuman, Hermes) and multi-user-by-isolation ones (agentmemory, OpenClaw).
+**Use something else if** you need a hosted recall API for a million mutually-invisible end-users. That is what Mem0, Zep and Letta are built for: developer-facing memory *APIs*, multi-user **by isolation**, each end-user in their own partition, the partitions never talking. They are strong products with real scale behind them, and for that shape they are the right tool. mwe-mcp would just be a server you have to run.
 
-Legend: `✓` strong or unique · `⚠` partial or different approach · `✗` absent. For single-user systems `✗` is not a defect, they have a different goal.
+**Use mwe-mcp if** the people sharing the memory are supposed to know each other. A household, a team, a family with a speaker in the kitchen and a bot on the phone. That is where isolation stops being the answer and governance starts: one memory several people legitimately share, with the boundaries drawn *inside* the page rather than around it. Per-fragment ACL, owner and sender kept apart, per-reader redaction, sharing rules that survive the session. Self-hosted, on your disk, under the AGPL.
 
-| Axis | mwe-mcp | OpenHuman | agentmemory | Hermes | OpenClaw |
-| --- | --- | --- | --- | --- | --- |
-| Human-readable substrate (memory you can open and read, not a blob) | ✓ Markdown wiki, governance in an engine index beside it | ✓ Markdown in an Obsidian vault, hand-authored | ✗ REST store | ⚠ Internal memory, not a readable KB | ⚠ `USER.md`, not a structured KB |
-| **Fragment-level ACL** (one page mixes public / private / group) | **✓ Unique**, per-reader redaction *before* injection | ✗ Single-user | ✗ | ✗ | ⚠ Coarse per-workspace |
-| **Owner / sender attribution** | **✓ Unique**, owner=Bob, sender=Alice | ✗ | ✗ | ✗ | ✗ |
-| Multi-user | ✓ Shared *and governed* | ✗ Single-user | ⚠ Namespacing, no ACL | ✗ Single-user | ⚠ Isolation, not sharing |
-| **Declarative sharing policy** (per-user default, per-group scope, durable user rules) | **✓ Unique** | ✗ | ✗ | ✗ | ✗ |
-| Per-fact temporal validity (expiry, completion, contradiction, dated queries) | ✓ Closure verbs + nightly sweeps, a ranking signal not a filter | ✗ | ⚠ Uniform decay | ✗ | ✗ |
-| Recall beyond vector search | ✓ Flat seeds + navigator over pages and links, gold-set eval ships with the engine | ⚠ Less explicit | ✓ BM25 + vector + graph | ✓ Three levels | ⚠ Plugin-dependent |
-| Self-organization fighting decay | ✓ Nightly REM: dedup, merge, sweeps, date re-anchoring, emergence, hubs | ⚠ Ingestion, not reorganization | ✓ Mature consolidation | ⚠ Oriented to skills | ✗ |
-| **Structural changes with receipts + revert** | **✓ Unique**, act-first, 7-day undo | ✗ | ✗ | ✗ | ✗ |
-| **Project-scoped memories** (smart wikis for coding agents) | **✓ Unique**, per-project wiki with ACL, briefing handoff, leases | ✗ | ⚠ Namespacing only | ✗ | ⚠ Coarse workspaces |
-| Consumer-agnostic (any MCP client, same governed memory) | ✓ Neutral MCP service + ACL governance | ⚠ Bound to its agent | ✓ Shared store, no ACL | ⚠ Bound to its framework | ⚠ Bound to the harness |
-| Proven maturity | ⚠ Live multi-user household deployment plus daily coding-agent use since spring 2026, young next to the incumbents | ✓ Thousands of users | ✓ Several deployments | ✓ 100k+ stars | ✓ Category leader |
-| License | AGPL-3.0 | GPL-3.0 | MIT | MIT | MIT |
+We are not trying to win the recall race. Remembering more, faster and cheaper is a well-funded contest with years of optimization behind it, and it isn't the axis this was built on.
 
-**What the first row does not claim.** On the memory proper the compiler owns the prose, so you correct a fact from the dashboard (per-fact records, inline comments, an operative chat that applies structured changes), not by rewriting a paragraph in an editor. That is what keeps the prose and the governance index in step. Deleting a marked region by hand does work as a forget, and the reindex pass reconciles it. Project wikis authored by coding agents are the other way round: those are filesystem-authored and hand-editable.
-
-> **Honest disclosure:** the `✓` rows describe capabilities designed, implemented and exercised end-to-end, on a multi-week multi-user replay corpus and on a live deployment running since spring 2026. Not yet on years of organic production data at scale. The MCP tool families are a stable surface under semver.
-
-**And the hosted memory platforms, Mem0, Zep, Letta?** Strong products, different center of gravity. They are developer-facing memory *APIs*, built multi-user **by isolation**: each end-user gets a partition and the partitions don't talk. mwe-mcp starts exactly where isolation ends, with one memory that several people legitimately share, governed *inside* the page. If you need a hosted recall API for millions of mutually-invisible end-users, they are the right tool. If you need one governed brain for a household or a team, self-hosted and file-first, that is the lane mwe-mcp was built for.
+> **Honest disclosure:** everything above is designed, implemented and exercised end-to-end, on a multi-week multi-user replay corpus and on a live deployment running since spring 2026. Not on years of organic production data at scale. The MCP tool families are a stable surface under semver.
 
 ## How it works
 
@@ -197,6 +179,8 @@ The agent talks to a small surface of **high-level** MCP tools grouped into fami
 The families are the stable, semver-governed surface. Exact tool counts may still grow within them across minor versions. Full reference: [`docs/protocol/`](docs/protocol/).
 
 ## Built-in dashboard
+
+The dashboard is also **where you correct the memory**. On the memory proper the compiler owns the prose, so a wrong fact is fixed here (per-fact records, inline comments, an operative chat that applies structured changes), not by rewriting a paragraph in a text editor. That is what keeps the prose and the governance index in step. Project wikis authored by coding agents are the other way round: those are filesystem-authored and hand-editable.
 
 `mwe-mcp serve` brings up an Axum-hosted PWA at `/dashboard/*`, on the same listener as `/mcp`:
 

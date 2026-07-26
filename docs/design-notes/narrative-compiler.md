@@ -404,10 +404,12 @@ together and adds the incremental bookkeeping:
   whose `_meta.md` smart flag is false — "narrative" = "not
   smart", read per-wiki) in
   fact-id order, builds the foundation, and loads the prior plan. It **skips
-  facts on the reserved `rules.md` page** (`wiki::is_rules_page`): those are
-  behaviour rules owned by the rules pipeline and read by
-  `recall_behaviour_rules` keyed on that path — re-homing one onto `index.md`
-  would silently drop it from the behaviour-rule channel
+  facts on the reserved channel pages** — `rules.md` and `projects.md`
+  (`wiki::is_channel_page`). Those belong to their own channels and are read
+  keyed on that path: behaviour rules by `recall_behaviour_rules`, project
+  signposts by the recall slot that opens their project
+  ([smart-wikis.md](smart-wikis.md)). Re-homing one onto `index.md` would
+  silently drop it from its channel
   ([ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-by-scope-outside-fact-memory)).
 - It **carries over** prior assignments for facts that still exist, and
   classifies **only the new facts** through the Cartografo — last night's
@@ -619,9 +621,13 @@ leaf, fed:
   of the page's default-visibility connective prose — the compiler half of the
   [redaction policy](redaction-policy.md). A fact that carries a validity window
   also gets a trailing `(validity: …)` hint (see [the validity cue](#the-validity-cue));
-- the **starvation index** — every *other* page as a `canonical wikilink →
+- the **starvation index** — every page as a `canonical wikilink →
   one-line description` line, **never** another page's facts
-  ([`starvation_index`](../../crates/mwe-core/src/compiler.rs));
+  ([`page_index_block`](../../crates/mwe-core/src/compiler.rs)). It includes
+  the page being written, so the block is **one string per run** — built once,
+  identical for every leaf, which is what makes it cacheable (see
+  [the cacheable split](#the-cacheable-split--why-the-page-comes-last)); the
+  prompt carries the rule that pays for it: never link a page to itself;
 - the recommended outgoing `[[wikilinks]]` from the plan's link graph;
 - the wiki's prose tone (resolved by matching the wiki's actor kind — the
   bare `wiki_type` string — in `resolve_tone`, cached per wiki within a run).
@@ -701,6 +707,45 @@ ceiling is warned loudly by the llm layer itself (every backend checks
 names the cap in its failure reason instead of the generic "unparseable
 JSON" — truncation must never masquerade as model flakiness.
 
+### The cacheable split — why the page comes last
+
+The Cronista's rendered prompt is one document that ships as **two halves**,
+cut on the `=== PAGE TO WRITE ===` line by
+[`split_cronista_prompt`](../../crates/mwe-core/src/compiler.rs):
+
+| Half | Content | Rides |
+|---|---|---|
+| Before the marker | the standing brief + the page index | the **system** prompt, marked cacheable |
+| From the marker on | this page's title / slug / hub / tone, its facts, its recommended links | the **user** turn, closed by the write instruction |
+
+The split exists because of the shape of the spend, measured on the live
+store: the brief plus the index is **~5.8k tokens and byte-identical for every
+page of one compile run**, while a median page's own facts are ~170 tokens —
+**97% of the input was the same block, re-bought once per page**, and input is
+~70% of a page's cost (pages are short: median compiled body ~1.9k chars).
+Split this way the stable half is a genuine prefix, so
+[`CompletionRequest::with_cached_system`](../../crates/mwe-core/src/llm.rs)
+marks it and only the first page of a run pays it in full.
+
+Two invariants follow, and both are load-bearing:
+
+- **nothing that identifies the page may appear before the marker.** The
+  prompt's opening line forward-references the marker instead of naming the
+  page; a title in the first line makes every prefix unique, which costs a
+  cache *write* per page and earns no read — worse than not caching;
+- **the page index includes the page being written**, so the block does not
+  differ by one line per call.
+
+The hint is honoured today only by the Anthropic backend, which puts
+`cache_control` on the **last** system block (caching is a prefix match, so an
+earlier breakpoint would leave the rest uncached) with the **1-hour** window:
+a compile run interleaves LLM calls with disk writes and can outlive the
+5-minute default, and the doubled write cost is repaid by the third read.
+Every other backend ignores the flag and its wire shape is unchanged — the
+light dream compiles on the ingest tier, where this is a no-op. An operator
+prompt override with no marker degrades cleanly: the whole body stays in the
+system prompt, nothing is marked cacheable.
+
 ### Degraded mode — the guard-only rewrite
 
 A Cronista reply that is **unusable** — a transport/backend error, or output
@@ -711,6 +756,15 @@ prompt machinery). Transport errors and parse failures are handled
 identically, per page — one flaky call can never abort the compile pass (the
 REM **reorg**'s own LLM-transport-fatal model is a separate, deliberate policy
 — see [rem-cycle.md](rem-cycle.md#cycle-invariants-and-crash-semantics)).
+
+**A rejected request is not flakiness and buys no retry.**
+[`LlmError::Invalid`] (the request itself was refused — a 400) and
+[`LlmError::Auth`] (bad or missing credential) go straight to the degraded
+rewrite, because a second identical call can only be refused identically.
+Observed live: with the API answering *"credit balance too low"*, a whole
+compile run spent two calls per page to be told the same thing twice. The
+report names the reason (`Cronista failed (not retryable): …`) so the
+distinction is visible in the Dream console, not just in the logs.
 
 If the retry is also unusable, the page falls back to the **guard-only
 rewrite** ([`compile_degraded_leaf`](../../crates/mwe-core/src/compiler.rs))

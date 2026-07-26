@@ -166,7 +166,7 @@ its **briefing** (`wiki_admin_notify`, §3; the REM read-jobs, §7).
 
 ### 3. Family H — `wiki_admin_*` MCP tools
 
-Three MCP tools. Their schemas are in
+Their schemas are in
 [`schemas.rs`](../../crates/mwe-mcp-server/src/mcp/schemas.rs); their
 handlers in
 [`tools.rs`](../../crates/mwe-mcp-server/src/mcp/tools.rs); the
@@ -498,6 +498,54 @@ classification with semantic routing is in §8).
 `SELECT COUNT(*) FROM wiki_briefing_items WHERE wiki_id=? AND ts >
 datetime('now', '-1 hour')`. Counting first means a buggy caller
 that retries on a transient error can't bypass the cap.
+
+#### `wiki_admin_signpost` (roadmap 48)
+
+```
+input:  { wiki_id, description?, activity?:{ day, text } }
+output: { owner_wiki_id, page, description, activity, retired, active_days }
+```
+
+Writes **signposts** — short facts on the *owner's* reserved
+`projects.md` saying that this project exists and what happened lately.
+Logic in [`signposts.rs`](../../crates/mwe-core/src/signposts.rs).
+
+Why the tool exists: a standard consumer's per-turn recall is
+facts-only, so a project the user never names is invisible to their
+everyday agent. A signpost is the dot that makes it visible — and when
+one surfaces in a turn, recall opens that project's sections in the same
+turn ([recall-pipeline](recall-pipeline.md)). It is a **pointer, not a
+record**: what was done lives in the project wiki.
+
+| Rule | Value |
+|---|---|
+| description | ≤400 chars, one per project, replaced on rewrite |
+| activity | ≤250 chars, one per project per day, replaced on rewrite |
+| window | the last 5 days; older lines are tombstoned on the next write |
+| over the cap | **refused** with the measured length, never truncated |
+| unchanged text | no-op — no write, no re-embed, same fact id |
+| read access | mirrors the project's `shared_with` |
+
+**Auth**: `consumer_class=smart` (checked in the handler), the caller
+must own the project wiki, and the wiki must be smart — a standard wiki
+needs no pointer, its facts are recalled directly.
+
+**Deterministic on purpose.** It writes through `capture::wiki_capture`
+with dedup *off*: a signpost's identity is its topic key (project, and
+day for an activity line), not similarity — two projects described in
+similar words stay two signposts. Going through the ordinary ingest path
+would hand placement to the classifier, and placement is exactly what
+must be guaranteed here. `projects.md` is a **reserved channel page**
+([`wiki::is_channel_page`](../../crates/mwe-core/src/wiki.rs)), fenced
+out of the compiler, the REM refile and the contradiction sweeps the way
+`rules.md` is — but, unlike `rules.md`, it stays recallable, which is
+the entire point.
+
+**The nudge (48f)**: every `wiki_admin_push` response carries
+`signpost_hint` — `null` when the signposts are current, otherwise one
+line naming what is missing (no description at all, or no activity line
+for today). The push is the right moment: the agent is already here, and
+something worth signposting just happened.
 
 ### 4. Ingest filter — and the conversation superset
 

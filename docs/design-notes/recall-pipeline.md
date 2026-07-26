@@ -33,28 +33,84 @@ conversational turn. Only the two consumer surfaces whose contract is
 "search everything I can see" — `wiki_search` (MCP) and `wiki_navigate` —
 reach for the merged view.
 
-### The named-project exception
+### The project-docs slot — two entry points, at two different stages
 
 Facts-only would leave a real gap: ask a **standard** consumer (Telegram,
 hermes) *"come funziona questa cosa di AcmeSigns?"* and the engine would
 have the answer indexed and never look at it. So the per-turn recall has
-one narrow, deterministic opening —
-[`recall_named_project_docs`](../../crates/mwe-core/src/recall.rs):
+two narrow openings. They are **not** equivalent, and that is why they
+run at different points of the turn:
 
-1. **Trigger — the name.** The message's tokens are matched against the
-   `slug` of every smart wiki *the sender can read*
-   (`smart_wikis.slug`, mirrored from `_meta.md`). No LLM, and no query
-   embedding at all when nothing is named — a message about dinner costs
-   nothing.
-2. **Selection — cosine, scoped.** Only the **named** wiki's sections are
-   ranked. This is why the trigger beats a plain score threshold: it
-   answers from the project the user asked about rather than from
-   whatever happened to score well anywhere.
-3. **Budget.** `project_docs_top_k` (default 3) and
-   `project_docs_char_budget` (default 2 000) bound the slot. Sections are
-   kept **whole** — a hit that would overrun is dropped, never truncated,
-   because half a section reads as a broken quote. On a documentation
-   corpus the char budget, not the top-K, is usually what bites.
+| | trigger | what it is | when it runs |
+|---|---|---|---|
+| [`recall_named_project_docs`](../../crates/mwe-core/src/recall.rs) | the message **names** a project | an instruction — the turn declared its own scope | **before** the classifier, so the docs are in front of it when it decides the intent |
+| [`recall_signposted_project_docs`](../../crates/mwe-core/src/recall.rs) | a **signpost** surfaced among the recalled facts | a guess — the memory noticed the project exists | **after** the classifier, gated by the judgement it returned |
+
+1. **The name.** The message's tokens are matched against the `slug` of
+   every smart wiki *the sender can read* (`smart_wikis.slug`, mirrored
+   from `_meta.md`). No LLM, and no query embedding at all when nothing
+   is named. No floor: the turn asked.
+2. **The signpost.** A signpost is a fact on the owner's reserved
+   `projects.md` ([`signposts`](../../crates/mwe-core/src/signposts.rs))
+   saying a project exists; when one comes back in the turn's ordinary
+   fact recall, that project *can* be opened. Whether it *should* be is
+   the classifier's call — the `needs_project_docs` field of the JSON it
+   already returns (see below). Read access is re-checked against
+   `smart_wikis`, never inferred from the signpost. Costs one query, and
+   only when a signpost actually surfaced.
+3. **Selection — cosine, scoped.** Only the candidate wikis' sections are
+   ranked, which is why this beats a score threshold over everything: it
+   answers from the project in play rather than from whatever scored well
+   somewhere.
+4. **Budget.** `project_docs_top_k` (default 3) and
+   `project_docs_char_budget` (default 3 000) bound the slot across
+   *both* stages — the second pass gets what the first left. Sections are
+   kept **whole**: a hit that would overrun is dropped, never truncated,
+   because half a section reads as a broken quote. The budget always
+   admits its *first* hit whatever the size (an empty slot is worse), so
+   the index-time section cap is what keeps one hit from starving the
+   others — see [reindex-pipeline](reindex-pipeline.md).
+
+#### Why the second gate is a judgement and not a threshold
+
+It was built as a threshold first, and measured. `bge-m3` against the
+real AcmeSigns corpus (2 112 sections at the current chunk policy), best
+cosine per turn:
+
+| turn | raw turn | distilled claim |
+|---|---|---|
+| «stasera ceniamo alle otto da mia sorella» | 0.427 | 0.490 |
+| «cosa ho fatto di lavoro questa settimana?» | 0.494 | 0.525 |
+| «domani alle 17:00 devo andare da questo cliente che ha il display che non funziona» — must **not** dig | **0.608** | **0.622** |
+| «mi ha chiamato un cliente che dice che i contenuti sono fermi da 10 giorni» — must dig | 0.602 | 0.586 |
+| «come fa acmesigns a inviare i contenuti ai display?» | 0.651 | 0.627 |
+
+On a 17-sentence bench (6 must-dig, 5 must-not sharing the same
+vocabulary — invoicing, a payment instalment, a bracket, a desk monitor)
+**no similarity signal separated the two groups**: raw turn A [0.515,
+0.602] vs B [0.515, 0.608]; distilled claim A [0.521, 0.586] vs B [0.523,
+0.622]; topics only A [0.482, 0.612] vs B [0.539, 0.564]. Distilling the
+claim first *compresses* the range (the dinner control climbs to 0.490)
+and makes the worst case worse.
+
+The reason is structural: the question is not *how similar is this text
+to the docs* but *would reading the docs help answer this* — a
+judgement, not a distance. Two sentences about a client and a screen sit
+at the same distance from the corpus whether they concern a payment or a
+fault. So the decision belongs to the model
+(`[[feedback-no-hardcoded-gates-llm-decides]]`), and it costs **no extra
+call**: `needs_project_docs` rides the JSON the classifier already
+returns, next to `needs_disambig`.
+
+`project_docs_signpost_floor` (default 0.55) survives underneath as a
+cheap backstop — an unrelated turn scores 0.42–0.49, far below it — not
+as the discriminator.
+
+The judge was then verified rather than assumed: the same bench replayed
+through the shipped rule, on the deployment's own workhorse model, with a
+signpost planted in the recall block — **14 of 14 decidable cases
+correct**, including the two that no similarity signal could tell apart.
+Re-run it after editing that section of the prompt.
 
 **Matching rule.** A slug matches as a **contiguous token sequence**,
 never as a substring and never token-by-token. That is what keeps the
@@ -580,13 +636,22 @@ table is the larger and the more regenerable of the two.
   window with one row write).
 - `search_all`: 2 (both corpora merge into one ranking while
   `wiki_search` stays facts-only / `top_k` honoured across the merge).
-- `recall_named_project_docs`: 7 — the match rule (case/punctuation
+- `recall_project_docs`: 10 — the match rule (case/punctuation
   insensitive, hyphenated slug either spelling / a compound slug never
   fires on one of its words / a slug inside a longer word does not count
-  / a too-short slug never triggers) and the pipeline (fires only when
-  the message names the project, naming an unreadable project yields
-  nothing, the char budget bounds the slot with whole sections and
-  `top_k = 0` disables it).
+  / a too-short slug never triggers); the name path (fires only when the
+  message names the project, naming an unreadable project yields nothing,
+  the char budget bounds the slot with whole sections and `top_k = 0`
+  disables it); and the signpost path (a surfaced signpost opens its
+  project with the project never named / the floor keeps a
+  weakly-matching turn's slot empty while a *named* project is served
+  regardless / a signpost never opens a project its reader cannot see).
+- `signposts`: 11 — the write lands on the owner's reserved page carrying
+  the project name; an unchanged refresh writes nothing; a new
+  description supersedes; the day window rolls; the same day twice
+  supersedes; both caps refuse rather than truncate; only the owner may
+  signpost; a standard wiki cannot be signposted; read access mirrors the
+  project's roster; a malformed day is refused.
 - `wiki_facts_for`: 2 (filtered without counter bump / ACL filter).
 - `wiki_recall`: 1 (delegates to search today).
 - `recall_fresh_captures`: 1 (un-promoted buffered capture surfaces, ACL-scoped, flagged `fresh`; another owner's capture is filtered out).

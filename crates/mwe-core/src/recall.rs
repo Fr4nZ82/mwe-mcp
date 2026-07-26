@@ -787,44 +787,165 @@ async fn smart_wikis_named_in(
         .collect())
 }
 
-/// Documentation from the projects the message **named**, for the
-/// per-turn recall of a standard consumer.
+/// The readable projects a **signpost surfaced this turn** points at.
 ///
-/// A conversational turn recalls facts, not documentation — that is what
-/// keeps a personal exchange from being buried under project docs. But a
-/// turn that says *"come funziona questa cosa di `AcmeSigns`?"* has named
-/// its own scope, and answering it well needs that project's pages.
+/// The other half of the project-docs trigger, roadmap group 48. A
+/// signpost is a short fact on its owner's reserved page
+/// ([`crate::signposts`]) saying that a project exists; when one comes
+/// back in the turn's ordinary fact recall, the project it names becomes
+/// a candidate — that is how a turn reaches project documentation
+/// *without naming the project*.
 ///
-/// So the trigger is the name, and the ranking is semantic: the message
-/// must name a readable smart wiki, and only **that** wiki's sections are
-/// then ranked by cosine. A message that names no project pays nothing —
-/// not even a query embedding, because the name match runs first.
-///
-/// Returns at most `top_k` hits, and stops early once `char_budget`
-/// characters of body text have been gathered (whole hits only — a
-/// truncated section is worse than one hit fewer).
-///
-/// # Errors
-///
-/// See [`RecallError`].
-pub async fn recall_named_project_docs(
+/// Costs one query, and only when a signpost actually surfaced. Read
+/// access is re-checked against the smart-wiki registry rather than
+/// inferred from the signpost's own ACL: the registry is the authority on
+/// who may read a project, and the two are written independently.
+async fn projects_signposted_in(
     pool: &SqlitePool,
-    embedder: Arc<dyn Embedder>,
-    message: &str,
-    top_k: usize,
-    char_budget: usize,
+    surfaced: &[RecallHit],
     sender: &SenderContext,
-) -> RecallResult<Vec<SectionHit>> {
-    if top_k == 0 || char_budget == 0 {
+) -> RecallResult<Vec<String>> {
+    let signpost_pages: std::collections::BTreeSet<&str> = surfaced
+        .iter()
+        .filter(|h| crate::wiki::is_projects_page(&h.source_path))
+        .map(|h| h.source_path.as_str())
+        .collect();
+    if signpost_pages.is_empty() {
         return Ok(Vec::new());
     }
-    let named = smart_wikis_named_in(pool, message, sender).await?;
+    let surfaced_ids: std::collections::BTreeSet<&str> =
+        surfaced.iter().map(|h| h.fact_id.as_str()).collect();
+    let mut named: Vec<String> = Vec::new();
+    for page in signpost_pages {
+        for row in fact_index::find_active_by_source_path(pool, page).await? {
+            if !surfaced_ids.contains(row.fact_id.as_str()) {
+                continue;
+            }
+            if let Some(project) = crate::signposts::project_of(&row)
+                && !named.contains(&project)
+            {
+                named.push(project);
+            }
+        }
+    }
     if named.is_empty() {
         return Ok(Vec::new());
     }
+    let registry = sections::list_smart_wikis(pool).await?;
+    Ok(registry
+        .into_iter()
+        .filter(|w| {
+            named.contains(&w.wiki_id) && {
+                let acl = Acl {
+                    owner: Some(w.owner_id.clone()),
+                    allow: w.shared_with.clone(),
+                };
+                can_read(&acl, &sender.sender_id, &sender.sender_groups, None)
+            }
+        })
+        .map(|w| w.wiki_id)
+        .collect())
+}
 
+/// Similarity floor a section must clear to be pulled in by a
+/// **signpost**, as opposed to by an explicit name.
+///
+/// The two triggers deserve different treatment. Naming a project is an
+/// instruction — the turn asked for it, so its documentation is offered
+/// whatever the cosine. A signpost is an inference: the memory noticed
+/// the project exists and is guessing that this turn is about it. That
+/// guess must be able to come back empty.
+///
+/// ## What the value is, and what it can actually separate
+///
+/// **Measured**, not chosen: `bge-m3` embeddings of real turns against
+/// the real `AcmeSigns` corpus (2 112 sections at the current chunk
+/// policy), best cosine per turn:
+///
+/// | turn | best section |
+/// |---|---|
+/// | «stasera ceniamo alle otto da mia sorella» | 0.427 |
+/// | «cosa ho fatto di lavoro questa settimana?» | 0.494 |
+/// | «domani alle 17:00 devo andare da questo cliente che ha il display che non funziona» | 0.608 |
+/// | «mi ha chiamato un cliente che dice che i contenuti sono fermi da 10 giorni» | 0.602 |
+/// | «come fa acmesigns a inviare i contenuti ai display?» | 0.651 |
+///
+/// So the floor sits in the empty band between a turn that has nothing to
+/// do with the project and a turn in its semantic neighbourhood. That is
+/// what it enforces, and it enforces it with room to spare.
+///
+/// **It does not separate the last three from each other.** The founder's
+/// two cases — an appointment that merely mentions a display (must not
+/// dig) and a symptom report that never names the project (must dig) —
+/// come out at 0.608 and 0.602: indistinguishable, and in the wrong
+/// order. A margin-based gate (best section minus best personal fact)
+/// was measured too and splits them no better: +0.082 against +0.085.
+/// The two sentences *are* the same sentence to an embedding model —
+/// customer, display, malfunction. What separates them is the speech act,
+/// which similarity does not encode.
+///
+/// Digging on the appointment turn therefore still happens. The cost is
+/// bounded: a labelled reference slot, capped at
+/// [`crate::ingest::IngestPolicy::project_docs_char_budget`], that the
+/// ingest prompt forbids filing as fact. The distinction the founder
+/// wants needs the turn's *intent*, which the classifier knows but only
+/// **after** recall has run — a second pass, not a threshold. Left open.
+///
+/// Corpus- and model-specific: re-measure before trusting this number on
+/// a different embedder or a very different corpus. Overridable per
+/// deployment through [`crate::ingest::IngestPolicy`].
+pub const DEFAULT_SIGNPOST_FLOOR: f32 = 0.55;
+
+/// How much of the project-docs slot one pass may spend.
+///
+/// The slot is shared by the two entry points and consumed in order, so
+/// the second pass is handed what the first left rather than its own
+/// fresh allowance.
+#[derive(Debug, Clone, Copy)]
+pub struct SlotBudget {
+    /// Maximum sections this pass may keep.
+    pub top_k: usize,
+    /// Maximum characters of body text this pass may gather.
+    pub char_budget: usize,
+}
+
+impl SlotBudget {
+    /// The slot as configured, before anything has been spent.
+    #[must_use]
+    pub const fn new(top_k: usize, char_budget: usize) -> Self {
+        Self { top_k, char_budget }
+    }
+
+    /// What is left after `hits` were already admitted.
+    #[must_use]
+    pub fn remaining(self, hits: &[SectionHit]) -> Self {
+        let spent: usize = hits.iter().map(|h| h.text.len()).sum();
+        Self {
+            top_k: self.top_k.saturating_sub(hits.len()),
+            char_budget: self.char_budget.saturating_sub(spent),
+        }
+    }
+}
+
+/// Rank the sections of `wikis` against `message` and keep what fits.
+///
+/// The shared core of the two project-docs entry points. `floor` drops
+/// hits below a cosine; the budget admits **whole** sections only, and
+/// always admits the first one — an empty slot is worse than one hit
+/// that overruns, and the index-time section cap
+/// ([`crate::document::SECTION_MAX_CHARS`]) is what keeps that first hit
+/// from starving the others.
+async fn rank_project_sections(
+    pool: &SqlitePool,
+    embedder: &Arc<dyn Embedder>,
+    message: &str,
+    wikis: &[String],
+    budget: SlotBudget,
+    floor: f32,
+) -> RecallResult<Vec<SectionHit>> {
+    let (top_k, char_budget) = (budget.top_k, budget.char_budget);
     let q_emb = embedder.embed(message).await?;
-    let candidates = sections::find_candidates_in_wikis(pool, &named).await?;
+    let candidates = sections::find_candidates_in_wikis(pool, wikis).await?;
     let mut scored: Vec<SectionHit> = candidates
         .into_iter()
         .map(|row| SectionHit {
@@ -835,6 +956,7 @@ pub async fn recall_named_project_docs(
             heading_path: row.heading_path,
             text: row.text,
         })
+        .filter(|hit| hit.score >= floor)
         .collect();
     scored.sort_by(|a, b| {
         b.score
@@ -848,8 +970,6 @@ pub async fn recall_named_project_docs(
         if kept.len() == top_k {
             break;
         }
-        // Whole hits only: a half-section reads as a broken quote, and the
-        // budget exists to bound the prompt, not to shave a paragraph.
         if spent + hit.text.len() > char_budget && !kept.is_empty() {
             break;
         }
@@ -862,13 +982,102 @@ pub async fn recall_named_project_docs(
         .map(|h| (h.source_path.clone(), h.section_ord))
         .collect();
     sections::bump_recall_hits(pool, &bumps).await?;
+    Ok(kept)
+}
 
+/// Documentation from the projects the message **named** — the first of
+/// the two project-docs entry points, and the one that needs no
+/// judgement.
+///
+/// Naming a project is an instruction: the turn declared its own scope,
+/// so its sections are ranked and offered whatever the cosine. This runs
+/// **before** the classifier, so the docs are in front of it when it
+/// decides the turn's intent ("the user is asking about the project" is a
+/// `recall`, not a `capture`).
+///
+/// A message that names nothing pays nothing — not even a query
+/// embedding, because the name match runs first.
+///
+/// # Errors
+///
+/// See [`RecallError`].
+pub async fn recall_named_project_docs(
+    pool: &SqlitePool,
+    embedder: Arc<dyn Embedder>,
+    message: &str,
+    budget: SlotBudget,
+    sender: &SenderContext,
+) -> RecallResult<Vec<SectionHit>> {
+    if budget.top_k == 0 || budget.char_budget == 0 {
+        return Ok(Vec::new());
+    }
+    let named = smart_wikis_named_in(pool, message, sender).await?;
+    if named.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Floor 0: the turn named the project, so its docs are offered
+    // whatever the cosine.
+    let kept = rank_project_sections(pool, &embedder, message, &named, budget, 0.0).await?;
     tracing::info!(
         sender_id = sender.sender_id,
         named_wikis = ?named,
         hits = kept.len(),
-        chars = spent,
-        "recall: project docs pulled by name match"
+        "recall: project docs pulled by name"
+    );
+    Ok(kept)
+}
+
+/// Documentation from a project a **signpost** pointed at — the second
+/// entry point, and the one that is a *guess*.
+///
+/// Runs **after** the classifier, gated by the judgement it returned
+/// (`needs_project_docs`), because the decision is "would reading the
+/// docs help answer this?" and that is a judgement, not a distance. It
+/// was measured as a distance first, on a 17-sentence bench against the
+/// production corpus, and no similarity signal separated the two cases
+/// the founder cared about — an appointment that merely mentions a
+/// screen scored *above* a malfunction report that needed the docs
+/// (0.608 vs 0.602 on the raw turn; distilling the claim first made it
+/// worse, 0.622 vs 0.586). Two sentences about a client and a screen sit
+/// at the same distance from the corpus whether they concern a payment
+/// or a fault. So the model decides, per
+/// `[[feedback-no-hardcoded-gates-llm-decides]]`, and it costs nothing:
+/// the classifier already runs and already returns JSON.
+///
+/// `floor` stays as a cheap backstop under that judgement — an unrelated
+/// turn scores far below it — not as the discriminator.
+///
+/// # Errors
+///
+/// See [`RecallError`].
+pub async fn recall_signposted_project_docs(
+    pool: &SqlitePool,
+    embedder: Arc<dyn Embedder>,
+    message: &str,
+    surfaced: &[RecallHit],
+    exclude_wikis: &[String],
+    budget: SlotBudget,
+    floor: f32,
+    sender: &SenderContext,
+) -> RecallResult<Vec<SectionHit>> {
+    if budget.top_k == 0 || budget.char_budget == 0 {
+        return Ok(Vec::new());
+    }
+    let signposted: Vec<String> = projects_signposted_in(pool, surfaced, sender)
+        .await?
+        .into_iter()
+        .filter(|w| !exclude_wikis.iter().any(|e| e == w))
+        .collect();
+    if signposted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let kept = rank_project_sections(pool, &embedder, message, &signposted, budget, floor).await?;
+    tracing::info!(
+        sender_id = sender.sender_id,
+        signposted_wikis = ?signposted,
+        floor,
+        hits = kept.len(),
+        "recall: project docs pulled by signpost"
     );
     Ok(kept)
 }
@@ -2227,8 +2436,7 @@ mod tests {
             &pool,
             embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
             "come fa acmesigns a inviare i contenuti ai display?",
-            3,
-            2_000,
+            SlotBudget::new(3, 2_000),
             &sender,
         )
         .await
@@ -2236,19 +2444,204 @@ mod tests {
         assert_eq!(hit.len(), 1);
         assert!(hit[0].text.contains("websocket"));
 
-        // Same corpus, same embedder — but nothing is named, so the slot
-        // stays empty and the turn pays nothing.
+        // Same corpus, same embedder — but nothing is named and no
+        // signpost surfaced, so the slot stays empty and the turn pays
+        // nothing.
         let unnamed = recall_named_project_docs(
             &pool,
             embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
             "stasera ceniamo alle otto",
-            3,
-            2_000,
+            SlotBudget::new(3, 2_000),
             &sender,
         )
         .await
         .unwrap();
         assert!(unnamed.is_empty());
+    }
+
+    /// Plant a description signpost for `project` on `owner`'s reserved
+    /// page and return it as a hit, the way the turn's fact recall would
+    /// have surfaced it.
+    async fn surfaced_signpost(
+        pool: &SqlitePool,
+        owner_wiki: &str,
+        owner: &str,
+        project: &str,
+        text: &str,
+    ) -> RecallHit {
+        let fact_id = crate::capture::new_fact_id().unwrap();
+        let row = NewFact {
+            authored_refs: Vec::new(),
+            fact_id: fact_id.clone(),
+            wiki_id: owner_wiki.to_owned(),
+            source_path: format!("wikis/{owner_wiki}/projects.md"),
+            region_start: Some(0),
+            region_end: Some(32),
+            text: text.to_owned(),
+            embedding: vec![0.0, 0.0, 1.0, 0.0],
+            owner_id: owner.parse().unwrap(),
+            allow_ids: vec![],
+            sender_id: None,
+            fact_type: Some(crate::signposts::SIGNPOST_FACT_TYPE.to_owned()),
+            topics: crate::signposts::description_topics(project),
+            valid_from: None,
+            valid_to: None,
+            target_page: None,
+            style: None,
+            page_description: None,
+            salience: None,
+            source_ref: None,
+        };
+        fact_index::insert(pool, &row).await.expect("insert");
+        let stored = fact_index::find_by_id(pool, &fact_id)
+            .await
+            .expect("read")
+            .expect("row");
+        RecallHit::from_row(stored, 0.9)
+    }
+
+    #[tokio::test]
+    async fn a_surfaced_signpost_opens_its_project_without_the_name() {
+        // A symptom of what the product does, with AcmeSigns never named.
+        // The signpost is what gets the turn to the door; the similarity
+        // is what opens it.
+        let pool = make_pool().await;
+        seed_smart_wiki(&pool, "franz-acmesigns", "user:franz", Vec::new()).await;
+        seed_section(
+            &pool,
+            "franz-acmesigns",
+            0,
+            "Content is pushed to each display over a websocket channel; a stalled feed means the channel dropped.",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        let signpost = surfaced_signpost(
+            &pool,
+            "franz",
+            "user:franz",
+            "franz-acmesigns",
+            "AcmeSigns — sistema che manda i contenuti ai cartelli digitali dei negozi",
+        )
+        .await;
+        let sender = SenderContext::user("franz");
+
+        let hits = recall_signposted_project_docs(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "mi ha chiamato un cliente che dice che i contenuti sono fermi da 10 giorni",
+            std::slice::from_ref(&signpost),
+            &[],
+            SlotBudget::new(3, 2_000),
+            DEFAULT_SIGNPOST_FLOOR,
+            &sender,
+        )
+        .await
+        .unwrap();
+        assert_eq!(hits.len(), 1, "the signpost must open the project");
+        assert!(hits[0].text.contains("websocket"));
+    }
+
+    #[tokio::test]
+    async fn a_marginally_related_turn_reaches_the_project_and_keeps_nothing() {
+        // The gate mechanism: the signpost still fires the lookup — that
+        // is cheap — but nothing clears the floor, so the slot stays
+        // empty. (Mechanism only. On the real corpus the floor separates
+        // an unrelated turn from a project-neighbourhood one; it does NOT
+        // separate two neighbourhood turns — see
+        // `DEFAULT_SIGNPOST_FLOOR`.)
+        let pool = make_pool().await;
+        seed_smart_wiki(&pool, "franz-acmesigns", "user:franz", Vec::new()).await;
+        seed_section(
+            &pool,
+            "franz-acmesigns",
+            0,
+            "Content is pushed to each display over a websocket channel.",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        let signpost = surfaced_signpost(
+            &pool,
+            "franz",
+            "user:franz",
+            "franz-acmesigns",
+            "AcmeSigns — sistema che manda i contenuti ai cartelli digitali",
+        )
+        .await;
+        let sender = SenderContext::user("franz");
+        // Orthogonal to the section: cosine 0, far below the floor.
+        let unrelated = embedder_fixed(vec![0.0, 1.0, 0.0, 0.0]);
+
+        let hits = recall_signposted_project_docs(
+            &pool,
+            Arc::clone(&unrelated),
+            "domani alle 17:00 devo andare da questo cliente che ha il display che non funziona",
+            std::slice::from_ref(&signpost),
+            &[],
+            SlotBudget::new(3, 2_000),
+            DEFAULT_SIGNPOST_FLOOR,
+            &sender,
+        )
+        .await
+        .unwrap();
+        assert!(
+            hits.is_empty(),
+            "a marginal mention must not drag in the project docs"
+        );
+
+        // Naming the project is an instruction, not a guess: the same
+        // weak similarity is served, because the turn asked for it.
+        let named = recall_named_project_docs(
+            &pool,
+            unrelated,
+            "cosa dice la documentazione di acmesigns?",
+            SlotBudget::new(3, 2_000),
+            &sender,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            named.len(),
+            1,
+            "the floor does not apply to a named project"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_signpost_never_opens_a_project_its_reader_cannot_see() {
+        // Belt and braces: the ACL is re-checked against the registry,
+        // not inferred from the signpost that surfaced.
+        let pool = make_pool().await;
+        seed_smart_wiki(&pool, "franz-acmesigns", "user:franz", Vec::new()).await;
+        seed_section(
+            &pool,
+            "franz-acmesigns",
+            0,
+            "internal architecture note",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        let signpost = surfaced_signpost(
+            &pool,
+            "franz",
+            "user:franz",
+            "franz-acmesigns",
+            "AcmeSigns — un sistema",
+        )
+        .await;
+
+        let hits = recall_signposted_project_docs(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "i contenuti sono fermi",
+            std::slice::from_ref(&signpost),
+            &[],
+            SlotBudget::new(3, 2_000),
+            DEFAULT_SIGNPOST_FLOOR,
+            &SenderContext::user("carol"),
+        )
+        .await
+        .unwrap();
+        assert!(hits.is_empty());
     }
 
     #[tokio::test]
@@ -2269,8 +2662,7 @@ mod tests {
             &pool,
             embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
             "come funziona acmesigns?",
-            3,
-            2_000,
+            SlotBudget::new(3, 2_000),
             &stranger,
         )
         .await
@@ -2295,8 +2687,7 @@ mod tests {
             &pool,
             embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
             "acmesigns",
-            10,
-            700,
+            SlotBudget::new(10, 700),
             &sender,
         )
         .await
@@ -2317,8 +2708,7 @@ mod tests {
             &pool,
             embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
             "acmesigns",
-            10,
-            10,
+            SlotBudget::new(10, 10),
             &sender,
         )
         .await
@@ -2331,8 +2721,7 @@ mod tests {
                 &pool,
                 embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
                 "acmesigns",
-                0,
-                2_000,
+                SlotBudget::new(0, 2_000),
                 &sender,
             )
             .await

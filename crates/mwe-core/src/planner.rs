@@ -1933,15 +1933,17 @@ pub enum NewFactPlacement<'a> {
 /// flattens to a single leaf `recipes_dinner` (slugify maps the separator to
 /// `_`). `index.md` / empty resolve to `None`: the fact belongs on its wiki's
 /// foundation page, which the deterministic orphan-fallback already homes — never
-/// a concept page named "index". `rules.md` resolves to `None` too: it is the
-/// reserved user-policy page ([`crate::wiki::RULES_FILENAME`]), never a
-/// fact-bearing concept page, so a fact mis-targeted there orphan-falls-back
-/// instead of clobbering the policy file. The `.md` suffix is stripped first so
-/// slugify does not fold it into a trailing `_md`.
+/// a concept page named "index". The reserved channel pages resolve to `None`
+/// too — `rules.md` ([`crate::wiki::RULES_FILENAME`]) and `projects.md`
+/// ([`crate::wiki::PROJECTS_FILENAME`]): neither is a fact-bearing concept
+/// page, and both are written by a deterministic channel, so a fact
+/// mis-targeted there orphan-falls-back instead of landing among the policy
+/// or the signposts. The `.md` suffix is stripped first so slugify does not
+/// fold it into a trailing `_md`.
 fn placement_slug(target_page: &str) -> Option<String> {
     let stripped = target_page.strip_suffix(".md").unwrap_or(target_page);
     let slug = slugify(stripped);
-    if slug.is_empty() || slug == "index" || slug == "rules" {
+    if slug.is_empty() || slug == "index" || slug == "rules" || slug == "projects" {
         None
     } else {
         Some(slug)
@@ -2396,15 +2398,15 @@ async fn gather_standard_facts(pool: &SqlitePool, tree: &WikiTree) -> Result<Vec
             continue;
         }
         for row in fact_index::find_active_in_wiki(pool, d.meta.wiki_id.as_str()).await? {
-            // The reserved policy page (`rules.md`) is the rules pipeline's
-            // perimeter, not the compiler's: a behaviour-rule fact lives there
-            // and `ingest::recall_behaviour_rules` reads it keyed on that path.
-            // The compiler must NOT gather it — absent from the persisted plan
-            // it would look "new", orphan-fall-back onto `index.md`, and the
-            // behaviour-rule channel (which filters on `rules.md`) would stop
-            // seeing it. (engine_rule governance is raw `rules.md` prose, not a
+            // The reserved channel pages (`rules.md`, `projects.md`) are their
+            // own pipelines' perimeter, not the compiler's: their facts are
+            // written directly and read back keyed on that path. The compiler
+            // must NOT gather them — absent from the persisted plan they would
+            // look "new", orphan-fall-back onto `index.md`, and their channel
+            // (which filters on the page) would stop seeing them.
+            // (engine_rule governance is raw `rules.md` prose, not a
             // `fact_index` row, so only behaviour-rule rows are spared here.)
-            if crate::wiki::is_rules_page(&row.source_path) {
+            if crate::wiki::is_channel_page(&row.source_path) {
                 continue;
             }
             out.push(FactForPage::from_row(&row));

@@ -233,17 +233,17 @@ async fn promote_one(
 
     // Dedup skip — the direct path's own scan, deferred to promotion
     // ([`crate::capture::best_dedup_candidate`]: same-owner scope,
-    // rules-page boundary, jaccard 6-gram vs the wiki's active facts).
+    // channel-page boundary, jaccard 6-gram vs the wiki's active facts).
     // Exclude self so a retry after a partial promotion does not skip
     // the capture against its own fact. The embed SETS must also match:
     // two photos with near-identical captions share the words while
     // linking different media — dropping the second would orphan it.
     let active = fact_index::find_active_in_wiki(pool, wiki).await?;
-    let on_rules_page = crate::wiki::is_rules_page(&cap.target_page.to_string_lossy());
+    let on_channel_page = crate::wiki::is_channel_page(&cap.target_page.to_string_lossy());
     if let Some((dup, score)) = crate::capture::best_dedup_candidate(
         &active,
         &cap.owner,
-        on_rules_page,
+        on_channel_page,
         &cap.body,
         Some(&cap.capture_id),
     ) && score >= policy.dedup_threshold
@@ -263,9 +263,11 @@ async fn promote_one(
         // already held — did the ORIGINAL turn's recall surface it? The
         // buffer row carries the turn linkage; a row without one (legacy,
         // journal-recovered) is skipped, and the whole check is best-effort
-        // telemetry — a failure never touches the promotion. Rules-page
-        // facts are out of scope (channel-delivered, never a recall miss).
-        if !crate::wiki::is_rules_page(&dup.source_path) {
+        // telemetry — a failure never touches the promotion. Channel-page
+        // facts are out of scope: a rule is channel-delivered, and a
+        // signpost is owned end-to-end by its writer, so neither is a
+        // recall miss the repair loop could act on.
+        if !crate::wiki::is_channel_page(&dup.source_path) {
             match miss_check(pool, cap, dup, score).await {
                 Ok(()) => {},
                 Err(e) => {

@@ -73,6 +73,7 @@ use crate::proposals::{self, ProposalsError};
 use crate::recall;
 use crate::recall_gate;
 use crate::recall_log;
+use crate::rem_verdicts;
 use crate::reviewer;
 use crate::sections;
 use crate::types::{FactId, WikiId};
@@ -265,6 +266,13 @@ pub struct RemPolicy {
     /// entry — rule/prompt-level levers are never auto-applied).
     /// Default 3.
     pub recall_tuning_recurrence: i64,
+    /// How long a **negative** confirmer verdict stays on record in
+    /// `rem_verdicts` before the question is asked again
+    /// ([`crate::rem_verdicts`]). The memo already self-invalidates on
+    /// content, prompt, and model changes, so this TTL is not a
+    /// correctness lever — it bounds the table and buys every settled
+    /// question an eventual second opinion. Default 90 days.
+    pub verdict_memo_ttl: chrono::Duration,
     /// Recall knobs the gold-set gate replays with
     /// ([`crate::recall_gate`]) — flat top-K + the navigator funnel
     /// budgets. Defaults mirror production's [`IngestPolicy`] defaults.
@@ -305,6 +313,7 @@ impl Default for RemPolicy {
             husk_gc_cap: 4,
             recall_repair_cap: 3,
             recall_tuning_recurrence: 3,
+            verdict_memo_ttl: chrono::Duration::days(90),
             gate_recall: crate::ingest::IngestPolicy::default(),
         }
     }
@@ -379,6 +388,14 @@ pub struct RemCycleReport {
     pub husk_gc: HuskGcReport,
     /// Hub Writer sub-job report (runs last).
     pub hub_writer: HubWriterReport,
+    /// Negative-verdict memos dropped by the TTL sweep at cycle start
+    /// ([`crate::rem_verdicts`]).
+    pub verdict_memo_purged: u64,
+    /// Live `rem_verdicts` rows once the cycle finished. Read together
+    /// with each sub-job's `examined` count — which now means *asked the
+    /// model*, memo hits never reach it — this is how an operator sees
+    /// the memo working.
+    pub verdict_memo_rows: i64,
 }
 
 /// Sub-report for the jaccard semantic revisor / Conciliatore emitter.
@@ -899,6 +916,12 @@ pub async fn run_cycle(
     // filter for the two new ones.
     let smart_wiki_index = load_smart_wiki_index(tree)?;
 
+    // Expire aged confirmer memos before any sub-job reads them, so a
+    // question whose TTL ran out is re-asked in THIS cycle rather than
+    // the next one.
+    let verdict_memo_purged =
+        rem_verdicts::purge_older_than(pool, now - policy.verdict_memo_ttl).await?;
+
     let auto_apply = run_auto_apply_sweep(pool, tree, now).await?;
     let auto_finalize = run_auto_finalize_sweep(pool, now).await?;
     let revisor = run_revisor_jaccard(
@@ -1060,8 +1083,10 @@ pub async fn run_cycle(
         husk_pages_examined = husk_gc.pages_examined,
         husk_pages_removed = husk_gc.removed.len(),
         hub_regenerated = hub_writer.regenerated.len(),
+        verdict_memo_purged,
         "rem: cycle done"
     );
+    let verdict_memo_rows = rem_verdicts::count(pool).await?;
     Ok(RemCycleReport {
         cycle_id,
         started_at,
@@ -1084,6 +1109,8 @@ pub async fn run_cycle(
         briefing_processor,
         husk_gc,
         hub_writer,
+        verdict_memo_purged,
+        verdict_memo_rows,
     })
 }
 
@@ -1272,11 +1299,11 @@ async fn run_revisor_jaccard(
             .iter()
             .map(|f| recall::ngrams(&f.text, recall::DEFAULT_NGRAM))
             .collect();
-        // Rules-page membership per fact: dedup pairs never cross the
-        // rules-page boundary (both sides on `rules.md`, or neither).
-        let on_rules_page: Vec<bool> = facts
+        // Channel-page membership per fact: dedup pairs never cross the
+        // boundary (both sides on a reserved channel page, or neither).
+        let on_channel_page: Vec<bool> = facts
             .iter()
-            .map(|f| wiki::is_rules_page(&f.source_path))
+            .map(|f| wiki::is_channel_page(&f.source_path))
             .collect();
         // Sort by created_at descending so the *newer* fact in a pair
         // is the survivor (capture's natural flow).
@@ -1307,7 +1334,7 @@ async fn run_revisor_jaccard(
                 // behaviour-rules channel — the dedup twin of the compiler
                 // and refile skips. A structural channel invariant, not a
                 // semantic gate: rule-vs-rule pairs still go to the LLM.
-                if on_rules_page[new_idx] != on_rules_page[old_idx] {
+                if on_channel_page[new_idx] != on_channel_page[old_idx] {
                     continue;
                 }
                 // Identity-core stickiness: background dedup never retires a
@@ -1354,12 +1381,24 @@ async fn run_revisor_jaccard(
                 if !surface && semantic.is_none() {
                     continue;
                 }
+                let prompt = revisor_prompt(tree, &facts[new_idx], &facts[old_idx])?;
+                // The memo check sits BEFORE the examined cap on purpose:
+                // a pair whose "not the same" verdict is already on record
+                // must not consume tonight's confirm budget. That budget
+                // exists to reach pairs nobody has judged yet — the live
+                // corpus had 156 nominable pairs against a cap of 120, so
+                // re-buying settled verdicts meant the tail was never
+                // examined at all.
+                let memo_key = rem_verdicts::key(llm.model_id(), &prompt);
+                if rem_verdicts::is_settled(pool, rem_verdicts::kind::DEDUP_PAIR, &memo_key).await?
+                {
+                    continue;
+                }
                 if report.pairs_examined >= policy.revisor_examined_cap {
                     examined_capped = true;
                     break;
                 }
                 report.pairs_examined += 1;
-                let prompt = revisor_prompt(tree, &facts[new_idx], &facts[old_idx])?;
                 let resp = llm
                     .complete(
                         CompletionRequest::new(prompt)
@@ -1375,6 +1414,17 @@ async fn run_revisor_jaccard(
                         ))
                     })?;
                 if !parse_llm_yes(&resp.text) {
+                    rem_verdicts::record_negative(
+                        pool,
+                        rem_verdicts::kind::DEDUP_PAIR,
+                        &memo_key,
+                        &format!(
+                            "{} vs {}",
+                            facts[new_idx].fact_id.as_str(),
+                            facts[old_idx].fact_id.as_str()
+                        ),
+                    )
+                    .await?;
                     continue;
                 }
                 report.pairs_confirmed += 1;
@@ -1649,6 +1699,15 @@ async fn run_auto_promote(
             if already {
                 continue;
             }
+            // Already answered "no" on this exact page content? Don't
+            // re-buy the verdict — this pass runs on the strong model and
+            // ships the whole page in the prompt, so a byte-identical
+            // re-ask is the most expensive no-op in the cycle.
+            let memo_prompt = paragraph_split_memo_prompt(tree, &source_page_rel, &page_facts)?;
+            let memo_key = rem_verdicts::key(llm.model_id(), &memo_prompt);
+            if rem_verdicts::is_settled(pool, rem_verdicts::kind::PAGE_SPLIT, &memo_key).await? {
+                continue;
+            }
             report.candidates_examined += 1;
 
             let mass = page_facts.len();
@@ -1672,15 +1731,23 @@ async fn run_auto_promote(
                 continue;
             };
             if !decision.split {
+                rem_verdicts::record_negative(
+                    pool,
+                    rem_verdicts::kind::PAGE_SPLIT,
+                    &memo_key,
+                    &format!("{}/{source_page_rel}", d.meta.wiki_id.as_str()),
+                )
+                .await?;
                 continue;
             }
-            // Validate the named facts: every id must be on the page,
-            // and the set must be a *proper* subset — moving everything
-            // is a rename, not a split (that is the page→sub-wiki rung).
+            // Validate the named facts: every handle must resolve on the
+            // page, and the set must be a *proper* subset — moving
+            // everything is a rename, not a split (that is the
+            // page→sub-wiki rung).
             let mut moving: Vec<&FactIndexRow> = Vec::with_capacity(decision.fact_ids.len());
             let mut invalid = None;
             for id in &decision.fact_ids {
-                if let Some(f) = page_facts.iter().find(|f| f.fact_id.as_str() == id) {
+                if let Some(f) = resolve_split_handle(&page_facts, id) {
                     moving.push(f);
                 } else {
                     invalid = Some(id.clone());
@@ -1871,23 +1938,57 @@ pub const BUNDLED_REM_PROMOTIONS_MD: &str = include_str!("../prompts/rem-promoti
 pub const BUNDLED_REM_SUBWIKI_EMERGENCE_MD: &str =
     include_str!("../prompts/rem-subwiki-emergence.md");
 
+/// Coarse recall band. Used **only** to build the memo key
+/// ([`paragraph_split_memo_prompt`]) — never shown to the model, which
+/// keeps seeing the exact count.
+///
+/// A page's split verdict does not turn on one extra recall hit; it
+/// turns on whether a sub-topic is cold, warm, or hot. Keying the memo
+/// on the raw counter would re-open every page every night for a number
+/// the model does not read that finely — which is the same waste the
+/// memo exists to remove.
+const fn recall_band(count: i64) -> &'static str {
+    match count {
+        ..=0 => "none",
+        1..=4 => "low",
+        5..=19 => "medium",
+        _ => "high",
+    }
+}
+
 /// Render the per-page split prompt: the whole page, each fact
-/// annotated with its id and 30-day recall count, so the LLM weighs
-/// mass and recall together and names the facts that move out.
-fn paragraph_split_prompt(
+/// annotated with a short positional handle and its 30-day recall count,
+/// so the LLM weighs mass and recall together and names the facts that
+/// move out.
+///
+/// The handle (`[n1]`, `[n2]`, …) replaces the fact's UUID. The model
+/// never reasons over a UUID — it only echoes one back to name what
+/// moves — and a UUID costs ~18 tokens of pure noise per fact on the
+/// strong model this slot runs on. [`resolve_split_handle`] maps the
+/// answer back, and still accepts a raw fact id so an operator prompt
+/// override (or a model that echoes an id anyway) keeps working.
+///
+/// `canonical` swaps each exact recall count for its [`recall_band`] —
+/// that rendering is the memo key, never a request body.
+fn paragraph_split_prompt_inner(
     tree: &WikiTree,
     page: &str,
     page_facts: &[&FactIndexRow],
+    canonical: bool,
 ) -> Result<String> {
     use std::fmt::Write as _;
     let mass_s = page_facts.len().to_string();
     let mut facts_block = String::new();
-    for f in page_facts {
+    for (i, f) in page_facts.iter().enumerate() {
+        let recall = if canonical {
+            recall_band(f.recall_count_30d).to_owned()
+        } else {
+            f.recall_count_30d.to_string()
+        };
         let _ = writeln!(
             facts_block,
-            "- id: {id} · recall30d: {n}\n  {text}",
-            id = f.fact_id.as_str(),
-            n = f.recall_count_30d,
+            "- [n{handle}] recall30d: {recall}\n  {text}",
+            handle = i + 1,
             text = f.text.replace('\n', "\n  "),
         );
     }
@@ -1902,6 +2003,45 @@ fn paragraph_split_prompt(
         ],
     )
     .map_err(RemError::from)
+}
+
+/// The prompt actually sent to the model.
+fn paragraph_split_prompt(
+    tree: &WikiTree,
+    page: &str,
+    page_facts: &[&FactIndexRow],
+) -> Result<String> {
+    paragraph_split_prompt_inner(tree, page, page_facts, false)
+}
+
+/// The canonical rendering hashed into the memo key: same template, same
+/// facts, recall counters bucketed so day-to-day drift does not re-open
+/// a page whose content has not moved.
+fn paragraph_split_memo_prompt(
+    tree: &WikiTree,
+    page: &str,
+    page_facts: &[&FactIndexRow],
+) -> Result<String> {
+    paragraph_split_prompt_inner(tree, page, page_facts, true)
+}
+
+/// Resolve one entry of the split verdict's `fact_ids` list against the
+/// page the model was shown: a positional handle (`n3`, `[n3]`, `N3`) or
+/// a raw fact id. Returns `None` when it matches neither — the caller
+/// treats that as a hallucinated name and drops the whole split.
+fn resolve_split_handle<'a>(
+    page_facts: &[&'a FactIndexRow],
+    token: &str,
+) -> Option<&'a FactIndexRow> {
+    let t = token.trim().trim_matches(|c| c == '[' || c == ']').trim();
+    if let Some(digits) = t.strip_prefix(['n', 'N'])
+        && let Ok(idx) = digits.parse::<usize>()
+        && idx >= 1
+        && let Some(f) = page_facts.get(idx - 1)
+    {
+        return Some(f);
+    }
+    page_facts.iter().copied().find(|f| f.fact_id.as_str() == t)
 }
 
 /// Extract the first brace-balanced JSON object from `raw` (tolerant
@@ -2097,8 +2237,6 @@ async fn run_subwiki_emergence_for_wiki(
         if already {
             continue;
         }
-        report.subwiki_candidates_examined += 1;
-
         let bodies = page_facts
             .iter()
             .map(|f| f.text.as_str())
@@ -2108,6 +2246,19 @@ async fn run_subwiki_emergence_for_wiki(
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("topic");
+        // Memo key: the same prompt with the parent's fact total rounded
+        // down to a multiple of 10. The model weighs the page *against
+        // its parent*, and that ratio does not turn on one fact landing
+        // anywhere else in the wiki — keying on the exact total would
+        // re-open every page on any capture into the same wiki.
+        let memo_prompt =
+            subwiki_emergence_prompt(tree, d, &page_rel, mass, parent_facts / 10 * 10, &bodies)?;
+        let memo_key = rem_verdicts::key(llm.model_id(), &memo_prompt);
+        if rem_verdicts::is_settled(pool, rem_verdicts::kind::SUBWIKI_EMERGENCE, &memo_key).await? {
+            continue;
+        }
+        report.subwiki_candidates_examined += 1;
+
         let prompt = subwiki_emergence_prompt(tree, d, &page_rel, mass, parent_facts, &bodies)?;
         let resp = llm
             .complete(
@@ -2124,6 +2275,13 @@ async fn run_subwiki_emergence_for_wiki(
             continue;
         };
         if !decision.promote {
+            rem_verdicts::record_negative(
+                pool,
+                rem_verdicts::kind::SUBWIKI_EMERGENCE,
+                &memo_key,
+                &format!("{}/{page_rel}", d.meta.wiki_id.as_str()),
+            )
+            .await?;
             continue;
         }
         report.subwiki_candidates_promoted += 1;
@@ -2500,8 +2658,12 @@ async fn run_page_merge(
             report.skipped_judged += 1;
             continue;
         }
-        report.candidates_examined += 1;
         let prompt = merge_prompt(tree, pa, pb, &signal)?;
+        let memo_key = rem_verdicts::key(llm.model_id(), &prompt);
+        if rem_verdicts::is_settled(pool, rem_verdicts::kind::PAGE_MERGE, &memo_key).await? {
+            continue;
+        }
+        report.candidates_examined += 1;
         let resp = llm
             .complete(
                 CompletionRequest::new(prompt)
@@ -2519,6 +2681,13 @@ async fn run_page_merge(
             continue;
         };
         if !verdict.merge {
+            rem_verdicts::record_negative(
+                pool,
+                rem_verdicts::kind::PAGE_MERGE,
+                &memo_key,
+                &format!("{slug_a} vs {slug_b}"),
+            )
+            .await?;
             continue;
         }
         let survivor_slug = crate::planner::slugify(&verdict.survivor);
@@ -2687,8 +2856,11 @@ fn completion_cases<'a>(
             // morgana's parallel Ernest naming rule), and it is never
             // completed by neighbouring evidence — it leaves the channel
             // only via supersede, tombstone, or its owner's explicit
-            // closure. Structural perimeter, like the dedup rules-boundary.
-            if wiki::is_rules_page(&evidence.source_path) {
+            // closure. Structural perimeter, like the dedup channel-boundary
+            // — and a project signpost is fenced out the same way: it is a
+            // pointer maintained by its channel, never evidence that
+            // something else finished.
+            if wiki::is_channel_page(&evidence.source_path) {
                 continue;
             }
             let Ok(created) = DateTime::parse_from_rfc3339(&evidence.created_at) else {
@@ -2703,7 +2875,7 @@ fn completion_cases<'a>(
                     c.fact_id != evidence.fact_id
                         && c.valid_to.is_none()
                         && c.created_at < evidence.created_at
-                        && !wiki::is_rules_page(&c.source_path)
+                        && !wiki::is_channel_page(&c.source_path)
                 })
                 .map(|c| {
                     (
@@ -2843,6 +3015,12 @@ async fn judge_completion_case(
             ("candidates", candidates_text.as_str()),
         ],
     )?;
+    // Evidence stays inside the 48 h window for two cycles, so without a
+    // memo the same evidence × same candidate set is judged twice.
+    let memo_key = rem_verdicts::key(llm.model_id(), &prompt);
+    if rem_verdicts::is_settled(pool, rem_verdicts::kind::COMPLETION, &memo_key).await? {
+        return Ok(None);
+    }
     let resp = match llm
         .complete(
             CompletionRequest::new(prompt)
@@ -2869,6 +3047,13 @@ async fn judge_completion_case(
         },
     };
     if decision.completions.is_empty() {
+        rem_verdicts::record_negative(
+            pool,
+            rem_verdicts::kind::COMPLETION,
+            &memo_key,
+            case.evidence.fact_id.as_str(),
+        )
+        .await?;
         return Ok(None);
     }
 
@@ -3095,10 +3280,11 @@ fn refile_cases<'a>(
             // them), so it is a natural false nominee — and a confirmed move
             // would eject it from the behaviour-rules channel, which reads
             // `rules.md` in the agent's own wiki (the refile twin of the
-            // compiler-door skip in `planner::gather_standard_facts`). Rules
-            // facts still count in the similarity pools above/below; they are
-            // only never nominated as the fact to move.
-            if wiki::is_rules_page(&fact.source_path) {
+            // compiler-door skip in `planner::gather_standard_facts`), and the
+            // signposts page is fenced the same way. Channel facts still count
+            // in the similarity pools above/below; they are only never
+            // nominated as the fact to move.
+            if wiki::is_channel_page(&fact.source_path) {
                 continue;
             }
             let foreign = ranked_foreign(views, home, fact, true);
@@ -3235,7 +3421,7 @@ async fn run_refile_sweep(
         }) else {
             continue;
         };
-        if wiki::is_rules_page(&fact.source_path) {
+        if wiki::is_channel_page(&fact.source_path) {
             continue;
         }
         let foreign = ranked_foreign(&views, home, fact, false);
@@ -3306,6 +3492,13 @@ async fn judge_refile_case(
             ("candidates", candidates_text.as_str()),
         ],
     )?;
+    // A fact that "stays" is re-nominated by the cosine pre-filter every
+    // night until its neighbourhood changes — and its neighbourhood is
+    // exactly what the prompt (and so the key) is made of.
+    let memo_key = rem_verdicts::key(llm.model_id(), &prompt);
+    if rem_verdicts::is_settled(pool, rem_verdicts::kind::REFILE, &memo_key).await? {
+        return Ok(None);
+    }
     let resp = match llm
         .complete(
             CompletionRequest::new(prompt)
@@ -3332,6 +3525,13 @@ async fn judge_refile_case(
         },
     };
     if !decision.verdict.eq_ignore_ascii_case("move") {
+        rem_verdicts::record_negative(
+            pool,
+            rem_verdicts::kind::REFILE,
+            &memo_key,
+            case.fact.fact_id.as_str(),
+        )
+        .await?;
         return Ok(None);
     }
     let Some(dest_wiki_id) = decision
@@ -3521,11 +3721,12 @@ async fn run_contradiction_sweep(
             //    contradicted the seed (observed live 2026-07-01: the
             //    freshly revised TTS rules fell as satellites of their own
             //    dead predecessors).
-            // 2. The reserved rules page is channel-governed: a standing
-            //    directive leaves it only via supersede, tombstone, or its
-            //    owner's explicit closure — never as collateral of a
-            //    neighbouring contradiction. Same fence the dedup/refile
-            //    sweeps already honour ([`crate::wiki::is_rules_page`]).
+            // 2. The reserved channel pages are channel-governed: a standing
+            //    directive — or a project signpost — leaves its page only via
+            //    supersede, tombstone, or its owner's explicit closure, never
+            //    as collateral of a neighbouring contradiction. Same fence the
+            //    dedup/refile sweeps already honour
+            //    ([`crate::wiki::is_channel_page`]).
             // 3. An identity-core fact (a role / relationship — `bio` +
             //    `salience=high`) is sticky: it changes only on the owner's
             //    explicit correction (the classifier supersede path), never
@@ -3538,7 +3739,7 @@ async fn run_contradiction_sweep(
                 .filter(|c| {
                     c.fact_id != seed.fact_id
                         && !lineage.contains(&c.fact_id)
-                        && !wiki::is_rules_page(&c.source_path)
+                        && !wiki::is_channel_page(&c.source_path)
                         && !c.is_identity_core()
                 })
                 .map(|c| (recall::cosine_similarity(&seed.embedding, &c.embedding), c))
@@ -3638,6 +3839,12 @@ async fn judge_contradiction_case(
             ("candidates", candidates_text.as_str()),
         ],
     )?;
+    // Same 48 h window as the completion sweep: a seed is re-judged
+    // against the same satellites on the next cycle unless it is settled.
+    let memo_key = rem_verdicts::key(llm.model_id(), &prompt);
+    if rem_verdicts::is_settled(pool, rem_verdicts::kind::CONTRADICTION, &memo_key).await? {
+        return Ok(None);
+    }
     let resp = match llm
         .complete(
             CompletionRequest::new(prompt)
@@ -3659,6 +3866,13 @@ async fn judge_contradiction_case(
         return Ok(None);
     };
     if decision.invalidated.is_empty() {
+        rem_verdicts::record_negative(
+            pool,
+            rem_verdicts::kind::CONTRADICTION,
+            &memo_key,
+            seed.fact_id.as_str(),
+        )
+        .await?;
         return Ok(None);
     }
 
@@ -3935,7 +4149,7 @@ async fn repair_one_miss(
         report.stale += 1;
         return Ok(());
     };
-    if is_smart_wiki(smart_wiki_index, &fact.wiki_id) || wiki::is_rules_page(&fact.source_path) {
+    if is_smart_wiki(smart_wiki_index, &fact.wiki_id) || wiki::is_channel_page(&fact.source_path) {
         recall_log::set_miss_status(pool, miss.miss_id, "discarded", Some("out_of_scope_home"))
             .await
             .map_err(|e| soft(&e))?;
@@ -6115,6 +6329,110 @@ mod tests {
         drop(dir);
     }
 
+    // ---------- revisor: a "not the same" verdict is bought once ----------
+
+    /// The memo's whole point. Before it, the confirm budget was spent
+    /// re-buying verdicts: on the live workdir the revisor burned all 120
+    /// confirms every night on the same pairs (156 nominable corpus-wide,
+    /// 2 merges), which also meant the 36 pairs past the cap were never
+    /// examined once. `pairs_examined` now means *asked the model* — a
+    /// settled pair never reaches it, and never consumes the cap.
+    #[tokio::test]
+    async fn revisor_negative_verdict_is_not_re_asked_next_cycle() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "bob", "Bob", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        plant_fact(&tree, &pool, "bob", "bob likes tea", "bob").await;
+        plant_fact(&tree, &pool, "bob", "bob likes coffee", "bob").await;
+
+        let policy = RemPolicy {
+            revisor_jaccard_min: 0.05,
+            revisor_jaccard_max: 0.99,
+            ..RemPolicy::default()
+        };
+        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
+        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
+
+        let first = run_cycle(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &test_llms(&hub_llm, &rev_llm),
+            &policy,
+        )
+        .await
+        .unwrap();
+        assert!(
+            first.revisor.pairs_examined > 0,
+            "the pair must be judged the first time"
+        );
+        assert!(
+            first.verdict_memo_rows > 0,
+            "the negative verdict must be recorded"
+        );
+
+        let second = run_cycle(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &test_llms(&hub_llm, &rev_llm),
+            &policy,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            second.revisor.pairs_examined, 0,
+            "a settled pair must not be re-asked, and must not eat the cap"
+        );
+        assert_eq!(
+            second.verdict_memo_rows, first.verdict_memo_rows,
+            "a memo hit records nothing new"
+        );
+        drop(dir);
+    }
+
+    /// The safety half of the same contract: the memo is keyed on what
+    /// the model actually reads, so touching a fact re-opens its pair.
+    /// A memo that survived an edit would silently freeze a stale verdict.
+    #[tokio::test]
+    async fn revisor_memo_reopens_when_a_fact_text_changes() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "bob", "Bob", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        let a = plant_fact(&tree, &pool, "bob", "bob likes tea", "bob").await;
+        plant_fact(&tree, &pool, "bob", "bob likes coffee", "bob").await;
+
+        let policy = RemPolicy {
+            revisor_jaccard_min: 0.05,
+            revisor_jaccard_max: 0.99,
+            ..RemPolicy::default()
+        };
+        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
+        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
+        let llms = test_llms(&hub_llm, &rev_llm);
+
+        run_cycle(&pool, &tree, fake_embedder(), &llms, &policy)
+            .await
+            .unwrap();
+
+        // The user corrects one of the two claims.
+        sqlx::query("UPDATE fact_index SET text = ? WHERE fact_id = ?")
+            .bind("bob likes tea in the evening")
+            .bind(a.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let after = run_cycle(&pool, &tree, fake_embedder(), &llms, &policy)
+            .await
+            .unwrap();
+        assert!(
+            after.revisor.pairs_examined > 0,
+            "an edited fact must re-open its pair"
+        );
+        drop(dir);
+    }
+
     // ---------- hub_writer: regenerates index.md when triggers met ----------
 
     #[tokio::test]
@@ -6904,6 +7222,59 @@ mod tests {
         assert_eq!(
             notice["dashboard_path"].as_str(),
             Some(format!("/dashboard/proposals/{proposal_id}/open-in-chat").as_str()),
+        );
+        drop(dir);
+    }
+
+    /// v2.1 of the prompt presents facts as positional handles (`n1`,
+    /// `n2`, …) instead of UUIDs: the model never reasons over an id, it
+    /// only echoes one back, and an id costs ~18 tokens of noise per fact
+    /// on the strong slot. A verdict naming handles must apply exactly
+    /// like one naming ids — `auto_promote_splits_page_directly` above
+    /// still answers with a raw id and must keep passing, which is the
+    /// backward-compatibility half of the same contract.
+    #[tokio::test]
+    async fn auto_promote_accepts_positional_handles() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        let facts = plant_distinct(&tree, &pool, "alice", 3, "alice").await;
+
+        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
+        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
+        // Bracketed, as the prompt renders them — the resolver strips them.
+        let promote_llm = FakeLlmBackend::new(
+            "rp",
+            "{\"split\": true, \"fact_ids\": [\"[n1]\"], \"target_page\": \"acme-corp.md\"}",
+        );
+        let report = run_cycle(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &split_llms(&hub_llm, &rev_llm, &promote_llm),
+            &mass_policy(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            report.auto_promote.candidates_promoted, 1,
+            "a handle must resolve, not read as a hallucinated name"
+        );
+        assert_eq!(report.auto_promote.applied.len(), 1);
+        let context: String =
+            sqlx::query_scalar("SELECT context FROM structure_proposals WHERE proposal_id = ?")
+                .bind(&report.auto_promote.applied[0])
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let ctx: serde_json::Value = serde_json::from_str(&context).unwrap();
+        let moved = ctx["fact_ids"].as_array().unwrap();
+        assert_eq!(moved.len(), 1, "a proper subset moves, not the whole page");
+        let moved_id = moved[0].as_str().unwrap();
+        assert!(
+            facts.iter().any(|f| f.as_str() == moved_id),
+            "the handle must resolve to a fact that was on the page"
         );
         drop(dir);
     }

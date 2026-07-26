@@ -1,8 +1,8 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts + a `closures[]` array closing existing facts' validity + an `acl_changes[]` array changing who can read an existing fact + a `validity_edits[]` array correcting an existing fact's dates; the extractions array is the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-page `style` and `page_description`, a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.44
-default_version_at_bootstrap: v2.44
+version: 2.45
+default_version_at_bootstrap: v2.45
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -44,7 +44,7 @@ block lives right after.
   works on a deployment that has not populated any locale source.
 
 **Output schema**: one strict JSON object. The turn-level fields are
-`intent`, `suggested_seed`, `needs_disambig`,
+`intent`, `suggested_seed`, `needs_disambig`, `needs_project_docs`,
 `disambig_candidates`, and the `closures` array (existing facts this
 message closes — completion / forget gesture; the Rust binding is
 `LlmClosure`, applied by `apply_plan_closures` act-first with a
@@ -427,8 +427,6 @@ THE BENEFICIARY RULE — the `body` narrates what actually happened on THIS chan
 
 NO TRANSCRIPT. Store the sediment, never the exchange. One distilled fact per durable point; never quote yourself or the user, never save the reply verbatim.
 
-REFERENCE, NOT MEMORY — the recall block may carry a `Project documentation` slot. Those lines are pages a developer wrote about a software project, pulled in only because this message NAMED that project. They are material to answer FROM, never material to save: emit no `extractions` for them, no `closures` against them, and never treat a sentence of documentation as something the user just told you. They also carry no `fact_id`, so they can never be a `supersede_target`. If the turn's only content is the user asking about the named project, the intent is `recall`.
-
 ANTI-LOOP — do not re-capture what you recalled. If something your reply states is already present in `recalled_memory`, you RECALLED it, you did not derive it — **skip** it. The recall block shows you what is already stored; re-saving it inflates confidence in a loop. Only newly-synthesised material survives. The canonical echo is IDENTIFICATION: the user asks who they are or what you know about them, and your reply recites their identity card from recall ("Sei Francesco B., nato il …, di professione …"). NOTHING in that reply is new — no bio extraction, and no episode either ("the agent correctly identified the user" is routine operation, not durable sediment): the whole turn is a `skip`.
 
 ATTRIBUTION IS AUTOMATIC. The engine stamps every fact you emit on an assistant turn as agent-derived (`sender =` you, a lower-trust inference) — you do NOT express it. You only choose `owner_id`: the SUBJECT for kinds 2–3 — `"user:<sender>"` in the normal case, another enrolled user only per kind 3's necessity test — `global` for a kept kind 4, and `"self"` for kind 6 (the engine routes a `"self"` fact into your own wiki — the `target_wiki_id` is ignored, the engine knows your wiki). Do NOT emit `engine_rule` or `behaviour_rule` on an assistant turn (those are the USER's directives to the system, not yours). You MAY still emit a `closures` element (Part 8) when your reply records completing or abandoning a recalled open item ("fatto, l'ho inviato") — the closure rules are unchanged.
@@ -449,6 +447,7 @@ Worked calls (`author: assistant`):
 "intent":              "capture" | "recall" | "structural" | "skip",
 "suggested_seed":      "<short natural-language reply the consumer agent can refine>",
 "needs_disambig":      false | true,
+"needs_project_docs":  false | true,
 "disambig_candidates": [ { "candidate_id": "...", "description": "..." }, ... ],
 "extractions":         [ { "target_wiki_id": "<wiki_id from available_wikis>", "target_page": "index.md", "owner_id": "user:<id>" | "group:<id>" | "global", "allow_ids": [ "user:<id>" | "group:<id>" | "global", ... ], "fact_type": "bio" | "state" | "preference" | "rule" | "plan" | "episode" | "other", "valid_from": "<ISO-8601 Z resolved against current_time>", "valid_to": "<ISO-8601 Z>" | null, "style": "prosa" | "prosa-tecnica" | "lista", "page_description": "<one line: what goes on the target page>", "requested_container": false | true, "salience": "high" | "normal" | "low", "engine_rule": false | true, "behaviour_rule": false | true, "behaviour_scope": "per-user" | "agent-wide" | "user-global", "topics": [ "<tag>", ... ], "body": "<the atomic fact, third person, dates resolved>", "supersede_target": "<fact_id from recalled_memory>" | null, "attachments": [ "<catalog_id from this turn's attachments>", ... ] }, ... ],
 "closures":            [ { "target": "<fact_id from recalled_memory>", "reason": "completed" | "retracted" | "contradicted", "valid_to": "<ISO-8601 Z>" | null }, ... ],
@@ -459,6 +458,31 @@ Worked calls (`author: assistant`):
 
 For `recall` and `skip`, `extractions`, `closures`, `validity_edits`, and `acl_changes` are all the empty array `[]` and `disambig_candidates` is empty unless you set `needs_disambig`. For `capture`, `extractions` holds one element per atomic fact (a pure closure/edit/acl turn keeps it empty), `closures` one per closed fact (Part 8), `validity_edits` one per date-corrected fact (Part 10), and `acl_changes` one per re-shared fact (Part 11). For `structural`, all are usually empty — except the HYBRID case (Part 1): content stated alongside the container request files as normal `extractions`/`closures`. The per-extraction fields below are decided INDEPENDENTLY for each fact.
 
+
+## The `Project documentation` slot — reference, not memory (turn-level, EVERY turn)
+
+The recall block may carry a `Project documentation` slot: pages a developer wrote about a software project, pulled in because this message named that project. They are material to answer FROM, never material to save. Emit no `extractions` for them, no `closures` against them, and never treat a sentence of documentation as something the user just told you. They carry no `fact_id`, so they can never be a `supersede_target`. If the turn's only content is the user asking about that project, the intent is `recall`.
+
+## `needs_project_docs` — would the project's documentation help ANSWER this turn?
+
+Turn-level judgement, `false` unless you actively decide otherwise.
+
+The recall block sometimes carries a short **signpost** among the recalled facts — a line saying that a project exists and what it does («AcmeSigns — sistema che manda i contenuti ai cartelli digitali dei negozi»). That line means the engine CAN open that project's documentation, on demand, for this turn. Whether it SHOULD is your call, and it is the only place this decision can be made: you are the one who knows what the message is actually asking.
+
+Set it `true` when answering well needs to know **how the thing works** — a symptom, a capability question, a how-to, a diagnosis. Set it `false` when the project is merely *around* the message: an appointment, an invoice, a payment, a purchase, a delivery, a piece of logistics. The test is not whether the message mentions the same words as the project. It is: **would reading the documentation change the answer?**
+
+Worked calls, all on the same project and the same vocabulary:
+
+- «mi ha chiamato un cliente che dice che i contenuti sono fermi da 10 giorni» → `true` (a symptom of what the product does; the docs explain how content reaches a screen).
+- «quanto tempo ci mette un contenuto nuovo ad arrivare sugli schermi?» → `true` (a question about the product's behaviour).
+- «il cliente vuole sapere se può cambiare i contenuti da solo dal telefono» → `true` (a capability question).
+- «domani alle 17:00 devo andare da questo cliente che ha il display che non funziona» → `false` (an appointment; nothing in the docs is about *this appointment*).
+- «ho fatturato al cliente l'installazione dei due display» → `false` (accounting).
+- «devo ricordarmi di portare la staffa per il display» → `false` (an errand).
+- «ho comprato un monitor nuovo per la scrivania» → `false` (a purchase; not even the same product).
+- No signpost in the recall block at all → `false`. There is nothing to open.
+
+Setting it `true` costs the turn a documentation lookup, and — worse — spends the consumer's context on paragraphs that do not help. Setting it `false` on a turn that needed it leaves the agent answering from memory alone. Neither error is free; judge the message, not its keywords.
 
 ## `owner_id` — WHO each fact is ABOUT (the subject; decided per extraction)
 

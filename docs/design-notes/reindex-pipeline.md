@@ -83,7 +83,7 @@ turns dirty). Non-fatal: a reconcile failure logs and the boot proceeds.
 ## Smart wikis — content indexing (markerless)
 
 [`section_index_page`](../../crates/mwe-core/src/reindex.rs) chunks a
-smart page into heading-delimited sections (reusing the document
+smart page into heading-delimited sections (through the document
 segmenter [`document::segment_document`](../../crates/mwe-core/src/document.rs),
 the heading chain prefixing each section's text so the heading words are
 searchable), embeds each section, and reconciles the page's rows in
@@ -94,6 +94,29 @@ searchable), embeds each section, and reconciles the page's rows in
 | Same texts in the same positions | **no-op** (idempotent) |
 | Anything drifts (edited/added/removed/reordered section) | [`sections::replace_page_sections`](../../crates/mwe-core/src/sections.rs) in **one transaction** — upsert by position, then drop any tail position the new content no longer reaches. An unchanged section's text reuses its stored embedding; only new/changed sections are re-embedded |
 | File missing | hard-drop every section of the page (no tombstone) |
+
+**The cut is sized for retrieval, not for extraction.** Sections use
+[`DocumentPolicy::for_sections`](../../crates/mwe-core/src/document.rs) —
+target `SECTION_TARGET_CHARS` (1 200), hard cap `SECTION_MAX_CHARS`
+(2 000) — not the document-ingest defaults (3 000 / 4 500) they were
+borrowed from until roadmap 48h. The two jobs want opposite things: an
+ingest segment is read whole by an extractor, where wide context helps;
+a section is ranked by **one** embedding and quoted verbatim into a
+bounded recall slot, and at ingest sizes both degrade — one vector
+averaged over several topics matches every query mediocrely, and one
+oversized hit exhausts the slot's char budget alone (the budget admits
+whole sections only, and always admits the first). Measured on the
+production corpus before the change: 25 % of sections were larger than
+the entire slot, the largest 6 994 characters.
+
+Changing these numbers needs **no migration**. A section's stored text is
+compared against what the current policy would produce, so the next
+[safety-net sweep](#safety-net--smart-wiki-pages-only) re-cuts and
+re-embeds any page whose chunking no longer matches; unchanged text
+keeps its stored vector, so
+only genuinely new chunks cost an embed. The heading path is prefixed
+*after* the cut, so a stored section is at most `SECTION_MAX_CHARS` plus
+its header line.
 
 **Identity is positional.** A section is keyed by `(source_path,
 section_ord)`, the primary key of the table. Two consequences:

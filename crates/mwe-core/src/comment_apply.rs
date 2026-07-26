@@ -529,7 +529,7 @@ async fn apply_add(
     // Write-time dedup, exactly as the capture path applies at every other
     // write site: an `add` that merely rephrases an existing fact is skipped
     // rather than minting a near-duplicate row. Same discipline as
-    // `capture::wiki_capture` — same-owner scope, the rules-page boundary,
+    // `capture::wiki_capture` — same-owner scope, the channel-page boundary,
     // jaccard 6-gram against the wiki's active facts, and the embed-set guard
     // (two distinct media with near-identical captions stay two facts). Dedup
     // first so a hit short-circuits before the (possibly remote) embed call.
@@ -538,9 +538,9 @@ async fn apply_add(
     // an earlier `add` carries its corrected replacement.
     let mut candidates = fact_index::find_active_in_wiki(pool, wiki_id.as_str()).await?;
     candidates.retain(|c| !batch_removals.contains(c.fact_id.as_str()));
-    let on_rules_page = crate::wiki::is_rules_page(source_path);
+    let on_channel_page = crate::wiki::is_channel_page(source_path);
     if let Some((dup, score)) =
-        crate::capture::best_dedup_candidate(&candidates, &owner_id, on_rules_page, text, None)
+        crate::capture::best_dedup_candidate(&candidates, &owner_id, on_channel_page, text, None)
         && score >= crate::recall::DEFAULT_DEDUP_THRESHOLD
     {
         if crate::parser::collect_embeds(&dup.text) == crate::parser::collect_embeds(text) {

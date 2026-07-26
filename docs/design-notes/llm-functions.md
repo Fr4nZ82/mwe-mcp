@@ -57,6 +57,17 @@ not the 9B workhorse. The slot resolves the usual way through
 [`LlmConfig::cronista`](../../crates/mwe-core/src/config.rs) and is surfaced in
 the dashboard admin UI like the other slots.
 
+It is also the one caller that sets
+[`CompletionRequest::cache_system`](../../crates/mwe-core/src/llm.rs) (via
+`with_cached_system`): its system prompt is the standing brief plus the page
+index, **byte-identical for every page of one compile run**, so a backend that
+prices repeated prefixes can bill it once. The flag is a *claim about the
+caller's own prompt*, not a knob to sprinkle: on a system prompt that varies
+per call it buys a cache write per call and never a read. Honoured today only
+by the Anthropic backend (`cache_control` on the last system block); every
+other backend ignores it. See
+[narrative-compiler §the cacheable split](narrative-compiler.md#the-cacheable-split--why-the-page-comes-last).
+
 ### 1.1 `hub_writer` — index regeneration (+ operational-chat fallback)
 
 `hub_writer`'s primary consumer is the REM `regenerate_index` sub-job;

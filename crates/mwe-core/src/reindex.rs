@@ -1550,7 +1550,7 @@ async fn section_index_page(
     raw: &str,
     report: &mut ReindexFileReport,
 ) -> Result<()> {
-    let policy = crate::document::DocumentPolicy::default();
+    let policy = crate::document::DocumentPolicy::for_sections();
     let segments =
         crate::document::segment_document(raw, crate::document::DocFormat::Prose, None, &policy);
     // Dedup identical section texts: a page with two identical sections must
@@ -2326,6 +2326,53 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "smart sections must not create fact_index rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn reindex_file_smart_caps_section_length() {
+        // Roadmap 48h. A section is a retrieval unit: it is quoted whole
+        // into a bounded recall slot, and the slot always admits its first
+        // hit whatever the size — so an uncapped section swallows the
+        // budget and starves every other hit. The smart indexer therefore
+        // chunks with its own policy, not the wider document-ingest one.
+        let dir = tempdir().unwrap();
+        let wiki_dir = dir.path().join("wikis/alice");
+        write_smart_wiki_meta(&wiki_dir, "alice");
+
+        let tree = WikiTree::open(dir.path()).expect("open tree");
+        let pool = make_pool().await;
+        let embedder = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
+
+        // One heading, one unbroken paragraph — the shape that produced
+        // prod's 5 239-char section. Nothing but the hard cap can split it.
+        let body = format!("# Log\n\n{}\n", "parola ".repeat(1_500));
+        let page = wiki_dir.join("log.md");
+        write_page(&wiki_dir, "log.md", &body);
+
+        reindex_file(&pool, &tree, embedder.clone(), &page)
+            .await
+            .expect("reindex");
+
+        let rows = sections::find_page_sections(&pool, "wikis/alice/log.md")
+            .await
+            .unwrap();
+        assert!(rows.len() > 1, "an oversized paragraph must be split");
+        // The heading path is prefixed to the body, hence the slack.
+        let slack = "Log\n\n".len();
+        for row in &rows {
+            assert!(
+                row.text.chars().count() <= crate::document::SECTION_MAX_CHARS + slack,
+                "section {} is {} chars, over the index-time cap",
+                row.section_ord,
+                row.text.chars().count()
+            );
+        }
+        // And the cap leaves room for a second hit in the recall slot.
+        assert!(
+            crate::document::SECTION_MAX_CHARS + slack
+                < crate::ingest::IngestPolicy::default().project_docs_char_budget,
+            "a maximal section must not fill the project-docs slot on its own"
         );
     }
 

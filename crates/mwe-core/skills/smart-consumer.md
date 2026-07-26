@@ -1,7 +1,7 @@
 ---
 name: smart-consumer
-version: 1.12.0
-description: "Project-bound mode for smart consumers: authoritative management of a project's smart wiki via wiki_admin_push/pull/notify + _briefing.md lifecycle + cooperative lease + graceful degradation on token revoke. Smart wikis are markerless and content-indexed — the consumer writes plain markdown freely (create / edit / move / rename / delete pages), exactly the way this repo's engineering wiki is maintained; the ACL is wiki-level in _meta (no per-fragment markers or ACL — those are the pillar of standard memory wikis only). Superset (group 17): the user↔agent conversation ALSO runs the standard personal-memory pipeline via wiki_ingest_message, joined to the project wiki by provenance links (authored_refs), with a per-message router (drop / personal-fact→standard / document-import / project-wiki / your-operational-wiki). Auto recall+capture, never dump everything into the user's standard memory."
+version: 1.13.0
+description: "Project-bound mode for smart consumers: authoritative management of a project's smart wiki via wiki_admin_push/pull/notify + project signposts (wiki_admin_signpost, so the user's standard memory knows the project exists) + _briefing.md lifecycle + cooperative lease + graceful degradation on token revoke. Smart wikis are markerless and content-indexed — the consumer writes plain markdown freely (create / edit / move / rename / delete pages), exactly the way this repo's engineering wiki is maintained; the ACL is wiki-level in _meta (no per-fragment markers or ACL — those are the pillar of standard memory wikis only). Superset (group 17): the user↔agent conversation ALSO runs the standard personal-memory pipeline via wiki_ingest_message, joined to the project wiki by provenance links (authored_refs), with a per-message router (drop / personal-fact→standard / document-import / project-wiki / your-operational-wiki). Auto recall+capture, never dump everything into the user's standard memory."
 depends_on: ["core"]
 applies_to:
   consumer_class: smart
@@ -475,6 +475,78 @@ push's `delete` paths. There is no single "replace everything" mode —
 recorded in the op-log; the dashboard's `/wikis/<id>/op-log` exposes a
 one-click revert window.
 
+## Project signposts — make the user's own agent aware the project exists
+
+The user's everyday agent (Telegram, chat, whatever they talk to about
+their life) recalls **facts**, never your project pages. That is
+deliberate: a personal conversation must not be buried under project
+documentation. The consequence is blunt — unless the user *names* the
+project, their standard memory has no idea it exists, and cannot connect
+a question to it.
+
+A **signpost** fixes that. It is a short line you write into the user's
+own memory saying that this project exists, and what happened lately.
+When a signpost surfaces in an ordinary turn, the engine opens this
+project's documentation for that turn. So the signpost is what makes an
+unnamed question reach your wiki at all.
+
+> **A signpost is a pointer, not a record.** It is not where the work is
+> written down — that is what this wiki is for. Do not try to make it
+> complete, and never treat it as the place to preserve detail. Its only
+> job is to make the memory realise there is something here worth
+> looking at.
+
+### When to write one
+
+On `wiki_admin_push`. The push response carries **`signpost_hint`**: it
+is `null` when the signposts are current, and otherwise a one-line
+reminder telling you exactly what is missing (a description that was
+never written, or an activity line for today). Act on it in the same
+turn — sessions end abruptly, and the moment you just pushed real work
+is the moment there is something to signpost.
+
+Re-writing an unchanged signpost is a **no-op** on the server, so
+calling this after a push is free.
+
+```
+wiki_admin_signpost(
+    wiki_id = state.wiki_id,
+    description = "Sistema che gestisce i cartelli digitali nei negozi: decide cosa mostrare su ogni schermo e quando aggiornarlo.",
+    activity = {"day": "2026-07-26", "text": "Sistemata la pagina che elenca gli schermi e corretto un errore che bloccava l'aggiornamento dei contenuti."},
+)
+```
+
+### Tone — this is where it goes wrong
+
+You are writing for someone who has **never seen the code** and is not
+reading a changelog. Write it the way you would say it out loud to the
+user's non-technical partner. Write in the user's own language.
+
+| | |
+|---|---|
+| ✅ good description | «Sistema che gestisce i cartelli digitali nei negozi: decide cosa mostrare su ogni schermo e quando aggiornarlo.» |
+| ❌ bad description | «Monorepo Angular/NestJS con worker di rendering headless, player Tizen e pipeline di sync via Socket.IO.» |
+| ✅ good activity | «Corretto un errore per cui i contenuti restavano fermi sugli schermi anche dopo un aggiornamento.» |
+| ❌ bad activity | «Fix del retry exponential-backoff nel job dispatcher (PR #214), refactor del reducer di stato.» |
+
+The bad ones are not wrong — they are unusable. A signpost written in
+jargon signposts nothing, because the agent reading it cannot tell
+whether the user's question has anything to do with it.
+
+### The rules the server enforces
+
+- **description** — max 400 characters, one per project. Writing a new
+  one replaces the old.
+- **activity** — max 250 characters, one per day. Writing the same day
+  twice replaces that day's line. The server prefixes the date and the
+  project name; your text carries only what happened.
+- Over the cap ⇒ the call is **refused** with the measured length, never
+  silently truncated. Rewrite shorter; do not retry the same text.
+- Only days inside a rolling **5-day window** are kept — older lines drop
+  off on their own. Do not try to keep a history here.
+- Only the **owner** of the project wiki can signpost it, and only for a
+  smart wiki.
+
 ## `_briefing.md` lifecycle
 
 `_briefing.md` is a single markdown file at the root of every
@@ -642,6 +714,7 @@ single-laptop single-token rotation case that motivated it.
 | F | `wiki_ingest_external` | document-import: a long body the user asks to keep whole becomes its own page + pointer |
 | H | `wiki_admin_push` | create + upsert pages (modes `create` / `upsert`; deletes ride the `upsert` push); response carries `authored_refs` |
 | H | `wiki_admin_pull` | full or path-narrowed pull for reconcile / revoke replay |
+| H | `wiki_admin_signpost` | tell the user's standard memory this project exists: a short non-technical `description` + one `activity` line per day. Prompted by `signpost_hint` in the push response |
 | H | `wiki_admin_notify` | append items to `_briefing.md` |
 | H | `wiki_admin_lease_acquire` / `_release` | cooperative lease for bulk edits |
 | I | `skill_list` / `skill_fetch` | discover and load the bundled skills |
@@ -678,6 +751,13 @@ single-laptop single-token rotation case that motivated it.
   the inbox is that the user sees stale items every session. If you
   bootstrap and skip the briefing read, REM's notify-only sub-jobs
   produce a write-only sink and the user never benefits from them.
+- ❌ **Writing the signpost as a changelog.** Commit subjects, PR
+  numbers and module names in an `activity` line make it unreadable to
+  the agent it is written for, which is the only reader it has. If you
+  cannot say it without naming a file, it does not belong in a signpost.
+- ❌ **Ignoring `signpost_hint`.** It appears in the push response only
+  when something is actually missing. Skipping it means the user's own
+  agent keeps not knowing this project exists.
 
 ## Cross-references
 

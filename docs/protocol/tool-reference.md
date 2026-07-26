@@ -40,7 +40,7 @@ ordering and membership match the `all_tools()` vector exactly:
 | **E** | Audit / health | `tool_log_search`, `wiki_lint` |
 | **F** | Setup | `consumer_register`, `wiki_ingest_external` |
 | **G** | Dashboard | `dashboard_link` |
-| **H** | Smart-wiki admin (smart) | `wiki_admin_push`, `wiki_admin_pull`, `wiki_admin_notify`, `wiki_admin_lease_acquire`, `wiki_admin_lease_release` |
+| **H** | Smart-wiki admin (smart) | `wiki_admin_push`, `wiki_admin_pull`, `wiki_admin_signpost`, `wiki_admin_notify`, `wiki_admin_lease_acquire`, `wiki_admin_lease_release` |
 | **I** | Skill catalog | `skill_list`, `skill_fetch` |
 | **K** | Smart bootstrap & contextual recall (smart) | `smart_bootstrap`, `recall_core_global` |
 | **L** | Forget (authority-routed) | `wiki_forget`, `wiki_forget_bulk` |
@@ -1004,6 +1004,56 @@ the next push's `expected_op_log_head` — the optimistic-concurrency gate
 **is wired** (a stale head → `409 conflicting_op_log_head`). Delta-pull
 (`since_op_log_id`) is not supported — the pull is always a full pull. Used to rebuild a missing local `.mwe/wiki/`
 cache or realign after a token revoke.
+
+### `wiki_admin_signpost`
+
+Tell the owner's **standard** memory that this project exists. Writes
+short *signposts* — a description of what the project is, and one
+activity line per day — onto the owner's reserved `projects.md`.
+
+A signpost is a **pointer, not a record**: a conversational turn recalls
+facts only, so a project the user never names is invisible to their
+everyday agent. When a signpost surfaces in a turn, recall opens that
+project's sections for that turn ([recall
+pipeline](../design-notes/recall-pipeline.md)); what was actually done
+stays in the project wiki.
+
+**Input**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `wiki_id` | string | yes | The project (smart) wiki. Must be owned by the caller. |
+| `description` | string | no | What the project is, non-technical. **≤400 chars.** Replaces the previous one. |
+| `activity.day` | string | with `activity` | Calendar day, `YYYY-MM-DD`. |
+| `activity.text` | string | with `activity` | What happened that day, plain language. **≤250 chars.** Replaces that day's line. |
+
+At least one of `description` / `activity` is required.
+
+**Output**
+
+```jsonc
+{
+  "owner_wiki_id": "alice",
+  "page": "wikis/alice/projects.md",
+  "description": "created",     // created | updated | unchanged | null
+  "activity": "updated",
+  "retired": 1,                  // day-lines dropped out of the 5-day window
+  "active_days": 4
+}
+```
+
+**Errors**: `403 requires_consumer_class_smart`;
+`403 wiki_owned_by_other_user` (foreign or group-owned project);
+`403 wiki_type_not_admin_writable` (target is not a smart wiki);
+`400 invalid_input` — over a cap (the message carries the measured
+length), a malformed `day`, or neither field supplied. **An over-long
+field is refused, never truncated**: rewrite it shorter rather than
+retrying the same text.
+
+**Caveats**: re-writing an unchanged signpost is a no-op (same fact id,
+no re-embed), so refreshing after every push is free — and
+`wiki_admin_push` returns `signpost_hint` telling you exactly when it is
+worth doing. Read access mirrors the project's `shared_with`.
 
 ### `wiki_admin_notify`
 

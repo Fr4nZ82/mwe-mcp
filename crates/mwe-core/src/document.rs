@@ -465,6 +465,46 @@ impl Default for DocumentPolicy {
     }
 }
 
+/// Segment packing target when chunking a **smart-wiki page for the
+/// section index**, characters.
+pub const SECTION_TARGET_CHARS: usize = 1_200;
+
+/// Hard per-section cap at index time, characters — the body only.
+///
+/// The indexer prefixes the heading path, so a stored section is this
+/// plus a short header line. Kept below
+/// [`crate::ingest::IngestPolicy::project_docs_char_budget`] so a single
+/// section can never fill the recall slot that quotes it.
+pub const SECTION_MAX_CHARS: usize = 2_000;
+
+impl DocumentPolicy {
+    /// Chunking policy for the **smart-wiki section index**, as distinct
+    /// from the document-ingest defaults it used to borrow.
+    ///
+    /// The two jobs want opposite things from a chunk. Ingest segments are
+    /// read *whole, in isolation* by an extractor, so wide context helps
+    /// and 3 000–4 500 characters is right. A section is a **retrieval
+    /// unit**: it is ranked by one embedding and quoted verbatim into a
+    /// bounded recall slot, and at ingest sizes both of those degrade —
+    /// one vector averaged over several topics matches every query
+    /// mediocrely and none well, and one oversized hit exhausts the slot's
+    /// character budget on its own, starving every other hit (the budget
+    /// admits whole sections only, and always admits the first).
+    ///
+    /// Changing these numbers is safe and needs no migration: a section's
+    /// stored text is compared against what the current policy would
+    /// produce, so the next reindex sweep re-cuts and re-embeds any page
+    /// whose chunking no longer matches.
+    #[must_use]
+    pub fn for_sections() -> Self {
+        Self {
+            segment_target_chars: SECTION_TARGET_CHARS,
+            segment_max_chars: SECTION_MAX_CHARS,
+            ..Self::default()
+        }
+    }
+}
+
 // ---------- Enqueue ----------
 
 /// Input to [`enqueue`]. The server layer resolves the source to text

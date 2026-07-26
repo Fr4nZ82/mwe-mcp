@@ -174,6 +174,20 @@ pub struct CompletionRequest {
     /// the ceiling is part of the contract (health probes). Suppresses
     /// the central truncation warning — see [`warn_if_truncated`].
     pub truncation_expected: bool,
+    /// The caller declares [`Self::system`] a **stable prefix reused
+    /// verbatim across a burst of calls**, so a backend that bills a
+    /// discount for repeated prefixes may mark it cacheable. Honoured
+    /// today only by the Anthropic backend (`cache_control` on the last
+    /// system block); every other backend ignores it and the wire shape
+    /// is unchanged.
+    ///
+    /// Set it **only** when the system prompt is genuinely identical
+    /// call-to-call: a prefix that varies per call would write a cache
+    /// entry nobody ever reads, which costs *more* than not caching at
+    /// all. The narrative compiler is the model caller — its Cronista
+    /// system prompt is the rules plus the page index, identical for
+    /// every page of one compile run.
+    pub cache_system: bool,
 }
 
 impl CompletionRequest {
@@ -189,7 +203,17 @@ impl CompletionRequest {
             stop: Vec::new(),
             images: Vec::new(),
             truncation_expected: false,
+            cache_system: false,
         }
+    }
+
+    /// Builder: declare the system prompt a stable prefix worth caching
+    /// across a burst of calls — see [`Self::cache_system`] for when this
+    /// is a win and when it is a loss.
+    #[must_use]
+    pub const fn with_cached_system(mut self) -> Self {
+        self.cache_system = true;
+        self
     }
 
     /// Builder: declare that hitting the `max_tokens` ceiling is
@@ -1427,16 +1451,59 @@ impl AnthropicBackend {
     /// API-key path the prompt is sent verbatim as a plain string — the
     /// legacy wire format, no identity prefix (it buys nothing for our
     /// structured task prompts and is not required there).
-    fn build_system<'a>(&self, system: Option<&'a str>) -> Option<AnthropicSystem<'a>> {
+    /// `cache` marks the **last** system block with `cache_control`, so
+    /// everything rendered before it (on the OAuth path that includes the
+    /// Claude Code identity block) becomes the cached prefix: the caller
+    /// is asserting this system prompt repeats verbatim across a burst of
+    /// calls. Caching is a prefix match, so the breakpoint has to be the
+    /// last block — one placed earlier would leave the rest uncached, and
+    /// one on a prompt that actually varies would write an entry per call
+    /// and read none.
+    fn build_system<'a>(
+        &self,
+        system: Option<&'a str>,
+        cache: bool,
+    ) -> Option<AnthropicSystem<'a>> {
+        let cache_control = cache.then_some(AnthropicCacheControl {
+            kind: "ephemeral",
+            // The compile run this exists for interleaves calls with disk
+            // writes and a planner pass, and one page can take tens of
+            // seconds — the 5-minute default would expire mid-run and turn
+            // every call into a fresh write. The 1 h window costs 2x on the
+            // single write instead of 1.25x and is repaid by the third read.
+            ttl: "1h",
+        });
         if !self.credential.is_oauth() {
-            return system.map(AnthropicSystem::Text);
+            // API-key path: a bare string is the legacy shape and carries
+            // no place for `cache_control`, so a cached request promotes to
+            // the (equivalent) single-block form.
+            return match (system, cache_control) {
+                (Some(text), Some(cc)) => {
+                    Some(AnthropicSystem::Blocks(vec![AnthropicSystemBlock {
+                        kind: "text",
+                        text,
+                        cache_control: Some(cc),
+                    }]))
+                },
+                (s, _) => s.map(AnthropicSystem::Text),
+            };
         }
         let mut blocks = vec![AnthropicSystemBlock {
             kind: "text",
             text: CLAUDE_CODE_SYSTEM_PREFIX,
+            cache_control: None,
         }];
         if let Some(text) = system.filter(|s| !s.is_empty()) {
-            blocks.push(AnthropicSystemBlock { kind: "text", text });
+            blocks.push(AnthropicSystemBlock {
+                kind: "text",
+                text,
+                cache_control: None,
+            });
+        }
+        if let Some(cc) = cache_control
+            && let Some(last) = blocks.last_mut()
+        {
+            last.cache_control = Some(cc);
         }
         Some(AnthropicSystem::Blocks(blocks))
     }
@@ -1510,7 +1577,7 @@ impl AnthropicBackend {
                 role: "user",
                 content,
             }],
-            system: self.build_system(request.system.as_deref()),
+            system: self.build_system(request.system.as_deref(), request.cache_system),
             temperature,
             thinking,
             stop_sequences: &request.stop,
@@ -1664,6 +1731,20 @@ struct AnthropicSystemBlock<'a> {
     #[serde(rename = "type")]
     kind: &'static str,
     text: &'a str,
+    /// Present only on the block that closes a cacheable prefix; absent
+    /// otherwise, so an uncached request is byte-for-byte the shape it
+    /// always had.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
+}
+
+/// Prompt-cache breakpoint. `ephemeral` is the only kind the API takes;
+/// `ttl` selects the 5-minute (default, omitted) or 1-hour window.
+#[derive(Debug, Clone, Copy, Serialize)]
+struct AnthropicCacheControl {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    ttl: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -1940,7 +2021,9 @@ impl LlmBackend for AnthropicBackend {
             model: &self.model,
             max_tokens: request.max_tokens.unwrap_or(Self::DEFAULT_MAX_TOKENS),
             messages,
-            system: self.build_system(system.as_deref()),
+            // Chat is the dashboard's interactive surface: its system
+            // prompt is per-conversation, never a repeated prefix.
+            system: self.build_system(system.as_deref(), false),
             temperature: if anthropic_rejects_sampling_params(&self.model) {
                 None
             } else {
@@ -3322,6 +3405,9 @@ impl LlmBackend for OpenRouterBackend {
             stop,
             images,
             truncation_expected,
+            // OpenRouter fans out to many providers with no common
+            // prompt-cache contract, so the hint is dropped here.
+            cache_system: _,
         } = request;
         if prompt.is_empty() {
             return Err(LlmError::Invalid("empty prompt".into()));
@@ -3637,7 +3723,7 @@ impl LlmBackend for FakeLlmBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{body_json, method, path};
+    use wiremock::matchers::{body_json, body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -5052,6 +5138,69 @@ mod tests {
         let resp = backend.chat(req).await.expect("chat");
         assert_eq!(resp.message.content, "Nothing on file.");
         assert!(resp.message.tool_calls.is_empty());
+    }
+
+    /// Uncached is the default and the wire shape is untouched: `system`
+    /// stays the legacy bare string on the API-key path. A regression here
+    /// would re-price every existing caller.
+    #[tokio::test]
+    async fn anthropic_system_stays_a_bare_string_without_the_cache_hint() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_partial_json(serde_json::json!({
+                "system": "the standing brief"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "content": [{ "type": "text", "text": "ok" }],
+                "stop_reason": "end_turn",
+                "usage": { "input_tokens": 1, "output_tokens": 1 }
+            })))
+            .mount(&server)
+            .await;
+        let backend = AnthropicBackend::new(fake_key(), "claude-opus-4-7", "ANTHROPIC_API_KEY")
+            .expect("new")
+            .with_base_url(server.uri());
+        backend
+            .complete(CompletionRequest::new("write it").with_system("the standing brief"))
+            .await
+            .expect("complete");
+    }
+
+    /// `with_cached_system` promotes the API-key path's bare string to the
+    /// single-block form carrying the breakpoint. The breakpoint must sit
+    /// on the LAST system block — caching is a prefix match, so an earlier
+    /// one would leave the rest of the prefix uncached.
+    #[tokio::test]
+    async fn anthropic_cached_system_carries_the_breakpoint_on_the_last_block() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_partial_json(serde_json::json!({
+                "system": [{
+                    "type": "text",
+                    "text": "the standing brief",
+                    "cache_control": { "type": "ephemeral", "ttl": "1h" }
+                }]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "content": [{ "type": "text", "text": "ok" }],
+                "stop_reason": "end_turn",
+                "usage": { "input_tokens": 1, "output_tokens": 1 }
+            })))
+            .mount(&server)
+            .await;
+        let backend = AnthropicBackend::new(fake_key(), "claude-opus-4-7", "ANTHROPIC_API_KEY")
+            .expect("new")
+            .with_base_url(server.uri());
+        backend
+            .complete(
+                CompletionRequest::new("write it")
+                    .with_system("the standing brief")
+                    .with_cached_system(),
+            )
+            .await
+            .expect("complete");
     }
 
     /// `chat` refuses an empty history at the boundary so callers

@@ -385,7 +385,7 @@ pub struct IngestPolicy {
     pub recall_fresh_top_k: usize,
     /// Size of the **project-docs** slot: how many smart-wiki sections a
     /// turn may pull when the message *names* a project the sender can
-    /// read (see [`recall::recall_named_project_docs`]). `0` disables the
+    /// read (see [`recall::recall_project_docs`]). `0` disables the
     /// slot. A conversational turn otherwise recalls facts only — this is
     /// the narrow, name-triggered exception for "how does `AcmeSigns` do X?".
     pub project_docs_top_k: usize,
@@ -393,7 +393,18 @@ pub struct IngestPolicy {
     /// would overrun the budget is dropped, never truncated. Documentation
     /// sections are long, so this — not `project_docs_top_k` — is usually
     /// what bounds the slot.
+    ///
+    /// Sized against [`document::SECTION_MAX_CHARS`]: strictly greater, so
+    /// that even a maximal section leaves room for a second hit rather
+    /// than consuming the slot alone (the budget always admits the first
+    /// hit, whatever its size — the alternative is an empty slot).
     pub project_docs_char_budget: usize,
+    /// Similarity floor for the **signpost-triggered** half of that slot
+    /// — the relevance gate that keeps a passing mention of a project
+    /// from dragging its documentation into an unrelated turn. Does not
+    /// apply when the message names the project outright. See
+    /// [`recall::DEFAULT_SIGNPOST_FLOOR`].
+    pub project_docs_signpost_floor: f32,
     /// Jaccard threshold passed through to [`capture::wiki_capture`]
     /// when routing intent `capture`.
     pub dedup_threshold: f32,
@@ -494,7 +505,8 @@ impl Default for IngestPolicy {
             recall_top_k: 5,
             recall_fresh_top_k: 3,
             project_docs_top_k: 3,
-            project_docs_char_budget: 2_000,
+            project_docs_char_budget: 3_000,
+            project_docs_signpost_floor: recall::DEFAULT_SIGNPOST_FLOOR,
             dedup_threshold: DEFAULT_DEDUP_THRESHOLD,
             max_recent_messages: 16,
             max_recent_message_chars: 280,
@@ -659,6 +671,18 @@ struct LlmIngestPlan {
     needs_disambig: bool,
     #[serde(default)]
     disambig_candidates: Vec<LlmDisambig>,
+    /// Turn-level judgement (roadmap 48i): would this project's
+    /// documentation help answer the turn? Set when the recall block
+    /// surfaced a **project signpost** and the message is actually about
+    /// what that project does — not merely near it (an invoice, an
+    /// appointment, a delivery mention its docs say nothing about).
+    ///
+    /// A judgement rather than a threshold because it was measured as a
+    /// threshold and no similarity signal separated the two cases; see
+    /// [`recall::recall_signposted_project_docs`]. Defaults to `false`,
+    /// so an older prompt (or a fallback plan) simply never digs.
+    #[serde(default)]
+    needs_project_docs: bool,
     /// `fact_id` the model wants to supersede (when the new message
     /// updates / contradicts a row already in `recalled_memory`). When
     /// set, the orchestrator routes the capture branch through
@@ -4369,19 +4393,22 @@ pub async fn wiki_ingest_message(
     };
     recall_hits.extend(fresh_hits);
 
-    // Project-docs slot. The turn's recall above is facts-only — a
-    // conversation must not be buried under project documentation. But a
-    // message that NAMES a project ("come funziona questa cosa di
-    // AcmeSigns?") has declared its own scope, so that project's pages
-    // become fair game: the name match is deterministic (no LLM, no
-    // embedding when nothing is named) and the ranking inside the named
-    // wiki is semantic. Soft-fails to an empty slot.
-    let project_docs = match recall::recall_named_project_docs(
+    // Project-docs slot, first half. The turn's recall above is
+    // facts-only — a conversation must not be buried under project
+    // documentation. A message that NAMES a project ("come funziona
+    // questa cosa di AcmeSigns?") has declared its own scope, so its
+    // docs are pulled here, BEFORE the classifier, and are in front of it
+    // when it decides the intent. The second half — a project the turn
+    // never named, reached through a signpost — needs a judgement the
+    // classifier has not made yet, so it runs after it (step 5b).
+    // Soft-fails to an empty slot.
+    let docs_slot =
+        recall::SlotBudget::new(policy.project_docs_top_k, policy.project_docs_char_budget);
+    let mut project_docs = match recall::recall_named_project_docs(
         pool,
         Arc::clone(&embedder),
         &request.text,
-        policy.project_docs_top_k,
-        policy.project_docs_char_budget,
+        docs_slot,
         &sender_ctx,
     )
     .await
@@ -5347,6 +5374,38 @@ pub async fn wiki_ingest_message(
         _ => None,
     };
     let navigated = nav_tail.as_ref().and_then(|t| t.section.clone());
+
+    // Step 5b — project-docs slot, second half (roadmap 48i). A signpost
+    // in the recall block says a project exists; whether READING that
+    // project's docs would help this turn is a judgement, and the
+    // classifier has just made it. It is deliberately not a similarity
+    // threshold: measured on a 17-sentence bench, no similarity signal
+    // separated «i contenuti non si aggiornano» (needs the docs) from
+    // «devo andare dal cliente alle 17» (does not) — they sit at the same
+    // distance from the corpus. This costs no extra LLM call: the field
+    // rides the JSON the classifier already returns. Whatever the named
+    // half already pulled is excluded, and it keeps the budget it spent.
+    if plan.needs_project_docs {
+        let named_wikis: Vec<String> = project_docs.iter().map(|d| d.wiki_id.clone()).collect();
+        match recall::recall_signposted_project_docs(
+            pool,
+            Arc::clone(&embedder),
+            &request.text,
+            &recall_hits,
+            &named_wikis,
+            docs_slot.remaining(&project_docs),
+            policy.project_docs_signpost_floor,
+            &sender_ctx,
+        )
+        .await
+        {
+            Ok(hits) => project_docs.extend(hits),
+            Err(err) => {
+                tracing::warn!(error = %err, "ingest: signposted project-docs recall failed, continuing without it");
+            },
+        }
+    }
+
     // The flat `RELEVANT MEMORY` slot renders here, AFTER navigation, so a
     // hit whose page prose the navigator already injected is dropped
     // instead of arriving twice ([`format_snippet`] dedup).
@@ -5892,6 +5951,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_plan_reads_the_project_docs_judgement_and_defaults_it_off() {
+        // Roadmap 48i: the classifier decides whether a signposted
+        // project's documentation would help this turn. Absent (an older
+        // prompt, or a fallback plan) must mean "do not dig" — the
+        // expensive direction is never the default.
+        let asked = parse_plan(r#"{"intent":"recall","needs_project_docs":true}"#).expect("parsed");
+        assert!(asked.needs_project_docs);
+        let silent = parse_plan(r#"{"intent":"capture"}"#).expect("parsed");
+        assert!(!silent.needs_project_docs);
+        let declined =
+            parse_plan(r#"{"intent":"capture","needs_project_docs":false}"#).expect("parsed");
+        assert!(!declined.needs_project_docs);
+    }
+
+    #[test]
     fn parse_plan_returns_none_on_garbage() {
         assert!(parse_plan("totally not json").is_none());
         assert!(parse_plan("").is_none());
@@ -5923,6 +5997,7 @@ mod tests {
             topics: Vec::new(),
             body: Some("a fact".into()),
             needs_disambig: false,
+            needs_project_docs: false,
             disambig_candidates: Vec::new(),
             supersede_target: None,
             extractions: Vec::new(),
@@ -5961,6 +6036,7 @@ mod tests {
             topics: vec!["coffee".into()],
             body: Some("alice prefers coffee black".into()),
             needs_disambig: false,
+            needs_project_docs: false,
             disambig_candidates: Vec::new(),
             supersede_target: None,
             extractions: Vec::new(),
@@ -6008,6 +6084,7 @@ mod tests {
             topics: Vec::new(),
             body: Some("alice prefers coffee black".into()),
             needs_disambig: false,
+            needs_project_docs: false,
             disambig_candidates: Vec::new(),
             supersede_target: None,
             extractions: Vec::new(),
@@ -6046,6 +6123,7 @@ mod tests {
             topics: Vec::new(),
             body: None,
             needs_disambig: false,
+            needs_project_docs: false,
             disambig_candidates: Vec::new(),
             supersede_target: None,
             extractions: Vec::new(),
@@ -6090,6 +6168,7 @@ mod tests {
             topics: Vec::new(),
             body: Some("public fact".into()),
             needs_disambig: false,
+            needs_project_docs: false,
             disambig_candidates: Vec::new(),
             supersede_target: None,
             extractions: Vec::new(),
@@ -6268,6 +6347,7 @@ mod tests {
             topics: Vec::new(),
             body: Some("alice prefers tea now".into()),
             needs_disambig: false,
+            needs_project_docs: false,
             disambig_candidates: Vec::new(),
             supersede_target: target.map(str::to_owned),
             extractions: Vec::new(),

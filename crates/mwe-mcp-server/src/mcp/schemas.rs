@@ -50,8 +50,9 @@ fn destructive(t: Tool) -> Tool {
 /// - E — `tool_log_search`, `wiki_lint`
 /// - F — `consumer_register`, `wiki_ingest_external`
 /// - G — `dashboard_link`
-/// - H — `wiki_admin_push`, `wiki_admin_pull`, `wiki_admin_notify`
-///   (smart-wiki authoritative writes for smart consumers +
+/// - H — `wiki_admin_push`, `wiki_admin_pull`, `wiki_admin_signpost`,
+///   `wiki_admin_notify` (smart-wiki authoritative writes for smart
+///   consumers, project signposts into the owner's standard memory, +
 ///   briefing inbox open to any reader).
 /// - I — `skill_list`, `skill_fetch` (server-served skill catalog;
 ///   bundled skills are public, custom skills are owner-scoped).
@@ -78,6 +79,7 @@ pub fn all_tools() -> Vec<Tool> {
         dashboard_link(),
         wiki_admin_push(),
         wiki_admin_pull(),
+        wiki_admin_signpost(),
         wiki_admin_notify(),
         wiki_admin_lease_acquire(),
         wiki_admin_lease_release(),
@@ -487,6 +489,35 @@ fn wiki_admin_pull() -> Tool {
     ))
 }
 
+fn wiki_admin_signpost() -> Tool {
+    materialize(
+        "wiki_admin_signpost",
+        "Tell the owner's standard memory that this project exists (H family, roadmap 48). Smart consumers only, and only for a smart-wiki the caller owns. Writes two kinds of short **signpost** into the owner's reserved `projects.md`: a `description` (what the project is, in plain language) and an `activity` line for one day (what happened that day). A signpost is a POINTER, not a record — it exists so a conversational turn that never names the project can still discover it and dig into the documentation; what was actually done belongs in the project wiki. Caps are enforced server-side (400 chars description, 250 activity) and an over-long field is REFUSED with the measured length, never truncated. Activity lines older than the 5-day window are dropped automatically. Re-writing an unchanged signpost is a no-op, so refreshing on every `wiki_admin_push` is free.",
+        json!({
+            "type": "object",
+            "required": ["wiki_id"],
+            "additionalProperties": false,
+            "properties": {
+                "wiki_id": { "type": "string", "description": "The project (smart) wiki being signposted. Must be owned by the caller." },
+                "description": {
+                    "type": "string",
+                    "description": "What the project is and what it is for, NON-technical, for a reader who has never seen the code. Max 400 characters. Replaces the previous description."
+                },
+                "activity": {
+                    "type": "object",
+                    "required": ["day", "text"],
+                    "additionalProperties": false,
+                    "description": "One day's activity, non-technical and summarised. Re-writing the same day replaces that day's line.",
+                    "properties": {
+                        "day": { "type": "string", "description": "Calendar day, `YYYY-MM-DD`." },
+                        "text": { "type": "string", "description": "What happened that day, in plain language. Max 250 characters. The project name and the date are added by the server." }
+                    }
+                }
+            }
+        }),
+    )
+}
+
 fn wiki_admin_lease_acquire() -> Tool {
     materialize(
         "wiki_admin_lease_acquire",
@@ -725,11 +756,13 @@ mod tests {
         // the Claude Code hook bundle (`SessionStart` +
         // `UserPromptSubmit`). `wiki_navigate` (deep recall via the funnel)
         // opened in family D → 20. `wiki_forget` (authority-routed forget)
-        // opened family L → 21; `wiki_forget_bulk` (bulk self-delete) → 22.
+        // opened family L → 21; `wiki_forget_bulk` (bulk self-delete) → 22;
+        // `wiki_admin_signpost` (project signposts into the owner's
+        // standard memory, roadmap 48) extended H → 23.
         let tools = all_tools();
-        assert_eq!(tools.len(), 22);
+        assert_eq!(tools.len(), 23);
         let names: std::collections::HashSet<_> = tools.iter().map(|t| t.name.as_ref()).collect();
-        assert_eq!(names.len(), 22, "tool names must be unique");
+        assert_eq!(names.len(), 23, "tool names must be unique");
         for expected in [
             "wiki_ingest_message",
             "events_poll",
@@ -744,6 +777,7 @@ mod tests {
             "dashboard_link",
             "wiki_admin_push",
             "wiki_admin_pull",
+            "wiki_admin_signpost",
             "wiki_admin_notify",
             "wiki_admin_lease_acquire",
             "wiki_admin_lease_release",

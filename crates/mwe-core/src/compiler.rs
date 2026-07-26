@@ -92,7 +92,7 @@ use thiserror::Error;
 use crate::compile_failures;
 use crate::events::{self, EventKind};
 use crate::fact_index::{self, FactIndexError};
-use crate::llm::{CompletionRequest, LlmBackend};
+use crate::llm::{CompletionRequest, LlmBackend, LlmError};
 use crate::meta_annotate;
 use crate::parser::{self, ParseEvent};
 use crate::planner::{self, CompilationPlan, FactForPage, PagePlan, PageType};
@@ -218,6 +218,12 @@ pub async fn compile_dirty_pages(
         );
     }
     let mut tone_cache: HashMap<String, String> = HashMap::new();
+    // The page index is a pure function of the plan, so it is built once per
+    // run and handed to every leaf: it is the same ~3.5k tokens for all of
+    // them, which is exactly what makes it the cacheable half of the Cronista
+    // system prompt (see `split_cronista_prompt`). Rebuilding it per page also
+    // rebuilt the same string 15-plus times for nothing.
+    let page_index = page_index_block(plan);
     // Pages whose compile failed or degraded: parked on the persisted plan's
     // `force_dirty` below, so the next build retries the proper rewrite even
     // on an otherwise-idle night (the early-skip would clear the dirty set).
@@ -228,7 +234,19 @@ pub async fn compile_dirty_pages(
             // sweep at the tail of this compile (once no row points at it).
             continue;
         };
-        match compile_page(pool, tree, plan, page, cronista, hub, &mut tone_cache, now).await {
+        match compile_page(
+            pool,
+            tree,
+            plan,
+            page,
+            cronista,
+            hub,
+            &mut tone_cache,
+            &page_index,
+            now,
+        )
+        .await
+        {
             Ok(PageOutcome::Leaf) => {
                 report.leaves += 1;
                 note_page_success(pool, tree, page).await;
@@ -511,6 +529,11 @@ async fn prepoint_plan_moves(
     Ok(moved)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one dispatch hop: the per-run values (page index, tone cache, clock) \
+              are built once by the caller and threaded, not rebuilt per page"
+)]
 async fn compile_page(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -519,6 +542,7 @@ async fn compile_page(
     cronista: &dyn LlmBackend,
     hub: &dyn LlmBackend,
     tone_cache: &mut HashMap<String, String>,
+    page_index: &str,
     now: &str,
 ) -> Result<PageOutcome> {
     // An emerged/topic-wiki index rides the same dispatch: it renders as
@@ -554,7 +578,7 @@ async fn compile_page(
         .entry(page.wiki_id.clone())
         .or_insert_with(|| resolve_tone(tree, &page.wiki_id))
         .clone();
-    compile_leaf_page(pool, tree, plan, page, cronista, &tone, now).await
+    compile_leaf_page(pool, tree, plan, page, cronista, &tone, page_index, now).await
 }
 
 /// The deterministic render of a fact-less leaf — usually a foundation
@@ -602,6 +626,7 @@ async fn compile_leaf_page(
     page: &PagePlan,
     llm: &dyn LlmBackend,
     tone: &str,
+    page_index: &str,
     now: &str,
 ) -> Result<PageOutcome> {
     let prompt = prompts::render(
@@ -623,7 +648,7 @@ async fn compile_leaf_page(
                 )
                 .as_str(),
             ),
-            ("page_index", starvation_index(plan, &page.slug).as_str()),
+            ("page_index", page_index),
             ("links", recommended_links(plan, &page.slug).as_str()),
         ],
     )?;
@@ -753,34 +778,104 @@ fn cronista_max_tokens(fact_count: usize) -> u32 {
 /// retry — a fresh call whose user message reminds strict JSON (no prompt
 /// machinery, the system prompt is unchanged). `Err` is the combined
 /// two-failure reason the degraded fallback records.
+/// Marker line in the rendered Cronista prompt that separates the
+/// **per-run-stable** half (the rules plus the page index — identical for
+/// every page of one compile run) from the **per-page** half (this page's
+/// identity, facts and recommended links).
+///
+/// The split is what makes the stable half a cacheable prefix: it goes in
+/// the system prompt with a cache breakpoint, the per-page half rides the
+/// user turn. On a run of N pages only the first pays the prefix in full.
+const CRONISTA_TASK_MARKER: &str = "=== PAGE TO WRITE ===";
+
+/// Split a rendered Cronista prompt at [`CRONISTA_TASK_MARKER`].
+///
+/// Returns `(system, task)`. A prompt without the marker — an operator
+/// override written against an older bundled body — yields `(whole,
+/// None)`: the entire prompt stays in the system field exactly as before
+/// and nothing is marked cacheable, because a system prompt that varies
+/// per page would write one cache entry per call and read none.
+fn split_cronista_prompt(rendered: &str) -> (&str, Option<&str>) {
+    // The marker counts only as a LINE OF ITS OWN. The standing brief names
+    // it in prose ("after the `=== PAGE TO WRITE ===` line") to tell the
+    // model where its page is; a plain substring search cut the prompt at
+    // that mention and shipped the brief's own opening sentence as the task
+    // half — with the rules, and the whole point of the split, lost.
+    let at = rendered
+        .match_indices(CRONISTA_TASK_MARKER)
+        .find(|(i, _)| {
+            let starts_line = *i == 0 || rendered[..*i].ends_with('\n');
+            let rest = &rendered[i + CRONISTA_TASK_MARKER.len()..];
+            starts_line && (rest.is_empty() || rest.starts_with('\n'))
+        })
+        .map(|(i, _)| i);
+    at.map_or((rendered, None), |at| {
+        (rendered[..at].trim_end(), Some(rendered[at..].trim_end()))
+    })
+}
+
+/// A Cronista attempt that did not produce a usable page.
+enum CronistaFailure {
+    /// Worth one more try: a flaky transport, a 5xx, a rate limit, or an
+    /// unparseable reply (the retry's stricter instruction exists for
+    /// exactly that).
+    Retryable(String),
+    /// Retrying cannot help — the request itself was rejected
+    /// ([`LlmError::Invalid`]) or the credential is bad
+    /// ([`LlmError::Auth`]). Observed live: with the API answering
+    /// "credit balance too low", a whole compile run spent two calls per
+    /// page to be told the same thing twice.
+    Permanent(String),
+}
+
+impl CronistaFailure {
+    fn message(&self) -> &str {
+        match self {
+            Self::Retryable(m) | Self::Permanent(m) => m,
+        }
+    }
+}
+
 async fn cronista_with_retry(
     llm: &dyn LlmBackend,
     prompt: &str,
     slug: &str,
     max_tokens: u32,
 ) -> std::result::Result<CronistaOutput, String> {
+    let (system, task) = split_cronista_prompt(prompt);
     match cronista_attempt(
         llm,
-        prompt,
+        system,
+        task,
         "Write the page. Return the JSON object only.",
         max_tokens,
     )
     .await
     {
         Ok(b) => Ok(b),
-        Err(first_err) => {
+        Err(CronistaFailure::Permanent(err)) => {
             tracing::warn!(
                 slug,
-                error = %first_err,
+                error = %err,
+                "compiler: Cronista rejected the request — no retry, straight to degraded"
+            );
+            Err(format!("Cronista failed (not retryable): {err}"))
+        },
+        Err(first) => {
+            tracing::warn!(
+                slug,
+                error = first.message(),
                 "compiler: Cronista attempt unusable — retrying once"
             );
             let retry_msg = "Write the page. Return ONLY one valid JSON object with the keys \
                              mergedBody, description, style — no code fences, no \
                              commentary, nothing before or after the object.";
-            match cronista_attempt(llm, prompt, retry_msg, max_tokens).await {
+            match cronista_attempt(llm, system, task, retry_msg, max_tokens).await {
                 Ok(b) => Ok(b),
-                Err(second_err) => Err(format!(
-                    "Cronista failed twice: {first_err}; retry: {second_err}"
+                Err(second) => Err(format!(
+                    "Cronista failed twice: {}; retry: {}",
+                    first.message(),
+                    second.message()
                 )),
             }
         },
@@ -797,25 +892,42 @@ async fn cronista_with_retry(
 async fn cronista_attempt(
     llm: &dyn LlmBackend,
     system_prompt: &str,
+    task: Option<&str>,
     user_msg: &str,
     max_tokens: u32,
-) -> std::result::Result<CronistaOutput, String> {
-    let resp = llm
-        .complete(
-            CompletionRequest::new(user_msg)
-                .with_system(system_prompt)
-                .with_temperature(0.4)
-                .with_max_tokens(max_tokens),
-        )
-        .await;
-    match resp {
-        Ok(r) => parse_cronista(&r.text).ok_or_else(|| match r.finish_reason {
-            crate::llm::FinishReason::MaxTokens => format!(
-                "Cronista reply truncated at the max_tokens cap ({max_tokens}) — unparseable JSON"
-            ),
-            _ => "Cronista output was not parseable JSON".to_owned(),
+) -> std::result::Result<CronistaOutput, CronistaFailure> {
+    // With a split prompt the per-page half leads the user turn and the
+    // instruction closes it; without one (an override with no marker) the
+    // user turn is the bare instruction, as it always was.
+    let user = task.map_or_else(|| user_msg.to_owned(), |t| format!("{t}\n\n{user_msg}"));
+    let request = CompletionRequest::new(user)
+        .with_system(system_prompt)
+        .with_temperature(0.4)
+        .with_max_tokens(max_tokens);
+    // Only a split prompt has a system half that repeats verbatim across
+    // the run; marking an unsplit one would buy a cache write per page and
+    // never a read.
+    let request = if task.is_some() {
+        request.with_cached_system()
+    } else {
+        request
+    };
+    match llm.complete(request).await {
+        Ok(r) => parse_cronista(&r.text).ok_or_else(|| {
+            CronistaFailure::Retryable(match r.finish_reason {
+                crate::llm::FinishReason::MaxTokens => format!(
+                    "Cronista reply truncated at the max_tokens cap ({max_tokens}) — unparseable JSON"
+                ),
+                _ => "Cronista output was not parseable JSON".to_owned(),
+            })
         }),
-        Err(e) => Err(format!("Cronista LLM failed: {e}")),
+        Err(e) => {
+            let msg = format!("Cronista LLM failed: {e}");
+            match e {
+                LlmError::Invalid(_) | LlmError::Auth(_) => Err(CronistaFailure::Permanent(msg)),
+                _ => Err(CronistaFailure::Retryable(msg)),
+            }
+        },
     }
 }
 
@@ -1474,11 +1586,19 @@ fn successor_wikilink(
     (slug != current_slug).then(|| plan_page_wikilink(home))
 }
 
-fn starvation_index(plan: &CompilationPlan, self_slug: &str) -> String {
+/// The link rail every leaf is shown: one line per page in the plan,
+/// `- [[wikilink]]: description`.
+///
+/// It deliberately includes the page being written. Excluding it made the
+/// block differ by one line for every call, which is precisely what a
+/// prompt cache cannot absorb — and this block is ~3.5k tokens, the bulk
+/// of the Cronista's input. Included, the block is one string per run,
+/// built once and reused verbatim, and the prompt carries the one rule
+/// that costs: never link a page to itself.
+fn page_index_block(plan: &CompilationPlan) -> String {
     let lines: Vec<String> = plan
         .compilation_order
         .iter()
-        .filter(|s| s.as_str() != self_slug)
         .filter_map(|s| {
             plan.pages
                 .get(s)
@@ -1486,7 +1606,7 @@ fn starvation_index(plan: &CompilationPlan, self_slug: &str) -> String {
         })
         .collect();
     if lines.is_empty() {
-        "(no other pages)".to_owned()
+        "(no pages)".to_owned()
     } else {
         lines.join("\n")
     }
@@ -2109,6 +2229,111 @@ mod tests {
             "wiki abstract persisted to _meta: {meta}"
         );
         drop(dir);
+    }
+
+    /// The cacheable split, end to end. The system half must carry the
+    /// standing brief and the page index and **nothing that identifies the
+    /// page** — a title in the system prompt makes every call's prefix
+    /// unique, which silently costs a cache write per page and earns no
+    /// read. The per-page half must ride the user turn instead.
+    #[tokio::test]
+    async fn cronista_sends_the_stable_brief_as_system_and_the_page_as_user() {
+        let (dir, tree, pool) = setup().await;
+        let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d99").unwrap();
+        fact_index::insert(
+            &pool,
+            &crate::fact_index::NewFact {
+                authored_refs: Vec::new(),
+                fact_id: fid.clone(),
+                wiki_id: "alice".to_owned(),
+                source_path: "wikis/alice/_captures.md".to_owned(),
+                region_start: None,
+                region_end: None,
+                text: "Alice loves pasta".to_owned(),
+                embedding: vec![0.1, 0.2],
+                owner_id: "user:alice".parse::<Principal>().unwrap(),
+                allow_ids: Vec::new(),
+                sender_id: None,
+                fact_type: Some("preference".to_owned()),
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                target_page: None,
+                style: None,
+                page_description: None,
+                salience: None,
+                source_ref: None,
+            },
+        )
+        .await
+        .unwrap();
+        let body = "{\"mergedBody\":\"Pasta. <f1>Alice ama la pasta.</f1>\",\"description\":\"d\"}"
+            .to_owned();
+        let cronista = FakeLlmBackend::new("fake", &body);
+        let hub = FakeLlmBackend::new("fake", "# hub\n");
+        let plan = leaf_plan(&fid);
+        compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-05-31T00:00:00Z")
+            .await
+            .expect("compile");
+
+        let system = cronista.last_system_prompt().expect("system prompt sent");
+        let user = cronista.last_prompt().expect("user prompt sent");
+        assert!(
+            system.contains("ONE FACT, ONE PAGE"),
+            "the standing brief stays in the cacheable half: {system}"
+        );
+        assert!(
+            system.contains("OTHER PAGES"),
+            "the page index stays in the cacheable half"
+        );
+        assert!(
+            !system.lines().any(|l| l.trim() == CRONISTA_TASK_MARKER),
+            "the separator line opens the user half — the brief may name it in \
+             prose, but never carry it as a line of its own: {system}"
+        );
+        assert!(
+            !system.contains("Alice loves pasta"),
+            "this page's facts must not sit in the shared prefix: {system}"
+        );
+        assert!(
+            user.starts_with(CRONISTA_TASK_MARKER),
+            "the per-page half leads the user turn: {user}"
+        );
+        assert!(
+            user.contains("Alice loves pasta"),
+            "the page's own facts ride the user turn: {user}"
+        );
+        assert!(
+            user.contains("Return the JSON object only"),
+            "the write instruction closes the user turn: {user}"
+        );
+        drop(dir);
+    }
+
+    /// A prompt with no marker — an operator override predating v1.14 —
+    /// must behave exactly as before: everything in the system prompt, and
+    /// (asserted in the unit test below) nothing marked cacheable.
+    #[test]
+    fn split_cronista_prompt_degrades_without_the_marker() {
+        let (system, task) = split_cronista_prompt("brief\n\n=== PAGE TO WRITE ===\nPAGE: x");
+        assert_eq!(system, "brief");
+        assert_eq!(task, Some("=== PAGE TO WRITE ===\nPAGE: x"));
+
+        let (system, task) = split_cronista_prompt("an override with no marker at all");
+        assert_eq!(system, "an override with no marker at all");
+        assert_eq!(task, None, "no marker ⇒ no split ⇒ no cache hint");
+
+        // The brief names the marker in prose so the model knows where its
+        // page is. Only the standalone line may cut the prompt — cutting at
+        // the mention would ship the rules as if they were the task.
+        let (system, task) = split_cronista_prompt(
+            "read on after the `=== PAGE TO WRITE ===` line\nrules\n=== PAGE TO WRITE ===\nPAGE: x",
+        );
+        assert_eq!(
+            system, "read on after the `=== PAGE TO WRITE ===` line\nrules",
+            "an in-prose mention is not a separator"
+        );
+        assert_eq!(task, Some("=== PAGE TO WRITE ===\nPAGE: x"));
     }
 
     #[tokio::test]
@@ -3140,8 +3365,13 @@ mod tests {
         );
     }
 
+    /// The index carries descriptions and never another page's facts —
+    /// that starvation is the whole mechanism. It now also carries the
+    /// page being written: one string per run is what makes the system
+    /// half of the Cronista prompt a cacheable prefix, and the body pays
+    /// for it with an explicit never-link-to-itself rule.
     #[test]
-    fn starvation_index_excludes_self_and_shows_only_descriptions() {
+    fn page_index_includes_self_and_shows_only_descriptions() {
         let mut pages = BTreeMap::new();
         for s in ["alice", "bob"] {
             pages.insert(
@@ -3175,12 +3405,15 @@ mod tests {
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
         };
-        let idx = starvation_index(&plan, "alice");
+        let idx = page_index_block(&plan);
         assert!(
             idx.contains("[[bob]]: bob desc"),
             "shows other page description"
         );
-        assert!(!idx.contains("alice"), "excludes self");
+        assert!(
+            idx.contains("[[alice]]: alice desc"),
+            "includes the page being written — the block is one per run"
+        );
         assert!(
             !idx.contains("secret bob fact"),
             "NEVER another page's facts"
@@ -3258,7 +3491,7 @@ mod tests {
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
         };
-        let idx = starvation_index(&plan, "hub");
+        let idx = page_index_block(&plan);
         assert!(
             idx.contains("- [[famiglia-bruno-battaglia/salute_bruno]]: salute_bruno desc"),
             "{idx}"
@@ -3273,6 +3506,130 @@ mod tests {
     // ---------- degraded mode + failure surfacing ----------
 
     use crate::llm::{CompletionResponse, CompletionUsage, FinishReason, LlmError};
+
+    /// A Cronista whose backend refuses the request outright, counting
+    /// attempts. Models the live failure: with the API answering "credit
+    /// balance too low" (a 400 ⇒ [`LlmError::Invalid`]) every page used to
+    /// buy the same refusal twice.
+    struct RefusingCronista {
+        error: fn(String) -> LlmError,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl RefusingCronista {
+        const fn new(error: fn(String) -> LlmError) -> Self {
+            Self {
+                error,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmBackend for RefusingCronista {
+        fn model_id(&self) -> &'static str {
+            "refusing-cronista"
+        }
+
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> crate::llm::Result<CompletionResponse> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err((self.error)("HTTP 400: credit balance too low".to_owned()))
+        }
+    }
+
+    /// A rejected request is not flakiness: retrying buys the same refusal
+    /// at the same price. One attempt, then straight to the degraded page.
+    #[tokio::test]
+    async fn cronista_does_not_retry_a_rejected_request() {
+        let (dir, tree, pool) = setup().await;
+        let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5daa").unwrap();
+        plant_degraded_fact(&pool, &fid).await;
+        let hub = FakeLlmBackend::new("fake", "# hub\n");
+        let plan = leaf_plan(&fid);
+
+        for make in [
+            LlmError::Invalid as fn(String) -> LlmError,
+            LlmError::Auth as fn(String) -> LlmError,
+        ] {
+            let cronista = RefusingCronista::new(make);
+            let report =
+                compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-05-31T00:00:00Z")
+                    .await
+                    .expect("compile");
+            assert_eq!(
+                cronista.calls(),
+                1,
+                "a permanent rejection must cost exactly one call, not two"
+            );
+            assert_eq!(
+                report.degraded.len(),
+                1,
+                "the page still degrades, not freezes"
+            );
+            assert!(
+                report.degraded[0].contains("not retryable"),
+                "the report names why it did not retry: {:?}",
+                report.degraded[0]
+            );
+        }
+        drop(dir);
+    }
+
+    /// The other half of the contract: a flaky transport IS worth one more
+    /// try, so the retry ladder must stay in place for it.
+    #[tokio::test]
+    async fn cronista_still_retries_a_transport_failure() {
+        let (dir, tree, pool) = setup().await;
+        let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5dbb").unwrap();
+        plant_degraded_fact(&pool, &fid).await;
+        let cronista = RefusingCronista::new(LlmError::Transport as fn(String) -> LlmError);
+        let hub = FakeLlmBackend::new("fake", "# hub\n");
+        let plan = leaf_plan(&fid);
+        compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-05-31T00:00:00Z")
+            .await
+            .expect("compile");
+        assert_eq!(cronista.calls(), 2, "transport flakiness earns one retry");
+        drop(dir);
+    }
+
+    /// Minimal fact for the failure-path tests: the page needs one fact to
+    /// reach the Cronista at all (a fact-less leaf renders without an LLM).
+    async fn plant_degraded_fact(pool: &SqlitePool, fid: &FactId) {
+        fact_index::insert(
+            pool,
+            &crate::fact_index::NewFact {
+                authored_refs: Vec::new(),
+                fact_id: fid.clone(),
+                wiki_id: "alice".to_owned(),
+                source_path: "wikis/alice/_captures.md".to_owned(),
+                region_start: None,
+                region_end: None,
+                text: "Alice loves pasta".to_owned(),
+                embedding: vec![0.1, 0.2],
+                owner_id: "user:alice".parse::<Principal>().unwrap(),
+                allow_ids: Vec::new(),
+                sender_id: None,
+                fact_type: Some("preference".to_owned()),
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                target_page: None,
+                style: None,
+                page_description: None,
+                salience: None,
+                source_ref: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
 
     /// Scripted Cronista: pops one `Result<reply, transport-error>` per
     /// `complete` call. Panics when over-called, so a test pins the exact

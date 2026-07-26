@@ -2357,7 +2357,41 @@ pub(super) async fn call_wiki_admin_push(
         // background — recall over brand-new sections may lag by the
         // queue depth. "inline": indexed before this ack.
         "section_indexing": section_indexing,
+        // Roadmap 48f. The moment a push lands is the moment something
+        // worth signposting just happened, and the agent is already
+        // here — a nudge attached to an action it already performs beats
+        // "remember at the end of the session", because sessions end
+        // abruptly. `null` when the signposts are current.
+        "signpost_hint": signpost_hint(state, &resp.wiki_id).await,
     }))
+}
+
+/// One-line reminder to refresh this project's signposts, or `None` when
+/// there is nothing to say. Best-effort: a read failure is silence, never
+/// a failed push.
+async fn signpost_hint(state: &McpState, wiki_id: &WikiId) -> Option<String> {
+    let status = match mwe_core::signposts::status(&state.pool, &state.tree, wiki_id).await {
+        Ok(Some(status)) => status,
+        Ok(None) => return None,
+        Err(e) => {
+            tracing::debug!(error = %e, "wiki_admin_push: signpost status unavailable");
+            return None;
+        },
+    };
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    if !status.has_description {
+        return Some(format!(
+            "This project has no signpost yet, so the owner's standard memory does not know it exists. Call `wiki_admin_signpost` with a short non-technical `description` (max {} chars).",
+            mwe_core::signposts::MAX_DESCRIPTION_CHARS
+        ));
+    }
+    if status.last_activity_day.as_deref() != Some(today.as_str()) {
+        return Some(format!(
+            "No activity signpost for {today} yet. If this push carried real work, call `wiki_admin_signpost` with an `activity` line for today (max {} chars, plain language).",
+            mwe_core::signposts::MAX_ACTIVITY_CHARS
+        ));
+    }
+    None
 }
 
 #[derive(Debug, Deserialize)]
@@ -2467,6 +2501,89 @@ fn lease_release_error_to_tool_error(err: &mwe_core::wiki_admin_leases::ReleaseE
         ),
         E::NotHeldByCaller { .. } => (ToolErrorClass::NotFound, err.to_string()),
         E::Db(_) => (ToolErrorClass::InternalError, err.to_string()),
+    };
+    ToolError::new(class, msg)
+}
+
+// ----- wiki_admin_signpost -----
+
+#[derive(Debug, Deserialize)]
+struct WikiAdminSignpostArgs {
+    wiki_id: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    activity: Option<WikiAdminSignpostActivity>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WikiAdminSignpostActivity {
+    day: String,
+    text: String,
+}
+
+pub(super) async fn call_wiki_admin_signpost(
+    state: &McpState,
+    identity: &IdentityProfile,
+    args: Value,
+) -> Result<Value, ToolError> {
+    // The class gate lives here, not in core: *who owns the project* is a
+    // data invariant (enforced by `signposts::write`), *which MCP surface
+    // may write signposts* is a property of this tool.
+    if !identity.consumer_class.is_smart() {
+        return Err(ToolError::new(
+            ToolErrorClass::RequiresConsumerClassSmart,
+            "requires consumer_class=smart".to_owned(),
+        ));
+    }
+    let args: WikiAdminSignpostArgs = parse_args(&args)?;
+    let wiki_id =
+        WikiId::parse(&args.wiki_id).map_err(|e| invalid_input(format!("wiki_id: {e}")))?;
+    let req = mwe_core::signposts::SignpostRequest {
+        project_wiki_id: wiki_id,
+        description: args.description,
+        activity: args.activity.map(|a| mwe_core::signposts::ActivityLine {
+            day: a.day,
+            text: a.text,
+        }),
+    };
+    let report = mwe_core::signposts::write(
+        &state.pool,
+        &state.tree,
+        Arc::clone(&state.embedder),
+        &identity.sender_id,
+        req,
+    )
+    .await
+    .map_err(|e| signpost_error_to_tool_error(&e))?;
+    Ok(json!({
+        "owner_wiki_id": report.owner_wiki_id,
+        "page": report.source_path,
+        "description": report.description.as_ref().map(mwe_core::signposts::SignpostOutcome::as_str),
+        "activity": report.activity.as_ref().map(mwe_core::signposts::SignpostOutcome::as_str),
+        // Activity lines dropped for falling out of the rolling window.
+        "retired": report.retired,
+        "active_days": report.active_days,
+    }))
+}
+
+fn signpost_error_to_tool_error(err: &mwe_core::signposts::SignpostError) -> ToolError {
+    use mwe_core::signposts::SignpostError as E;
+    let (class, msg) = match err {
+        E::NotOwner { .. } | E::GroupOwned { .. } => {
+            (ToolErrorClass::WikiOwnedByOtherUser, err.to_string())
+        },
+        E::NotSmart { .. } => (ToolErrorClass::WikiTypeNotAdminWritable, err.to_string()),
+        // The caps are the point of the tool: a refusal has to say what
+        // was measured, so the agent can rewrite shorter instead of
+        // guessing.
+        E::Empty | E::TooLong { .. } | E::BadDay { .. } | E::BadWikiId { .. } => {
+            (ToolErrorClass::InvalidInput, err.to_string())
+        },
+        E::Wiki(_) => (ToolErrorClass::NotFound, err.to_string()),
+        E::Capture(_) | E::FactIndex(_) | E::Db(_) => {
+            (ToolErrorClass::InternalError, err.to_string())
+        },
     };
     ToolError::new(class, msg)
 }

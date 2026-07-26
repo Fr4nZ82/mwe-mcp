@@ -285,12 +285,13 @@ pub struct LinkOutcome {
 ///   owner), but per-user facts that merely share a wiki (an agent's
 ///   behaviour rules, each owned by the user who dictated it) never
 ///   collide. Preserves per-fragment ownership.
-/// - **Never across the rules-page boundary** (both sides on
-///   `rules.md`, or neither): a new behaviour rule must not be skipped
-///   as a duplicate of an ordinary fact that happens to restate it (the
-///   rule would then never reach `rules.md`, so the behaviour-rules
-///   channel would never serve it), and an ordinary fact never folds
-///   into a rule. Rule-vs-rule still dedups.
+/// - **Never across the channel-page boundary** ([`crate::wiki::is_channel_page`]:
+///   both sides on a reserved channel page, or neither): a new behaviour
+///   rule must not be skipped as a duplicate of an ordinary fact that
+///   happens to restate it (the rule would then never reach `rules.md`, so
+///   the behaviour-rules channel would never serve it), and the same holds
+///   for a project signpost on `projects.md`. Rule-vs-rule and
+///   signpost-vs-signpost still dedup.
 /// - `exclude` skips one fact id — a light-dream retry after a partial
 ///   promotion must not dedup a capture against its own fact.
 ///
@@ -301,7 +302,7 @@ pub struct LinkOutcome {
 pub(crate) fn best_dedup_candidate<'a>(
     candidates: &'a [FactIndexRow],
     owner: &Principal,
-    on_rules_page: bool,
+    on_channel_page: bool,
     body: &str,
     exclude: Option<&FactId>,
 ) -> Option<(&'a FactIndexRow, f32)> {
@@ -317,7 +318,7 @@ pub(crate) fn best_dedup_candidate<'a>(
         if &row.owner_id != owner {
             continue;
         }
-        if crate::wiki::is_rules_page(&row.source_path) != on_rules_page {
+        if crate::wiki::is_channel_page(&row.source_path) != on_channel_page {
             continue;
         }
         let hay = recall::ngrams(
@@ -435,8 +436,8 @@ pub async fn wiki_capture_with_source(
         .unwrap_or(DEFAULT_DEDUP_THRESHOLD)
         .max(0.0);
     let candidates = fact_index::find_active_in_wiki(pool, &wiki_id_str).await?;
-    let on_rules_page = crate::wiki::is_rules_page(&req.page.to_string_lossy());
-    let best = best_dedup_candidate(&candidates, &req.owner, on_rules_page, &req.body, None);
+    let on_channel_page = crate::wiki::is_channel_page(&req.page.to_string_lossy());
+    let best = best_dedup_candidate(&candidates, &req.owner, on_channel_page, &req.body, None);
     tracing::debug!(
         wiki_id = %wiki_id_str,
         candidates = candidates.len(),
