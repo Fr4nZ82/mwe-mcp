@@ -841,16 +841,20 @@ in a side table is a later optimisation if profiling demands it.
 ## Briefing dispatcher sub-job
 
 For every smart-family wiki (per the cycle-scoped `SmartWikiIndex`),
-scans active facts for two flavours of finding and posts one
+scans its **sections** (`wiki_sections` — a smart wiki has no
+`fact_index` rows) for two flavours of finding and posts one
 `_briefing.md` item per finding via [`briefing::notify_as_rem`]:
 
 | Finding | Trigger | Source ref |
 |---|---|---|
-| **Stale draft** | YAML body has top-level `status: draft` and `created_at < now - briefing_stale_draft_age` (default 14 days). | `rem:briefing_dispatcher:stale_draft:<fact_id>` |
-| **Recall-hot** | `fact_index.recall_count_30d >= briefing_recall_hot_threshold` (default 20). | `rem:briefing_dispatcher:recall_hot:<fact_id>` |
+| **Stale draft** | YAML body has top-level `status: draft` and `created_at < now - briefing_stale_draft_age` (default 14 days). | `rem:briefing_dispatcher:stale_draft:<source_path>#<ord>` |
+| **Recall-hot** | `wiki_sections.recall_count_30d >= briefing_recall_hot_threshold` (default 20). | `rem:briefing_dispatcher:recall_hot:<source_path>#<ord>` |
 
 Idempotency: a deterministic `source_ref` keyed by `(wiki_id, source_ref)`
 absorbs the same finding for `briefing_dedup_window` (default 7 days).
+The ref keys on the section's **positional** handle, which survives an
+edit elsewhere on the page — so the dedup window holds instead of
+re-firing under a fresh key every time the page is touched.
 Per-wiki cap: `briefing_notify_cap` (default 10). The briefing inbox's
 own `50/wiki/h` cap from [`briefing::NOTIFY_RATE_PER_HOUR`] still
 applies as the global backstop.
@@ -865,11 +869,12 @@ helper.
 
 Builds a `(target smart wiki, source_wiki)` matrix in one pass:
 
-1. Collect smart wikis + cache their active fact bodies once.
+1. Collect smart wikis + cache their **section** bodies once
+   (`wiki_sections`).
 2. For each non-smart source wiki, scan each active fact body with
    [`recall::extract_wikilink_wiki_ids`] (made `pub` for this use).
 3. For each `[[<wiki_id>...]]` whose target is a smart wiki of step 1,
-   check whether at least one fact body in the target smart wiki
+   check whether at least one section body in the target smart wiki
    mentions `[[<source_wiki_id>...]]`. If not, the inverse is missing.
 4. Post one `_briefing.md` item on the smart wiki with source_ref
    `rem:backlink_reciprocity:<source_wiki_id>` (also dedup-keyed) and

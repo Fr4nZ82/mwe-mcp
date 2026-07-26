@@ -53,9 +53,6 @@ pub const DEFAULT_RECALL_LIMIT: usize = 8;
 /// distillate the smart consumer renders becomes too long for a
 /// pre-prompt context budget — the skill is explicit about this.
 pub const MAX_RECALL_LIMIT: usize = 20;
-/// Overfetch multiplier used to compensate for the post-filter that
-/// drops `the smart family` hits before truncating to `limit`.
-const RECALL_OVERFETCH: usize = 4;
 
 /// Errors surfaced by the smart-helper functions in this module.
 #[derive(Debug, thiserror::Error)]
@@ -391,26 +388,15 @@ pub async fn recall_core_global(
         owner_id: Some(Principal::User(caller.sender_id.clone())),
         ..Default::default()
     };
-    // Overfetch — the family post-filter discards smart-wiki hits, so
-    // we ask for more candidates than we will keep to make sure the
-    // caller's limit is honoured when there is enough non-smart
-    // material.
-    let raw = recall::wiki_search(
-        pool,
-        embedder,
-        &query,
-        limit.saturating_mul(RECALL_OVERFETCH),
-        filters,
-        &sender,
-    )
-    .await?;
+    // The fact corpus only. Smart-wiki documentation lives in its own
+    // table and is simply not queried here — no overfetch, no post-filter
+    // to shrink the caller's `limit`. This view is transversal personal
+    // memory; project docs would drown it.
+    let raw = recall::wiki_search(pool, embedder, &query, limit, filters, &sender).await?;
 
-    // The smart family this global recall excludes: the distinct
-    // smart-family `wiki_type`s present on disk, read from each `_meta.md`
-    // (derived from the on-disk flag, not the `wiki_types_registry`
-    // lookup). Echoed in
-    // `filter_applied` regardless of how many hits there are — it is the
-    // policy statement "smart-wiki material is filtered out of this view".
+    // The smart-family `wiki_type`s this view excludes, echoed in
+    // `filter_applied` regardless of how many hits there are — the policy
+    // statement "smart-wiki material is not in this view".
     let mut excluded_types: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for d in tree.walk()? {
         if d.meta.smart {
@@ -418,10 +404,7 @@ pub async fn recall_core_global(
         }
     }
 
-    // Resolve each hit's wiki to `(wiki_type, smart)` straight from
-    // `_meta.md`; smart-wiki hits are dropped — this is the non-smart
-    // global recall.
-    let mut meta_cache: HashMap<String, Option<(String, bool)>> = HashMap::new();
+    let mut meta_cache: HashMap<String, Option<String>> = HashMap::new();
     let mut hits: Vec<RecallCoreGlobalHit> = Vec::with_capacity(limit);
 
     for h in raw {
@@ -431,20 +414,15 @@ pub async fn recall_core_global(
         let resolved = if let Some(v) = meta_cache.get(&h.wiki_id) {
             v.clone()
         } else {
-            let r = WikiId::parse(&h.wiki_id).ok().and_then(|id| {
-                tree.locate(&id)
-                    .ok()
-                    .map(|hh| (hh.meta().wiki_type.clone(), hh.meta().smart))
-            });
+            let r = WikiId::parse(&h.wiki_id)
+                .ok()
+                .and_then(|id| tree.locate(&id).ok().map(|hh| hh.meta().wiki_type.clone()));
             meta_cache.insert(h.wiki_id.clone(), r.clone());
             r
         };
-        let Some((wt, smart)) = resolved else {
+        let Some(wt) = resolved else {
             continue;
         };
-        if smart {
-            continue;
-        }
         hits.push(RecallCoreGlobalHit {
             wiki_id: h.wiki_id,
             wiki_type: wt,

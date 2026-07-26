@@ -1,8 +1,8 @@
 ---
-title: Reindex pipeline — repairing the page ↔ fact_index bookkeeping
+title: Reindex pipeline — repairing the page ↔ index bookkeeping
 area: design-notes
 status: implemented
-last_review: "2026-07-02"
+last_review: "2026-07-26"
 ---
 
 # Reindex pipeline
@@ -11,18 +11,22 @@ last_review: "2026-07-02"
 [`mwe-core::watcher`](../../crates/mwe-core/src/watcher.rs): when a
 third-party editor (Obsidian, an operator typing in `nvim`) touches a
 markdown file under `<workdir>/wikis/**`, this module re-parses it and
-reconciles the [`fact_index`](../../crates/mwe-core/src/fact_index.rs).
-What "reconcile" means depends on the wiki's family:
+reconciles the index. **Which** index depends on the wiki's family —
+[`fact_index`](../../crates/mwe-core/src/fact_index.rs) for standard
+wikis, [`wiki_sections`](../../crates/mwe-core/src/sections.rs) for smart
+ones — and so does what "reconcile" means:
 
 - **Smart wikis** (smart-consumer project wikis, written verbatim via
   `wiki_admin_*` or a direct filesystem edit): plain markdown with **no
   per-fragment `{{f=…}}` markers**, so recall indexes the **content**.
-  Each page is chunked into heading-delimited sections, embedded, and the
-  page's `fact_index` rows are **drop-and-reinserted**; every row carries
-  the wiki-level ACL from `_meta` (owner + `shared_with`) projected onto
-  it. A removed page's rows are **hard-dropped** (no tombstone). This is
-  the markerless half of the [per-fragment-ACL pillar](smart-wikis.md):
-  per-fragment markers/ACL stay the pillar of **standard** wikis only.
+  Each page is chunked into heading-delimited sections, embedded, and
+  written to **`wiki_sections`** — its own table, not `fact_index`
+  ([`mwe_core::sections`](../../crates/mwe-core/src/sections.rs)). A
+  section carries **no ACL of its own**: read access belongs to the wiki
+  and is held once in the `smart_wikis` registry. A removed page's
+  sections are **hard-dropped** (no tombstone). This is the markerless
+  half of the [per-fragment-ACL pillar](smart-wikis.md): per-fragment
+  markers/ACL stay the pillar of **standard** wikis only.
 - **Standard wikis** (compiler/capture output — "standard" = "not
   smart", keyed off the per-wiki smart flag in `_meta.md`):
   the **DB is the authoritative fact store** and pages are its prose
@@ -42,14 +46,16 @@ knowledge it authored).
 | Function | When | Cost |
 |---|---|---|
 | [`reindex_file`](../../crates/mwe-core/src/reindex.rs) | Single `WatchedChange` event — the hot path | Smart: segment the page + ≤N embed calls (unchanged sections reuse their stored vector); standard: one parse + one `find_active_by_source_path` |
-| [`reindex_full`](../../crates/mwe-core/src/reindex.rs) | Safety-net 5-minute tick, also usable as a startup catch-up | Walk every wiki; re-section every smart-wiki `*.md` + a deleted-page sweep |
+| [`reindex_full`](../../crates/mwe-core/src/reindex.rs) | Safety-net 5-minute tick, also usable as a startup catch-up | Refresh the `smart_wikis` registry; walk every wiki; re-section every smart-wiki `*.md` + a deleted-page sweep |
+| [`project_smart_wiki_registry`](../../crates/mwe-core/src/reindex.rs) | `serve` boot + every `reindex_full` tick | One tree walk + one upsert per smart wiki |
+| [`backfill_smart_sections`](../../crates/mwe-core/src/reindex.rs) | `serve` boot (one-time migration tail, idempotent) | One pass over each smart wiki's legacy rows; embeddings copied, never recomputed |
 | [`strip_fact_region`](../../crates/mwe-core/src/reindex.rs) | Act-time, from every retire path with engine context (supersede, forget, dedup merge — the roster is in [redaction-policy](redaction-policy.md)) | One row lookup + one page rewrite + a `reindex_file` re-sync; refuses active rows |
 | [`strip_retired_regions_on_page`](../../crates/mwe-core/src/reindex.rs) / [`sweep_retired_regions`](../../crates/mwe-core/src/reindex.rs) | The light dream's retirement hygiene sweep over **non-plan** pages ([rem-cycle](rem-cycle.md)) | Per page: one parse + one lookup per marker + at most one rewrite; sweep bounded at `RETIRED_SWEEP_MAX_PAGES`/cycle |
 | [`reconcile_wiki_ids`](../../crates/mwe-core/src/reindex.rs) | Once at `serve` boot, after the tree opens | One slim full-table scan of active rows + one targeted UPDATE per divergence |
 
 The first two are **idempotent**: running them twice in a row over an
 unchanged tree mutates zero rows the second time. For smart wikis a page
-whose section texts and projected ACL already match the stored rows is a
+whose section texts already sit in the same positions is a
 no-op; that property is what makes the race documented under
 [marker filter](#marker-filter--inotify-race) acceptable, and what keeps
 the push-path index queue (below) from churning on a re-push. The
@@ -80,45 +86,81 @@ turns dirty). Non-fatal: a reconcile failure logs and the boot proceeds.
 smart page into heading-delimited sections (reusing the document
 segmenter [`document::segment_document`](../../crates/mwe-core/src/document.rs),
 the heading chain prefixing each section's text so the heading words are
-searchable), embeds each section, and reconciles the page's rows:
+searchable), embeds each section, and reconciles the page's rows in
+`wiki_sections`:
 
-| Page state vs. stored rows | Action |
+| Page state vs. stored sections | Action |
 |---|---|
-| Section texts + projected ACL all match | **no-op** (idempotent) |
-| Anything drifts (edited/added/removed section, ACL change) | replace the page's rows in **one transaction** (`fact_index::replace_source_path_rows`) — drop every row at the page's `source_path`, insert one row per **distinct** section — an unchanged section's text reuses its stored embedding, only new/changed sections are re-embedded |
-| File missing | hard-drop every row pointing at the page (no tombstone) |
+| Same texts in the same positions | **no-op** (idempotent) |
+| Anything drifts (edited/added/removed/reordered section) | [`sections::replace_page_sections`](../../crates/mwe-core/src/sections.rs) in **one transaction** — upsert by position, then drop any tail position the new content no longer reaches. An unchanged section's text reuses its stored embedding; only new/changed sections are re-embedded |
+| File missing | hard-drop every section of the page (no tombstone) |
 
-**Two safeguards against duplicate section rows** (a duplicate would surface
-as the same block twice in a `wiki_navigate` flat hit — identical text, identical
-score, distinct `fact_id`):
+**Identity is positional.** A section is keyed by `(source_path,
+section_ord)`, the primary key of the table. Two consequences:
 
-- **Atomic drop+insert.** The drop and the inserts run in a single transaction
-  ([`fact_index::replace_source_path_rows`](../../crates/mwe-core/src/fact_index.rs)).
-  Multiple reindexers can target the same page at once — the push-enqueued
-  index, the watcher (which *does* observe the server's own write, see the
-  [marker filter](#marker-filter--inotify-race)), the safety-net sweep — and
-  because SQLite serializes writers, a second reindex's drop catches the first's
-  just-committed rows instead of interleaving between a separate drop and a
-  separate insert (which left two copies). Embeddings are computed **before** the
-  transaction opens, so the slow embed I/O never holds a write lock.
-- **Section dedup.** Identical section texts on one page collapse to a single
-  desired row before insertion, so a page that genuinely repeats a block indexes
-  it once. `smart_page_in_sync` compares against the deduped set, so a page that
-  *already* carries duplicate rows (e.g. left by a pre-fix race) is detected as
-  out-of-sync and rebuilt clean on the next reindex.
+- **Duplicate rows are not expressible.** The old design minted a fresh
+  id per reinsert, so an interleaved drop-then-insert from two concurrent
+  reindexers could leave two copies of the same block (identical text,
+  identical score, different id) — visible as the same hit twice in
+  `wiki_navigate`. The primary key now rules that out structurally; the
+  single transaction remains, so a concurrent pass converges instead of
+  interleaving. Embeddings are computed **before** the transaction opens,
+  so the slow embed I/O never holds a write lock.
+- **Recall history survives an edit.** A position whose text is unchanged
+  keeps its `created_at` and its `last_recall_at` / `recall_count_30d`; a
+  position whose text changed keeps the slot but resets the counters,
+  because the history belonged to the old content. Under the minted-id
+  design every id changed on every reindex, so a `recall_log` entry
+  stopped resolving as soon as its page was touched.
 
-Each reinserted row is markerless — `region_start`/`region_end` are
-NULL (there is no on-disk span to repair) and the `fact_id` is freshly
-minted per reinsert (the page carries no stable per-fact key). The
-wiki-level ACL is **projected onto every row**: `owner_id` = the wiki's
-resolved `scope` (the writing consumer's user), `allow_ids` = the
-wiki's `_meta.shared_with` roster. Recall's per-fact visibility check
-([`acl::can_read`](../../crates/mwe-core/src/acl.rs)) then honours the
-wiki-level share with no recall-layer change — a `shared_with` grantee
-sees the wiki's content because every section row carries them in
-`allow`. Changing the wiki's ACL in `_meta` re-projects onto the rows on
-the next reindex (the safety-net tick re-stamps, since the ACL drift
-fails the no-op check).
+**Section dedup.** Identical section texts on one page collapse to a
+single desired row before the write, so a page that genuinely repeats a
+block indexes it once.
+
+Each row is markerless: there is no on-disk span to repair, and **no
+ACL**. Read access to a section is the *wiki's*, held once in
+`smart_wikis` and resolved per wiki by
+[`recall::search_sections`](../../crates/mwe-core/src/recall.rs) — see
+[recall-pipeline.md](recall-pipeline.md#the-two-corpora). That is what
+makes a `shared_with` edit a **single-row** write
+([`sections::upsert_smart_wiki`](../../crates/mwe-core/src/sections.rs))
+where it used to re-stamp one row per indexed section.
+
+## The `smart_wikis` registry
+
+[`project_smart_wiki_registry`](../../crates/mwe-core/src/reindex.rs)
+walks the tree and mirrors every smart wiki's `_meta.md` into the
+`smart_wikis` table: resolved owner (the scope principal), `shared_with`,
+`project_id`, `wiki_type`. Rows whose wiki is gone or no longer smart are
+dropped, so the projection is self-healing.
+
+`_meta.md` on disk stays the **source of truth** — this table is a cache,
+which is why the projection re-runs at boot *and* on every safety-net
+tick: a hand-edited `smart:` flag or roster still wins, and a revoke made
+by editing the file closes the recall window on the next tick without
+anyone touching the dashboard.
+
+What it buys is that "which wikis are smart?" and "who may read this
+wiki?" become part of a SQL query. Before it existed, the smart flag was
+reachable only through the on-disk tree, so every "exclude the project
+docs" filter had to run *after* the ranking — silently shrinking the
+caller's result set whenever the excluded family dominated the top-K.
+
+## The one-time backfill
+
+[`backfill_smart_sections`](../../crates/mwe-core/src/reindex.rs) is the
+migration tail that moves legacy smart-wiki rows out of `fact_index`.
+Embeddings are copied verbatim, so the move costs one pass and no
+re-embedding. Legacy rows carry no ordinal, so each page's rows are
+ordered by `fact_id` — `UUIDv7` is time-ordered, so that is their
+original insertion order; any residual drift is corrected free of charge
+by the next reindex, which re-derives the true order from disk and reuses
+each section's stored vector by text.
+
+Idempotent, and safe to re-run on a partially migrated store: a page
+already present in `wiki_sections` is not re-copied, only its legacy rows
+are dropped. Runs at `serve` boot alongside the registry projection
+(`boot_smart_wiki_passes`); both are best-effort and non-fatal.
 
 ## Smart wikis — indexing on push (queued)
 
@@ -240,13 +282,15 @@ crash window. `run_safety_net_loop` ticks every [`SAFETY_NET_INTERVAL`]
 discarded so a fresh startup does not slam the embedder before any
 edit had a chance to fire.
 
-`reindex_full` rebuilds every wiki's captures buffer from its durable
+`reindex_full` first refreshes the `smart_wikis` registry (so a
+hand-edited `smart:` flag or `shared_with:` roster lands within a tick),
+rebuilds every wiki's captures buffer from its durable
 `_captures.md` journal
 ([`capture_buffer::reindex_capture_journal`](../../crates/mwe-core/src/capture_buffer.rs)
 — best-effort, never indexed itself), then **section-indexes only smart
 wikis** (the per-page no-op fast path keeps the tick cheap on an idle
-tree) and finishes with a **deleted-page sweep**: any active row whose
-page no longer exists on disk is hard-dropped (the markerless
+tree) and finishes with a **deleted-page sweep**: any indexed page that
+no longer exists on disk has its sections hard-dropped (the markerless
 counterpart of the standard orphan tombstone, recovering a `Removed`
 event the watcher missed). Standard pages are excluded from the
 periodic tick even though `reindex_file` is standard-wiki-safe per
@@ -338,9 +382,13 @@ ids match and no reindex is needed.
 ## Tests
 
 `reindex::tests` covers the smart-wiki section index (section-indexes a
-page / idempotent on an unchanged page / re-sections on edit / projects
-`shared_with` onto rows / drops a removed section / hard-drops on file
-delete / `reindex_full` section-indexes smart and skips standard), the
+page and creates **no** `fact_index` row / idempotent on an unchanged
+page / re-sections on edit / drops a removed section / drops a stale tail
+position / hard-drops on file delete / `reindex_full` section-indexes
+smart and skips standard), the registry projection (holds the wiki-level
+ACL while the sections hold none / drops a wiki that stopped being
+smart), the one-time backfill (legacy rows moved with their embeddings,
+ordered by `fact_id`, then idempotent), the
 standard-wiki repair (never-creates-rows, offsets-repaired-without-
 touching-text, pending-render rows spared on both tombstone paths), the
 retirement disk half (region excised + neighbours re-synced, active fact
@@ -352,7 +400,10 @@ plumbing (path-outside-tree, wiki picking).
 `tests/watcher_reindex_roundtrip.rs` proves the wiring end-to-end
 through a real `notify` watcher + `tokio::spawn` consumer on a smart
 wiki (third-party write → section row, held-marker suppression,
-third-party delete → hard drop).
+third-party delete → hard drop). `sections::tests` covers the store
+itself (positional upsert, recall history preserved on an unchanged
+position and reset on a changed one, tail drop, idempotence, wiki-scoped
+candidates, registry round-trip).
 
 ## Scope-out
 

@@ -553,6 +553,10 @@ struct SharingState {
     title: String,
     owner_user: String,
     shared_with: Vec<Principal>,
+    /// Carried through so a roster edit can refresh the whole registry row
+    /// without re-reading `_meta.md`.
+    project_id: Option<String>,
+    wiki_type: String,
 }
 
 fn load_sharing(state: &DashboardState, user: &SessionUser, id: &str) -> Result<SharingState> {
@@ -588,11 +592,18 @@ fn load_sharing(state: &DashboardState, user: &SessionUser, id: &str) -> Result<
         return Err(DashboardError::NotFound);
     }
     let shared_with = meta.shared_with.clone();
+    let project_id = meta
+        .extra
+        .get(serde_yaml::Value::from("project_id"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
     Ok(SharingState {
         wiki_id: wiki_id.as_str().to_owned(),
         title: meta.title,
         owner_user,
         shared_with,
+        project_id,
+        wiki_type: meta.wiki_type,
     })
 }
 
@@ -642,25 +653,32 @@ async fn submit_sharing(
         .map_err(|e| DashboardError::Internal(format!("re-parse wiki_id: {e}")))?;
     let roster_len = new_roster.len();
     let owner = update_shared_with(&memory.tree, &wiki_id, new_roster.clone())?;
-    // Re-project the new wiki-level ACL onto the smart wiki's content-indexed
-    // fact rows SYNCHRONOUSLY — a revoke must close the recall read-window
-    // before this request returns; the periodic safety-net sweep (~5 min) is
-    // too slow for an access revocation. See smart-wikis.md recall consistency.
-    let reprojected = mwe_core::fact_index::reproject_wiki_acl(
+    // Refresh the wiki's registry row SYNCHRONOUSLY — a revoke must close
+    // the recall read-window before this request returns; the periodic
+    // safety-net sweep (~5 min) is too slow for an access revocation.
+    //
+    // This is now a **single-row** write. Read access belongs to the wiki,
+    // not to its sections, so there is nothing to re-stamp per section —
+    // where a roster change used to rewrite one row per indexed section
+    // (over a thousand on a large project wiki), it now touches one.
+    mwe_core::sections::upsert_smart_wiki(
         &state.pool,
-        wiki_id.as_str(),
-        &owner,
-        &new_roster,
+        &mwe_core::sections::SmartWikiRow {
+            wiki_id: wiki_id.as_str().to_owned(),
+            owner_id: owner,
+            shared_with: new_roster,
+            project_id: sharing.project_id.clone(),
+            wiki_type: sharing.wiki_type.clone(),
+        },
     )
     .await
-    .map_err(|e| DashboardError::Internal(format!("re-project wiki ACL: {e}")))?;
+    .map_err(|e| DashboardError::Internal(format!("refresh smart wiki registry: {e}")))?;
 
     tracing::info!(
         actor = %user.sender_id,
         wiki = %sharing.wiki_id,
         roster_len,
-        reprojected,
-        "dashboard updated shared_with + re-projected wiki ACL onto fact rows"
+        "dashboard updated shared_with + refreshed the smart wiki registry row"
     );
 
     Ok(Redirect::to(&format!("/dashboard/wiki/{}/sharing", sharing.wiki_id)).into_response())

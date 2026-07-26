@@ -2,7 +2,7 @@
 title: The memory model — what mwe-mcp is and why
 area: concepts
 status: implemented
-last_review: "2026-06-29"
+last_review: "2026-07-26"
 ---
 
 # The memory model
@@ -331,9 +331,13 @@ family:
   ([`reindex-pipeline.md`](../design-notes/reindex-pipeline.md)).
 - **Smart wikis** (project wikis a smart consumer writes verbatim): the
   page **content on disk is what gets indexed** — an edit re-chunks and
-  re-embeds the page, with the wiki-level ACL projected onto every row.
-  There the files do drive the index, because the consumer owns those
-  bytes.
+  re-embeds the page. There the files do drive the index, because the
+  consumer owns those bytes. That index is a **separate table**,
+  `wiki_sections`, not `fact_index`: a section is a searchable chunk of a
+  document, with no owner, no sender, no supersedence chain, no validity
+  window and no tombstone. Read access belongs to the *wiki* and is held
+  once in the `smart_wikis` registry
+  ([`mwe_core::sections`](../../crates/mwe-core/src/sections.rs)).
 
 The two families are one principle, not two: **authority follows the
 author**. Engine-curated memory is DB-authoritative because the engine is
@@ -358,7 +362,11 @@ The operational consequence: `engine.db` is **not a disposable cache** —
 back it up like the files (the dashboard's Backup console and the
 snapshot tooling, `mwe_core::backup`, exist for exactly that). What is
 regenerable from disk is the smart-wiki content rows and the captures
-buffer below — not the standard-wiki fact store.
+buffer below — not the standard-wiki fact store. Since those two
+families now live in **different tables** (`wiki_sections` vs
+`fact_index`), that distinction is operational rather than merely
+descriptive: the section table can be emptied and rebuilt from the pages
+without touching a single governed fact.
 
 The surface is not only the published pages. For a **standard** wiki
 (see [`narrative-buffer.md`](../design-notes/narrative-buffer.md)),
@@ -506,7 +514,7 @@ registry) — and "standard" simply means "not smart":
 
 | Class | Examples | Capture path |
 |---|---|---|
-| **companion** (`smart: true`) | `wiki-companion` | Smart-consumer-owned; excluded from the standard ingest/compiler path entirely. |
+| **companion** (`smart: true`) | `wiki-companion` | Smart-consumer-owned; excluded from the standard ingest/compiler path entirely. Its pages are content-indexed into `wiki_sections`, a different table — so it produces no `fact_index` row at all. |
 | **standard** (smart flag `false`) | `wiki-root`, `wiki-user`, `wiki-group`, and every emerged sub-wiki | A capture is **staged in the captures buffer**, not written to the published `.md`. |
 
 For a standard wiki, `wiki_ingest_message` classifies the message and —
@@ -539,8 +547,9 @@ compiled page. The classifier's supersede proposal rides along as a
 > schedule, the deterministic post-compile reviewer, and human-edit
 > reconciliation. The buffer mechanism is documented in full in
 > [`narrative-buffer.md`](../design-notes/narrative-buffer.md).
-> Smart wikis are unaffected: their captures still
-> become facts synchronously and are never compiled.
+> Smart wikis are unaffected: they never enter this chain at all — their
+> pages are indexed as sections into `wiki_sections` and are never
+> buffered, promoted or compiled.
 
 ### The prose compiler — facts become published prose
 

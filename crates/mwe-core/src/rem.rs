@@ -74,6 +74,7 @@ use crate::recall;
 use crate::recall_gate;
 use crate::recall_log;
 use crate::reviewer;
+use crate::sections;
 use crate::types::{FactId, WikiId};
 use crate::wal;
 use crate::wiki::{self, WikiTree};
@@ -795,6 +796,10 @@ pub enum RemError {
     /// Fact-index layer failure.
     #[error("rem fact_index: {0}")]
     FactIndex(#[from] fact_index::FactIndexError),
+    /// Smart-wiki section-index failure (the read-jobs that scan a smart
+    /// wiki's content).
+    #[error("rem wiki_sections: {0}")]
+    Sections(#[from] sections::SectionError),
     /// Events layer failure.
     #[error("rem events: {0}")]
     Events(#[from] EventsError),
@@ -5238,7 +5243,8 @@ async fn run_briefing_dispatcher(
         }
         report.wikis_examined += 1;
         let mut per_wiki = 0_usize;
-        let facts = fact_index::find_active_in_wiki(pool, d.meta.wiki_id.as_str()).await?;
+        // A smart wiki's content lives in `wiki_sections`, not `fact_index`.
+        let facts = sections::find_wiki_sections(pool, d.meta.wiki_id.as_str()).await?;
         for fact in &facts {
             if per_wiki >= policy.briefing_notify_cap {
                 break;
@@ -5289,7 +5295,7 @@ async fn try_emit_stale_draft(
     tree: &WikiTree,
     cycle_id: &str,
     wiki_id: &WikiId,
-    fact: &FactIndexRow,
+    fact: &sections::SectionRow,
     stale_threshold: DateTime<Utc>,
     dedup_window: chrono::Duration,
     report: &mut BriefingDispatcherReport,
@@ -5307,10 +5313,7 @@ async fn try_emit_stale_draft(
     if created_ts >= stale_threshold {
         return Ok(());
     }
-    let source_ref = format!(
-        "rem:briefing_dispatcher:stale_draft:{}",
-        fact.fact_id.as_str()
-    );
+    let source_ref = format!("rem:briefing_dispatcher:stale_draft:{}", fact.handle());
     if briefing_recently_emitted(pool, wiki_id, &source_ref, dedup_window).await? {
         report.deduplicated += 1;
         return Ok(());
@@ -5321,9 +5324,9 @@ async fn try_emit_stale_draft(
         created = fact.created_at,
     );
     let body = format!(
-        "Fact `{id}` on page `{path}` has carried `status: draft` since {created}. \
+        "Section `{id}` on page `{path}` has carried `status: draft` since {created}. \
          Promote, supersede, or archive it during the next session.",
-        id = fact.fact_id.as_str(),
+        id = fact.handle(),
         path = fact.source_path,
         created = fact.created_at,
     );
@@ -5359,7 +5362,7 @@ async fn try_emit_recall_hot(
     tree: &WikiTree,
     cycle_id: &str,
     wiki_id: &WikiId,
-    fact: &FactIndexRow,
+    fact: &sections::SectionRow,
     threshold: i64,
     dedup_window: chrono::Duration,
     report: &mut BriefingDispatcherReport,
@@ -5368,10 +5371,7 @@ async fn try_emit_recall_hot(
     if fact.recall_count_30d < threshold {
         return Ok(());
     }
-    let source_ref = format!(
-        "rem:briefing_dispatcher:recall_hot:{}",
-        fact.fact_id.as_str()
-    );
+    let source_ref = format!("rem:briefing_dispatcher:recall_hot:{}", fact.handle());
     if briefing_recently_emitted(pool, wiki_id, &source_ref, dedup_window).await? {
         report.deduplicated += 1;
         return Ok(());
@@ -5382,9 +5382,9 @@ async fn try_emit_recall_hot(
         hits = fact.recall_count_30d,
     );
     let body = format!(
-        "Fact `{id}` on page `{path}` was recalled {hits} times in the last 30 days — \
+        "Section `{id}` on page `{path}` was recalled {hits} times in the last 30 days — \
          consider promoting it into a dedicated page or surfacing it more prominently.",
-        id = fact.fact_id.as_str(),
+        id = fact.handle(),
         path = fact.source_path,
         hits = fact.recall_count_30d,
     );
@@ -5528,8 +5528,9 @@ async fn run_backlink_reciprocity(
         let id_str = d.meta.wiki_id.as_str().to_owned();
         smart_wiki_ids.insert(id_str.clone());
         smart_wiki_id_lookup.insert(id_str.clone(), d.meta.wiki_id.clone());
-        let facts = fact_index::find_active_in_wiki(pool, d.meta.wiki_id.as_str()).await?;
-        smart_wiki_bodies.insert(id_str, facts.into_iter().map(|f| f.text).collect());
+        // A smart wiki's content is its indexed sections, not fact rows.
+        let secs = sections::find_wiki_sections(pool, d.meta.wiki_id.as_str()).await?;
+        smart_wiki_bodies.insert(id_str, secs.into_iter().map(|s| s.text).collect());
     }
     report.smart_wikis_known = smart_wiki_ids.len();
     if smart_wiki_ids.is_empty() {
@@ -5751,6 +5752,43 @@ mod tests {
             .await
             .expect("plant")
             .fact_id
+    }
+
+    /// Plant one **section** of a smart wiki's page, the smart-family
+    /// counterpart of [`plant_fact`]. Smart content is content-indexed in
+    /// `wiki_sections` (no capture, no ACL, no lifecycle), so the REM
+    /// read-jobs that scan a smart wiki read these rows.
+    ///
+    /// Returns the section's stable `"<source_path>#<ord>"` handle.
+    async fn plant_section(pool: &SqlitePool, wiki: &str, body: &str) -> String {
+        let source_path = format!("wikis/{wiki}/index.md");
+        let existing = sections::find_page_sections(pool, &source_path)
+            .await
+            .expect("read sections");
+        let mut desired: Vec<sections::NewSection> = existing
+            .iter()
+            .map(|r| sections::NewSection {
+                wiki_id: r.wiki_id.clone(),
+                source_path: r.source_path.clone(),
+                section_ord: r.section_ord,
+                heading_path: r.heading_path.clone(),
+                text: r.text.clone(),
+                embedding: r.embedding.clone(),
+            })
+            .collect();
+        let ord = i64::try_from(desired.len()).unwrap();
+        desired.push(sections::NewSection {
+            wiki_id: wiki.to_owned(),
+            source_path: source_path.clone(),
+            section_ord: ord,
+            heading_path: None,
+            text: body.to_owned(),
+            embedding: vec![0.1; 8],
+        });
+        sections::replace_page_sections(pool, &source_path, &desired)
+            .await
+            .expect("plant section");
+        format!("{source_path}#{ord}")
     }
 
     /// Plant a fact with a **caller-chosen embedding** so a test can shape
@@ -7610,7 +7648,7 @@ mod tests {
         tree = WikiTree::open(dir.path()).unwrap();
 
         let draft = "status: draft\ntopic: MFA recovery codes\nbody: 'TODO write up'\n";
-        let fact_id = plant_fact(&tree, &pool, "alice-lnprint", draft, "alice").await;
+        let handle = plant_section(&pool, "alice-lnprint", draft).await;
 
         // Stale-draft window of -1 ns ⇒ threshold = now + 1 ns, so the
         // just-planted fact is unambiguously "older" than the threshold.
@@ -7651,7 +7689,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             source_ref,
-            format!("rem:briefing_dispatcher:stale_draft:{}", fact_id.as_str())
+            format!("rem:briefing_dispatcher:stale_draft:{handle}")
         );
         assert_eq!(kind.as_deref(), Some("observation"));
         drop(dir);
@@ -7663,7 +7701,7 @@ mod tests {
         write_smart_wiki(&tree, "alice-lnprint", "lnprint companion", "alice");
         tree = WikiTree::open(dir.path()).unwrap();
         let draft = "status: draft\ntopic: stale\nbody: 'TODO'\n";
-        let _ = plant_fact(&tree, &pool, "alice-lnprint", draft, "alice").await;
+        let _ = plant_section(&pool, "alice-lnprint", draft).await;
         let policy = RemPolicy {
             briefing_stale_draft_age: chrono::Duration::nanoseconds(-1),
             ..RemPolicy::default()
@@ -7817,12 +7855,10 @@ mod tests {
             "alice",
         )
         .await;
-        plant_fact(
-            &tree,
+        plant_section(
             &pool,
             "alice-lnprint",
             "Back-reference to [[alice]] on the owner wiki.",
-            "alice",
         )
         .await;
 

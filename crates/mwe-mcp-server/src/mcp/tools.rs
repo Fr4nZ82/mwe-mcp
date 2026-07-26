@@ -957,11 +957,15 @@ struct WikiSearchScope {
     #[serde(default)]
     wiki_types: Vec<String>,
     /// Filter hits down to wikis whose
-    /// smart flag matches the requested bool. `Some(true)`
-    /// keeps only smart-family hits, `Some(false)` keeps only
-    /// non-smart hits, `None` disables the filter. Applied as a
-    /// post-filter after the recall pipeline returns the top-K hits,
-    /// so result counts are at most the same as without the filter.
+    /// Which corpus to search. `Some(false)` searches the **fact**
+    /// store (standard-wiki memory), `Some(true)` searches the
+    /// **section** index (smart-wiki documentation), `None` searches
+    /// both and merges the ranking.
+    ///
+    /// This selects the corpus **before** ranking, so the caller always
+    /// gets up to `top_k` hits. It used to be a post-filter over a
+    /// mixed top-K, which silently shrank the result set — often to
+    /// nothing — whenever the discarded family dominated the ranking.
     #[serde(default)]
     smart: Option<bool>,
     /// The dated-query selector (ISO-8601): keep only facts whose
@@ -1012,15 +1016,30 @@ pub(super) async fn call_wiki_search(
         valid_at,
         ..Default::default()
     };
-    let hits = recall::wiki_search(
-        &state.pool,
-        Arc::clone(&state.embedder),
-        &args.query,
-        args.top_k.unwrap_or(20),
-        filters,
-        &sender,
-    )
-    .await
+    let top_k = args.top_k.unwrap_or(20);
+    // Corpus selection happens HERE, before ranking — `scope.smart` picks
+    // a table, it is no longer a post-filter over a mixed top-K. That is
+    // what makes the caller's `top_k` honoured: asking for 20 non-smart
+    // hits used to return whatever survived after the smart hits were
+    // discarded, which on a documentation-heavy store was near zero.
+    let embedder = Arc::clone(&state.embedder);
+    let hits: Vec<recall::SearchHit> = match args.scope.as_ref().and_then(|s| s.smart) {
+        Some(false) => {
+            recall::wiki_search(&state.pool, embedder, &args.query, top_k, filters, &sender)
+                .await
+                .map(|v| {
+                    v.into_iter()
+                        .map(|h| recall::SearchHit::Fact(Box::new(h)))
+                        .collect()
+                })
+        },
+        Some(true) => recall::search_sections(&state.pool, embedder, &args.query, top_k, &sender)
+            .await
+            .map(|v| v.into_iter().map(recall::SearchHit::Section).collect()),
+        None => {
+            recall::search_all(&state.pool, embedder, &args.query, top_k, filters, &sender).await
+        },
+    }
     .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
 
     let allowed_types: Option<std::collections::HashSet<String>> = args
@@ -1028,70 +1047,61 @@ pub(super) async fn call_wiki_search(
         .as_ref()
         .filter(|s| !s.wiki_types.is_empty())
         .map(|s| s.wiki_types.iter().cloned().collect());
-    let smart_filter: Option<bool> = args.scope.as_ref().and_then(|s| s.smart);
 
-    // Per-hit `(wiki_type, smart)` lookup straight from `_meta.md`
-    // (no `wiki_types_registry`). Resolve `wiki_id → meta` via
-    // the tree (cached), then drop hits whose wiki_type falls outside
-    // `allowed_types` and/or whose per-wiki smart flag differs
-    // from `smart_filter`. The old string `family` filter has been
-    // collapsed to the bool now compared directly against each wiki's
-    // `_meta.md` flag.
-    let mut meta_cache: std::collections::HashMap<String, Option<(String, bool)>> =
+    // `wiki_type` is a free-form label that still lives only in
+    // `_meta.md`, so this axis stays a per-hit tree lookup (cached).
+    // Unknown wiki_ids — the hit's wiki was deleted between recall and
+    // filter — drop out of an explicit type filter and pass otherwise.
+    let mut type_cache: std::collections::HashMap<String, Option<String>> =
         std::collections::HashMap::new();
-    let mut filtered: Vec<recall::RecallHit> = Vec::new();
+    let mut filtered: Vec<recall::SearchHit> = Vec::new();
     for hit in hits {
-        let resolved = if let Some(cached) = meta_cache.get(&hit.wiki_id).cloned() {
-            cached
-        } else {
-            // Resolve the wiki_id to its `(wiki_type, smart)` via the
-            // on-disk tree. Unknown wiki_ids (the hit's parent wiki was
-            // deleted between recall and filter) keep `None` — such hits
-            // drop out of any type/family filter but pass the unfiltered
-            // path.
-            let resolved = WikiId::parse(&hit.wiki_id).ok().and_then(|id| {
-                state
-                    .tree
-                    .locate(&id)
-                    .ok()
-                    .map(|h| (h.meta().wiki_type.clone(), h.meta().smart))
-            });
-            meta_cache.insert(hit.wiki_id.clone(), resolved.clone());
-            resolved
-        };
         if let Some(allow) = allowed_types.as_ref() {
-            let Some((t, _)) = resolved.as_ref() else {
+            let wiki_id = hit.wiki_id().to_owned();
+            let resolved = type_cache.entry(wiki_id).or_insert_with_key(|id| {
+                WikiId::parse(id).ok().and_then(|parsed| {
+                    state
+                        .tree
+                        .locate(&parsed)
+                        .ok()
+                        .map(|h| h.meta().wiki_type.clone())
+                })
+            });
+            let resolved = resolved.clone();
+            let Some(t) = resolved else {
                 continue;
             };
-            if !allow.contains(t) {
+            if !allow.contains(&t) {
                 continue;
             }
         }
-        if let Some(want_smart) = smart_filter {
-            let Some((_, smart)) = resolved.as_ref() else {
-                continue;
-            };
-            if *smart != want_smart {
-                continue;
-            }
-        }
-        // Visibility is derived from the per-fragment ACL — there is no
-        // wiki-level gate. `recall::wiki_search` already dropped every hit the
-        // sender cannot `can_read`, so a surviving hit is readable by
-        // construction.
+        // Visibility is already settled: fact hits passed the per-fragment
+        // ACL check, section hits came only from wikis the sender may read.
         filtered.push(hit);
     }
 
     let total = filtered.len();
     let results: Vec<Value> = filtered
         .into_iter()
-        .map(|h| {
-            json!({
-                "wiki_id": h.wiki_id,
-                "fact_id": h.fact_id.as_str(),
-                "snippet": h.text,
-                "score": h.score,
-            })
+        .map(|h| match h {
+            recall::SearchHit::Fact(f) => json!({
+                "wiki_id": f.wiki_id,
+                "kind": "fact",
+                "fact_id": f.fact_id.as_str(),
+                "snippet": f.text,
+                "score": f.score,
+            }),
+            recall::SearchHit::Section(s) => json!({
+                "wiki_id": s.wiki_id,
+                "kind": "section",
+                // Sections are keyed by position, not by a fact id: the
+                // handle is stable across reindexes, a minted id was not.
+                "section": s.handle(),
+                "source_path": s.source_path,
+                "heading_path": s.heading_path,
+                "snippet": s.text,
+                "score": s.score,
+            }),
         })
         .collect();
     Ok(json!({
@@ -1165,6 +1175,10 @@ async fn navigate_seeds(
 /// breadth `wiki_search` would have returned. Smart wikis are funnel-skipped
 /// (handled in `recall_nav`); their content still surfaces via the flat
 /// component. Degrades to flat-only when no `navigator` LLM slot is wired.
+#[allow(
+    clippy::too_many_lines,
+    reason = "two-corpus flat recall + funnel + JSON shaping + trace live as one linear handler; splitting hides the order the pieces depend on"
+)]
 pub(super) async fn call_wiki_navigate(
     state: &McpState,
     identity: &IdentityProfile,
@@ -1180,8 +1194,10 @@ pub(super) async fn call_wiki_navigate(
         sender_groups,
     };
 
-    // Flat recall: the breadth floor returned to the caller AND the RAG seeds
-    // that feed the funnel. Whole visible corpus, ACL-filtered.
+    // Flat recall over the fact corpus: the breadth floor returned to the
+    // caller AND the RAG seeds that feed the funnel. The funnel walks
+    // wikilinks and page structure, which only standard wikis carry, so
+    // the seeds are facts by construction.
     let top_k = args.top_k.unwrap_or(20);
     let flat_hits = recall::wiki_search(
         &state.pool,
@@ -1189,6 +1205,18 @@ pub(super) async fn call_wiki_navigate(
         &args.query,
         top_k,
         FactFilters::default(),
+        &sender,
+    )
+    .await
+    .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
+
+    // Smart-wiki documentation: surfaced in the flat floor alongside the
+    // facts, never fed to the funnel.
+    let section_hits = recall::search_sections(
+        &state.pool,
+        Arc::clone(&state.embedder),
+        &args.query,
+        top_k,
         &sender,
     )
     .await
@@ -1224,17 +1252,42 @@ pub(super) async fn call_wiki_navigate(
             })
         })
         .collect();
-    let flat_json: Vec<Value> = flat_hits
+    // The flat floor is the whole visible corpus, so it carries the
+    // smart-wiki sections too — they are funnel-skipped (free markdown has
+    // no wikilink/heading structure the funnel walks) but must still
+    // surface here. Merged into one score-ordered list.
+    let mut flat_ranked: Vec<(f32, Value)> = flat_hits
         .iter()
         .map(|h| {
-            json!({
-                "wiki_id": h.wiki_id,
-                "fact_id": h.fact_id.as_str(),
-                "snippet": h.text,
-                "score": h.score,
-            })
+            (
+                h.score,
+                json!({
+                    "wiki_id": h.wiki_id,
+                    "kind": "fact",
+                    "fact_id": h.fact_id.as_str(),
+                    "snippet": h.text,
+                    "score": h.score,
+                }),
+            )
         })
         .collect();
+    flat_ranked.extend(section_hits.iter().map(|s| {
+        (
+            s.score,
+            json!({
+                "wiki_id": s.wiki_id,
+                "kind": "section",
+                "section": s.handle(),
+                "source_path": s.source_path,
+                "heading_path": s.heading_path,
+                "snippet": s.text,
+                "score": s.score,
+            }),
+        )
+    }));
+    flat_ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Less));
+    flat_ranked.truncate(top_k);
+    let flat_json: Vec<Value> = flat_ranked.into_iter().map(|(_, v)| v).collect();
 
     let result = json!({
         "navigated": navigated_json,

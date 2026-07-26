@@ -1906,6 +1906,41 @@ async fn apply_staged_recovery(workdir: &Path, config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// The two smart-wiki boot passes, run once after the tree opens.
+///
+/// Both are best-effort: a failure logs and serving proceeds, because
+/// neither is required to answer a request correctly — the first is a
+/// cache refresh the safety-net tick repeats, the second is a migration
+/// tail that converges on the next boot.
+async fn boot_smart_wiki_passes(pool: &sqlx::SqlitePool, tree: &mwe_core::wiki::WikiTree) {
+    // Project every smart wiki's `_meta.md` into the `smart_wikis`
+    // registry, so recall can scope by wiki family and resolve wiki-level
+    // read access in SQL instead of walking the tree per hit. Refreshed on
+    // every safety-net tick too — `_meta.md` stays the source of truth.
+    match reindex::project_smart_wiki_registry(pool, tree).await {
+        Ok(r) => info!(
+            projected = r.projected,
+            removed = r.removed,
+            "smart registry: projected at boot"
+        ),
+        Err(e) => warn!(error = %e, "smart registry projection failed (non-fatal)"),
+    }
+
+    // One-time migration tail: move any smart-wiki content row still
+    // living in `fact_index` into `wiki_sections`, embeddings copied
+    // verbatim. Idempotent — a no-op on an already-migrated store.
+    match reindex::backfill_smart_sections(pool, tree).await {
+        Ok(r) if r.pages_moved > 0 || r.legacy_rows_dropped > 0 => info!(
+            pages_moved = r.pages_moved,
+            sections_written = r.sections_written,
+            legacy_rows_dropped = r.legacy_rows_dropped,
+            "smart backfill: legacy section rows moved out of fact_index"
+        ),
+        Ok(_) => info!("smart backfill: nothing to move"),
+        Err(e) => warn!(error = %e, "smart backfill failed (non-fatal)"),
+    }
+}
+
 /// Shared startup helper used by both transports.
 ///
 /// 1. Health-check every configured LLM slot (no silent fallbacks).
@@ -1980,6 +2015,8 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
         Ok(r) => info!(scanned = r.scanned, "wiki-id reconcile: clean"),
         Err(e) => warn!(error = %e, "wiki-id reconcile failed (non-fatal)"),
     }
+
+    boot_smart_wiki_passes(&pool, &tree).await;
 
     // Refresh the operator's Obsidian collector index (`wikis/index.md`) to
     // realign after any external edits/deletions while the server was down.

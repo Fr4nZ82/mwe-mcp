@@ -538,7 +538,7 @@ Semantic search over the corpus accessible to the sender. Top-K cosine
 | `top_k` | integer 1–50 | no (default 20) | — |
 | `scope.owner_ids` | `array<principal>` | no | Honoured. Only the first entry is applied as the owner filter. |
 | `scope.wiki_types` | `array<string>` | no | Post-filter: keeps hits whose resolved `wiki_type` is in the set. |
-| `scope.smart` | boolean | no | `true` keeps smart-wiki-only hits, `false` excludes them; resolved against each wiki's smart flag in its `_meta.md`. |
+| `scope.smart` | boolean | no | Corpus selector, applied **before** ranking: `true` searches only `wiki_sections` (smart-wiki documentation), `false` only `fact_index` (standard-wiki memory), omitted searches both and merges. Not a post-filter — `top_k` is honoured either way. |
 | `scope.valid_at` | string (ISO-8601) | no | The dated query: keeps only facts whose validity window contains the instant ("what was true on June 4th?"). Without it a closed window only down-ranks a hit (signal, never filter). Malformed values are `invalid_input`. |
 | `scope.include_archived` | boolean | no (default `false`) | **Accepted but not honoured.** |
 
@@ -547,22 +547,32 @@ Semantic search over the corpus accessible to the sender. Top-K cosine
 ```jsonc
 {
   "results": [
-    { "wiki_id": "…", "fact_id": "018f…", "snippet": "…", "score": 0.83 }
+    { "wiki_id": "…", "kind": "fact", "fact_id": "018f…", "snippet": "…", "score": 0.83 },
+    { "wiki_id": "…", "kind": "section", "section": "wikis/alice/proj/design.md#3",
+      "source_path": "wikis/alice/proj/design.md", "heading_path": "Design > Auth",
+      "snippet": "…", "score": 0.79 }
   ],
   "total": 5,                          // count of hits after filtering (= results.len())
   "scope_hint": null                   // legacy wire-compat field, always null
 }
 ```
 
+A `fact` result is keyed by its `fact_id`; a `section` result is keyed by
+its positional `section` handle (`<source_path>#<ord>`), which is stable
+across reindexes.
+
 **Errors**: `400 invalid_input` (bad `scope.owner_ids[0]`),
 `403 sender_token_mismatch`, `500 internal_error`.
 
-**Caveats**: each hit is gated by the per-fragment ACL (`can_read`), so a
+**Caveats**: a **fact** hit is gated by the per-fragment ACL (`can_read`), so a
 fact the sender cannot read never appears — and a wiki the sender can read
 nothing in simply contributes no hits (visibility is derived from the facts,
 not a wiki-level flag; see
 [`identity-and-acl.md` §5](../concepts/identity-and-acl.md#5-wiki-visibility-is-derived--there-is-no-wiki-level-access-gate)).
-The family / wiki_type filters resolve each hit's
+A **section** hit is gated at the wiki level instead — its wiki's owner +
+`shared_with`, resolved once per wiki — because that is where a smart
+wiki's ACL lives.
+The `wiki_types` filter resolves each hit's
 `wiki_type` through a cached tree walk — hits whose parent wiki was
 deleted between recall and filter resolve to `None` and drop out of any
 type filter.

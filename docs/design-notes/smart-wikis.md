@@ -2,7 +2,7 @@
 title: Smart-wikis — smart consumers authoritatively managing their own memory wikis
 area: design-notes
 status: partial
-last_review: "2026-06-29"
+last_review: "2026-07-26"
 ---
 
 # Smart-wikis
@@ -104,22 +104,41 @@ consumer is authoritative on the on-disk shape (default ACL `owner_user`,
 no REM hub regeneration underneath it). Smart *content* shape is the
 smart consumer's to organise.
 
-**Recall indexing — content-indexed, markerless.** A smart wiki carries
-**no per-fragment `{{f=…}}` markers and no per-fragment ACL**: the
-consumer writes plain markdown (move / rename / add / remove pages,
-exactly as the engineering wiki of *this* repo is maintained) and recall
-indexes the *content*. The [reindex pipeline](reindex-pipeline.md#smart-wikis--content-indexing-markerless)
-chunks each page into heading-delimited sections, embeds them, and
-drop-and-reinserts the page's `fact_index` rows, stamping the
-**wiki-level ACL** (owner = the wiki's resolved `scope`, allow =
-`shared_with`) onto every row — so recall's per-fact visibility check
-honours the wiki-level share with no recall-layer change. Smart-wiki
-rows keep `sender_id = NULL`: they have no per-fragment capturer, and the
-"always-materialize `sender`" invariant is standard-wikis only (see
-[marker-grammar §5](marker-grammar.md#5-cross-user-attribution)). The
-re-stamp (`fact_index::reproject_wiki_acl`) clears `sender_id` alongside
-owner/allow, so a revoke leaves no stale sender in the read union. A
-`wiki_admin_push` enqueues its touched pages onto the reindex queue and
+**Recall indexing — its own tables, content-indexed and markerless.** A
+smart wiki carries **no per-fragment `{{f=…}}` markers and no
+per-fragment ACL**: the consumer writes plain markdown (move / rename /
+add / remove pages, exactly as the engineering wiki of *this* repo is
+maintained) and recall indexes the *content*. That content does **not**
+live in `fact_index` — it has its own pair of tables
+([`mwe_core::sections`](../../crates/mwe-core/src/sections.rs), migration
+`0062`):
+
+- **`wiki_sections`** — one row per heading-delimited section, keyed by
+  `(source_path, section_ord)`. No owner, no sender, no allow list, no
+  supersedence, no tombstone, no validity window: a section is a chunk of
+  a document, not a governed claim, and it exists exactly as long as its
+  page does.
+- **`smart_wikis`** — a queryable projection of each smart wiki's
+  `_meta.md`: resolved owner, `shared_with`, `project_id`, `wiki_type`.
+  The file stays the source of truth; the table exists so the engine can
+  ask *in SQL* which wikis are smart and who may read them.
+
+The split is what makes wiki-level ACL actually wiki-level: read access
+is stored **once per wiki** and resolved once per query
+([`recall::search_sections`](../../crates/mwe-core/src/recall.rs) keeps
+the readable wikis, then loads only their sections — an unreadable wiki's
+bytes are never read). A `shared_with` edit is a **single-row** write
+that closes the read window immediately; it used to re-stamp one row per
+indexed section, over a thousand on a large project wiki.
+
+It is also what makes the family filter honest: `wiki_search`'s
+`scope.smart` now selects a **table before ranking** instead of
+discarding hits after it, so the caller's `top_k` is honoured. And the
+conversational path (`wiki_ingest_message`) recalls facts only —
+structurally, because documentation is not in the table it reads — so
+project docs can no longer crowd a personal turn's context.
+
+A `wiki_admin_push` enqueues its touched pages onto the reindex queue and
 acks immediately (embedding runs off the request path — a bulk import of
 large pages must not hold the HTTP response past a proxy timeout); the
 safety-net sweep is the backstop. See
@@ -131,10 +150,13 @@ wikis only (the founding ACL-per-fragment idea — see
 consumer's: every management verb of the dashboard chat panel
 (`wiki_change_scope`, `wiki_move_fact`, `wiki_delete_page`,
 `wiki_forget`, `wiki_supersede`, `wiki_request_forget`) refuses a smart
-target, keying on this `smart` flag — smart section rows carry
-`sender_id = NULL` and owner = the scope principal, so no sender/owner
-gate would catch them
-([`agentic.rs`](../../crates/mwe-dashboard/src/agentic.rs)). The core
+target, keying on this `smart` flag
+([`agentic.rs`](../../crates/mwe-dashboard/src/agentic.rs)). Those
+refusals are now belt-and-braces rather than the only line of defence:
+those verbs act on `fact_index` rows, and a smart wiki has none — its
+content is in `wiki_sections`, where supersede and forget do not exist.
+The guards stay because they give the operator a clear message instead of
+a silent no-op. The core
 [`scope::wiki_change_scope`](../../crates/mwe-core/src/scope.rs)
 primitive carries the same refusal for any caller: a smart wiki's
 wiki-level read audience derives from its position in the tree (the
@@ -615,17 +637,23 @@ proposals targeting companions are blocked at emission time by the
 now-excluded write-jobs.
 
 **Briefing dispatcher** ([`run_briefing_dispatcher`](../../crates/mwe-core/src/rem.rs))
-scans each smart wiki's active facts for two findings:
+scans each smart wiki's **sections** (`wiki_sections`, not `fact_index`)
+for two findings. The `source_ref` therefore keys on the section's stable
+`<source_path>#<ord>` handle:
 
 | Finding | Trigger | `source_ref` |
 |---|---|---|
-| **Stale draft** | YAML body has `status: draft` at the top level and `created_at < now - briefing_stale_draft_age` (default 14 days) | `rem:briefing_dispatcher:stale_draft:<fact_id>` |
-| **Recall-hot** | `fact_index.recall_count_30d >= briefing_recall_hot_threshold` (default 20) | `rem:briefing_dispatcher:recall_hot:<fact_id>` |
+| **Stale draft** | YAML body has `status: draft` at the top level and `created_at < now - briefing_stale_draft_age` (default 14 days) | `rem:briefing_dispatcher:stale_draft:<source_path>#<ord>` |
+| **Recall-hot** | `wiki_sections.recall_count_30d >= briefing_recall_hot_threshold` (default 20) | `rem:briefing_dispatcher:recall_hot:<source_path>#<ord>` |
+
+Because a section's identity is its position, both findings survive an
+edit elsewhere on the page — the dedup window keeps working instead of
+re-firing under a fresh id every time the page is touched.
 
 **Backlink reciprocity detector** ([`run_backlink_reciprocity`](../../crates/mwe-core/src/rem.rs))
 builds a `(target_companion, source_wiki)` matrix in one pass:
 
-1. Collect smart wikis + cache their active fact bodies.
+1. Collect smart wikis + cache their section bodies.
 2. For each non-smart source wiki, scan each active fact body with
    [`recall::extract_wikilink_wiki_ids`].
 3. For each `[[<wiki_id>...]]` whose target is a companion, check
@@ -973,16 +1001,17 @@ specific grant):
 
 **Recall consistency.** `resolve_read_access` gates the `wiki_admin`
 read surface (`wiki_read` / `wiki_search` at the wiki level) and
-`wiki_admin_notify`. Content **recall** is gated per-fact instead, but on
-the *same* roster: the
-[section indexer](reindex-pipeline.md#smart-wikis--content-indexing-markerless)
-stamps the wiki's resolved `scope` as each row's `owner_id` and
-`shared_with` as its `allow_ids`, so the same principals decide recall
-visibility. A `shared_with` edit re-projects onto the wiki's rows
-**synchronously** before the sharing request returns
-([`fact_index::reproject_wiki_acl`](../../crates/mwe-core/src/fact_index.rs),
+`wiki_admin_notify`. Content **recall** is gated on the *same* roster, at
+the same granularity: [`recall::search_sections`](../../crates/mwe-core/src/recall.rs)
+reads the wiki's owner + `shared_with` from the `smart_wikis` registry,
+keeps the wikis the sender may read, and only then loads their sections.
+A `shared_with` edit refreshes that **single registry row**
+synchronously before the sharing request returns
+([`sections::upsert_smart_wiki`](../../crates/mwe-core/src/sections.rs),
 called from the dashboard sharing route) — a revoke must close the recall
-read-window immediately, never waiting for the ~5-minute safety-net sweep.
+read-window immediately, never waiting for the ~5-minute safety-net
+sweep, which re-projects the roster as a backstop for a hand edit to
+`_meta.md`.
 
 `briefing::notify` (the `wiki_admin_notify` MCP tool's headless core)
 routes through `resolve_read_access` rather than an
@@ -1003,7 +1032,7 @@ The roster is managed via the dashboard `/wikis/<id>/sharing` route —
 **smart-only**: the surface is a `404` on a standard wiki (not even
 discoverable), because `shared_with` is the *wiki-level* ACL axis, which
 standard wikis do not have — their reads are governed per-fragment, and a
-wiki-level `reproject_wiki_acl` would flatten that granularity. The guard
+wiki-level roster would flatten that granularity. The guard
 lives in `load_sharing` (gating both the GET form and the POST), the
 inverse of the raw editor's smart-wiki refusal. Operators can also edit
 `_meta.md` by hand — the parser accepts the field and round-trips it
@@ -1091,7 +1120,8 @@ through `WikiMeta::to_yaml`.
 ## Maturity
 
 The smart-wiki surface is `status: partial`: the family-H
-`wiki_admin_*` tools, the `smart: true` marker, the skill catalog,
+`wiki_admin_*` tools, the `smart: true` marker, the dedicated content
+index (`wiki_sections` + the `smart_wikis` registry), the skill catalog,
 the REM read/write split, three-layer
 briefing classification, citation IDs, inline dashboard comments,
 op-log revert, sharing, the lease coordination tools, and
@@ -1110,4 +1140,6 @@ comments, and richer briefing-triage UX — are not yet implemented
 - **Smart marker**: the `smart: bool` flag in each wiki's `_meta.md` (on-disk key `smart:`, legacy read-alias `companion:`) (§2 above) — see also [../concepts/memory-model.md](../concepts/memory-model.md).
 - **Ingest filter**: [ingest-pipeline.md §Smart-family filter](ingest-pipeline.md#smart-family-filter).
 - **Dispatcher wiring**: [mcp-dispatcher.md §The tool roster](mcp-dispatcher.md#the-tool-roster).
-- **Migrations**: [engine-db-and-migrations.md](engine-db-and-migrations.md) — `wiki_admin_op_log` (0022) and `wiki_briefing_items` (0023).
+- **Content index**: [`mwe_core::sections`](../../crates/mwe-core/src/sections.rs) (`wiki_sections` + `smart_wikis`) and [reindex-pipeline.md](reindex-pipeline.md#smart-wikis--content-indexing-markerless).
+- **Recall corpora**: [recall-pipeline.md §The two corpora](recall-pipeline.md#the-two-corpora).
+- **Migrations**: [engine-db-and-migrations.md](engine-db-and-migrations.md) — `wiki_admin_op_log` (0022), `wiki_briefing_items` (0023), `wiki_sections` + `smart_wikis` (0062).

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! End-to-end round-trip test for the watcher → `fact_index`
-//! pipeline.
+//! End-to-end round-trip test for the watcher → `wiki_sections`
+//! pipeline (the smart-wiki content index).
 //!
 //! Uses a real `notify` watcher backed by `tempfile` so the event
 //! delivery + marker filter + reindex consumer all run under the same
@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mwe_core::embedder::FakeEmbedder;
-use mwe_core::fact_index;
 use mwe_core::reindex;
+use mwe_core::sections;
 use mwe_core::watcher::WikiWatcher;
 use mwe_core::wiki::{WikiTree, atomic_write};
 use sqlx::SqlitePool;
@@ -109,7 +109,7 @@ async fn third_party_write_triggers_reindex_insert() {
     let found = wait_for(WATCHER_DELIVERY_TIMEOUT, move || {
         let pool = pool_for_wait.clone();
         async move {
-            fact_index::find_active_by_source_path(&pool, "wikis/alice/intro.md")
+            sections::find_page_sections(&pool, "wikis/alice/intro.md")
                 .await
                 .expect("query")
                 .into_iter()
@@ -158,7 +158,7 @@ async fn write_with_held_marker_is_suppressed_by_filter() {
     // dispatch) the event.
     tokio::time::sleep(Duration::from_millis(800)).await;
 
-    let rows = fact_index::find_active_by_source_path(&pool, "wikis/alice/intro.md")
+    let rows = sections::find_page_sections(&pool, "wikis/alice/intro.md")
         .await
         .expect("query");
     assert!(
@@ -184,11 +184,10 @@ async fn third_party_delete_hard_drops_index_rows() {
     reindex::reindex_file(&pool, &tree, embedder.clone(), &page)
         .await
         .unwrap();
-    let seeded = fact_index::find_active_by_source_path(&pool, "wikis/alice/intro.md")
+    let seeded = sections::find_page_sections(&pool, "wikis/alice/intro.md")
         .await
         .unwrap();
     assert_eq!(seeded.len(), 1);
-    let fact_id = seeded[0].fact_id.clone();
 
     let (watcher, _tx, rx) = WikiWatcher::start(tree.wikis_dir()).expect("start watcher");
     let _watcher_keep = watcher;
@@ -203,20 +202,16 @@ async fn third_party_delete_hard_drops_index_rows() {
     let pool_for_wait = pool.clone();
     let gone = wait_for(WATCHER_DELIVERY_TIMEOUT, move || {
         let pool = pool_for_wait.clone();
-        let fact_id = fact_id.clone();
         async move {
-            match fact_index::find_by_id(&pool, &fact_id)
+            let rows = sections::find_page_sections(&pool, "wikis/alice/intro.md")
                 .await
-                .expect("find_by_id")
-            {
-                None => Some(()),
-                Some(_) => None,
-            }
+                .expect("query");
+            rows.is_empty().then_some(())
         }
     })
     .await;
     assert!(
         gone.is_some(),
-        "deleted smart page's row hard-dropped within watcher delivery timeout"
+        "deleted smart page's sections hard-dropped within watcher delivery timeout"
     );
 }

@@ -46,7 +46,7 @@
 //! reindex pipeline) so a
 //! missed event never permanently de-syncs the index.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,9 +57,10 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::embedder::{Embedder, EmbedderError};
-use crate::fact_index::{self, FactIndexRow, NewFact};
+use crate::fact_index::{self, FactIndexRow};
 use crate::parser::{self, ParseEvent};
-use crate::types::{FactId, Principal};
+use crate::sections;
+use crate::types::FactId;
 use crate::watcher::WatchedChange;
 use crate::wiki::{DiscoveredWiki, WikiError, WikiTree};
 
@@ -81,6 +82,9 @@ pub enum ReindexError {
     /// DB-side failure on insert / update / tombstone.
     #[error("fact_index: {0}")]
     FactIndex(#[from] fact_index::FactIndexError),
+    /// DB-side failure on the smart-wiki section index.
+    #[error("wiki_sections: {0}")]
+    Sections(#[from] sections::SectionError),
     /// Embedder failure when re-embedding a changed body.
     #[error("embedder: {0}")]
     Embedder(#[from] EmbedderError),
@@ -313,10 +317,10 @@ pub async fn reindex_file(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             report.file_missing = true;
             let dropped = if matches!(&resolved_wiki, Some(r) if r.smart) {
-                // Markerless smart wiki: a removed page's section rows are
-                // hard-dropped — recall is content-indexed, so there is
-                // nothing to tombstone.
-                usize::try_from(fact_index::drop_by_source_path(pool, &source_path).await?)
+                // Markerless smart wiki: a removed page's sections are
+                // hard-dropped — the page is their only source, so there
+                // is nothing to tombstone.
+                usize::try_from(sections::drop_page_sections(pool, &source_path).await?)
                     .unwrap_or(usize::MAX)
             } else {
                 drop_active_rows_for_source(pool, &source_path, spare_pending).await?
@@ -342,17 +346,15 @@ pub async fn reindex_file(
     };
 
     if resolved.smart {
-        // Markerless smart wiki: index the page content by section. The
-        // wiki-level ACL (owner = the derived scope principal, allow =
-        // `shared_with`) is projected onto every section row so recall's
-        // per-fact visibility check honours the wiki-level share.
+        // Markerless smart wiki: index the page content by section into
+        // `wiki_sections`. No ACL is stamped here — read access belongs to
+        // the wiki, and recall resolves it once per wiki from the
+        // `smart_wikis` registry.
         section_index_page(
             pool,
             embedder.as_ref(),
             &source_path,
             &resolved.wiki_id,
-            &resolved.scope_principal,
-            &resolved.allow_default,
             &raw,
             &mut report,
         )
@@ -738,6 +740,197 @@ fn plan_page_source_paths(tree: &WikiTree) -> anyhow::Result<HashSet<String>> {
         .collect())
 }
 
+// ---------- smart_wikis registry projection ----------
+
+/// Outcome of one [`project_smart_wiki_registry`] pass.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SmartRegistryReport {
+    /// Smart wikis projected (inserted or refreshed).
+    pub projected: usize,
+    /// Registry rows dropped because their wiki is gone or no longer smart.
+    pub removed: usize,
+}
+
+/// Re-project every smart wiki's `_meta.md` into the `smart_wikis`
+/// registry, and drop registry rows whose wiki is gone or stopped being
+/// smart.
+///
+/// `_meta.md` on disk stays the single source of truth: this table is a
+/// **queryable cache** of it, which is why the projection re-runs on the
+/// safety-net tick rather than being written once. What it buys is that
+/// recall can ask the DB "which wikis are smart, and who may read them?"
+/// instead of resolving every hit's wiki through a tree walk — that
+/// impossibility is why the smart filter used to be applied *after*
+/// top-K, silently shrinking the caller's result set.
+///
+/// Idempotent: an unchanged wiki re-writes the same values.
+///
+/// # Errors
+///
+/// Propagates the tree walk and DB failures.
+pub async fn project_smart_wiki_registry(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+) -> anyhow::Result<SmartRegistryReport> {
+    let mut report = SmartRegistryReport::default();
+    let mut live: HashSet<String> = HashSet::new();
+
+    for d in tree.walk()? {
+        if !d.meta.smart {
+            continue;
+        }
+        let wiki_id = d.meta.wiki_id.as_str().to_owned();
+        let owner_id = match tree.resolve_scope_principal(&d.meta) {
+            Ok(p) => p,
+            Err(e) => {
+                // An unresolvable scope means we cannot say who may read
+                // the wiki. Leaving the row out is fail-closed: recall
+                // simply will not offer its sections.
+                tracing::warn!(
+                    wiki_id = %wiki_id,
+                    error = %e,
+                    "smart registry: scope unresolved — wiki left out of the registry"
+                );
+                continue;
+            },
+        };
+        let project_id = d
+            .meta
+            .extra
+            .get(serde_yaml::Value::from("project_id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        sections::upsert_smart_wiki(
+            pool,
+            &sections::SmartWikiRow {
+                wiki_id: wiki_id.clone(),
+                owner_id,
+                shared_with: d.meta.shared_with.clone(),
+                project_id,
+                wiki_type: d.meta.wiki_type.clone(),
+            },
+        )
+        .await?;
+        live.insert(wiki_id);
+        report.projected += 1;
+    }
+
+    for row in sections::list_smart_wikis(pool).await? {
+        if !live.contains(&row.wiki_id) {
+            sections::remove_smart_wiki(pool, &row.wiki_id).await?;
+            report.removed += 1;
+            tracing::info!(
+                wiki_id = %row.wiki_id,
+                "smart registry: row dropped — wiki gone or no longer smart"
+            );
+        }
+    }
+    Ok(report)
+}
+
+// ---------- Boot-time smart-section backfill ----------
+
+/// Outcome of one [`backfill_smart_sections`] pass.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SmartBackfillReport {
+    /// Pages whose legacy rows were moved into `wiki_sections`.
+    pub pages_moved: usize,
+    /// Section rows written.
+    pub sections_written: usize,
+    /// Legacy `fact_index` rows removed.
+    pub legacy_rows_dropped: usize,
+}
+
+/// One-time boot pass: move legacy smart-wiki content rows out of
+/// `fact_index` and into `wiki_sections`.
+///
+/// Smart-wiki sections used to live in `fact_index` alongside standard
+/// facts (see [`crate::sections`] for why they no longer do). This moves
+/// them, **copying the stored embeddings verbatim** — no re-embedding, so
+/// the migration costs one pass over the rows and nothing else.
+///
+/// Legacy rows carry no ordinal (they were keyed by a minted id), so the
+/// position is reconstructed by sorting each page's rows by `fact_id` —
+/// `UUIDv7` is time-ordered, so that is their original insertion order.
+/// Any residual drift is free to fix: the next reindex re-derives the
+/// true order from disk and reuses each section's stored vector by text,
+/// so no embedding is recomputed there either.
+///
+/// Idempotent. A page already present in `wiki_sections` is not
+/// re-copied — its legacy rows are simply dropped — so a re-run after a
+/// partial pass converges, and a run on an already-migrated store is a
+/// no-op.
+///
+/// # Errors
+///
+/// Propagates the tree walk and DB failures.
+pub async fn backfill_smart_sections(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+) -> anyhow::Result<SmartBackfillReport> {
+    let mut report = SmartBackfillReport::default();
+
+    for d in tree.walk()? {
+        if !d.meta.smart {
+            continue;
+        }
+        let wiki_id = d.meta.wiki_id.as_str().to_owned();
+        let legacy = fact_index::find_active_in_wiki(pool, &wiki_id).await?;
+        if legacy.is_empty() {
+            continue;
+        }
+
+        // Group the page's rows, then order them the way they were
+        // inserted (UUIDv7 is time-ordered).
+        let mut by_page: BTreeMap<String, Vec<&FactIndexRow>> = BTreeMap::new();
+        for row in &legacy {
+            by_page
+                .entry(row.source_path.clone())
+                .or_default()
+                .push(row);
+        }
+
+        for (source_path, mut rows) in by_page {
+            rows.sort_by(|a, b| a.fact_id.as_str().cmp(b.fact_id.as_str()));
+
+            let already = sections::find_page_sections(pool, &source_path).await?;
+            if already.is_empty() {
+                let new_sections: Vec<sections::NewSection> = rows
+                    .iter()
+                    .enumerate()
+                    .map(|(ord, row)| sections::NewSection {
+                        wiki_id: wiki_id.clone(),
+                        source_path: source_path.clone(),
+                        section_ord: i64::try_from(ord).unwrap_or(i64::MAX),
+                        // Unknown for a legacy row — the heading chain is
+                        // baked into `text`. The next reindex fills it in.
+                        heading_path: None,
+                        text: row.text.clone(),
+                        embedding: row.embedding.clone(),
+                    })
+                    .collect();
+                let (written, _) =
+                    sections::replace_page_sections(pool, &source_path, &new_sections).await?;
+                report.sections_written += usize::try_from(written).unwrap_or(usize::MAX);
+                report.pages_moved += 1;
+            }
+
+            let dropped = fact_index::drop_by_source_path(pool, &source_path).await?;
+            report.legacy_rows_dropped += usize::try_from(dropped).unwrap_or(usize::MAX);
+        }
+    }
+
+    if report.pages_moved > 0 || report.legacy_rows_dropped > 0 {
+        tracing::info!(
+            pages_moved = report.pages_moved,
+            sections_written = report.sections_written,
+            legacy_rows_dropped = report.legacy_rows_dropped,
+            "smart backfill: legacy smart-wiki rows moved out of fact_index"
+        );
+    }
+    Ok(report)
+}
+
 // ---------- Boot-time wiki_id reconcile (safety net) ----------
 
 /// Outcome of one [`reconcile_wiki_ids`] pass.
@@ -853,6 +1046,20 @@ pub async fn reindex_full(
     embedder: Arc<dyn Embedder>,
 ) -> Result<ReindexFullReport> {
     let mut report = ReindexFullReport::default();
+    // Refresh the `smart_wikis` registry first: it is a projection of the
+    // `_meta.md` files this sweep is about to walk, so a hand edit to a
+    // wiki's `smart:` flag or `shared_with:` roster lands here — including
+    // a revoke, which must close the recall window on the next tick even
+    // if nobody hit the dashboard sharing route.
+    match project_smart_wiki_registry(pool, tree).await {
+        Ok(r) if r.projected > 0 || r.removed > 0 => tracing::debug!(
+            projected = r.projected,
+            removed = r.removed,
+            "reindex_full: smart registry refreshed"
+        ),
+        Ok(_) => {},
+        Err(e) => tracing::warn!(error = %e, "reindex_full: smart registry projection failed"),
+    }
     // Standard wikis are compiler OUTPUT — their fact_index is owned by
     // the buffer→promote→compile chain. `reindex_file` is standard-wiki-safe
     // per event (offset-and-existence repair only), but the periodic tick
@@ -915,23 +1122,23 @@ pub async fn reindex_full(
             }
         }
 
-        // Markerless deletion safety net: hard-drop any active row whose
-        // page no longer exists on disk (a `Removed` watcher event this
-        // periodic tick is recovering). Smart wikis carry no tombstone —
-        // the section rows of a removed page simply disappear.
-        match fact_index::find_active_in_wiki(pool, d.meta.wiki_id.as_str()).await {
-            Ok(active) => {
+        // Markerless deletion safety net: hard-drop the sections of any
+        // page that no longer exists on disk (a `Removed` watcher event
+        // this periodic tick is recovering). Smart wikis carry no
+        // tombstone — a removed page's sections simply disappear.
+        match sections::indexed_pages(pool).await {
+            Ok(pages) => {
                 let mut gone: HashSet<String> = HashSet::new();
-                for row in &active {
-                    if gone.contains(&row.source_path) {
+                for (wiki_id, source_path) in pages {
+                    if wiki_id != d.meta.wiki_id.as_str() || gone.contains(&source_path) {
                         continue;
                     }
-                    if !tree.workdir().join(&row.source_path).exists() {
-                        gone.insert(row.source_path.clone());
+                    if !tree.workdir().join(&source_path).exists() {
+                        gone.insert(source_path);
                     }
                 }
                 for sp in &gone {
-                    match fact_index::drop_by_source_path(pool, sp).await {
+                    match sections::drop_page_sections(pool, sp).await {
                         Ok(n) => report.total_orphaned += usize::try_from(n).unwrap_or(usize::MAX),
                         Err(e) => tracing::warn!(
                             error = %e,
@@ -1090,16 +1297,13 @@ fn relative_source_path(tree: &WikiTree, abs_path: &Path) -> Result<String> {
 }
 
 /// The owning wiki of a watched path, resolved for the reindex sweep.
+///
+/// Carries no ACL: a smart wiki's read access lives once in the
+/// `smart_wikis` registry (projected by
+/// [`project_smart_wiki_registry`]), not stamped onto each section, and a
+/// standard wiki's lives per fragment in `fact_index`.
 struct ResolvedWiki {
     wiki_id: String,
-    /// The wiki-level owner — the **scope principal** derived from the
-    /// parent chain to the root identity wiki. Stamped as `owner_id` on
-    /// every smart-wiki section row.
-    scope_principal: Principal,
-    /// The wiki-level `shared_with` roster (`_meta`). Stamped as
-    /// `allow_ids` on every smart-wiki section row so a grantee can recall
-    /// the wiki's content through the per-fact ACL check.
-    allow_default: Vec<Principal>,
     /// Picks the sweep shape: smart = content-indexed by section;
     /// standard = DB-authoritative, offset-and-existence repair.
     smart: bool,
@@ -1112,11 +1316,8 @@ fn resolve_wiki_for_path(tree: &WikiTree, abs_path: &Path) -> Result<Option<Reso
     let Some(d) = pick_wiki_for_path(&discovered, &abs_canon) else {
         return Ok(None);
     };
-    let scope_principal = tree.resolve_scope_principal(&d.meta)?;
     Ok(Some(ResolvedWiki {
         wiki_id: d.meta.wiki_id.as_str().to_owned(),
-        scope_principal,
-        allow_default: d.meta.shared_with.clone(),
         smart: d.meta.smart,
     }))
 }
@@ -1294,15 +1495,6 @@ fn collect_disk_markers(events: &[ParseEvent]) -> Vec<DiskMarker> {
     out
 }
 
-/// Mint a fresh `UUIDv7` fact id (markerless smart-wiki section rows get
-/// a new key on every reinsert). Mirrors `capture::new_fact_id` but
-/// stays infallible at the call site: `Uuid::new_v7` always yields the
-/// canonical layout `FactId::parse` accepts.
-fn fresh_fact_id() -> FactId {
-    let raw = uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::ContextV7::new()));
-    FactId::parse(&raw.to_string()).expect("Uuid::new_v7 is a valid fact id")
-}
-
 /// Section text for one [`crate::document::Segment`]: the heading chain
 /// (when present) prefixes the body so the heading words are part of the
 /// indexed + embedded text.
@@ -1313,60 +1505,47 @@ fn segment_text(seg: &crate::document::Segment) -> String {
     }
 }
 
-/// Whether a smart page's existing rows already match the desired
-/// sections **and** the projected wiki-level ACL — the idempotent fast
-/// path that spares a re-embed + drop/reinsert on an unchanged page.
-fn smart_page_in_sync(
-    existing: &[FactIndexRow],
-    desired: &[String],
-    owner: &Principal,
-    allow: &[Principal],
-) -> bool {
-    if existing.len() != desired.len() {
-        return false;
-    }
-    let mut remaining: Vec<&str> = desired.iter().map(String::as_str).collect();
-    for row in existing {
-        // Markerless section rows carry no offsets and the projected
-        // wiki-level ACL; any drift forces a rebuild.
-        if &row.owner_id != owner
-            || row.allow_ids.as_slice() != allow
-            || row.region_start.is_some()
-            || row.region_end.is_some()
-        {
-            return false;
-        }
-        match remaining.iter().position(|t| *t == row.text) {
-            Some(pos) => {
-                remaining.swap_remove(pos);
-            },
-            None => return false,
-        }
-    }
-    remaining.is_empty()
+/// Whether a smart page's stored sections already match the desired ones,
+/// **position by position** — the idempotent fast path that spares a
+/// re-embed and a write on an unchanged page.
+///
+/// Position-sensitive on purpose: identity here *is* the position, so a
+/// page whose sections were reordered is out of sync even though the same
+/// texts are present.
+fn smart_page_in_sync(existing: &[sections::SectionRow], desired: &[String]) -> bool {
+    existing.len() == desired.len()
+        && existing
+            .iter()
+            .enumerate()
+            .all(|(ord, row)| row.section_ord == i64::try_from(ord).unwrap_or(i64::MAX))
+        && existing
+            .iter()
+            .zip(desired.iter())
+            .all(|(row, text)| &row.text == text)
 }
 
 /// The smart-wiki half of the reindex sweep — markerless content
-/// indexing (standard pages go through [`apply_standard_marker`]).
+/// indexing into `wiki_sections` (standard pages go through
+/// [`apply_standard_marker`], which repairs `fact_index` instead).
 ///
 /// Smart (project) wikis carry no per-fragment `{{f=…}}` markers: the
 /// consumer writes plain markdown and recall indexes the content. The
 /// page is chunked into heading-delimited sections (reusing the document
-/// segmenter), each embedded, and the page's `fact_index` rows are
-/// drop-and-reinserted. Each row is stamped with the wiki-level ACL
-/// (`owner` + `allow`, projected from `_meta`) so recall's per-fact
-/// visibility check honours the wiki-level share.
+/// segmenter), each embedded, and the page's sections are replaced.
 ///
-/// Idempotent: an unchanged page (same section texts + same projected
-/// ACL) mutates zero rows; an edit reuses the stored vector of any
-/// section whose text is unchanged, re-embedding only the rest.
+/// **No ACL is written here.** Read access to a section is the *wiki's*,
+/// held once in the `smart_wikis` registry — which is why a sharing edit
+/// no longer has to rewrite one row per section
+/// ([`crate::sections`]).
+///
+/// Idempotent: an unchanged page mutates zero rows; an edit reuses the
+/// stored vector of any section whose text is unchanged, re-embedding
+/// only the rest.
 async fn section_index_page(
     pool: &SqlitePool,
     embedder: &dyn Embedder,
     source_path: &str,
     wiki_id_str: &str,
-    owner: &Principal,
-    allow: &[Principal],
     raw: &str,
     report: &mut ReindexFileReport,
 ) -> Result<()> {
@@ -1375,67 +1554,56 @@ async fn section_index_page(
         crate::document::segment_document(raw, crate::document::DocFormat::Prose, None, &policy);
     // Dedup identical section texts: a page with two identical sections must
     // not produce two identical index rows, which would surface as the same
-    // flat hit twice (same text, same score, distinct fact_id). Order-preserving.
-    let mut desired: Vec<String> = Vec::new();
+    // flat hit twice (same text, same score, distinct position).
+    // Order-preserving — position is identity here.
+    let mut desired: Vec<(String, Option<String>)> = Vec::new();
     for seg in &segments {
         let text = segment_text(seg);
-        if !desired.iter().any(|d| d == &text) {
-            desired.push(text);
+        if !desired.iter().any(|(d, _)| d == &text) {
+            let heading = seg.heading.clone().filter(|h| !h.is_empty());
+            desired.push((text, heading));
         }
     }
 
-    let existing = fact_index::find_active_by_source_path(pool, source_path).await?;
-    if smart_page_in_sync(&existing, &desired, owner, allow) {
+    let existing = sections::find_page_sections(pool, source_path).await?;
+    let desired_texts: Vec<String> = desired.iter().map(|(t, _)| t.clone()).collect();
+    if smart_page_in_sync(&existing, &desired_texts) {
         return Ok(());
     }
-    // Reuse the stored embedding for any section whose text is unchanged.
+    // Reuse the stored embedding for any section whose text is unchanged —
+    // keyed by text, so a section that merely MOVED on the page is not
+    // re-embedded either.
     let reuse: std::collections::HashMap<&str, &[f32]> = existing
         .iter()
         .map(|r| (r.text.as_str(), r.embedding.as_slice()))
         .collect();
 
     // Compute every section's embedding BEFORE touching the DB — the slow
-    // embed I/O must stay out of the drop+insert transaction below.
-    let mut facts: Vec<NewFact> = Vec::with_capacity(desired.len());
-    for text in &desired {
+    // embed I/O must stay out of the write transaction below.
+    let mut new_sections: Vec<sections::NewSection> = Vec::with_capacity(desired.len());
+    for (ord, (text, heading_path)) in desired.iter().enumerate() {
         let embedding = match reuse.get(text.as_str()) {
             Some(vec) => (*vec).to_vec(),
             None => embedder.embed(text).await?,
         };
-        facts.push(NewFact {
-            fact_id: fresh_fact_id(),
+        new_sections.push(sections::NewSection {
             wiki_id: wiki_id_str.to_owned(),
             source_path: source_path.to_owned(),
-            // Markerless: section rows carry no on-disk region span.
-            region_start: None,
-            region_end: None,
+            section_ord: i64::try_from(ord).unwrap_or(i64::MAX),
+            heading_path: heading_path.clone(),
             text: text.clone(),
             embedding,
-            owner_id: owner.clone(),
-            allow_ids: allow.to_vec(),
-            sender_id: None,
-            fact_type: None,
-            topics: Vec::new(),
-            valid_from: None,
-            valid_to: None,
-            target_page: None,
-            style: None,
-            page_description: None,
-            salience: None,
-            source_ref: None,
-            authored_refs: Vec::new(),
         });
     }
 
-    // Drop the page's stale rows and insert the fresh set in ONE
-    // transaction, so concurrent reindexers of the same page (the
-    // synchronous push reindex, the filesystem watcher, the safety-net
-    // sweep) converge to a single clean set instead of interleaving a
-    // separate drop and insert into duplicate section rows.
-    let (dropped, inserted) =
-        fact_index::replace_source_path_rows(pool, source_path, &facts).await?;
+    // Upsert by position and drop the tail in ONE transaction, so
+    // concurrent reindexers of the same page (the push-enqueued index, the
+    // filesystem watcher, the safety-net sweep) converge to a single clean
+    // set instead of interleaving into duplicates.
+    let (upserted, dropped) =
+        sections::replace_page_sections(pool, source_path, &new_sections).await?;
     report.orphaned += usize::try_from(dropped).unwrap_or(usize::MAX);
-    report.inserted += usize::try_from(inserted).unwrap_or(usize::MAX);
+    report.inserted += usize::try_from(upserted).unwrap_or(usize::MAX);
 
     if report.changed() {
         tracing::info!(
@@ -1549,9 +1717,20 @@ async fn apply_orphan_sweep(
 mod tests {
     use super::*;
     use crate::embedder::FakeEmbedder;
+    use crate::fact_index::NewFact;
     use crate::wiki::atomic_write;
     use sqlx::sqlite::SqlitePoolOptions;
     use tempfile::tempdir;
+
+    /// Mint a `UUIDv7` fact id for the standard-wiki fixtures below.
+    ///
+    /// Production no longer mints ids for smart-wiki content — sections
+    /// are keyed by `(source_path, section_ord)` — so this lives with the
+    /// tests that still seed `fact_index` rows by hand.
+    fn fresh_fact_id() -> FactId {
+        let raw = uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::ContextV7::new()));
+        FactId::parse(&raw.to_string()).expect("Uuid::new_v7 is a valid fact id")
+    }
 
     async fn make_pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
@@ -2096,8 +2275,9 @@ mod tests {
     #[tokio::test]
     async fn reindex_file_section_indexes_smart_page() {
         // Smart wiki: plain markdown, no markers. Each heading-delimited
-        // section becomes one content-indexed row carrying the wiki-level
-        // ACL (owner = acl_default, allow = shared_with).
+        // section becomes one row of `wiki_sections`, keyed by its
+        // position — and NOT a `fact_index` row, which is the standard
+        // family's authoritative fact store.
         let dir = tempdir().unwrap();
         let wiki_dir = dir.path().join("wikis/alice");
         write_smart_wiki_meta(&wiki_dir, "alice");
@@ -2117,22 +2297,34 @@ mod tests {
         assert_eq!(report.updated, 0);
         assert_eq!(report.wiki_id.as_deref(), Some("alice"));
 
-        let rows = fact_index::find_active_by_source_path(&pool, "wikis/alice/design.md")
+        let rows = sections::find_page_sections(&pool, "wikis/alice/design.md")
             .await
             .unwrap();
         assert_eq!(rows.len(), 2);
-        for row in &rows {
-            assert_eq!(row.owner_id, "user:alice".parse().unwrap());
-            assert!(row.allow_ids.is_empty());
-            assert!(row.sender_id.is_none());
-            // Markerless: section rows carry no on-disk region span.
-            assert!(row.region_start.is_none());
-            assert!(row.region_end.is_none());
+        for (ord, row) in rows.iter().enumerate() {
+            assert_eq!(row.section_ord, i64::try_from(ord).unwrap());
+            assert_eq!(row.wiki_id, "alice");
+            assert_eq!(row.embedding_dim, 8);
         }
-        // The heading words are part of the indexed text.
+        // The heading words are part of the indexed text, and the chain is
+        // kept alongside it so the dashboard can label the section.
         assert!(
             rows.iter()
                 .any(|r| r.text.contains("Auth") && r.text.contains("JWT"))
+        );
+        assert!(rows.iter().any(|r| {
+            r.heading_path
+                .as_deref()
+                .is_some_and(|h| h.contains("Auth"))
+        }));
+
+        // Smart content never lands in the fact store.
+        assert!(
+            fact_index::find_active_by_source_path(&pool, "wikis/alice/design.md")
+                .await
+                .unwrap()
+                .is_empty(),
+            "smart sections must not create fact_index rows"
         );
     }
 
@@ -2159,7 +2351,7 @@ mod tests {
             .await
             .expect("reindex");
 
-        let rows = fact_index::find_active_by_source_path(&pool, "wikis/alice/dup.md")
+        let rows = sections::find_page_sections(&pool, "wikis/alice/dup.md")
             .await
             .unwrap();
         let distinct: std::collections::HashSet<&str> =
@@ -2173,11 +2365,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reindex_file_smart_self_heals_existing_duplicate_rows() {
-        // A page already carrying duplicate section rows (e.g. left by a
-        // pre-fix reindex race) collapses to a single clean set on the next
-        // reindex: smart_page_in_sync sees the length mismatch and rebuilds,
-        // and the atomic drop+insert leaves exactly the desired set.
+    async fn reindex_file_smart_self_heals_stale_tail_sections() {
+        // A page whose stored sections outnumber what is on disk (a
+        // shrunk page whose reindex was interrupted, or a pre-migration
+        // leftover) converges on the next pass: the tail positions are
+        // dropped. Duplicate *rows* are no longer expressible at all —
+        // `(source_path, section_ord)` is the primary key — so the race
+        // this used to guard against cannot recur.
         let dir = tempdir().unwrap();
         let wiki_dir = dir.path().join("wikis/alice");
         write_smart_wiki_meta(&wiki_dir, "alice");
@@ -2185,38 +2379,44 @@ mod tests {
         let pool = make_pool().await;
         let embedder = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
 
-        let body = "Single section body.\n";
         let page = wiki_dir.join("p.md");
-        write_page(&wiki_dir, "p.md", body);
+        write_page(&wiki_dir, "p.md", "Single section body.\n");
 
-        // Two duplicate rows for the page, as a race would leave behind.
-        let id1 = FactId::parse("018f1234-5678-7abc-9def-00000000d001").unwrap();
-        let id2 = FactId::parse("018f1234-5678-7abc-9def-00000000d002").unwrap();
-        seed_fact(
+        // Seed a stale two-section state for a page that now holds one.
+        sections::replace_page_sections(
             &pool,
-            &id1,
             "wikis/alice/p.md",
-            "Single section body.",
-            None,
+            &[
+                sections::NewSection {
+                    wiki_id: "alice".to_owned(),
+                    source_path: "wikis/alice/p.md".to_owned(),
+                    section_ord: 0,
+                    heading_path: None,
+                    text: "Single section body.".to_owned(),
+                    embedding: vec![0.0; 8],
+                },
+                sections::NewSection {
+                    wiki_id: "alice".to_owned(),
+                    source_path: "wikis/alice/p.md".to_owned(),
+                    section_ord: 1,
+                    heading_path: None,
+                    text: "stale leftover".to_owned(),
+                    embedding: vec![0.0; 8],
+                },
+            ],
         )
-        .await;
-        seed_fact(
-            &pool,
-            &id2,
-            "wikis/alice/p.md",
-            "Single section body.",
-            None,
-        )
-        .await;
+        .await
+        .unwrap();
 
         reindex_file(&pool, &tree, embedder.clone(), &page)
             .await
             .expect("reindex");
 
-        let rows = fact_index::find_active_by_source_path(&pool, "wikis/alice/p.md")
+        let rows = sections::find_page_sections(&pool, "wikis/alice/p.md")
             .await
             .unwrap();
-        assert_eq!(rows.len(), 1, "duplicate rows collapse to a single row");
+        assert_eq!(rows.len(), 1, "the stale tail position is dropped");
+        assert!(rows[0].text.contains("Single section body"));
     }
 
     #[tokio::test]
@@ -2266,7 +2466,7 @@ mod tests {
             .unwrap();
         assert!(report.changed(), "edited page is re-sectioned");
 
-        let rows = fact_index::find_active_by_source_path(&pool, "wikis/alice/p.md")
+        let rows = sections::find_page_sections(&pool, "wikis/alice/p.md")
             .await
             .unwrap();
         assert_eq!(rows.len(), 1);
@@ -2275,10 +2475,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reindex_file_smart_projects_wiki_shared_with_onto_rows() {
-        // The wiki-level ACL lives in `_meta`: owner = acl_default, allow
-        // = shared_with. Section rows carry it so recall's per-fact check
-        // lets a grantee see the wiki's content.
+    async fn smart_registry_holds_the_wiki_level_acl_not_the_sections() {
+        // The wiki-level ACL lives in `_meta` and is projected ONCE into
+        // `smart_wikis`. Sections carry no ACL of their own — which is
+        // what makes a sharing edit a one-row write instead of one write
+        // per indexed section.
         let dir = tempdir().unwrap();
         let wiki_dir = dir.path().join("wikis/alice");
         write_smart_wiki_meta_with(&wiki_dir, "alice", "shared_with: [user:bob]\n");
@@ -2292,13 +2493,115 @@ mod tests {
         reindex_file(&pool, &tree, embedder.clone(), &page)
             .await
             .unwrap();
+        project_smart_wiki_registry(&pool, &tree).await.unwrap();
 
-        let rows = fact_index::find_active_by_source_path(&pool, "wikis/alice/p.md")
+        let rows = sections::find_page_sections(&pool, "wikis/alice/p.md")
             .await
             .unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].owner_id, "user:alice".parse().unwrap());
-        assert_eq!(rows[0].allow_ids, vec!["user:bob".parse().unwrap()]);
+
+        let registered = sections::find_smart_wiki(&pool, "alice")
+            .await
+            .unwrap()
+            .expect("smart wiki projected");
+        assert_eq!(registered.owner_id, "user:alice".parse().unwrap());
+        assert_eq!(registered.shared_with, vec!["user:bob".parse().unwrap()]);
+    }
+
+    #[tokio::test]
+    async fn smart_registry_drops_a_wiki_that_stopped_being_smart() {
+        let dir = tempdir().unwrap();
+        let wiki_dir = dir.path().join("wikis/alice");
+        write_smart_wiki_meta(&wiki_dir, "alice");
+        let tree = WikiTree::open(dir.path()).expect("open tree");
+        let pool = make_pool().await;
+
+        let report = project_smart_wiki_registry(&pool, &tree).await.unwrap();
+        assert_eq!(report.projected, 1);
+        assert!(
+            sections::find_smart_wiki(&pool, "alice")
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        // The operator flips the flag off by hand in `_meta.md` — the
+        // file is the source of truth, so the next projection follows it.
+        write_wiki_meta(&wiki_dir, "alice");
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+        let report = project_smart_wiki_registry(&pool, &tree).await.unwrap();
+        assert_eq!(report.projected, 0);
+        assert_eq!(report.removed, 1);
+        assert!(
+            sections::find_smart_wiki(&pool, "alice")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn backfill_moves_legacy_smart_rows_and_is_idempotent() {
+        // The one-time migration tail: smart-wiki content that still lives
+        // in `fact_index` is moved into `wiki_sections` with its embedding
+        // copied verbatim, and the legacy rows are dropped.
+        let dir = tempdir().unwrap();
+        let wiki_dir = dir.path().join("wikis/alice");
+        write_smart_wiki_meta(&wiki_dir, "alice");
+        write_page(&wiki_dir, "p.md", "# A\n\nlegacy body.\n");
+        let tree = WikiTree::open(dir.path()).expect("open tree");
+        let pool = make_pool().await;
+
+        let id1 = FactId::parse("018f1234-5678-7abc-9def-00000000e001").unwrap();
+        let id2 = FactId::parse("018f1234-5678-7abc-9def-00000000e002").unwrap();
+        seed_fact(
+            &pool,
+            &id1,
+            "wikis/alice/p.md",
+            "first legacy section",
+            None,
+        )
+        .await;
+        seed_fact(
+            &pool,
+            &id2,
+            "wikis/alice/p.md",
+            "second legacy section",
+            None,
+        )
+        .await;
+
+        let report = backfill_smart_sections(&pool, &tree).await.unwrap();
+        assert_eq!(report.pages_moved, 1);
+        assert_eq!(report.sections_written, 2);
+        assert_eq!(report.legacy_rows_dropped, 2);
+
+        let moved = sections::find_page_sections(&pool, "wikis/alice/p.md")
+            .await
+            .unwrap();
+        assert_eq!(moved.len(), 2);
+        // UUIDv7 is time-ordered, so insertion order is reconstructed.
+        assert_eq!(moved[0].section_ord, 0);
+        assert!(moved[0].text.contains("first legacy"));
+        assert!(moved[1].text.contains("second legacy"));
+        assert!(
+            fact_index::find_active_by_source_path(&pool, "wikis/alice/p.md")
+                .await
+                .unwrap()
+                .is_empty(),
+            "legacy rows are gone from the fact store"
+        );
+
+        // Re-running on an already-migrated store changes nothing.
+        let again = backfill_smart_sections(&pool, &tree).await.unwrap();
+        assert_eq!(again, SmartBackfillReport::default());
+        assert_eq!(
+            sections::find_page_sections(&pool, "wikis/alice/p.md")
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -2523,7 +2826,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            fact_index::find_active_by_source_path(&pool, "wikis/alice/intro.md")
+            sections::find_page_sections(&pool, "wikis/alice/intro.md")
                 .await
                 .unwrap()
                 .len(),
@@ -2535,7 +2838,7 @@ mod tests {
         reindex_file(&pool, &tree, embedder.clone(), &page)
             .await
             .unwrap();
-        let rows = fact_index::find_active_by_source_path(&pool, "wikis/alice/intro.md")
+        let rows = sections::find_page_sections(&pool, "wikis/alice/intro.md")
             .await
             .unwrap();
         assert_eq!(rows.len(), 1, "removed section's row is gone");
@@ -2560,11 +2863,13 @@ mod tests {
         reindex_file(&pool, &tree, embedder.clone(), &page)
             .await
             .unwrap();
-        let rows = fact_index::find_active_by_source_path(&pool, "wikis/alice/intro.md")
-            .await
-            .unwrap();
-        assert_eq!(rows.len(), 1);
-        let fid = rows[0].fact_id.clone();
+        assert_eq!(
+            sections::find_page_sections(&pool, "wikis/alice/intro.md")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
         std::fs::remove_file(&page).unwrap();
         let report = reindex_file(&pool, &tree, embedder.clone(), &page)
@@ -2573,9 +2878,13 @@ mod tests {
         assert!(report.file_missing);
         assert_eq!(report.orphaned, 1);
 
-        // Hard delete: the row is gone entirely, not tombstoned.
+        // Hard delete: the sections are gone entirely, not tombstoned —
+        // the page was their only source.
         assert!(
-            fact_index::find_by_id(&pool, &fid).await.unwrap().is_none(),
+            sections::find_page_sections(&pool, "wikis/alice/intro.md")
+                .await
+                .unwrap()
+                .is_empty(),
             "smart page delete is a hard delete, no tombstone"
         );
     }
@@ -2651,7 +2960,7 @@ mod tests {
         // The smart wiki's section is indexed; the standard wiki is skipped.
         assert_eq!(report.total_inserted, 1);
         assert_eq!(
-            fact_index::find_active_by_source_path(&pool, "wikis/acme/intro.md")
+            sections::find_page_sections(&pool, "wikis/acme/intro.md")
                 .await
                 .unwrap()
                 .len(),
@@ -2659,6 +2968,19 @@ mod tests {
         );
         assert!(
             fact_index::find_by_id(&pool, &f_narr)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // The sweep also refreshed the registry for the smart wiki only.
+        assert!(
+            sections::find_smart_wiki(&pool, "acme")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            sections::find_smart_wiki(&pool, "alice")
                 .await
                 .unwrap()
                 .is_none()
@@ -2686,7 +3008,7 @@ mod tests {
         reindex_full(&pool, &tree, embedder).await.unwrap();
 
         assert_eq!(
-            fact_index::find_active_by_source_path(&pool, "wikis/alice/intro.md")
+            sections::find_page_sections(&pool, "wikis/alice/intro.md")
                 .await
                 .unwrap()
                 .len(),
@@ -2694,11 +3016,11 @@ mod tests {
             "the knowledge page is indexed"
         );
         assert!(
-            fact_index::find_active_by_source_path(&pool, "wikis/alice/_briefing.md")
+            sections::find_page_sections(&pool, "wikis/alice/_briefing.md")
                 .await
                 .unwrap()
                 .is_empty(),
-            "_briefing.md (the consumer's inbox) must never be indexed as facts"
+            "_briefing.md (the consumer's inbox) must never be indexed"
         );
     }
 

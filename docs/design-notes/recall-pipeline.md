@@ -2,7 +2,7 @@
 title: Recall pipeline — the read-side orchestrators and the entry-point gatherer
 area: design-notes
 status: implemented
-last_review: "2026-07-05"
+last_review: "2026-07-26"
 ---
 
 # Recall pipeline
@@ -10,13 +10,43 @@ last_review: "2026-07-05"
 [`mwe-core::recall`](../../crates/mwe-core/src/recall.rs) hosts the
 read-side orchestrators that complement [capture](capture-and-dedup.md).
 The module is layered: pure helpers at the top (n-gram + jaccard +
-cosine) and five async `_internal.*` orchestrators at the bottom.
+cosine) and the async orchestrators at the bottom.
+
+## The two corpora
+
+Recall reads **two** stores, and which one a caller gets is an explicit
+choice made by calling a different function — there is no flag that can
+be forgotten:
+
+| Corpus | Table | What it holds | Entry point |
+|---|---|---|---|
+| **Facts** | `fact_index` | Standard-wiki memory: governed claims with per-fragment ACL, supersedence, validity, attribution | `wiki_search` (and everything built on it) |
+| **Sections** | `wiki_sections` | Smart-wiki documentation: heading-delimited chunks of pages a smart consumer authored, ACL held per wiki in `smart_wikis` | `search_sections` |
+| Both | — | merged into one ranking, `top_k` applied after the merge | `search_all` |
+
+`wiki_search` returns [`RecallHit`]s and **cannot** return
+documentation — the two live in different tables, and `SectionHit` is a
+different type. That is the point: the ingest turn, `recall_core_global`,
+the recall gate and the eval harness all take the fact corpus, so
+project documentation can no longer crowd out personal memory in a
+conversational turn. Only the two consumer surfaces whose contract is
+"search everything I can see" — `wiki_search` (MCP) and `wiki_navigate` —
+reach for the merged view.
+
+**ACL is resolved once per wiki, not once per row.** `search_sections`
+loads the `smart_wikis` registry (a handful of rows), keeps the wikis the
+sender may read (`owner ∪ shared_with`, the same effective set
+[`acl::can_read`] evaluates), and only then loads those wikis' sections.
+An unreadable wiki's bytes never leave the DB. A sharing revoke is a
+single-row write and closes the read window on the next query.
 
 ## The orchestrators
 
 | API | Scoring | ACL filter | Bumps recall counter? | Surface |
 |---|---|---|---|---|
-| `wiki_search` | cosine over embedding | post-fetch via [`acl::can_read`] | ✓ on returned ids (`wiki_search_unrecorded` is the bump-free sibling for measurement paths — the eval harness) | top-K vector search |
+| `wiki_search` | cosine over embedding | post-fetch via [`acl::can_read`] | ✓ on returned ids (`wiki_search_unrecorded` is the bump-free sibling for measurement paths — the eval harness) | top-K vector search over the **fact** corpus |
+| `search_sections` | cosine over embedding | **pre-fetch**, per wiki, from the `smart_wikis` registry | ✓ on returned `(source_path, section_ord)` positions | top-K vector search over the **section** corpus |
+| `search_all` | inherited from both | inherited from both | ✓ inherited | the merged view for `wiki_search` (MCP) + `wiki_navigate` |
 | `wiki_facts_for` | constant `1.0` | post-fetch | ✗ (audit/list view) | structured SQL query |
 | `wiki_recall` | delegates to `wiki_search` today | inherited | ✓ inherited | semantic recall the LLM ingest uses (stable call site) |
 | `wiki_multi_hop_facts` | seed-fact + per-hop `wiki_search` | inherited | ✓ inherited | early multi-hop link resolution; lives in [`recall.rs`](../../crates/mwe-core/src/recall.rs) and returns a `MultiHopOutcome`. Exported and tested, but the agentic chat and `wiki_ingest_message` do not call it yet, pending the cap-10-hop traversal protection that gates the consumer hookup (see [What is intentionally out of scope](#what-is-intentionally-out-of-scope)). |
@@ -470,13 +500,26 @@ Tests cover:
 
 ## Why brute-force cosine for now
 
-The orchestrator scans every candidate with a flat O(N) cosine loop. On
-the target workload (low thousands of active regions, bge-m3 1024-d
-vectors) a full scan completes in single-digit milliseconds — well
-inside the response budget. A `sqlite-vec` integration is not built
-today; it is profile-driven work for when scanning becomes the
-bottleneck — ship a correct floor, defer the index until the load
-justifies it.
+Both orchestrators scan every candidate with a flat O(N) cosine loop:
+each query reads the candidate rows **with their vectors** and scores
+them in memory. There is no ANN index; a `sqlite-vec` integration is not
+built today.
+
+The cost is therefore linear in the candidate count, and the candidate
+count is what the corpus split above controls. Measured on a production
+store of ~4k active rows with bge-m3 1024-d vectors (≈16 MB of
+embeddings): reading the full candidate set costs ~30-45 ms warm, and
+observed end-to-end `wiki_search` latency ran ~170-260 ms including the
+query embed — up from ~100 ms when the same store held ~1k rows. So the
+scan is not the dominant term yet, but it is the term that **grows**, and
+it grows fastest with documentation, which is exactly the corpus a
+conversational turn no longer scans.
+
+Watch `wiki_search` latency (it is journalled per call in
+`tool_executions`) rather than row counts: when the scan starts to
+dominate the embed, the `sqlite-vec` work is due. Splitting the corpora
+also means the index can be added to one of them first — the section
+table is the larger and the more regenerable of the two.
 
 ## Test coverage
 
@@ -488,6 +531,11 @@ justifies it.
   topics_any with `json_each`).
 - `wiki_search`: 4 (top-K by cosine / ACL drop / recall-counter bump
   / top-K=0 returns empty).
+- `search_sections`: 3 (cosine ranking + telemetry bump / wiki-level ACL
+  across owner, group grantee and stranger / a revoke closes the read
+  window with one row write).
+- `search_all`: 2 (both corpora merge into one ranking while
+  `wiki_search` stays facts-only / `top_k` honoured across the merge).
 - `wiki_facts_for`: 2 (filtered without counter bump / ACL filter).
 - `wiki_recall`: 1 (delegates to search today).
 - `recall_fresh_captures`: 1 (un-promoted buffered capture surfaces, ACL-scoped, flagged `fresh`; another owner's capture is filtered out).
@@ -509,7 +557,7 @@ roadmap):
 
 | Not yet supported | Why |
 |---|---|
-| **`sqlite-vec` integration** | Profile-driven; brute-force is fast enough at target size. |
+| **`sqlite-vec` integration** | Profile-driven. Still fast enough at current size; the signal to watch is `wiki_search` latency, and the corpus split bought headroom by keeping documentation out of the conversational scan. |
 | **LLM rerank** | `wiki_recall` stays a stable call site so the ingest LLM can layer rerank on top without breaking signatures. |
 | **`recent_messages` weighting** | Accepted as parameter today, ignored; the weighting will use context-cache hooks the ingest LLM owns. |
 | **Multi-hop link resolution wired into consumer surfaces** | `wiki_multi_hop_facts` already lives in [`recall.rs`](../../crates/mwe-core/src/recall.rs) with tests, but it is not yet called by `wiki_ingest_message`, the agentic chat, or `wiki_navigate`. The cap-10-hop traversal protection plus the right rerank policy are needed before the consumer hookup. |

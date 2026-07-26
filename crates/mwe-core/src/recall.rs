@@ -41,6 +41,7 @@ use crate::acl::can_read;
 use crate::capture_buffer::{self, BufferedCapture, CaptureBufferError};
 use crate::embedder::{Embedder, EmbedderError};
 use crate::fact_index::{self, FactIndexError, FactIndexRow};
+use crate::sections::{self, SectionError};
 use crate::types::{Acl, FactId, Principal};
 
 /// Default size of the n-gram window used across the dedup pipeline.
@@ -254,6 +255,11 @@ pub enum RecallError {
     /// the un-promoted buffer via [`recall_fresh_captures`].
     #[error("recall capture_buffer: {0}")]
     CaptureBuffer(#[from] CaptureBufferError),
+
+    /// Underlying section-index error — the smart-wiki document corpus
+    /// read by [`search_sections`].
+    #[error("recall wiki_sections: {0}")]
+    Sections(#[from] SectionError),
 }
 
 /// Result alias for the recall pipeline.
@@ -538,6 +544,214 @@ async fn bump_recall_hits_from(pool: &SqlitePool, hits: &[RecallHit]) -> RecallR
     let ids: Vec<FactId> = hits.iter().map(|h| h.fact_id.clone()).collect();
     fact_index::bump_recall_hits(pool, &ids).await?;
     Ok(())
+}
+
+// ---------- the section corpus ----------
+
+/// One hit from the smart-wiki section index (`wiki_sections`).
+///
+/// Deliberately **not** a [`RecallHit`]: a section is a chunk of a
+/// document a smart consumer authored, not a governed fact. It has no
+/// owner, no sender, no validity window and no lifecycle, so the ingest
+/// verbs that act on facts (supersede, forget, validity edit, ACL edit)
+/// have nothing to bite on. Keeping the two types apart is what stops a
+/// fact-shaped code path from silently operating on documentation — the
+/// failure mode that shipped when both lived in one table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SectionHit {
+    /// Containing smart wiki.
+    pub wiki_id: String,
+    /// Workdir-relative page path.
+    pub source_path: String,
+    /// Position of the section on its page — half of its identity.
+    pub section_ord: i64,
+    /// Heading chain, when the section sits under one.
+    pub heading_path: Option<String>,
+    /// The indexed text (heading chain + body).
+    pub text: String,
+    /// Cosine similarity against the query.
+    pub score: f32,
+}
+
+impl SectionHit {
+    /// Stable `"<source_path>#<section_ord>"` handle.
+    #[must_use]
+    pub fn handle(&self) -> String {
+        format!("{}#{}", self.source_path, self.section_ord)
+    }
+}
+
+/// A hit from either corpus, for the two consumer surfaces that search
+/// **everything** the sender can see (`wiki_search`, `wiki_navigate`).
+///
+/// Every other caller takes the fact corpus alone and keeps working with
+/// [`RecallHit`] — which is the point: a path that never asked for
+/// documentation cannot accidentally receive it.
+#[derive(Debug, Clone)]
+pub enum SearchHit {
+    /// A governed fact from a standard wiki.
+    Fact(Box<RecallHit>),
+    /// A document section from a smart wiki.
+    Section(SectionHit),
+}
+
+impl SearchHit {
+    /// Ranking score, for the merge.
+    #[must_use]
+    pub fn score(&self) -> f32 {
+        match self {
+            Self::Fact(h) => h.score,
+            Self::Section(s) => s.score,
+        }
+    }
+
+    /// Containing wiki.
+    #[must_use]
+    pub fn wiki_id(&self) -> &str {
+        match self {
+            Self::Fact(h) => &h.wiki_id,
+            Self::Section(s) => &s.wiki_id,
+        }
+    }
+
+    /// The hit's body text.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Fact(h) => &h.text,
+            Self::Section(s) => &s.text,
+        }
+    }
+
+    /// The stable handle a caller echoes back: a `fact_id` for a fact, a
+    /// `"<source_path>#<ord>"` for a section.
+    #[must_use]
+    pub fn handle(&self) -> String {
+        match self {
+            Self::Fact(h) => h.fact_id.as_str().to_owned(),
+            Self::Section(s) => s.handle(),
+        }
+    }
+}
+
+/// The smart wikis `sender` may read, resolved **once per wiki** from the
+/// `smart_wikis` registry.
+///
+/// This is the whole point of moving the ACL off the rows: read access to
+/// a smart wiki is one decision about one wiki, not one decision per
+/// indexed section. The effective set is the same `owner ∪ shared_with`
+/// the per-row check used to evaluate, so visibility is unchanged.
+async fn readable_smart_wikis(
+    pool: &SqlitePool,
+    sender: &SenderContext,
+) -> RecallResult<Vec<String>> {
+    let registry = sections::list_smart_wikis(pool).await?;
+    Ok(registry
+        .into_iter()
+        .filter(|w| {
+            let acl = Acl {
+                owner: Some(w.owner_id.clone()),
+                allow: w.shared_with.clone(),
+            };
+            can_read(&acl, &sender.sender_id, &sender.sender_groups, None)
+        })
+        .map(|w| w.wiki_id)
+        .collect())
+}
+
+/// Vector top-K over the **section** corpus — smart-wiki documentation.
+///
+/// ACL is applied *before* the scan: only the readable wikis' sections
+/// are loaded, so an unreadable wiki's bytes never leave the DB. (The
+/// per-row predecessor had to read every row before it could discard
+/// any.)
+///
+/// # Errors
+///
+/// See [`RecallError`].
+pub async fn search_sections(
+    pool: &SqlitePool,
+    embedder: Arc<dyn Embedder>,
+    query: &str,
+    top_k: usize,
+    sender: &SenderContext,
+) -> RecallResult<Vec<SectionHit>> {
+    if top_k == 0 {
+        return Ok(Vec::new());
+    }
+    let readable = readable_smart_wikis(pool, sender).await?;
+    if readable.is_empty() {
+        return Ok(Vec::new());
+    }
+    let q_emb = embedder.embed(query).await?;
+    let candidates = sections::find_candidates_in_wikis(pool, &readable).await?;
+    let mut scored: Vec<SectionHit> = candidates
+        .into_iter()
+        .map(|row| SectionHit {
+            score: cosine_similarity(&q_emb, &row.embedding),
+            wiki_id: row.wiki_id,
+            source_path: row.source_path,
+            section_ord: row.section_ord,
+            heading_path: row.heading_path,
+            text: row.text,
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Less)
+    });
+    scored.truncate(top_k);
+
+    let bumps: Vec<(String, i64)> = scored
+        .iter()
+        .map(|h| (h.source_path.clone(), h.section_ord))
+        .collect();
+    sections::bump_recall_hits(pool, &bumps).await?;
+
+    tracing::info!(
+        sender_id = sender.sender_id,
+        readable_wikis = readable.len(),
+        hits = scored.len(),
+        top_k,
+        "recall: search_sections done"
+    );
+    Ok(scored)
+}
+
+/// Vector top-K over **both** corpora, merged into one ranking.
+///
+/// For the consumer surfaces whose contract is "search everything I can
+/// see". Each corpus is over-fetched to `top_k` and the union is
+/// re-ranked, so the merge cannot lose a hit that would have made the
+/// combined top-K.
+///
+/// # Errors
+///
+/// See [`RecallError`].
+pub async fn search_all(
+    pool: &SqlitePool,
+    embedder: Arc<dyn Embedder>,
+    query: &str,
+    top_k: usize,
+    filters: fact_index::FactFilters,
+    sender: &SenderContext,
+) -> RecallResult<Vec<SearchHit>> {
+    let facts = wiki_search(pool, Arc::clone(&embedder), query, top_k, filters, sender).await?;
+    let secs = search_sections(pool, embedder, query, top_k, sender).await?;
+
+    let mut merged: Vec<SearchHit> = facts
+        .into_iter()
+        .map(|h| SearchHit::Fact(Box::new(h)))
+        .chain(secs.into_iter().map(SearchHit::Section))
+        .collect();
+    merged.sort_by(|a, b| {
+        b.score()
+            .partial_cmp(&a.score())
+            .unwrap_or(std::cmp::Ordering::Less)
+    });
+    merged.truncate(top_k);
+    Ok(merged)
 }
 
 // ---------- wiki_facts_for ----------
@@ -1584,6 +1798,309 @@ mod tests {
         for r in rows {
             fact_index::insert(pool, &r).await.expect("insert");
         }
+    }
+
+    // -- the section corpus --
+
+    async fn seed_smart_wiki(
+        pool: &SqlitePool,
+        wiki_id: &str,
+        owner: &str,
+        shared_with: Vec<Principal>,
+    ) {
+        sections::upsert_smart_wiki(
+            pool,
+            &sections::SmartWikiRow {
+                wiki_id: wiki_id.to_owned(),
+                owner_id: owner.parse().unwrap(),
+                shared_with,
+                project_id: None,
+                wiki_type: "project".to_owned(),
+            },
+        )
+        .await
+        .expect("register smart wiki");
+    }
+
+    async fn seed_section(
+        pool: &SqlitePool,
+        wiki_id: &str,
+        ord: i64,
+        text: &str,
+        embedding: Vec<f32>,
+    ) {
+        let source_path = format!("wikis/{wiki_id}/doc.md");
+        let mut desired: Vec<sections::NewSection> =
+            sections::find_page_sections(pool, &source_path)
+                .await
+                .expect("read")
+                .into_iter()
+                .map(|r| sections::NewSection {
+                    wiki_id: r.wiki_id,
+                    source_path: r.source_path,
+                    section_ord: r.section_ord,
+                    heading_path: r.heading_path,
+                    text: r.text,
+                    embedding: r.embedding,
+                })
+                .collect();
+        desired.push(sections::NewSection {
+            wiki_id: wiki_id.to_owned(),
+            source_path: source_path.clone(),
+            section_ord: ord,
+            heading_path: None,
+            text: text.to_owned(),
+            embedding,
+        });
+        sections::replace_page_sections(pool, &source_path, &desired)
+            .await
+            .expect("seed section");
+    }
+
+    #[tokio::test]
+    async fn search_sections_ranks_by_cosine_and_bumps_recall() {
+        let pool = make_pool().await;
+        seed_smart_wiki(&pool, "alice-proj", "user:alice", Vec::new()).await;
+        seed_section(&pool, "alice-proj", 0, "near", vec![1.0, 0.0, 0.0, 0.0]).await;
+        seed_section(&pool, "alice-proj", 1, "far", vec![0.0, 1.0, 0.0, 0.0]).await;
+
+        let sender = SenderContext::user("alice");
+        let hits = search_sections(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "q",
+            10,
+            &sender,
+        )
+        .await
+        .expect("search");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].text, "near");
+        assert!(hits[0].score > hits[1].score);
+        assert_eq!(hits[0].handle(), "wikis/alice-proj/doc.md#0");
+
+        // Telemetry advanced — the signal REM's recall-hot finding reads.
+        let rows = sections::find_page_sections(&pool, "wikis/alice-proj/doc.md")
+            .await
+            .unwrap();
+        assert!(rows.iter().all(|r| r.recall_count_30d == 1));
+    }
+
+    #[tokio::test]
+    async fn search_sections_honours_the_wiki_level_acl() {
+        let pool = make_pool().await;
+        // Alice's private project, and one she shared with a group Bob is in.
+        seed_smart_wiki(&pool, "alice-private", "user:alice", Vec::new()).await;
+        seed_section(
+            &pool,
+            "alice-private",
+            0,
+            "private note",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        seed_smart_wiki(
+            &pool,
+            "alice-shared",
+            "user:alice",
+            vec![Principal::Group("devs".to_owned())],
+        )
+        .await;
+        seed_section(
+            &pool,
+            "alice-shared",
+            0,
+            "shared note",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+
+        let alice = SenderContext::user("alice");
+        let owner_hits = search_sections(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "q",
+            10,
+            &alice,
+        )
+        .await
+        .unwrap();
+        assert_eq!(owner_hits.len(), 2, "the owner reads both");
+
+        let bob = SenderContext {
+            sender_id: "bob".to_owned(),
+            sender_groups: vec!["devs".to_owned()],
+        };
+        let grantee_hits = search_sections(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "q",
+            10,
+            &bob,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            grantee_hits.len(),
+            1,
+            "a group grantee reads only the share"
+        );
+        assert_eq!(grantee_hits[0].text, "shared note");
+
+        let stranger = SenderContext::user("carol");
+        let none = search_sections(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "q",
+            10,
+            &stranger,
+        )
+        .await
+        .unwrap();
+        assert!(none.is_empty(), "a stranger reads neither");
+    }
+
+    #[tokio::test]
+    async fn a_revoke_closes_the_section_read_window_with_one_row_write() {
+        let pool = make_pool().await;
+        seed_smart_wiki(
+            &pool,
+            "alice-proj",
+            "user:alice",
+            vec![Principal::User("bob".to_owned())],
+        )
+        .await;
+        seed_section(&pool, "alice-proj", 0, "shared", vec![1.0, 0.0, 0.0, 0.0]).await;
+
+        let bob = SenderContext::user("bob");
+        assert_eq!(
+            search_sections(
+                &pool,
+                embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+                "q",
+                10,
+                &bob
+            )
+            .await
+            .unwrap()
+            .len(),
+            1
+        );
+
+        // The revoke touches the registry row only — no per-section rewrite.
+        seed_smart_wiki(&pool, "alice-proj", "user:alice", Vec::new()).await;
+        assert!(
+            search_sections(
+                &pool,
+                embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+                "q",
+                10,
+                &bob
+            )
+            .await
+            .unwrap()
+            .is_empty(),
+            "the revoke closes the read window immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_all_merges_both_corpora_and_wiki_search_stays_facts_only() {
+        let pool = make_pool().await;
+        let mut rows = Vec::new();
+        insert_row(
+            &mut rows,
+            "018f1234-5678-7abc-9def-0000000000f1",
+            "alice",
+            "user:alice",
+            "a personal fact",
+            vec![1.0, 0.0, 0.0, 0.0],
+        );
+        populate(&pool, rows).await;
+        seed_smart_wiki(&pool, "alice-proj", "user:alice", Vec::new()).await;
+        seed_section(
+            &pool,
+            "alice-proj",
+            0,
+            "a doc section",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+
+        let sender = SenderContext::user("alice");
+
+        // The fact corpus alone — this is what the ingest turn recalls, so
+        // documentation can no longer crowd out personal memory there.
+        let facts = wiki_search(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "q",
+            10,
+            fact_index::FactFilters::default(),
+            &sender,
+        )
+        .await
+        .unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].text, "a personal fact");
+
+        // Both, for the consumer surfaces that ask for everything.
+        let all = search_all(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "q",
+            10,
+            fact_index::FactFilters::default(),
+            &sender,
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().any(|h| matches!(h, SearchHit::Fact(_))));
+        assert!(all.iter().any(|h| matches!(h, SearchHit::Section(_))));
+        // Ranked as one list.
+        assert!(all[0].score() >= all[1].score());
+    }
+
+    #[tokio::test]
+    async fn search_all_truncates_to_top_k_across_the_merge() {
+        let pool = make_pool().await;
+        let mut rows = Vec::new();
+        insert_row(
+            &mut rows,
+            "018f1234-5678-7abc-9def-0000000000f2",
+            "alice",
+            "user:alice",
+            "fact",
+            vec![0.0, 1.0, 0.0, 0.0],
+        );
+        populate(&pool, rows).await;
+        seed_smart_wiki(&pool, "alice-proj", "user:alice", Vec::new()).await;
+        seed_section(
+            &pool,
+            "alice-proj",
+            0,
+            "closer section",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+
+        let sender = SenderContext::user("alice");
+        let all = search_all(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "q",
+            1,
+            fact_index::FactFilters::default(),
+            &sender,
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.len(), 1, "top_k is honoured across the merged ranking");
+        assert!(
+            matches!(all[0], SearchHit::Section(_)),
+            "the closer hit wins"
+        );
     }
 
     // -- find_by_filters --

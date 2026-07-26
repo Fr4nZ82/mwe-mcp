@@ -74,6 +74,7 @@ pub mod rem;
 pub mod render;
 pub mod reviewer;
 pub mod scope;
+pub mod sections;
 pub mod skills;
 pub mod slug;
 pub mod smart;

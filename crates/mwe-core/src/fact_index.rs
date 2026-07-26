@@ -832,50 +832,6 @@ pub async fn restore_acl(
     Ok(res.rows_affected())
 }
 
-/// Re-stamp the wiki-level ACL onto every active row of a wiki.
-///
-/// The synchronous re-projection a **smart-wiki** sharing change runs so a
-/// revoke closes the recall read-window immediately: smart-wiki section
-/// rows carry the wiki-level ACL the indexer projects from `_meta`
-/// (owner = resolved `acl_default`, allow = `shared_with`), and a live
-/// `_meta` ACL edit must propagate without waiting for the periodic
-/// safety-net sweep. **Smart wikis only** — on a standard wiki this would
-/// clobber the per-fragment ACLs (the caller is the smart-wiki sharing
-/// surface).
-///
-/// `sender_id` is reset to `NULL` in the same stamp: smart-wiki section
-/// rows have no per-fragment capturer, and a frozen `sender` would
-/// otherwise survive a revoke as a stale extra principal in the read
-/// union (the materialized-provenance invariant is standard-wikis only —
-/// see marker-grammar §5).
-///
-/// Returns the number of rows updated.
-///
-/// # Errors
-///
-/// `sqlx::Error` + JSON serialization of `allow`.
-pub async fn reproject_wiki_acl(
-    pool: &SqlitePool,
-    wiki_id: &str,
-    owner: &Principal,
-    allow: &[Principal],
-) -> Result<u64> {
-    let allow_json = principals_to_json(allow)?;
-    let now = chrono::Utc::now().to_rfc3339();
-    let res = sqlx::query(
-        "UPDATE fact_index
-            SET owner_id = ?, allow_ids = ?, sender_id = NULL, updated_at = ?
-          WHERE wiki_id = ? AND deleted_at IS NULL",
-    )
-    .bind(owner.to_string())
-    .bind(&allow_json)
-    .bind(&now)
-    .bind(wiki_id)
-    .execute(pool)
-    .await?;
-    Ok(res.rows_affected())
-}
-
 /// Stamp `decay_reason` on a fact that already carries its closing
 /// `valid_to`.
 ///
