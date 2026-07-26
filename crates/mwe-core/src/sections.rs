@@ -554,6 +554,10 @@ pub async fn bump_recall_hits(pool: &SqlitePool, hits: &[(String, i64)]) -> Resu
 pub struct SmartWikiRow {
     /// The wiki's id.
     pub wiki_id: String,
+    /// The wiki's directory slug — the human-facing name an operator
+    /// types ("`AcmeSigns`" → `acmesigns`). Mirrored from `_meta.md` so
+    /// the per-turn recall can tell when a message names this project.
+    pub slug: String,
     /// Resolved owner principal (the wiki's `scope`).
     pub owner_id: Principal,
     /// The `_meta.shared_with` roster.
@@ -587,6 +591,7 @@ fn principals_from_json(s: &str) -> Result<Vec<Principal>> {
 #[derive(sqlx::FromRow)]
 struct RawSmartWikiRow {
     wiki_id: String,
+    slug: String,
     owner_id: String,
     shared_with: String,
     project_id: Option<String>,
@@ -596,6 +601,7 @@ struct RawSmartWikiRow {
 fn decode_smart_wiki(raw: RawSmartWikiRow) -> Result<SmartWikiRow> {
     Ok(SmartWikiRow {
         wiki_id: raw.wiki_id,
+        slug: raw.slug,
         owner_id: raw
             .owner_id
             .parse::<Principal>()
@@ -621,9 +627,10 @@ pub async fn upsert_smart_wiki(pool: &SqlitePool, wiki: &SmartWikiRow) -> Result
     let shared = principals_to_json(&wiki.shared_with)?;
     sqlx::query(
         "INSERT INTO smart_wikis
-             (wiki_id, owner_id, shared_with, project_id, wiki_type, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+             (wiki_id, slug, owner_id, shared_with, project_id, wiki_type, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(wiki_id) DO UPDATE SET
+             slug        = excluded.slug,
              owner_id    = excluded.owner_id,
              shared_with = excluded.shared_with,
              project_id  = excluded.project_id,
@@ -631,6 +638,7 @@ pub async fn upsert_smart_wiki(pool: &SqlitePool, wiki: &SmartWikiRow) -> Result
              updated_at  = excluded.updated_at",
     )
     .bind(&wiki.wiki_id)
+    .bind(&wiki.slug)
     .bind(wiki.owner_id.to_string())
     .bind(&shared)
     .bind(wiki.project_id.as_deref())
@@ -662,7 +670,7 @@ pub async fn remove_smart_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<u64> 
 /// `sqlx::Error` + principal decode failures.
 pub async fn list_smart_wikis(pool: &SqlitePool) -> Result<Vec<SmartWikiRow>> {
     let raw = sqlx::query_as::<_, RawSmartWikiRow>(
-        "SELECT wiki_id, owner_id, shared_with, project_id, wiki_type FROM smart_wikis",
+        "SELECT wiki_id, slug, owner_id, shared_with, project_id, wiki_type FROM smart_wikis",
     )
     .fetch_all(pool)
     .await?;
@@ -676,7 +684,7 @@ pub async fn list_smart_wikis(pool: &SqlitePool) -> Result<Vec<SmartWikiRow>> {
 /// `sqlx::Error` + principal decode failures.
 pub async fn find_smart_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<Option<SmartWikiRow>> {
     let raw = sqlx::query_as::<_, RawSmartWikiRow>(
-        "SELECT wiki_id, owner_id, shared_with, project_id, wiki_type FROM smart_wikis \
+        "SELECT wiki_id, slug, owner_id, shared_with, project_id, wiki_type FROM smart_wikis \
          WHERE wiki_id = ?",
     )
     .bind(wiki_id)
@@ -962,6 +970,7 @@ mod tests {
         let pool = pool().await;
         let row = SmartWikiRow {
             wiki_id: "alice-proj".to_owned(),
+            slug: "proj".to_owned(),
             owner_id: Principal::User("alice".to_owned()),
             shared_with: vec![
                 Principal::User("bob".to_owned()),

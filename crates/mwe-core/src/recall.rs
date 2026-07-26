@@ -719,6 +719,160 @@ pub async fn search_sections(
     Ok(scored)
 }
 
+// ---------- the named-project trigger ----------
+
+/// Split `text` into lowercase alphanumeric tokens.
+///
+/// Both the message and a wiki's slug go through this, so the two are
+/// compared on the same footing: `"mwe-mcp"` and `"mwe mcp"` both become
+/// `["mwe", "mcp"]`, and punctuation around a name ("`AcmeSigns`?") falls
+/// away.
+fn name_tokens(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Shortest slug (joined, without separators) that may trigger the
+/// project-docs lookup. Guards against a one- or two-letter slug firing
+/// on ordinary text.
+const MIN_SLUG_MATCH_LEN: usize = 4;
+
+/// Whether `message_tokens` names the wiki whose slug is `slug`.
+///
+/// The slug is matched as a **contiguous token sequence**, never as a
+/// substring and never token-by-token. That is what makes the trigger
+/// safe on a compound slug: `cc-pc-lavoro` fires only on the whole
+/// "cc pc lavoro", so an ordinary message about *lavoro* does not drag
+/// in a project's documentation. Likewise `acmesigns` never fires from a
+/// longer word that merely contains it.
+fn message_names_wiki(message_tokens: &[String], slug: &str) -> bool {
+    let needle = name_tokens(slug);
+    if needle.is_empty() || needle.iter().map(String::len).sum::<usize>() < MIN_SLUG_MATCH_LEN {
+        return false;
+    }
+    message_tokens
+        .windows(needle.len())
+        .any(|window| window == needle.as_slice())
+}
+
+/// The readable smart wikis whose **name appears in `message`**.
+///
+/// The deterministic half of the project-docs trigger: no LLM, no
+/// embedding, just a token match against the registry's slugs. Only
+/// wikis the sender may read are considered, so the trigger can never
+/// reveal that a project exists.
+async fn smart_wikis_named_in(
+    pool: &SqlitePool,
+    message: &str,
+    sender: &SenderContext,
+) -> RecallResult<Vec<String>> {
+    let tokens = name_tokens(message);
+    if tokens.is_empty() {
+        return Ok(Vec::new());
+    }
+    let registry = sections::list_smart_wikis(pool).await?;
+    Ok(registry
+        .into_iter()
+        .filter(|w| {
+            let acl = Acl {
+                owner: Some(w.owner_id.clone()),
+                allow: w.shared_with.clone(),
+            };
+            can_read(&acl, &sender.sender_id, &sender.sender_groups, None)
+                && message_names_wiki(&tokens, &w.slug)
+        })
+        .map(|w| w.wiki_id)
+        .collect())
+}
+
+/// Documentation from the projects the message **named**, for the
+/// per-turn recall of a standard consumer.
+///
+/// A conversational turn recalls facts, not documentation — that is what
+/// keeps a personal exchange from being buried under project docs. But a
+/// turn that says *"come funziona questa cosa di `AcmeSigns`?"* has named
+/// its own scope, and answering it well needs that project's pages.
+///
+/// So the trigger is the name, and the ranking is semantic: the message
+/// must name a readable smart wiki, and only **that** wiki's sections are
+/// then ranked by cosine. A message that names no project pays nothing —
+/// not even a query embedding, because the name match runs first.
+///
+/// Returns at most `top_k` hits, and stops early once `char_budget`
+/// characters of body text have been gathered (whole hits only — a
+/// truncated section is worse than one hit fewer).
+///
+/// # Errors
+///
+/// See [`RecallError`].
+pub async fn recall_named_project_docs(
+    pool: &SqlitePool,
+    embedder: Arc<dyn Embedder>,
+    message: &str,
+    top_k: usize,
+    char_budget: usize,
+    sender: &SenderContext,
+) -> RecallResult<Vec<SectionHit>> {
+    if top_k == 0 || char_budget == 0 {
+        return Ok(Vec::new());
+    }
+    let named = smart_wikis_named_in(pool, message, sender).await?;
+    if named.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let q_emb = embedder.embed(message).await?;
+    let candidates = sections::find_candidates_in_wikis(pool, &named).await?;
+    let mut scored: Vec<SectionHit> = candidates
+        .into_iter()
+        .map(|row| SectionHit {
+            score: cosine_similarity(&q_emb, &row.embedding),
+            wiki_id: row.wiki_id,
+            source_path: row.source_path,
+            section_ord: row.section_ord,
+            heading_path: row.heading_path,
+            text: row.text,
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Less)
+    });
+
+    let mut kept: Vec<SectionHit> = Vec::with_capacity(top_k);
+    let mut spent = 0_usize;
+    for hit in scored {
+        if kept.len() == top_k {
+            break;
+        }
+        // Whole hits only: a half-section reads as a broken quote, and the
+        // budget exists to bound the prompt, not to shave a paragraph.
+        if spent + hit.text.len() > char_budget && !kept.is_empty() {
+            break;
+        }
+        spent += hit.text.len();
+        kept.push(hit);
+    }
+
+    let bumps: Vec<(String, i64)> = kept
+        .iter()
+        .map(|h| (h.source_path.clone(), h.section_ord))
+        .collect();
+    sections::bump_recall_hits(pool, &bumps).await?;
+
+    tracing::info!(
+        sender_id = sender.sender_id,
+        named_wikis = ?named,
+        hits = kept.len(),
+        chars = spent,
+        "recall: project docs pulled by name match"
+    );
+    Ok(kept)
+}
+
 /// Vector top-K over **both** corpora, merged into one ranking.
 ///
 /// For the consumer surfaces whose contract is "search everything I can
@@ -1812,6 +1966,7 @@ mod tests {
             pool,
             &sections::SmartWikiRow {
                 wiki_id: wiki_id.to_owned(),
+                slug: wiki_id.rsplit('-').next().unwrap_or(wiki_id).to_owned(),
                 owner_id: owner.parse().unwrap(),
                 shared_with,
                 project_id: None,
@@ -2001,6 +2156,188 @@ mod tests {
             .unwrap()
             .is_empty(),
             "the revoke closes the read window immediately"
+        );
+    }
+
+    // -- the named-project trigger --
+
+    #[test]
+    fn a_named_slug_matches_however_the_operator_writes_it() {
+        let tokens = name_tokens("Come funziona questa cosa di AcmeSigns?");
+        assert!(message_names_wiki(&tokens, "acmesigns"));
+        // Case and punctuation are irrelevant on both sides.
+        assert!(message_names_wiki(
+            &name_tokens("parliamo di LNPrint."),
+            "lnprint"
+        ));
+        // A hyphenated slug matches the spaced or hyphenated spelling.
+        assert!(message_names_wiki(
+            &name_tokens("il mwe-mcp è lento"),
+            "mwe-mcp"
+        ));
+        assert!(message_names_wiki(
+            &name_tokens("il mwe mcp è lento"),
+            "mwe-mcp"
+        ));
+    }
+
+    #[test]
+    fn a_compound_slug_never_fires_on_one_of_its_words() {
+        // `cc-pc-lavoro` must not turn every message about *lavoro* into a
+        // project-docs lookup. The slug matches as a whole sequence only.
+        let tokens = name_tokens("domani ho tanto lavoro");
+        assert!(!message_names_wiki(&tokens, "cc-pc-lavoro"));
+        assert!(message_names_wiki(
+            &name_tokens("sul cc pc lavoro"),
+            "cc-pc-lavoro"
+        ));
+    }
+
+    #[test]
+    fn a_slug_inside_a_longer_word_does_not_count() {
+        // Substring matching would fire here; token matching does not.
+        assert!(!message_names_wiki(&name_tokens("acmesignss"), "acmesigns"));
+        assert!(!message_names_wiki(
+            &name_tokens("superacmesigns"),
+            "acmesigns"
+        ));
+    }
+
+    #[test]
+    fn a_too_short_slug_never_triggers() {
+        assert!(!message_names_wiki(&name_tokens("va bene ok"), "ok"));
+        assert!(!message_names_wiki(&name_tokens("a b c"), "abc"));
+    }
+
+    #[tokio::test]
+    async fn project_docs_fire_only_when_the_message_names_the_project() {
+        let pool = make_pool().await;
+        seed_smart_wiki(&pool, "franz-acmesigns", "user:franz", Vec::new()).await;
+        seed_section(
+            &pool,
+            "franz-acmesigns",
+            0,
+            "Content is pushed to each display over a websocket channel.",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        let sender = SenderContext::user("franz");
+
+        let hit = recall_named_project_docs(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "come fa acmesigns a inviare i contenuti ai display?",
+            3,
+            2_000,
+            &sender,
+        )
+        .await
+        .unwrap();
+        assert_eq!(hit.len(), 1);
+        assert!(hit[0].text.contains("websocket"));
+
+        // Same corpus, same embedder — but nothing is named, so the slot
+        // stays empty and the turn pays nothing.
+        let unnamed = recall_named_project_docs(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "stasera ceniamo alle otto",
+            3,
+            2_000,
+            &sender,
+        )
+        .await
+        .unwrap();
+        assert!(unnamed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn naming_a_project_you_cannot_read_yields_nothing() {
+        let pool = make_pool().await;
+        seed_smart_wiki(&pool, "franz-acmesigns", "user:franz", Vec::new()).await;
+        seed_section(
+            &pool,
+            "franz-acmesigns",
+            0,
+            "internal architecture note",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+
+        let stranger = SenderContext::user("carol");
+        let hits = recall_named_project_docs(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "come funziona acmesigns?",
+            3,
+            2_000,
+            &stranger,
+        )
+        .await
+        .unwrap();
+        assert!(
+            hits.is_empty(),
+            "naming a project must not reveal it to someone who cannot read it"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_char_budget_bounds_the_slot_with_whole_sections() {
+        let pool = make_pool().await;
+        seed_smart_wiki(&pool, "franz-acmesigns", "user:franz", Vec::new()).await;
+        let long = "x".repeat(300);
+        seed_section(&pool, "franz-acmesigns", 0, &long, vec![1.0, 0.0, 0.0, 0.0]).await;
+        seed_section(&pool, "franz-acmesigns", 1, &long, vec![0.9, 0.1, 0.0, 0.0]).await;
+        seed_section(&pool, "franz-acmesigns", 2, &long, vec![0.8, 0.2, 0.0, 0.0]).await;
+        let sender = SenderContext::user("franz");
+
+        let hits = recall_named_project_docs(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "acmesigns",
+            10,
+            700,
+            &sender,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            hits.len(),
+            2,
+            "a third whole section would overrun 700 chars"
+        );
+        assert!(
+            hits.iter().all(|h| h.text.len() == 300),
+            "sections are kept whole, never truncated"
+        );
+
+        // A budget smaller than the first hit still returns it — one whole
+        // section beats an empty slot on a question that named the project.
+        let tiny = recall_named_project_docs(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "acmesigns",
+            10,
+            10,
+            &sender,
+        )
+        .await
+        .unwrap();
+        assert_eq!(tiny.len(), 1);
+
+        // `top_k = 0` disables the slot outright.
+        assert!(
+            recall_named_project_docs(
+                &pool,
+                embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+                "acmesigns",
+                0,
+                2_000,
+                &sender,
+            )
+            .await
+            .unwrap()
+            .is_empty()
         );
     }
 

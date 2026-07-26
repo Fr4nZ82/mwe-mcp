@@ -557,6 +557,7 @@ struct SharingState {
     /// without re-reading `_meta.md`.
     project_id: Option<String>,
     wiki_type: String,
+    slug: String,
 }
 
 fn load_sharing(state: &DashboardState, user: &SessionUser, id: &str) -> Result<SharingState> {
@@ -604,6 +605,7 @@ fn load_sharing(state: &DashboardState, user: &SessionUser, id: &str) -> Result<
         shared_with,
         project_id,
         wiki_type: meta.wiki_type,
+        slug: meta.slug.as_str().to_owned(),
     })
 }
 
@@ -665,6 +667,7 @@ async fn submit_sharing(
         &state.pool,
         &mwe_core::sections::SmartWikiRow {
             wiki_id: wiki_id.as_str().to_owned(),
+            slug: sharing.slug.clone(),
             owner_id: owner,
             shared_with: new_roster,
             project_id: sharing.project_id.clone(),

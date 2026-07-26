@@ -383,6 +383,17 @@ pub struct IngestPolicy {
     /// design: each candidate is re-embedded at recall time. PROVISIONAL —
     /// revisit after the recall-strategy review.
     pub recall_fresh_top_k: usize,
+    /// Size of the **project-docs** slot: how many smart-wiki sections a
+    /// turn may pull when the message *names* a project the sender can
+    /// read (see [`recall::recall_named_project_docs`]). `0` disables the
+    /// slot. A conversational turn otherwise recalls facts only — this is
+    /// the narrow, name-triggered exception for "how does `AcmeSigns` do X?".
+    pub project_docs_top_k: usize,
+    /// Character budget for that slot. Whole sections only: a hit that
+    /// would overrun the budget is dropped, never truncated. Documentation
+    /// sections are long, so this — not `project_docs_top_k` — is usually
+    /// what bounds the slot.
+    pub project_docs_char_budget: usize,
     /// Jaccard threshold passed through to [`capture::wiki_capture`]
     /// when routing intent `capture`.
     pub dedup_threshold: f32,
@@ -482,6 +493,8 @@ impl Default for IngestPolicy {
         Self {
             recall_top_k: 5,
             recall_fresh_top_k: 3,
+            project_docs_top_k: 3,
+            project_docs_char_budget: 2_000,
             dedup_threshold: DEFAULT_DEDUP_THRESHOLD,
             max_recent_messages: 16,
             max_recent_message_chars: 280,
@@ -3797,7 +3810,11 @@ const HDR_RELEVANT_MEMORY: &str =
 ///   through the dedicated `rules` field only, never as recalled memory.
 ///
 /// `None` when nothing survives — the section is omitted entirely.
-fn format_snippet(hits: &[RecallHit], navigated_paths: &[String]) -> Option<String> {
+fn format_snippet(
+    hits: &[RecallHit],
+    navigated_paths: &[String],
+    project_docs: &[recall::SectionHit],
+) -> Option<String> {
     let keep = |h: &&RecallHit| -> bool {
         if crate::wiki::is_rules_page(&h.source_path) {
             return false;
@@ -3829,11 +3846,44 @@ fn format_snippet(hits: &[RecallHit], navigated_paths: &[String]) -> Option<Stri
             push_trust_tag(&mut out, h);
         }
     }
+    // Project docs the message NAMED — a separate, labelled slot so the
+    // classifier reads it as reference material, not as something the
+    // user just told it. The label is load-bearing: without it a
+    // documentation paragraph in the recall block looks exactly like a
+    // recalled fact, and the classifier would happily file it back as a
+    // new fact about the sender (the ANTI-LOOP rule in the prompt).
+    if !project_docs.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("\nProject documentation (reference — never file this as a fact):");
+        for d in project_docs {
+            out.push_str("\n- (");
+            out.push_str(&d.wiki_id);
+            out.push_str(" · ");
+            out.push_str(page_of(&d.source_path));
+            out.push_str(") ");
+            out.push_str(&d.text);
+        }
+    }
     if out.is_empty() {
         None
     } else {
         Some(format!("{HDR_RELEVANT_MEMORY}{out}"))
     }
+}
+
+/// The page part of a workdir-relative `source_path`, for the citation in
+/// the project-docs slot: `wikis/franz/acmesigns/architecture/X.md` →
+/// `architecture/X.md`. Falls back to the whole path when the shape is
+/// unexpected — a slightly long citation beats a wrong one.
+fn page_of(source_path: &str) -> &str {
+    source_path
+        .strip_prefix("wikis/")
+        .and_then(|rest| rest.split_once('/'))
+        .map_or(source_path, |(_owner, rest)| {
+            rest.split_once('/').map_or(rest, |(_wiki, page)| page)
+        })
 }
 
 /// In-band trust tag on a snippet line: when the fact was noted and —
@@ -4183,7 +4233,7 @@ fn fallback_response(
     took: std::time::Duration,
     llm_used: bool,
 ) -> IngestResponse {
-    let context_snippet = format_snippet(recall_hits, &[]);
+    let context_snippet = format_snippet(recall_hits, &[], &[]);
     let suggested_seed = match request.context_hint {
         ContextHint::DashboardCommand => Some(policy.structural_suggested_seed.clone()),
         _ => Some(policy.fallback_suggested_seed.clone()),
@@ -4318,7 +4368,35 @@ pub async fn wiki_ingest_message(
         },
     };
     recall_hits.extend(fresh_hits);
-    tracing::debug!(recall_hits = recall_hits.len(), "ingest: recall done");
+
+    // Project-docs slot. The turn's recall above is facts-only — a
+    // conversation must not be buried under project documentation. But a
+    // message that NAMES a project ("come funziona questa cosa di
+    // AcmeSigns?") has declared its own scope, so that project's pages
+    // become fair game: the name match is deterministic (no LLM, no
+    // embedding when nothing is named) and the ranking inside the named
+    // wiki is semantic. Soft-fails to an empty slot.
+    let project_docs = match recall::recall_named_project_docs(
+        pool,
+        Arc::clone(&embedder),
+        &request.text,
+        policy.project_docs_top_k,
+        policy.project_docs_char_budget,
+        &sender_ctx,
+    )
+    .await
+    {
+        Ok(hits) => hits,
+        Err(err) => {
+            tracing::warn!(error = %err, "ingest: project-docs recall failed, continuing without it");
+            Vec::new()
+        },
+    };
+    tracing::debug!(
+        recall_hits = recall_hits.len(),
+        project_docs = project_docs.len(),
+        "ingest: recall done"
+    );
 
     // Builtin guest pseudo-identity — the unidentified-human sender. The
     // turn is EPHEMERAL by construction: recall above already ran with the
@@ -4333,7 +4411,7 @@ pub async fn wiki_ingest_message(
             recall_hits = recall_hits.len(),
             "ingest: guest turn — ephemeral, classifier skipped, nothing filed"
         );
-        let context_snippet = format_snippet(&recall_hits, &[]);
+        let context_snippet = format_snippet(&recall_hits, &[], &project_docs);
         record_ingest_trace(
             pool,
             &request,
@@ -5274,7 +5352,7 @@ pub async fn wiki_ingest_message(
     // instead of arriving twice ([`format_snippet`] dedup).
     let relevant = if include_flat {
         let nav_paths = nav_tail.as_ref().map_or(&[][..], |t| &t.page_paths);
-        format_snippet(&recall_hits, nav_paths)
+        format_snippet(&recall_hits, nav_paths, &project_docs)
     } else {
         None
     };
@@ -7010,6 +7088,71 @@ mod tests {
     // ---------- snippet formatting ----------
 
     #[test]
+    fn project_docs_render_in_their_own_labelled_slot() {
+        // The slot must be unmistakably reference material: without the
+        // label a documentation paragraph reads exactly like a recalled
+        // fact, and the classifier would file it back as one.
+        let fact = RecallHit {
+            fact_id: FactId::parse("018f1234-5678-7abc-9def-0123456789ab").unwrap(),
+            wiki_id: "franz".into(),
+            source_path: "wikis/franz/index.md".into(),
+            region_start: None,
+            region_end: None,
+            text: "franz lives in Bologna".into(),
+            owner_id: Principal::User("franz".into()),
+            allow_ids: Vec::new(),
+            sender_id: None,
+            fact_type: None,
+            created_at: "2026-05-18".into(),
+            valid_to: None,
+            score: 0.9,
+            fresh: false,
+        };
+        let doc = recall::SectionHit {
+            wiki_id: "franz-acmesigns".into(),
+            source_path: "wikis/franz/acmesigns/architecture/Delivery.md".into(),
+            section_ord: 2,
+            heading_path: Some("Delivery".into()),
+            text: "Content is pushed to each display over a websocket.".into(),
+            score: 0.88,
+        };
+
+        let snippet = format_snippet(std::slice::from_ref(&fact), &[], &[doc]).expect("renders");
+        assert!(snippet.contains("franz lives in Bologna"), "{snippet}");
+        assert!(
+            snippet.contains("Project documentation (reference — never file this as a fact):"),
+            "the slot must be labelled: {snippet}"
+        );
+        // The citation names the wiki and the page, not the workdir path.
+        assert!(
+            snippet.contains("(franz-acmesigns · architecture/Delivery.md)"),
+            "{snippet}"
+        );
+        // Facts keep their trust tag; a doc line carries none — it has no
+        // validity window and no capture date to reason about.
+        assert!(snippet.contains("[noted 2026-05-18]"), "{snippet}");
+        assert!(
+            !snippet.contains("websocket.\n [noted"),
+            "a doc line must not be tagged like a fact: {snippet}"
+        );
+
+        // No docs → no slot at all, so an ordinary turn's block is unchanged.
+        let plain = format_snippet(&[fact], &[], &[]).expect("renders");
+        assert!(!plain.contains("Project documentation"), "{plain}");
+    }
+
+    #[test]
+    fn page_of_strips_the_workdir_and_wiki_prefix() {
+        assert_eq!(
+            page_of("wikis/franz/acmesigns/architecture/X.md"),
+            "architecture/X.md"
+        );
+        assert_eq!(page_of("wikis/franz/acmesigns/index.md"), "index.md");
+        // Unexpected shapes fall back to the whole path rather than lying.
+        assert_eq!(page_of("odd.md"), "odd.md");
+    }
+
+    #[test]
     fn format_snippet_joins_hits_with_wiki_prefix() {
         let hits = vec![
             RecallHit {
@@ -7061,7 +7204,7 @@ mod tests {
                 fresh: true,
             },
         ];
-        let snippet = format_snippet(&hits, &[]).expect("non-empty hits render");
+        let snippet = format_snippet(&hits, &[], &[]).expect("non-empty hits render");
         // The flat slot is a labelled role section now (roadmap 41f).
         assert!(snippet.starts_with(HDR_RELEVANT_MEMORY), "{snippet}");
         assert!(snippet.contains("(alice) alice likes coffee"));
@@ -7092,7 +7235,7 @@ mod tests {
         kept.source_path = "wikis/matteo/index.md".into();
 
         let nav_paths = vec!["wikis/franz/index.md".to_owned()];
-        let snippet = format_snippet(&[navigated_home, rules_hit, kept.clone()], &nav_paths)
+        let snippet = format_snippet(&[navigated_home, rules_hit, kept.clone()], &nav_paths, &[])
             .expect("one hit survives");
         // A hit homed on a navigated page is dropped (its prose rides the
         // navigated section); a rules-page hit is channel-only.
@@ -7101,7 +7244,7 @@ mod tests {
         assert!(snippet.contains("matteo's pronouns are he/him"));
         // All hits filtered → the whole section is omitted.
         assert_eq!(
-            format_snippet(&[kept], &["wikis/matteo/index.md".into()]),
+            format_snippet(&[kept], &["wikis/matteo/index.md".into()], &[]),
             None
         );
     }
@@ -7111,7 +7254,7 @@ mod tests {
         let mut hit = sample_recall_hit("018f1234-5678-7abc-9def-0123456789ab");
         hit.created_at = "2026-05-18T09:30:00Z".into();
         hit.valid_to = Some("2026-06-01T00:00:00Z".into());
-        let snippet = format_snippet(&[hit], &[]).expect("one hit renders");
+        let snippet = format_snippet(&[hit], &[], &[]).expect("one hit renders");
         // Dates only, raw window — no expired/stale verdict in Rust: the
         // consumer model judges staleness against its own clock.
         assert!(

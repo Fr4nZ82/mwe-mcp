@@ -33,6 +33,50 @@ conversational turn. Only the two consumer surfaces whose contract is
 "search everything I can see" — `wiki_search` (MCP) and `wiki_navigate` —
 reach for the merged view.
 
+### The named-project exception
+
+Facts-only would leave a real gap: ask a **standard** consumer (Telegram,
+hermes) *"come funziona questa cosa di AcmeSigns?"* and the engine would
+have the answer indexed and never look at it. So the per-turn recall has
+one narrow, deterministic opening —
+[`recall_named_project_docs`](../../crates/mwe-core/src/recall.rs):
+
+1. **Trigger — the name.** The message's tokens are matched against the
+   `slug` of every smart wiki *the sender can read*
+   (`smart_wikis.slug`, mirrored from `_meta.md`). No LLM, and no query
+   embedding at all when nothing is named — a message about dinner costs
+   nothing.
+2. **Selection — cosine, scoped.** Only the **named** wiki's sections are
+   ranked. This is why the trigger beats a plain score threshold: it
+   answers from the project the user asked about rather than from
+   whatever happened to score well anywhere.
+3. **Budget.** `project_docs_top_k` (default 3) and
+   `project_docs_char_budget` (default 2 000) bound the slot. Sections are
+   kept **whole** — a hit that would overrun is dropped, never truncated,
+   because half a section reads as a broken quote. On a documentation
+   corpus the char budget, not the top-K, is usually what bites.
+
+**Matching rule.** A slug matches as a **contiguous token sequence**,
+never as a substring and never token-by-token. That is what keeps the
+trigger safe on a compound slug: `cc-pc-lavoro` fires only on the whole
+"cc pc lavoro", so an ordinary Italian message about *lavoro* does not
+drag in a project's docs; and `acmesigns` never fires from inside a
+longer word. Slugs shorter than
+[`MIN_SLUG_MATCH_LEN`](../../crates/mwe-core/src/recall.rs) never
+trigger.
+
+**Only the slug — deliberately not the title.** Titles carry generic
+words ("Claude (claude2)", "… engineering wiki"); matching those would
+fire the trigger on ordinary conversation.
+
+The hits render in their own labelled slot of the recall block
+(`Project documentation (reference — never file this as a fact):`, see
+[`ingest::format_snippet`](../../crates/mwe-core/src/ingest.rs)), and the
+ingest prompt carries a matching REFERENCE, NOT MEMORY rule. Both halves
+are load-bearing: an unlabelled documentation paragraph in the recall
+block looks exactly like a recalled fact, and the classifier would file
+it straight back as a fact about the sender.
+
 **ACL is resolved once per wiki, not once per row.** `search_sections`
 loads the `smart_wikis` registry (a handful of rows), keeps the wikis the
 sender may read (`owner ∪ shared_with`, the same effective set
@@ -536,6 +580,13 @@ table is the larger and the more regenerable of the two.
   window with one row write).
 - `search_all`: 2 (both corpora merge into one ranking while
   `wiki_search` stays facts-only / `top_k` honoured across the merge).
+- `recall_named_project_docs`: 7 — the match rule (case/punctuation
+  insensitive, hyphenated slug either spelling / a compound slug never
+  fires on one of its words / a slug inside a longer word does not count
+  / a too-short slug never triggers) and the pipeline (fires only when
+  the message names the project, naming an unreadable project yields
+  nothing, the char budget bounds the slot with whole sections and
+  `top_k = 0` disables it).
 - `wiki_facts_for`: 2 (filtered without counter bump / ACL filter).
 - `wiki_recall`: 1 (delegates to search today).
 - `recall_fresh_captures`: 1 (un-promoted buffered capture surfaces, ACL-scoped, flagged `fresh`; another owner's capture is filtered out).

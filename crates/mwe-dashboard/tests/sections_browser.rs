@@ -86,6 +86,7 @@ async fn seed_sections(pool: &SqlitePool, wiki_id: &str, owner: &str, shared_wit
         pool,
         &SmartWikiRow {
             wiki_id: wiki_id.to_owned(),
+            slug: wiki_id.rsplit('-').next().unwrap_or(wiki_id).to_owned(),
             owner_id: owner.parse().expect("owner principal"),
             shared_with,
             project_id: Some("abc123".to_owned()),
@@ -214,6 +215,7 @@ async fn a_shared_wiki_becomes_visible_through_the_registry_row_alone() {
         &pool,
         &SmartWikiRow {
             wiki_id: "bob-proj".to_owned(),
+            slug: "proj".to_owned(),
             owner_id: "user:bob".parse().unwrap(),
             shared_with: vec![Principal::User("alice".to_owned())],
             project_id: Some("abc123".to_owned()),

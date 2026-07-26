@@ -7,7 +7,7 @@ last_review: "2026-06-29"
 
 # Worked scenarios
 
-Seven narrative walkthroughs that show how mwe-mcp composes with a
+Six narrative walkthroughs that show how mwe-mcp composes with a
 generic consumer agent. Each one keeps the same lens on the camera:
 **the external consumer side** (what the client agent actually calls)
 sits in front of **the internal mwe-mcp side** (what the server's

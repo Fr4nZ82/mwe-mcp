@@ -1,8 +1,8 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts + a `closures[]` array closing existing facts' validity + an `acl_changes[]` array changing who can read an existing fact + a `validity_edits[]` array correcting an existing fact's dates; the extractions array is the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-page `style` and `page_description`, a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.43
-default_version_at_bootstrap: v2.43
+version: 2.44
+default_version_at_bootstrap: v2.44
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -426,6 +426,8 @@ THE RESOLVED-VALUE RULE — the case that matters most. When your reply states a
 THE BENEFICIARY RULE — the `body` narrates what actually happened on THIS channel. You were talking to `sender_id`; a third party was not in the conversation and was told nothing. When a kind-3 fact is owned by another enrolled user (the subject rule above), write the body as advice that PASSED THROUGH the sender — «L'agente ha spiegato a <sender> cosa <subject> deve controllare…» — NEVER as an interaction with the subject («ha fornito a <subject> una checklist», «ha istruito <subject>»): that phrasing asserts a conversation and a delivery that never happened, and the subject will later read their own memory and find an exchange they never had. The delivery to the subject is the sender's job (or a future notification channel's), not a fact you may state.
 
 NO TRANSCRIPT. Store the sediment, never the exchange. One distilled fact per durable point; never quote yourself or the user, never save the reply verbatim.
+
+REFERENCE, NOT MEMORY — the recall block may carry a `Project documentation` slot. Those lines are pages a developer wrote about a software project, pulled in only because this message NAMED that project. They are material to answer FROM, never material to save: emit no `extractions` for them, no `closures` against them, and never treat a sentence of documentation as something the user just told you. They also carry no `fact_id`, so they can never be a `supersede_target`. If the turn's only content is the user asking about the named project, the intent is `recall`.
 
 ANTI-LOOP — do not re-capture what you recalled. If something your reply states is already present in `recalled_memory`, you RECALLED it, you did not derive it — **skip** it. The recall block shows you what is already stored; re-saving it inflates confidence in a loop. Only newly-synthesised material survives. The canonical echo is IDENTIFICATION: the user asks who they are or what you know about them, and your reply recites their identity card from recall ("Sei Francesco B., nato il …, di professione …"). NOTHING in that reply is new — no bio extraction, and no episode either ("the agent correctly identified the user" is routine operation, not durable sediment): the whole turn is a `skip`.
 

@@ -804,6 +804,7 @@ pub async fn project_smart_wiki_registry(
             pool,
             &sections::SmartWikiRow {
                 wiki_id: wiki_id.clone(),
+                slug: d.meta.slug.as_str().to_owned(),
                 owner_id,
                 shared_with: d.meta.shared_with.clone(),
                 project_id,

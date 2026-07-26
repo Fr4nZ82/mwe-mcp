@@ -1,0 +1,22 @@
+-- The smart-wiki registry learns each wiki's `slug`.
+--
+-- WHY. The per-turn recall of a **standard** consumer (Telegram, hermes)
+-- reads the fact corpus only, so naming a project in a message no longer
+-- pulls its documentation into the turn. The fix is a deterministic
+-- trigger: when the message names a smart wiki, search that wiki's
+-- sections too. Matching needs the human-facing name, and the registry
+-- only carried `wiki_id` (`franz-acmesigns`) — the owner prefix makes it
+-- the wrong thing to match a sentence against.
+--
+-- The slug is what the operator types ("AcmeSigns" → `acmesigns`). It
+-- lives in each wiki's `_meta.md`; this column is the queryable mirror,
+-- refreshed by the same projection pass as the rest of the row.
+--
+-- Deliberately NOT the title: titles carry generic words ("Claude
+-- (claude2)", "… wiki"), and matching those would fire the trigger on
+-- ordinary conversation.
+--
+-- Backfilled as empty; `reindex::project_smart_wiki_registry` fills it on
+-- the next boot or safety-net tick, and an empty slug simply never
+-- matches until then.
+ALTER TABLE smart_wikis ADD COLUMN slug TEXT NOT NULL DEFAULT '';

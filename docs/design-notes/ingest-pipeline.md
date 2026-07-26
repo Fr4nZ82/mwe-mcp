@@ -2,7 +2,7 @@
 title: Ingest pipeline — wiki_ingest_message
 area: design-notes
 status: implemented
-last_review: "2026-07-20"
+last_review: "2026-07-26"
 ---
 
 # Ingest pipeline
@@ -626,7 +626,16 @@ places adjacent to this block (the hermes bridge leads with it).
    `max_agent_history_chars` (default 1400).
 4. **`RELEVANT MEMORY`** — the flat hit-list rebuilt from the step-1
    hits ([`format_snippet`]; carries the `Recent (not yet consolidated):`
-   fresh slot — see [recall-pipeline.md](recall-pipeline.md)). It is
+   fresh slot and, when the message **named a project**, the
+   `Project documentation (reference — never file this as a fact):`
+   slot — see [recall-pipeline.md](recall-pipeline.md#the-named-project-exception)).
+   The recalled facts themselves are **facts only**: smart-wiki
+   documentation lives in another table and only enters through that one
+   labelled, name-triggered slot, which is why an ordinary conversational
+   turn is no longer buried under project docs. The label is
+   load-bearing — the ingest prompt's REFERENCE, NOT MEMORY rule keys on
+   it so a documentation paragraph is never filed back as a fact about
+   the sender. It is
    **deterministic**, never an LLM recap: the classifier runs before the
    navigator on the shallow hits alone, so a prose recap it wrote here
    could assert a false negative the navigator then contradicts two
