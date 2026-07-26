@@ -203,7 +203,12 @@ The defaults are already conservative; production exposure adds four habits:
    through a TLS reverse proxy or an
    authenticated tunnel (Cloudflare Tunnel, Tailscale, a VPN). Never forward
    bare HTTP across a network you don't own — every request carries a bearer
-   token.
+   token. If that fronting layer runs bot or browser-integrity filters, exempt
+   `/mcp` from them: it is an API path spoken only by programs, and those
+   filters reject non-browser clients on sight — a consumer then gets an
+   opaque `403` from the edge that looks like a revoked token but never
+   reaches mwe-mcp at all. `/dashboard` is the browser surface; leave its
+   filtering alone.
 2. **Treat tokens as per-consumer credentials.** Mint one token per agent
    from the dashboard, scope it with its delegation list at mint time, and
    revoke it there the moment the consumer is retired. The signing secret

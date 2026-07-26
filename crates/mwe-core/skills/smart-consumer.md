@@ -1,6 +1,6 @@
 ---
 name: smart-consumer
-version: 1.13.0
+version: 1.13.1
 description: "Project-bound mode for smart consumers: authoritative management of a project's smart wiki via wiki_admin_push/pull/notify + project signposts (wiki_admin_signpost, so the user's standard memory knows the project exists) + _briefing.md lifecycle + cooperative lease + graceful degradation on token revoke. Smart wikis are markerless and content-indexed — the consumer writes plain markdown freely (create / edit / move / rename / delete pages), exactly the way this repo's engineering wiki is maintained; the ACL is wiki-level in _meta (no per-fragment markers or ACL — those are the pillar of standard memory wikis only). Superset (group 17): the user↔agent conversation ALSO runs the standard personal-memory pipeline via wiki_ingest_message, joined to the project wiki by provenance links (authored_refs), with a per-message router (drop / personal-fact→standard / document-import / project-wiki / your-operational-wiki). Auto recall+capture, never dump everything into the user's standard memory."
 depends_on: ["core"]
 applies_to:
@@ -329,6 +329,14 @@ operator mints one once (`mwe-mcp token-issue --class smart …` on the server,
 or the dashboard token page) and exports it here. The token is the **only**
 setup step on this machine — `mwe-mcp` itself is never installed here; the
 script only speaks HTTP to the remote server.
+
+**Identify your client.** Set an explicit `User-Agent` naming the flow (e.g.
+`mwe-bulk-copy/1.0`) instead of shipping your HTTP library's default. It is
+what the operator sees in the access log when a bulk run misbehaves, and
+stock library defaults are the signatures a filter in front of the server
+drops first — so a `403` whose body never mentions mwe-mcp came from that
+edge, not from your token. Never impersonate a browser to get past one: say
+what you are.
 
 **After the copy**, record `.mwe/state.json` (`wiki_id`, `local_wiki_root` =
 the existing dir, `last_op_log_head` from the last push) and switch to the
