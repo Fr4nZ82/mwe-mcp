@@ -653,13 +653,13 @@ fn render_install_md_claude_code(origin: &str) -> String {
          \n\
          ## 6. Do NOT bootstrap a project now\n\
          \n\
-         The install ends here. When the user later asks (or you judge a moment to be\n\
-         durable project knowledge), follow `smart-consumer` / `smart-codebase`:\n\
-         never scan folders on your own, leave the local copy intact, and for an\n\
-         existing `docs/` or wiki **propose** the path (build an mwe-style wiki from\n\
-         `docs/`, or check an existing wiki for mwe-compatibility then ingest),\n\
-         surfacing the `CLAUDE.md` / `AGENTS.md` documentation-rules decision. Keep\n\
-         the user aware of every action.\n\
+         The install ends here. Later, inside a project, pass the derived `project_id`\n\
+         to `smart_bootstrap` (the `core` skill carries the exact recipe): the response\n\
+         says whether that project already has a wiki, and when it has none it points\n\
+         you at the `smart-onboarding` skill — which is where the whole first-connect\n\
+         procedure lives, including the rules about **not** opening it mid-task and\n\
+         never asking twice. Nothing is ever scanned or copied without the user's yes,\n\
+         and the local copy is left exactly as it is.\n\
          \n\
          ## Keeping a repo private (per-project isolation)\n\
          \n\

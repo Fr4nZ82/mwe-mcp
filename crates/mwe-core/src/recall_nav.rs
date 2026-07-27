@@ -276,6 +276,14 @@ pub async fn gather_entry_points(
 /// per-fragment) ACL. They are surfaced via flat recall instead; the funnel
 /// skips them as both seeds and destinations (mirrors the REM cross-wiki refile
 /// sweep).
+///
+/// This is a **settled decision, not an omission**: teaching the funnel to
+/// descend was weighed and withdrawn (roadmap 48g, 2026-07-27). A project
+/// wiki's retrieval quality stays a property of its sections alone, so nobody
+/// has to author link topology to be found; and a graph walk would spend one
+/// model call per hop on the per-turn budget. If a hit ever needs its
+/// surroundings, the cheap move is its neighbouring sections on the same page,
+/// not a walk.
 fn build_seed_infos(
     tree: &WikiTree,
     reader_card: &meta_annotate::ReaderCard,

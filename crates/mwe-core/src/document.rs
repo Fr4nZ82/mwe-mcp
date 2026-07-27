@@ -853,6 +853,55 @@ fn pack(
     }
 }
 
+/// One `\n\n`-delimited block of a prose document, already split into the
+/// heading it opens (if any) and the body that travels with it.
+///
+/// Both [`segment_prose`] and [`page_shape`] read a page through this, so
+/// "what will the index do to this page?" is answered by the same walk
+/// that does it. A measurement that drifts from the mechanism it measures
+/// is worse than no measurement — it is reported to a user as fact.
+struct ProseBlock {
+    /// `(level, title)` when the block opens with a markdown heading.
+    heading: Option<(usize, String)>,
+    /// The block's prose, trimmed. Empty when the block is a bare
+    /// heading line.
+    body: String,
+}
+
+/// Cut a prose document into blocks. Pure and allocation-per-block; the
+/// callers are a background indexer and a once-per-page report.
+fn prose_blocks(text: &str) -> Vec<ProseBlock> {
+    let mut out: Vec<ProseBlock> = Vec::new();
+    for para in text.split("\n\n") {
+        let trimmed = para.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let first = trimmed.lines().next().unwrap_or("");
+        let hashes = first.chars().take_while(|&c| c == '#').count();
+        if (1..=6).contains(&hashes) && first.chars().nth(hashes) == Some(' ') {
+            // Any prose lines following the heading inside the same
+            // paragraph stay with it. A heading whose text follows on the
+            // very next line (no blank line between) makes the whole block
+            // ONE paragraph: a changelog entry, a table, a dense list.
+            // Pushing that straight into the buffer bypassed
+            // `segment_max_chars` entirely and was how a 6 994-character
+            // section reached the index.
+            let rest: String = trimmed.lines().skip(1).collect::<Vec<_>>().join("\n");
+            out.push(ProseBlock {
+                heading: Some((hashes, first[hashes + 1..].trim().to_owned())),
+                body: rest.trim().to_owned(),
+            });
+        } else {
+            out.push(ProseBlock {
+                heading: None,
+                body: trimmed.to_owned(),
+            });
+        }
+    }
+    out
+}
+
 fn segment_prose(text: &str, policy: &DocumentPolicy) -> Vec<Segment> {
     // Heading chain: a stack of (level, title) — `## B` under `# A`
     // renders as "A › B" in the segment context.
@@ -873,20 +922,13 @@ fn segment_prose(text: &str, policy: &DocumentPolicy) -> Vec<Segment> {
         buf.clear();
     };
 
-    for para in text.split("\n\n") {
-        let trimmed = para.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let first = trimmed.lines().next().unwrap_or("");
-        let hashes = first.chars().take_while(|&c| c == '#').count();
-        if (1..=6).contains(&hashes) && first.chars().nth(hashes) == Some(' ') {
-            // A heading paragraph closes the current segment and pushes the
-            // chain.
+    for block in prose_blocks(text) {
+        if let Some((level, title)) = block.heading {
+            // A heading paragraph closes the current segment and pushes
+            // the chain.
             flush(&mut out, &mut buf, &buf_heading);
-            let title = first[hashes + 1..].trim().to_owned();
-            chain.retain(|(lvl, _)| *lvl < hashes);
-            chain.push((hashes, title));
+            chain.retain(|(lvl, _)| *lvl < level);
+            chain.push((level, title));
             buf_heading = Some(
                 chain
                     .iter()
@@ -894,25 +936,147 @@ fn segment_prose(text: &str, policy: &DocumentPolicy) -> Vec<Segment> {
                     .collect::<Vec<_>>()
                     .join(" › "),
             );
-            // Any prose lines following the heading inside the same
-            // paragraph stay with it — packed and hard-split like any
-            // other body. A heading whose text follows on the very next
-            // line (no blank line between) makes the whole block ONE
-            // paragraph: a changelog entry, a table, a dense list. Pushing
-            // that straight into the buffer bypassed `segment_max_chars`
-            // entirely and was how a 6 994-character section reached the
-            // index.
-            let rest: String = trimmed.lines().skip(1).collect::<Vec<_>>().join("\n");
-            let rest = rest.trim();
-            if !rest.is_empty() {
-                pack(&mut out, &mut buf, buf_heading.as_ref(), rest, policy);
-            }
-            continue;
         }
-        pack(&mut out, &mut buf, buf_heading.as_ref(), trimmed, policy);
+        if !block.body.is_empty() {
+            pack(
+                &mut out,
+                &mut buf,
+                buf_heading.as_ref(),
+                &block.body,
+                policy,
+            );
+        }
     }
     flush(&mut out, &mut buf, &buf_heading);
     out
+}
+
+// ---------- Page shape (measured, never asked) ----------
+
+/// Share of a page that must sit in over-cap blocks before the page is
+/// worth repairing.
+///
+/// Density, not size: a 55 KB page written in ordinary paragraphs indexes
+/// fine, and a dense page at a third of that does not. The threshold is
+/// deliberately coarse — this decides whether a human is *offered* a
+/// repair, and an offer that fires on every page is ignored within a
+/// week.
+pub const DENSE_PAGE_SHARE: f64 = 0.25;
+
+/// …or this many over-cap blocks, whatever share they hold. Three cuts
+/// mid-sentence on one page is a shape problem even on a long page.
+pub const DENSE_PAGE_BLOCKS: usize = 3;
+
+/// What the section index will make of one page — measured from the same
+/// deterministic walk that produces the sections.
+///
+/// Counted in characters, like the segmenter's own knobs
+/// ([`SECTION_TARGET_CHARS`] / [`SECTION_MAX_CHARS`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PageShape {
+    /// Characters on the page.
+    pub chars: usize,
+    /// Sections the page will produce.
+    pub sections: usize,
+    /// Sections that exist because the packer closed the buffer, not
+    /// because a heading opened one: they carry the **same** heading
+    /// chain as their predecessor. Cap-split pieces are not unlabelled —
+    /// [`pack`] copies the heading chain onto every piece it emits — so
+    /// the defect is siblings sharing one label with different content,
+    /// not anonymity.
+    pub sections_sharing_a_heading: usize,
+    /// Source blocks longer than [`DocumentPolicy::segment_max_chars`]:
+    /// the ones that get cut at an arbitrary offset, mid-sentence,
+    /// because they offer no boundary to cut at.
+    pub oversize_blocks: usize,
+    /// Characters held by those blocks.
+    pub oversize_chars: usize,
+    /// The longest single block on the page.
+    pub longest_block_chars: usize,
+}
+
+impl PageShape {
+    /// Share of the page held by over-cap blocks, `0.0` on an empty page.
+    #[must_use]
+    pub fn oversize_share(&self) -> f64 {
+        if self.chars == 0 {
+            return 0.0;
+        }
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "page sizes are far below the f64 integer-exact range; this is a ratio for a report"
+        )]
+        {
+            self.oversize_chars as f64 / self.chars as f64
+        }
+    }
+
+    /// Whether this page is worth offering to repair.
+    #[must_use]
+    pub fn needs_repair(&self) -> bool {
+        self.oversize_blocks >= DENSE_PAGE_BLOCKS
+            || (self.oversize_blocks > 0 && self.oversize_share() >= DENSE_PAGE_SHARE)
+    }
+
+    /// One plain-language line about this page, or `None` when the page
+    /// is fine. Written for a consumer agent to relay to a human, so it
+    /// states what happens rather than naming the knob that causes it.
+    #[must_use]
+    pub fn warning(&self, path: &str) -> Option<String> {
+        if !self.needs_repair() {
+            return None;
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a percentage of a page, rounded for a human-facing sentence"
+        )]
+        let pct = (self.oversize_share() * 100.0).round() as u32;
+        Some(format!(
+            "`{path}`: {blocks} block(s) are longer than the {cap}-character section limit and hold \
+             {pct}% of the page, so the index has to cut them mid-sentence and several sections end \
+             up under the same heading with different content. This page will retrieve badly. The \
+             cheapest repair is usually formatting — a blank line between long entries moves every \
+             cut onto a clean boundary; see the `smart-onboarding` skill before proposing anything \
+             bigger.",
+            blocks = self.oversize_blocks,
+            cap = SECTION_MAX_CHARS,
+        ))
+    }
+}
+
+/// Measure what the index will do to `text`.
+///
+/// Prose only — a wiki page is a document, and the dialogue segmenter
+/// serves transcripts, which are never pushed as pages.
+///
+/// This is the read path the post-import report needs: sectioning is
+/// **queued**, so counting rows in `wiki_sections` right after a push
+/// would report a page that has not been indexed yet. Re-deriving from
+/// the bytes answers immediately and cannot disagree with what the queue
+/// will produce, because it is the same function.
+#[must_use]
+pub fn page_shape(text: &str, policy: &DocumentPolicy) -> PageShape {
+    let blocks = prose_blocks(text);
+    let mut shape = PageShape {
+        chars: text.chars().count(),
+        ..PageShape::default()
+    };
+    for block in &blocks {
+        let len = block.body.chars().count();
+        shape.longest_block_chars = shape.longest_block_chars.max(len);
+        if len > policy.segment_max_chars {
+            shape.oversize_blocks += 1;
+            shape.oversize_chars += len;
+        }
+    }
+    let segments = segment_prose(text, policy);
+    shape.sections = segments.len();
+    shape.sections_sharing_a_heading = segments
+        .windows(2)
+        .filter(|w| w[0].heading == w[1].heading)
+        .count();
+    shape
 }
 
 /// Best-effort timestamp of a dialogue block: a full ISO-8601 instant
@@ -2399,6 +2563,80 @@ mod tests {
         let segs = segment_prose(&text, &p);
         assert!(segs.len() >= 3, "hard split expected: {}", segs.len());
         assert!(segs.iter().all(|s| s.content.chars().count() <= 30));
+    }
+
+    #[test]
+    fn page_shape_leaves_an_ordinary_page_alone() {
+        // Long, but written in ordinary paragraphs: size is not the signal.
+        let para = format!(
+            "{}\n\n",
+            "Una frase ordinaria di lunghezza normale. ".repeat(20)
+        );
+        let text = format!("# Pagina\n\n{}", para.repeat(30));
+        let shape = page_shape(&text, &DocumentPolicy::for_sections());
+        assert!(shape.chars > 25_000, "a genuinely long page: {shape:?}");
+        assert_eq!(shape.oversize_blocks, 0);
+        assert!(!shape.needs_repair());
+        assert!(shape.warning("notes.md").is_none());
+        // It still splits into many sections — that is packing, not damage.
+        assert!(shape.sections > 10);
+        assert!(shape.sections_sharing_a_heading > 0);
+    }
+
+    #[test]
+    fn page_shape_flags_the_dense_page() {
+        // Four blocks over the cap, holding most of the page — the
+        // telaiojs decision log in miniature.
+        let dense = format!("{}\n\n", "x".repeat(3_000));
+        let thin = format!("{}\n\n", "y".repeat(200));
+        let text = format!("# Decisioni\n\n{}{}", dense.repeat(4), thin.repeat(5));
+        let shape = page_shape(&text, &DocumentPolicy::for_sections());
+        assert_eq!(shape.oversize_blocks, 4);
+        assert_eq!(shape.longest_block_chars, 3_000);
+        assert!(shape.oversize_share() > 0.9, "{shape:?}");
+        assert!(shape.needs_repair());
+        let warning = shape.warning("12-decisions.md").expect("warning");
+        assert!(warning.contains("12-decisions.md"));
+        assert!(warning.contains("4 block"));
+    }
+
+    #[test]
+    fn page_shape_needs_three_blocks_or_a_quarter_of_the_page() {
+        let policy = DocumentPolicy::for_sections();
+        // One over-cap block inside a large page: noise, not signal.
+        let one_in_a_big_page = format!(
+            "# P\n\n{}\n\n{}",
+            "x".repeat(2_500),
+            format!("{}\n\n", "y".repeat(500)).repeat(40)
+        );
+        let shape = page_shape(&one_in_a_big_page, &policy);
+        assert_eq!(shape.oversize_blocks, 1);
+        assert!(shape.oversize_share() < DENSE_PAGE_SHARE);
+        assert!(!shape.needs_repair());
+        // The same single block on a small page holds most of it.
+        let one_in_a_small_page = format!("# P\n\n{}\n\n{}", "x".repeat(2_500), "y".repeat(500));
+        assert!(page_shape(&one_in_a_small_page, &policy).needs_repair());
+        // Three blocks fire whatever their share.
+        let three_in_a_big_page = format!(
+            "# P\n\n{}{}",
+            format!("{}\n\n", "x".repeat(2_100)).repeat(3),
+            format!("{}\n\n", "y".repeat(500)).repeat(80)
+        );
+        let shape = page_shape(&three_in_a_big_page, &policy);
+        assert_eq!(shape.oversize_blocks, 3);
+        assert!(shape.oversize_share() < DENSE_PAGE_SHARE);
+        assert!(shape.needs_repair());
+    }
+
+    #[test]
+    fn page_shape_counts_what_the_segmenter_produces() {
+        let policy = DocumentPolicy::for_sections();
+        let text = "# Manual\n\nIntro paragraph.\n\n## Cleaning\n\nStep one.\n\nStep two.\n";
+        let shape = page_shape(text, &policy);
+        assert_eq!(shape.sections, segment_prose(text, &policy).len());
+        // Two headings, two sections, no sibling sharing a label.
+        assert_eq!(shape.sections, 2);
+        assert_eq!(shape.sections_sharing_a_heading, 0);
     }
 
     #[test]

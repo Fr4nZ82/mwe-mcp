@@ -389,7 +389,18 @@ pub struct SignpostStatus {
 ///
 /// Read-only and caller-agnostic: it reports on the owner resolved from
 /// the tree, so it never needs the write path's ownership gate. A wiki
-/// that is not smart, or whose owner is a group, simply has no signposts.
+/// that is not smart, whose owner is a group, or that is **not bound to
+/// a project** simply has no signposts.
+///
+/// "Not a project" means the `_meta.md` `wiki_type` is
+/// [`crate::wiki::AGENT_WIKI_TYPE`]: the consumer's own operational
+/// wiki, forged by the sign-in flow, is private working memory and
+/// signposting it would only add noise to the owner's `projects.md` —
+/// observed live on `franz-ubestia-cc`, where the nudge fired twice and
+/// was correctly ignored twice. The test is deliberately that flag and
+/// not "has a `project_id`": `project_id` is optional on create, so a
+/// project wiki pushed without one would otherwise go silently
+/// undiscoverable, which is the failure this whole area exists to fix.
 ///
 /// # Errors
 ///
@@ -401,6 +412,9 @@ pub async fn status(
 ) -> Result<Option<SignpostStatus>> {
     let project = tree.locate(project_wiki_id)?;
     if !project.meta().smart {
+        return Ok(None);
+    }
+    if project.meta().wiki_type == crate::wiki::AGENT_WIKI_TYPE {
         return Ok(None);
     }
     let Principal::User(owner) = tree.resolve_scope_principal(project.meta())? else {
@@ -777,6 +791,39 @@ mod tests {
         fact_index::find_active_by_source_path(pool, "wikis/alice/projects.md")
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn status_stays_silent_on_the_consumers_own_operational_wiki() {
+        let dir = tempdir().unwrap();
+        seed_tree(dir.path(), "");
+        // The agent's own operational wiki, exactly as the sign-in flow
+        // forges it: smart, owned by the same user, `wiki_type: agent`.
+        let agent = dir.path().join("wikis/alice/cc-laptop");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(
+            agent.join("_meta.md"),
+            "---\nwiki_id: alice-cc-laptop\nwiki_type: agent\nparent_wiki_id: alice\nslug: cc-laptop\ntitle: Claude Code (cc-laptop)\nsmart: true\n---\n",
+        )
+        .unwrap();
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+        let pool = make_pool().await;
+
+        // A project wiki reports (and, having no description yet, is what
+        // makes `wiki_admin_push` volunteer the nudge).
+        let project = status(&pool, &tree, &WikiId::parse("alice-acmesigns").unwrap())
+            .await
+            .expect("status")
+            .expect("a project wiki has signpost state");
+        assert!(!project.has_description);
+
+        // Private working memory is not a project: no state, so no nudge.
+        assert!(
+            status(&pool, &tree, &WikiId::parse("alice-cc-laptop").unwrap())
+                .await
+                .expect("status")
+                .is_none()
+        );
     }
 
     #[tokio::test]

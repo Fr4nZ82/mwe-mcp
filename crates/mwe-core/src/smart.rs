@@ -14,7 +14,9 @@
 //!   smart-family wiki the caller owns plus its pending briefing
 //!   inbox, sorted so the most-recently-touched wiki floats up. Caller
 //!   may pass `project_hint` to bias the ranking toward a particular
-//!   `project_id` / slug / title.
+//!   `project_id` / slug / title, and `project_id` to ask the exact
+//!   question "does *this* project already have memory?" — answered in
+//!   [`FirstConnect`], the datum that triggers onboarding.
 //! - [`recall_core_global`] — used by the `UserPromptSubmit` hook.
 //!   Wraps [`crate::recall::wiki_search`] with the canonical
 //!   "transversal recall" filter documented in the bundled skill
@@ -90,6 +92,15 @@ pub struct BootstrapRequest {
     /// returned, in last-activity order. Empty or whitespace = no
     /// hint.
     pub project_hint: Option<String>,
+    /// The **exact** stable id of the project this session is working
+    /// in, derived by the caller from its cwd (the recipe is in the
+    /// bundled `core` skill). Unlike [`Self::project_hint`] this is an
+    /// equality match against `_meta.md.extra.project_id`, and it is
+    /// what makes [`BootstrapResponse::first_connect`] a *datum* rather
+    /// than a guess: pass it and the server answers "this project has a
+    /// wiki" or "it has none", instead of the agent inferring an answer
+    /// from a ranked list.
+    pub project_id: Option<String>,
     /// Per-wiki cap on `recent_briefing` rows. Clamped to
     /// [`MAX_BOOTSTRAP_BRIEFING_LIMIT`]. Default
     /// [`DEFAULT_BOOTSTRAP_BRIEFING_LIMIT`].
@@ -126,6 +137,11 @@ pub struct SmartWikiSummary {
     /// matches this wiki (case-insensitive substring on `project_id`,
     /// slug, or title).
     pub matches_project_hint: bool,
+    /// `true` when [`BootstrapRequest::project_id`] is set and this
+    /// wiki's `_meta.md.extra.project_id` is exactly it. This is the
+    /// deterministic "resume *this* wiki" signal; `matches_project_hint`
+    /// is the fuzzy one.
+    pub matches_project_id: bool,
     /// `true` when this wiki is the **caller's own operational wiki** — the
     /// dedicated wiki forged at consent for this connection, whose slug equals
     /// the caller's `consumer_id`. Lets a freshly-connected consumer identify
@@ -160,19 +176,54 @@ pub struct BootstrapResponse {
     /// Echoes the request hint, if any. Trimmed of leading/trailing
     /// whitespace; preserved verbatim otherwise.
     pub project_hint: Option<String>,
+    /// Present only when the caller passed
+    /// [`BootstrapRequest::project_id`]. See [`FirstConnect`].
+    pub first_connect: Option<FirstConnect>,
     /// One entry per smart-family wiki owned by the caller, sorted:
-    /// (1) hint matches first, (2) most-recent `wiki_admin_op_log`
-    /// activity next, (3) `wiki_id` alphabetical as stable tie-break.
+    /// (1) exact `project_id` match first, (2) hint matches, (3) the
+    /// caller's own operational wiki, (4) most-recent
+    /// `wiki_admin_op_log` activity, (5) `wiki_id` alphabetical as a
+    /// stable tie-break.
     pub smart_wikis: Vec<SmartWikiSummary>,
+}
+
+/// The server's answer to "does this project already have memory?".
+///
+/// This is the [`crate::signposts`] lesson applied to onboarding: the one
+/// piece of advice this product gives that agents reliably act on is the
+/// one the **server volunteers in a response** (`signpost_hint`), not the
+/// one a skill asks them to remember. First connect happens once per
+/// project and cannot be re-run, so it may not depend on an agent
+/// choosing to fetch a procedure — the response says outright that there
+/// is nothing here yet, and names the skill that knows what to do.
+#[derive(Debug, Clone)]
+pub struct FirstConnect {
+    /// The `project_id` the caller passed, trimmed.
+    pub project_id: String,
+    /// The caller's own smart wiki carrying exactly this `project_id`,
+    /// when one exists. `Some` ⇒ resume it (pull, reconcile, work);
+    /// there is nothing to onboard.
+    pub wiki_id: Option<WikiId>,
+    /// One line of guidance, set **only** when `wiki_id` is `None`.
+    /// Deliberately short: it points at the `smart-onboarding` skill
+    /// rather than restating a procedure that would then live in two
+    /// places again.
+    pub hint: Option<String>,
 }
 
 /// Wrap up the smart-consumer's session-start landscape.
 ///
 /// The hook fires once per session. The smart consumer reads the
-/// returned summary, picks the wiki whose `matches_project_hint` (or
-/// `last_op_log_ts`) makes it the current project, surfaces unread
-/// briefing items to the user, and proceeds with the usual editing
-/// loop documented in the `smart-consumer.md` skill.
+/// returned summary, picks the wiki whose `matches_project_id` (or,
+/// failing that, `matches_project_hint` / `last_op_log_ts`) makes it the
+/// current project, surfaces unread briefing items to the user, and
+/// proceeds with the usual editing loop documented in the
+/// `smart-consumer.md` skill.
+///
+/// When the caller passed a `project_id` that no owned wiki carries, the
+/// response also volunteers [`FirstConnect::hint`] — the session is a
+/// project's *first* connect, and that is the one moment per project
+/// which cannot be re-run later.
 ///
 /// # Errors
 ///
@@ -201,6 +252,17 @@ pub async fn bootstrap(
         .filter(|s| !s.is_empty())
         .map(str::to_lowercase);
 
+    // Exact, case-sensitive: a `project_id` is a derived identifier, not
+    // a human string — two ids that differ only in case are two ids, and
+    // silently folding them would hand the caller a wiki that is not its
+    // project's.
+    let wanted_project_id = req
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+
     let caller_principal = Principal::User(caller.sender_id.clone());
     let mut summaries: Vec<SmartWikiSummary> = Vec::new();
 
@@ -214,36 +276,8 @@ pub async fn bootstrap(
             continue;
         }
 
-        let counts = briefing::counts_by_kind(pool, &d.meta.wiki_id).await?;
-        let items = briefing::list_items(
-            pool,
-            &d.meta.wiki_id,
-            &ListItemsFilter {
-                kind: None,
-                pending_only: Some(true),
-                limit: Some(i64::try_from(briefing_limit).unwrap_or(i64::MAX)),
-            },
-        )
-        .await?;
-        let recent_briefing: Vec<BriefingItemSummary> = items
-            .into_iter()
-            .map(|bi| BriefingItemSummary {
-                briefing_item_id: bi.briefing_item_id,
-                kind: bi.kind,
-                topic: bi.topic,
-                body: bi.body,
-                target_cite: bi.target_cite,
-                ts: bi.ts,
-            })
-            .collect();
-
-        let last_op: Option<(i64, String)> = sqlx::query_as(
-            "SELECT op_id, ts FROM wiki_admin_op_log WHERE wiki_id = ? \
-                 ORDER BY ts DESC, op_id DESC LIMIT 1",
-        )
-        .bind(d.meta.wiki_id.as_str())
-        .fetch_optional(pool)
-        .await?;
+        let (counts, recent_briefing, last_op) =
+            wiki_activity(pool, &d.meta.wiki_id, briefing_limit).await?;
 
         let project_id = d
             .meta
@@ -263,6 +297,11 @@ pub async fn bootstrap(
             haystack.contains(hint)
         });
 
+        let matches_project_id = match (&wanted_project_id, &project_id) {
+            (Some(wanted), Some(found)) => wanted == found,
+            _ => false,
+        };
+
         // Own operational wiki = its slug equals the caller's `consumer_id`.
         let is_self = caller.consumer_id.as_deref() == Some(d.meta.slug.as_str());
 
@@ -277,16 +316,31 @@ pub async fn bootstrap(
             last_op_log_id: last_op.as_ref().map(|(id, _)| *id),
             last_op_log_ts: last_op.map(|(_, ts)| ts),
             matches_project_hint,
+            matches_project_id,
             is_self,
         });
     }
 
     summaries.sort_by(|a, b| {
-        b.matches_project_hint
-            .cmp(&a.matches_project_hint)
+        b.matches_project_id
+            .cmp(&a.matches_project_id)
+            .then_with(|| b.matches_project_hint.cmp(&a.matches_project_hint))
             .then_with(|| b.is_self.cmp(&a.is_self))
             .then_with(|| b.last_op_log_ts.cmp(&a.last_op_log_ts))
             .then_with(|| a.wiki_id.as_str().cmp(b.wiki_id.as_str()))
+    });
+
+    let first_connect = wanted_project_id.map(|project_id| {
+        let wiki_id = summaries
+            .iter()
+            .find(|s| s.matches_project_id)
+            .map(|s| s.wiki_id.clone());
+        let hint = wiki_id.is_none().then(first_connect_hint);
+        FirstConnect {
+            project_id,
+            wiki_id,
+            hint,
+        }
     });
 
     Ok(BootstrapResponse {
@@ -295,8 +349,69 @@ pub async fn bootstrap(
             .project_hint
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty()),
+        first_connect,
         smart_wikis: summaries,
     })
+}
+
+/// Per-wiki briefing inbox + last admin activity, the two reads
+/// [`bootstrap`] does for every wiki it returns.
+async fn wiki_activity(
+    pool: &SqlitePool,
+    wiki_id: &WikiId,
+    briefing_limit: usize,
+) -> Result<
+    (
+        BriefingKindCounts,
+        Vec<BriefingItemSummary>,
+        Option<(i64, String)>,
+    ),
+    SmartError,
+> {
+    let counts = briefing::counts_by_kind(pool, wiki_id).await?;
+    let items = briefing::list_items(
+        pool,
+        wiki_id,
+        &ListItemsFilter {
+            kind: None,
+            pending_only: Some(true),
+            limit: Some(i64::try_from(briefing_limit).unwrap_or(i64::MAX)),
+        },
+    )
+    .await?;
+    let recent_briefing: Vec<BriefingItemSummary> = items
+        .into_iter()
+        .map(|bi| BriefingItemSummary {
+            briefing_item_id: bi.briefing_item_id,
+            kind: bi.kind,
+            topic: bi.topic,
+            body: bi.body,
+            target_cite: bi.target_cite,
+            ts: bi.ts,
+        })
+        .collect();
+    let last_op: Option<(i64, String)> = sqlx::query_as(
+        "SELECT op_id, ts FROM wiki_admin_op_log WHERE wiki_id = ? \
+             ORDER BY ts DESC, op_id DESC LIMIT 1",
+    )
+    .bind(wiki_id.as_str())
+    .fetch_optional(pool)
+    .await?;
+    Ok((counts, recent_briefing, last_op))
+}
+
+/// The one line the server volunteers when a project has no memory yet.
+///
+/// It says the fact and names the skill, and stops there. Every rule that
+/// governs *whether and when* to act on it — propose once, respect a
+/// recorded decline, never open an intro in the middle of a task — lives
+/// in `smart-onboarding`, because the whole point of group 51 was to stop
+/// writing the one-shot procedure in three places.
+fn first_connect_hint() -> String {
+    "This project has no wiki of yours yet, so nothing about it is remembered between sessions. \
+     Before proposing anything, `skill_fetch` the `smart-onboarding` skill and follow it: it \
+     carries the whole first-connect procedure, including when *not* to open it."
+        .to_owned()
 }
 
 // ---------- recall_core_global ----------
@@ -635,13 +750,110 @@ mod tests {
             &alice_smart(),
             BootstrapRequest {
                 project_hint: Some("acme".to_owned()),
-                briefing_limit_per_wiki: None,
+                ..BootstrapRequest::default()
             },
         )
         .await
         .expect("bootstrap hint");
         assert_eq!(resp_hint.smart_wikis[0].wiki_id, acme);
         assert!(resp_hint.smart_wikis[0].matches_project_hint);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_first_connect_is_absent_without_a_project_id() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        create_smart_wiki_for(&pool, &tree, &alice_smart(), "acme", "Acme", Some("p-acme")).await;
+        let resp = bootstrap(&pool, &tree, &alice_smart(), BootstrapRequest::default())
+            .await
+            .expect("bootstrap");
+        // A transversal session (no project cwd) passes no id and must
+        // not be nagged about onboarding anything.
+        assert!(resp.first_connect.is_none());
+        assert!(resp.smart_wikis.iter().all(|c| !c.matches_project_id));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_first_connect_resolves_the_wiki_that_carries_the_id() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        let acme =
+            create_smart_wiki_for(&pool, &tree, &alice_smart(), "acme", "Acme", Some("p-acme"))
+                .await;
+        let widget =
+            create_smart_wiki_for(&pool, &tree, &alice_smart(), "widget", "Widget", None).await;
+        rewrite_last_op_log_ts(&pool, &widget, "2027-01-01T00:00:00Z").await;
+        let resp = bootstrap(
+            &pool,
+            &tree,
+            &alice_smart(),
+            BootstrapRequest {
+                project_id: Some("p-acme".to_owned()),
+                ..BootstrapRequest::default()
+            },
+        )
+        .await
+        .expect("bootstrap");
+        let fc = resp.first_connect.expect("first_connect present");
+        assert_eq!(fc.project_id, "p-acme");
+        assert_eq!(fc.wiki_id.as_ref(), Some(&acme));
+        assert!(fc.hint.is_none(), "a known project gets no onboarding line");
+        // The exact match outranks the more recently touched wiki.
+        assert_eq!(resp.smart_wikis[0].wiki_id, acme);
+        assert!(resp.smart_wikis[0].matches_project_id);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_first_connect_volunteers_the_hint_when_the_project_is_unknown() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        create_smart_wiki_for(&pool, &tree, &alice_smart(), "acme", "Acme", Some("p-acme")).await;
+        let resp = bootstrap(
+            &pool,
+            &tree,
+            &alice_smart(),
+            BootstrapRequest {
+                project_id: Some("p-fresh".to_owned()),
+                ..BootstrapRequest::default()
+            },
+        )
+        .await
+        .expect("bootstrap");
+        let fc = resp.first_connect.expect("first_connect present");
+        assert!(fc.wiki_id.is_none());
+        let hint = fc.hint.expect("hint volunteered");
+        assert!(
+            hint.contains("smart-onboarding"),
+            "the hint must name the skill that carries the procedure: {hint}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_first_connect_matches_the_project_id_exactly() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        create_smart_wiki_for(
+            &pool,
+            &tree,
+            &alice_smart(),
+            "acme",
+            "Acme",
+            Some("18a486b5c823a33f"),
+        )
+        .await;
+        // A prefix is a different project. `project_hint` is the fuzzy
+        // field; this one decides whether a wiki gets created, so it
+        // never guesses.
+        let resp = bootstrap(
+            &pool,
+            &tree,
+            &alice_smart(),
+            BootstrapRequest {
+                project_id: Some("18a486b5".to_owned()),
+                ..BootstrapRequest::default()
+            },
+        )
+        .await
+        .expect("bootstrap");
+        let fc = resp.first_connect.expect("first_connect present");
+        assert!(fc.wiki_id.is_none(), "prefix must not resolve");
+        assert!(fc.hint.is_some());
     }
 
     #[tokio::test]

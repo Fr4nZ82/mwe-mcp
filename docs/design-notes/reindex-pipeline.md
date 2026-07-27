@@ -95,6 +95,14 @@ searchable), embeds each section, and reconciles the page's rows in
 | Anything drifts (edited/added/removed/reordered section) | [`sections::replace_page_sections`](../../crates/mwe-core/src/sections.rs) in **one transaction** — upsert by position, then drop any tail position the new content no longer reaches. An unchanged section's text reuses its stored embedding; only new/changed sections are re-embedded |
 | File missing | hard-drop every section of the page (no tombstone) |
 
+**The lexical index needs nothing from this path.** `wiki_sections_fts`
+(migration `0065`, the exact-term half of section ranking) is maintained
+by triggers on `wiki_sections`, so every row this reconciliation writes,
+rewrites or drops updates it in the same transaction. That is why the
+triggers live in the schema and not here: this sweep, the push-enqueued
+index, the boot-time reconciliation and an operator's manual `UPDATE` all
+get it right without knowing the index exists.
+
 **The cut is sized for retrieval, not for extraction.** Sections use
 [`DocumentPolicy::for_sections`](../../crates/mwe-core/src/document.rs) —
 target `SECTION_TARGET_CHARS` (1 200), hard cap `SECTION_MAX_CHARS`
@@ -108,6 +116,22 @@ oversized hit exhausts the slot's char budget alone (the budget admits
 whole sections only, and always admits the first). Measured on the
 production corpus before the change: 25 % of sections were larger than
 the entire slot, the largest 6 994 characters.
+
+**The same cut answers "how will this page retrieve?"**
+[`document::page_shape`](../../crates/mwe-core/src/document.rs) walks a
+page through the identical block splitter and reports what the index will
+do to it: how many sections, how many of them carry the *same* heading
+chain as their predecessor (packed, not opened by a heading), how many
+source blocks exceed the hard cap, and what share of the page those hold.
+It is a pure function of the bytes — no DB, no queue, no embedder — which
+is what makes it usable at the two moments it is needed: on the
+`wiki_admin_push` response (`warnings[]`, per pushed page) and on
+`wiki_admin_pull` with `shape: true` (the whole wiki, no content), while
+this pipeline's own work is still queued. `PageShape::needs_repair` fires
+on **density, not size**: at least `DENSE_PAGE_BLOCKS` (3) over-cap
+blocks, or over-cap blocks holding at least `DENSE_PAGE_SHARE` (25 %) of
+the page. A long page written in ordinary paragraphs is fine and must not
+be flagged, or the warning is noise and gets ignored (roadmap 51f).
 
 Changing these numbers needs **no migration**. A section's stored text is
 compared against what the current policy would produce, so the next

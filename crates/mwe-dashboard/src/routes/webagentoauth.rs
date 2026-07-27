@@ -664,7 +664,7 @@ async fn ensure_dedicated_wiki(
         parent_wiki_id: Some(parent),
         slug: Some(connection.to_owned()),
         title: Some(format!("{client_name} ({connection})")),
-        wiki_type: Some("agent".to_owned()),
+        wiki_type: Some(mwe_core::wiki::AGENT_WIKI_TYPE.to_owned()),
         smart: true,
         project_id: None,
         pages: vec![wiki_admin::PushPage {

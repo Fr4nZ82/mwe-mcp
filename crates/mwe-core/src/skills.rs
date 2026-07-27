@@ -4,8 +4,10 @@
 //! A "skill" is a markdown document that documents how a consumer LLM
 //! agent should behave in a given mode: the always-loaded `core`, the
 //! transversal `core-globalmemory`, the smart-wiki-bound
-//! `smart-consumer`, the per-class `standard-conversational`, and the
-//! conversion pattern `smart-codebase`.
+//! `smart-consumer`, the per-class `standard-conversational`, the
+//! codebase pattern `smart-codebase`, and the one-shot first-connect
+//! procedure `smart-onboarding` (fetched only when a project turns out
+//! to have no memory yet, so the everyday skills stop paying for it).
 //!
 //! Bundled skills ship as `.md` files inside `crates/mwe-core/skills/`,
 //! embedded into the binary at compile time. They are identical for
@@ -15,7 +17,8 @@
 //!
 //! Skills are identified by a globally-unique `name`, all reserved by
 //! the bundled set (`core`, `core-globalmemory`, `smart-consumer`,
-//! `standard-conversational`, `smart-codebase`).
+//! `smart-onboarding`, `standard-conversational`, `smart-codebase`,
+//! `web-smart-consumer`).
 //!
 //! ## `ETag`
 //!
@@ -258,6 +261,7 @@ mod tests {
             "core-globalmemory",
             "smart-codebase",
             "smart-consumer",
+            "smart-onboarding",
             "standard-conversational",
             "web-smart-consumer",
         ];

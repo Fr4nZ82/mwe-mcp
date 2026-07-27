@@ -1310,6 +1310,60 @@ async fn smart_bootstrap_surfaces_caller_owned_smart_wikis() {
 }
 
 #[tokio::test]
+async fn smart_bootstrap_omits_first_connect_without_a_project_id() {
+    let (state, identity, _dir, _wiki_id) = smart_fixture_with_smart_wiki().await;
+    let out = call(&state, &identity, "smart_bootstrap", json!({}))
+        .await
+        .expect("smart bootstrap");
+    // A transversal session asks nothing about a project and is told
+    // nothing about onboarding one.
+    assert_eq!(out["first_connect"], json!(null));
+}
+
+#[tokio::test]
+async fn smart_bootstrap_volunteers_first_connect_for_an_unknown_project() {
+    let (state, identity, _dir, _wiki_id) = smart_fixture_with_smart_wiki().await;
+    let out = call(
+        &state,
+        &identity,
+        "smart_bootstrap",
+        json!({ "project_id": "18a486b5c823a33f" }),
+    )
+    .await
+    .expect("smart bootstrap");
+    let fc = &out["first_connect"];
+    assert_eq!(fc["project_id"], json!("18a486b5c823a33f"));
+    assert_eq!(fc["wiki_found"], json!(false));
+    assert_eq!(fc["wiki_id"], json!(null));
+    let hint = fc["hint"].as_str().expect("hint volunteered on the wire");
+    assert!(
+        hint.contains("smart-onboarding"),
+        "the hint must name the skill carrying the procedure: {hint}"
+    );
+}
+
+#[tokio::test]
+async fn wiki_admin_pull_shape_mode_returns_counters_and_no_content() {
+    let (state, identity, _dir, wiki_id) = smart_fixture_with_smart_wiki().await;
+    let out = call(
+        &state,
+        &identity,
+        "wiki_admin_pull",
+        json!({ "wiki_id": wiki_id.as_str(), "shape": true }),
+    )
+    .await
+    .expect("shape pull");
+    assert_eq!(out["shape_summary"]["pages"], json!(1));
+    assert_eq!(out["shape_summary"]["pages_needing_repair"], json!(0));
+    let page = &out["pages"][0];
+    assert_eq!(page["path"], json!("index.md"));
+    assert!(page["content"].is_null(), "shape mode must not ship bytes");
+    assert_eq!(page["shape"]["needs_repair"], json!(false));
+    assert_eq!(page["shape"]["oversize_blocks"], json!(0));
+    assert!(page["shape"]["sections"].as_u64().is_some());
+}
+
+#[tokio::test]
 async fn recall_core_global_rejects_standard_token_with_smart_class_wire_error() {
     let (state, identity, _dir) = fixture(false, None).await;
     let err = call(

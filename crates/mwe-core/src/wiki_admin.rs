@@ -43,10 +43,10 @@
 //!   smart consumer can compose it on its side).
 //! - `since_op_log_id` delta pull (full pull works; the optimisation
 //!   matters once wikis grow past hundreds of pages).
-//! - `folder_structure.recommended` deviation warnings (the spec
-//!   lists them as `warnings[]` on the response — we ship an empty
-//!   vec for now and add the validator alongside the deviation
-//!   policy reader).
+//! - `folder_structure.recommended` deviation warnings (the spec lists
+//!   them as `warnings[]` on the response — the folder-shape validator
+//!   is still unwritten). The field itself is **no longer empty**: it
+//!   carries the per-page density warnings of [`shape_warnings`].
 //! - `fact_index` re-indexing — the watcher pipeline catches the
 //!   file changes asynchronously. For test setups without a watcher,
 //!   the consumer can drive a manual reindex; we don't block writes
@@ -156,12 +156,22 @@ pub enum AdminError {
     /// gate: a top-level smart wiki would lose the
     /// ACL-inheritance it relies
     /// on. Wire form: `400 wiki_type_requires_parent`.
+    ///
+    /// The message names the value to pass. A first-connect agent hit
+    /// this live and could not act on it: the old text said what was
+    /// wrong and not what to do, and the answer — "your own root wiki,
+    /// which is your `sender_id`" — is something the server knows and
+    /// the caller has to guess.
     #[error(
-        "wiki_type {wiki_type:?} declares requires_parent: true and cannot be created as top-level"
+        "a smart wiki must be created under your own root wiki: pass parent_wiki_id={expected_parent:?} \
+         (wiki_type {wiki_type:?} cannot be created as top-level)"
     )]
     WikiTypeRequiresParent {
         /// The `wiki_type` that refused a parent-less create.
         wiki_type: String,
+        /// The `parent_wiki_id` the caller should have passed — its own
+        /// root wiki, derived from the authenticated `sender_id`.
+        expected_parent: String,
     },
     /// Target wiki was not found (pull / upsert path).
     #[error("wiki {0} not found")]
@@ -385,7 +395,11 @@ pub struct PushResponse {
     /// `wiki_admin_op_log`. Future consumers reference it via
     /// `expected_op_log_head` for optimistic concurrency.
     pub op_log_id: i64,
-    /// Folder-structure warnings (empty in MVP).
+    /// Plain-language warnings about what was just written, for the
+    /// consumer to relay. Today: one line per pushed page whose blocks
+    /// are too dense to section cleanly ([`shape_warnings`]), capped at
+    /// [`MAX_SHAPE_WARNINGS_PER_PUSH`]. Empty on a standard wiki and on
+    /// a healthy push.
     pub warnings: Vec<String>,
     /// Canonical `bi_<N>` ids the push successfully marked
     /// `processed_at = NOW()`. Sorted ascending, no duplicates, in the
@@ -428,15 +442,38 @@ fn authored_refs_for(wiki_id: &WikiId, pages: &[PushPage]) -> Vec<String> {
 pub struct PullPage {
     /// Relative path inside the wiki directory.
     pub path: String,
-    /// Full markdown body.
-    pub content: String,
+    /// Full markdown body. `None` in shape mode — the whole point of
+    /// that mode is to answer "how will these pages retrieve?" without
+    /// moving the wiki through the caller's context.
+    pub content: Option<String>,
+    /// What the section index will make of this page. `Some` only in
+    /// shape mode ([`PullRequest::shape`]).
+    pub shape: Option<crate::document::PageShape>,
+}
+
+/// Input to [`pull`].
+#[derive(Debug, Clone)]
+pub struct PullRequest {
+    /// Wiki to read.
+    pub wiki_id: WikiId,
+    /// Narrow the pull to these wiki-relative page paths (forward
+    /// slashes). Empty = the whole wiki. A path that does not exist is
+    /// simply absent from the response — a pull is a read, and asking
+    /// for a page that was deleted elsewhere is the normal way to find
+    /// out that it was.
+    pub paths: Vec<String>,
+    /// Report each page's [`crate::document::PageShape`] instead of its
+    /// bytes. Re-derived from disk, so it answers correctly even though
+    /// section indexing is queued rather than synchronous.
+    pub shape: bool,
 }
 
 /// Return value of [`pull`].
 #[derive(Debug, Clone)]
 pub struct PullResponse {
     /// Every `.md` page in the wiki directory excluding `_meta.md`
-    /// and sub-wikis (matches `WikiHandle::list_pages` semantics).
+    /// and sub-wikis (matches `WikiHandle::list_pages` semantics),
+    /// narrowed by [`PullRequest::paths`] when set.
     pub pages: Vec<PullPage>,
     /// `op_id` of the most recent `wiki_admin_op_log` row for this
     /// wiki, or `None` if no admin op was ever recorded. The smart
@@ -542,15 +579,24 @@ async fn push_create(
     let title = req
         .title
         .as_deref()
-        .ok_or_else(|| AdminError::InvalidInput("create (new wiki) requires title".into()))?
+        .ok_or_else(|| {
+            AdminError::InvalidInput(
+                "create (new wiki) requires `title` — the wiki's display name, e.g. \"LNPrint — \
+                 engineering wiki\""
+                    .into(),
+            )
+        })?
         .trim();
     if title.is_empty() {
         return Err(AdminError::InvalidInput("title must not be blank".into()));
     }
-    let wiki_type = req
-        .wiki_type
-        .as_deref()
-        .ok_or_else(|| AdminError::InvalidInput("create (new wiki) requires wiki_type".into()))?;
+    let wiki_type = req.wiki_type.as_deref().ok_or_else(|| {
+        AdminError::InvalidInput(
+            "create (new wiki) requires `wiki_type` — a free-form label (\"project\" is the usual \
+             one); smart-ness comes from the separate `smart: true` flag, not from this string"
+                .into(),
+        )
+    })?;
     if req.wiki_id.is_some() {
         return Err(AdminError::InvalidInput(
             "create must not pass wiki_id (it is derived from parent + slug)".into(),
@@ -582,10 +628,14 @@ async fn push_create(
     if is_smart_family && req.parent_wiki_id.is_none() {
         return Err(AdminError::WikiTypeRequiresParent {
             wiki_type: wiki_type.to_owned(),
+            expected_parent: caller.sender_id.clone(),
         });
     }
     let parent_id = req.parent_wiki_id.clone().ok_or_else(|| {
-        AdminError::InvalidInput("create (new wiki) requires parent_wiki_id".into())
+        AdminError::InvalidInput(format!(
+            "create (new wiki) requires parent_wiki_id — your own root wiki, `{}`",
+            caller.sender_id
+        ))
     })?;
 
     // Locate the parent on disk (or refuse if it's missing — we
@@ -712,11 +762,12 @@ async fn push_create(
     tx.commit().await?;
 
     let authored_refs = authored_refs_for(&new_wiki_id, &req.pages);
+    let warnings = shape_warnings(&req.pages, is_smart_family);
     Ok(PushResponse {
         wiki_id: new_wiki_id,
         ops_applied: ops,
         op_log_id,
-        warnings: Vec::new(),
+        warnings,
         marked_processed,
         authored_refs,
     })
@@ -850,18 +901,69 @@ async fn push_upsert(
     tx.commit().await?;
 
     let authored_refs = authored_refs_for(&wiki_id, &req.pages);
+    let warnings = shape_warnings(&req.pages, handle.meta().smart);
     Ok(PushResponse {
         wiki_id,
         ops_applied: ops,
         op_log_id,
-        warnings: Vec::new(),
+        warnings,
         marked_processed,
         authored_refs,
     })
 }
 
+/// Cap on density warnings a single push may carry. A bulk import of a
+/// badly-shaped wiki would otherwise answer with one line per page; the
+/// whole-wiki picture is what [`pull`]'s shape mode is for.
+const MAX_SHAPE_WARNINGS_PER_PUSH: usize = 5;
+
+/// Roadmap 51f — the write half of "page shape is measured and reported,
+/// never asked".
+///
+/// A page whose blocks are too long to index as one retrieves badly, and
+/// nobody finds out: the push succeeds, the sections are cut mid-sentence
+/// in the background, and the damage surfaces months later as an answer
+/// that misses. The moment a page is written is the moment its author is
+/// still here — the same reasoning that puts `signpost_hint` on this
+/// response.
+///
+/// Smart wikis only: a standard wiki's content is fact-indexed, not
+/// sectioned, so markdown shape has no bearing on how it is retrieved.
+/// Computed from the bytes in hand — no DB, no queue, no embedder.
+fn shape_warnings(pages: &[PushPage], smart: bool) -> Vec<String> {
+    if !smart {
+        return Vec::new();
+    }
+    let policy = crate::document::DocumentPolicy::for_sections();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut suppressed = 0usize;
+    for page in pages {
+        let Some(line) = crate::document::page_shape(&page.content, &policy).warning(&page.path)
+        else {
+            continue;
+        };
+        if warnings.len() < MAX_SHAPE_WARNINGS_PER_PUSH {
+            warnings.push(line);
+        } else {
+            suppressed += 1;
+        }
+    }
+    if suppressed > 0 {
+        warnings.push(format!(
+            "…and {suppressed} more page(s) in this push have the same problem. Pull the wiki with \
+             `shape: true` for the full picture."
+        ));
+    }
+    warnings
+}
+
 /// Run a `wiki_admin_pull`. See module docstring for what is and
 /// isn't enforced.
+///
+/// Three shapes, one call: the whole wiki (the default), a named subset
+/// ([`PullRequest::paths`] — the narrowing the smart-consumer skill has
+/// always documented), and the per-page section shape instead of the
+/// bytes ([`PullRequest::shape`], roadmap 51f).
 ///
 /// # Errors
 ///
@@ -870,28 +972,47 @@ pub async fn pull(
     pool: &SqlitePool,
     tree: &WikiTree,
     caller: &AdminCaller,
-    wiki_id: &WikiId,
+    req: &PullRequest,
 ) -> Result<PullResponse, AdminError> {
     if !caller.consumer_class.is_smart() {
         return Err(AdminError::RequiresSmart);
     }
+    let wiki_id = &req.wiki_id;
     let handle = tree
         .locate(wiki_id)
         .map_err(|_| AdminError::NotFound(wiki_id.clone()))?;
     enforce_admin_auth(pool, tree, &handle, caller, ActorKind::SmartConsumer).await?;
 
+    let wanted: Option<std::collections::HashSet<&str>> = if req.paths.is_empty() {
+        None
+    } else {
+        Some(req.paths.iter().map(String::as_str).collect())
+    };
+    let policy = crate::document::DocumentPolicy::for_sections();
     let mut pages: Vec<PullPage> = Vec::new();
     for info in handle.list_pages()? {
-        let body = std::fs::read_to_string(&info.abs_path)?;
         let rel = info
             .rel_path
             .to_str()
             .ok_or_else(|| AdminError::InvalidInput("non-utf8 page path".into()))?
             .replace('\\', "/");
-        pages.push(PullPage {
-            path: rel,
-            content: body,
-        });
+        if wanted.as_ref().is_some_and(|w| !w.contains(rel.as_str())) {
+            continue;
+        }
+        let body = std::fs::read_to_string(&info.abs_path)?;
+        if req.shape {
+            pages.push(PullPage {
+                path: rel,
+                shape: Some(crate::document::page_shape(&body, &policy)),
+                content: None,
+            });
+        } else {
+            pages.push(PullPage {
+                path: rel,
+                content: Some(body),
+                shape: None,
+            });
+        }
     }
 
     let op_log_head: Option<i64> =
@@ -1899,6 +2020,16 @@ mod tests {
         }
     }
 
+    /// Whole-wiki content pull — the only shape that existed before the
+    /// `paths` / `shape` modes.
+    fn pull_all(wiki_id: &WikiId) -> PullRequest {
+        PullRequest {
+            wiki_id: wiki_id.clone(),
+            paths: Vec::new(),
+            shape: false,
+        }
+    }
+
     fn page(path: &str, content: &str) -> PushPage {
         PushPage {
             path: path.into(),
@@ -2209,12 +2340,22 @@ mod tests {
         let err = push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
             .await
             .expect_err("top-level smart wiki must reject");
-        match err {
-            AdminError::WikiTypeRequiresParent { wiki_type } => {
+        match &err {
+            AdminError::WikiTypeRequiresParent {
+                wiki_type,
+                expected_parent,
+            } => {
                 assert_eq!(wiki_type, "wiki-companion");
+                // The message has to carry the value to pass: an agent
+                // meeting this error on its first connect cannot guess it.
+                assert_eq!(expected_parent, "alice");
             },
             other => panic!("expected WikiTypeRequiresParent, got {other:?}"),
         }
+        assert!(
+            err.to_string().contains("parent_wiki_id=\"alice\""),
+            "{err}"
+        );
     }
 
     #[tokio::test]
@@ -2404,7 +2545,7 @@ mod tests {
         )
         .await
         .expect("create");
-        let resp = pull(&pool, &tree, &alice_smart(), &create.wiki_id)
+        let resp = pull(&pool, &tree, &alice_smart(), &pull_all(&create.wiki_id))
             .await
             .expect("pull");
         assert_eq!(resp.pages.len(), 2);
@@ -2417,10 +2558,188 @@ mod tests {
         assert_eq!(head, create.op_log_id);
 
         // Re-pull observes the previous pull row as the new head.
-        let resp2 = pull(&pool, &tree, &alice_smart(), &create.wiki_id)
+        let resp2 = pull(&pool, &tree, &alice_smart(), &pull_all(&create.wiki_id))
             .await
             .expect("second pull");
         assert!(resp2.op_log_head.unwrap() > create.op_log_id);
+    }
+
+    /// A page whose blocks the section cap must cut mid-sentence.
+    fn dense_page_body() -> String {
+        format!(
+            "# Decisioni\n\n{}",
+            format!("{}\n\n", "x".repeat(3_000)).repeat(4)
+        )
+    }
+
+    #[tokio::test]
+    async fn pull_narrows_to_requested_paths() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        let create = push(
+            &pool,
+            &tree,
+            &alice_smart(),
+            ActorKind::SmartConsumer,
+            create_smart_wiki_request("lnprint"),
+        )
+        .await
+        .expect("create");
+        let resp = pull(
+            &pool,
+            &tree,
+            &alice_smart(),
+            &PullRequest {
+                wiki_id: create.wiki_id.clone(),
+                paths: vec!["modules/auth.md".to_owned(), "does/not/exist.md".to_owned()],
+                shape: false,
+            },
+        )
+        .await
+        .expect("narrowed pull");
+        // The narrowing the smart-consumer skill has always documented,
+        // now real; an unknown path is absent, not an error.
+        assert_eq!(resp.pages.len(), 1);
+        assert_eq!(resp.pages[0].path, "modules/auth.md");
+        assert!(
+            resp.pages[0]
+                .content
+                .as_ref()
+                .is_some_and(|c| c.contains("mfa flow"))
+        );
+    }
+
+    #[tokio::test]
+    async fn pull_shape_mode_reports_without_the_bytes() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        let create = push(
+            &pool,
+            &tree,
+            &alice_smart(),
+            ActorKind::SmartConsumer,
+            create_smart_wiki_request("lnprint"),
+        )
+        .await
+        .expect("create");
+        push(
+            &pool,
+            &tree,
+            &alice_smart(),
+            ActorKind::SmartConsumer,
+            PushRequest {
+                mode: PushMode::Upsert,
+                wiki_id: Some(create.wiki_id.clone()),
+                parent_wiki_id: None,
+                slug: None,
+                title: None,
+                wiki_type: None,
+                smart: false,
+                project_id: None,
+                pages: vec![page("decisions.md", &dense_page_body())],
+                deletes: Vec::new(),
+                mark_processed: Vec::new(),
+                expected_op_log_head: None,
+            },
+        )
+        .await
+        .expect("upsert dense page");
+        let resp = pull(
+            &pool,
+            &tree,
+            &alice_smart(),
+            &PullRequest {
+                wiki_id: create.wiki_id.clone(),
+                paths: Vec::new(),
+                shape: true,
+            },
+        )
+        .await
+        .expect("shape pull");
+        assert!(
+            resp.pages.iter().all(|p| p.content.is_none()),
+            "shape mode must not ship bytes"
+        );
+        let dense = resp
+            .pages
+            .iter()
+            .find(|p| p.path == "decisions.md")
+            .expect("dense page present");
+        let shape = dense.shape.expect("shape computed");
+        assert_eq!(shape.oversize_blocks, 4);
+        assert!(shape.needs_repair());
+        // The healthy pages of the same wiki stay quiet.
+        let healthy = resp
+            .pages
+            .iter()
+            .find(|p| p.path == "index.md")
+            .expect("index present");
+        assert!(!healthy.shape.expect("shape computed").needs_repair());
+    }
+
+    #[tokio::test]
+    async fn push_warns_only_about_dense_smart_pages() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        // A healthy create says nothing.
+        let create = push(
+            &pool,
+            &tree,
+            &alice_smart(),
+            ActorKind::SmartConsumer,
+            create_smart_wiki_request("lnprint"),
+        )
+        .await
+        .expect("create");
+        assert!(create.warnings.is_empty());
+
+        let dense = push(
+            &pool,
+            &tree,
+            &alice_smart(),
+            ActorKind::SmartConsumer,
+            PushRequest {
+                mode: PushMode::Upsert,
+                wiki_id: Some(create.wiki_id.clone()),
+                parent_wiki_id: None,
+                slug: None,
+                title: None,
+                wiki_type: None,
+                smart: false,
+                project_id: None,
+                pages: vec![page("decisions.md", &dense_page_body())],
+                deletes: Vec::new(),
+                mark_processed: Vec::new(),
+                expected_op_log_head: None,
+            },
+        )
+        .await
+        .expect("upsert");
+        assert_eq!(dense.warnings.len(), 1, "{:?}", dense.warnings);
+        assert!(dense.warnings[0].contains("decisions.md"));
+
+        // Same bytes on a standard wiki: no sections, so no warning.
+        let alice_id = WikiId::parse("alice").unwrap();
+        let standard = push(
+            &pool,
+            &tree,
+            &alice_dashboard(),
+            ActorKind::Dashboard,
+            PushRequest {
+                mode: PushMode::Upsert,
+                wiki_id: Some(alice_id),
+                parent_wiki_id: None,
+                slug: None,
+                title: None,
+                wiki_type: None,
+                smart: false,
+                project_id: None,
+                pages: vec![page("decisions.md", &dense_page_body())],
+                deletes: Vec::new(),
+                mark_processed: Vec::new(),
+                expected_op_log_head: None,
+            },
+        )
+        .await
+        .expect("dashboard upsert");
+        assert!(standard.warnings.is_empty());
     }
 
     #[tokio::test]
@@ -2435,7 +2754,7 @@ mod tests {
         )
         .await
         .expect("create");
-        let err = pull(&pool, &tree, &alice_standard(), &create.wiki_id)
+        let err = pull(&pool, &tree, &alice_standard(), &pull_all(&create.wiki_id))
             .await
             .expect_err("standard must not pull");
         assert!(matches!(err, AdminError::RequiresSmart));
@@ -2753,7 +3072,7 @@ mod tests {
 
         // pull is also write-restricted (smart-only) so bob can't pull
         // either. The MVP keeps both write tools owner-only.
-        let pull_err = pull(&pool, &tree, &bob_smart, &create.wiki_id)
+        let pull_err = pull(&pool, &tree, &bob_smart, &pull_all(&create.wiki_id))
             .await
             .expect_err("pull also stays owner-only in MVP");
         assert!(matches!(pull_err, AdminError::WikiOwnedByOtherUser { .. }));
@@ -3043,7 +3362,7 @@ mod tests {
         // A pull writes a `pull` op-log row (raw MAX(op_id) advances) but
         // must not trip the gate: an upsert guarded by the last *write*
         // head still passes.
-        pull(&pool, &tree, &alice_smart(), &wiki_id)
+        pull(&pool, &tree, &alice_smart(), &pull_all(&wiki_id))
             .await
             .expect("pull");
         let up2 = push(
@@ -3389,7 +3708,9 @@ mod tests {
         // read and has no pre-image. The revert handler must refuse.
         let (_dir, tree, pool, wiki_id, _create_id, _target_id) = seed_revertable_upsert().await;
         // Run a pull to produce a `pull` row.
-        let _ = pull(&pool, &tree, &alice_smart(), &wiki_id).await.unwrap();
+        let _ = pull(&pool, &tree, &alice_smart(), &pull_all(&wiki_id))
+            .await
+            .unwrap();
         let pull_op_id: i64 = sqlx::query_scalar(
             "SELECT op_id FROM wiki_admin_op_log
               WHERE wiki_id = ? AND op_kind = 'pull'

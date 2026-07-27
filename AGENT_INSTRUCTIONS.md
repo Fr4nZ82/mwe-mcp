@@ -187,10 +187,16 @@ Performed once by the human operator via the dashboard:
 on_session_start():
     load_skill("core")                          # always
 
+    if consumer_class == "smart":
+        snapshot = smart_bootstrap(project_id = project_id_for_cwd())
+                                                # pass the derived id inside a project;
+                                                # `core` carries the exact recipe
+        if snapshot.first_connect?.hint:
+            load_skill("smart-onboarding")      # this project has no memory yet
+
     if cwd_has_mwe_state(".mwe/state.json"):
-        load_skill("smart-consumer")           # cwd-bound mode
-        load_skill("smart-codebase")   # iff project_kind == software
-        smart_bootstrap()                       # see smart-consumer
+        load_skill("smart-consumer")            # cwd-bound mode
+        load_skill("smart-codebase")            # iff project_kind == software
 
     elif consumer_class == "smart":
         load_skill("core-globalmemory")         # transversal recall mode
@@ -213,7 +219,8 @@ type.
 | `core` | always | identity claims, dispatcher, token lifecycle, auth error codes |
 | `core-globalmemory` | smart consumer, **no** cwd marker | transversal recall on first prompt (forked-subagent pattern) |
 | `smart-consumer` | smart consumer + `.mwe/state.json` in cwd | `smart_bootstrap`, `wiki_admin_*`, cooperative lease, `_briefing.md` lifecycle, graceful degradation on token revoke |
-| `smart-codebase` | `smart-consumer` + software project | `docs/` conversion, modules/decisions/runbooks/architecture layout, `source_ref` + `last_synced` discipline |
+| `smart-codebase` | `smart-consumer` + software project | modules/decisions/runbooks/architecture layout, module + decision + change-log page conventions, `source_ref` + `last_synced` discipline |
+| `smart-onboarding` | on demand: `smart_bootstrap` answered that this project has no wiki, or the user asks | **first connect, once per project**: the intro (three questions, and the ones never to ask), importing existing docs faithfully, the `CLAUDE.md` doc-rules resolution, the post-import shape report, the cut-never-rewrite page repair |
 | `standard-conversational` | standard consumer (or absent claim) | `wiki_ingest_message` loop, wire shape, disambiguation, `pending_attention`, `events_poll`, structural notices + undo routing, consumer self-configuration |
 
 How to consume skills (three modes, by preference):

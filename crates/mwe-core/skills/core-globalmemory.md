@@ -1,6 +1,6 @@
 ---
 name: core-globalmemory
-version: 1.6.0
+version: 1.7.0
 description: "Transversal mwe-mcp mode for smart consumers when the cwd has no .mwe/state.json: auto-recall across the user's wikis (forked subagent to prevent context bleed) AND manage your own dedicated operational wiki if you own one (general working memory + behaviour rules + conversations.md via wiki_admin_*). Facts about the user go to wiki_ingest_message; never dump everything into standard memory."
 depends_on: ["core"]
 applies_to:
@@ -265,40 +265,26 @@ folder):
 
 If two or more of these match — **or** at any point mid-session you
 judge a moment to be durable *project* knowledge while this cwd is not
-bootstrapped — **derive the project's stable `project_id`** and look it
-up before proposing anything:
+bootstrapped — derive the project's stable `project_id` (the exact
+recipe is in [`core`](core.md)) and pass it to `smart_bootstrap`. The
+server answers in `first_connect`, and its answer decides which of two
+things you propose:
 
-```jsonc
-// project_id = sha256( normalized_vcs_origin + ":" + cwd_relpath_from_repo_root )[..16]
-// A CLAUDE.md line "mwe-mcp: project_id=manual:<slug>" overrides the derivation.
-smart_bootstrap({ project_hint: "<project_id>" })   // works even with NO local .mwe/state.json
-```
+- **`wiki_id` set** — a wiki already exists for this project
+  (bootstrapped on another machine, or the local `.mwe/` was wiped).
+  Propose a **sync**: pull, write `.mwe/state.json`, resume. **Never** a
+  second wiki, and never a write before the pull.
+- **`hint` set** — this project has no memory at all. Everything about
+  what to propose, how to ask, and when *not* to ask lives in
+  [`smart-onboarding`](smart-onboarding.md): fetch it and follow it.
 
-The lookup splits the proposal you make — and in **both** branches you
-**propose, you do not act**:
-
-- **A companion-wiki already exists for this `project_id`** (it was
-  bootstrapped on another machine, or the local `.mwe/` was wiped) →
-  stop and **propose a sync**: `wiki_admin_pull` the server state into a
-  fresh `.mwe/wiki/`, write `.mwe/state.json`, then resume companion-bound
-  work. **Never** start a second wiki for a project that already has one,
-  and never write into it before the pull/reconcile.
-- **No companion-wiki anywhere for this `project_id`** → **propose
-  creating** a new project companion-wiki.
-
-Either way **do not auto-bootstrap silently**. The user might be browsing
+Either way **do not auto-bootstrap silently.** The user might be browsing
 a read-only checkout, or want this folder to remain transversal-only.
-Bootstrap / sync is a write operation (it renames an existing `docs/`,
-generates pages, and pushes to the server — a smart wiki is markerless
-and content-indexed, so there is **no** custom `wiki_type` to register)
-and must be explicit.
 
-If the user consents, switch to `smart-consumer`: load that skill via
-`skill_fetch` (or your consumer's equivalent) and follow its
-`smart_bootstrap` checklist (create-new vs. sync-existing, plus the
-pre-existing-`CLAUDE.md` documentation-rules check). From that point on
-you are in companion-bound mode for the rest of the session — this skill
-becomes irrelevant for this cwd until `.mwe/state.json` is removed again.
+If the user consents, switch to `smart-consumer` — load it via
+`skill_fetch` — and stay companion-bound for the rest of the session;
+this skill becomes irrelevant for this cwd until `.mwe/state.json` is
+removed again.
 
 If none of the heuristics match, treat the cwd as genuinely generic
 (scratch folder, home dir, a temporary workdir) and stay in
@@ -321,9 +307,9 @@ transversal mode without prompting.
   into a single layer.** They have different lifetimes; conflating
   them produces stale facts on one side and missing facts on the
   other.
-- ❌ **Don't silently auto-bootstrap a candidate cwd.** Always ask.
-  See `smart-consumer` for the conversion flow once the user
-  consents.
+- ❌ **Don't silently auto-bootstrap a candidate cwd.** Always ask —
+  and ask the way [`smart-onboarding`](smart-onboarding.md) says to,
+  including the part about not asking at all in the middle of a task.
 
 ## Cross-references
 

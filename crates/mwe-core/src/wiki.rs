@@ -150,6 +150,16 @@ pub fn is_rules_page(source_path: &str) -> bool {
 /// and navigable: delivery through ordinary recall is the entire point.
 pub const PROJECTS_FILENAME: &str = "projects.md";
 
+/// `wiki_type` of a smart consumer's **operational wiki**.
+///
+/// That wiki is the consumer's own working memory, one per connection,
+/// and never a project. Written by the OAuth consent flow and read
+/// wherever "is this a project?" must be answered from the wiki alone —
+/// the signpost nudge is the first such place. Every other smart
+/// `wiki_type` is a free-form label chosen by the consumer, so this one
+/// is only trustworthy because the *server* writes it.
+pub const AGENT_WIKI_TYPE: &str = "agent";
+
 /// True when `source_path` is a wiki's reserved signposts page
 /// [`PROJECTS_FILENAME`]. Keyed on the file name, like [`is_rules_page`],
 /// so a content page named `my_projects.md` is not caught.

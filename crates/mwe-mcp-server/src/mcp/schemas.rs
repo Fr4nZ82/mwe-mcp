@@ -477,13 +477,23 @@ fn wiki_admin_push() -> Tool {
 fn wiki_admin_pull() -> Tool {
     read_only(materialize(
         "wiki_admin_pull",
-        "Dual of `wiki_admin_push` (H family). Smart consumers only. Returns every page of a smart-wiki the caller owns, plus the latest `op_log_head` — stamp it and pass it back as `wiki_admin_push`'s `expected_op_log_head` for optimistic concurrency (the gate is enforced: a stale head yields `409 conflicting_op_log_head`).",
+        "Dual of `wiki_admin_push` (H family). Smart consumers only. Returns every page of a smart-wiki the caller owns, plus the latest `op_log_head` — stamp it and pass it back as `wiki_admin_push`'s `expected_op_log_head` for optimistic concurrency (the gate is enforced: a stale head yields `409 conflicting_op_log_head`). Narrow with `paths` when you only need a few pages, and pass `shape: true` to get **how each page will retrieve** instead of its bytes: sections, blocks too long to index as one, the share of the page they hold, and a plain-language `note` per bad page — measured from disk, so it answers correctly even though section indexing is queued.",
         json!({
             "type": "object",
             "required": ["wiki_id"],
             "additionalProperties": false,
             "properties": {
-                "wiki_id": { "type": "string" }
+                "wiki_id": { "type": "string" },
+                "paths": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Wiki-relative page paths (forward slashes) to pull. Omit or leave empty for the whole wiki. A path that does not exist is simply absent from the response."
+                },
+                "shape": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Return `pages[*].shape` (+ a `shape_summary` of how many pages will retrieve badly) instead of `pages[*].content`. This is the post-import report: it never moves the wiki's bytes through your context."
+                }
             }
         }),
     ))
@@ -593,7 +603,7 @@ fn wiki_admin_notify() -> Tool {
 fn skill_list() -> Tool {
     read_only(materialize(
         "skill_list",
-        "List the bundled skills available to this consumer (I family): `core`, `core-globalmemory`, `smart-consumer`, `standard-conversational`, `smart-codebase` (shipped with mwe-mcp via rust-embed). Each entry carries `name`, `version`, `description`, `depends_on`, `etag` (content hash), and `source` (`bundled`).",
+        "List the bundled skills available to this consumer (I family): `core`, `core-globalmemory`, `smart-consumer`, `smart-onboarding`, `standard-conversational`, `smart-codebase` (shipped with mwe-mcp via rust-embed). Each entry carries `name`, `version`, `description`, `depends_on`, `etag` (content hash), and `source` (`bundled`).",
         json!({
             "type": "object",
             "additionalProperties": false,
@@ -617,7 +627,7 @@ fn skill_fetch() -> Tool {
             "required": ["name"],
             "additionalProperties": false,
             "properties": {
-                "name": { "type": "string", "description": "Skill name (no `.md` suffix): `core`, `core-globalmemory`, `smart-consumer`, `standard-conversational`, `smart-codebase`." },
+                "name": { "type": "string", "description": "Skill name (no `.md` suffix): `core`, `core-globalmemory`, `smart-consumer`, `smart-onboarding`, `standard-conversational`, `smart-codebase`." },
                 "version": { "type": "string", "description": "Optional version pin. Reserved — today the only version on disk is the current one; HTTP `/skills/<name>/<version>.md` is the future plumbing." }
             }
         }),
@@ -662,7 +672,7 @@ fn dashboard_link() -> Tool {
 fn smart_bootstrap() -> Tool {
     read_only(materialize(
         "smart_bootstrap",
-        "Surface the smart consumer's session-start landscape — every smart-family wiki the caller owns, with pending briefing items and last op-log activity (K family). Called at session start — the bundled `claude-code.json` SessionStart hook nudges the model to call it: input is `{}` by default; pass `project_hint` to float a particular wiki to the top. Each returned wiki carries `is_self: true` when it is your own operational wiki (its slug equals your `consumer_id`), so you can pick yours when the user owns several agent wikis. Smart-only.",
+        "Surface the smart consumer's session-start landscape — every smart-family wiki the caller owns, with pending briefing items and last op-log activity (K family). Called at session start — the bundled `claude-code.json` SessionStart hook nudges the model to call it: input is `{}` by default; pass `project_hint` to float a particular wiki to the top. **Inside a project folder, pass `project_id`** (the exact derived id — the recipe is in the bundled `core` skill): the response then carries `first_connect`, which says outright whether this project already has a wiki of yours, and when it has none it names the skill that knows what to do about it. Each returned wiki carries `is_self: true` when it is your own operational wiki (its slug equals your `consumer_id`), so you can pick yours when the user owns several agent wikis. Smart-only.",
         json!({
             "type": "object",
             "additionalProperties": false,
@@ -670,6 +680,10 @@ fn smart_bootstrap() -> Tool {
                 "project_hint": {
                     "type": "string",
                     "description": "Optional substring (case-insensitive) matched against each candidate wiki's `_meta.md.extra.project_id`, slug, and title. Matches float to the top; non-matches are still returned, in last-activity order. Empty/whitespace = no hint."
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "The exact stable id of the project this session is working in, derived from the cwd per the `core` skill. Matched for equality (case-sensitive) against `_meta.md.extra.project_id`. Sets `matches_project_id` on the wiki that carries it, floats it first, and populates the `first_connect` block: `{project_id, wiki_id, wiki_found, hint}` — `hint` is non-null only when this project has no wiki yet."
                 },
                 "briefing_limit_per_wiki": {
                     "type": "integer",

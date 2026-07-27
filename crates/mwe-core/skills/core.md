@@ -1,7 +1,7 @@
 ---
 name: core
-version: 1.2.0
-description: "Always-loaded mwe-mcp skill: cardinal rule, identity model (3-claim JWT), bootstrap dispatcher, auto recall+capture and the 3-way route (your operational wiki / a project wiki / the user's standard memory), skill catalog index, token lifecycle. Every consumer (smart or standard) loads this first."
+version: 1.3.0
+description: "Always-loaded mwe-mcp skill: cardinal rule, identity model (3-claim JWT), bootstrap dispatcher, the exact project_id recipe + the first_connect datum smart_bootstrap volunteers, auto recall+capture and the 3-way route (your operational wiki / a project wiki / the user's standard memory), skill catalog index, token lifecycle. Every consumer (smart or standard) loads this first."
 depends_on: []
 applies_to:
   consumer_class: any
@@ -94,10 +94,18 @@ on_session_start():
     load_skill("core")                          # this file, always
 
     if consumer_class == "smart":
-        smart_bootstrap()                       # discover the wikis you own — your
+        pid = project_id_for_cwd()              # see "The project_id" below; None outside a project
+        snapshot = smart_bootstrap(project_id = pid)
+                                                # discover the wikis you own — your
                                                 # operational wiki (if you signed in over
                                                 # OAuth) + any project wikis + pending
                                                 # briefing. Load + surface them.
+
+        if snapshot.first_connect?.hint and not onboarding_declined(".mwe/state.json"):
+            load_skill("smart-onboarding")      # this project has no memory yet: the server
+                                                # said so. That skill decides whether to
+                                                # propose at all — never mid-task, never twice.
+
         if cwd_has_mwe_state(".mwe/state.json"):
             load_skill("smart-consumer")        # cwd-bound project mode
             load_skill("smart-codebase")        # iff project_kind == software
@@ -111,6 +119,51 @@ on_session_start():
         load_skill("standard-conversational")   # per-turn ingest pattern
 ```
 
+## The `project_id` — derive it, pass it, and let the server answer
+
+Two devices that clone the same repo must land on the **same** id, or the
+user ends up with two wikis for one project. So the recipe is exact, and
+it is here — in the file every session loads — rather than in the skills
+that only some sessions do.
+
+```jsonc
+// 16 lowercase hex chars
+project_id = sha256(origin_normalized + ":" + relpath)[..16]
+```
+
+- `origin_normalized` — the VCS remote named `origin`
+  (`git remote get-url origin`), then: strip the scheme (`https://`,
+  `http://`, `ssh://`, `git://`); rewrite the scp form `git@host:path`
+  into `host/path`; drop any remaining `user@`; drop a trailing slash.
+  **Keep the `.git` suffix and keep the case** — both are part of the
+  string that is hashed.
+- `relpath` — the project root relative to the repo root, forward
+  slashes, no leading `./`. **Empty** when the project *is* the repo root
+  (the usual case — the `:` separator is still there).
+- Worked example, verifiable:
+  `sha256("github.com/Fr4nZ82/mwe-mcp.git" + ":" + "")[..16]` =
+  `18a486b5c823a33f`.
+- **No remote, or no VCS at all** — nothing is derivable, so do not
+  invent one: use `manual:<slug>` and write it down. A `CLAUDE.md` line
+  `mwe-mcp: project_id=manual:<slug>` **overrides** the derivation.
+- **`.mwe/state.json` wins over both.** If it exists, read `project_id`
+  from it and do not re-derive: it is what the wiki was actually created
+  with, manual ids included.
+
+Pass it as `smart_bootstrap({ project_id })`. The response then carries
+`first_connect`:
+
+| `first_connect` | Meaning | What you do |
+|---|---|---|
+| absent (you passed no id) | not in a project, or you did not ask | nothing |
+| `wiki_id` set, `hint` null | this project already has memory | resume it — pull, reconcile, work (`smart-consumer`) |
+| `wiki_id` null, `hint` set | **this project has no memory at all** | `skill_fetch` `smart-onboarding` and follow it |
+
+The hint is a *datum the server volunteers*, not a rule you have to
+remember — the same idiom as `signpost_hint` on `wiki_admin_push`. It is
+also not an order: `smart-onboarding` carries the rules about when *not*
+to act on it (never mid-task; never after a recorded decline).
+
 Skills are fetched via the `skill_list` / `skill_fetch` MCP tools (the
 catalog ships server-side; no copy-paste required for the bundled
 set). Only bundled skills exist — there are no custom user-scoped
@@ -123,8 +176,15 @@ skills.
 | `core` | always | this file |
 | `core-globalmemory` | `consumer_class=smart`, no `.mwe/state.json` in cwd | transversal recall across the user's standard wikis on first prompt |
 | `smart-consumer` | `consumer_class=smart` + `.mwe/state.json` in cwd | authoritative `wiki_admin_*` management of a per-project companion-wiki |
-| `smart-codebase` | `smart-consumer` + software project | concrete folder layout + ingest pre-existing docs / wiki |
+| `smart-codebase` | `smart-consumer` + software project | concrete folder layout, module / decision / change-log page conventions |
+| `smart-onboarding` | `consumer_class=smart` + `first_connect.hint` (or the user asks) | **first connect, once per project**: the intro, the faithful import, the shape report, the page-repair proposal |
 | `standard-conversational` | `consumer_class=standard` (or absent) | `wiki_ingest_message` loop, `events_poll`, `pending_attention`, structural notices + undo routing |
+
+**If a skill names a tool you cannot see**, the server is newer than your
+session: a consumer's tool list is a snapshot taken at connect, so a tool
+added while you were live is absent until you reconnect. Call it over
+JSON-RPC (`tools/call` on `POST <server>/mcp`) or reconnect — do not
+conclude the skill is wrong.
 
 ## Token lifecycle
 

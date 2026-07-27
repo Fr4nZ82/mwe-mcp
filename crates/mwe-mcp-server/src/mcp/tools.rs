@@ -2397,6 +2397,12 @@ async fn signpost_hint(state: &McpState, wiki_id: &WikiId) -> Option<String> {
 #[derive(Debug, Deserialize)]
 struct WikiAdminPullArgs {
     wiki_id: String,
+    /// Narrow to these wiki-relative page paths. Empty = whole wiki.
+    #[serde(default)]
+    paths: Vec<String>,
+    /// Return each page's section shape instead of its bytes.
+    #[serde(default)]
+    shape: bool,
 }
 
 pub(super) async fn call_wiki_admin_pull(
@@ -2408,19 +2414,57 @@ pub(super) async fn call_wiki_admin_pull(
     let wiki_id =
         WikiId::parse(&args.wiki_id).map_err(|e| invalid_input(format!("wiki_id: {e}")))?;
     let caller = admin_caller(identity);
-    let resp = mwe_core::wiki_admin::pull(&state.pool, &state.tree, &caller, &wiki_id)
+    let req = mwe_core::wiki_admin::PullRequest {
+        wiki_id: wiki_id.clone(),
+        paths: args.paths,
+        shape: args.shape,
+    };
+    let resp = mwe_core::wiki_admin::pull(&state.pool, &state.tree, &caller, &req)
         .await
         .map_err(|e| admin_error_to_tool_error(&e))?;
+    // Roadmap 51f. In shape mode the page bytes stay on the server: what
+    // comes back is what the index will make of each page, plus the one
+    // line the consumer can relay to a human as-is.
+    let needing_repair = resp
+        .pages
+        .iter()
+        .filter(|p| p.shape.is_some_and(|s| s.needs_repair()))
+        .count();
+    let page_count = resp.pages.len();
     let pages_json: Vec<Value> = resp
         .pages
         .into_iter()
-        .map(|p| json!({ "path": p.path, "content": p.content }))
+        .map(|p| match p.shape {
+            Some(s) => json!({
+                "path": p.path,
+                "shape": {
+                    "chars": s.chars,
+                    "sections": s.sections,
+                    "sections_sharing_a_heading": s.sections_sharing_a_heading,
+                    "oversize_blocks": s.oversize_blocks,
+                    "oversize_chars": s.oversize_chars,
+                    "longest_block_chars": s.longest_block_chars,
+                    "needs_repair": s.needs_repair(),
+                    "note": s.warning(&p.path),
+                },
+            }),
+            None => json!({ "path": p.path, "content": p.content }),
+        })
         .collect();
-    Ok(json!({
+    let mut out = json!({
         "wiki_id": wiki_id.as_str(),
         "pages": pages_json,
         "op_log_head": resp.op_log_head,
-    }))
+    });
+    if req.shape
+        && let Some(obj) = out.as_object_mut()
+    {
+        obj.insert(
+            "shape_summary".to_owned(),
+            json!({ "pages": page_count, "pages_needing_repair": needing_repair }),
+        );
+    }
+    Ok(out)
 }
 
 // ----- wiki_admin_lease_acquire + _release -----
@@ -2830,6 +2874,8 @@ struct SmartBootstrapArgs {
     #[serde(default)]
     project_hint: Option<String>,
     #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
     briefing_limit_per_wiki: Option<i64>,
 }
 
@@ -2851,6 +2897,7 @@ pub(super) async fn call_smart_bootstrap(
         &caller,
         mwe_core::smart::BootstrapRequest {
             project_hint: args.project_hint,
+            project_id: args.project_id,
             briefing_limit_per_wiki: briefing_limit,
         },
     )
@@ -2881,6 +2928,7 @@ pub(super) async fn call_smart_bootstrap(
                 "slug": c.slug,
                 "project_id": c.project_id,
                 "matches_project_hint": c.matches_project_hint,
+                "matches_project_id": c.matches_project_id,
                 "is_self": c.is_self,
                 "last_op_log_id": c.last_op_log_id,
                 "last_op_log_ts": c.last_op_log_ts,
@@ -2895,9 +2943,22 @@ pub(super) async fn call_smart_bootstrap(
             })
         })
         .collect();
+    // Roadmap 51a. Volunteered, not asked for: the agent learns a project
+    // has no memory from the response it already reads, the way
+    // `wiki_admin_push` volunteers `signpost_hint`. `null` unless the
+    // caller passed a `project_id`.
+    let first_connect = resp.first_connect.map(|fc| {
+        json!({
+            "project_id": fc.project_id,
+            "wiki_id": fc.wiki_id.as_ref().map(mwe_core::types::WikiId::as_str),
+            "wiki_found": fc.wiki_id.is_some(),
+            "hint": fc.hint,
+        })
+    });
     Ok(json!({
         "caller_sender_id": resp.caller_sender_id,
         "project_hint": resp.project_hint,
+        "first_connect": first_connect,
         "smart_wikis": wikis,
     }))
 }

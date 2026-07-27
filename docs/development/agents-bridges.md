@@ -272,11 +272,16 @@ optional **token-less `SessionStart` `command` hook** that emits a fixed
 reminder so the model calls `smart_bootstrap` itself (no `UserPromptSubmit`
 recall hook). Skills load on demand via `skill_fetch`, **not** written to
 `~/.claude/skills/`. Runtime behaviour (the operational wiki + per-project
-wikis, the 3-way routing, the pre-bootstrap split, the `CLAUDE.md` +
-`AGENTS.md` documentation-rules scan, the user-initiated ingestion that
-leaves the local copy intact, per-project isolation) lives in the
-`smart-consumer` / `smart-codebase` / `core-globalmemory` skills and
-[`INTEGRATING.md`](../../INTEGRATING.md). Bootstrap is never automatic.
+wikis, the 3-way routing, the pre-bootstrap split, per-project isolation)
+lives in the `smart-consumer` / `smart-codebase` / `core-globalmemory`
+skills and [`INTEGRATING.md`](../../INTEGRATING.md). **First connect** —
+the intro, the `CLAUDE.md` + `AGENTS.md` documentation-rules scan, the
+user-initiated import that leaves the local copy intact, the post-import
+shape report — lives in `smart-onboarding`, fetched only when
+`smart_bootstrap` answers that this project has no wiki yet; the hook
+therefore no longer describes it, and carries only the clause that makes
+that answer possible (pass the derived `project_id`). Bootstrap is never
+automatic.
 
 ## Keeping bridges current
 

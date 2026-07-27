@@ -122,6 +122,13 @@ live in `fact_index` — it has its own pair of tables
   `_meta.md`: resolved owner, `shared_with`, `project_id`, `wiki_type`.
   The file stays the source of truth; the table exists so the engine can
   ask *in SQL* which wikis are smart and who may read them.
+- **`wiki_sections_fts`** (migration `0065`) — an FTS5 index over the
+  section text and its heading chain, maintained by triggers and
+  regenerable at any time. It is what lets a project wiki be searched by
+  the tokens project wikis are actually written with — `D-006`, an ADR
+  number, a ticket id, a symbol from a stack trace — which an embedding
+  has almost nothing to encode. Recall fuses the two rankings; see
+  [recall-pipeline.md](recall-pipeline.md#the-section-corpus-is-ranked-by-two-passes-fused).
 
 The split is what makes wiki-level ACL actually wiki-level: read access
 is stored **once per wiki** and resolved once per query
@@ -547,6 +554,16 @@ line naming what is missing (no description at all, or no activity line
 for today). The push is the right moment: the agent is already here, and
 something worth signposting just happened.
 
+The nudge is **silent on a consumer's own operational wiki** — the wiki
+the sign-in flow forges with `wiki_type: agent`
+([`wiki::AGENT_WIKI_TYPE`](../../crates/mwe-core/src/wiki.rs)). That wiki
+is the agent's private working memory, not a project, and signposting it
+would only add noise to the page whose whole job is to let a turn
+discover *projects*. The test is deliberately the server-written
+`wiki_type` and not "has a `project_id`": that field is optional on
+create, so keying on it would silently un-signpost a real project wiki
+pushed without one — the exact failure this area exists to prevent.
+
 ### 4. Ingest filter — and the conversation superset
 
 `wiki_ingest_message`'s step 2 ("enumerate wikis") drops every
@@ -606,16 +623,26 @@ Two parallel distribution surfaces:
   (raw markdown with `Content-Type: text/markdown; charset=utf-8`,
   `ETag`, honours `If-None-Match → 304`).
 
-Five bundled stubs ship today in
+The bundled skills ship in
 [`crates/mwe-core/skills/`](../../crates/mwe-core/skills/):
 
 | Skill | Pre-requisite | Body |
 |---|---|---|
-| `core` | always loaded | cardinal rule + identity claims + dispatcher pseudocode + skill catalog + auth-failure matrix |
+| `core` | always loaded | cardinal rule + identity claims + dispatcher pseudocode + the exact `project_id` recipe and the `first_connect` datum + skill catalog + auth-failure matrix |
 | `core-globalmemory` | `consumer_class=smart` + cwd without `.mwe/state.json` | forked-subagent recall pattern |
-| `smart-consumer` | `consumer_class=smart` + cwd with `.mwe/state.json` | smart_bootstrap + day-to-day editing loop + cooperative lease + `_briefing.md` lifecycle + graceful degradation; the smart consumer writes pages directly and verbatim, respecting the documented `_meta` / frontmatter constraints — no styles, no custom types; **the conversation superset** (group 17): the per-message router (drop / personal-fact / document-import-on-request / project-wiki+link) routing the user↔agent conversation through `wiki_ingest_message`, plus the `authored_refs` provenance echo that links a personal digest to a just-pushed project page |
+| `smart-consumer` | `consumer_class=smart` + cwd with `.mwe/state.json` | resume-the-project bootstrap + day-to-day editing loop + reading the push response (`warnings[]` / `signpost_hint` / `section_indexing`) + cooperative lease + `_briefing.md` lifecycle + graceful degradation; the smart consumer writes pages directly and verbatim, respecting the documented `_meta` / frontmatter constraints — no styles, no custom types; **the conversation superset** (group 17): the per-message router (drop / personal-fact / document-import-on-request / project-wiki+link) routing the user↔agent conversation through `wiki_ingest_message`, plus the `authored_refs` provenance echo that links a personal digest to a just-pushed project page |
 | `standard-conversational` | `consumer_class=standard` (openclaw, hermes, …) | per-turn `wiki_ingest_message` loop + wire shape + disambiguation + `pending_attention` + `events_poll` + proposal lifecycle + consumer self-configuration |
-| `smart-codebase` | smart consumer on a software project | folder mapping + `docs/` conversion + `source_ref`/`last_synced` discipline |
+| `smart-codebase` | smart consumer on a software project | folder mapping + module / decision / change-log page conventions + `source_ref`/`last_synced` discipline |
+| `smart-onboarding` | **fetched on demand**: `first_connect.hint`, or the user asks | first connect, once per project: the three-question intro (and the questions that must never be asked), the four situations, the faithful bulk copy, the `create` wire shape, the post-import shape report, the cut-never-rewrite page repair |
+| `web-smart-consumer` | bridge-less web client (claude.ai) | the reduced surface, bundled with the client rather than fetched |
+
+**Why one skill is fetched on demand.** A one-shot procedure written into
+the everyday skills is paid for by every session forever, and first
+connect is the rarest path there is — it happens once per project. Moving
+it out only works together with the trigger: `smart_bootstrap`'s
+`first_connect` block *tells* the agent the project has no memory
+(roadmap 51a/51b), so the procedure is not gated on the agent remembering
+to look for it.
 
 The bundled skills all ship at `status: implemented`; their roster and
 per-skill `version` are the SSOT in

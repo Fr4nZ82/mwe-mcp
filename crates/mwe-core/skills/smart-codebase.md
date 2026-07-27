@@ -1,7 +1,7 @@
 ---
 name: smart-codebase
-version: 1.5.0
-description: "Conversion + maintenance pattern for software-project companion-wikis: pre-existing CLAUDE.md/AGENTS.md documentation-rules scan (two options, logged in .mwe/state.json), build-an-mwe-wiki-from-docs / ingest-an-existing-wiki-faithfully (the local copy is never touched), modules/decisions/runbooks/architecture layout, deviation warnings, source_ref discipline, last_synced cadence."
+version: 1.6.0
+description: "Maintenance pattern for a software project's smart wiki: modules/decisions/runbooks/architecture layout, module- and decision-page conventions, the change-log page, source_ref discipline, last_synced cadence. First connect (importing an existing docs/ or wiki, the CLAUDE.md documentation-rules resolution, the shape report) is not here — it lives in smart-onboarding."
 depends_on: ["core", "smart-consumer"]
 applies_to:
   consumer_class: smart
@@ -14,10 +14,11 @@ status: implemented
 
 This skill concretises `smart-consumer` for the most common case:
 **a software project's companion-wiki**. It defines how the bundled
-`wiki-companion` type maps to a real codebase, how to convert
-a pre-existing `docs/` directory into a companion-wiki, and the
-day-to-day discipline (`source_ref` frontmatter, `last_synced` bumps)
-that keeps REM's read-side sub-jobs useful.
+`wiki-companion` type maps to a real codebase, what belongs on a module,
+decision or change-log page, and the day-to-day discipline (`source_ref`
+frontmatter, `last_synced` bumps) that keeps REM's read-side sub-jobs
+useful. Bringing an existing `docs/` tree or wiki *in* is a one-shot job
+and lives in [`smart-onboarding`](smart-onboarding.md).
 
 ## When this skill applies
 
@@ -40,9 +41,10 @@ codebase-specific patterns below won't help.
 The bundled `wiki-companion` type suggests four top-level
 subdirectories under your local mirror (`state.local_wiki_root` —
 `.mwe/wiki/` by default, or the directory you ingested in place).
-Deviations don't error — they **warn** in the `wiki_admin_push`
-response — but the standard layout lets REM's read-side dedup and your
-team's recall hit the right files without surprise:
+Deviations are neither an error nor a warning — the server does not
+check folder shape at all — but the standard layout lets REM's
+read-side dedup and your team's recall hit the right files without
+surprise:
 
 | Folder | What lives there | Page frontmatter convention |
 |---|---|---|
@@ -50,179 +52,32 @@ team's recall hit the right files without surprise:
 | `decisions/` | One page per non-trivial design decision. ADR-shaped (Context → Decision → Consequences). One file per decision; **do not** merge multiple decisions into a single file. | `decision_id: <slug>`, `status: proposed/accepted/superseded`, `superseded_by: <decision_id>?`, `last_synced` |
 | `runbooks/` | One page per operational procedure (deploy steps, rollback, oncall response, recovery from $known-incident). Steps explicit, copy-pasteable. | `runbook_id: <slug>`, `severity: routine/oncall/incident`, `last_synced` |
 | `architecture/` | Cross-module concerns: data flow, service topology, event/queue ownership. Diagrams (mermaid / ascii) go here. Fewer files than `modules/`, broader scope. | `topic: <slug>`, `last_synced` |
-| `_briefing.md` (root) | Inbox managed by mwe-mcp — see `smart-consumer`. Never write directly via `wiki_admin_push`; use `wiki_admin_notify`. | (managed by the server) |
+| `_briefing.md` (root) | Your inbox — see `smart-consumer`. Others reach it with `wiki_admin_notify`; **you** write it with an ordinary `wiki_admin_push` (the server refuses a smart consumer notifying its own wiki). | (you own it; the server appends to it) |
 | `_meta.md` (root) | Auto-managed metadata: `owner_user`, `shared_with`, `wiki_type`. Edited via dashboard `/wikis/<id>/sharing`, not by the smart consumer. | (managed by the server) |
 
-Other folders (`adr/`, `notes/`, `playbooks/`, `glossary/`) are
-tolerated — `wiki_admin_push` returns them in the `warnings` list of
-the response, the user sees the warning, but the push goes through.
-There is a single bundled companion type and no custom-type
-registration: a non-canonical layout simply keeps surfacing those
-benign warnings. If the noise matters, conform to the canonical
-folders; otherwise the warnings are harmless and the push still lands.
+Other folders (`adr/`, `notes/`, `playbooks/`, `glossary/`) are simply
+tolerated: there is a single bundled companion type and no custom-type
+registration, and nothing on the server objects to a layout of your own.
+Never force the four folders onto a wiki already organised its own way.
 
-## Pre-existing `CLAUDE.md` / `AGENTS.md` documentation rules — surface, never silently obey
+What the push response's `warnings[]` **does** carry is page **shape** —
+a page whose blocks are too long for the index to keep whole. That is a
+retrieval problem and worth acting on; folder names are not.
 
-Many repos already carry a `CLAUDE.md` (or `AGENTS.md`) with rules about *how
-to write documentation* — heading conventions, a required per-module structure,
-a house style. **Before you generate the companion-wiki, scan `CLAUDE.md` and
-`AGENTS.md` for documentation-style rules** and resolve the conflict with the user.
-The companion-wiki has its own conventions (the four folders above,
-`source_ref` / `last_synced`, markerless markdown); silently *following*
-a repo's bespoke doc rules and silently *ignoring* them are both wrong —
-each surprises the user.
+## Bringing an existing `docs/` or wiki in — not here
 
-Scope of the scan, for this Claude Code bridge: **`CLAUDE.md` and `AGENTS.md`**
-— the two project-instruction files Claude Code reads natively. (`.cursorrules`
-and the like ride a future Cursor bridge; do not read those here.) What counts
-as a documentation-style rule:
+That is **first connect**, it happens once, and it lives in
+[`smart-onboarding`](smart-onboarding.md): the faithful bulk copy (bytes go
+file → script → server, never through your context), the pre-existing
+`CLAUDE.md` / `AGENTS.md` documentation-rules resolution, the shape report,
+and the repair proposal. Two things from it are worth remembering even when
+you never open that skill:
 
-- A heading like `## Documentation rules`, `## Wiki style`, `## Doc
-  format`, `## Style guide`, `## Docs`.
-- Imperative doc conventions in prose: "Every module must have a doc
-  page", "Documentation conventions: …", "one ADR per decision", a
-  mandated frontmatter shape, a required folder layout for docs.
-
-If you find such rules, **show the user the exact lines** and offer
-**two** options — there is no third:
-
-- **(a) Adopt the mwe standard.** Ignore the repo's local doc rules for
-  the companion-wiki; they stay on disk untouched, simply not applied.
-  The wiki follows the bundled companion conventions above.
-- **(b) Stop.** The user edits, removes, or adapts the doc rules in
-  `CLAUDE.md` themselves, then re-runs the bootstrap. You do **not** edit
-  `CLAUDE.md` for them.
-
-There is no option to register a custom wiki type that formalises the
-repo's rules: the single bundled companion type is markerless and
-content-indexed, with no custom-type registration — a non-canonical
-layout only ever *warns* on push.
-
-**Record the choice in `.mwe/state.json`** so a later bootstrap does not
-re-ask:
-
-```json
-{
-  "bootstrap_decisions": {
-    "claude_md_doc_rules": {
-      "choice": "adopt_mwe",
-      "scanned_headings": ["## Documentation rules"],
-      "at": "2026-06-24T10:00:00Z"
-    }
-  }
-}
-```
-
-`choice` is `"adopt_mwe"` (option a) or `"user_will_edit"` (option b,
-pending the re-run). Never silently obey the repo rules, never silently
-delete them, and never proceed past option (b) until the user has
-re-run the bootstrap.
-
-## Ingesting pre-existing docs or a wiki — never silently, the copy stays intact
-
-You **never scan folders on your own initiative** to ingest them. This runs only
-when the **user asks** to bring a project's documentation into mwe, or when a
-write-moment forces the question (see `smart-consumer` → "the first write-moment
-is the deferred bootstrap"). Whatever the shape, the **originals stay exactly as
-they are** — you never rename, move, or delete them. Keep the user aware of every
-step.
-
-Where the **local mirror** (`state.local_wiki_root` — the directory you edit and
-push from) ends up depends on the shape, and you record it in `.mwe/state.json`
-at bootstrap:
-
-- **Loose `docs/` → build from it:** you author a *fresh* wiki at the default
-  `.mwe/wiki/`, reading `docs/` only as source. `local_wiki_root` stays
-  `.mwe/wiki/`; `docs/` is untouched.
-- **An existing wiki → ingest in place:** the existing directory (e.g. the repo's
-  `wiki/`) **is** the mirror. Set `local_wiki_root` to it and keep editing it
-  there — **never duplicate it into `.mwe/wiki/`**. `.mwe/wiki/` is only the
-  default for a freshly-seeded wiki, not a mandatory location.
-
-Three shapes, decided per project — and if it is ambiguous, **ask**:
-
-### Loose `docs/`, no wiki → build an mwe-style wiki from it
-
-Read the docs as source material, map them onto the companion layout (the four
-folders below), and push. `docs/` is left untouched on disk (the user can diff
-the generated `.mwe/wiki/` against it).
-
-```
-fn build_wiki_from_docs(cwd, wiki_type):
-    confirm_with_user(
-        "I'll read docs/ and author an mwe-style wiki in .mwe/wiki/ from it, then "
-        "push it to mwe. Your docs/ stays exactly as it is. OK?")
-    pages = []
-    for f in walk("docs", "*.md"):                 # read-only — never renamed/removed
-        cat = classify(f)                          # README/-arch → architecture/, ADR-* → decisions/,
-                                                   # runbooks/ops → runbooks/, module docs → modules/
-        pages.append({ "path": cat + "/" + slugify(f.stem) + ".md",
-                       "content": rewrite_body(f, target_type=wiki_type) })  # +source_ref +last_synced
-    if uncategorisable: surface_to_user("Couldn't classify <list>; parked in modules/.")
-    out = wiki_admin_push(project_id=state.project_id, wiki_type=wiki_type,
-                          smart=true, mode="create", pages=pages)
-    write(".mwe/state.json", { wiki_id: out.wiki_id, last_op_log_head: out.op_log_id,
-                               project_id: state.project_id,
-                               local_wiki_root: ".mwe/wiki/",   # freshly authored → the default
-                               source: "docs/" })
-    return out.wiki_id
-```
-
-### An existing wiki (a markdown tree) → check compatibility, then ingest faithfully
-
-Do **not** reclassify it. A smart wiki is markerless, so a good structure
-survives a verbatim push. **Check it against the mwe rules first**:
-
-- pages are markdown with **headings** (each section becomes a recallable unit);
-- you do not hand-write `_meta.md` / `_captures` (the server owns them — a
-  malformed `_meta` is rejected on push);
-- no per-fragment `{{…}}` markers (smart wikis do not use them).
-
-If it conforms, push it **page-for-page as-is** (`mode=create`, then `upsert`).
-Where it needs light conformance (a missing heading, a stray `_meta`), adjust it
-**with the user's awareness** and push. Never force the four-folder layout onto a
-wiki already organised its own way — non-canonical folders only *warn* on push.
-
-**The ingested directory stays the local mirror — do not copy it into
-`.mwe/wiki/`.** Record its path as `local_wiki_root` in `.mwe/state.json` and go
-on editing it in place; from here the day-to-day loop (`smart-consumer` →
-"Day-to-day editing loop") reads and writes under that `local_wiki_root`.
-
-```
-fn ingest_existing_wiki(cwd, wiki_root):          # e.g. wiki_root = "wiki/"
-    confirm_with_user(
-        "I'll copy your existing " + wiki_root + " into mwe as-is (byte-for-byte) "
-        "and keep editing it right there — I won't copy it into .mwe/wiki/. OK?")
-    # Bulk copy runs in a SCRIPT — it reads the files and pushes them over /mcp;
-    # you never pull the pages through your own context (no token burn, no read
-    # ceiling). See smart-consumer "Onboarding an existing wiki — copy it up in bulk".
-    wiki_id, head = run_bulk_copy_script(wiki_root,            # create → upsert in batches
-                                         project_id=state.project_id, wiki_type=wiki_type)
-    write(".mwe/state.json", { wiki_id: wiki_id, last_op_log_head: head,
-                               project_id: state.project_id,
-                               local_wiki_root: wiki_root,     # <-- the existing dir, NOT .mwe/wiki/
-                               source: wiki_root })
-    return wiki_id
-```
-
-**Oversized pages during ingest.** Because the bulk copy runs in a *script*,
-not through your context, a page's size is a non-issue — the script reads a
-350 KB `log.md` as easily as a 2 KB one, byte-for-byte, with no read ceiling
-and no reassembly drift. Two things still hold:
-
-- **Copy verbatim; never paraphrase.** The script emits the file bytes as the
-  page `content` — a faithful copy, not a rewrite of it from memory.
-- **A chronological `log.md` / `CHANGELOG.md` is copied whole, then curated.**
-  It is first-class content — the trail maintainers read to retrace work — so
-  you never drop it. *After* the copy, structure it by date and rotate it into
-  dated period archives behind a live index (see "Change-log page"), as a
-  follow-up pass — not something to skip or split during the copy itself.
-
-### Both `docs/` and a wiki → decide with the user
-
-No fixed rule. Usually the existing wiki is the base (check + ingest) and `docs/`
-is a source to fold in — but surface both and let the user choose. Do not guess
-silently.
+- The originals are **never** renamed, moved, or deleted, and nothing is
+  rewritten on the day it is imported.
+- If the mirror is an existing directory (e.g. the repo's `wiki/`), that
+  directory **is** `state.local_wiki_root` — it is never duplicated into
+  `.mwe/wiki/`, which is only the default for a wiki you seed fresh.
 
 ## Module-page convention
 
@@ -375,11 +230,10 @@ rotation meet: the log survives whole, just paged and navigable.
   REM can't index them.
 - ❌ **Bumping `last_synced` on cosmetic edits.** You burn the
   freshness signal REM uses for recall preference.
-- ❌ **Fighting the canonical folders.** Project one-offs are fine in
-  the bundled type's `warnings` (you see the warning, the user sees it,
-  life goes on). There is no custom-type escape hatch: if a layout
-  diverges, either conform to the canonical folders or accept the benign
-  warnings — don't invent machinery that no longer exists.
+- ❌ **Fighting a layout that already works.** The canonical folders are
+  a suggestion the server never checks; a project with its own structure
+  keeps it. There is no custom-type escape hatch and none is needed —
+  don't invent machinery that does not exist.
 
 ## Tools used
 
@@ -391,8 +245,9 @@ for "classify this file".
 
 ## Cross-references
 
-- Sibling skill: `smart-consumer` (parent, the cwd-bound mode this
-  one specialises).
+- Sibling skills: `smart-consumer` (parent, the cwd-bound mode this one
+  specialises) and [`smart-onboarding`](smart-onboarding.md) (first
+  connect: the import, the shape report, the repair proposal).
 - Bundled `wiki-companion` type (the `wiki_type` stem + smart-consumer
   detection): `crates/mwe-core/src/smart.rs`.
 - Engineering wiki: the smart-wikis design note.

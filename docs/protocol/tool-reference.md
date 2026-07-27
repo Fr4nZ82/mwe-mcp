@@ -365,7 +365,7 @@ The `kind` column is `TEXT`, so new kinds are additive —
 a consumer that does not recognise a kind just receives the JSON payload
 and decides what to do. `structure_applied` is the **notice** for a
 structural change REM applied directly (paragraph→page split or
-page→sub-wiki emergence): its payload carries the receipt
+page-group→wiki regrouping): its payload carries the receipt
 `proposal_id`, the `variant`, source → target, the `revert_deadline`,
 the undo `dashboard_path`, and the `recipient_id` of the affected user.
 
@@ -426,7 +426,7 @@ Acknowledge delivery of the listed events so they stop reappearing in
 ## Structural changes: apply + notice (no proposal family)
 
 There is **no proposal family on the MCP surface**. A structural change
-(the REM paragraph→page split, the page→sub-wiki emergence) is **not** a
+(the REM paragraph→page split, the page-group→wiki regrouping) is **not** a
 blocking proposal the user must approve: REM applies it directly,
 records a **born-applied receipt** (a `structure_proposals` row in
 status `applied` with a `revert_token` + 7-day `revert_deadline`), and
@@ -931,7 +931,7 @@ is written verbatim.
   "wiki_id": "alice-acme",
   "ops_applied": { "created": 12, "updated": 2, "deleted": 0 },
   "op_log_id": "wol_2026-05-26-001",
-  "warnings": [ "page 'misc/notes.md' deviates from the recommended folder_structure; allowed but flagged" ],
+  "warnings": [ "`decisions.md`: 4 block(s) are longer than the 2000-character section limit and hold 62% of the page, so the index has to cut them mid-sentence …" ],
   "marked_processed": [ "bi_42" ],
   "authored_refs": [ "[[alice-acme/index]]", "[[alice-acme/modules/auth]]" ],
   "section_indexing": "queued"
@@ -944,6 +944,15 @@ queue and this ack returned immediately, so recall over brand-new
 sections may lag by the queue depth; `"inline"` — indexed synchronously
 before the ack (fallback when the queue is not wired: tests, degraded
 boot). Either way the push itself is already committed.
+
+`warnings[]` carries **page-shape** lines, one per pushed page whose blocks
+are too long for the section index to keep whole (capped at 5 per push, then
+one "…and N more" line). Smart wikis only — a standard wiki's content is
+fact-indexed, not sectioned. The line is plain language, written for the
+consumer to relay as-is; the whole-wiki view is `wiki_admin_pull` with
+`shape: true`. The folder-structure deviation warnings the spec once
+promised here are **not** implemented — the server does not check folder
+shape at all.
 
 `authored_refs` is one `[[wiki_id/page]]` provenance breadcrumb per written
 page (`_meta.md` and deletes excluded). A smart consumer echoes these into the
@@ -982,12 +991,14 @@ cap (`429 push_too_large`) is unimplemented; do not model it.
 
 ### `wiki_admin_pull` *(read-only)*
 
-Dual of push. Returns every page of a smart-wiki the caller owns,
-plus the latest `op_log_head`.
+Dual of push. Returns the pages of a smart-wiki the caller owns, plus the
+latest `op_log_head`. Three modes, one call.
 
-**Input**: `{ wiki_id }` (required).
+**Input**: `{ wiki_id }` (required), `paths[]` (optional — wiki-relative
+page paths, forward slashes; a path that does not exist is simply absent
+from the response), `shape` (optional bool, default `false`).
 
-**Output**
+**Output** — default / `paths`-narrowed
 
 ```jsonc
 {
@@ -997,13 +1008,41 @@ plus the latest `op_log_head`.
 }
 ```
 
+**Output** — `shape: true`
+
+```jsonc
+{
+  "wiki_id": "alice-acme",
+  "pages": [
+    { "path": "decisions.md",
+      "shape": {
+        "chars": 54970, "sections": 47, "sections_sharing_a_heading": 39,
+        "oversize_blocks": 4, "oversize_chars": 34112,
+        "longest_block_chars": 12480, "needs_repair": true,
+        "note": "`decisions.md`: 4 block(s) are longer than the 2000-character section limit …"
+      } }
+  ],
+  "shape_summary": { "pages": 45, "pages_needing_repair": 3 },
+  "op_log_head": "wol_2026-05-26-001"
+}
+```
+
+Shape mode ships **no page content**: it answers "how will these pages
+retrieve?" without moving the wiki through the consumer's context. The
+numbers are re-derived from the bytes on disk by the same deterministic
+segmentation the indexer runs, so they are correct even while section
+indexing is still queued. `needs_repair` fires on **density, not size**:
+at least three over-cap blocks, or over-cap blocks holding ≥25% of the
+page (`document::DENSE_PAGE_BLOCKS` / `DENSE_PAGE_SHARE`).
+
 **Errors**: same auth gates as push, plus `404 not_found`.
 
 **Caveats**: the `op_log_head` is the value to stamp and pass back as
 the next push's `expected_op_log_head` — the optimistic-concurrency gate
 **is wired** (a stale head → `409 conflicting_op_log_head`). Delta-pull
-(`since_op_log_id`) is not supported — the pull is always a full pull. Used to rebuild a missing local `.mwe/wiki/`
-cache or realign after a token revoke.
+(`since_op_log_id`) is not supported. Used to rebuild a missing local
+`.mwe/wiki/` cache, realign after a token revoke, or report page shape
+after a bulk import.
 
 ### `wiki_admin_signpost`
 
@@ -1205,10 +1244,14 @@ smart-wiki the caller owns, with pending briefing items and last
 op-log activity. Designed for the `SessionStart` hook (fires with
 `{}`).
 
-**Input**: `{ project_hint? (string), briefing_limit_per_wiki? (1–50, default 5) }`.
+**Input**: `{ project_hint? (string), project_id? (string),
+briefing_limit_per_wiki? (1–50, default 5) }`.
 `project_hint` is a case-insensitive substring matched against each
 candidate's `_meta.md.extra.project_id`, slug, and title; matches float
-to the top.
+to the top. `project_id` is the **exact** (case-sensitive) id of the
+project the session is working in, derived by the caller per the bundled
+`core` skill; it is matched for equality against
+`_meta.md.extra.project_id` and drives the `first_connect` block.
 
 **Output**
 
@@ -1216,6 +1259,12 @@ to the top.
 {
   "caller_sender_id": "alice",
   "project_hint": "acme",
+  "first_connect": {
+    "project_id": "18a486b5c823a33f",
+    "wiki_id": null,
+    "wiki_found": false,
+    "hint": "This project has no wiki of yours yet, so nothing about it is remembered between sessions. Before proposing anything, `skill_fetch` the `smart-onboarding` skill and follow it: it carries the whole first-connect procedure, including when *not* to open it."
+  },
   "smart_wikis": [
     {
       "wiki_id": "alice-acme",
@@ -1223,6 +1272,7 @@ to the top.
       "title": "Acme", "slug": "acme",
       "project_id": "acme-monorepo",
       "matches_project_hint": true,
+      "matches_project_id": false,
       "last_op_log_id": 47,
       "last_op_log_ts": "2026-05-26T10:00:00Z",
       "briefing_counts": {
@@ -1243,8 +1293,19 @@ to the top.
 }
 ```
 
-Sort order: `matches_project_hint` desc, `last_op_log_ts` desc,
-`wiki_id` alphabetical.
+Sort order: `matches_project_id` desc, `matches_project_hint` desc,
+`is_self` desc, `last_op_log_ts` desc, `wiki_id` alphabetical.
+
+`first_connect` is **absent** (`null`) unless the caller passed a
+`project_id`. When it is present: `wiki_id` names the caller's own smart
+wiki carrying that id — resume it, never create a second one — and
+`hint` is set **only** when there is none, in which case it names the
+`smart-onboarding` skill. This is the `signpost_hint` idiom applied to
+onboarding: the trigger for a once-per-project procedure is a datum the
+server volunteers in a response the agent already reads, not a rule the
+agent has to remember (roadmap 51a). The server has no view of a user's
+*decline*, so a consumer that recorded one in `.mwe/state.json` ignores
+the hint from then on.
 
 **Errors**: `403 requires_consumer_class_smart`, `400 invalid_input`
 (`briefing_limit_per_wiki < 1`), `500 internal_error`.

@@ -1,7 +1,7 @@
 ---
 name: smart-consumer
-version: 1.14.0
-description: "Project-bound mode for smart consumers: authoritative management of a project's smart wiki via wiki_admin_push/pull/notify + project signposts (wiki_admin_signpost, so the user's standard memory knows the project exists) + _briefing.md lifecycle + cooperative lease + graceful degradation on token revoke. Smart wikis are markerless and content-indexed — the consumer writes plain markdown freely (create / edit / move / rename / delete pages), exactly the way this repo's engineering wiki is maintained; the ACL is wiki-level in _meta (no per-fragment markers or ACL — those are the pillar of standard memory wikis only). Superset (group 17): the user↔agent conversation ALSO runs the standard personal-memory pipeline via wiki_ingest_message, joined to the project wiki by provenance links (authored_refs), with a per-message router (drop / personal-fact→standard / document-import / project-wiki / your-operational-wiki). Auto recall+capture, never dump everything into the user's standard memory."
+version: 1.15.0
+description: "Project-bound mode for smart consumers: authoritative management of a project's smart wiki via wiki_admin_push/pull (whole, narrowed by paths, or shape-only) + project signposts (wiki_admin_signpost, so the user's standard memory knows the project exists) + _briefing.md lifecycle + cooperative lease + graceful degradation on token revoke. First connect is NOT here — it lives in smart-onboarding, fetched when the server volunteers first_connect.hint. Smart wikis are markerless and content-indexed — the consumer writes plain markdown freely (create / edit / move / rename / delete pages), exactly the way this repo's engineering wiki is maintained; the ACL is wiki-level in _meta (no per-fragment markers or ACL — those are the pillar of standard memory wikis only). Superset (group 17): the user↔agent conversation ALSO runs the standard personal-memory pipeline via wiki_ingest_message, joined to the project wiki by provenance links (authored_refs), with a per-message router (drop / personal-fact→standard / document-import / project-wiki / your-operational-wiki). Auto recall+capture, never dump everything into the user's standard memory."
 depends_on: ["core"]
 applies_to:
   consumer_class: smart
@@ -35,10 +35,13 @@ transversal recall mode — no companion-wiki, no `wiki_admin_*`.
 
 A companion-wiki is **owned by the user** (`owner_user = sender_id`)
 and **administered by smart consumers of that user**. You — the smart
-consumer — push markdown pages to it via `wiki_admin_push`, pull the
-authoritative state back via `wiki_admin_pull`, and notify the
-project's `_briefing.md` via `wiki_admin_notify` when you want to
-leave a note for the next session. mwe-mcp's REM cycle skips all
+consumer — push markdown pages to it via `wiki_admin_push` and pull the
+authoritative state back via `wiki_admin_pull`. `_briefing.md` is your
+**inbox**: others notify *you* there (`wiki_admin_notify`), and you
+administer it yourself with an ordinary push — the server refuses a
+smart consumer notifying its own wiki (`403
+smart_does_not_notify_own_wiki`), because writing your own inbox is a
+write, not a message. mwe-mcp's REM cycle skips all
 write-jobs on companion-wikis (no auto-promote, no auto-archive, no
 hub-writer), runs read-jobs (recall pre-indexing, dedup source), and
 adds two notify-only sub-jobs (Briefing dispatcher + Backlink
@@ -130,219 +133,60 @@ detector keeps the inverse honest. Carry the refs only when the turn
 genuinely produced a personal-memory note worth linking — an op you
 dropped needs none.
 
-## smart_bootstrap
+## smart_bootstrap — resume the project
 
-Run at session start when `.mwe/state.json` is present in cwd, or on
-the first user turn that mentions the project clearly enough to
-trigger an opt-in bootstrap.
+Call the **MCP tool `smart_bootstrap`** (family K) at session start; it
+bundles the wiki landscape + the briefing inbox into one call. The Claude
+Code session-start nudge (served at `/connect/hooks/claude-code.json`)
+reminds you to, but **you** make the call over your own connection (the
+hook holds no token and calls nothing).
 
-There is a dedicated **MCP tool `smart_bootstrap`** (family
-K) that bundles the recall + briefing-fetch into a single call. Call it
-at session start — the Claude Code session-start nudge (served at
-`/connect/hooks/claude-code.json`, `SessionStart`) reminds you to, but
-**you** make the call yourself over your own connection (the hook holds
-no token and does not call the server).
-The pseudocode below documents
-the *call shape*: when the K-family tool is available, replace step
-(2)/(2.a) with a single `smart_bootstrap({ project_hint: <derived
-project_id or slug> })` and read `smart_wikis[0]` for the resume
-branch (or `smart_wikis == []` for the initialise branch).
+Pass the project's `project_id` — the recipe is in
+[`core`](core.md) — and the server answers the only question that
+matters at connect: does this project already have memory?
 
 ```
-fn smart_bootstrap(cwd):
-    # 1. Identify the project
-    project_id = derive_project_id(cwd)
-    # default derivation: sha256( normalized_vcs_origin + ":" + cwd_relpath_from_repo_root )[..16]
-    # CLAUDE.md may override: "mwe-mcp: project_id=manual:<slug>"
-
-    # 2. Look up the caller's companion-wiki landscape via the K-family tool
-    snapshot = smart_bootstrap(project_hint = project_id)
-    # snapshot.smart_wikis[*] = { wiki_id, wiki_type, title, slug,
-    #     project_id, matches_project_hint, last_op_log_id,
+fn resume(cwd):
+    project_id = state.project_id if .mwe/state.json else derive_project_id(cwd)
+    snapshot   = smart_bootstrap(project_id = project_id)
+    # snapshot.first_connect = { project_id, wiki_id, wiki_found, hint }
+    # snapshot.smart_wikis[*] = { wiki_id, wiki_type, title, slug, project_id,
+    #     matches_project_id, matches_project_hint, is_self, last_op_log_id,
     #     last_op_log_ts, briefing_counts, recent_briefing[...] }
 
-    matches = [c for c in snapshot.smart_wikis if c.matches_project_hint]
-    if matches is non-empty:
-        # Branch A: resume an existing companion-wiki
-        wiki_id = matches[0].wiki_id
-        state = read(".mwe/state.json")          # may be absent on first session
+    if not snapshot.first_connect.wiki_found:
+        # No memory for this project yet. That is the ONE case this skill
+        # does not handle: load `smart-onboarding` and follow it.
+        return handoff_to("smart-onboarding")
 
-        # 2.a Surface unread briefing items — already in the snapshot
-        surface_to_user(matches[0].recent_briefing)
-        # recent_briefing already filters processed_at IS NULL;
-        # briefing_counts has the per-kind totals for a UI badge.
+    wiki_id = snapshot.first_connect.wiki_id
+    me      = the entry with matches_project_id
 
-        # 2.b Reconcile local cache (if any) with server state
-        if state and state.last_op_log_id < matches[0].last_op_log_id:
-            pull = wiki_admin_pull(wiki_id = wiki_id)   # full pull, narrow with paths= when bandwidth matters
-            diff = local_vs(pull)
-            if diff has local edits:
-                # Replay queued local edits — see "Day-to-day editing loop"
-                for page in diff.locally_modified:
-                    wiki_admin_push(wiki_id, mode="upsert", pages=[page])
-        return wiki_id
+    # 1. Surface unread briefing items — already in the snapshot.
+    surface_to_user(me.recent_briefing)     # already filtered to processed_at IS NULL;
+                                            # briefing_counts has the per-kind totals
 
-    # Branch B: no companion-wiki for this project yet — initialise.
-    # The smart consumer never registers a custom type and never applies
-    # styles — it just writes pages directly, respecting the documented
-    # _meta / frontmatter rules. `wiki_type` is a free-form tone/label
-    # (use the project name, or "project"); it does NOT determine
-    # smart-ness — the explicit `smart = true` flag does that.
-    wiki_type = "project"
-
-    # 2.5 Surface pre-existing CLAUDE.md documentation rules BEFORE generating
-    #     any pages. Two options (adopt the mwe standard / stop so the user
-    #     edits CLAUDE.md), the choice logged in
-    #     .mwe/state.json.bootstrap_decisions.claude_md_doc_rules. Never
-    #     silently obey or delete them. See the smart-codebase skill.
-    resolve_claude_md_doc_rules(cwd)
-
-    # 3. Seed the pages. NEVER scan or rename folders on your own — the local copy
-    #    stays intact. If the user is converting pre-existing docs/ or an existing
-    #    wiki, follow smart-codebase "Ingesting pre-existing docs or a wiki" (build
-    #    from docs as *source*, or check-and-ingest an existing wiki — the originals
-    #    are never moved). Otherwise seed a single index page.
-    pages = [seed_index_page()]
-
-    # 4. Create the companion-wiki server-side. `smart = true` is what
-    #    forges a smart wiki (markerless, content-indexed); `wiki_type`
-    #    is just a descriptive label.
-    out = wiki_admin_push(
-        project_id = project_id,
-        wiki_type = wiki_type,
-        smart = true,
-        mode = "create",
-        pages = pages,
-    )
-
-    # 5. Persist local state. `local_wiki_root` records WHERE the local
-    #    markdown mirror lives — the directory you edit and push from.
-    #    Default `.mwe/wiki/` for a freshly-seeded wiki; when you instead
-    #    ingested an existing wiki *in place* (e.g. the repo's `wiki/`), it is
-    #    that directory and you never duplicate it into `.mwe/wiki/`
-    #    (see smart-codebase "Ingesting pre-existing docs or a wiki").
-    write(".mwe/state.json", {
-        "wiki_id": out.wiki_id,
-        "last_op_log_head": out.op_log_id,
-        "wiki_type": wiki_type,
-        "project_id": project_id,
-        "local_wiki_root": ".mwe/wiki/",   # default; an in-place ingest sets it to the existing dir
-        "checksums": {page.path: sha256(page.content) for page in pages},
-    })
-    return out.wiki_id
+    # 2. Reconcile the local mirror with the server.
+    state = read(".mwe/state.json")                       # absent on a fresh clone
+    if state and state.last_op_log_head < me.last_op_log_id:
+        pull = wiki_admin_pull(wiki_id = wiki_id)         # add paths=[…] to narrow it
+        for page in local_edits_not_in(pull):
+            wiki_admin_push(wiki_id, mode="upsert", pages=[page])
+    return wiki_id
 ```
 
-Two things to internalise:
+Three things to internalise:
 
-- **The bootstrap is interactive, and never touches the local copy.** You
-  do not scan or rename a project's folders on your own — `docs/` and any
-  existing wiki stay exactly as they are; you read them as *source* (see the
-  `smart-codebase` "Ingesting pre-existing docs or a wiki" flow). Before
-  generating, scan `CLAUDE.md` **and `AGENTS.md`** for documentation-style
-  rules and resolve them with the user (two options — adopt the mwe standard,
-  or stop so they edit the file), logging the choice in `.mwe/state.json`.
-- **Run it proactively at session start — but it still proposes, never
-  writes silently.** Don't wait for a "write-moment": the SessionStart nudge
-  tells you to call `smart_bootstrap` on connect, so do the cwd
-  discrimination *then*, and raise the result right away. Derive the
-  `project_id` and look it up *even without* a local `.mwe/state.json`:
-  - a wiki already exists for it **on mwe** (bootstrapped on another machine) →
-    **propose a sync** (pull → reconcile), never a second wiki;
-  - none on mwe, but the repo has an **existing local wiki/docs** the user never
-    ingested → **propose onboarding it now** — copy it up in bulk (see
-    "Onboarding an existing wiki" below; **never** a page-by-page read into your
-    context), or build from docs — so you write into the real wiki, not a
-    parallel one;
-  - nothing anywhere → **propose creating** a new project wiki.
-  All are proposals you surface on connect — never write silently, never create a
-  duplicate. If the user declines to onboard, keep the wiki **local-only** (edit
-  the files, don't push — it just will not be in mwe recall) or skip; park
-  pending knowledge in your operational wiki meanwhile so it is not lost. See
-  [`core-globalmemory`](core-globalmemory.md) "Cwd discrimination".
-- **The `project_id` is stable.** It comes from the VCS origin + the
-  repo-relative path of the project root. Renaming the local
-  checkout doesn't change it; cloning the same repo on a different
-  laptop produces the same id, so two devices of the same user
-  converge on the same companion-wiki rather than forking duplicates.
-
-## Onboarding an existing wiki — copy it up in bulk, not through your context
-
-The **first** time you bring a project's existing wiki into mwe you are
-copying many (sometimes large) pages up. Reading each page into your context
-and re-emitting it as a `wiki_admin_push` argument *works*, but the bytes
-pass through you twice — so a big wiki burns tokens for nothing, and a page
-over your file-read ceiling can't be read in one go at all.
-
-**So don't read the pages into your context for the bulk copy.** You have a
-shell — write and run a small script that walks the wiki tree and calls
-`wiki_admin_push` over `/mcp` itself. The bytes go **file → script →
-server**, never through you. This is the single mechanism for onboarding
-*any* existing smart wiki, large or small. (The day-to-day single-page loop
-below is different: a page you just edited is already in your context — push
-it normally. The script is only for the initial bulk copy.)
-
-**The call.** `wiki_admin_push` is an MCP tool; over HTTP it is a JSON-RPC
-`tools/call` on `POST <server>/mcp`:
-
-```
-POST <server>/mcp
-Authorization: Bearer <smart JWT>          # see "Auth" below
-Content-Type: application/json
-Accept: application/json, text/event-stream
-
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
-  "name":"wiki_admin_push",
-  "arguments":{ "mode":"create", "wiki_type":"project", "smart":true,
-                "project_id":"<id>", "pages":[ {"path":"index.md","content":"…"} ] }}}
-```
-
-Call `mode:"create"` first (its result carries the new `wiki_id`), then
-`mode:"upsert", "wiki_id":"<id>"` for the remaining pages **in batches**.
-Each `pages[*]` is `{path, content}` — `path` relative to the wiki root
-(forward slashes), `content` the file bytes verbatim.
-
-A Windows PowerShell sketch — no extra tools, `ConvertTo-Json` escapes the
-content for you (elsewhere the same shape over `bash` + `curl`, using `jq` to
-build the JSON):
-
-```powershell
-$srv=$env:MWE_SERVER; $jwt=$env:MWE_JWT; $root="wiki"; $proj=$env:MWE_PROJECT_ID
-$hdr=@{Authorization="Bearer $jwt"; "Content-Type"="application/json";
-       Accept="application/json, text/event-stream"}
-function Push($a){ $b=@{jsonrpc="2.0";id=1;method="tools/call";
-   params=@{name="wiki_admin_push";arguments=$a}} | ConvertTo-Json -Depth 20
-   Invoke-RestMethod "$srv/mcp" -Method Post -Headers $hdr -Body $b }
-$base=(Resolve-Path $root).Path
-$pages = Get-ChildItem $root -Recurse -Filter *.md | ForEach-Object {
-   @{ path = $_.FullName.Substring($base.Length+1) -replace '\\','/';
-      content = [IO.File]::ReadAllText($_.FullName) } }
-$r  = Push @{mode="create"; wiki_type="project"; smart=$true; project_id=$proj; pages=@($pages[0])}
-$wid= ($r.result.content[0].text | ConvertFrom-Json).wiki_id
-for($i=1; $i -lt $pages.Count; $i+=25){
-   Push @{mode="upsert"; wiki_id=$wid; pages=$pages[$i..([math]::Min($i+24,$pages.Count-1))]} }
-```
-
-**Auth.** The script needs a **smart** Bearer JWT in `$MWE_JWT`. Either reuse
-the OAuth `access_token` your own connection already holds, *if your host
-exposes it* to a shell (short-lived, ~1 h — fine for a one-shot copy); or the
-operator mints one once (`mwe-mcp token-issue --class smart …` on the server,
-or the dashboard token page) and exports it here. The token is the **only**
-setup step on this machine — `mwe-mcp` itself is never installed here; the
-script only speaks HTTP to the remote server.
-
-**Identify your client.** Set an explicit `User-Agent` naming the flow (e.g.
-`mwe-bulk-copy/1.0`) instead of shipping your HTTP library's default. It is
-what the operator sees in the access log when a bulk run misbehaves, and
-stock library defaults are the signatures a filter in front of the server
-drops first — so a `403` whose body never mentions mwe-mcp came from that
-edge, not from your token. Never impersonate a browser to get past one: say
-what you are.
-
-**After the copy**, record `.mwe/state.json` (`wiki_id`, `local_wiki_root` =
-the existing dir, `last_op_log_head` from the last push) and switch to the
-day-to-day loop. A big `log.md` is copied **whole** (byte-exact); its
-date-structuring / rotation is a follow-up curation pass (see
-`smart-codebase`), not part of the copy.
+- **A wiki on mwe with no local `.mwe/state.json` is a sync, never a second
+  wiki.** It was bootstrapped on another machine, or the local `.mwe/` was
+  wiped: pull, write the state file, reconcile, resume.
+- **The `project_id` is stable**, which is what makes that convergence
+  work: it comes from the VCS origin plus the repo-relative path of the
+  project root, so renaming the local checkout changes nothing and two
+  laptops with the same clone land on the same wiki.
+- **`op_log_id` is a global counter, not per-wiki.** It jumps between two
+  of your own pushes because other wikis wrote in between. Stamp back
+  whatever the last response returned; never compute the value you expect.
 
 ## Markerless, content-indexed — write the wiki like local files
 
@@ -505,6 +349,28 @@ push's `delete` paths. There is no single "replace everything" mode —
 recorded in the op-log; the dashboard's `/wikis/<id>/op-log` exposes a
 one-click revert window.
 
+### Read the push response — it tells you things you cannot see
+
+Three fields carry information you would otherwise never get:
+
+- **`warnings[]`** — a page you just wrote has blocks too long for the
+  index to keep whole, so they are cut mid-sentence and several sections
+  end up under the same heading with different content. The line is
+  written in plain language: relay it, and offer the repair from
+  [`smart-onboarding`](smart-onboarding.md) ("Repairing a page"). This is
+  how a page that grew across sessions gets caught — nobody notices
+  otherwise, and the usual fix is a blank line, not surgery.
+- **`signpost_hint`** — see the next section.
+- **`section_indexing`** — `"queued"` means the sections (and their
+  embeddings) are still being built when the ack arrives, so a recall
+  immediately after a big push can lag by the queue depth. Not an error;
+  just do not test recall in the same breath as the push.
+
+**Reading back cheaply.** `wiki_admin_pull` takes `paths: [...]` to
+narrow to the pages you care about, and `shape: true` to get *how each
+page will retrieve* — sections, over-long blocks, and a per-page note —
+without pulling a single byte of content through your context.
+
 ## Project signposts — make the user's own agent aware the project exists
 
 The user's everyday agent (Telegram, chat, whatever they talk to about
@@ -618,22 +484,23 @@ When the user acknowledges or acts on an item, move it from
 files in a single `wiki_admin_push mode: upsert` so the move is
 atomic.
 
-### Notify yourself for next time
+### Leave a note for your next session
 
-If the current session ends with a half-finished thought worth
-revisiting — "next time look at whether dedup of `decisions/2025-q4-*`
-helps", "remind me to check the licence pinning when I'm back" — call
-`wiki_admin_notify` to drop it into your own `_briefing.md`. The next
-`smart_bootstrap` surfaces it like any other source.
+If the session ends with a half-finished thought worth revisiting —
+"next time check whether dedup of `decisions/2025-q4-*` helps",
+"re-check the licence pinning" — append it to your own `_briefing.md`
+with an ordinary **push**, the same way you archive an item:
 
 ```
-wiki_admin_notify(
-    wiki_id = state.wiki_id,
-    topic = "follow-up dedup decisions/2025-q4",
-    body = "We deferred the cluster review. Decision pages have grown to 18; revisit at next session.",
-    source = {"kind": "consumer", "ref": "self/cc-laptop"},
-)
+wiki_admin_push(wiki_id = state.wiki_id, mode = "upsert", pages = [
+    { "path": "_briefing.md", "content": <current content + the new item> },
+])
 ```
+
+**Not `wiki_admin_notify`** — the server refuses a smart consumer
+notifying its own smart wiki (`403 smart_does_not_notify_own_wiki`), and
+it is right to: `notify` is how *others* reach your inbox, while writing
+your own inbox is just a write you are already authorised to make.
 
 ## Three-layer briefing classification
 
@@ -743,9 +610,10 @@ single-laptop single-token rotation case that motivated it.
 | D | `wiki_navigate` | **deep** recall — a navigator walks the wiki structure hop by hop (the path becomes the context) and returns the flat hits too. For a question that needs depth or to connect things across pages; pass `topics`/`owners` you know. Costs an LLM call per hop, so keep `wiki_search` for quick lookups. Smart wikis aren't funnel-navigated (read your own with `wiki_admin_pull`) |
 | F | `wiki_ingest_external` | document-import: a long body the user asks to keep whole becomes its own page + pointer |
 | H | `wiki_admin_push` | create + upsert pages (modes `create` / `upsert`; deletes ride the `upsert` push); response carries `authored_refs` |
-| H | `wiki_admin_pull` | full or path-narrowed pull for reconcile / revoke replay |
+| H | `wiki_admin_pull` | whole wiki, narrowed by `paths`, or `shape: true` for per-page retrieval quality without the bytes |
 | H | `wiki_admin_signpost` | tell the user's standard memory this project exists: a short non-technical `description` + one `activity` line per day. Prompted by `signpost_hint` in the push response |
-| H | `wiki_admin_notify` | append items to `_briefing.md` |
+| H | `wiki_admin_notify` | append an item to **someone else's** `_briefing.md`; your own inbox you write with `wiki_admin_push` |
+| K | `smart_bootstrap` | the session-start landscape + `first_connect`: does this project already have memory? |
 | H | `wiki_admin_lease_acquire` / `_release` | cooperative lease for bulk edits |
 | I | `skill_list` / `skill_fetch` | discover and load the bundled skills |
 
@@ -775,8 +643,12 @@ single-laptop single-token rotation case that motivated it.
   the filesystem. Your local mirror is **`state.local_wiki_root`**
   (`.mwe/wiki/` by default, or the directory you ingested in place) — edit
   there, and pass those bodies to `wiki_admin_push`.
-- ❌ **Silently auto-converting `docs/`.** Always confirm the rename
-  with the user, never `rm -rf` historical content.
+- ❌ **Silently auto-converting `docs/`.** Importing a project's existing
+  documentation is first-connect work and it always waits for a yes — see
+  [`smart-onboarding`](smart-onboarding.md). The originals are never
+  renamed, moved, or deleted.
+- ❌ **Ignoring `warnings[]` on a push.** It is the only moment anyone
+  finds out that a page has stopped retrieving properly.
 - ❌ **Ignoring `_briefing.md` at session start.** The whole point of
   the inbox is that the user sees stale items every session. If you
   bootstrap and skip the briefing read, REM's notify-only sub-jobs
@@ -793,8 +665,9 @@ single-laptop single-token rotation case that motivated it.
 
 - Bootstrap document: [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md).
 - Sibling skills: `core-globalmemory` (transversal mode, no cwd state),
-  `smart-codebase` (codebase-specific conversion + layout
-  patterns).
+  `smart-codebase` (codebase layout + page conventions),
+  [`smart-onboarding`](smart-onboarding.md) (**first connect**: the intro,
+  the faithful import, the shape report, the page-repair proposal).
 - Wire-level tool spec: `docs/protocol/mcp-tools.md` family H.
 - Engineering wiki: the smart-wikis design note.
 - Lease design: the rem-cycle design note §"Lease expirer
