@@ -58,10 +58,13 @@ run at different points of the turn:
    already returns (see below). Read access is re-checked against
    `smart_wikis`, never inferred from the signpost. Costs one query, and
    only when a signpost actually surfaced.
-3. **Selection — cosine, scoped.** Only the candidate wikis' sections are
-   ranked, which is why this beats a score threshold over everything: it
-   answers from the project in play rather than from whatever scored well
-   somewhere.
+3. **Selection — scoped, then ranked by both passes.** Only the candidate
+   wikis' sections are ranked, which is why this beats a score threshold
+   over everything: it answers from the project in play rather than from
+   whatever scored well somewhere. Within that scope the cosine ranking is
+   fused with exact-term search — see [the two
+   passes](#the-section-corpus-is-ranked-by-two-passes-fused), including
+   why the floor is applied *before* the fusion.
 4. **Budget.** `project_docs_top_k` (default 3) and
    `project_docs_char_budget` (default 3 000) bound the slot across
    *both* stages — the second pass gets what the first left. Sections are
@@ -140,13 +143,93 @@ sender may read (`owner ∪ shared_with`, the same effective set
 An unreadable wiki's bytes never leave the DB. A sharing revoke is a
 single-row write and closes the read window on the next query.
 
+## The section corpus is ranked by two passes, fused
+
+Sections — and only sections — are ranked by vector similarity **fused
+with exact-term search**. Facts are not: they are short authored claims
+with per-fragment ACLs, and giving them the same treatment is separate
+work, not a wider `IN` clause.
+
+**Why.** An identifier carries almost no meaning for an embedding to
+encode, and identifiers are what a decision log, an ADR list, a ticket
+trail and a stack trace are made of. Measured on the production corpus
+before the index existed: the query `D-006` returned the section of
+decision **D-001** (whose body merely cites the string), then an
+unrelated changelog entry matching on `D-`, then another wiki's
+`ADR-006` — never the section actually titled `D-006`. The same content
+asked in prose returned that section first, at 0.68, across a language
+boundary. The failure is not a tuning problem; it is the one thing
+cosine cannot do.
+
+**The lexical pass.** `wiki_sections_fts` is an FTS5 index over
+`wiki_sections`, external-content (`content='wiki_sections'`) so the
+bytes live in one place, maintained by three triggers in the schema
+rather than by the Rust write path — so the reindex sweep, the boot-time
+reconciliation and an operator's manual repair cannot bypass it. Free to
+rebuild: 2.5 MB and 60 ms on the 4 220-section production corpus, with no
+embedder involved.
+
+- **Tokenization is plain `unicode61`.** It splits `D-006` into `d` and
+  `006`, and the query is split the same way, so searching the identifier
+  as a *phrase* matches only where those tokens are adjacent. Adding `-`
+  to `tokenchars` would keep identifiers whole but weld `well-known` into
+  a token a search for `known` could never reach.
+- **Every query term is a quoted phrase joined by `OR`**
+  ([`sections::lexical_query`]). Quoting makes a malformed expression
+  unconstructible and makes a user typing `memory OR nothing` search for
+  the words. `OR` because the result is a *ranking* input, not a filter:
+  `AND` on a prose turn returns nothing.
+- **The heading chain is its own weighted column.** `wiki_sections."text"`
+  already begins with the heading, so indexing `heading_path` again
+  counts a heading term twice — which is exactly the difference between
+  the section that *is* `D-006` and one that *cites* it, and nothing else
+  in the row expresses it. Measured on the telaiojs decision log
+  (D-001…D-007, each split across 2–4 sections by the chunk cap): one
+  column ranked the defining section first for **4 of 7** identifiers,
+  two columns for **7 of 7**. The 4.0 weight then buys ranks 2 and 3,
+  where it promotes the sibling pieces of the same decision over
+  unrelated citations; 10.0 and 25.0 behave identically, so the value
+  sits on a plateau. Prose queries do not move.
+
+**Both passes always run.** A gate deciding per query whether the lexical
+pass is "needed" would spend an LLM judgement to guard a sub-millisecond
+index lookup, would discriminate on a *surface property of the query
+string* rather than on the invisible intent
+`[[feedback-no-hardcoded-gates-llm-decides]]` was written for, and would
+drop the hit silently whenever it answered wrongly. The ranking decides
+instead of a switch.
+
+**Fusion changes the order and nothing else.** The two rankings are not
+commensurable — a cosine is a distance in `[-1, 1]`, `bm25` an unbounded
+corpus-relative weight — so reciprocal rank fusion (`Σ 1/(60 + rank)`)
+keeps only positions and discards both magnitudes. `SectionHit::score`
+stays the **cosine**, because three callers read it as one: the signpost
+floor is a cosine threshold applied to it, `search_all` merges the two
+corpora by comparing it against a *fact's* cosine, and `wiki_search`
+serializes it to the consumer in the same `score` field a fact hit uses.
+A fused number written there would fail all three with no error and no
+failing test.
+
+**The floor is applied before the fusion, and that ordering is
+load-bearing.** The lexical pass matches on `OR`, so on any ordinary
+sentence *something* in the corpus shares a word with it — "has a lexical
+match" is not evidence, only a high lexical rank is. If the floor were
+waived for lexically ranked sections, «stasera ceniamo da mia sorella»
+(best cosine 0.427, floor 0.55, digs nothing today) would start dragging
+in documentation because one page contains "sorella". So the floor keeps
+deciding **whether** to dig, exactly as measured below, and the fusion
+decides only **what surfaces** among the sections that already cleared
+it. A turn that *names* its project comes through
+`recall_named_project_docs` with floor 0, which is why the founder's
+`D-006` case is answered by the pass that can read it literally.
+
 ## The orchestrators
 
 | API | Scoring | ACL filter | Bumps recall counter? | Surface |
 |---|---|---|---|---|
 | `wiki_search` | cosine over embedding | post-fetch via [`acl::can_read`] | ✓ on returned ids (`wiki_search_unrecorded` is the bump-free sibling for measurement paths — the eval harness) | top-K vector search over the **fact** corpus |
-| `search_sections` | cosine over embedding | **pre-fetch**, per wiki, from the `smart_wikis` registry | ✓ on returned `(source_path, section_ord)` positions | top-K vector search over the **section** corpus |
-| `search_all` | inherited from both | inherited from both | ✓ inherited | the merged view for `wiki_search` (MCP) + `wiki_navigate` |
+| `search_sections` | cosine **fused with `bm25`** by rank; `score` stays the cosine | **pre-fetch**, per wiki, from the `smart_wikis` registry | ✓ on returned `(source_path, section_ord)` positions | top-K over the **section** corpus |
+| `search_all` | inherited from both, then re-fused on the merged list | inherited from both | ✓ inherited | the merged view for `wiki_search` (MCP) + `wiki_navigate` |
 | `wiki_facts_for` | constant `1.0` | post-fetch | ✗ (audit/list view) | structured SQL query |
 | `wiki_recall` | delegates to `wiki_search` today | inherited | ✓ inherited | semantic recall the LLM ingest uses (stable call site) |
 | `wiki_multi_hop_facts` | seed-fact + per-hop `wiki_search` | inherited | ✓ inherited | early multi-hop link resolution; lives in [`recall.rs`](../../crates/mwe-core/src/recall.rs) and returns a `MultiHopOutcome`. Exported and tested, but the agentic chat and `wiki_ingest_message` do not call it yet, pending the cap-10-hop traversal protection that gates the consumer hookup (see [What is intentionally out of scope](#what-is-intentionally-out-of-scope)). |
@@ -603,7 +686,8 @@ Tests cover:
 Both orchestrators scan every candidate with a flat O(N) cosine loop:
 each query reads the candidate rows **with their vectors** and scores
 them in memory. There is no ANN index; a `sqlite-vec` integration is not
-built today.
+built today. (The lexical pass is *not* part of this cost — `bm25` over
+FTS5 is an index lookup, and it returns identities rather than rows.)
 
 The cost is therefore linear in the candidate count, and the candidate
 count is what the corpus split above controls. Measured on a production
@@ -631,11 +715,24 @@ table is the larger and the more regenerable of the two.
   topics_any with `json_each`).
 - `wiki_search`: 4 (top-K by cosine / ACL drop / recall-counter bump
   / top-K=0 returns empty).
-- `search_sections`: 3 (cosine ranking + telemetry bump / wiki-level ACL
+- `search_sections`: 5 (cosine ranking + telemetry bump / wiki-level ACL
   across owner, group grantee and stranger / a revoke closes the read
-  window with one row write).
-- `search_all`: 2 (both corpora merge into one ranking while
-  `wiki_search` stays facts-only / `top_k` honoured across the merge).
+  window with one row write / an exact term outranks a better cosine
+  while `score` stays the cosine / a query with no lexical match leaves
+  the cosine order untouched).
+- Lexical pass, in [`sections`](../../crates/mwe-core/src/sections.rs): 5
+  (query building — identifiers stay adjacent, operator words are quoted
+  not obeyed, repeats and punctuation collapse, a `"` cannot reach the
+  expression, term cap / identifier ranking + wiki ACL + the three empty
+  short-circuits / a section *titled* with an identifier beats a shorter
+  one *citing* it, which fails without the heading column / the index
+  tracks in-place edits and page deletions through its triggers).
+- `search_all`: 3 (both corpora merge into one ranking while
+  `wiki_search` stays facts-only / `top_k` honoured across the merge /
+  the fused order survives the merge with a perfect-cosine fact present).
+- `recall_named_project_docs` + `rank_project_sections`, fusion: 2 (naming
+  the project puts its identifier in the single slot / a lexical match
+  does **not** lift a section over the signpost floor).
 - `recall_project_docs`: 10 — the match rule (case/punctuation
   insensitive, hyphenated slug either spelling / a compound slug never
   fires on one of its words / a slug inside a longer word does not count

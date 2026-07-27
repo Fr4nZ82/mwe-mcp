@@ -659,12 +659,99 @@ async fn readable_smart_wikis(
         .collect())
 }
 
-/// Vector top-K over the **section** corpus — smart-wiki documentation.
+// ---------- rank fusion ----------
+
+/// How deep the lexical list is consulted.
 ///
-/// ACL is applied *before* the scan: only the readable wikis' sections
+/// Past this the reciprocal weight is already smaller than the gap
+/// between adjacent vector ranks, so a deeper list changes no order and
+/// only widens the query. Both corpora are over-fetched relative to the
+/// `top_k` any caller asks for.
+const LEXICAL_DEPTH: usize = 50;
+
+/// Reciprocal-rank-fusion constant. 60 is the value the original RRF
+/// paper measured and the one every implementation since has kept: large
+/// enough that rank 1 does not swamp rank 5, small enough that the tail
+/// stops mattering.
+const RRF_K: f32 = 60.0;
+
+/// Reorder a **cosine-sorted** list by fusing its own ranking with a
+/// lexical one — `score` is not touched.
+///
+/// ## Why fusion, and why it may not touch the score
+///
+/// The two rankings are not commensurable: a cosine is a distance in
+/// `[-1, 1]`, `bm25` is an unbounded corpus-relative weight, and no
+/// constant converts one into the other. Reciprocal rank fusion sidesteps
+/// that by discarding both magnitudes and keeping only *positions* —
+/// `Σ 1/(k + rank)` over the lists an item appears in. An item ranked
+/// well by both wins; an item ranked first by one and absent from the
+/// other still places high, which is the entire point (an identifier has
+/// no semantics to embed, a paraphrase shares no words).
+///
+/// What it must **not** do is write the fused number into
+/// [`SectionHit::score`]. That field is a cosine and three callers read
+/// it as one: [`DEFAULT_SIGNPOST_FLOOR`] is a cosine threshold applied to
+/// it, [`search_all`] merges the two corpora by comparing it against a
+/// *fact's* cosine, and `wiki_search` serializes it to the consumer in
+/// the same `score` field a fact hit uses. A fused number would fail all
+/// three silently — no error, no failing test, just a gate that never
+/// opens again and a ranking that compares two different units. So fusion
+/// changes the **order** and nothing else.
+///
+/// `items` must already be in cosine order: its index *is* the vector
+/// rank. Ties break on that original rank, so the result is deterministic
+/// and a lexically-unknown list comes back untouched.
+fn fuse_by_lexical_rank<T, F>(items: &mut Vec<T>, lexical: &[(String, i64)], handle: F)
+where
+    F: Fn(&T) -> String,
+{
+    if lexical.is_empty() {
+        return;
+    }
+    let lex_rank: std::collections::HashMap<String, usize> = lexical
+        .iter()
+        .enumerate()
+        .map(|(rank, (source_path, ord))| (format!("{source_path}#{ord}"), rank))
+        .collect();
+    let mut keyed: Vec<(f32, usize, T)> = std::mem::take(items)
+        .into_iter()
+        .enumerate()
+        .map(|(vec_rank, item)| {
+            let mut rrf = reciprocal(vec_rank);
+            if let Some(&lex) = lex_rank.get(&handle(&item)) {
+                rrf += reciprocal(lex);
+            }
+            (rrf, vec_rank, item)
+        })
+        .collect();
+    keyed.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    items.extend(keyed.into_iter().map(|(_, _, item)| item));
+}
+
+/// One list's contribution to an item's fused score: `1 / (k + rank)`.
+fn reciprocal(rank: usize) -> f32 {
+    #[allow(clippy::cast_precision_loss)] // ranks are bounded by LEXICAL_DEPTH / top_k
+    let rank = rank as f32;
+    1.0 / (RRF_K + rank)
+}
+
+/// Top-K over the **section** corpus — smart-wiki documentation — ranked
+/// by vector similarity fused with exact-term search.
+///
+/// ACL is applied *before* both scans: only the readable wikis' sections
 /// are loaded, so an unreadable wiki's bytes never leave the DB. (The
 /// per-row predecessor had to read every row before it could discard
 /// any.)
+///
+/// Both passes always run. A gate that decided per query whether the
+/// lexical pass is "needed" would spend a judgement to guard a
+/// sub-millisecond index lookup, and would drop the hit silently whenever
+/// it answered wrongly; the ranking decides instead of a switch.
 ///
 /// # Errors
 ///
@@ -701,6 +788,8 @@ pub async fn search_sections(
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Less)
     });
+    let lexical = sections::search_lexical(pool, &readable, query, LEXICAL_DEPTH).await?;
+    fuse_by_lexical_rank(&mut scored, &lexical, SectionHit::handle);
     scored.truncate(top_k);
 
     let bumps: Vec<(String, i64)> = scored
@@ -712,6 +801,7 @@ pub async fn search_sections(
     tracing::info!(
         sender_id = sender.sender_id,
         readable_wikis = readable.len(),
+        lexical_hits = lexical.len(),
         hits = scored.len(),
         top_k,
         "recall: search_sections done"
@@ -935,6 +1025,24 @@ impl SlotBudget {
 /// that overruns, and the index-time section cap
 /// ([`crate::document::SECTION_MAX_CHARS`]) is what keeps that first hit
 /// from starving the others.
+///
+/// ## The floor is applied before the fusion, on purpose
+///
+/// Order here decides whether the signpost path can regress. The lexical
+/// pass matches on `OR`, so on an ordinary sentence *something* in the
+/// corpus shares a word with it — "has a lexical match" is not evidence,
+/// only a high lexical rank is. Were the floor waived for lexically
+/// ranked sections, a turn like «stasera ceniamo da mia sorella» (best
+/// cosine 0.427, floor 0.55, digs nothing today) would start dragging in
+/// documentation because one page happens to contain "sorella". So the
+/// floor keeps deciding **whether** to dig, exactly as measured, and the
+/// fusion only decides **what surfaces** among the sections that already
+/// cleared it.
+///
+/// Which is also why the founder's case works: a turn that *names* the
+/// project comes through [`recall_named_project_docs`] with `floor = 0.0`,
+/// so an identifier the embedding cannot represent — `D-006` — is ranked
+/// by the pass that can read it literally.
 async fn rank_project_sections(
     pool: &SqlitePool,
     embedder: &Arc<dyn Embedder>,
@@ -963,6 +1071,8 @@ async fn rank_project_sections(
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Less)
     });
+    let lexical = sections::search_lexical(pool, wikis, message, LEXICAL_DEPTH).await?;
+    fuse_by_lexical_rank(&mut scored, &lexical, SectionHit::handle);
 
     let mut kept: Vec<SectionHit> = Vec::with_capacity(top_k);
     let mut spent = 0_usize;
@@ -1082,12 +1192,25 @@ pub async fn recall_signposted_project_docs(
     Ok(kept)
 }
 
-/// Vector top-K over **both** corpora, merged into one ranking.
+/// Top-K over **both** corpora, merged into one ranking.
 ///
 /// For the consumer surfaces whose contract is "search everything I can
 /// see". Each corpus is over-fetched to `top_k` and the union is
 /// re-ranked, so the merge cannot lose a hit that would have made the
 /// combined top-K.
+///
+/// The merge sorts by cosine, which would undo the order
+/// [`search_sections`] fused — so the fusion is re-applied to the *merged*
+/// list, where a fact simply never carries a lexical rank. It has to be
+/// this way round rather than merging two already-fused lists: fusing
+/// per-corpus and then interleaving would pit rank 1 of the facts against
+/// rank 1 of the sections with nothing to separate them, and this surface
+/// is precisely where a user types an identifier and expects the page
+/// that defines it.
+///
+/// Only sections have a lexical index. Facts are short authored claims
+/// with per-fragment ACLs, so the same treatment there is a different
+/// piece of work, not a wider `IN` clause.
 ///
 /// # Errors
 ///
@@ -1113,6 +1236,9 @@ pub async fn search_all(
             .partial_cmp(&a.score())
             .unwrap_or(std::cmp::Ordering::Less)
     });
+    let readable = readable_smart_wikis(pool, sender).await?;
+    let lexical = sections::search_lexical(pool, &readable, query, LEXICAL_DEPTH).await?;
+    fuse_by_lexical_rank(&mut merged, &lexical, SearchHit::handle);
     merged.truncate(top_k);
     Ok(merged)
 }
@@ -2248,6 +2374,173 @@ mod tests {
             .await
             .unwrap();
         assert!(rows.iter().all(|r| r.recall_count_30d == 1));
+    }
+
+    // -- rank fusion: the identifier the embedding cannot represent --
+
+    /// Seed one wiki with a section the query matches **semantically** and
+    /// one it matches **literally**, arranged so the two disagree: the
+    /// decoy wins on cosine (it is the query vector), the identifier
+    /// section scores zero against it.
+    async fn seed_disagreeing_corpus(pool: &SqlitePool) {
+        seed_smart_wiki(pool, "alice-proj", "user:alice", Vec::new()).await;
+        seed_section(
+            pool,
+            "alice-proj",
+            0,
+            "the retry policy, discussed at length",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        seed_section(
+            pool,
+            "alice-proj",
+            1,
+            "D-006. Retry with backoff, then dead-letter.",
+            vec![0.0, 1.0, 0.0, 0.0],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn search_sections_lifts_an_exact_term_over_a_better_cosine() {
+        let pool = make_pool().await;
+        seed_disagreeing_corpus(&pool).await;
+        let sender = SenderContext::user("alice");
+
+        let hits = search_sections(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "D-006",
+            10,
+            &sender,
+        )
+        .await
+        .expect("search");
+
+        assert_eq!(hits.len(), 2);
+        assert!(
+            hits[0].text.starts_with("D-006"),
+            "the section that carries the identifier must lead, got {:?}",
+            hits[0].text
+        );
+        // The order changed; the score did not. It is still the cosine,
+        // which is what DEFAULT_SIGNPOST_FLOOR and the REM cycle read.
+        assert!(
+            (hits[0].score - 0.0).abs() < 1e-6,
+            "score must stay a cosine, got {}",
+            hits[0].score
+        );
+        assert!((hits[1].score - 1.0).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn a_query_with_no_lexical_match_leaves_the_cosine_order_alone() {
+        let pool = make_pool().await;
+        seed_disagreeing_corpus(&pool).await;
+        let sender = SenderContext::user("alice");
+
+        let hits = search_sections(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "quantum barnacles",
+            10,
+            &sender,
+        )
+        .await
+        .expect("search");
+        assert_eq!(hits.len(), 2);
+        assert!(hits[0].text.starts_with("the retry policy"));
+        assert!(hits[0].score > hits[1].score);
+    }
+
+    #[tokio::test]
+    async fn naming_the_project_ranks_its_identifier_first() {
+        // The founder's case end to end: «cosa abbiamo deciso in D-006 di
+        // proj» names the project, so the docs are pulled with floor 0,
+        // and the fusion decides what surfaces.
+        let pool = make_pool().await;
+        seed_disagreeing_corpus(&pool).await;
+        let sender = SenderContext::user("alice");
+
+        let hits = recall_named_project_docs(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "cosa abbiamo deciso in D-006 di proj?",
+            SlotBudget::new(1, 4_000),
+            &sender,
+        )
+        .await
+        .expect("named docs");
+
+        assert_eq!(hits.len(), 1, "the slot holds one section");
+        assert!(
+            hits[0].text.starts_with("D-006"),
+            "got {:?} — the single slot went to the decoy",
+            hits[0].text
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lexical_match_does_not_lift_a_section_over_the_signpost_floor() {
+        // The floor decides *whether* to dig and runs first; the fusion
+        // decides only what surfaces among what already cleared it.
+        // Otherwise an unrelated turn would start dragging in docs
+        // because one page happens to share a word with it.
+        let pool = make_pool().await;
+        seed_disagreeing_corpus(&pool).await;
+        let wikis = vec!["alice-proj".to_owned()];
+
+        let kept = rank_project_sections(
+            &pool,
+            &embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "D-006",
+            &wikis,
+            SlotBudget::new(10, 4_000),
+            DEFAULT_SIGNPOST_FLOOR,
+        )
+        .await
+        .expect("ranked");
+
+        assert_eq!(kept.len(), 1, "only the section above the floor survives");
+        assert!(kept[0].text.starts_with("the retry policy"));
+    }
+
+    #[tokio::test]
+    async fn search_all_keeps_the_fused_order_across_both_corpora() {
+        let pool = make_pool().await;
+        seed_disagreeing_corpus(&pool).await;
+        // A fact that is a perfect cosine match — without re-fusing after
+        // the merge it would sit on top of the section the query names.
+        let mut rows = Vec::new();
+        insert_row(
+            &mut rows,
+            "019f0000-0000-7000-8000-000000000001",
+            "alice-notes",
+            "user:alice",
+            "a perfectly on-topic fact",
+            vec![1.0, 0.0, 0.0, 0.0],
+        );
+        populate(&pool, rows).await;
+        let sender = SenderContext::user("alice");
+
+        let hits = search_all(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "D-006",
+            10,
+            fact_index::FactFilters::default(),
+            &sender,
+        )
+        .await
+        .expect("search all");
+
+        assert!(
+            hits[0].text().starts_with("D-006"),
+            "got {:?}",
+            hits[0].text()
+        );
+        assert!(matches!(hits[0], SearchHit::Section(_)));
     }
 
     #[tokio::test]

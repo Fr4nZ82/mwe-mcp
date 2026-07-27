@@ -360,6 +360,139 @@ pub async fn find_candidates_in_wikis(
     raw.into_iter().map(decode_section).collect()
 }
 
+// ---------- Lexical (exact-term) search ----------
+
+/// How many query words reach the index. A turn is a sentence, not a
+/// document; past this the tail is noise that only widens the `OR`.
+const LEXICAL_MAX_TERMS: usize = 32;
+
+/// How much a term in a section's **heading** outweighs the same term in
+/// its body, in the `bm25` ranking.
+///
+/// The heading chain is already part of the indexed `text`, so indexing
+/// `heading_path` as its own column counts a heading term twice. That
+/// alone is what separates the section that *is* `D-006` from the one
+/// that *mentions* it — measured on the production corpus, one column got
+/// 4 of 7 decision identifiers right, two columns got 7 of 7. This weight
+/// then decides ranks 2 and 3, where it promotes the sibling pieces of
+/// the same decision over unrelated sections citing it; 10.0 and 25.0
+/// behave identically, so it sits on a plateau rather than on a tuned
+/// edge. Prose queries do not move. Full measurement in
+/// `migrations/0065_wiki_sections_fts.sql`.
+const LEXICAL_HEADING_WEIGHT: f64 = 4.0;
+
+/// Turn a raw query into an FTS5 `MATCH` expression — `None` when nothing
+/// searchable survives (punctuation, emoji, empty string).
+///
+/// Three properties, each load-bearing:
+///
+/// **Every term is a quoted phrase.** FTS5's `MATCH` argument is a small
+/// query language: bare `AND`/`OR`/`NOT`/`NEAR` are operators, `*` is a
+/// prefix, `(`/`)` group, and a stray `"` is a syntax error that fails the
+/// whole statement. Quoting each term makes a user typing "`memory OR
+/// nothing`" search for the *words*, and makes a malformed expression
+/// unconstructible rather than merely unlikely.
+///
+/// **A word that tokenizes to several tokens becomes a phrase, not
+/// several terms.** This is what makes identifiers work. `D-006` splits —
+/// under `unicode61`, both here and inside the index — into `d` and `006`,
+/// so the phrase `"d 006"` matches only text where those tokens are
+/// *adjacent*: the identifier, and not every document containing a stray
+/// `d`. Emitting them as two independent terms would match half the
+/// corpus.
+///
+/// **Terms are joined by `OR`, never `AND`.** The result is a *ranking*
+/// input, not a filter: a prose turn shares few words with the page that
+/// answers it, and `AND` would return nothing. `bm25` already discounts
+/// words that appear everywhere, and only the head of the list is
+/// consulted, so the loose match costs precision nowhere.
+///
+/// The split matches `unicode61`'s own rule — a token is a run of Unicode
+/// letters and digits, everything else separates — so a term this builds
+/// can always be found by the index. Case and diacritics are folded by
+/// FTS5 itself, on the query as on the text.
+#[must_use]
+pub fn lexical_query(raw: &str) -> Option<String> {
+    let mut terms: Vec<String> = Vec::new();
+    for word in raw.split_whitespace() {
+        let tokens: Vec<&str> = word
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|t| !t.is_empty())
+            .collect();
+        if tokens.is_empty() {
+            continue;
+        }
+        // Tokens are alphanumeric by construction, so no token can carry
+        // the `"` that would close the phrase early.
+        let term = format!("\"{}\"", tokens.join(" ").to_lowercase());
+        if !terms.contains(&term) {
+            terms.push(term);
+        }
+        if terms.len() == LEXICAL_MAX_TERMS {
+            break;
+        }
+    }
+    (!terms.is_empty()).then(|| terms.join(" OR "))
+}
+
+/// Lexical top-`limit` over the sections of `wiki_ids`, best `bm25` first.
+///
+/// Returns identities only — `(source_path, section_ord)` — because the
+/// caller already holds the rows: this pass exists to say *which* sections
+/// contain the query's words, and the vector pass it is fused with has
+/// their text and their embeddings already.
+///
+/// ACL is the same wiki-level decision the vector pass makes, applied in
+/// the same place (before the scan): a wiki absent from `wiki_ids` cannot
+/// contribute a row.
+///
+/// The index stores no copy of the text (`content='wiki_sections'`), so
+/// the join is on `rowid` and the bytes are read once, from the one place
+/// they live.
+///
+/// # Errors
+///
+/// `sqlx::Error`.
+pub async fn search_lexical(
+    pool: &SqlitePool,
+    wiki_ids: &[String],
+    query: &str,
+    limit: usize,
+) -> Result<Vec<(String, i64)>> {
+    if wiki_ids.is_empty() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let Some(match_expr) = lexical_query(query) else {
+        return Ok(Vec::new());
+    };
+    let placeholders = std::iter::repeat_n("?", wiki_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    // The index is unaliased on purpose: `MATCH` and `bm25()` both need
+    // the FTS table by its real name, and an alias makes SQLite reject
+    // them ("no such column: f").
+    //
+    // `bm25()` is *negative* — a better match is a smaller number — so
+    // plain ascending order is best-first. The weights say a section
+    // headed `D-006` beats one that merely cites it; see the migration
+    // for what that was measured against.
+    let sql = format!(
+        r"SELECT s.source_path, s.section_ord
+            FROM wiki_sections_fts
+            JOIN wiki_sections s ON s.rowid = wiki_sections_fts.rowid
+           WHERE wiki_sections_fts MATCH ?
+             AND s.wiki_id IN ({placeholders})
+           ORDER BY bm25(wiki_sections_fts, {LEXICAL_HEADING_WEIGHT:.1}, 1.0)
+           LIMIT ?"
+    );
+    let mut q = sqlx::query_as::<_, (String, i64)>(&sql).bind(match_expr);
+    for id in wiki_ids {
+        q = q.bind(id);
+    }
+    let q = q.bind(i64::try_from(limit).unwrap_or(i64::MAX));
+    Ok(q.fetch_all(pool).await?)
+}
+
 // ---------- Browser view (no embeddings) ----------
 
 /// One section as the operator's browser sees it — **without** its
@@ -999,6 +1132,204 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    // ---------- lexical search ----------
+
+    #[test]
+    fn lexical_query_quotes_every_term_and_keeps_identifiers_adjacent() {
+        // A hyphenated identifier becomes ONE phrase: the two tokens must
+        // be adjacent in the text, which is what distinguishes `D-006`
+        // from a document containing a stray `d`.
+        assert_eq!(lexical_query("D-006").as_deref(), Some(r#""d 006""#));
+        // Operator words are quoted, so they are searched, not obeyed.
+        assert_eq!(
+            lexical_query("memory OR nothing").as_deref(),
+            Some(r#""memory" OR "or" OR "nothing""#)
+        );
+        // Repeats collapse; punctuation and case fall away.
+        assert_eq!(
+            lexical_query("Deploy, deploy!").as_deref(),
+            Some(r#""deploy""#)
+        );
+        // A `"` cannot reach the expression: it is a separator, not a token.
+        assert_eq!(
+            lexical_query(r#"say "hi""#).as_deref(),
+            Some(r#""say" OR "hi""#)
+        );
+        // Nothing searchable survives.
+        assert_eq!(lexical_query("   ?! —  "), None);
+        assert_eq!(lexical_query(""), None);
+    }
+
+    #[test]
+    fn lexical_query_caps_the_term_count() {
+        let long = (0..100)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let q = lexical_query(&long).expect("some");
+        assert_eq!(q.matches(" OR ").count(), LEXICAL_MAX_TERMS - 1);
+    }
+
+    #[tokio::test]
+    async fn search_lexical_finds_the_identifier_and_respects_the_wiki_acl() {
+        let pool = pool().await;
+        let page = "wikis/alice/proj/decisions.md";
+        let other = "wikis/bob/proj/adr.md";
+        replace_page_sections(
+            &pool,
+            page,
+            &[
+                NewSection {
+                    text: "Decisions > D-001. We chose the queue. Superseded in part by D-006."
+                        .to_owned(),
+                    ..section(page, 0, "")
+                },
+                NewSection {
+                    text: "Decisions > D-006. Retry with backoff, then dead-letter.".to_owned(),
+                    ..section(page, 1, "")
+                },
+                NewSection {
+                    text: "Changelog. Fixed a d bug in the renderer.".to_owned(),
+                    ..section(page, 2, "")
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        replace_page_sections(
+            &pool,
+            other,
+            &[NewSection {
+                wiki_id: "bob-proj".to_owned(),
+                text: "ADR-006 cross-references D-006 of the other project.".to_owned(),
+                ..section(other, 0, "")
+            }],
+        )
+        .await
+        .unwrap();
+
+        let readable = vec!["alice-proj".to_owned()];
+        let hits = search_lexical(&pool, &readable, "D-006", 10).await.unwrap();
+        // The section that *is* D-006 leads; the one that merely cites it
+        // follows; the "a d bug" section is absent, because the phrase
+        // needs the two tokens adjacent; Bob's wiki never enters.
+        assert_eq!(
+            hits,
+            vec![(page.to_owned(), 1), (page.to_owned(), 0)],
+            "lexical order"
+        );
+
+        // No readable wiki, no limit, no searchable term: all empty, and
+        // none of them touches the index.
+        assert!(
+            search_lexical(&pool, &[], "D-006", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            search_lexical(&pool, &readable, "D-006", 0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            search_lexical(&pool, &readable, "?!", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_section_titled_with_an_identifier_beats_a_shorter_one_citing_it() {
+        // The failure this index was rebuilt to fix, reduced to two rows.
+        // Plain bm25 rewards the short block that *mentions* `D-006` over
+        // the long one that is *titled* with it — on the production
+        // corpus that lost 3 of 7 decision identifiers. Indexing the
+        // heading chain as its own weighted column is what separates
+        // "this section is D-006" from "this section refers to D-006".
+        let pool = pool().await;
+        let page = "wikis/alice/proj/decisions.md";
+        let cites = "Decision log > D-001 — queue. Superseded in part by D-006.";
+        let titled = format!(
+            "Decision log > D-006 — a picture on screen is a preview. {}",
+            "The renderer never writes the file it shows. ".repeat(12)
+        );
+        replace_page_sections(
+            &pool,
+            page,
+            &[
+                NewSection {
+                    heading_path: Some("Decision log > D-001 — queue".to_owned()),
+                    text: cites.to_owned(),
+                    ..section(page, 0, "")
+                },
+                NewSection {
+                    heading_path: Some(
+                        "Decision log > D-006 — a picture on screen is a preview".to_owned(),
+                    ),
+                    text: titled,
+                    ..section(page, 1, "")
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let hits = search_lexical(&pool, &["alice-proj".to_owned()], "D-006", 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            hits.first(),
+            Some(&(page.to_owned(), 1)),
+            "the section headed D-006 must lead the one that cites it"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_lexical_index_tracks_edits_and_deletions() {
+        let pool = pool().await;
+        let page = "wikis/alice/proj/notes.md";
+        let readable = vec!["alice-proj".to_owned()];
+        replace_page_sections(&pool, page, &[section(page, 0, "the pineapple protocol")])
+            .await
+            .unwrap();
+        assert_eq!(
+            search_lexical(&pool, &readable, "pineapple", 10)
+                .await
+                .unwrap(),
+            vec![(page.to_owned(), 0)]
+        );
+
+        // An in-place edit keeps the row's identity — the UPDATE trigger,
+        // not a delete/insert pair, is what has to re-index it.
+        replace_page_sections(&pool, page, &[section(page, 0, "the rhubarb protocol")])
+            .await
+            .unwrap();
+        assert!(
+            search_lexical(&pool, &readable, "pineapple", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            search_lexical(&pool, &readable, "rhubarb", 10)
+                .await
+                .unwrap(),
+            vec![(page.to_owned(), 0)]
+        );
+
+        // And a dropped page leaves nothing behind to be found.
+        drop_page_sections(&pool, page).await.unwrap();
+        assert!(
+            search_lexical(&pool, &readable, "rhubarb", 10)
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 }
