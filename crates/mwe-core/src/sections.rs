@@ -413,6 +413,38 @@ const LEXICAL_HEADING_WEIGHT: f64 = 4.0;
 /// FTS5 itself, on the query as on the text.
 #[must_use]
 pub fn lexical_query(raw: &str) -> Option<String> {
+    let terms = lexical_terms(raw);
+    (!terms.is_empty()).then(|| terms.join(" OR "))
+}
+
+/// The same terms, but **all of them**, and only against the heading
+/// column: the expression that asks "is this section *titled* with the
+/// query?".
+///
+/// This is the definition/citation distinction, and it is why the 4x
+/// heading weight was not enough on its own. `D-001` cites `D-006` in its
+/// body, so it is in the lexical list too — two positions behind the
+/// section actually titled `D-006`, which rank fusion cannot recover from
+/// when the citing section leads the *vector* list. Verified
+/// arithmetically before writing any code: neither a smaller `RRF_K` nor a
+/// heavier lexical term flips it, because both are monotone in a rank gap
+/// of two. A tier does.
+///
+/// `AND`, deliberately, where [`lexical_query`] uses `OR`. A heading that
+/// contains *every* term of the query is the query's subject; a heading
+/// that shares one word with a prose sentence is a coincidence, and
+/// promoting on it would make this tier fire on every ordinary turn. A
+/// long prose query therefore matches no heading at all — the tier goes
+/// quiet exactly where it has nothing to say.
+#[must_use]
+pub fn lexical_heading_query(raw: &str) -> Option<String> {
+    let terms = lexical_terms(raw);
+    (!terms.is_empty()).then(|| format!("{{heading_path}} : ({})", terms.join(" AND ")))
+}
+
+/// Shared term extraction for both query builders — see [`lexical_query`]
+/// for the tokenization rules this implements.
+fn lexical_terms(raw: &str) -> Vec<String> {
     let mut terms: Vec<String> = Vec::new();
     for word in raw.split_whitespace() {
         let tokens: Vec<&str> = word
@@ -432,7 +464,7 @@ pub fn lexical_query(raw: &str) -> Option<String> {
             break;
         }
     }
-    (!terms.is_empty()).then(|| terms.join(" OR "))
+    terms
 }
 
 /// Lexical top-`limit` over the sections of `wiki_ids`, best `bm25` first.
@@ -459,10 +491,39 @@ pub async fn search_lexical(
     query: &str,
     limit: usize,
 ) -> Result<Vec<(String, i64)>> {
+    search_lexical_with(pool, wiki_ids, lexical_query(query), limit).await
+}
+
+/// The sections whose **heading** carries every term of the query —
+/// the ones the query *names* rather than mentions.
+///
+/// Same index, same ACL, same shape as [`search_lexical`]; only the
+/// `MATCH` expression differs ([`lexical_heading_query`]). Empty on any
+/// query whose terms are not all in one heading, which is the normal case
+/// for prose.
+///
+/// # Errors
+///
+/// `sqlx::Error`.
+pub async fn search_lexical_headings(
+    pool: &SqlitePool,
+    wiki_ids: &[String],
+    query: &str,
+    limit: usize,
+) -> Result<Vec<(String, i64)>> {
+    search_lexical_with(pool, wiki_ids, lexical_heading_query(query), limit).await
+}
+
+async fn search_lexical_with(
+    pool: &SqlitePool,
+    wiki_ids: &[String],
+    match_expr: Option<String>,
+    limit: usize,
+) -> Result<Vec<(String, i64)>> {
     if wiki_ids.is_empty() || limit == 0 {
         return Ok(Vec::new());
     }
-    let Some(match_expr) = lexical_query(query) else {
+    let Some(match_expr) = match_expr else {
         return Ok(Vec::new());
     };
     let placeholders = std::iter::repeat_n("?", wiki_ids.len())
@@ -1161,6 +1222,22 @@ mod tests {
         // Nothing searchable survives.
         assert_eq!(lexical_query("   ?! —  "), None);
         assert_eq!(lexical_query(""), None);
+    }
+
+    #[test]
+    fn lexical_heading_query_demands_every_term_in_the_heading() {
+        // One term: the identifier case, and the whole point of the tier.
+        assert_eq!(
+            lexical_heading_query("D-006").as_deref(),
+            Some(r#"{heading_path} : ("d 006")"#)
+        );
+        // Several terms are ANDed — a heading that shares *one* word with
+        // a prose sentence is a coincidence, not a definition.
+        assert_eq!(
+            lexical_heading_query("retry policy").as_deref(),
+            Some(r#"{heading_path} : ("retry" AND "policy")"#)
+        );
+        assert_eq!(lexical_heading_query("  ?!  "), None);
     }
 
     #[test]

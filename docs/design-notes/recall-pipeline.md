@@ -184,12 +184,14 @@ embedder involved.
   counts a heading term twice — which is exactly the difference between
   the section that *is* `D-006` and one that *cites* it, and nothing else
   in the row expresses it. Measured on the telaiojs decision log
-  (D-001…D-007, each split across 2–4 sections by the chunk cap): one
-  column ranked the defining section first for **4 of 7** identifiers,
-  two columns for **7 of 7**. The 4.0 weight then buys ranks 2 and 3,
-  where it promotes the sibling pieces of the same decision over
-  unrelated citations; 10.0 and 25.0 behave identically, so the value
-  sits on a plateau. Prose queries do not move.
+  (D-001…D-007, each split across 2–4 sections by the chunk cap): **in
+  the lexical pass alone**, one column ranked the defining section first
+  for **4 of 7** identifiers, two columns for **7 of 7**. The 4.0 weight
+  then buys ranks 2 and 3, where it promotes the sibling pieces of the
+  same decision over unrelated citations; 10.0 and 25.0 behave
+  identically, so the value sits on a plateau. Prose queries do not move.
+  *That result is about this pass, not about what a consumer receives* —
+  see the definition tier below for what the fusion then does with it.
 
 **Both passes always run.** A gate deciding per query whether the lexical
 pass is "needed" would spend an LLM judgement to guard a sub-millisecond
@@ -209,6 +211,25 @@ corpora by comparing it against a *fact's* cosine, and `wiki_search`
 serializes it to the consumer in the same `score` field a fact hit uses.
 A fused number written there would fail all three with no error and no
 failing test.
+
+**A definition outranks a citation — as a tier, not a weight.** Rank
+fusion alone cannot separate the section *titled* `D-006` from one that
+merely *quotes* the string, because the quoting section is in **both**
+lists. Measured on the production corpus right after the fusion shipped:
+`D-001` cites `D-006`, led the vector list, and sat two places behind in
+the lexical one — `1/60 + 1/62` against the definition's `1/78 + 1/60`,
+so the citation stayed first and the defining sections came back at #2
+and #3. Checked before writing any code: neither a smaller `RRF_K` nor a
+heavier lexical term flips that, because both are monotone in a rank gap
+of two. So [`sections::search_lexical_headings`] asks the index a second,
+sharper question — which sections carry **every** term of the query in
+`heading_path` — and those get a bonus larger than any achievable RRF sum
+(`DEFINITION_TIER`). `AND` here, where the ranking pass uses `OR`: a
+heading holding every term is the query's subject, a heading sharing one
+word with a prose sentence is a coincidence. On a prose query the set
+comes back empty and the tier is inert — verified on the live corpus, where
+the identifier query returns exactly the two defining sections and a
+five-word prose query returns none.
 
 **The floor is applied before the fusion, and that ordering is
 load-bearing.** The lexical pass matches on `OR`, so on any ordinary

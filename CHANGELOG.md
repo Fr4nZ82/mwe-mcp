@@ -9,6 +9,26 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## 1.5.6 — 2026-07-27
+
+### Fixed
+
+- **A section *titled* with the query now outranks one that merely cites
+  it.** 1.5.4 claimed identifiers rank their defining section first; the
+  live check found otherwise, and the claim is corrected here in both
+  senses. What was true: the lexical pass ranks the definition first
+  (7 of 7 on the reference store). What was not: the *fusion* then put a
+  citing section back on top, because a section quoting `D-006` is in
+  **both** lists — leading on cosine and two places behind lexically,
+  which reciprocal rank fusion cannot recover from at any `RRF_K` or
+  lexical weight (both are monotone in a rank gap of two). The fix is a
+  **tier, not a knob**: a second, sharper index question — which sections
+  carry *every* query term in their heading — and those outrank every
+  citation. It uses `AND` where the ranking pass uses `OR`, so a prose
+  query matches no heading and the tier goes quiet; verified on the live
+  corpus, where the identifier query promotes exactly the two defining
+  sections and a five-word prose query promotes none.
+
 ## 1.5.5 — 2026-07-27
 
 ### Added

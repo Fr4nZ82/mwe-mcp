@@ -675,6 +675,35 @@ const LEXICAL_DEPTH: usize = 50;
 /// stops mattering.
 const RRF_K: f32 = 60.0;
 
+/// The bonus a section gets for being *titled* with the query rather than
+/// merely containing it. Any value above `2/RRF_K` (the largest sum two
+/// rank-0 placements can produce) makes the tier absolute; `1.0` is that
+/// with room to read.
+const DEFINITION_TIER: f32 = 1.0;
+
+/// Both lexical signals for one query, in one place: the ranked list every
+/// section entry point fuses with, and the set of sections the query
+/// *names* (see [`fuse_by_lexical_rank`]). Two index lookups, no
+/// embeddings, sub-millisecond on the reference store.
+///
+/// # Errors
+///
+/// Bubbles the section-index reads.
+async fn lexical_signals(
+    pool: &SqlitePool,
+    wikis: &[String],
+    query: &str,
+) -> RecallResult<(Vec<(String, i64)>, HashSet<String>)> {
+    let lexical = sections::search_lexical(pool, wikis, query, LEXICAL_DEPTH).await?;
+    let defining: HashSet<String> =
+        sections::search_lexical_headings(pool, wikis, query, LEXICAL_DEPTH)
+            .await?
+            .into_iter()
+            .map(|(source_path, ord)| format!("{source_path}#{ord}"))
+            .collect();
+    Ok((lexical, defining))
+}
+
 /// Reorder a **cosine-sorted** list by fusing its own ranking with a
 /// lexical one — `score` is not touched.
 ///
@@ -699,14 +728,35 @@ const RRF_K: f32 = 60.0;
 /// opens again and a ranking that compares two different units. So fusion
 /// changes the **order** and nothing else.
 ///
+/// ## The definition tier
+///
+/// Rank fusion alone cannot separate a section *titled* `D-006` from one
+/// that merely *cites* `D-006` in its body, because the citing section is
+/// in **both** lists too. Measured on the production corpus after 1.5.4
+/// shipped: `D-001` (which quotes the string) held rank 0 by cosine and
+/// rank 2 lexically — `1/60 + 1/62` — against the defining section's
+/// `1/78 + 1/60`. Neither a smaller `RRF_K` nor a heavier lexical term
+/// flips that; both are monotone in a rank gap of two.
+///
+/// So `defining` — the sections whose *heading* carries every term of the
+/// query ([`sections::search_lexical_headings`]) — is a **tier**, not a
+/// weight: a bonus larger than any achievable RRF sum, so a definition
+/// outranks every citation and definitions keep their own fused order
+/// among themselves. On a prose query no heading carries all the terms,
+/// the set is empty, and this is inert.
+///
 /// `items` must already be in cosine order: its index *is* the vector
 /// rank. Ties break on that original rank, so the result is deterministic
 /// and a lexically-unknown list comes back untouched.
-fn fuse_by_lexical_rank<T, F>(items: &mut Vec<T>, lexical: &[(String, i64)], handle: F)
-where
+fn fuse_by_lexical_rank<T, F>(
+    items: &mut Vec<T>,
+    lexical: &[(String, i64)],
+    defining: &HashSet<String>,
+    handle: F,
+) where
     F: Fn(&T) -> String,
 {
-    if lexical.is_empty() {
+    if lexical.is_empty() && defining.is_empty() {
         return;
     }
     let lex_rank: std::collections::HashMap<String, usize> = lexical
@@ -718,9 +768,13 @@ where
         .into_iter()
         .enumerate()
         .map(|(vec_rank, item)| {
+            let key = handle(&item);
             let mut rrf = reciprocal(vec_rank);
-            if let Some(&lex) = lex_rank.get(&handle(&item)) {
+            if let Some(&lex) = lex_rank.get(&key) {
                 rrf += reciprocal(lex);
+            }
+            if defining.contains(&key) {
+                rrf += DEFINITION_TIER;
             }
             (rrf, vec_rank, item)
         })
@@ -788,8 +842,8 @@ pub async fn search_sections(
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Less)
     });
-    let lexical = sections::search_lexical(pool, &readable, query, LEXICAL_DEPTH).await?;
-    fuse_by_lexical_rank(&mut scored, &lexical, SectionHit::handle);
+    let (lexical, defining) = lexical_signals(pool, &readable, query).await?;
+    fuse_by_lexical_rank(&mut scored, &lexical, &defining, SectionHit::handle);
     scored.truncate(top_k);
 
     let bumps: Vec<(String, i64)> = scored
@@ -1071,8 +1125,8 @@ async fn rank_project_sections(
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Less)
     });
-    let lexical = sections::search_lexical(pool, wikis, message, LEXICAL_DEPTH).await?;
-    fuse_by_lexical_rank(&mut scored, &lexical, SectionHit::handle);
+    let (lexical, defining) = lexical_signals(pool, wikis, message).await?;
+    fuse_by_lexical_rank(&mut scored, &lexical, &defining, SectionHit::handle);
 
     let mut kept: Vec<SectionHit> = Vec::with_capacity(top_k);
     let mut spent = 0_usize;
@@ -1237,8 +1291,8 @@ pub async fn search_all(
             .unwrap_or(std::cmp::Ordering::Less)
     });
     let readable = readable_smart_wikis(pool, sender).await?;
-    let lexical = sections::search_lexical(pool, &readable, query, LEXICAL_DEPTH).await?;
-    fuse_by_lexical_rank(&mut merged, &lexical, SearchHit::handle);
+    let (lexical, defining) = lexical_signals(pool, &readable, query).await?;
+    fuse_by_lexical_rank(&mut merged, &lexical, &defining, SearchHit::handle);
     merged.truncate(top_k);
     Ok(merged)
 }
@@ -2312,6 +2366,44 @@ mod tests {
         .expect("register smart wiki");
     }
 
+    /// Like [`seed_section`], with a heading — the column that decides
+    /// whether a section *is* the query or merely mentions it.
+    async fn seed_section_with_heading(
+        pool: &SqlitePool,
+        wiki_id: &str,
+        ord: i64,
+        heading: &str,
+        text: &str,
+        embedding: Vec<f32>,
+    ) {
+        let source_path = format!("wikis/{wiki_id}/doc.md");
+        let mut desired: Vec<sections::NewSection> =
+            sections::find_page_sections(pool, &source_path)
+                .await
+                .expect("read")
+                .into_iter()
+                .map(|r| sections::NewSection {
+                    wiki_id: r.wiki_id,
+                    source_path: r.source_path,
+                    section_ord: r.section_ord,
+                    heading_path: r.heading_path,
+                    text: r.text,
+                    embedding: r.embedding,
+                })
+                .collect();
+        desired.push(sections::NewSection {
+            wiki_id: wiki_id.to_owned(),
+            source_path: source_path.clone(),
+            section_ord: ord,
+            heading_path: Some(heading.to_owned()),
+            text: text.to_owned(),
+            embedding,
+        });
+        sections::replace_page_sections(pool, &source_path, &desired)
+            .await
+            .expect("seed section");
+    }
+
     async fn seed_section(
         pool: &SqlitePool,
         wiki_id: &str,
@@ -2541,6 +2633,95 @@ mod tests {
             hits[0].text()
         );
         assert!(matches!(hits[0], SearchHit::Section(_)));
+    }
+
+    /// The shape that beat rank fusion on the production corpus after
+    /// 1.5.4 shipped: the section that *cites* the identifier leads the
+    /// vector list **and** is in the lexical list, two positions behind
+    /// the one that defines it. RRF cannot recover from that — the
+    /// definition tier can.
+    #[tokio::test]
+    async fn a_section_titled_with_the_query_outranks_one_that_cites_it() {
+        let pool = make_pool().await;
+        seed_smart_wiki(&pool, "alice-proj", "user:alice", Vec::new()).await;
+        seed_section_with_heading(
+            &pool,
+            "alice-proj",
+            0,
+            "Decision log > D-001 - adopt the item / content split",
+            "A picture is two things, not one (S-019, D-006): the preview and the original.",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        seed_section_with_heading(
+            &pool,
+            "alice-proj",
+            1,
+            "Decision log > D-006 - a picture on screen is a preview, not the file",
+            "Adopted whole, including the escape hatch.",
+            vec![0.0, 1.0, 0.0, 0.0],
+        )
+        .await;
+
+        let hits = search_sections(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "D-006",
+            10,
+            &SenderContext::user("alice"),
+        )
+        .await
+        .expect("search");
+
+        assert_eq!(hits.len(), 2);
+        assert!(
+            hits[0]
+                .heading_path
+                .as_deref()
+                .is_some_and(|h| h.contains("D-006")),
+            "the section titled with the identifier must lead, got {:?}",
+            hits[0].heading_path
+        );
+        // The tier reorders; it must not rewrite the cosine the signpost
+        // floor and the merge both read.
+        assert!(hits[0].score < hits[1].score);
+    }
+
+    #[tokio::test]
+    async fn the_definition_tier_is_inert_on_a_prose_query() {
+        let pool = make_pool().await;
+        seed_smart_wiki(&pool, "alice-proj", "user:alice", Vec::new()).await;
+        seed_section_with_heading(
+            &pool,
+            "alice-proj",
+            0,
+            "Pictures",
+            "the preview is what the page draws",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        seed_section_with_heading(
+            &pool,
+            "alice-proj",
+            1,
+            "Pictures > storage",
+            "the original lives on the server",
+            vec![0.0, 1.0, 0.0, 0.0],
+        )
+        .await;
+
+        // No heading carries *every* term, so nothing is promoted and the
+        // cosine order stands.
+        let hits = search_sections(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "how are pictures stored on the server",
+            10,
+            &SenderContext::user("alice"),
+        )
+        .await
+        .expect("search");
+        assert_eq!(hits[0].heading_path.as_deref(), Some("Pictures"));
     }
 
     #[tokio::test]
