@@ -438,28 +438,26 @@ sub-job roster and ordering is in
   sub-wiki".
 - It is **not silently autonomous** — REM emits a proposal, Alice
   approves (or lets the auto-apply path run, see Scenario 0's outcomes).
-- **3 natural stages**: paragraph (stage 1) → dedicated file (stage 2) →
-  sub-wiki (stage 3).
-- **Deterministic trigger** (words / KB) + **LLM decision** (semantic
-  cohesion).
+- **3 natural stages**: paragraph (stage 1) → dedicated page (stage 2) →
+  sub-wiki, once several such pages are one subject (stage 3).
+- **Deterministic pre-filter** (page mass for the split, group size for
+  the regrouping) + **LLM decision** (semantic cohesion).
 - Configurable cap (default 5 promotions/night).
 
-> **Scope note.** The page-level **cluster → sub-wiki** emergence drawn here
-> (aggregate the atomic facts on a page, detect topic clusters, promote a
-> cluster *whole* to its own sub-wiki via `file_to_subwiki`) is **deferred**:
-> the apply handler exists, the nightly candidate-detection does not. What
-> ships today is the narrower **`paragraph_to_file`** (one fact → its own
-> page), gated on a *single fact's* word count — a **pre-atomicity
-> heuristic** that atomic facts rarely trip, so it is largely vestigial.
-> The real emergence trigger is the **count / mass of atomic facts on a
-> topic**, never one fact's length — see the unit caveat in
-> rem-cycle.md and the
-> principle in [memory-model.md](../concepts/memory-model.md).
+> **Scope note.** The two rungs read **different** signals and fire in
+> sequence: mass on a page drives the **paragraph → page** split
+> (`paragraph_to_file`), and only once several pages of a wiki are
+> *already* one subject do they move together into a sub-wiki
+> (`pages_to_subwiki`, floor `auto_promote_group_min_pages`, default 9).
+> A sub-wiki is therefore never born holding a single page. Pages whose
+> subject already has a sub-wiki are filed into it instead
+> (`pages_move_wiki`, no floor). See the regrouping pass in
+> rem-cycle.md and the principle in
+> [memory-model.md](../concepts/memory-model.md).
 
 **What REM does NOT do**: it doesn't write new text (it preserves the
-existing `fact_id`s, only relocates them); it doesn't auto-apply without
-the user's approval window. (And, per the scope note above, it does not
-yet auto-emit the page-cluster → sub-wiki proposals this scenario draws.)
+existing `fact_id`s, only relocates them); it doesn't block on approval —
+a structural change is applied act-first and carries a 7-day undo.
 
 ---
 

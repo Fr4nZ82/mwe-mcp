@@ -810,6 +810,24 @@ untouched — the owner axis is the subject, not the interlocutor. The
 document path applies the same guard on its filing loop
 ([document-ingest.md](document-ingest.md)).
 
+A third normalization is the **agent-wiki guard on the target**. Owner
+and `target_wiki_id` are deliberately **independent** axes: the owner is
+the subject and the ACL, the wiki is conceptual organisation — so a
+`group:`-owned fact may legitimately live in a user's wiki and a
+`user:`-owned one in a group wiki (the classifier prompt says so
+explicitly, with worked examples), and the engine does not couple them.
+The one placement that is never legitimate is a `user:`/`group:`-owned
+fact filed in an **agent's** wiki: that wiki is the agent's
+autobiography, reached only through the `owner_id: "self"` and
+behaviour-rule paths, both of which pin the wiki in code and never pass
+through here. So when the resolved target carries `is_agent` (the flag
+rides `AvailableWiki` from the wiki's `_meta`) and the owner is a user
+or a group, `validate_capture_plan` **redirects** the write to the
+owner's own wiki when it is in the turn's window, and **drops** the
+extraction when it is not (`TargetIsAgentWiki` → skip + warn, rather
+than misfile). The guard fires on that one shape only; every other
+owner⊥wiki placement the classifier proposes is honoured.
+
 The subject-owner axiom has a **delivery half**: a fact that files
 owned by an enrolled user who is not the human of the conversation is
 news *to that user*, and the recipient must not have to stumble on it
@@ -994,7 +1012,14 @@ and **naming deixis** — a rule body is read back cold, so the user naming the
 AGENT ("ti chiamerò Hermes") is stored from the agent's side ("Il tuo nome per
 questo utente è Hermes."), never as the referent-inverting "Chiamami Hermes.",
 which the prompt reserves for the user asking to BE called something ("chiamami
-Franz").
+Franz"). Renaming further requires an **explicit naming predicate** ("ti chiami
+X", "il tuo nome è X", "chiamati X"): the agent's name used as an *address*
+inside an unrelated command ("Hermes, abbassa il volume") never renames it,
+however the address is spelled. The discriminator is the speech act, not
+spelling proximity — there is deliberately **no edit-distance guard**, so an
+explicit rename to a near-identical name still works, while a mangled vocative
+(speech recognition gluing the next word onto the name) cannot silently
+supersede the rule.
 
 The classifier also holds the **engine-vs-behaviour routing boundary** (roadmap
 29e), so privacy stays ACL-enforced and the consumer field stays behaviour-only:
@@ -1186,8 +1211,18 @@ wiki: Part 12's `owner_id: "self"` sentinel routes an extraction through
 `capture_agent_self_fact` into the calling agent's wiki, **owned by the agent**
 (`owner == sender == the agent` ⇒ no separate sender), auto-tagged with the
 served user — *except* a high-salience **identity** fact, which stays untagged so
-it is user-agnostic. So one INPS reply yields two facts: "the user's deadline is
-27/6" (`owner=user`, her wiki, surfaces on *her* recall) and "the agent helped
+it is user-agnostic. **The engine chooses the page too**
+([`agent_self_fact_page`](../../crates/mwe-core/src/ingest.rs)): an identity
+self-fact lands on the agent's `index.md`, where the REM consolidates the
+autobiography; a relationship self-fact lands on `esperienze_<served-user>.md`
+(through the same `normalize_capture_page` chokepoint). The classifier's own
+`target_page` is **ignored** for self-facts — the same "the engine knows the
+home" treatment the wiki axis already gets, and the reason the diary cannot
+collapse into one heterogeneous catch-all page: a per-person history is a
+coherent subject the REM can grow and split, a grab-bag of every user's episodes
+is not. The read side is page-agnostic (it buckets by the served-user tag), so
+the routing is a write-time concern only. So one INPS reply yields two facts:
+"the user's deadline is 27/6" (`owner=user`, her wiki, surfaces on *her* recall) and "the agent helped
 the user with the INPS filing" (`owner=self`, the agent's wiki, its own history)
 — the two sides of one event, mirroring how two people each remember a
 conversation from their own side. The read side closes the loop:
@@ -1195,7 +1230,11 @@ conversation from their own side. The read side closes the loop:
 (the agent's high-salience identity, always) + YOUR HISTORY WITH THIS USER (its
 facts tagged with the served sender, scoped — one user's relationship never
 surfaces in another's turn), as the first `assemble_recall_block` slot ahead of
-the recalled facts. (Behaviour rules ride the dedicated
+the recalled facts. The self-facts it surfaces are **counted like any other
+recall hit** (`fact_index::bump_recall_hits`, best-effort), so the agent's
+autobiography accrues real `recall_count_30d` / `last_recall_at` instead of
+reading as permanently cold to every recall-weighted REM pass. (Behaviour
+rules ride the dedicated
 [`rules` field](#the-rules-field--behaviour-directives-kept-apart-from-memory),
 never this block.) The agent thus answers conscious of
 itself and the relationship, not only

@@ -60,8 +60,8 @@ pub mod kind {
     pub const DEDUP_PAIR: &str = "dedup_pair";
     /// Auto-promote paragraph → page split (`rem-promotions`).
     pub const PAGE_SPLIT: &str = "page_split";
-    /// Auto-promote page → sub-wiki emergence (`rem-subwiki-emergence`).
-    pub const SUBWIKI_EMERGENCE: &str = "subwiki_emergence";
+    /// Auto-promote page-group → wiki regrouping (`rem-page-grouping`).
+    pub const PAGE_GROUPING: &str = "page_grouping";
     /// Page-merge confirm (`rem-merge`).
     pub const PAGE_MERGE: &str = "page_merge";
     /// Completion sweep confirm (`rem-completion`).

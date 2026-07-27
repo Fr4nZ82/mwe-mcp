@@ -321,7 +321,7 @@ inside the long-lived server.
 | `rem.schedule.light_initial_delay_secs` | int (seconds) | `60` (1 min) | Delay before the **first** light-dream run after startup. |
 | `rem.schedule.light_backlog_threshold` | int | `20` | Buffered-capture backlog that triggers a light-dream run **ahead of** `light_interval_secs` (the "timer + threshold" cadence — whichever fires first). `0` disables the early trigger, leaving the timer as the only cadence. |
 | `rem.policy.auto_promote_min_page_facts` | int \| _unset_ | _unset_ → `RemPolicy` default `8` | Min active facts on a page (page mass) before the per-page split pass shows it to the LLM. The only deterministic gate — a resource pre-filter, not a semantic one. Lower it to exercise auto-promotion in a small deployment. |
-| `rem.policy.auto_promote_subwiki_min_page_facts` | int \| _unset_ | _unset_ → default `20` | Min page mass for the page→sub-wiki emergence pre-filter. |
+| `rem.policy.auto_promote_group_min_pages` | int \| _unset_ | _unset_ → default `9` | Pages of one subject the regrouping pass must find before a **new** sub-wiki is born. Birth only — filing pages into a sub-wiki that already exists has no floor. |
 | `rem.policy.auto_promote_cap` | int \| _unset_ | _unset_ → default `5` | Max structural changes the auto-promote sub-job **applies** per cycle (both rungs share it). |
 | `rem.policy.page_merge_cap` | int \| _unset_ | _unset_ → default `3` | Max page-merge confirmation calls the page-merge sub-job spends per cycle; `0` disables it. |
 | `rem.policy.completion_sweep_cap` | int \| _unset_ | _unset_ → default `8` | Max evidence facts the completion sweep sends to the LLM per cycle; `0` disables it. |
@@ -359,7 +359,7 @@ rem:
     light_backlog_threshold: 20   # early trigger on backlog; 0 disables it
   policy:                         # cap / threshold overrides (omit → RemPolicy defaults)
     # auto_promote_min_page_facts: 3          # default 8 — lower it to exercise the split pass in a small deployment
-    # auto_promote_subwiki_min_page_facts: 5  # default 20
+    # auto_promote_group_min_pages: 6         # default 9 — pages needed to found a sub-wiki
     # auto_promote_cap: 5
     # page_merge_cap: 3                       # 0 disables the sub-job
     # completion_sweep_cap: 8                 # 0 disables
@@ -408,7 +408,7 @@ contract of a cycle. Defaults verified against `RemPolicy::default()`:
 | `revisor_jaccard_max` | `recall::DEFAULT_DEDUP_THRESHOLD` | Upper bound: pairs at/above were already deduped at capture time, so the revisor works the **interesting band** in between. |
 | `auto_promote_cap` | 5 | Max structural changes the auto-promote sub-job applies per cycle (both rungs) — REM never carpet-bombs the user with notices. **YAML: `rem.policy.auto_promote_cap`.** |
 | `auto_promote_min_page_facts` | 8 | Min page mass before the per-page split pass shows the page to the LLM (the only deterministic gate — no recall floor). **YAML: `rem.policy.auto_promote_min_page_facts`.** |
-| `auto_promote_subwiki_min_page_facts` | 20 | Min page mass for the page→sub-wiki emergence pre-filter. **YAML: `rem.policy.auto_promote_subwiki_min_page_facts`.** |
+| `auto_promote_group_min_pages` | 9 | Pages of one subject needed to found a sub-wiki (birth only; filing into an existing one has no floor). **YAML: `rem.policy.auto_promote_group_min_pages`.** |
 | `page_merge_cap` | 3 | Max page-merge confirmation calls per cycle; `0` disables the sub-job. **YAML: `rem.policy.page_merge_cap`.** |
 | `completion_sweep_cap` | 8 | Max evidence facts the completion sweep sends to the LLM per cycle; `0` disables. **YAML: `rem.policy.completion_sweep_cap`.** |
 | `refile_sweep_cap` | 5 | Max misfiled-fact candidates the cross-wiki refile sweep sends to the LLM per cycle; `0` disables. |

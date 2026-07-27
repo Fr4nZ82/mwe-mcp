@@ -9,8 +9,8 @@ last_review: "2026-07-02"
 
 This page documents the **chassis** behind the structural-change
 lifecycle, plus the concrete kind handlers shipped today:
-`wiki_promote` (both `paragraph_to_file` and `file_to_subwiki`
-variants), `dedup_merge` (two-way merge), `bundle` — a
+`wiki_promote` (the `paragraph_to_file`, `pages_to_subwiki` and
+`pages_move_wiki` variants), `dedup_merge` (two-way merge), `bundle` — a
 **born-applied-only** kind wrapping many sub-operations into one
 revertible receipt ([`mwe_core::bundle`], the page-deletion unit) — and
 `fact_forget`, a **propose-first vote** a non-sender owner opens to forget
@@ -25,7 +25,7 @@ final — see [Fact-forget handler](#fact-forget-handler)).
 The lifecycle is a **5-state machine**, but since the apply-and-notice
 conversion **no REM emitter enters it from `pending`**:
 REM applies a `wiki_promote` change (`paragraph_to_file` /
-`file_to_subwiki` / `fact_refile`), a page merge, and a revisor
+`pages_to_subwiki` / `pages_move_wiki` / `fact_refile`), a page merge, and a revisor
 `dedup_merge` **directly**
 and records a **born-applied receipt**
 via `emit_applied_proposal` — a row inserted straight into `applied`
@@ -235,7 +235,7 @@ token.
 
 | Kind constant | Wire string | Handler status |
 |---|---|---|
-| `kind::WIKI_PROMOTE` | `wiki_promote` | **Shipped** — variants `paragraph_to_file` (default), `file_to_subwiki`, `page_merge`, `fact_refile` (born-applied only), `validity_close` (born-applied only). See [Promote handler](#promote-handler). |
+| `kind::WIKI_PROMOTE` | `wiki_promote` | **Shipped** — variants `paragraph_to_file` (default), `pages_to_subwiki`, `pages_move_wiki`, `page_merge`, `fact_refile` (born-applied only), `validity_close` (born-applied only), plus the legacy `file_to_subwiki` (revert-only: no longer emitted). See [Promote handler](#promote-handler). |
 | `kind::DEDUP_MERGE` | `dedup_merge` | **Shipped** — two-way merge variant. See [Dedup-merge handler](#dedup-merge-handler). |
 | `kind::BUNDLE` | `bundle` | **Revert shipped** (`bundle::revert_bundle`) — born-applied only (wraps tombstones + cross-wiki refiles for the page deletion); no chassis *apply* path, so `apply` stays `KindNotYetImplemented` by design. See [Bundle handler](#bundle-handler). |
 | `kind::FACT_FORGET` | `fact_forget` | **Apply shipped** (`proposals::apply_fact_forget`) — born-`pending` (a non-sender owner's forget request, [`mwe_core::votes`]); apply tombstones the fact when its audience consents; **no revert** (final). See [Fact-forget handler](#fact-forget-handler). |
@@ -269,7 +269,7 @@ Cronista writes** — a new `.md` page (or `index.md` hub) inside an
 `structure_proposal` at all; it is a normal compiled write, not a gated
 structural change. Only the **escalation** of a grown concept page into a
 dedicated **sub-wiki** is a structural change, and that reuses the
-**existing** [`wiki_promote` / `file_to_subwiki`](#promote-handler)
+**existing** [`wiki_promote` / `pages_to_subwiki`](#promote-handler)
 machinery driven by the proposal-gated REM auto-promote sub-job
 ([`rem-cycle.md`](rem-cycle.md)). The upshot: **the planner adds no new
 proposal kind** — the `kind::ALL` roster above is unchanged, and the
@@ -419,13 +419,25 @@ field in `answers` (default `paragraph_to_file`):
   loudly; the revert repoints `wiki_id` back to the source + restores the
   prose + re-homes the plan back. Refuses a same-wiki move (that is
   `paragraph_to_file`).
-- **`file_to_subwiki`** — take an entire page of a wiki and turn it
-  into a new dedicated sub-wiki whose `index.md` carries the page's
-  content verbatim. The new wiki id is derived via
-  [`WikiId::child_of`] (parent + child slug joined with `-`); the new
-  directory lives at `<parent_abs_dir>/<child_slug>/`. Refuses partial
-  fact sets — use `paragraph_to_file` if you only want to move some
-  of the facts.
+- **`pages_to_subwiki`** — take a **group** of pages of one wiki that
+  are already the same subject area and turn them into a new dedicated
+  sub-wiki, each page carried over under its own name. The new wiki id
+  is derived via [`WikiId::child_of`] (parent + child slug joined with
+  `-`); the new directory lives at `<parent_abs_dir>/<child_slug>/`, and
+  its `index.md` is born as a bare title stub because the front page is
+  a plan-owned `emerged_index` node the compiler authors. Refuses the
+  parent's own `index.md`, a page with no active fact, and a page whose
+  markers on disk disagree with `fact_index`. The **page-count floor**
+  lives in the REM caller (`auto_promote_group_min_pages`), not here.
+- **`pages_move_wiki`** — the same move into a sub-wiki that **already
+  exists**. No floor: the home is there. The target must be a child of
+  the source wiki — regrouping rearranges a wiki's own subtree, it never
+  files content into somebody else's.
+- **`file_to_subwiki`** *(legacy, revert-only)* — the superseded
+  single-page emergence: one whole page became a sub-wiki whose
+  `index.md` carried it verbatim. No emitter reaches it any more; apply
+  and revert stay wired so receipts written before the change remain
+  undoable for the rest of their window.
 - **`page_merge`** — move **every** active fact of one concept page (the
   husk) onto a near-synonym survivor page of the same wiki, **delete the
   husk file**, and re-home the move in the persisted compilation plan
@@ -619,7 +631,8 @@ and the sub-ops act on independent facts. A true multi-op
 `wal::begin_proposal_op` + matching `OpInverse` impls; `bootstrap_state`
 uses `NoopInverse` for the recovery sweep and relies on handler
 idempotency. There is no cross-link rewriter for handlers that change
-`wiki_id` (`file_to_subwiki`, `scope::wiki_change_scope`) — the
+`wiki_id` (`pages_to_subwiki` / `pages_move_wiki`,
+`scope::wiki_change_scope`) — the
 `wiki_id` stability invariant from
 [`memory-model.md`](../concepts/memory-model.md) means existing
 `[[wiki_id]]` cross-links keep resolving without rewrite.

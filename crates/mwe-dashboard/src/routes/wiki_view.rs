@@ -110,6 +110,7 @@ use maud::{Markup, PreEscaped, html};
 use mwe_core::briefing::{
     BODY_MAX_BYTES, HeadingAnchor, compose_cite, extract_anchors_from_markdown, parse_cite,
 };
+use mwe_core::dream_journal::DreamKind;
 use mwe_core::enrollment;
 use mwe_core::fact_index;
 use mwe_core::page::DeletionMode;
@@ -302,34 +303,17 @@ async fn delete_confirm(
             }
             p {
                 "Deleting moves the whole directory subtree into "
-                code { "<workdir>/trash/" } " — recoverable, not a hard erase. Choose below how "
-                "its facts are disposed."
+                code { "<workdir>/trash/" } " — the files are never erased. What happens to the "
+                strong { "facts" } " is a separate choice, and it is the one that matters: a "
+                "tombstoned fact leaves recall, and putting the directory back does not bring it "
+                "back."
             }
             ul {
                 li { "Wikis removed (this one + sub-wikis): " strong { (wikis_removed) } }
                 li { "Active facts on the subtree: " strong { (facts) } }
             }
             form action=(format!("/dashboard/wiki/{id}/delete")) method="post" {
-                fieldset {
-                    legend { "What happens to the facts" }
-                    p {
-                        label {
-                            input type="radio" name="disposition" value="move" checked;
-                            " " strong { "Move" }
-                            " — evacuate each fact contributed by someone else to its author's "
-                            "own wiki, intact (nothing is destroyed); only your own and ownerless "
-                            "facts are tombstoned."
-                        }
-                    }
-                    p {
-                        label {
-                            input type="radio" name="disposition" value="tombstone";
-                            " " strong { "Tombstone all" }
-                            " — tombstone every fact, including ones contributed by others. They "
-                            "leave recall at once but survive as audit tombstones."
-                        }
-                    }
-                }
+                (disposition_fieldset())
                 p {
                     label for="confirm-id" {
                         "Type the wiki id (" code { (id) } ") to confirm:"
@@ -350,6 +334,48 @@ async fn delete_confirm(
         admin.session(),
         &body,
     )))
+}
+
+/// The three fact dispositions of a wiki deletion, in the order that ranks
+/// them by what they destroy: nothing, your own, everyone's.
+///
+/// Split out of [`delete_confirm`] because this markup — not the blast-radius
+/// numbers above it — is what the operator actually has to read: the files
+/// always survive in the trash, so the only irreversible choice on the page is
+/// this one.
+fn disposition_fieldset() -> Markup {
+    html! {
+        fieldset {
+            legend { "What happens to the facts" }
+            p {
+                label {
+                    input type="radio" name="disposition" value="dissolve" checked;
+                    " " strong { "Dissolve" } " (recommended)"
+                    " — the structure goes, the knowledge stays. Nothing is tombstoned: "
+                    "every fact is freed and re-placed where it belongs across the rest "
+                    "of the memory, by the same cartographer that files new facts."
+                }
+            }
+            p {
+                label {
+                    input type="radio" name="disposition" value="authors";
+                    " " strong { "Return to each author" }
+                    " — each fact someone else contributed goes back to that person's own "
+                    "wiki, intact; the ones "
+                    em { "you" }
+                    " contributed are tombstoned, and so are facts with no home to return to."
+                }
+            }
+            p {
+                label {
+                    input type="radio" name="disposition" value="tombstone";
+                    " " strong { "Tombstone all" }
+                    " — tombstone every fact, including ones contributed by others. They "
+                    "leave recall at once but survive as audit tombstones."
+                }
+            }
+        }
+    }
 }
 
 /// POST `/dashboard/wiki/:id/delete` — admin-only soft-delete apply.
@@ -374,7 +400,11 @@ async fn delete_apply(
     }
     let (mode, disposition) = match form.disposition.trim() {
         "tombstone" => (DeletionMode::TombstoneAll, "tombstone"),
-        _ => (DeletionMode::SenderKeyed, "move"), // the safe default
+        "authors" => (DeletionMode::SenderKeyed, "authors"),
+        // Dissolve is the default: the only disposition that destroys no
+        // one's contribution — the structure goes, every fact is kept and
+        // re-placed.
+        _ => (DeletionMode::Dissolve, "dissolve"),
     };
     let deleter = Principal::User(admin.sender_id().to_owned());
     let report =
@@ -388,9 +418,24 @@ async fn delete_apply(
         wikis_removed = report.wikis_removed,
         facts_tombstoned = report.facts_tombstoned,
         facts_evacuated = report.facts_evacuated,
+        facts_unplaced = report.facts_unplaced,
         trash = %report.trash_dir.display(),
         "dashboard: wiki subtree soft-deleted to trash"
     );
+    // A dissolve leaves its freed facts parked for re-placement: kick the full
+    // reorg off now so the Cartografo re-decides where each one belongs while
+    // the operator is still looking, instead of the memory sitting lopsided
+    // until tonight. A busy gate is fine — the park is persisted on the plan
+    // and the next build consumes it either way.
+    if matches!(mode, DeletionMode::Dissolve) && report.facts_unplaced > 0 {
+        let started = super::dream::spawn_dream(&state, DreamKind::Full);
+        tracing::info!(
+            wiki = %id,
+            facts_unplaced = report.facts_unplaced,
+            started,
+            "dashboard: dissolve triggered a full reorg to re-place the freed facts"
+        );
+    }
     // The deleted subtree may have been a web-agent consumer's smart wiki:
     // drain the now-dangling consumer (and its OAuth rows) right away
     // instead of waiting for the next boot sweep. Best-effort.
@@ -413,7 +458,7 @@ fn map_wiki_delete_err(e: wiki_delete::WikiDeleteError) -> DashboardError {
         E::NotFound(_) => DashboardError::NotFound,
         E::Identity(_, _) => DashboardError::Validation(e.to_string()),
         E::Wiki(we) => map_wiki_err(we),
-        E::FactIndex(_) | E::Refile(_) | E::Move { .. } | E::Enrollment(_) => {
+        E::FactIndex(_) | E::Refile(_) | E::Move { .. } | E::Enrollment(_) | E::Plan(_) => {
             DashboardError::Internal(e.to_string())
         },
     }

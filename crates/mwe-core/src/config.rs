@@ -1175,10 +1175,12 @@ pub struct RemPolicyConfig {
     /// Override `auto_promote_min_page_facts` (default 8).
     #[serde(default)]
     pub auto_promote_min_page_facts: Option<usize>,
-    /// Override `auto_promote_subwiki_min_page_facts` (default 20) — the
-    /// page→sub-wiki emergence mass bar.
+    /// Override `auto_promote_group_min_pages` (default 9) — how many
+    /// pages of one subject the regrouping pass must find before a new
+    /// sub-wiki is born. Governs birth only: filing pages into a
+    /// sub-wiki that already exists has no floor.
     #[serde(default)]
-    pub auto_promote_subwiki_min_page_facts: Option<usize>,
+    pub auto_promote_group_min_pages: Option<usize>,
     /// Override `auto_promote_cap` (default 5).
     #[serde(default)]
     pub auto_promote_cap: Option<usize>,
@@ -1236,8 +1238,8 @@ impl RemConfig {
         if let Some(m) = self.policy.auto_promote_min_page_facts {
             p.auto_promote_min_page_facts = m;
         }
-        if let Some(m) = self.policy.auto_promote_subwiki_min_page_facts {
-            p.auto_promote_subwiki_min_page_facts = m;
+        if let Some(m) = self.policy.auto_promote_group_min_pages {
+            p.auto_promote_group_min_pages = m;
         }
         if let Some(c) = self.policy.auto_promote_cap {
             p.auto_promote_cap = c;

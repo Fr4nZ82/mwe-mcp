@@ -322,19 +322,37 @@ editor's admin-AND-owner: a placement hint, not content), and the per-page
 read view links to it (`✎ Edit «what goes here»`) only for callers who may
 edit.
 
-**Deleting a wiki** is an admin-only, *recoverable* action — the only
-manual structural mutation the dashboard exposes (creation / reorg still
-ride the consumer / REM). It is a three-step flow: a `delete` link in the
-wiki list (`GET /dashboard/wiki`, hidden on identity wikis) → a
-strong-confirmation page (`GET /dashboard/wiki/:id/delete`: the operator
-must re-type the id, and it shows the blast radius — sub-wiki count + the
-facts that will be tombstoned) → `POST /dashboard/wiki/:id/delete`. The
-apply calls
-[`wiki_delete::delete_wiki_subtree`](../../crates/mwe-core/src/wiki_delete.rs):
-it tombstones every active fact in the target **and its sub-wikis**
-(`fact_index::mark_forgotten_in_wiki`, reason `wiki_deleted`) and **moves**
-the directory subtree into `<workdir>/trash/` — a sibling of `wikis/`, so a
-trashed subtree never reappears in `WikiTree::walk` — never an `rm -rf`.
+**Deleting a wiki** is an admin-only action — the only manual structural
+mutation the dashboard exposes (creation / reorg still ride the consumer /
+REM). It is a three-step flow: a `delete` link in the wiki list
+(`GET /dashboard/wiki`, hidden on identity wikis) → a strong-confirmation
+page (`GET /dashboard/wiki/:id/delete`: the operator must re-type the id,
+and it shows the blast radius — sub-wiki count + active facts) →
+`POST /dashboard/wiki/:id/delete`. The apply calls
+[`wiki_delete::delete_wiki_subtree`](../../crates/mwe-core/src/wiki_delete.rs),
+which always **moves** the directory subtree into `<workdir>/trash/` — a
+sibling of `wikis/`, so a trashed subtree never reappears in
+`WikiTree::walk` — never an `rm -rf`.
+
+The **files** are therefore always recoverable; what happens to the **facts**
+is the operator's choice on the confirmation page, and it is the part that
+is not symmetrical, because putting a trashed directory back does *not*
+revive tombstoned rows (a standard wiki's pages are renders — the reindex
+leaves a marker whose row is inactive alone, as stale render residue).
+Hence three dispositions, ordered by what they destroy:
+
+| Disposition | Form value | What it does |
+|---|---|---|
+| **Dissolve** *(default)* | `dissolve` | Destroys the structure, keeps every fact. Nothing is tombstoned: each fact moves to a live wiki (`page::dissolve_home` — its sender's home, else its owner's, else the deleter's) and the dissolved wiki's plan slugs are parked as `reopen_pages`, so the next Cartografo build **re-decides where each fact belongs** corpus-wide rather than letting it inherit the page it sat on. The evacuation target is a waiting room, not the answer. Only a fact with no live home anywhere is tombstoned — and it is **counted** in `facts_tombstoned`. |
+| **Return to each author** | `authors` | The `SenderKeyed` arm: a fact the deleter sent is tombstoned; a foreign-authored one is evacuated intact to its sender's home wiki (owner as fallback). A fact whose sender and owner both lack a home is tombstoned. |
+| **Tombstone all** | `tombstone` | Tombstones every fact regardless of sender, destroying others' contributions. |
+
+A dissolve that actually freed facts then kicks off a **background full
+reorg** (`dream::spawn_dream(DreamKind::Full)`) so the Cartografo re-places
+them while the operator is still looking, instead of the memory sitting
+lopsided until the nightly cycle. A busy REM gate is not an error: the park
+is persisted on the plan, so whichever build runs next consumes it.
+
 **Identity wikis (`wiki-user` / `wiki-group`) are refused**: they are an
 account's autobiographical store, removed through the user / group deletion
 flow instead.

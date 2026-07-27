@@ -73,10 +73,11 @@ fn knobs() -> Vec<Knob> {
                 .to_owned(),
         },
         Knob {
-            field: "auto_promote_subwiki_min_page_facts",
-            label: "Auto-promote — sub-wiki min page mass",
-            default: def.auto_promote_subwiki_min_page_facts.to_string(),
-            help: "Page mass before a topic page becomes a page→sub-wiki emergence candidate."
+            field: "auto_promote_group_min_pages",
+            label: "Auto-promote — pages to found a sub-wiki",
+            default: def.auto_promote_group_min_pages.to_string(),
+            help: "Pages of one subject the regrouping pass must find to found a sub-wiki. \
+                   Birth only: filing into an existing sub-wiki has no floor."
                 .to_owned(),
         },
         Knob {
@@ -171,7 +172,7 @@ fn override_value(cfg: &RemPolicyConfig, field: &str) -> String {
     }
     match field {
         "auto_promote_min_page_facts" => s(cfg.auto_promote_min_page_facts),
-        "auto_promote_subwiki_min_page_facts" => s(cfg.auto_promote_subwiki_min_page_facts),
+        "auto_promote_group_min_pages" => s(cfg.auto_promote_group_min_pages),
         "auto_promote_cap" => s(cfg.auto_promote_cap),
         "page_merge_cap" => s(cfg.page_merge_cap),
         "completion_sweep_cap" => s(cfg.completion_sweep_cap),
@@ -356,10 +357,7 @@ fn backup_path_for(target: &Path) -> PathBuf {
 fn parse_form(form: &HashMap<String, String>) -> Result<RemPolicyConfig> {
     Ok(RemPolicyConfig {
         auto_promote_min_page_facts: parse_usize(form, "auto_promote_min_page_facts")?,
-        auto_promote_subwiki_min_page_facts: parse_usize(
-            form,
-            "auto_promote_subwiki_min_page_facts",
-        )?,
+        auto_promote_group_min_pages: parse_usize(form, "auto_promote_group_min_pages")?,
         auto_promote_cap: parse_usize(form, "auto_promote_cap")?,
         page_merge_cap: parse_usize(form, "page_merge_cap")?,
         completion_sweep_cap: parse_usize(form, "completion_sweep_cap")?,

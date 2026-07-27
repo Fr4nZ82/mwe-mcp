@@ -75,8 +75,8 @@ graph from three deterministic sources — no LLM, no facts. From
 id), wiring `parent_hub` to the user's **first** known group and
 `outgoing_links` to all of them. Groups are built first so a person can
 link to them. From the **tree** (`seed_topic_wiki_indexes`): every
-standard non-identity wiki — the emerged sub-wikis `file_to_subwiki`
-mints, any hand-forged topic wiki — gets its `index.md` as an
+standard non-identity wiki — the sub-wikis `pages_to_subwiki` mints,
+any hand-forged topic wiki — gets its `index.md` as an
 `emerged_index` node (slug = `slugify(wiki_id)`, `parent_hub` = the parent
 wiki's foundation slug when the graph has it, description = the `_meta`
 `scope` prose). A topic container carries **no identity semantics**: its
@@ -424,7 +424,7 @@ together and adds the incremental bookkeeping:
 
 The act-first structural verbs (the REM split's
 [`apply_paragraph_to_file_direct`](proposal-apply-engine.md), the page merge,
-the `file_to_subwiki` emergence) rewrite disk bytes and `fact_index` rows —
+the `pages_to_subwiki` regrouping) rewrite disk bytes and `fact_index` rows —
 but the planner's **carry-over reads
 the persisted plan**, not the filesystem. Without reconciliation it re-assigns
 every moved fact to its old slug, and the next recompile of the old page pulls
@@ -494,7 +494,7 @@ the maintainer (2026-05-31):
   is *content the Cronista writes* — a new `.md` inside an existing wiki —
   and therefore needs **no `structure_proposal`**.
 - **Escalation** of a grown concept page into a dedicated **sub-wiki**
-  reuses the **existing** [`wiki_promote` / `file_to_subwiki`](proposal-apply-engine.md)
+  reuses the **existing** [`wiki_promote` / `pages_to_subwiki`](proposal-apply-engine.md)
   machinery — the REM auto-promote sub-job ([rem-cycle.md](rem-cycle.md)),
   which is already proposal-gated. The planner does not reinvent promotion.
 

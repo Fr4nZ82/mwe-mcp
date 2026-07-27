@@ -245,8 +245,8 @@ pub const BUNDLED: &[(&str, &str)] = &[
     ("rem-dates", crate::rem::BUNDLED_REM_DATES_MD),
     ("rem-merge", crate::rem::BUNDLED_REM_MERGE_MD),
     (
-        "rem-subwiki-emergence",
-        crate::rem::BUNDLED_REM_SUBWIKI_EMERGENCE_MD,
+        "rem-page-grouping",
+        crate::rem::BUNDLED_REM_PAGE_GROUPING_MD,
     ),
     ("regenerate-index", crate::rem::BUNDLED_REGENERATE_INDEX_MD),
     (

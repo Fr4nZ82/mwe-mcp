@@ -153,7 +153,13 @@ struct FactRefileSpec {
 }
 
 const VARIANT_PARAGRAPH_TO_FILE: &str = "paragraph_to_file";
+/// Legacy single-page emergence. No longer emitted — the REM grouping
+/// pass replaced it with [`VARIANT_PAGES_TO_SUBWIKI`] — but the apply
+/// and revert paths stay wired so receipts written before the change
+/// remain undoable for the rest of their window.
 const VARIANT_FILE_TO_SUBWIKI: &str = "file_to_subwiki";
+const VARIANT_PAGES_TO_SUBWIKI: &str = "pages_to_subwiki";
+const VARIANT_PAGES_MOVE_WIKI: &str = "pages_move_wiki";
 const VARIANT_PAGE_MERGE: &str = "page_merge";
 const VARIANT_FACT_REFILE: &str = "fact_refile";
 const VARIANT_VALIDITY_CLOSE: &str = "validity_close";
@@ -191,6 +197,8 @@ pub(crate) async fn apply_wiki_promote(
     match variant {
         VARIANT_PARAGRAPH_TO_FILE => apply_paragraph_to_file(pool, tree, context, answers).await,
         VARIANT_FILE_TO_SUBWIKI => apply_file_to_subwiki(pool, tree, context, answers).await,
+        VARIANT_PAGES_TO_SUBWIKI => apply_pages_to_subwiki(pool, tree, context, answers).await,
+        VARIANT_PAGES_MOVE_WIKI => apply_pages_move_wiki(pool, tree, context, answers).await,
         VARIANT_PAGE_MERGE => apply_page_merge(pool, tree, context, answers).await,
         // Closures are applied by the ingest orchestrator before the
         // receipt exists (born-applied); a pending row of this variant
@@ -239,6 +247,8 @@ pub(crate) async fn revert_wiki_promote(
     match variant {
         VARIANT_PARAGRAPH_TO_FILE => revert_paragraph_to_file(pool, tree, spec).await,
         VARIANT_FILE_TO_SUBWIKI => revert_file_to_subwiki(pool, tree, spec).await,
+        VARIANT_PAGES_TO_SUBWIKI => revert_pages_to_subwiki(pool, tree, spec).await,
+        VARIANT_PAGES_MOVE_WIKI => revert_pages_move_wiki(pool, tree, spec).await,
         VARIANT_PAGE_MERGE => revert_page_merge(pool, tree, spec).await,
         VARIANT_VALIDITY_CLOSE => revert_validity_close(pool, spec).await,
         VARIANT_VALIDITY_EDIT => revert_validity_edit(pool, spec).await,
@@ -2107,6 +2117,702 @@ async fn revert_file_to_subwiki(
     Ok(())
 }
 
+// ---------- page group → wiki variants (regrouping) ----------
+
+/// One page carried by a group move: where it lived, its verbatim bytes
+/// at apply time, and the facts that sat on it.
+///
+/// The bytes are what the revert rewrites, so a group move is undoable
+/// byte-for-byte. A group move never splits a page — `fact_ids` is
+/// **every** active fact on it at apply time, and the revert refuses
+/// when the set on disk has since diverged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GroupedPage {
+    /// Page path relative to the **source** wiki (e.g. `allattamento.md`).
+    page: String,
+    /// Verbatim file contents at apply time.
+    page_bytes: String,
+    /// Every active fact that lived on the page.
+    fact_ids: Vec<String>,
+}
+
+/// `spec` payload for [`apply_pages_to_subwiki`] — a group of sibling
+/// pages that became a new sub-wiki. Read back by
+/// [`revert_pages_to_subwiki`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PagesToSubwikiSpec {
+    variant: String,
+    source_wiki_id: String,
+    new_wiki_id: String,
+    new_wiki_slug: String,
+    pages: Vec<GroupedPage>,
+}
+
+/// `spec` payload for [`apply_pages_move_wiki`] — a group of pages that
+/// moved into a wiki that already existed. Read back by
+/// [`revert_pages_move_wiki`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PagesMoveWikiSpec {
+    variant: String,
+    source_wiki_id: String,
+    target_wiki_id: String,
+    pages: Vec<GroupedPage>,
+}
+
+/// The `context` the REM grouping pass writes for both group variants.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GroupContext {
+    /// Wiki the pages currently live in.
+    source_wiki_id: String,
+    /// Page paths relative to the source wiki, in the order the model
+    /// named them.
+    pages: Vec<String>,
+    /// `pages_to_subwiki` only — advisory slug for the wiki about to be
+    /// born (re-derived through [`crate::slug::derive_slug`]).
+    #[serde(default)]
+    new_wiki_slug: Option<String>,
+    /// `pages_to_subwiki` only — human-readable title.
+    #[serde(default)]
+    new_wiki_title: Option<String>,
+    /// `pages_move_wiki` only — the wiki that receives the pages.
+    #[serde(default)]
+    target_wiki_id: Option<String>,
+}
+
+/// A page collected for a group move: paths, bytes, and the facts on it,
+/// validated against both `fact_index` and the markers on disk.
+struct CollectedPage {
+    rel_in_wiki: PathBuf,
+    abs: PathBuf,
+    /// Workdir-relative `source_path` as `fact_index` stores it.
+    source_rel: String,
+    bytes: String,
+    facts: Vec<FactId>,
+}
+
+/// Collect + validate every page of a group move.
+///
+/// Per page: the path is safe and is not the wiki's own `index.md`
+/// (moving a wiki's front page out would decapitate it), the file
+/// exists, and the marker set on disk matches the active `fact_index`
+/// rows for that `source_path` exactly. A page with no active fact is
+/// refused — the grouping pass only ever names pages that carry mass,
+/// so an empty one means the caller and the index disagree.
+async fn collect_group_pages(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    source_dir: &std::path::Path,
+    pages: &[String],
+) -> Result<Vec<CollectedPage>, ApplyError> {
+    if pages.is_empty() {
+        return Err(ApplyError::InvalidPayload(
+            "context.pages must not be empty".into(),
+        ));
+    }
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::with_capacity(pages.len());
+    for page in pages {
+        if !seen.insert(page.clone()) {
+            return Err(ApplyError::InvalidPayload(format!(
+                "context.pages duplicate: {page}",
+            )));
+        }
+        let rel_in_wiki = validated_page_path(page, "context.pages")?;
+        if rel_in_wiki == std::path::Path::new("index.md") {
+            return Err(ApplyError::InvalidPayload(
+                "a group move must not carry the wiki's own index.md".into(),
+            ));
+        }
+        let abs = source_dir.join(&rel_in_wiki);
+        let source_rel = wiki::workdir_relative_source_path(tree.workdir(), &abs);
+        let bytes = std::fs::read_to_string(&abs)
+            .map_err(|e| ApplyError::HandlerIo(format!("read {source_rel}: {e}")))?;
+
+        let active = fact_index::find_active_by_source_path(pool, &source_rel)
+            .await
+            .map_err(|e| ApplyError::HandlerIo(e.to_string()))?;
+        if active.is_empty() {
+            return Err(ApplyError::HandlerData(format!(
+                "{source_rel} carries no active fact — refusing to move it as part of a group",
+            )));
+        }
+        let indexed: HashSet<FactId> = active.iter().map(|r| r.fact_id.clone()).collect();
+        let on_disk = marker_set(&bytes);
+        if on_disk != indexed {
+            return Err(ApplyError::HandlerData(format!(
+                "{source_rel} marker set diverged from fact_index \
+                 (on_disk={on_disk:?}, indexed={indexed:?}) — refusing to move it",
+            )));
+        }
+        // Preserve the index order so the receipt reads like the page.
+        let facts = active.iter().map(|r| r.fact_id.clone()).collect();
+        out.push(CollectedPage {
+            rel_in_wiki,
+            abs,
+            source_rel,
+            bytes,
+            facts,
+        });
+    }
+    Ok(out)
+}
+
+/// Every `fact_id` marker present in a page's bytes.
+fn marker_set(bytes: &str) -> HashSet<FactId> {
+    let mut out = HashSet::new();
+    for ev in parser::parse(bytes).events {
+        if let ParseEvent::Region { attrs, .. } = ev
+            && let Some(fid) = attrs.fact_id
+        {
+            out.insert(fid);
+        }
+    }
+    out
+}
+
+/// Write one collected page into `dest_dir` under the same filename,
+/// delete it from its old home, and re-point its `fact_index` rows at
+/// the new wiki. Byte offsets survive the move because the bytes are
+/// copied verbatim.
+async fn relocate_page(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    page: &CollectedPage,
+    dest_dir: &std::path::Path,
+    dest_wiki_id: &str,
+) -> Result<String, ApplyError> {
+    let dest_abs = dest_dir.join(&page.rel_in_wiki);
+    let dest_rel = wiki::workdir_relative_source_path(tree.workdir(), &dest_abs);
+    if dest_abs.exists() {
+        return Err(ApplyError::HandlerData(format!(
+            "{dest_rel} already exists — refusing to clobber",
+        )));
+    }
+    atomic_write(&dest_abs, page.bytes.as_bytes())
+        .map_err(|e| ApplyError::HandlerIo(format!("atomic_write {dest_rel}: {e}")))?;
+
+    for fid in &page.facts {
+        let row = fact_index::find_by_id(pool, fid)
+            .await
+            .map_err(|e| ApplyError::HandlerIo(e.to_string()))?
+            .ok_or_else(|| ApplyError::HandlerData(format!("fact {fid} vanished mid-apply")))?;
+        let touched = fact_index::move_to_wiki(
+            pool,
+            fid,
+            dest_wiki_id,
+            &dest_rel,
+            row.region_start,
+            row.region_end,
+        )
+        .await
+        .map_err(|e| ApplyError::HandlerIo(e.to_string()))?;
+        if touched == 0 {
+            return Err(ApplyError::HandlerData(format!(
+                "fact_index::move_to_wiki updated 0 rows for {fid}",
+            )));
+        }
+    }
+
+    std::fs::remove_file(&page.abs)
+        .map_err(|e| ApplyError::HandlerIo(format!("remove {}: {e}", page.source_rel)))?;
+    Ok(dest_rel)
+}
+
+/// Re-home one moved page in the persisted compilation plan: its facts
+/// leave the old page node and land on a page node of the destination
+/// wiki. Best-effort, exactly like the single-page variants.
+async fn rehome_grouped_page(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    page: &CollectedPage,
+    source_wiki_id: &str,
+    dest_wiki_id: &str,
+) {
+    let page_name = page.rel_in_wiki.to_string_lossy().into_owned();
+    let seed = crate::planner::RehomePageSeed::page_in_wiki(&page_name, dest_wiki_id);
+    let old_slug = plan_slug_of_page(source_wiki_id, &page_name);
+    rehome_rows_with_seed(pool, &page.facts, &seed, &[old_slug], tree).await;
+}
+
+/// Apply a `pages_to_subwiki` promotion: a group of sibling pages that
+/// are one subject area becomes a dedicated sub-wiki, each page carried
+/// over under its own name.
+///
+/// The new wiki's `index.md` is born as a bare title stub: an emerged
+/// wiki's front page is a plan-owned `emerged_index` node the narrative
+/// compiler authors on the next cycle, so the handler must not invent
+/// prose that the compiler would then fight over.
+///
+/// The page-count floor is the **caller's** (the REM grouping pass owns
+/// `auto_promote_group_min_pages`); this handler enforces only the
+/// structural invariants — every named page exists, carries mass, and
+/// moves whole.
+async fn apply_pages_to_subwiki(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    context: &Value,
+    _answers: &Value,
+) -> Result<Value, ApplyError> {
+    let ctx: GroupContext = serde_json::from_value(context.clone())
+        .map_err(|e| ApplyError::InvalidPayload(format!("context: {e}")))?;
+    let parent_wiki_id = WikiId::parse(&ctx.source_wiki_id)
+        .map_err(|e| ApplyError::InvalidPayload(format!("context.source_wiki_id invalid: {e}")))?;
+    let parent_handle = tree
+        .locate(&parent_wiki_id)
+        .map_err(|e| ApplyError::HandlerData(format!("parent wiki not found: {e}")))?;
+
+    let slug_seed = ctx
+        .new_wiki_slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            ApplyError::InvalidPayload("context.new_wiki_slug is required".to_owned())
+        })?;
+    let derived = crate::slug::derive_slug(slug_seed)
+        .map_err(|e| ApplyError::InvalidPayload(format!("new_wiki_slug derive: {e}")))?;
+    let new_slug = WikiSlug::parse(&derived)
+        .map_err(|e| ApplyError::InvalidPayload(format!("new_wiki_slug invalid: {e}")))?;
+    let new_wiki_id = WikiId::child_of(&parent_wiki_id, &new_slug);
+    let new_wiki_dir = parent_handle.abs_dir().join(new_slug.as_str());
+    if new_wiki_dir.exists() {
+        return Err(ApplyError::InvalidPayload(format!(
+            "target sub-wiki path already exists: {}",
+            new_wiki_dir.display(),
+        )));
+    }
+
+    let collected = collect_group_pages(pool, tree, parent_handle.abs_dir(), &ctx.pages).await?;
+
+    let new_title = ctx
+        .new_wiki_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| new_slug.as_str())
+        .to_owned();
+    let meta = WikiMeta {
+        wiki_id: new_wiki_id.clone(),
+        wiki_type: DEFAULT_NEW_SUBWIKI_TYPE.to_owned(),
+        parent_wiki_id: Some(parent_wiki_id.clone()),
+        slug: new_slug.clone(),
+        title: new_title.clone(),
+        scope: None,
+        shared_with: Vec::new(),
+        style_overrides: serde_yaml::Mapping::new(),
+        keywords: serde_yaml::Mapping::new(),
+        children: Vec::new(),
+        promoted_from: Some(ctx.source_wiki_id.clone()),
+        no_archive: false,
+        smart: false,
+        is_agent: false,
+        created: Some(chrono::Utc::now().to_rfc3339()),
+        updated: None,
+        extra: subwiki_meta_extra(context),
+    };
+    let index_stub = format!("# {new_title}\n");
+    wiki::write_wiki_dir(tree, &meta, &index_stub, /* requires_parent */ false)
+        .map_err(|e| ApplyError::HandlerIo(format!("create sub-wiki {new_wiki_id}: {e}")))?;
+
+    let mut spec_pages = Vec::with_capacity(collected.len());
+    for page in &collected {
+        relocate_page(pool, tree, page, &new_wiki_dir, new_wiki_id.as_str()).await?;
+        rehome_grouped_page(pool, tree, page, &ctx.source_wiki_id, new_wiki_id.as_str()).await;
+        spec_pages.push(GroupedPage {
+            page: page.rel_in_wiki.to_string_lossy().into_owned(),
+            page_bytes: page.bytes.clone(),
+            fact_ids: page.facts.iter().map(|f| f.as_str().to_owned()).collect(),
+        });
+    }
+
+    tracing::info!(
+        parent_wiki_id = parent_wiki_id.as_str(),
+        new_wiki_id = new_wiki_id.as_str(),
+        pages = spec_pages.len(),
+        facts = spec_pages.iter().map(|p| p.fact_ids.len()).sum::<usize>(),
+        "promote: pages_to_subwiki applied",
+    );
+
+    Ok(json!(PagesToSubwikiSpec {
+        variant: VARIANT_PAGES_TO_SUBWIKI.to_owned(),
+        source_wiki_id: ctx.source_wiki_id,
+        new_wiki_id: new_wiki_id.as_str().to_owned(),
+        new_wiki_slug: new_slug.as_str().to_owned(),
+        pages: spec_pages,
+    }))
+}
+
+/// The `_meta.extra` a newborn sub-wiki carries: the grouping-decided
+/// `summary` ("what goes in here") and dominant `style` default. Both
+/// are hints, not gates — an out-of-palette style leaves the wiki
+/// generic.
+fn subwiki_meta_extra(context: &Value) -> serde_yaml::Mapping {
+    let mut extra = serde_yaml::Mapping::new();
+    if let Some(desc) = context
+        .get("new_wiki_description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        extra.insert(
+            serde_yaml::Value::from("summary"),
+            serde_yaml::Value::from(desc),
+        );
+    }
+    if let Some(style) = context
+        .get("new_wiki_style")
+        .and_then(Value::as_str)
+        .filter(|s| matches!(*s, "prosa" | "prosa-tecnica" | "lista"))
+    {
+        extra.insert(
+            serde_yaml::Value::from("style"),
+            serde_yaml::Value::from(style),
+        );
+    }
+    extra
+}
+
+/// Revert a `pages_to_subwiki` promotion: every carried page goes back
+/// to the parent under its old name and the newborn wiki is removed.
+///
+/// Conservative, and deliberately narrower than "delete the directory":
+///
+/// 1. The wiki directory may hold only `_meta.md`, `index.md`, and the
+///    pages the spec carried. A page that appeared afterwards means the
+///    wiki has a life of its own — refuse.
+/// 2. `index.md` must carry **no** fact markers. The front page is
+///    compiler-authored and disposable, so its bytes are free to have
+///    changed since the apply; facts landing *on* it are not, since the
+///    revert has nowhere to put them.
+/// 3. Each carried page's marker set must still match the spec — a fact
+///    that arrived after the move would be dropped by the verbatim
+///    rewrite.
+/// 4. No target path in the parent may already exist.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the four guards run before any write, on purpose; splitting them hides that order"
+)]
+async fn revert_pages_to_subwiki(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    spec: &Value,
+) -> Result<(), RevertError> {
+    let spec: PagesToSubwikiSpec = serde_json::from_value(spec.clone()).map_err(|e| {
+        RevertError::InvalidPayload(format!("spec is not a PagesToSubwikiSpec: {e}"))
+    })?;
+    if spec.variant != VARIANT_PAGES_TO_SUBWIKI {
+        return Err(RevertError::InvalidPayload(format!(
+            "spec.variant {} is not {VARIANT_PAGES_TO_SUBWIKI}",
+            spec.variant,
+        )));
+    }
+    let parent_wiki_id = WikiId::parse(&spec.source_wiki_id)
+        .map_err(|e| RevertError::InvalidPayload(format!("spec.source_wiki_id invalid: {e}")))?;
+    let parent_handle = tree
+        .locate(&parent_wiki_id)
+        .map_err(|e| RevertError::HandlerData(format!("parent wiki not found: {e}")))?;
+    let wiki_dir = parent_handle.abs_dir().join(&spec.new_wiki_slug);
+
+    // 1. Nothing in the directory beyond _meta.md, index.md, and the
+    //    pages we carried in.
+    let carried: HashSet<&str> = spec.pages.iter().map(|p| p.page.as_str()).collect();
+    let mut unexpected: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&wiki_dir)
+        .map_err(|e| RevertError::HandlerIo(format!("read {dir}: {e}", dir = wiki_dir.display())))?
+    {
+        let entry = entry
+            .map_err(|e| RevertError::HandlerIo(format!("read dir entry: {e}")))?
+            .file_name();
+        let name = entry.to_string_lossy().into_owned();
+        if name != "_meta.md" && name != "index.md" && !carried.contains(name.as_str()) {
+            unexpected.push(name);
+        }
+    }
+    if !unexpected.is_empty() {
+        unexpected.sort();
+        return Err(RevertError::HandlerData(format!(
+            "sub-wiki {dir} grew entries {unexpected:?} since it was created — \
+             refusing to delete it; dissolve it by hand instead",
+            dir = wiki_dir.display(),
+        )));
+    }
+
+    // 2. The front page must hold no facts of its own.
+    let index_abs = wiki_dir.join("index.md");
+    let index_bytes = std::fs::read_to_string(&index_abs)
+        .map_err(|e| RevertError::HandlerIo(format!("read {}: {e}", index_abs.display())))?;
+    let index_facts = marker_set(&index_bytes);
+    if !index_facts.is_empty() {
+        return Err(RevertError::HandlerData(format!(
+            "sub-wiki {dir} has {n} fact(s) on its own index.md — reverting would strand them; \
+             dissolve it by hand instead",
+            dir = wiki_dir.display(),
+            n = index_facts.len(),
+        )));
+    }
+
+    // 3 + 4. Per-page guards, all of them before any write.
+    let mut restores: Vec<(PathBuf, PathBuf, &GroupedPage)> = Vec::with_capacity(spec.pages.len());
+    for page in &spec.pages {
+        let rel = validated_page_path_rev(&page.page, "spec.pages[].page")?;
+        let moved_abs = wiki_dir.join(&rel);
+        let moved_bytes = std::fs::read_to_string(&moved_abs)
+            .map_err(|e| RevertError::HandlerIo(format!("read {}: {e}", moved_abs.display())))?;
+        let on_disk = marker_set(&moved_bytes);
+        let expected: HashSet<FactId> = page
+            .fact_ids
+            .iter()
+            .filter_map(|s| FactId::parse(s).ok())
+            .collect();
+        if on_disk != expected {
+            return Err(RevertError::HandlerData(format!(
+                "{p} marker set diverged from spec (on_disk={on_disk:?}, expected={expected:?}) \
+                 — refusing to revert",
+                p = moved_abs.display(),
+            )));
+        }
+        let back_abs = parent_handle.abs_dir().join(&rel);
+        if back_abs.exists() {
+            return Err(RevertError::HandlerData(format!(
+                "{p} already exists — refusing to clobber; remove it manually if you really want \
+                 to revert",
+                p = back_abs.display(),
+            )));
+        }
+        restores.push((moved_abs, back_abs, page));
+    }
+
+    for (_, back_abs, page) in &restores {
+        let back_rel = wiki::workdir_relative_source_path(tree.workdir(), back_abs);
+        atomic_write(back_abs, page.page_bytes.as_bytes())
+            .map_err(|e| RevertError::HandlerIo(format!("atomic_write {back_rel}: {e}")))?;
+        let back_ids = move_facts_back(pool, page, parent_wiki_id.as_str(), &back_rel).await?;
+        let seed = crate::planner::RehomePageSeed::concept(
+            &plan_slug_of_page(&spec.source_wiki_id, &page.page),
+            &spec.source_wiki_id,
+        );
+        let moved_slug = crate::planner::slugify(&spec.new_wiki_id);
+        rehome_rows_with_seed(pool, &back_ids, &seed, &[moved_slug], tree).await;
+    }
+
+    std::fs::remove_dir_all(&wiki_dir).map_err(|e| {
+        RevertError::HandlerIo(format!("remove {dir}: {e}", dir = wiki_dir.display()))
+    })?;
+
+    tracing::info!(
+        parent_wiki_id = parent_wiki_id.as_str(),
+        new_wiki_id = spec.new_wiki_id,
+        pages = spec.pages.len(),
+        "promote: pages_to_subwiki reverted",
+    );
+    Ok(())
+}
+
+/// Move one carried page's facts back onto `back_rel` in the parent
+/// wiki, offsets untouched (the bytes are restored verbatim).
+async fn move_facts_back(
+    pool: &SqlitePool,
+    page: &GroupedPage,
+    dest_wiki_id: &str,
+    back_rel: &str,
+) -> Result<Vec<FactId>, RevertError> {
+    let mut out = Vec::with_capacity(page.fact_ids.len());
+    for fid_str in &page.fact_ids {
+        let fid = FactId::parse(fid_str).map_err(|e| {
+            RevertError::InvalidPayload(format!("spec fact_id {fid_str} invalid: {e}"))
+        })?;
+        let row = fact_index::find_by_id(pool, &fid)
+            .await
+            .map_err(|e| RevertError::HandlerIo(e.to_string()))?
+            .ok_or_else(|| {
+                RevertError::HandlerData(format!("fact {fid_str} vanished mid-revert"))
+            })?;
+        let touched = fact_index::move_to_wiki(
+            pool,
+            &fid,
+            dest_wiki_id,
+            back_rel,
+            row.region_start,
+            row.region_end,
+        )
+        .await
+        .map_err(|e| RevertError::HandlerIo(e.to_string()))?;
+        if touched == 0 {
+            return Err(RevertError::HandlerData(format!(
+                "fact_index::move_to_wiki updated 0 rows for {fid_str}",
+            )));
+        }
+        out.push(fid);
+    }
+    Ok(out)
+}
+
+/// Apply a `pages_move_wiki` promotion: pages that belong to a wiki
+/// which **already exists** move into it.
+///
+/// No page-count floor applies — the home is already there, so there is
+/// nothing to justify; a single stray page belongs inside just as much
+/// as nine do. The target must be an existing **child** of the source
+/// wiki: regrouping rearranges a wiki's own subtree, it never files
+/// content into somebody else's.
+async fn apply_pages_move_wiki(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    context: &Value,
+    _answers: &Value,
+) -> Result<Value, ApplyError> {
+    let ctx: GroupContext = serde_json::from_value(context.clone())
+        .map_err(|e| ApplyError::InvalidPayload(format!("context: {e}")))?;
+    let source_wiki_id = WikiId::parse(&ctx.source_wiki_id)
+        .map_err(|e| ApplyError::InvalidPayload(format!("context.source_wiki_id invalid: {e}")))?;
+    let target_raw = ctx
+        .target_wiki_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            ApplyError::InvalidPayload("context.target_wiki_id is required".to_owned())
+        })?;
+    let target_wiki_id = WikiId::parse(target_raw)
+        .map_err(|e| ApplyError::InvalidPayload(format!("context.target_wiki_id invalid: {e}")))?;
+
+    let source_handle = tree
+        .locate(&source_wiki_id)
+        .map_err(|e| ApplyError::HandlerData(format!("source wiki not found: {e}")))?;
+    let target_handle = tree
+        .locate(&target_wiki_id)
+        .map_err(|e| ApplyError::HandlerData(format!("target wiki not found: {e}")))?;
+    if target_handle.meta().parent_wiki_id.as_ref() != Some(&source_wiki_id) {
+        return Err(ApplyError::InvalidPayload(format!(
+            "{target_wiki_id} is not a child of {source_wiki_id} — a group move only rearranges a \
+             wiki's own subtree",
+        )));
+    }
+
+    let collected = collect_group_pages(pool, tree, source_handle.abs_dir(), &ctx.pages).await?;
+    let mut spec_pages = Vec::with_capacity(collected.len());
+    for page in &collected {
+        relocate_page(
+            pool,
+            tree,
+            page,
+            target_handle.abs_dir(),
+            target_wiki_id.as_str(),
+        )
+        .await?;
+        rehome_grouped_page(
+            pool,
+            tree,
+            page,
+            &ctx.source_wiki_id,
+            target_wiki_id.as_str(),
+        )
+        .await;
+        spec_pages.push(GroupedPage {
+            page: page.rel_in_wiki.to_string_lossy().into_owned(),
+            page_bytes: page.bytes.clone(),
+            fact_ids: page.facts.iter().map(|f| f.as_str().to_owned()).collect(),
+        });
+    }
+
+    tracing::info!(
+        source_wiki_id = source_wiki_id.as_str(),
+        target_wiki_id = target_wiki_id.as_str(),
+        pages = spec_pages.len(),
+        "promote: pages_move_wiki applied",
+    );
+
+    Ok(json!(PagesMoveWikiSpec {
+        variant: VARIANT_PAGES_MOVE_WIKI.to_owned(),
+        source_wiki_id: ctx.source_wiki_id,
+        target_wiki_id: target_wiki_id.as_str().to_owned(),
+        pages: spec_pages,
+    }))
+}
+
+/// Revert a `pages_move_wiki`: each page goes back to the wiki it came
+/// from. Same conservatism as the sibling revert — a page whose marker
+/// set drifted, or whose old path has been re-created, blocks the undo
+/// rather than losing content.
+async fn revert_pages_move_wiki(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    spec: &Value,
+) -> Result<(), RevertError> {
+    let spec: PagesMoveWikiSpec = serde_json::from_value(spec.clone()).map_err(|e| {
+        RevertError::InvalidPayload(format!("spec is not a PagesMoveWikiSpec: {e}"))
+    })?;
+    if spec.variant != VARIANT_PAGES_MOVE_WIKI {
+        return Err(RevertError::InvalidPayload(format!(
+            "spec.variant {} is not {VARIANT_PAGES_MOVE_WIKI}",
+            spec.variant,
+        )));
+    }
+    let source_wiki_id = WikiId::parse(&spec.source_wiki_id)
+        .map_err(|e| RevertError::InvalidPayload(format!("spec.source_wiki_id invalid: {e}")))?;
+    let target_wiki_id = WikiId::parse(&spec.target_wiki_id)
+        .map_err(|e| RevertError::InvalidPayload(format!("spec.target_wiki_id invalid: {e}")))?;
+    let source_handle = tree
+        .locate(&source_wiki_id)
+        .map_err(|e| RevertError::HandlerData(format!("source wiki not found: {e}")))?;
+    let target_handle = tree
+        .locate(&target_wiki_id)
+        .map_err(|e| RevertError::HandlerData(format!("target wiki not found: {e}")))?;
+
+    let mut restores: Vec<(PathBuf, PathBuf, &GroupedPage)> = Vec::with_capacity(spec.pages.len());
+    for page in &spec.pages {
+        let rel = validated_page_path_rev(&page.page, "spec.pages[].page")?;
+        let moved_abs = target_handle.abs_dir().join(&rel);
+        let moved_bytes = std::fs::read_to_string(&moved_abs)
+            .map_err(|e| RevertError::HandlerIo(format!("read {}: {e}", moved_abs.display())))?;
+        let on_disk = marker_set(&moved_bytes);
+        let expected: HashSet<FactId> = page
+            .fact_ids
+            .iter()
+            .filter_map(|s| FactId::parse(s).ok())
+            .collect();
+        if on_disk != expected {
+            return Err(RevertError::HandlerData(format!(
+                "{p} marker set diverged from spec (on_disk={on_disk:?}, expected={expected:?}) \
+                 — refusing to revert",
+                p = moved_abs.display(),
+            )));
+        }
+        let back_abs = source_handle.abs_dir().join(&rel);
+        if back_abs.exists() {
+            return Err(RevertError::HandlerData(format!(
+                "{p} already exists — refusing to clobber; remove it manually if you really want \
+                 to revert",
+                p = back_abs.display(),
+            )));
+        }
+        restores.push((moved_abs, back_abs, page));
+    }
+
+    for (moved_abs, back_abs, page) in &restores {
+        let back_rel = wiki::workdir_relative_source_path(tree.workdir(), back_abs);
+        atomic_write(back_abs, page.page_bytes.as_bytes())
+            .map_err(|e| RevertError::HandlerIo(format!("atomic_write {back_rel}: {e}")))?;
+        std::fs::remove_file(moved_abs)
+            .map_err(|e| RevertError::HandlerIo(format!("remove {}: {e}", moved_abs.display())))?;
+        let back_ids = move_facts_back(pool, page, source_wiki_id.as_str(), &back_rel).await?;
+        let seed = crate::planner::RehomePageSeed::concept(
+            &plan_slug_of_page(&spec.source_wiki_id, &page.page),
+            &spec.source_wiki_id,
+        );
+        let moved_slug = plan_slug_of_page(&spec.target_wiki_id, &page.page);
+        rehome_rows_with_seed(pool, &back_ids, &seed, &[moved_slug], tree).await;
+    }
+
+    tracing::info!(
+        source_wiki_id = source_wiki_id.as_str(),
+        target_wiki_id = target_wiki_id.as_str(),
+        pages = spec.pages.len(),
+        "promote: pages_move_wiki reverted",
+    );
+    Ok(())
+}
+
 // ---------- Helpers ----------
 
 struct ParsedRegion {
@@ -3450,6 +4156,133 @@ pub async fn apply_file_to_subwiki_direct(
     })
 }
 
+/// Hints the REM grouping pass attaches to a group receipt for the
+/// dashboard to render. Presentation + audit only — no handler reads
+/// them.
+#[derive(Debug, Clone, Default)]
+pub struct PageGroupHints {
+    /// Pages in the group — the trigger for a `pages_to_subwiki` is the
+    /// group's **size**, never one page's mass.
+    pub group_pages: Option<usize>,
+    /// Top-level pages the source wiki held when the group was cut.
+    pub source_wiki_pages: Option<usize>,
+    /// Free-form reason ("rem grouping: 13 of 35 pages of famiglia").
+    pub reason: Option<String>,
+}
+
+/// Act-first entry point for the REM grouping pass: a group of pages
+/// becomes a **new** sub-wiki, the change applies in-cycle, and a
+/// born-applied receipt carries the undo window.
+///
+/// # Errors
+///
+/// Apply failures surface as [`DirectPromoteError::Apply`]; receipt
+/// insertion as [`DirectPromoteError::Proposals`].
+#[allow(
+    clippy::too_many_arguments,
+    reason = "carries the newborn wiki's identity + _meta defaults; a struct would just rename the same fields"
+)]
+pub async fn apply_pages_to_subwiki_direct(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    source_wiki_id: &str,
+    pages: &[String],
+    new_wiki_slug: &str,
+    new_wiki_title: Option<&str>,
+    style: Option<&str>,
+    description: Option<&str>,
+    hints: &PageGroupHints,
+    recipient: Option<String>,
+) -> Result<DirectApplied, DirectPromoteError> {
+    let context = json!({
+        "variant": VARIANT_PAGES_TO_SUBWIKI,
+        "source_wiki_id": source_wiki_id,
+        "pages": pages,
+        "new_wiki_slug": new_wiki_slug,
+        "new_wiki_title": new_wiki_title,
+        "new_wiki_style": style,
+        "new_wiki_description": description,
+        "group_pages": hints.group_pages,
+        "source_wiki_pages": hints.source_wiki_pages,
+        "reason": hints.reason,
+    });
+    let answers = json!({ "variant": VARIANT_PAGES_TO_SUBWIKI });
+    let spec = apply_pages_to_subwiki(pool, tree, &context, &answers).await?;
+    let questions = json!([{
+        "id": "variant",
+        "text": format!("Group {n} pages into a new sub-wiki?", n = pages.len()),
+        "options": [{
+            "id": VARIANT_PAGES_TO_SUBWIKI,
+            "label": format!("Create sub-wiki `{new_wiki_slug}` from {n} pages", n = pages.len()),
+            "value": VARIANT_PAGES_TO_SUBWIKI,
+            "recommended": true,
+        }]
+    }]);
+    let receipt = proposals::emit_applied_proposal(
+        pool,
+        EmitParams::new(kind::WIKI_PROMOTE, context, questions).with_recipient(recipient),
+        spec.clone(),
+        None,
+    )
+    .await?;
+    Ok(DirectApplied {
+        proposal_id: receipt.proposal_id,
+        revert_deadline: receipt.revert_deadline,
+        spec,
+    })
+}
+
+/// Act-first entry point for the REM grouping pass: pages move into a
+/// sub-wiki that already exists.
+///
+/// # Errors
+///
+/// Apply failures surface as [`DirectPromoteError::Apply`]; receipt
+/// insertion as [`DirectPromoteError::Proposals`].
+pub async fn apply_pages_move_wiki_direct(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    source_wiki_id: &str,
+    target_wiki_id: &str,
+    pages: &[String],
+    hints: &PageGroupHints,
+    recipient: Option<String>,
+) -> Result<DirectApplied, DirectPromoteError> {
+    let context = json!({
+        "variant": VARIANT_PAGES_MOVE_WIKI,
+        "source_wiki_id": source_wiki_id,
+        "target_wiki_id": target_wiki_id,
+        "pages": pages,
+        "group_pages": hints.group_pages,
+        "source_wiki_pages": hints.source_wiki_pages,
+        "reason": hints.reason,
+    });
+    let answers = json!({ "variant": VARIANT_PAGES_MOVE_WIKI });
+    let spec = apply_pages_move_wiki(pool, tree, &context, &answers).await?;
+    let questions = json!([{
+        "id": "variant",
+        "text": format!("Move {n} pages into {target_wiki_id}?", n = pages.len()),
+        "options": [{
+            "id": VARIANT_PAGES_MOVE_WIKI,
+            "label": format!("Move {n} pages into `{target_wiki_id}`", n = pages.len()),
+            "value": VARIANT_PAGES_MOVE_WIKI,
+            "recommended": true,
+        }]
+    }]);
+    let receipt = proposals::emit_applied_proposal(
+        pool,
+        EmitParams::new(kind::WIKI_PROMOTE, context, questions).with_recipient(recipient),
+        spec.clone(),
+        None,
+    )
+    .await?;
+    Ok(DirectApplied {
+        proposal_id: receipt.proposal_id,
+        revert_deadline: receipt.revert_deadline,
+        spec,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4555,5 +5388,240 @@ mod tests {
         revert_wiki_promote(&pool, &tree, &spec)
             .await
             .expect("soft revert");
+    }
+
+    // ---------- page group → wiki (regrouping) ----------
+
+    /// Seed an existing sub-wiki under alice so the "file into a home
+    /// that already exists" branch has a target.
+    fn seed_alice_child(tree: &WikiTree, slug: &str) {
+        let dir = tree.wikis_dir().join("alice").join(slug);
+        std::fs::create_dir_all(&dir).unwrap();
+        let meta = format!(
+            "---\nwiki_id: alice-{slug}\nwiki_type: wiki-tech\nparent_wiki_id: alice\n\
+             slug: {slug}\ntitle: {slug}\nacl_default: 'user:alice'\n---\n",
+        );
+        std::fs::write(dir.join("_meta.md"), meta).unwrap();
+        std::fs::write(dir.join("index.md"), "# placeholder\n").unwrap();
+    }
+
+    #[tokio::test]
+    async fn pages_to_subwiki_carries_every_page_and_reverts_whole() {
+        let (_dir, tree, pool) = setup().await;
+        let emb = embedder();
+        let mut planted = Vec::new();
+        for page in ["orto.md", "potatura.md", "compost.md"] {
+            planted.push(
+                capture_one(&tree, &pool, emb.clone(), page, &format!("note on {page}")).await,
+            );
+        }
+        let ctx = json!({
+            "variant": "pages_to_subwiki",
+            "source_wiki_id": "alice",
+            "pages": ["orto.md", "potatura.md", "compost.md"],
+            "new_wiki_slug": "giardino",
+            "new_wiki_title": "Giardino",
+            "new_wiki_style": "prosa",
+            "new_wiki_description": "Everything about the garden",
+        });
+        let spec = apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_subwiki"}))
+            .await
+            .expect("apply");
+
+        // The wiki is born holding all three pages under their own
+        // names, and the parent is left without them.
+        let new_dir = tree.wikis_dir().join("alice").join("giardino");
+        for page in ["orto.md", "potatura.md", "compost.md"] {
+            assert!(new_dir.join(page).exists(), "{page} moved in");
+            assert!(!tree.wikis_dir().join("alice").join(page).exists());
+        }
+        for fid in &planted {
+            let row = fact_index::find_by_id(&pool, fid).await.unwrap().unwrap();
+            assert_eq!(row.wiki_id, "alice-giardino");
+        }
+        // The birth stamps the _meta hints so the wiki is not born blind.
+        let handle = tree
+            .locate(&WikiId::parse("alice-giardino").unwrap())
+            .unwrap();
+        assert_eq!(
+            handle
+                .meta()
+                .extra
+                .get(serde_yaml::Value::from("style"))
+                .and_then(serde_yaml::Value::as_str),
+            Some("prosa"),
+        );
+
+        // Undo puts every page back and takes the wiki with it.
+        revert_wiki_promote(&pool, &tree, &spec)
+            .await
+            .expect("revert");
+        assert!(!new_dir.exists(), "the newborn wiki is gone");
+        for page in ["orto.md", "potatura.md", "compost.md"] {
+            assert!(
+                tree.wikis_dir().join("alice").join(page).exists(),
+                "{page} is back"
+            );
+        }
+        for fid in &planted {
+            let row = fact_index::find_by_id(&pool, fid).await.unwrap().unwrap();
+            assert_eq!(row.wiki_id, "alice");
+        }
+    }
+
+    #[tokio::test]
+    async fn revert_pages_to_subwiki_refuses_once_a_fact_landed_inside() {
+        let (_dir, tree, pool) = setup().await;
+        let emb = embedder();
+        for page in ["orto.md", "potatura.md"] {
+            capture_one(&tree, &pool, emb.clone(), page, &format!("note on {page}")).await;
+        }
+        let ctx = json!({
+            "variant": "pages_to_subwiki",
+            "source_wiki_id": "alice",
+            "pages": ["orto.md", "potatura.md"],
+            "new_wiki_slug": "giardino",
+        });
+        let spec = apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_subwiki"}))
+            .await
+            .expect("apply");
+
+        // A fact arrives on a carried page after the move. Restoring the
+        // recorded bytes would silently drop it, so the undo must refuse
+        // rather than lose content.
+        let moved = tree
+            .wikis_dir()
+            .join("alice")
+            .join("giardino")
+            .join("orto.md");
+        let mut bytes = std::fs::read_to_string(&moved).unwrap();
+        bytes.push_str("\n{{f=019f0000-0000-7000-8000-00000000abcd}}later note{{/}}\n");
+        std::fs::write(&moved, bytes).unwrap();
+
+        let err = revert_wiki_promote(&pool, &tree, &spec).await.unwrap_err();
+        assert!(
+            matches!(err, RevertError::HandlerData(ref m) if m.contains("marker set diverged")),
+            "unexpected error: {err:?}",
+        );
+        assert!(moved.exists(), "nothing was undone");
+    }
+
+    #[tokio::test]
+    async fn revert_pages_to_subwiki_refuses_when_the_wiki_grew_a_page() {
+        let (_dir, tree, pool) = setup().await;
+        let emb = embedder();
+        for page in ["orto.md", "potatura.md"] {
+            capture_one(&tree, &pool, emb.clone(), page, &format!("note on {page}")).await;
+        }
+        let ctx = json!({
+            "variant": "pages_to_subwiki",
+            "source_wiki_id": "alice",
+            "pages": ["orto.md", "potatura.md"],
+            "new_wiki_slug": "giardino",
+        });
+        let spec = apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_subwiki"}))
+            .await
+            .expect("apply");
+        // The wiki has started a life of its own.
+        std::fs::write(
+            tree.wikis_dir()
+                .join("alice")
+                .join("giardino")
+                .join("semina.md"),
+            "# semina\n",
+        )
+        .unwrap();
+
+        let err = revert_wiki_promote(&pool, &tree, &spec).await.unwrap_err();
+        assert!(
+            matches!(err, RevertError::HandlerData(ref m) if m.contains("grew entries")),
+            "unexpected error: {err:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn pages_move_wiki_files_into_an_existing_home_and_back() {
+        let (_dir, tree, pool) = setup().await;
+        seed_alice_child(&tree, "giardino");
+        let tree = WikiTree::open(tree.workdir()).unwrap();
+        let emb = embedder();
+        let fid = capture_one(&tree, &pool, emb, "orto.md", "note on orto").await;
+
+        let ctx = json!({
+            "variant": "pages_move_wiki",
+            "source_wiki_id": "alice",
+            "target_wiki_id": "alice-giardino",
+            "pages": ["orto.md"],
+        });
+        let spec = apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_move_wiki"}))
+            .await
+            .expect("apply");
+
+        let moved = tree
+            .wikis_dir()
+            .join("alice")
+            .join("giardino")
+            .join("orto.md");
+        assert!(moved.exists(), "the page found its home");
+        assert!(!tree.wikis_dir().join("alice").join("orto.md").exists());
+        let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
+        assert_eq!(row.wiki_id, "alice-giardino");
+
+        revert_wiki_promote(&pool, &tree, &spec)
+            .await
+            .expect("revert");
+        assert!(!moved.exists());
+        assert!(tree.wikis_dir().join("alice").join("orto.md").exists());
+        let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
+        assert_eq!(row.wiki_id, "alice");
+    }
+
+    #[tokio::test]
+    async fn pages_move_wiki_refuses_a_target_outside_the_subtree() {
+        let (_dir, tree, pool) = setup().await;
+        seed_wiki(&tree, "bob");
+        let tree = WikiTree::open(tree.workdir()).unwrap();
+        let emb = embedder();
+        capture_one(&tree, &pool, emb, "orto.md", "note on orto").await;
+
+        // Regrouping rearranges a wiki's own subtree — it never files
+        // content into somebody else's wiki.
+        let ctx = json!({
+            "variant": "pages_move_wiki",
+            "source_wiki_id": "alice",
+            "target_wiki_id": "bob",
+            "pages": ["orto.md"],
+        });
+        let err = apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_move_wiki"}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ApplyError::InvalidPayload(ref m) if m.contains("is not a child of")),
+            "unexpected error: {err:?}",
+        );
+        assert!(tree.wikis_dir().join("alice").join("orto.md").exists());
+    }
+
+    #[tokio::test]
+    async fn pages_to_subwiki_refuses_to_carry_the_parents_index() {
+        let (_dir, tree, pool) = setup().await;
+        let emb = embedder();
+        capture_one(&tree, &pool, emb.clone(), "index.md", "front page note").await;
+        capture_one(&tree, &pool, emb, "orto.md", "note on orto").await;
+
+        let ctx = json!({
+            "variant": "pages_to_subwiki",
+            "source_wiki_id": "alice",
+            "pages": ["orto.md", "index.md"],
+            "new_wiki_slug": "giardino",
+        });
+        let err = apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_subwiki"}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ApplyError::InvalidPayload(ref m) if m.contains("index.md")),
+            "unexpected error: {err:?}",
+        );
+        assert!(tree.wikis_dir().join("alice").join("index.md").exists());
     }
 }

@@ -1609,6 +1609,30 @@ pub fn park_force_dirty_in_persisted_plan(tree: &WikiTree, slugs: &[String]) -> 
     Ok(added)
 }
 
+/// Every persisted-plan slug whose page lives in `wiki_id`.
+///
+/// The lookup a **dissolve** needs ([`crate::wiki_delete`]): the slugs it
+/// hands to [`park_bridge_signals`] as `reopen_pages`, so the facts those
+/// pages carried leave the next build's carry-over and flow through the
+/// Cartografo again instead of inheriting a placement whose page no longer
+/// exists. A missing plan yields nothing — there is no carry-over to
+/// re-open, and the first build classifies those facts as new anyway.
+///
+/// # Errors
+///
+/// Plan IO.
+pub fn plan_slugs_of_wiki(tree: &WikiTree, wiki_id: &str) -> Result<Vec<String>> {
+    let Some(plan) = load_previous_plan(tree)? else {
+        return Ok(Vec::new());
+    };
+    Ok(plan
+        .pages
+        .values()
+        .filter(|p| p.wiki_id == wiki_id)
+        .map(|p| p.slug.clone())
+        .collect())
+}
+
 /// Park the dream reviewer's bridge signals on the persisted plan.
 ///
 /// `refile_candidates` are fact ids the next refile sweep judges;

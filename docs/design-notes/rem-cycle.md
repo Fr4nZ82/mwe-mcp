@@ -37,7 +37,7 @@ construction.
  1. auto_apply sweep             proposals::apply_proposal on rows whose timeout_at < now
  2. auto_finalize sweep          proposals::auto_finalize_unconfirmed
  3. revisor jaccard              recall::jaccard_sets + rem_dedup_semantic LLM → direct apply + `structure_applied` notice (dedup_merge) *[skips smart]*
- 4. auto_promote                 rem_promotions LLM → direct apply + `structure_applied` notice (file_to_subwiki + paragraph_to_file)   *[skips smart]*
+ 4. auto_promote                 rem_promotions LLM → direct apply + `structure_applied` notice (pages_to_subwiki / pages_move_wiki + paragraph_to_file) *[skips smart]*
  5. page_merge                   plan/reviewer signals nominate → rem_dedup_semantic LLM confirms → direct apply + `structure_applied` notice (page_merge)
  6. completion_sweep             fresh evidence × similar open items → rem-completion LLM confirms → close_validity + `validity_close` receipt + notice *[skips smart]*
  7. contradiction_sweep          freshly contradicted seeds × similar open items → rem-contradiction LLM confirms → satellites close as contradicted, same paper trail *[skips smart]*
@@ -178,8 +178,8 @@ before.
 a `(kind, key_hash)` row meaning *this exact question, on this exact
 content, judged by this exact model and prompt, already came back
 negative*. The seven confirmers that carry it are the revisor dedup
-pair, the paragraph split, the sub-wiki emergence pass, the page merge,
-and the completion / contradiction / refile sweeps.
+pair, the paragraph split, the page-group regrouping pass, the page
+merge, and the completion / contradiction / refile sweeps.
 
 - **The key is the rendered prompt** (hashed together with the slot's
   `model_id`). That one input carries every invalidation axis for free:
@@ -311,11 +311,17 @@ backend the **light** dream compile runs on, not an apply slot.
 ## Auto-promote sub-job
 
 Two passes share the `rem_promotions` LLM slot, the
-`auto_promote_cap`, and the `applied` list: a **page →
-sub-wiki emergence** pass (whole-page promotion, run first) and the
+`auto_promote_cap`, and the `applied` list: a **page-group → wiki**
+regrouping pass (whole pages move between wikis, run first) and the
 **paragraph → page** pass (per-page split, below). Both are the forma
 fisica scale of [memory-model.md](../concepts/memory-model.md) — line→page (paragraph) and
-page→folder (sub-wiki).
+page→folder (regrouping).
+
+The two rungs read **different** signals and no longer compete. A page
+that has accumulated mass is *split into pages* by the paragraph pass; a
+**set** of pages that are already one subject becomes a wiki. A wiki is
+therefore never born holding a single page, and the trigger is evidence
+on disk rather than a forecast about what one page might ramify into.
 
 Both passes are **act-first** ("apply + notice"): a structural change is
 never a blocking proposal the user must approve. The pass applies the
@@ -332,49 +338,65 @@ forward it to. The dashboard is the **undo** surface — *le grosse si
 fanno vedere*: if the LLM promotes badly, the user/admin reverts or
 declasses from there; the product never stops to ask permission.
 
-### Page → sub-wiki emergence pass
+### Page-group → wiki regrouping pass
 
-Per wiki, *before* the paragraph pass, for each **non-`index.md`** page
-whose `page_mass >= auto_promote_subwiki_min_page_facts` (default 20):
+Per non-smart wiki, *before* the paragraph pass, **one** LLM call for the
+whole wiki (not one per page):
 
-1. Skip `index.md` (the wiki's own root/hub — promoting it would delete
-   the index), any page whose normalized `style:` testata is **`lista`**
-   (a list is structurally terminal — it never emerges into a sub-wiki on
-   mass; list items that outgrow the list promote individually through
-   the paragraph→page rung first, after which the container is a folder
-   of pages, not a list), and any page where a fact is already covered
-   by a `wiki_promote` row (receipt or legacy pending). The lista skip is a **form
-   invariant**, not a semantic gate: the LLM still makes every judgement
-   *inside* a prosa page and still decides whether a prosa page has grown
-   into a subject area. **No recall floor** applies —
-   emergence is mass-driven, so a fresh wiki with a
-   dense page can emerge before any recall accrues.
-2. Ask the `rem_promotions` LLM (`rem-subwiki-emergence` prompt) with
-   the page's fact bodies, the page mass, and the **parent wiki's total
-   active facts** (weigh the page against its parent): strict JSON
-   `{"promote", "slug", "style", "description"}`. `style` is the emerged
-   wiki's dominant style **default** (`prosa`/`prosa-tecnica`/`lista`, or
-   `null` = generic) and `description` is a free-text "what goes in here"
-   whose wording encodes how strict the hint is — both a **hint, not a
-   gate** ([memory-model.md](../concepts/memory-model.md)).
-3. On `promote: true`, call `promote::apply_file_to_subwiki_direct` with
-   **every** active fact on the page (the handler refuses partial moves):
-   the sub-wiki is created on the spot, the born-applied receipt recorded,
-   and the `structure_applied` notice emitted (`variant: file_to_subwiki`,
-   plus the `new_wiki_id` from the apply spec). The `style` +
-   `description` ride in the receipt **context** (emergence-decided, not
-   operator-chosen); the apply stamps them onto the emerged wiki's `_meta`
-   (`extra["style"]` validated to the closed palette, `extra["summary"]`)
-   so the new wiki is **not born blind** to placement + recall navigation
-   (the metadata is deposited ahead, like the
-   `keywords`/`summary` of recall-nav prep).
+1. Build the candidate list: every page carrying at least one active
+   fact, except the wiki's own **`index.md`** (moving a wiki's front page
+   out would decapitate it). Collect the wiki's existing **child
+   sub-wikis** too — smart children excluded, since REM never files into
+   a wiki whose consumer is the sole writer.
+2. **Pre-filter** (pure resource guard): skip the wiki when it has fewer
+   than `auto_promote_group_min_pages` candidates **and** no child
+   sub-wiki. With neither a possible birth nor a possible move, the call
+   would be wasted. There is no mass gate and no recall floor — a page's
+   size is not this rung's business.
+3. Ask the `rem_promotions` LLM (`rem-page-grouping` prompt) with the
+   page **inventory** — name, active-fact count, and up to two verbatim
+   excerpts per page — plus the existing sub-wikis and their `_meta`
+   summaries. The inventory deliberately carries excerpts rather than the
+   stored `page_description`: that field is written per fact at routing
+   time and drifts (in a live corpus it routinely describes a
+   neighbouring page, and mixes languages), and a wrong label is worse
+   than no label.
+4. The verdict is strict JSON `{"groups": [...]}`, each group either
+   `{"action":"create", "slug", "title", "style", "description",
+   "pages":[…]}` or `{"action":"move", "target", "pages":[…]}`.
+   Rust then enforces what is structural, never semantic: every named
+   page must exist in this wiki and be claimed by exactly **one** group;
+   a `create` group must hold at least `auto_promote_group_min_pages`
+   pages; a `move` target must be an existing **child** of this wiki
+   (regrouping rearranges a wiki's own subtree, it never files content
+   into somebody else's). A group failing any of these is dropped with a
+   soft error — never silently reshaped.
+5. Apply through `promote::apply_pages_to_subwiki_direct` /
+   `promote::apply_pages_move_wiki_direct`: pages move whole, under their
+   own names, with every active fact on them; the born-applied receipt is
+   recorded and one `structure_applied` notice emitted (`variant:
+   pages_to_subwiki` / `pages_move_wiki`). A newborn wiki's `index.md` is
+   a bare title stub — its front page is a plan-owned `emerged_index`
+   node the [narrative compiler](narrative-compiler.md) authors, so the
+   handler must not invent prose the compiler would then fight over. The
+   `style` + `description` ride in the receipt **context** and are
+   stamped onto the newborn `_meta` (`extra["style"]` validated to the
+   closed palette, `extra["summary"]`) so the wiki is **not born blind**
+   to placement + recall navigation.
 
-Running emergence first gives whole-page promotion **precedence**: the
-facts it moves become `already_promoted_for`, so the paragraph pass
-below skips carving them piecemeal. The threshold is a resource
-pre-filter (default 20, overridable as
-`rem.policy.auto_promote_subwiki_min_page_facts`); the LLM makes the
-emerge verdict — no semantic gate.
+The **birth floor governs birth only**. Filing pages into a sub-wiki that
+already exists has no floor: the home is there, so a single stray page
+belongs inside just as much as nine do — and that branch is what repairs
+a corpus where a subject already has a wiki but half its pages never made
+it in.
+
+The verdict memo (`rem_verdicts` kind `page_grouping`) keys on the
+rendered prompt, so a settled "no groups" re-opens by itself the moment
+the inventory changes — a page added, split, or renamed. Pages this pass
+relocated are skipped by the paragraph pass below: its `facts` snapshot
+predates the move and still points at their old home. The floor is
+overridable as `rem.policy.auto_promote_group_min_pages` (default 9);
+applies share `auto_promote_cap` with the paragraph pass.
 
 ### Paragraph → page split pass (per page)
 
@@ -399,12 +421,11 @@ in every wiki:
    (`/dashboard/admin/rem-settings` — the scheduler snapshots the shared
    policy handle at each cycle start, so a save applies to the next
    cycle without a restart).
-2. Skip pages where any fact is already covered by a `wiki_promote` row
-   (an `applied` row is the receipt of a promote already performed, a
-   legacy `pending` one is in flight) — the dedup check is a coarse
-   `LIKE` over `context` so the same split does not pile up over
-   multiple nights, and a page the emergence pass just moved wholesale
-   is left alone.
+2. Skip pages carrying a genuine promotion receipt of their own — the
+   same `already_promoted_for` check the emergence pass applies above
+   (promotion variants only, scoped to this wiki + this page), so the
+   same split does not pile up over multiple nights and a page the
+   emergence pass just moved wholesale is left alone.
 3. Show the **whole page** to the `rem_promotions` LLM
    (`paragraph_split_prompt`): every fact annotated with a short
    positional handle (`[n1]`, `[n2]`, …) and its

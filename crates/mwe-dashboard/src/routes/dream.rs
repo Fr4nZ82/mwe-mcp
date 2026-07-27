@@ -184,13 +184,35 @@ fn start_async(state: &DashboardState, kind: DreamKind) -> Result<Response> {
         ));
     }
     let label = kind.label();
-    let Ok(guard) = state.rem_gate.clone().try_lock_owned() else {
+    if !spawn_dream(state, kind) {
         return Ok(axum::Json(StartAck {
             started: false,
             busy: true,
             kind: label,
         })
         .into_response());
+    }
+    Ok(axum::Json(StartAck {
+        started: true,
+        busy: false,
+        kind: label,
+    })
+    .into_response())
+}
+
+/// Spawn one dream on a background task if the REM gate is free.
+///
+/// Returns `true` when this call started it, `false` when another dream
+/// already holds the gate — the caller decides what busy means. The trigger
+/// routes answer `{started:false, busy:true}`; a **wiki dissolve** just lets
+/// the nightly cycle pick the work up, since the re-placement it needs is
+/// parked on the persisted plan and survives until some build consumes it.
+///
+/// Holds the gate for the whole run via an owned guard moved into the task.
+pub(super) fn spawn_dream(state: &DashboardState, kind: DreamKind) -> bool {
+    let label = kind.label();
+    let Ok(guard) = state.rem_gate.clone().try_lock_owned() else {
+        return false;
     };
     state
         .dream_status
@@ -242,13 +264,7 @@ fn start_async(state: &DashboardState, kind: DreamKind) -> Result<Response> {
         )
         .await;
     });
-
-    Ok(axum::Json(StartAck {
-        started: true,
-        busy: false,
-        kind: label,
-    })
-    .into_response())
+    true
 }
 
 /// The structured outcome of one dream, ready for the journal: the one-line

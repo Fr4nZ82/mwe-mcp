@@ -102,7 +102,7 @@ async fn list_lists_every_bundled_prompt_with_matches_default_after_seed() {
         "ingest",
         "rem-dedup",
         "rem-promotions",
-        "rem-subwiki-emergence",
+        "rem-page-grouping",
         "agentic-chat-panel",
     ] {
         let needle = format!("<code>{name}</code>");

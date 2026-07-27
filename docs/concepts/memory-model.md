@@ -152,18 +152,35 @@ internal ingest LLM or by the user in the dashboard, never a structural
 constraint enforced by the engine. Structure is meant to **emerge
 organically** from use, not be declared up front.
 
-Concretely, a sub-wiki emerges when **many atomic facts converge on one
-topic**: facts about a job accumulate on a `lavoro` page, that page
-crosses a mass threshold, and the page is promoted *whole* to its own
-sub-wiki (the `file_to_subwiki` shape). The trigger is the **count / mass
-of atomic facts on a topic**, never the length of a single fact — facts
-are **atomic** (one clause to a few sentences). A turn that states several
-things is **meant** to be split into several atomic facts at ingest (the
-multi-fact `extractions[]` path, see
-ingest-pipeline.md); a pasted
-multi-fact block is decomposed into atomic facts first, and those facts
-then drive emergence like any others. Either way "one long fact → a new
-wiki" is a **non-goal** — emergence keys off fact *count* on a topic.
+Concretely, structure emerges in **two distinct steps, on two distinct
+signals**, and they must not be confused:
+
+1. **A page ramifies into pages.** Facts about a job accumulate on a
+   `lavoro` page; once that page carries enough of them, the REM
+   paragraph pass splits the sub-topics that outgrew it onto pages of
+   their own. The trigger is the **count / mass of atomic facts on a
+   page**, never the length of a single fact — facts are **atomic** (one
+   clause to a few sentences). "One long fact → a new page" is a
+   **non-goal**.
+2. **A group of pages becomes a wiki.** Once several pages of one wiki
+   are *already* the same subject area, they move together into a
+   dedicated sub-wiki (the `pages_to_subwiki` shape), carried under their
+   own names. The trigger is **how many pages there are**, never how fat
+   any one of them is. The floor is
+   `rem.policy.auto_promote_group_min_pages` (default 9).
+
+So a wiki is born holding every page of its subject, and **can never be
+born holding one page**. That ordering is load-bearing: a single page
+heavy enough to look like a subject area is precisely the page the split
+pass should be carving up, and promoting it whole would freeze it as one
+page inside a wiki that then has nothing to ramify into. Pages whose
+subject already has a sub-wiki are **filed into it** instead
+(`pages_move_wiki`) — no floor applies there, since the home exists.
+
+A turn that states several things is **meant** to be split into several
+atomic facts at ingest (the multi-fact `extractions[]` path, see
+ingest-pipeline.md); a pasted multi-fact block is decomposed into atomic
+facts first, and those facts then feed step 1 like any others.
 
 The split *wiring* files one capture per `extractions[]` element, and
 `extractions[]` is the **sole** fact container with "extract every atomic
@@ -171,10 +188,7 @@ fact" as the lead instruction in the ingest prompt, so a multi-fact turn
 (*"Galadriel ha fatto spesa: latte, formaggio, salame, pane, poi ha preso
 Matteo a karate"*) splits into its constituent atomic facts rather than
 landing as one consolidated fact. The owner (`global` bio vs `user:`
-preference) is decided **per fact**. (The page-accumulation
-emitter that would auto-propose the sub-wiki from the accumulated facts is
-still deferred — see the unit caveat in
-rem-cycle.md.)
+preference) is decided **per fact**.
 
 A wiki's kind is a **bare `wiki_type` string** in its `_meta.md` — there
 is no registry, no template, no schema to register against, and no

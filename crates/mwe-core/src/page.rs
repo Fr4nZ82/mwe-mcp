@@ -64,6 +64,10 @@ pub enum PageError {
     /// Resolving the owning group's member roster failed.
     #[error("page deletion db: {0}")]
     Db(#[from] sqlx::Error),
+    /// [`DeletionMode::Dissolve`] reached the page verb. It is a whole-wiki
+    /// gesture (see [`crate::wiki_delete::delete_wiki_subtree`]).
+    #[error("dissolve is a whole-wiki mode; a page cannot be dissolved")]
+    DissolveIsWholeWikiOnly,
 }
 
 /// What happened to the facts on a deleted page.
@@ -92,6 +96,14 @@ pub enum DeletionMode {
     /// contributions, so the verb layer requires an informed confirmation
     /// (see the `WikiDeletePage` verb).
     TombstoneAll,
+    /// **Dissolve**: destroy the *structure*, keep every fact. Nothing is
+    /// tombstoned — each fact is evacuated to a live wiki
+    /// ([`dissolve_home`]) as a **pending render**, and its placement is
+    /// re-opened on the compilation plan so the Cartografo decides where it
+    /// belongs next, corpus-wide, instead of it inheriting the page it
+    /// happened to sit on. Whole-wiki only (see
+    /// [`crate::wiki_delete::delete_wiki_subtree`]).
+    Dissolve,
 }
 
 /// Policy knobs for [`delete_page_direct`]. The non-default `mode` is
@@ -139,6 +151,14 @@ pub async fn delete_page_direct(
         let action = match policy.mode {
             DeletionMode::TombstoneAll => Action::Tombstone,
             DeletionMode::SenderKeyed => decide(responsible, &row.owner_id, deleter, tree),
+            // Dissolving is a whole-wiki gesture: it re-opens the placement
+            // of everything it frees so the Cartografo redistributes it.
+            // On a single page that is not a deletion at all — it is what
+            // the REM split/merge passes already do, page by page — so the
+            // page verb refuses the mode rather than half-honouring it.
+            DeletionMode::Dissolve => {
+                return Err(PageError::DissolveIsWholeWikiOnly);
+            },
         };
         match action {
             Action::Tombstone => {
@@ -247,6 +267,28 @@ pub(crate) fn decide(
         return Action::Tombstone;
     }
     existing_home_wiki(owner, tree).map_or(Action::Tombstone, Action::Evacuate)
+}
+
+/// Where one fact waits when its wiki is **dissolved** (module docs of
+/// [`crate::wiki_delete`]).
+///
+/// A dissolve destroys nothing, so — unlike [`decide`] — the deleter's
+/// authority does not enter: every fact only needs a **live** wiki to sit in
+/// while its placement is re-decided, because a row pointing into the trash
+/// would drop out of the compilation plan's input and never be re-placed.
+/// The preference order is the fact's own provenance first (sender, then
+/// owner), and the deleter's home only as the last resort that keeps it
+/// reachable. `None` means the fact has no live home anywhere — the caller
+/// must surface it rather than silently destroy it.
+pub(crate) fn dissolve_home(
+    responsible: &Principal,
+    owner: &Principal,
+    deleter: &Principal,
+    tree: &WikiTree,
+) -> Option<String> {
+    existing_home_wiki(responsible, tree)
+        .or_else(|| existing_home_wiki(owner, tree))
+        .or_else(|| existing_home_wiki(deleter, tree))
 }
 
 /// The home wiki id of a principal **if it exists** in the tree: user `alice` →
