@@ -9,6 +9,46 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## 1.5.4 — 2026-07-27
+
+### Added
+
+- **Exact-term matching fused into the section ranking** (migration
+  `0065`). Recall was pure vector, so a query that *is* an identifier — a
+  decision code, an ADR number, a ticket id, a file path — ranked worst
+  exactly where a project's decision log lives. `wiki_sections_fts`
+  indexes `heading_path` as its own 4×-weighted column beside the text
+  and the three section entry points fuse the two rankings by position
+  (RRF). Both passes always run: a per-query gate would spend a model
+  call to guard a sub-millisecond index lookup, and a wrong "no" drops
+  the hit with nothing to notice. The fusion reorders only — a hit's
+  `score` keeps its cosine meaning — and the signpost floor still runs
+  before it, so an `OR` match on an ordinary sentence can never start a
+  dig into project documentation. Measured on the reference store (4 220
+  sections): 7 of 7 decision identifiers now rank their defining section
+  first, prose queries unmoved.
+- **REM regroups pages into sub-wikis.** The nightly promotions slot
+  reads a wiki's whole page inventory once per cycle and cuts the groups
+  of pages that are *already* one subject area: a group founds a new
+  sub-wiki (floor `auto_promote_group_min_pages`, default 9) or moves
+  into one that already exists (no floor). The trigger is evidence on
+  disk rather than a forecast about one page's mass.
+
+### Changed
+
+- **Deleting a wiki defaults to Dissolve**: the structure goes, every
+  fact stays. Facts are evacuated to a live home and their pages parked
+  on the compilation plan as `reopen_pages`, so the next narrative build
+  re-decides where each fact belongs corpus-wide instead of letting it
+  inherit the page it happened to sit on.
+
+### Removed
+
+- **Page → sub-wiki emergence**, its prompt, and the
+  `auto_promote_subwiki_min_page_facts` knob — superseded by the
+  page-group pass above. A wiki is born holding every page of its
+  subject, so it can never be born with a single page.
+
 ## 1.5.3 — 2026-07-26
 
 ### Fixed
