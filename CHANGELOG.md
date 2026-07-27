@@ -9,6 +9,57 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## 1.5.5 — 2026-07-27
+
+### Added
+
+- **First connect is its own skill, and the server says when it
+  applies.** `smart_bootstrap` accepts the exact `project_id` a consumer
+  derives from its working directory and answers a `first_connect` block:
+  the wiki to resume, or one line pointing at the new bundled
+  `smart-onboarding` skill when this project has no memory yet. The
+  procedure — the intro, the faithful import of existing documents, the
+  post-import report, the page repair — moved out of the three places
+  that carried it and is fetched only by the sessions that need it; the
+  everyday skills shed 452 lines. The trigger had to move to the server
+  for the split to be safe: a procedure behind an extra fetch, gated on
+  an agent remembering to fetch it, is easier to skip than one already
+  open.
+- **Page shape is measured and reported.** `wiki_admin_push` returns a
+  plain-language `warnings[]` line for each written page whose blocks are
+  too long for the index to keep whole (they are cut mid-sentence, and
+  several sections end up under one heading with different content), and
+  `wiki_admin_pull` accepts `shape: true` to report a whole wiki —
+  sections, over-cap blocks, the share of the page they hold, a per-page
+  note and a summary — without returning any content. Both are derived
+  from the bytes by the same segmentation the indexer runs, so they are
+  correct while section indexing is still queued. The trigger is density,
+  not size: three over-cap blocks, or a quarter of the page.
+- **`wiki_admin_pull` accepts `paths`** to narrow a pull to named pages —
+  the narrowing the smart-consumer skill had documented since the MVP.
+
+### Changed
+
+- **`signpost_hint` no longer fires on a consumer's own operational
+  wiki** (`wiki_type: agent`). Signposts exist so a conversational turn
+  can discover *projects*; nudging an agent to signpost its private
+  working memory only added noise to the owner's `projects.md`.
+- **Create-mode errors say what to pass.** A parent-less smart-wiki
+  create now names the caller's own root wiki id in the message instead
+  of stating only that top-level is not allowed; the `title` and
+  `wiki_type` errors say what those fields are for.
+
+### Fixed
+
+- **The skill told agents to notify their own wiki, which the server
+  refuses.** Writing your own `_briefing.md` is an ordinary push;
+  `wiki_admin_notify` is how *others* reach it. The documented
+  "note to next session" flow had been impossible as written.
+- **Two documented behaviours that did not exist**: the folder-structure
+  deviation warnings described in three documents (no validator was ever
+  written — `warnings[]` now carries page shape instead) and the `paths`
+  argument above.
+
 ## 1.5.4 — 2026-07-27
 
 ### Added
