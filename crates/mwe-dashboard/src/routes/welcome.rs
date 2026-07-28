@@ -45,6 +45,7 @@ use std::fmt::Write as _;
 
 use axum::Router;
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
 use maud::{Markup, PreEscaped, html};
@@ -56,6 +57,33 @@ use crate::error::Result;
 use crate::routes::chat::{self, ChatTurn};
 use crate::state::DashboardState;
 use crate::ui::{components, layout};
+
+/// What the primer's language field falls back to when the browser says
+/// nothing and the user types nothing. English is the deployment-wide
+/// fallback the engine already assumes, so the form agrees with it rather
+/// than inventing a second answer.
+const DEFAULT_PRIMER_LOCALE: &str = "en";
+
+/// Best-effort language for pre-filling the primer, read off
+/// `Accept-Language`. The field stays mandatory: this only spares an
+/// Italian user, looking at a form where everything else is already
+/// right, from carrying English through by inattention — which would
+/// silently commit their memory to the wrong language.
+///
+/// Deliberately crude: first tag, primary subtag only, letters only, and
+/// [`DEFAULT_PRIMER_LOCALE`] for anything else. A wrong guess costs one
+/// keystroke; an over-clever parser costs a maintenance surface.
+fn preferred_locale(headers: &HeaderMap) -> String {
+    headers
+        .get(axum::http::header::ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| raw.split(',').next())
+        .map(|first| first.split(';').next().unwrap_or(first).trim())
+        .and_then(|tag| tag.split('-').next())
+        .map(str::trim)
+        .filter(|p| (2..=3).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphabetic()))
+        .map_or_else(|| DEFAULT_PRIMER_LOCALE.to_owned(), str::to_ascii_lowercase)
+}
 
 /// Sub-router for `/welcome`. Mounted inside the authenticated tree.
 pub fn router() -> Router<DashboardState> {
@@ -136,7 +164,11 @@ pub struct ProfileSubmission {
     pub action: String,
 }
 
-async fn form(State(state): State<DashboardState>, user: SessionUser) -> Result<Response> {
+async fn form(
+    State(state): State<DashboardState>,
+    user: SessionUser,
+    headers: HeaderMap,
+) -> Result<Response> {
     if user_already_initialized(&state, &user.sender_id).await? {
         return Ok(Redirect::to("/dashboard/home").into_response());
     }
@@ -146,7 +178,8 @@ async fn form(State(state): State<DashboardState>, user: SessionUser) -> Result<
         .as_ref()
         .and_then(|m| m.defaults_for(LlmFunction::Ingest))
         .is_some();
-    Ok(render_form(&user, email.as_deref(), ingest_available).into_response())
+    let locale_default = preferred_locale(&headers);
+    Ok(render_form(&user, email.as_deref(), ingest_available, &locale_default).into_response())
 }
 
 async fn submit(
@@ -166,6 +199,30 @@ async fn submit(
     // module owns that path and we route through it so the resulting
     // turn lands in the user's chat history exactly as if they had
     // typed it themselves.
+    // The declared language lands in `enrollment_users.locale` **before** the
+    // primer is ingested, not after: the ingest classifier resolves its
+    // LANGUAGE directive through this column, so writing it first is what
+    // makes the primer's own facts come out in the user's language. (The
+    // timezone column below can wait until after — nothing in this request
+    // reads it.) The field is mandatory in the form with a default, so an
+    // empty value here means a hand-crafted POST; fall back to English rather
+    // than leaving the column NULL, which is what the old prose-only
+    // behaviour effectively did.
+    let declared = form.language.trim();
+    let locale = if declared.is_empty()
+        || declared.len() > 32
+        || declared.chars().any(char::is_whitespace)
+    {
+        DEFAULT_PRIMER_LOCALE
+    } else {
+        declared
+    };
+    sqlx::query("UPDATE enrollment_users SET locale = ? WHERE user_id = ?")
+        .bind(locale)
+        .bind(&user.sender_id)
+        .execute(&state.pool)
+        .await?;
+
     let primer_turn = if want_skip {
         None
     } else {
@@ -438,10 +495,12 @@ fn compose_identity_section(email: Option<&str>, form: &ProfileSubmission) -> St
     if !address.is_empty() {
         clauses.push(format!("vivo a {address}"));
     }
-    let language = form.language.trim();
-    if !language.is_empty() {
-        clauses.push(format!("la mia lingua principale è {language}"));
-    }
+    // `language` is deliberately NOT a clause. It is the one primer answer
+    // that is plumbing rather than biography: it lands in
+    // `enrollment_users.locale` (see `submit`), the column every prompt that
+    // writes this person's memory resolves its LANGUAGE directive from.
+    // Recording it as a fact as well would give the same setting two homes,
+    // and the fact is the one nothing reads.
     let timezone = form.timezone.trim();
     if !timezone.is_empty() {
         clauses.push(format!("il mio fuso orario è {timezone}"));
@@ -575,7 +634,12 @@ fn compose_preferences_section(form: &ProfileSubmission) -> String {
     out
 }
 
-fn render_form(user: &SessionUser, email: Option<&str>, ingest_available: bool) -> Html<String> {
+fn render_form(
+    user: &SessionUser,
+    email: Option<&str>,
+    ingest_available: bool,
+    locale_default: &str,
+) -> Html<String> {
     let email_value = email.unwrap_or("");
     let body = html! {
         h1 { "Welcome, " (user.sender_id) "!" }
@@ -596,7 +660,7 @@ fn render_form(user: &SessionUser, email: Option<&str>, ingest_available: bool) 
         }
 
         form id="welcome-form" action="/dashboard/welcome" method="post" {
-            (step1_identity_fieldset(email_value))
+            (step1_identity_fieldset(email_value, locale_default))
             (step2_rules_fieldset())
             (step3_rest_fieldset())
         }
@@ -619,7 +683,7 @@ fn render_form(user: &SessionUser, email: Option<&str>, ingest_available: bool) 
 /// Step 1 fieldset → `index.md`: the identity card plus the always-on
 /// health/safety slot. A "Salta tutto" submit is repeated on every step
 /// so the user can bail out at any point.
-fn step1_identity_fieldset(email_value: &str) -> Markup {
+fn step1_identity_fieldset(email_value: &str, locale_default: &str) -> Markup {
     html! {
         fieldset data-step="1" {
             legend { "1 · Who you are" }
@@ -660,7 +724,12 @@ fn step1_identity_fieldset(email_value: &str) -> Markup {
             div.field-grid {
                 (components::text_field("birthday", "Date of birth", "date", "", false))
                 (components::text_field("address", "Address / city", "text", "", false))
-                (components::text_field("language", "Primary language (it, en, …)", "text", "", false))
+                (components::text_field("language", "Primary language (it, en, en-GB …)", "text", locale_default, true))
+                p.help.muted {
+                    "Required. This is the language your memory is written in, not only the "
+                    "language an assistant replies in: every page the engine compiles for you "
+                    "is written in it. Pre-filled from your browser — change it if it is wrong."
+                }
                 (components::text_field("timezone", "Time zone (e.g. Europe/Rome)", "text", "", false))
                 (components::text_field("pronouns", "Pronouns", "text", "", false))
                 (components::text_field("phone", "Phone", "tel", "", false))
@@ -1025,7 +1094,7 @@ mod tests {
             is_admin: false,
             session_jti: "test-jti".into(),
         };
-        let html = render_form(&user, Some("frodo@example.com"), true).0;
+        let html = render_form(&user, Some("frodo@example.com"), true, "en").0;
         assert!(html.contains("data-step=\"1\""), "{html}");
         assert!(html.contains("data-step=\"2\""), "{html}");
         assert!(html.contains("data-step=\"3\""), "{html}");
@@ -1035,5 +1104,77 @@ mod tests {
         assert!(html.contains("name=\"do_not_store\""), "{html}");
         // Both vanilla scripts ship.
         assert!(html.contains("welcome-step-indicator"), "{html}");
+    }
+}
+
+#[cfg(test)]
+mod primer_language_tests {
+    use axum::http::{HeaderMap, HeaderValue, header::ACCEPT_LANGUAGE};
+
+    use super::{
+        DEFAULT_PRIMER_LOCALE, ProfileSubmission, compose_ingest_message, preferred_locale,
+    };
+
+    fn headers_with(raw: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(ACCEPT_LANGUAGE, HeaderValue::from_str(raw).expect("header"));
+        h
+    }
+
+    /// The pre-fill reads the browser's first preference and keeps only the
+    /// primary subtag: an Italian browser must not leave the user staring at
+    /// "en" on a form where every other answer is already right.
+    #[test]
+    fn prefill_follows_the_browsers_first_preference() {
+        assert_eq!(
+            preferred_locale(&headers_with("it-IT,it;q=0.9,en;q=0.8")),
+            "it"
+        );
+        assert_eq!(preferred_locale(&headers_with("en-GB,en;q=0.5")), "en");
+        assert_eq!(preferred_locale(&headers_with("  fr  ")), "fr");
+    }
+
+    /// Anything that is not plainly a language tag falls to English rather
+    /// than being passed through: this value is written straight into
+    /// `enrollment_users.locale`, so a junk pre-fill would quietly commit the
+    /// user's memory to a language nobody chose.
+    #[test]
+    fn prefill_falls_back_to_english_on_absent_or_junk_headers() {
+        assert_eq!(preferred_locale(&HeaderMap::new()), DEFAULT_PRIMER_LOCALE);
+        assert_eq!(preferred_locale(&headers_with("*")), DEFAULT_PRIMER_LOCALE);
+        assert_eq!(
+            preferred_locale(&headers_with("12345")),
+            DEFAULT_PRIMER_LOCALE
+        );
+        assert_eq!(
+            preferred_locale(&headers_with("englishplease")),
+            DEFAULT_PRIMER_LOCALE
+        );
+        // The negation that matters: a junk header never becomes a locale.
+        assert_ne!(preferred_locale(&headers_with("!!")), "!!");
+    }
+
+    /// The language answer is plumbing, not biography. It belongs in
+    /// `enrollment_users.locale` — the column every prompt resolves its
+    /// LANGUAGE directive from — and must NOT also be composed into the
+    /// primer as a fact, which would give one setting two homes and leave
+    /// the readable one unread.
+    #[test]
+    fn the_language_answer_is_not_composed_into_the_primer() {
+        let form = ProfileSubmission {
+            display_name: "Alice".into(),
+            language: "it".into(),
+            ..Default::default()
+        };
+        let msg = compose_ingest_message(Some("alice@example.com"), &form);
+        assert!(msg.contains("mi chiamo Alice"), "{msg}");
+        assert!(
+            !msg.contains("lingua"),
+            "language must not be a primer fact: {msg}"
+        );
+        assert!(
+            !msg.contains(" it"),
+            "the tag must not leak into the prose: {msg}"
+        );
     }
 }
