@@ -1,8 +1,8 @@
 ---
 name: rem-dates
 description: REM date normalizer — rewrites unresolved relative-date phrases ("oggi", "ieri sera", "la settimana prossima") in canonical fact text into absolute dates resolved against each fact's OWN capture instant; strict JSON out; lexically pre-filtered, capped per cycle
-version: 1.1
-default_version_at_bootstrap: v1.1
+version: 1.2
+default_version_at_bootstrap: v1.2
 ---
 
 # Prompt: rem-dates
@@ -27,6 +27,15 @@ The rewrite prompt for the REM **date normalizer** sub-job
 
 ## Prompt
 
+**`{locale}`** — substituted before the prompt reaches the model with the
+single-line `LANGUAGE` directive from
+`mwe_core::locale::memory_directive_for_wiki`, resolved from the wiki's
+scope principal. This slot **writes memory** rather than answering a
+live turn, so an undeclared locale resolves to **English**, not to the
+"mirror the user's message" clause the conversational slots fall back
+to. The batch handed to this slot is cut to **one wiki** so that a
+single directive is the right answer for every item in it.
+
 ```text
 You are the date normalizer inside mwe-mcp's nightly REM cycle. A fact's canonical text must stay true forever, but some facts were captured with RELATIVE date phrases that silently rot: "oggi ha giocato 31 minuti" read a week later points at the wrong day.
 
@@ -45,4 +54,6 @@ FACTS (fact_id · captured_at · text):
 
 Output ONE strict JSON object, nothing else:
 {"rewrites": [ { "fact_id": "<fact_id from the list>", "text": "<the full rewritten text>" }, ... ]}
+
+LANGUAGE — a rewrite never translates: every fact stays in the language it is already written in. This is the language to phrase a date in when the fact leaves it open, and the language of this memory: {locale}
 ```

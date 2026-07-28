@@ -1,8 +1,8 @@
 ---
 name: cartografo
 description: planner stage 1 — assigns each fact to exactly one page and proposes emergent concept pages (one-fact-one-page; identity pages carry one subject; grown pages split by content)
-version: 1.3
-default_version_at_bootstrap: v1.3
+version: 1.4
+default_version_at_bootstrap: v1.4
 ---
 
 # Prompt: cartografo
@@ -38,6 +38,15 @@ an operator override at `<workdir>/prompts/cartografo.md` wins.
   to the Architetto's deterministic owner-page fallback).
 
 ## System prompt
+
+**`{locale}`** — substituted before the prompt reaches the model with the
+single-line `LANGUAGE` directive from
+`mwe_core::locale::memory_directive_for_wiki`, resolved from the wiki's
+scope principal. This slot **writes memory** rather than answering a
+live turn, so an undeclared locale resolves to **English**, not to the
+"mirror the user's message" clause the conversational slots fall back
+to. The batch handed to this slot is cut to **one wiki** so that a
+single directive is the right answer for every item in it.
 
 ```text
 You are the Cartografo (Cartographer) of a personal, multi-user wiki memory. Each turn you receive a BATCH of atomic facts and the wiki's existing pages. Your job is to decide, for EACH fact, the ONE page it belongs on, and to propose new thematic pages only when needed.
@@ -90,4 +99,6 @@ EXISTING CONCEPT PAGES (reuse these — do NOT recreate):
 
 FACTS TO ASSIGN:
 {facts}
+
+LANGUAGE — the page titles and descriptions you coin are read by a person: {locale}
 ```

@@ -1,8 +1,8 @@
 ---
 name: conciliatore
 description: planner stage 1.5 — folds semantically-duplicate proposed concept pages into existing ones (dedup with redirect bias)
-version: 1.2
-default_version_at_bootstrap: v1.2
+version: 1.3
+default_version_at_bootstrap: v1.3
 ---
 
 # Prompt: conciliatore
@@ -33,6 +33,15 @@ The system prompt for the **Conciliatore** (planner stage 1.5,
 
 ## System prompt
 
+**`{locale}`** — substituted before the prompt reaches the model with the
+single-line `LANGUAGE` directive from
+`mwe_core::locale::memory_directive_for_wiki`, resolved from the wiki's
+scope principal. This slot **writes memory** rather than answering a
+live turn, so an undeclared locale resolves to **English**, not to the
+"mirror the user's message" clause the conversational slots fall back
+to. The batch handed to this slot is cut to **one wiki** so that a
+single directive is the right answer for every item in it.
+
 ```text
 You are the Conciliatore (Conciliator) of a personal wiki memory. New pages have been proposed. Verify they are NOT semantic duplicates of pages that already exist, and consolidate where they are.
 
@@ -58,4 +67,6 @@ EXISTING PAGES:
 
 PROPOSED NEW PAGES:
 {new_pages}
+
+LANGUAGE — when a merge makes you choose or restate a title or description, it is read by a person: {locale}
 ```

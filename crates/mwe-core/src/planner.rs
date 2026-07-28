@@ -1770,6 +1770,11 @@ pub struct CartografoSignals {
     /// carried-over count entering this build). [`classify_facts`] adds its
     /// own in-run assignments on top so later batches see the pile grow.
     pub page_mass: BTreeMap<String, usize>,
+    /// Source wiki id → that wiki's rendered `LANGUAGE` directive. The
+    /// Cartografo and the Conciliatore coin page titles and descriptions a
+    /// person reads, so each batch is cut to one wiki and carries that
+    /// wiki's language. Built by [`wiki_locales_for`].
+    pub wiki_locales: BTreeMap<String, String>,
 }
 
 impl CartografoSignals {
@@ -1778,6 +1783,17 @@ impl CartografoSignals {
     /// Falls back to what is derivable without enrollment (a bag built
     /// empty): a user covers their own page, the global group covers `any`,
     /// a group with unknown membership covers `none`.
+    /// The `LANGUAGE` directive for one source wiki. An unknown wiki
+    /// falls back to English, the same fallback every memory-writing slot
+    /// uses — see [`crate::locale::render_memory_language_directive`].
+    #[must_use]
+    fn language_for(&self, wiki_id: &str) -> String {
+        self.wiki_locales
+            .get(wiki_id)
+            .cloned()
+            .unwrap_or_else(|| crate::locale::render_memory_language_directive(None))
+    }
+
     #[must_use]
     fn identity_scope_tag(&self, owner: &Principal) -> String {
         if let Some(tag) = self.subject_scopes.get(&owner.to_string()) {
@@ -1841,6 +1857,56 @@ pub async fn subject_scopes_for(
     Ok(scopes)
 }
 
+/// Cut `facts` into the Cartografo's units of work: **grouped by source
+/// wiki first**, chunked to [`CARTOGRAFO_BATCH`] second.
+///
+/// The order matters and is the point. This stage coins page titles and
+/// descriptions a person reads, so a batch has to belong to one wiki for
+/// "the language of this page" to exist at all — chunking first and
+/// grouping after would leave a 15-fact chunk straddling two wikis with
+/// two languages and one directive. Only the batch *composition*
+/// narrows: the model still sees every foundation and concept page of
+/// the whole forest, so a fact can still be assigned to a page that
+/// lives elsewhere.
+///
+/// Deterministic: `BTreeMap` orders the wikis, and the caller's
+/// `fact_id` sort survives inside each one.
+fn cartografo_batches(facts: &[FactForPage]) -> BTreeMap<String, Vec<FactForPage>> {
+    let mut by_wiki: BTreeMap<String, Vec<FactForPage>> = BTreeMap::new();
+    for f in facts {
+        by_wiki
+            .entry(f.source_wiki_id.clone())
+            .or_default()
+            .push(f.clone());
+    }
+    by_wiki
+}
+
+/// Resolve the `LANGUAGE` directive of every distinct source wiki in
+/// `facts` — the language half of [`CartografoSignals`].
+///
+/// One lookup per distinct wiki, not per fact: the scope-chain walk that
+/// turns a wiki into a principal is not free, and a build routinely
+/// carries hundreds of facts across a handful of wikis.
+pub async fn wiki_locales_for(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    facts: &[FactForPage],
+) -> BTreeMap<String, String> {
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for f in facts {
+        if out.contains_key(&f.source_wiki_id) {
+            continue;
+        }
+        let Ok(id) = crate::types::WikiId::parse(&f.source_wiki_id) else {
+            continue;
+        };
+        let directive = crate::locale::memory_directive_for_wiki(pool, tree, &id).await;
+        out.insert(f.source_wiki_id.clone(), directive);
+    }
+    out
+}
+
 /// Assign each fact to one page and propose emergent concept pages.
 ///
 /// LLM, batched, one-fact-one-page. Resilient: a batch whose LLM call or JSON
@@ -1873,15 +1939,31 @@ pub async fn classify_facts(
     // Running per-page mass: the carried-over counts plus what THIS run has
     // already assigned, so batch k sees the pile batches 1..k-1 built up.
     let mut running_mass = signals.page_mass.clone();
-    for batch in facts.chunks(CARTOGRAFO_BATCH) {
+    // Materialised into an owned Vec rather than iterated lazily: the loop
+    // below awaits, and a borrowed chunk iterator alive across that await
+    // defeats the compiler's `Send` inference for every caller of this
+    // future (the dashboard's dream routes stop compiling).
+    let batches: Vec<(String, Vec<FactForPage>)> = cartografo_batches(facts)
+        .into_iter()
+        .flat_map(|(wiki, rows)| {
+            rows.chunks(CARTOGRAFO_BATCH)
+                .map(|c| (wiki.clone(), c.to_vec()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (wiki, batch) in &batches {
+        let wiki = wiki.as_str();
+        let batch = batch.as_slice();
         let foundation_desc = describe_foundation(foundation, &running_mass);
         let concept_desc = describe_concepts(registry, &merged.new_pages, &running_mass);
         let facts_desc = describe_facts(batch, signals);
+        let language_directive = signals.language_for(wiki);
         let system = prompts::render(
             "cartografo",
             workdir,
             BUNDLED_CARTOGRAFO_MD,
             &[
+                ("locale", language_directive.as_str()),
                 ("foundation_pages", foundation_desc.as_str()),
                 ("concept_pages", concept_desc.as_str()),
                 ("facts", facts_desc.as_str()),
@@ -2052,30 +2134,97 @@ async fn place_new_facts(
 
 /// Fold semantically-duplicate proposed pages into existing ones.
 ///
-/// LLM, one call. Infallible: on any failure it falls back to accepting every
-/// proposed page with no merges (conservative — never loses a page).
+/// LLM, **one call per prospective wiki**: the stage passes titles and
+/// descriptions through (and picks which survives a merge), so its batch
+/// has to belong to one wiki for a language directive to mean anything.
+/// `page_wikis` maps a proposed slug to the wiki its facts live in —
+/// `slug_source_wiki`'s rule, applied one stage earlier; a proposal no
+/// fact claims is homeless and rides the last group, where the plan
+/// builder will decide its home or drop it.
+///
+/// What each call *sees* does not narrow: `existing` is still every
+/// foundation and concept page of the whole forest, so a proposal can
+/// still be folded into a page that lives in another wiki — exactly as
+/// before.
+///
+/// Infallible: on any failure the affected group falls back to accepting
+/// every proposed page with no merges (conservative — never loses a page).
 pub async fn conciliate_new_pages(
     llm: &dyn LlmBackend,
     new_pages: &[NewPage],
     foundation: &BTreeMap<String, PagePlan>,
     registry: &ConceptRegistry,
     workdir: &Path,
+    page_wikis: &BTreeMap<String, String>,
+    signals: &CartografoSignals,
 ) -> ConciliatorResult {
     if new_pages.is_empty() {
         return ConciliatorResult::default();
     }
+    let by_wiki = conciliatore_groups(new_pages, page_wikis);
+    // Computed ONCE, outside the loop, and handed to every group: the
+    // batch narrows to one wiki, what the model may fold a proposal into
+    // does not.
+    let existing = describe_existing(foundation, registry);
+    let mut merged = ConciliatorResult::default();
+    for (wiki, group) in by_wiki {
+        let result = conciliate_one_wiki(
+            llm,
+            &group,
+            &existing,
+            workdir,
+            &signals.language_for(&wiki),
+        )
+        .await;
+        merged.redirects.extend(result.redirects);
+        merged.accepted_new.extend(result.accepted_new);
+    }
+    merged
+}
+
+/// Group proposed pages by the wiki their facts live in.
+///
+/// A proposal no assignment claims has no prospective wiki; it lands in
+/// the `""` bucket, gets the English fallback, and is left for the plan
+/// builder to home or drop as before.
+///
+/// Deterministic: `BTreeMap` orders the wikis, proposal order survives
+/// inside each.
+fn conciliatore_groups(
+    new_pages: &[NewPage],
+    page_wikis: &BTreeMap<String, String>,
+) -> BTreeMap<String, Vec<NewPage>> {
+    let mut by_wiki: BTreeMap<String, Vec<NewPage>> = BTreeMap::new();
+    for np in new_pages {
+        let wiki = page_wikis
+            .get(&slugify(&np.slug))
+            .cloned()
+            .unwrap_or_default();
+        by_wiki.entry(wiki).or_default().push(np.clone());
+    }
+    by_wiki
+}
+
+/// One Conciliatore call over the proposals of a single wiki.
+async fn conciliate_one_wiki(
+    llm: &dyn LlmBackend,
+    new_pages: &[NewPage],
+    existing: &str,
+    workdir: &Path,
+    language_directive: &str,
+) -> ConciliatorResult {
     let accept_all = || ConciliatorResult {
         redirects: BTreeMap::new(),
         accepted_new: new_pages.to_vec(),
     };
-    let existing = describe_existing(foundation, registry);
     let proposed = describe_new_pages(new_pages);
     let system = match prompts::render(
         "conciliatore",
         workdir,
         BUNDLED_CONCILIATORE_MD,
         &[
-            ("existing_pages", existing.as_str()),
+            ("locale", language_directive),
+            ("existing_pages", existing),
             ("new_pages", proposed.as_str()),
         ],
     ) {
@@ -2232,6 +2381,9 @@ pub async fn build_wiki_plan(
     }
     if matches!(placement, NewFactPlacement::Cartografo(_)) {
         signals.subject_scopes = subject_scopes_for(pool, &facts).await?;
+        // Same shape, same moment: the page names both LLM stages coin are
+        // read by a person, so each batch carries its wiki's language.
+        signals.wiki_locales = wiki_locales_for(pool, tree, &facts).await;
     }
 
     let mut blueprint = Blueprint::default();
@@ -2333,12 +2485,30 @@ pub async fn build_wiki_plan(
     let conciliation = if blueprint.new_pages.is_empty() {
         ConciliatorResult::default()
     } else if let Some(llm) = conciliatore {
+        // Which wiki each proposal is destined for, by the same rule the
+        // plan builder applies a few lines down (`slug_source_wiki`): the
+        // source wiki of the first fact assigned to it.
+        let mut page_wikis: BTreeMap<String, String> = BTreeMap::new();
+        let fact_wikis: BTreeMap<&str, &str> = facts
+            .iter()
+            .map(|f| (f.fact_id.as_str(), f.source_wiki_id.as_str()))
+            .collect();
+        for a in &blueprint.assignments {
+            let Some(wiki) = fact_wikis.get(a.fact_id.as_str()) else {
+                continue;
+            };
+            page_wikis
+                .entry(slugify(&a.page_slug))
+                .or_insert_with(|| (*wiki).to_owned());
+        }
         conciliate_new_pages(
             llm,
             &blueprint.new_pages,
             &foundation,
             &registry,
             tree.workdir(),
+            &page_wikis,
+            &signals,
         )
         .await
     } else {
@@ -4088,6 +4258,95 @@ mod tests {
     /// The conciliatore output schema omits `NewPage::style`, so a parsed
     /// `accepted_new` item comes back with `style: None`. The backfill must
     /// re-attach the ingest-proposed style from the original proposal, or a
+    /// The Cartografo groups by wiki FIRST and chunks second, so a batch
+    /// never straddles two wikis. The other order — chunk the globally
+    /// sorted list, then hope — is what shipped before and is what makes
+    /// a single language directive a lie for part of the batch. Sized so
+    /// the two orders cannot agree: `alice` alone overflows one chunk
+    /// while `bob` does not, so grouping-first yields three batches
+    /// (2 + 1) and chunking-first would yield two mixed ones.
+    #[test]
+    fn cartografo_batches_never_mix_two_wikis() {
+        let mut facts = Vec::new();
+        for i in 0..u8::try_from(CARTOGRAFO_BATCH + 1).unwrap() {
+            facts.push(fact(i, "alice fact", "user:alice", "alice"));
+        }
+        for i in 0..3u8 {
+            facts.push(fact(100 + i, "bob fact", "user:bob", "bob"));
+        }
+        let grouped = cartografo_batches(&facts);
+        assert_eq!(
+            grouped.keys().collect::<Vec<_>>(),
+            vec!["alice", "bob"],
+            "wikis are grouped, in a deterministic order"
+        );
+        let batches: Vec<(&str, &[FactForPage])> = grouped
+            .iter()
+            .flat_map(|(w, rows)| rows.chunks(CARTOGRAFO_BATCH).map(move |c| (w.as_str(), c)))
+            .collect();
+        assert_eq!(
+            batches.len(),
+            3,
+            "alice overflows into two batches, bob takes one"
+        );
+        for (wiki, batch) in &batches {
+            assert!(
+                batch.iter().all(|f| f.source_wiki_id == *wiki),
+                "a batch labelled `{wiki}` carried a fact from another wiki"
+            );
+        }
+        assert_eq!(
+            batches.iter().map(|(_, b)| b.len()).sum::<usize>(),
+            facts.len(),
+            "regrouping must not drop or duplicate a fact"
+        );
+    }
+
+    /// Every batch gets its own wiki's directive, and a wiki nobody
+    /// declared a language for gets English — not the mirror clause the
+    /// conversational slots fall back to.
+    #[test]
+    fn cartografo_signals_hand_each_wiki_its_own_language() {
+        let mut signals = CartografoSignals::default();
+        signals.wiki_locales.insert(
+            "alice".to_owned(),
+            crate::locale::render_memory_language_directive(Some("it-IT")),
+        );
+        assert!(signals.language_for("alice").contains("Respond in Italian"));
+        let unknown = signals.language_for("bob");
+        assert!(unknown.contains("Respond in English"));
+        assert!(
+            !unknown.contains("Mirror the language"),
+            "a compiled page has no user message to mirror: {unknown}"
+        );
+    }
+
+    /// The Conciliatore groups proposals by their prospective wiki, and
+    /// a proposal no assignment claims falls into its own bucket rather
+    /// than being silently attached to somebody's wiki.
+    #[test]
+    fn conciliatore_groups_proposals_by_prospective_wiki() {
+        let np = |slug: &str| NewPage {
+            slug: slug.to_owned(),
+            title: slug.to_owned(),
+            description: String::new(),
+            style: None,
+            page_type: PageType::ConceptLeaf,
+            parent_hub: None,
+        };
+        let mut page_wikis = BTreeMap::new();
+        page_wikis.insert("salute".to_owned(), "alice".to_owned());
+        page_wikis.insert("viaggi".to_owned(), "bob".to_owned());
+        let groups = conciliatore_groups(&[np("salute"), np("viaggi"), np("orfana")], &page_wikis);
+        assert_eq!(groups.len(), 3, "two wikis plus the homeless bucket");
+        assert_eq!(groups["alice"].len(), 1);
+        assert_eq!(groups["bob"].len(), 1);
+        assert_eq!(
+            groups[""][0].slug, "orfana",
+            "an unclaimed proposal keeps its own bucket"
+        );
+    }
+
     /// `lista` page would be silently demoted to full-prose compilation.
     #[tokio::test]
     async fn conciliation_preserves_ingest_proposed_style() {
@@ -4111,8 +4370,16 @@ mod tests {
              \"description\":\"La lista della spesa\",\"page_type\":\"concept_leaf\",\
              \"parent_hub\":\"famiglia\"}]}",
         );
-        let result =
-            conciliate_new_pages(&llm, &new_pages, &foundation, &registry, tree.workdir()).await;
+        let result = conciliate_new_pages(
+            &llm,
+            &new_pages,
+            &foundation,
+            &registry,
+            tree.workdir(),
+            &BTreeMap::new(),
+            &CartografoSignals::default(),
+        )
+        .await;
         assert_eq!(
             result.accepted_new.len(),
             1,

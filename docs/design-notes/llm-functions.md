@@ -379,12 +379,26 @@ things:
 
 | resolver | used by | the language of record |
 | --- | --- | --- |
-| `locale::memory_directive_for_wiki` / `…_for_wiki_meta` | `cronista`, `regenerate-index`, `comment-apply`, `rem-page-grouping` | the target wiki's **scope principal** — a `wiki-user` line speaks its owner's declared locale; a `wiki-group` line speaks the one **every** member declared, and has none when they disagree or anyone left it blank (`enrollment::locale_for_principal`) |
+| `locale::memory_directive_for_wiki` / `…_for_wiki_meta` | `cronista`, `regenerate-index`, `comment-apply`, `rem-page-grouping`, `cartografo`, `conciliatore`, `rem-dates` | the target wiki's **scope principal** — a `wiki-user` line speaks its owner's declared locale; a `wiki-group` line speaks the one **every** member declared, and has none when they disagree or anyone left it blank (`enrollment::locale_for_principal`) |
 | `locale::memory_directive_for_user` | `document-classify`, `document-extract`, `document-merge` | the person who submitted the document — which is why an English PDF read by an Italian user lands in memory in Italian |
 
 Both are best-effort: an unresolvable scope chain or a DB failure logs
 a warning and yields the English fallback rather than failing the
 compile.
+
+Three of those slots used to batch the **whole forest** into one call,
+which is why they landed after the rest: a directive is a statement
+about one language, and a batch spanning several wikis has several. They
+now cut their batches per wiki — `cartografo_batches` and
+`conciliatore_groups` in
+[`planner.rs`](../../crates/mwe-core/src/planner.rs), and the per-wiki
+grouping inside `run_date_normalizer` in
+[`rem.rs`](../../crates/mwe-core/src/rem.rs). In all three the batch is
+what narrows; **the context the model is shown is not**. The Cartografo
+still sees every foundation and concept page of the forest, the
+Conciliatore still folds a proposal into a page from another wiki, and
+the date normaliser still spends the same global cap. Only the
+composition of one call changed.
 
 ### The registry that keeps this from rotting
 

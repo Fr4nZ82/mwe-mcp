@@ -60,7 +60,7 @@ roster and order; the sketch below mirrors it.
 ```text
 0. Fonditore       build_foundation_pages   deterministic, no LLM   identity wikis → person / group_theme pages
 1. Cartografo      classify_facts           STRONG LLM, batched     one-fact-one-page assignment + proposed concept pages
-1.5 Conciliatore   conciliate_new_pages     STRONG LLM, one call    fold duplicate proposed pages (redirects)
+1.5 Conciliatore   conciliate_new_pages     STRONG LLM, one call/wiki  fold duplicate proposed pages (redirects)
 2. Architetto      build_compilation_plan   deterministic           materialise + GC + link graph + order
 —. Incremental     build_wiki_plan          deterministic           carry-over + new-only classify + dirty set + persist
 ```
@@ -105,7 +105,13 @@ to split by content.
 stage. It runs on a **strong** model — the structural-judgment tier, a
 config slot distinct from the 9B workhorse; see
 [the strong-model tier](#the-strong-model-tier) below — in batches
-(`CARTOGRAFO_BATCH` facts per call). For each fact it returns the **one**
+(`CARTOGRAFO_BATCH` facts per call), **grouped by source wiki before
+they are chunked** (`cartografo_batches`), so a batch never straddles two
+wikis. That order is what lets one language directive be true for the
+whole batch: this stage coins page titles and descriptions a person
+reads. Only the batch composition narrows — the model is still shown
+every foundation and concept page of the whole forest, so a fact can
+still be assigned to a page that lives elsewhere. For each fact it returns the **one**
 page slug the fact belongs on, and it may propose emergent `concept_hub` /
 `concept_leaf` pages when a theme warrants its own page. The prompt
 ([`crates/mwe-core/prompts/cartografo.md`](../../crates/mwe-core/prompts/cartografo.md))
@@ -189,13 +195,25 @@ to re-home and reorganise.
 
 ### Stage 1.5 — the Conciliatore (strong-model dedup)
 
-[`conciliate_new_pages`](../../crates/mwe-core/src/planner.rs) is a single
-strong-model call that folds **semantically-duplicate proposed pages** into
-existing ones. The Cartografo, working batch by batch, cannot see the whole
-proposed set at once; the Conciliatore does — it gets all foundation +
-registry pages and every page proposed this run, and returns a `redirects`
-map (`proposed_slug → existing_slug`) plus the genuinely-new `accepted_new`
-list. The prompt
+[`conciliate_new_pages`](../../crates/mwe-core/src/planner.rs) is a
+strong-model call **per prospective wiki** that folds
+**semantically-duplicate proposed pages** into existing ones. The
+Cartografo, working batch by batch, cannot see the whole proposed set at
+once; the Conciliatore does — it gets all foundation + registry pages and
+every page proposed this run for that wiki, and returns a `redirects` map
+(`proposed_slug → existing_slug`) plus the genuinely-new `accepted_new`
+list.
+
+A proposal's prospective wiki is the source wiki of the first fact
+assigned to it (`conciliatore_groups`, the same rule `slug_source_wiki`
+applies one stage later); a proposal no assignment claims rides its own
+group and is homed or dropped by the plan builder as before. The split is
+what gives the stage a language: it picks which title and description
+survive a merge, and those are read by a person. **What each call sees
+does not narrow** — `describe_existing` is computed once, outside the
+loop, and every group is shown the whole forest, so a proposal can still
+be folded into a page that lives in another wiki exactly as before. The
+prompt
 ([`crates/mwe-core/prompts/conciliatore.md`](../../crates/mwe-core/prompts/conciliatore.md))
 carries a **redirect bias**: when in doubt, consolidate — fewer
 well-populated pages beat many scattered ones.

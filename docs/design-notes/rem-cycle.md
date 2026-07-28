@@ -880,8 +880,15 @@ later.
    facts across the non-smart wikis. A resource pre-filter only — the
    LLM decides whether a flagged fact really needs the rewrite, and an
    unflagged miss waits for a richer lexicon rather than a wrong guess.
-2. **Rewrite** (one batched LLM call, `rem_dedup_semantic` / revisor slot
-   — the low-tier confirmer shared by every REM verdict sweep): the
+2. **Rewrite** (one batched LLM call **per wiki**, `rem_dedup_semantic` /
+   revisor slot — the low-tier confirmer shared by every REM verdict
+   sweep). The flagging, the oldest-first order and the cap above are
+   global, so a cycle still spends at most `date_normalize_cap` facts;
+   only how they are dealt out changes. The split exists because a
+   rewrite is fact prose and needs the wiki's `{locale}` directive,
+   which means nothing over a batch spanning several wikis. A side
+   effect worth having: one wiki's transport failure no longer sinks
+   the whole cycle's normalisation. The
    [`rem-dates`](../../crates/mwe-core/prompts/rem-dates.md) prompt
    receives the flagged facts — oldest first, capped by
    `policy.date_normalize_cap` (default 16; `0` disables) — each with

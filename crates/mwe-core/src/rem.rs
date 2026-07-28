@@ -5087,55 +5087,80 @@ async fn run_date_normalizer(
     flagged.truncate(policy.date_normalize_cap);
     report.examined = flagged.len();
 
-    let facts_text = flagged
-        .iter()
-        .enumerate()
-        .map(|(i, f)| {
-            // The "captured_at" the prompt promises: the semantic capture
-            // instant, i.e. `valid_from` when stamped (deduced against the
-            // turn's `occurred_at` clock at ingest), `created_at` otherwise.
-            let anchor = f.valid_from.as_deref().unwrap_or(&f.created_at);
-            format!(
-                "{}. {} · {} · {}",
-                i + 1,
-                f.fact_id.as_str(),
-                anchor,
-                f.text.replace('\n', " ")
+    // One call PER WIKI, not one for the whole forest. A rewrite is fact
+    // prose, so it needs the wiki's language directive — and a directive
+    // only means something over a batch that belongs to one wiki. The
+    // selection and the cap above stay global, so the cycle still spends
+    // at most `date_normalize_cap` facts; only how they are dealt out
+    // changes. Deterministic: BTreeMap orders the wikis, and the
+    // oldest-first sort survives inside each one.
+    let mut by_wiki: BTreeMap<&str, Vec<&FactIndexRow>> = BTreeMap::new();
+    for row in &flagged {
+        by_wiki.entry(row.wiki_id.as_str()).or_default().push(row);
+    }
+    let mut rewrites: Vec<DateRewrite> = Vec::new();
+    for (wiki, rows) in by_wiki {
+        let facts_text = rows
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                // The "captured_at" the prompt promises: the semantic capture
+                // instant, i.e. `valid_from` when stamped (deduced against the
+                // turn's `occurred_at` clock at ingest), `created_at` otherwise.
+                let anchor = f.valid_from.as_deref().unwrap_or(&f.created_at);
+                format!(
+                    "{}. {} · {} · {}",
+                    i + 1,
+                    f.fact_id.as_str(),
+                    anchor,
+                    f.text.replace('\n', " ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let language_directive = match crate::types::WikiId::parse(wiki) {
+            Ok(id) => crate::locale::memory_directive_for_wiki(pool, tree, &id).await,
+            Err(_) => crate::locale::render_memory_language_directive(None),
+        };
+        let prompt = prompts::render(
+            "rem-dates",
+            tree.workdir(),
+            BUNDLED_REM_DATES_MD,
+            &[
+                ("locale", language_directive.as_str()),
+                ("facts", facts_text.as_str()),
+            ],
+        )?;
+        let resp = match llm
+            .complete(
+                CompletionRequest::new(prompt)
+                    .with_temperature(0.1)
+                    .with_max_tokens(2048),
             )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let prompt = prompts::render(
-        "rem-dates",
-        tree.workdir(),
-        BUNDLED_REM_DATES_MD,
-        &[("facts", facts_text.as_str())],
-    )?;
-    let resp = match llm
-        .complete(
-            CompletionRequest::new(prompt)
-                .with_temperature(0.1)
-                .with_max_tokens(2048),
-        )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            report.errors.push(format!("normalizer LLM: {e}"));
-            return Ok(report);
-        },
-    };
-    let parsed =
-        first_json_object(&resp.text).and_then(|v| serde_json::from_value::<DateRewrites>(v).ok());
-    let Some(decision) = parsed else {
-        report
-            .errors
-            .push("normalizer: unparseable LLM answer".to_owned());
-        return Ok(report);
-    };
-    if decision.rewrites.is_empty() {
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                // One wiki's transport failure no longer sinks the whole
+                // cycle's normalisation — the others still drain.
+                report.errors.push(format!("normalizer LLM ({wiki}): {e}"));
+                continue;
+            },
+        };
+        let parsed = first_json_object(&resp.text)
+            .and_then(|v| serde_json::from_value::<DateRewrites>(v).ok());
+        let Some(decision) = parsed else {
+            report
+                .errors
+                .push(format!("normalizer: unparseable LLM answer ({wiki})"));
+            continue;
+        };
+        rewrites.extend(decision.rewrites);
+    }
+    if rewrites.is_empty() {
         return Ok(report);
     }
+    let decision = DateRewrites { rewrites };
 
     let op_id = wal::begin_rem_op(pool, cycle_id, "date_normalize_apply", None, None).await?;
     for rw in &decision.rewrites {

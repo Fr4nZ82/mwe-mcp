@@ -648,6 +648,28 @@ mod tests {
         );
     }
 
+    /// Every prose slot carries the placeholder. This is the guard the
+    /// whole registry exists for: the directive reaches the model only
+    /// if the body has somewhere to put it — `substitute` leaves an
+    /// absent placeholder absent, silently.
+    #[test]
+    fn prose_prompts_carry_the_locale_placeholder() {
+        for (name, md) in BUNDLED {
+            let Some((_, kind)) = PROSE_REGISTRY.iter().find(|(n, _)| n == name) else {
+                continue; // reported by prose_registry_covers_every_bundled
+            };
+            if *kind != PromptOutput::Prose {
+                continue;
+            }
+            let body = extract_fenced_text(md, name, "<bundled>").expect("bundled parses");
+            assert!(
+                body.contains(LOCALE_PLACEHOLDER),
+                "prose prompt `{name}` has no `{LOCALE_PLACEHOLDER}` in its body: \
+                 it will answer in the language of its own examples"
+            );
+        }
+    }
+
     /// And the negation, which is what makes the classification a
     /// decision rather than a label: an `Internal` slot must NOT carry
     /// the placeholder. Copy-pasting a prose prompt into a new
