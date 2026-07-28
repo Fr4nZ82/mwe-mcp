@@ -573,7 +573,9 @@ The journal prunes to the newest `TRACE_KEEP` (10) rows after each insert —
 a resource cap; `tool_executions` remains the audit surface. The dashboard
 surface (journal list + the animated 3D replay viewer) is
 [admin-only](dashboard.md) — a trace crosses wiki and ACL lines by
-construction.
+construction — and inside that gate it is **scoped to the reader's own
+recalls**, with [admin reveal](redaction-policy.md#dashboard-admin-reveal)
+as the one switch that widens it to the whole journal.
 
 ## The recall eval harness — `recall_eval`
 

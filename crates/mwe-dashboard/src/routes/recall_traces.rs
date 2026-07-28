@@ -13,6 +13,16 @@
 //! - GET `/admin/recall-traces/:id/data` — the JSON payload the viewer fetches
 //!   (`meta` + the decoded [`mwe_core::recall_trace::RecallTrace`]).
 //!
+//! Admin is the floor, not the whole gate: **by default every operator —
+//! admins included — sees only the traces whose sender is themself**. A trace
+//! carries the recalled fact bodies verbatim and is not re-projected per
+//! reader, so listing the whole deployment unconditionally would hand one
+//! user's memory to another. The reveal switch ([`crate::reveal`]) is what
+//! lifts an admin to the whole journal — the same single control that governs
+//! the facts table and the wiki pages, not a second policy. Scoping to self is
+//! also what the page is usually opened for: to see why **my** last search
+//! answered badly.
+//!
 //! The journal itself is written by the two recall producers (see
 //! [`mwe_core::recall_trace`] and the
 //! recall pipeline): the
@@ -23,6 +33,7 @@ use axum::Router;
 use axum::extract::{Path as AxumPath, State};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
+use axum_extra::extract::cookie::CookieJar;
 use maud::{Markup, PreEscaped, html};
 use mwe_core::recall_nav::HopTrace;
 use mwe_core::recall_trace::{self, RecallTrace, TraceHit, TraceRow, TraceSource};
@@ -41,18 +52,40 @@ pub fn router() -> Router<DashboardState> {
         .route("/admin/recall-traces/:id/data", get(data))
 }
 
+/// May `user` open the trace `row` was recorded for?
+///
+/// Own traces always; anyone else's only under the reveal switch (which is
+/// itself admin-only, so `reveal` can never be true for a non-admin).
+fn readable(row: &TraceRow, user: &SessionUser, reveal: bool) -> bool {
+    reveal || row.sender_id == user.sender_id
+}
+
 /// `GET /dashboard/admin/recall-traces` — the journal, newest first.
-async fn index(State(state): State<DashboardState>, user: SessionUser) -> Result<Html<String>> {
+///
+/// Scoped to the reader's own recalls unless the reveal switch is on.
+async fn index(
+    State(state): State<DashboardState>,
+    user: SessionUser,
+    jar: CookieJar,
+) -> Result<Html<String>> {
     if !user.is_admin {
         return Err(DashboardError::Forbidden);
     }
+    let reveal = crate::reveal::active(&user, &jar);
     let rows = recall_trace::recent_traces(&state.pool, recall_trace::TRACE_KEEP)
         .await
         .map_err(|e| DashboardError::Internal(format!("recall_trace::recent_traces: {e}")))?;
+    // The journal is capped at `TRACE_KEEP` rows deployment-wide, so the
+    // scoping filter is a cheap pass over a handful of rows and the policy
+    // stays here, next to the reveal decision, instead of in the query.
+    let rows: Vec<TraceRow> = rows
+        .into_iter()
+        .filter(|r| readable(r, &user, reveal))
+        .collect();
     Ok(Html(layout::authenticated_page(
         "Recall traces",
         &user,
-        &render_index_body(&rows),
+        &render_index_body(&rows, reveal),
     )))
 }
 
@@ -60,22 +93,21 @@ async fn index(State(state): State<DashboardState>, user: SessionUser) -> Result
 async fn viewer(
     State(state): State<DashboardState>,
     user: SessionUser,
+    jar: CookieJar,
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Html<String>> {
     if !user.is_admin {
         return Err(DashboardError::Forbidden);
     }
-    let row = recall_trace::get_trace(&state.pool, id)
-        .await
-        .map_err(|e| DashboardError::Internal(format!("recall_trace::get_trace: {e}")))?
-        .ok_or(DashboardError::NotFound)?;
+    let reveal = crate::reveal::active(&user, &jar);
+    let row = load_readable(&state, id, &user, reveal).await?;
     let trace = row
         .parse()
         .map_err(|e| DashboardError::Internal(format!("recall_trace payload: {e}")))?;
     Ok(Html(layout::authenticated_page(
         &format!("Recall trace #{id}"),
         &user,
-        &render_viewer_body(&row, &trace),
+        &render_viewer_body(&row, &trace, reveal),
     )))
 }
 
@@ -83,15 +115,14 @@ async fn viewer(
 async fn data(
     State(state): State<DashboardState>,
     user: SessionUser,
+    jar: CookieJar,
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Response> {
     if !user.is_admin {
         return Err(DashboardError::Forbidden);
     }
-    let row = recall_trace::get_trace(&state.pool, id)
-        .await
-        .map_err(|e| DashboardError::Internal(format!("recall_trace::get_trace: {e}")))?
-        .ok_or(DashboardError::NotFound)?;
+    let reveal = crate::reveal::active(&user, &jar);
+    let row = load_readable(&state, id, &user, reveal).await?;
     let trace = row
         .parse()
         .map_err(|e| DashboardError::Internal(format!("recall_trace payload: {e}")))?;
@@ -105,14 +136,44 @@ async fn data(
     .into_response())
 }
 
+/// Fetch trace `id` and apply the same scoping the journal applies.
+///
+/// A trace the reader may not open is [`DashboardError::NotFound`], not
+/// `Forbidden`: the id space is a dense autoincrement, and answering
+/// "forbidden" would confirm that someone else's recall exists at that id.
+async fn load_readable(
+    state: &DashboardState,
+    id: i64,
+    user: &SessionUser,
+    reveal: bool,
+) -> Result<TraceRow> {
+    let row = recall_trace::get_trace(&state.pool, id)
+        .await
+        .map_err(|e| DashboardError::Internal(format!("recall_trace::get_trace: {e}")))?
+        .ok_or(DashboardError::NotFound)?;
+    if readable(&row, user, reveal) {
+        Ok(row)
+    } else {
+        Err(DashboardError::NotFound)
+    }
+}
+
 // ---------- Rendering: the journal ----------
 
-fn render_index_body(rows: &[TraceRow]) -> Markup {
+fn render_index_body(rows: &[TraceRow], reveal: bool) -> Markup {
     html! {
+        @if reveal { (crate::reveal::banner()) }
         p class="text-text-dim max-w-prose" {
             "The last " (recall_trace::TRACE_KEEP) " recalls, newest first — what each user "
             "action pulled out of memory and what was injected back into the consumer. "
             "Open a trace to replay the navigator's route."
+            @if reveal {
+                " Admin reveal is on, so this is every user's recall."
+            } @else {
+                " Only your own recalls are listed; turn on Admin reveal in "
+                a href="/dashboard/settings/me" { "Settings" }
+                " to see everyone's."
+            }
         }
         @if rows.is_empty() {
             p class="mt-6" { "No traces yet — they appear as soon as a consumer turn or a deep search runs." }
@@ -199,8 +260,9 @@ fn compact_stamp(iso: &str) -> String {
 
 // ---------- Rendering: the viewer ----------
 
-fn render_viewer_body(row: &TraceRow, trace: &RecallTrace) -> Markup {
+fn render_viewer_body(row: &TraceRow, trace: &RecallTrace, reveal: bool) -> Markup {
     html! {
+        @if reveal { (crate::reveal::banner()) }
         // Stage mount for the 3D replay. recall-trace.js (an ES module — it
         // imports the vendored three.module.min.js relative to itself)
         // hydrates it from the /data endpoint; without JS/WebGL the stage

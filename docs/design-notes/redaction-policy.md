@@ -427,7 +427,7 @@ per-browser **ACL-reveal** toggle: a single control on the
 [Settings page](dashboard-frontend.md) (`/dashboard/settings/me`) that
 governs every reveal-aware surface. The logic lives in one place,
 `mwe_dashboard::reveal`; a surface opts in by consulting `reveal::active`
-and skipping its ACL projection when it returns true. Three surfaces
+and skipping its ACL projection when it returns true. Four surfaces
 honour it today:
 
 - **The memory-wiki read surfaces** (`/dashboard/wiki/:id` and
@@ -457,6 +457,15 @@ honour it today:
   table. The act tools (`apply` / `confirm` / `revert`) are unchanged:
   an admin may still act on any proposal *by id* (the addressee gate
   admits admins), so reveal governs discovery, not authority.
+- **The recall-traces journal** (`/dashboard/admin/recall-traces`, its
+  viewer and its `/data` feed). By default every operator — admins
+  included — sees only the traces whose `sender_id` is themself; another
+  user's trace is `404` on the viewer and on the feed (not `403`: the id
+  space is a dense autoincrement, so a `403` would confirm the row
+  exists). A trace journals the recalled fact bodies verbatim and is not
+  re-projected per reader, so the exposure class is the facts table's;
+  reveal lifts an admin to the whole journal. See
+  [dashboard.md](dashboard.md).
 
 A banner marks the mode so a revealed-private fragment / fact is never
 mistaken for a public one.
@@ -583,9 +592,14 @@ would move into a localized table. For now they are constants.
   user's fact is absent from the list until the reveal cookie is set);
   `agentic.rs` pins the proposal read tools
   (`proposal_list_hides_other_users_until_reveal` — an admin sees another
-  user's pending, and its `context`, only with reveal) and
+  user's pending, and its `context`, only with reveal);
   `proposals_in_flight_count.rs` pins the badge count
-  (`admin_count_is_scoped_to_self_without_reveal_full_with_reveal`).
+  (`admin_count_is_scoped_to_self_without_reveal_full_with_reveal`); and
+  `recall_traces.rs` pins the journal
+  (`journal_hides_another_users_trace_until_admin_reveal` — the admin's
+  own trace is listed, another user's is absent from the list and `404`
+  on both the viewer and the `/data` feed, and reveal turns all three
+  around).
 - **Segmented variants** — `render.rs` pins the segment contract
   (readable region carries its map-covered fact id, redacted placeholder
   and connective prose are fact-less, a map-uncovered region shows

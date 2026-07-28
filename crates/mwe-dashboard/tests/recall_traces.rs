@@ -3,7 +3,8 @@
 //!
 //! Exercises `/dashboard/admin/recall-traces` (the journal), the per-trace
 //! viewer page (3D stage mount + the full textual trace) and its `/data`
-//! JSON feed — all admin-gated.
+//! JSON feed — all admin-gated, and all scoped to the reader's own recalls
+//! until the admin reveal switch is on.
 
 mod common;
 
@@ -185,7 +186,11 @@ async fn empty_journal_renders_and_links_nothing() {
 async fn journal_lists_and_viewer_replays_a_recorded_trace() {
     let (app, pool, _dir) = make_app().await;
     let cookie = login_as_admin(&app).await;
-    recall_trace::record_trace(&pool, TraceSource::Ingest, "franz", &sample_trace())
+    // Recorded for `alice` — the signed-in admin herself. The journal is
+    // scoped to the reader, so a trace filed under any other sender would
+    // not be listed here (that is
+    // `journal_hides_another_users_trace_until_admin_reveal`).
+    recall_trace::record_trace(&pool, TraceSource::Ingest, "alice", &sample_trace())
         .await
         .expect("record");
 
@@ -201,7 +206,7 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_string(response).await;
-    for needle in ["ingest", "franz", "cosa cucino stasera", "1 flat", "done"] {
+    for needle in ["ingest", "alice", "cosa cucino stasera", "1 flat", "done"] {
         assert!(html.contains(needle), "missing `{needle}`: {html}");
     }
     let id_pos = html.find("/admin/recall-traces/").expect("view link");
@@ -252,7 +257,7 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
     let payload: serde_json::Value =
         serde_json::from_str(&body_string(response).await).expect("json");
     assert_eq!(payload["source"], "ingest");
-    assert_eq!(payload["sender_id"], "franz");
+    assert_eq!(payload["sender_id"], "alice");
     assert_eq!(payload["trace"]["hops"][0]["opened"][0]["discovered"], 3);
     assert_eq!(payload["trace"]["nav_stop"], "done");
 
@@ -267,4 +272,110 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// The scoping rule, pinned from both sides: an admin does **not** see
+/// another user's recall by default — not in the journal, not on the viewer,
+/// and above all not through the `/data` feed, which is where the recalled
+/// fact bodies actually travel. Admin reveal is the one switch that lifts it.
+#[tokio::test]
+async fn journal_hides_another_users_trace_until_admin_reveal() {
+    let (app, pool, _dir) = make_app().await;
+    let cookie = login_as_admin(&app).await;
+
+    // Alice's own recall, and bob's — recorded in that order, so bob's is
+    // the newest row and cannot be missing merely for being pruned.
+    let mut mine = sample_trace();
+    mine.turn_text = "che pasta compro?".to_owned();
+    recall_trace::record_trace(&pool, TraceSource::Ingest, "alice", &mine)
+        .await
+        .expect("record alice");
+
+    let mut theirs = sample_trace();
+    theirs.turn_text = "quanto ha speso bob dal notaio?".to_owned();
+    theirs.flat_hits[0].text = "Bob deve 4.000 euro al notaio.".to_owned();
+    recall_trace::record_trace(&pool, TraceSource::Navigate, "bob", &theirs)
+        .await
+        .expect("record bob");
+
+    let bob_id: i64 = sqlx::query_scalar("SELECT id FROM recall_traces WHERE sender_id = 'bob'")
+        .fetch_one(&pool)
+        .await
+        .expect("bob's row id");
+
+    // Without reveal: alice's own row is listed, bob's is not.
+    let html = body_string(
+        send(
+            &app,
+            Request::builder()
+                .uri("/admin/recall-traces")
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        html.contains("che pasta compro?"),
+        "the admin's own trace must still be listed: {html}"
+    );
+    assert!(
+        !html.contains("quanto ha speso bob"),
+        "another user's trace must not be listed without reveal: {html}"
+    );
+
+    // …and reaching for it by id is a 404 on both the page and the feed.
+    for uri in [
+        format!("/admin/recall-traces/{bob_id}"),
+        format!("/admin/recall-traces/{bob_id}/data"),
+    ] {
+        let response = send(
+            &app,
+            Request::builder()
+                .uri(&uri)
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{uri} must 404 without reveal"
+        );
+    }
+
+    // With reveal: the row is listed and the feed serves it.
+    let revealed = format!("{cookie}; mwe_admin_reveal=1");
+    let html = body_string(
+        send(
+            &app,
+            Request::builder()
+                .uri("/admin/recall-traces")
+                .header(header::COOKIE, revealed.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        html.contains("quanto ha speso bob"),
+        "reveal must lift the admin to the whole journal: {html}"
+    );
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(format!("/admin/recall-traces/{bob_id}/data"))
+            .header(header::COOKIE, revealed)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value =
+        serde_json::from_str(&body_string(response).await).expect("json");
+    assert_eq!(payload["sender_id"], "bob");
 }

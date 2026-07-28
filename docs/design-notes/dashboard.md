@@ -181,7 +181,16 @@ operational chat + first-login welcome wizard**.
   also the no-JS / no-WebGL fallback. `/:id/data` serves the viewer's
   JSON feed. Admin-only because a trace journals what a specific sender
   was served, across wiki and ACL lines — operator telemetry, same tier
-  as the engine DB.
+  as the engine DB. Admin is the floor, not the whole gate: **by default
+  every operator, admins included, sees only the traces whose sender is
+  themself**, and another user's trace is `404` on both the viewer and
+  the `/data` feed. A trace carries the recalled fact bodies verbatim and
+  is not re-projected per reader, so a deployment-wide listing is the
+  same class of exposure as the facts table — and it rides the same
+  single control: [admin reveal](redaction-policy.md#dashboard-admin-reveal)
+  lifts an admin to the whole journal. Scoping to self is also what the
+  page is normally opened for — to see why *my* last search answered
+  badly.
 - **REM settings** — `/dashboard/admin/rem-settings` admin-only editor
   for the [`rem.policy:` config subsection](../protocol/config-schema.md#rem):
   the REM cycle's behaviour knobs (auto-promote mass bars, per-cycle
