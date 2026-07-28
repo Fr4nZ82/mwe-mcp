@@ -165,8 +165,19 @@ and changing whose eyes you are using without leaving it. A switcher
 that lived only on the sign-in screen would make the visitor navigate
 back each time, and the demonstration would die of friction. The switch
 returns to the page it was made from (`Referer`, reduced to a local
-`/dashboard/` path, home otherwise), and the button for whoever is
-already signed in is not rendered.
+`/dashboard/` path), and the button for whoever is already signed in is
+not rendered.
+
+The one path that rule must **not** honour is the sign-in screen itself.
+The buttons on the door post the same form as the switcher in the frame,
+so they arrive with `/dashboard/login` as their `Referer` — and a visitor
+who clicks *Enter as Bob* and is sent back to the door sees the same
+three buttons and nothing that says they are now signed in, so they click
+again. `destination` is the two-step rule: `safe_local` answers whether
+the browser may be sent there at all, and the `SIGN_IN` filter answers
+whether there is anything to see when it arrives. Everything else — a
+missing header, a foreign origin, a non-dashboard path — lands on the
+panel as before.
 
 Implementation: [`routes/demo.rs`](../../crates/mwe-dashboard/src/routes/demo.rs).
 
@@ -252,10 +263,14 @@ inferred from the markup:
   answering `404`, and a frozen deployment refuses an unknown write with
   `403` before routing gets a say, so the expected code differs per
   posture while the property does not. The rest pin the entrance
-  (`a_visitor_enters_with_one_click_and_no_credentials`), the frame
+  (`a_visitor_enters_with_one_click_and_no_credentials`, which posts the
+  `Referer` a browser really sends and asserts the landing — passing
+  `None` there is what let the door-to-door redirect ship), the frame
   switcher and its return path
   (`the_switcher_is_on_every_page_and_returns_to_the_same_page`), the
-  never-admin rule, the off-list refusal, and the configured-but-absent
+  destination rule itself (`demo.rs`'s
+  `entering_from_the_door_lands_in_the_panel_and_not_back_on_the_door`),
+  the never-admin rule, the off-list refusal, and the configured-but-absent
   typo. `config.rs` pins the load-time refusal
   (`demo_identities_without_read_only_refuse_to_load`).
 

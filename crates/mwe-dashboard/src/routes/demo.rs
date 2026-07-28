@@ -65,6 +65,17 @@ use crate::state::DashboardState;
 /// Where a demo switch lands when the page it came from is unknown.
 const FALLBACK: &str = "/dashboard/home";
 
+/// The sign-in screen — a safe local path, and the one destination that
+/// is never the right answer.
+///
+/// The switcher in the frame wants the page it was used on. The buttons
+/// on the door are the *same* form, so they arrive with the door as
+/// their `Referer`, and returning a visitor to the door lands them on a
+/// screen that still offers the same three buttons and shows no sign
+/// that anything happened. They click again, and again nothing appears
+/// to change: the demonstration dies on its first click.
+const SIGN_IN: &str = "/dashboard/login";
+
 /// Routes for the passwordless entrance.
 ///
 /// Merged by [`super::build`] **only** when
@@ -115,14 +126,29 @@ fn safe_local(raw: &str) -> Option<String> {
     (path.starts_with("/dashboard/") && !path.starts_with("/dashboard//")).then(|| path.to_owned())
 }
 
+/// The page a switch lands on: the one it was made from, or the panel.
+///
+/// Two questions that are **not** the same one, which is why they are
+/// two steps. [`safe_local`] answers *may we send the browser there at
+/// all* — a security reduction, and the reason a forged `Referer` cannot
+/// leave the site. This answers *is there anything to see when we do*,
+/// and the only path that fails it is [`SIGN_IN`].
+fn destination(referer: Option<&str>) -> String {
+    referer
+        .and_then(safe_local)
+        .filter(|path| path != SIGN_IN)
+        .unwrap_or_else(|| FALLBACK.to_owned())
+}
+
 /// `POST /dashboard/demo/enter` — become one of the configured
 /// identities, no credentials involved.
 ///
 /// Lands back on the page the switch was made from, so comparing the
 /// same page as two people is one click and no navigation. The page is
 /// taken from `Referer`, which browsers send in full for a same-origin
-/// form post; when it is missing or not a local dashboard path the
-/// visitor goes home rather than anywhere a header could name.
+/// form post; when it is missing, not a local dashboard path, or the
+/// sign-in screen itself, the visitor goes to the panel rather than
+/// anywhere a header could name ([`destination`]).
 ///
 /// # Errors
 ///
@@ -158,13 +184,9 @@ pub async fn enter(
 
     // Never admin, whatever `enrollment_users.is_admin` says.
     let cookie = issue_session_cookie(&state, wanted, false)?;
-    let destination = headers
-        .get(REFERER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(safe_local)
-        .unwrap_or_else(|| FALLBACK.to_owned());
+    let landing = destination(headers.get(REFERER).and_then(|v| v.to_str().ok()));
     tracing::info!(identity = wanted, "demo entrance: session issued");
-    Ok((jar.add(cookie), Redirect::to(&destination)).into_response())
+    Ok((jar.add(cookie), Redirect::to(&landing)).into_response())
 }
 
 /// The row of entrance buttons.
@@ -255,5 +277,42 @@ mod tests {
         assert_eq!(safe_local("https://evil.example/phish"), None);
         assert_eq!(safe_local("/mcp"), None);
         assert_eq!(safe_local(""), None);
+    }
+
+    /// The frame switcher's whole point: you come back to what you were
+    /// reading, as somebody else.
+    #[test]
+    fn a_switch_returns_to_the_page_it_was_made_from() {
+        assert_eq!(
+            destination(Some(
+                "https://demo.example/dashboard/wiki/bob/view/index.md"
+            )),
+            "/dashboard/wiki/bob/view/index.md"
+        );
+        assert_eq!(
+            destination(Some("/dashboard/facts?page=2")),
+            "/dashboard/facts"
+        );
+    }
+
+    /// …and the one path that rule must not honour. The buttons on the
+    /// door post the same form as the switcher in the frame, so they
+    /// arrive with `SIGN_IN` as their `Referer`; obeying it would put a
+    /// visitor who just clicked *Enter as Bob* back on a screen offering
+    /// *Enter as Bob*, with nothing on it to say they are now signed in.
+    #[test]
+    fn entering_from_the_door_lands_in_the_panel_and_not_back_on_the_door() {
+        assert_eq!(
+            destination(Some("http://127.0.0.1:8760/dashboard/login")),
+            FALLBACK
+        );
+        assert_eq!(destination(Some("/dashboard/login")), FALLBACK);
+        assert_eq!(
+            destination(Some("/dashboard/login?next=/dashboard/facts")),
+            FALLBACK
+        );
+        // The pre-existing fallbacks are unchanged.
+        assert_eq!(destination(None), FALLBACK);
+        assert_eq!(destination(Some("https://evil.example/phish")), FALLBACK);
     }
 }

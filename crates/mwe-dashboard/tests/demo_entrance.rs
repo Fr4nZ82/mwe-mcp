@@ -199,11 +199,28 @@ async fn a_visitor_enters_with_one_click_and_no_credentials() {
         assert!(html.contains(label), "missing `{label}`: {html}");
     }
 
-    let response = enter_as(&app, "bob", None).await;
+    // The header a real browser sends: the buttons live on `/login`, and
+    // a same-origin form post carries the page it was made from. Posting
+    // with no `Referer` at all — which no browser does — is what let the
+    // landing below go unnoticed, so this test sends what the visitor's
+    // browser sends.
+    let response = enter_as(&app, "bob", Some("http://demo.example/dashboard/login")).await;
     assert!(
         response.status().is_redirection(),
         "entering must mint a session: {}",
         response.status()
+    );
+    // …and lands in the panel. Honouring the `Referer` here would return
+    // the visitor to the door, which still shows *Enter as Bob* and says
+    // nothing about being signed in: the first click of the whole demo
+    // would look like it did nothing.
+    assert_eq!(
+        response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("/dashboard/home"),
+        "entering from the sign-in screen must not land back on it"
     );
     let cookie = extract_cookie_value(
         &extract_set_cookie(&response, "mwe_session").expect("session cookie"),
