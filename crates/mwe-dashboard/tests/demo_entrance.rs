@@ -246,9 +246,18 @@ async fn a_demo_session_is_never_admin_even_for_an_admin_identity() {
         .await,
     )
     .await;
+    // `/admin/health` is admin-only and read-only, so it survives the
+    // freeze and its nav link is a clean tell for the role. (The traces
+    // journal is deliberately *not* the tell any more: it is open to
+    // every signed-in user, scoped to their own recalls.)
     assert!(
-        !page.contains(r#"href="/dashboard/admin/recall-traces""#),
+        !page.contains(r#"href="/dashboard/admin/health""#),
         "a demo session must not carry the admin role: {page}"
+    );
+    // …and the surfaces a demo visitor is meant to reach are there.
+    assert!(
+        page.contains(r#"href="/dashboard/recall-traces""#),
+        "a demo visitor must still reach their own recall traces: {page}"
     );
 }
 

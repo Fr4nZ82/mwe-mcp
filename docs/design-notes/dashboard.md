@@ -169,8 +169,8 @@ operational chat + first-login welcome wizard**.
   `Arc<RwLock<RecallConfig>>` that both transports (MCP dispatcher and
   dashboard chat) read per turn — no restart caveat. Semantics stay in
   the `navigator` prompt; the panel only bounds resources.
-- **Recall traces** — `/dashboard/admin/recall-traces` admin-only journal
-  of the last few recall runs (the [`recall_trace`
+- **Recall traces** — `/dashboard/recall-traces`, open to **every
+  signed-in user** and scoped to their own recalls (the [`recall_trace`
   journal](recall-pipeline.md#recall-traces--the-last-10-journal): what a
   user action pulled out of memory and what was injected back). The list
   links each trace to a per-trace viewer that mounts the **animated 3D
@@ -179,18 +179,28 @@ operational chat + first-login welcome wizard**.
   entry-point fan, every navigator hop with its candidates / one-line
   note / vetting outcome, and the injected block verbatim; the text is
   also the no-JS / no-WebGL fallback. `/:id/data` serves the viewer's
-  JSON feed. Admin-only because a trace journals what a specific sender
-  was served, across wiki and ACL lines — operator telemetry, same tier
-  as the engine DB. Admin is the floor, not the whole gate: **by default
-  every operator, admins included, sees only the traces whose sender is
-  themself**, and another user's trace is `404` on both the viewer and
-  the `/data` feed. A trace carries the recalled fact bodies verbatim and
-  is not re-projected per reader, so a deployment-wide listing is the
-  same class of exposure as the facts table — and it rides the same
-  single control: [admin reveal](redaction-policy.md#dashboard-admin-reveal)
-  lifts an admin to the whole journal. Scoping to self is also what the
-  page is normally opened for — to see why *my* last search answered
-  badly.
+  JSON feed.
+
+  **Ownership is the gate, and it is the only gate.** A trace belongs to
+  the sender it was recorded for: your own always, anybody else's only
+  under [admin reveal](redaction-policy.md#dashboard-admin-reveal) —
+  which is itself admin-only, so a regular user can never widen past
+  themself. Another user's trace is `404` on both the viewer and the
+  `/data` feed, never `403`: trace ids are a dense autoincrement, and
+  `403` would confirm the row exists. With no admin gate above it, that
+  check in the route is the whole boundary between two users' traces.
+
+  The page is not under `/admin/` and is not admin-gated, because once a
+  trace is scoped to its own sender the role stops being the right
+  question. A user opening their own trace is not reading system
+  telemetry; they are seeing how the memory arrived at the answer it gave
+  **them**, over their own pages, inside their own permissions. That is
+  transparency, and the 3D replay is the clearest explanation of the
+  product anyone gets — withholding it from the person the recall ran for
+  would be backwards. What *is* an operator lens is the deployment-wide
+  listing: a trace carries the recalled fact bodies verbatim and is not
+  re-projected per reader, so widening past yourself is the same class of
+  exposure as the facts table and rides the same single control.
 - **REM settings** — `/dashboard/admin/rem-settings` admin-only editor
   for the [`rem.policy:` config subsection](../protocol/config-schema.md#rem):
   the REM cycle's behaviour knobs (auto-promote mass bars, per-cycle

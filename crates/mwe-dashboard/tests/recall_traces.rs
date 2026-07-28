@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Admin recall-traces surface integration tests.
+//! Recall-traces surface integration tests.
 //!
-//! Exercises `/dashboard/admin/recall-traces` (the journal), the per-trace
+//! Exercises `/dashboard/recall-traces` (the journal), the per-trace
 //! viewer page (3D stage mount + the full textual trace) and its `/data`
-//! JSON feed — all admin-gated, and all scoped to the reader's own recalls
-//! until the admin reveal switch is on.
+//! JSON feed — open to every signed-in user, all three scoped to the
+//! reader's own recalls until the admin reveal switch is on.
 
 mod common;
 
@@ -64,6 +64,61 @@ async fn login_as_admin(app: &Router) -> String {
     .await;
     assert!(response.status().is_redirection(), "{}", response.status());
     extract_cookie_value(&extract_set_cookie(&response, "mwe_session").expect("cookie"))
+}
+
+/// Mint a **non-admin** session via the invitation → accept cycle,
+/// returning its `mwe_session` cookie. Same shape as the helper in
+/// `proposals_in_flight_count.rs`.
+async fn login_as_user(app: &Router, admin_cookie: &str, user_id: &str) -> String {
+    let create = send(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri("/users/new")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::COOKIE, admin_cookie)
+            .body(Body::from(format!(
+                "user_id={user_id}&email={user_id}@example.com&aliases="
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(create.status(), StatusCode::OK);
+    let html = body_string(create).await;
+    let prefix = "/dashboard/accept-invite/";
+    let start = html.find(prefix).expect("invitation link");
+    let after = &html[start + prefix.len()..];
+    let end = after
+        .find(|c: char| c.is_whitespace() || matches!(c, '"' | '<' | '\'' | ')' | ','))
+        .unwrap();
+    let invitation_id = &after[..end];
+    let accept = send(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/accept-invite/{invitation_id}"))
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(format!(
+                "password={user_id}-pw-secret-12&password_confirm={user_id}-pw-secret-12"
+            )))
+            .unwrap(),
+    )
+    .await;
+    extract_cookie_value(&extract_set_cookie(&accept, "mwe_session").expect("cookie"))
+}
+
+/// Status of a GET, with `cookie` presented.
+async fn status_of(app: &Router, uri: &str, cookie: &str) -> StatusCode {
+    send(
+        app,
+        Request::builder()
+            .uri(uri)
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .status()
 }
 
 /// A representative trace: one flat hit, a two-entry fan, one hop with a
@@ -147,9 +202,9 @@ fn sample_trace() -> RecallTrace {
 async fn anonymous_users_are_redirected_to_login() {
     let (app, _pool, _dir) = make_app().await;
     for uri in [
-        "/admin/recall-traces",
-        "/admin/recall-traces/1",
-        "/admin/recall-traces/1/data",
+        "/recall-traces",
+        "/recall-traces/1",
+        "/recall-traces/1/data",
     ] {
         let response = send(
             &app,
@@ -171,7 +226,7 @@ async fn empty_journal_renders_and_links_nothing() {
     let response = send(
         &app,
         Request::builder()
-            .uri("/admin/recall-traces")
+            .uri("/recall-traces")
             .header(header::COOKIE, cookie)
             .body(Body::empty())
             .unwrap(),
@@ -198,7 +253,7 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
     let response = send(
         &app,
         Request::builder()
-            .uri("/admin/recall-traces")
+            .uri("/recall-traces")
             .header(header::COOKIE, cookie.clone())
             .body(Body::empty())
             .unwrap(),
@@ -209,8 +264,8 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
     for needle in ["ingest", "alice", "cosa cucino stasera", "1 flat", "done"] {
         assert!(html.contains(needle), "missing `{needle}`: {html}");
     }
-    let id_pos = html.find("/admin/recall-traces/").expect("view link");
-    let id: i64 = html[id_pos + "/admin/recall-traces/".len()..]
+    let id_pos = html.find("/recall-traces/").expect("view link");
+    let id: i64 = html[id_pos + "/recall-traces/".len()..]
         .chars()
         .take_while(char::is_ascii_digit)
         .collect::<String>()
@@ -221,7 +276,7 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
     let response = send(
         &app,
         Request::builder()
-            .uri(format!("/admin/recall-traces/{id}"))
+            .uri(format!("/recall-traces/{id}"))
             .header(header::COOKIE, cookie.clone())
             .body(Body::empty())
             .unwrap(),
@@ -247,7 +302,7 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
     let response = send(
         &app,
         Request::builder()
-            .uri(format!("/admin/recall-traces/{id}/data"))
+            .uri(format!("/recall-traces/{id}/data"))
             .header(header::COOKIE, cookie.clone())
             .body(Body::empty())
             .unwrap(),
@@ -265,7 +320,7 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
     let response = send(
         &app,
         Request::builder()
-            .uri("/admin/recall-traces/999999")
+            .uri("/recall-traces/999999")
             .header(header::COOKIE, cookie)
             .body(Body::empty())
             .unwrap(),
@@ -308,7 +363,7 @@ async fn journal_hides_another_users_trace_until_admin_reveal() {
         send(
             &app,
             Request::builder()
-                .uri("/admin/recall-traces")
+                .uri("/recall-traces")
                 .header(header::COOKIE, cookie.clone())
                 .body(Body::empty())
                 .unwrap(),
@@ -327,8 +382,8 @@ async fn journal_hides_another_users_trace_until_admin_reveal() {
 
     // …and reaching for it by id is a 404 on both the page and the feed.
     for uri in [
-        format!("/admin/recall-traces/{bob_id}"),
-        format!("/admin/recall-traces/{bob_id}/data"),
+        format!("/recall-traces/{bob_id}"),
+        format!("/recall-traces/{bob_id}/data"),
     ] {
         let response = send(
             &app,
@@ -352,7 +407,7 @@ async fn journal_hides_another_users_trace_until_admin_reveal() {
         send(
             &app,
             Request::builder()
-                .uri("/admin/recall-traces")
+                .uri("/recall-traces")
                 .header(header::COOKIE, revealed.clone())
                 .body(Body::empty())
                 .unwrap(),
@@ -368,7 +423,7 @@ async fn journal_hides_another_users_trace_until_admin_reveal() {
     let response = send(
         &app,
         Request::builder()
-            .uri(format!("/admin/recall-traces/{bob_id}/data"))
+            .uri(format!("/recall-traces/{bob_id}/data"))
             .header(header::COOKIE, revealed)
             .body(Body::empty())
             .unwrap(),
@@ -378,4 +433,116 @@ async fn journal_hides_another_users_trace_until_admin_reveal() {
     let payload: serde_json::Value =
         serde_json::from_str(&body_string(response).await).expect("json");
     assert_eq!(payload["sender_id"], "bob");
+}
+
+/// The surface is **not** admin-gated, and ownership is what replaces the
+/// role.
+///
+/// A trace belongs to the sender it was recorded for, so the person the
+/// recall actually ran for is exactly who should be able to replay it —
+/// the 3D route is the clearest explanation of the product anyone gets,
+/// and an admin-only page would have withheld it from every ordinary user
+/// (and from every demo visitor, whose session is never admin).
+///
+/// The other half is what the admin gate used to do for free and now must
+/// be done by the route: bob may open his own by id, and **not** carol's
+/// by guessing the id next to it. The refusal is `404`, not `403` — trace
+/// ids are a dense autoincrement, so `403` would confirm that carol's
+/// recall exists there.
+#[tokio::test]
+async fn a_regular_user_reads_their_own_traces_and_cannot_reach_anybody_elses() {
+    let (app, pool, _dir) = make_app().await;
+    let admin = login_as_admin(&app).await;
+    let bob = login_as_user(&app, &admin, "bob").await;
+
+    let mut his = sample_trace();
+    his.turn_text = "che pasta compro?".to_owned();
+    recall_trace::record_trace(&pool, TraceSource::Ingest, "bob", &his)
+        .await
+        .expect("record bob");
+
+    let mut hers = sample_trace();
+    hers.turn_text = "quanto ha speso carol dal notaio?".to_owned();
+    recall_trace::record_trace(&pool, TraceSource::Navigate, "carol", &hers)
+        .await
+        .expect("record carol");
+
+    let ids: Vec<(i64, String)> = sqlx::query_as("SELECT id, sender_id FROM recall_traces")
+        .fetch_all(&pool)
+        .await
+        .expect("ids");
+    let bobs_id = ids.iter().find(|(_, s)| s == "bob").expect("bob's row").0;
+    let carols_id = ids
+        .iter()
+        .find(|(_, s)| s == "carol")
+        .expect("carol's row")
+        .0;
+
+    // The journal opens for a non-admin, and holds only his own recall.
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/recall-traces")
+            .header(header::COOKIE, bob.clone())
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a regular user must reach their own recall traces"
+    );
+    let html = body_string(response).await;
+    assert!(html.contains("che pasta compro?"), "{html}");
+    assert!(!html.contains("quanto ha speso carol"), "{html}");
+    // No dead end: reveal is admin-only, so a regular user is not pointed
+    // at a switch they do not have.
+    assert!(!html.contains("turn on Admin reveal"), "{html}");
+
+    // His own, by id, on both the page and the feed.
+    for uri in [
+        format!("/recall-traces/{bobs_id}"),
+        format!("/recall-traces/{bobs_id}/data"),
+    ] {
+        assert_eq!(
+            status_of(&app, &uri, &bob).await,
+            StatusCode::OK,
+            "{uri} is bob's own"
+        );
+    }
+
+    // Carol's, by guessing the id: gone, and gone as "not found". A
+    // forged reveal cookie buys a non-admin nothing either — the switch
+    // is gated on the role server-side.
+    let forged = format!("{bob}; mwe_admin_reveal=1");
+    for cookie in [&bob, &forged] {
+        for uri in [
+            format!("/recall-traces/{carols_id}"),
+            format!("/recall-traces/{carols_id}/data"),
+        ] {
+            assert_eq!(
+                status_of(&app, &uri, cookie).await,
+                StatusCode::NOT_FOUND,
+                "{uri}: another user's trace must be 404 — a 403 would confirm it exists"
+            );
+        }
+    }
+
+    let html = body_string(
+        send(
+            &app,
+            Request::builder()
+                .uri("/recall-traces")
+                .header(header::COOKIE, forged)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        !html.contains("quanto ha speso carol"),
+        "a non-admin cannot widen the journal with a hand-written cookie: {html}"
+    );
 }

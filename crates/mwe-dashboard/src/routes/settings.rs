@@ -220,7 +220,7 @@ fn reveal_section(reveal_on: bool, locked: bool) -> Markup {
                 a href="/dashboard/facts" { "facts table" }
                 " lists every user's facts, so the owner-or-admin ACL / validity / "
                 "delete actions reach them, and the "
-                a href="/dashboard/admin/recall-traces" { "recall traces" }
+                a href="/dashboard/recall-traces" { "recall traces" }
                 " journal widens from your own recalls to everybody's. It never "
                 "affects the MCP tool surface, and it is honoured only for admins. "
                 "Leave it off unless you are actively supervising."

@@ -337,10 +337,13 @@ fn header(read_only: bool, demo_identities: &[String], user: Option<&SessionUser
                     (nav_link("/dashboard/skills", "Skills"))
                     (nav_link("/dashboard/facts", "Facts"))
                     (nav_link("/dashboard/bridges", "Bridges"))
+                    // "Traces" — your own last recalls and the 3D replay of
+                    // the route each took. Not admin-gated: a trace belongs
+                    // to the sender it was recorded for, so reading your own
+                    // is transparency about the answer you were given, not
+                    // operator telemetry.
+                    (nav_link("/dashboard/recall-traces", "Traces"))
                     @if u.is_admin {
-                        // Admin "Traces" — the recall journal + 3D replay
-                        // viewer (the last few recalls, whole route).
-                        (nav_link("/dashboard/admin/recall-traces", "Traces"))
                         (nav_link("/dashboard/admin/health", "Health"))
                         // The write-only consoles. A frozen deployment does
                         // not mount them at all (`routes::build`), so linking

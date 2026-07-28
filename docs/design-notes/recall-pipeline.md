@@ -571,11 +571,13 @@ clones only, no extra I/O or LLM cost. Recording is **best-effort
 telemetry**: a journal failure logs a warning and never touches the turn.
 The journal prunes to the newest `TRACE_KEEP` (10) rows after each insert —
 a resource cap; `tool_executions` remains the audit surface. The dashboard
-surface (journal list + the animated 3D replay viewer) is
-[admin-only](dashboard.md) — a trace crosses wiki and ACL lines by
-construction — and inside that gate it is **scoped to the reader's own
-recalls**, with [admin reveal](redaction-policy.md#dashboard-admin-reveal)
-as the one switch that widens it to the whole journal.
+surface (journal list + the animated 3D replay viewer) is open to
+[every signed-in user](dashboard.md) and **scoped to the reader's own
+recalls** — a trace belongs to the sender it was recorded for, so reading
+your own is transparency about the answer you were given rather than
+operator telemetry. Widening it to the whole deployment is
+[admin reveal](redaction-policy.md#dashboard-admin-reveal), the one switch,
+because a trace does cross wiki and ACL lines by construction.
 
 ## The recall eval harness — `recall_eval`
 

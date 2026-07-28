@@ -1,27 +1,44 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Admin **Recall traces** — the last recalls, listed and replayed.
+//! **Recall traces** — the last recalls, listed and replayed.
 //!
-//! Three routes, all admin-gated (a trace journals what a specific sender was
-//! served, across wiki and ACL lines — operator telemetry, same tier as the
-//! engine DB):
+//! Three routes, open to every signed-in user:
 //!
-//! - GET `/admin/recall-traces` — the journal (newest first): one row per
+//! - GET `/recall-traces` — the journal (newest first): one row per
 //!   recorded recall run, linking to its viewer.
-//! - GET `/admin/recall-traces/:id` — the viewer page: the animated 3D replay
+//! - GET `/recall-traces/:id` — the viewer page: the animated 3D replay
 //!   of the route the recall took (WebGL, `recall-trace.js`) mounted above the
 //!   full textual trace — which is also the no-JS / no-WebGL fallback.
-//! - GET `/admin/recall-traces/:id/data` — the JSON payload the viewer fetches
+//! - GET `/recall-traces/:id/data` — the JSON payload the viewer fetches
 //!   (`meta` + the decoded [`mwe_core::recall_trace::RecallTrace`]).
 //!
-//! Admin is the floor, not the whole gate: **by default every operator —
-//! admins included — sees only the traces whose sender is themself**. A trace
-//! carries the recalled fact bodies verbatim and is not re-projected per
-//! reader, so listing the whole deployment unconditionally would hand one
-//! user's memory to another. The reveal switch ([`crate::reveal`]) is what
-//! lifts an admin to the whole journal — the same single control that governs
-//! the facts table and the wiki pages, not a second policy. Scoping to self is
-//! also what the page is usually opened for: to see why **my** last search
-//! answered badly.
+//! # Ownership is the gate, and it is the only gate
+//!
+//! **A trace belongs to the sender it was recorded for**, and
+//! [`readable`] is the whole policy: your own always, anybody else's only
+//! under the reveal switch ([`crate::reveal`]) — which is itself
+//! admin-only, so a non-admin can never widen past themself.
+//!
+//! This surface used to sit behind the admin role, and while the journal
+//! listed *everybody's* recalls that was the only gate available. Once a
+//! trace is scoped to its own sender the role stops being the right
+//! question: a user opening their own trace is not reading system
+//! telemetry, they are seeing how the memory arrived at the answer it
+//! gave **them**, over their own pages, inside their own permissions.
+//! That is transparency, and withholding it from the person the recall
+//! ran for is backwards — the 3D replay of the route is the clearest
+//! explanation of the product anyone gets.
+//!
+//! The consequence to keep in mind when editing: with the admin gate
+//! gone, **the route itself is what stops one user reading another's
+//! trace**. There is no outer check to fall back on. `load_readable` is
+//! that check, and it answers [`DashboardError::NotFound`] rather than
+//! `Forbidden` — trace ids are a dense autoincrement, so `403` would
+//! confirm that somebody else's recall exists at that id.
+//!
+//! Widening the journal past yourself is still the reveal switch — the
+//! same single control that governs the facts table and the wiki pages,
+//! not a second policy, and still lockable from the config file
+//! (`instance.admin_reveal_locked`).
 //!
 //! The journal itself is written by the two recall producers (see
 //! [`mwe_core::recall_trace`] and the
@@ -43,24 +60,29 @@ use crate::error::{DashboardError, Result};
 use crate::state::DashboardState;
 use crate::ui::layout;
 
-/// Routes for the admin Recall-traces surface. Merged into the
-/// authenticated tree.
+/// Routes for the Recall-traces surface. Merged into the authenticated
+/// tree, and deliberately **not** under `/admin/`: the page is scoped to
+/// the reader's own recalls, so it is not an operator surface.
 pub fn router() -> Router<DashboardState> {
     Router::new()
-        .route("/admin/recall-traces", get(index))
-        .route("/admin/recall-traces/:id", get(viewer))
-        .route("/admin/recall-traces/:id/data", get(data))
+        .route("/recall-traces", get(index))
+        .route("/recall-traces/:id", get(viewer))
+        .route("/recall-traces/:id/data", get(data))
 }
 
 /// May `user` open the trace `row` was recorded for?
 ///
 /// Own traces always; anyone else's only under the reveal switch (which is
 /// itself admin-only, so `reveal` can never be true for a non-admin).
+///
+/// This is the **only** thing standing between two users' traces — there
+/// is no admin gate above it any more. Every handler in this module goes
+/// through it, the two by-id ones via [`load_readable`].
 fn readable(row: &TraceRow, user: &SessionUser, reveal: bool) -> bool {
     reveal || row.sender_id == user.sender_id
 }
 
-/// `GET /dashboard/admin/recall-traces` — the journal, newest first.
+/// `GET /dashboard/recall-traces` — the journal, newest first.
 ///
 /// Scoped to the reader's own recalls unless the reveal switch is on.
 async fn index(
@@ -69,9 +91,6 @@ async fn index(
     jar: CookieJar,
 ) -> Result<Html<String>> {
     let chrome = layout::Chrome::of(&state);
-    if !user.is_admin {
-        return Err(DashboardError::Forbidden);
-    }
     let reveal = crate::reveal::active(&state, &user, &jar);
     let rows = recall_trace::recent_traces(&state.pool, recall_trace::TRACE_KEEP)
         .await
@@ -87,11 +106,11 @@ async fn index(
         chrome,
         "Recall traces",
         &user,
-        &render_index_body(&rows, reveal),
+        &render_index_body(&rows, reveal, user.is_admin),
     )))
 }
 
-/// `GET /dashboard/admin/recall-traces/:id` — the viewer page.
+/// `GET /dashboard/recall-traces/:id` — the viewer page.
 async fn viewer(
     State(state): State<DashboardState>,
     user: SessionUser,
@@ -99,9 +118,6 @@ async fn viewer(
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Html<String>> {
     let chrome = layout::Chrome::of(&state);
-    if !user.is_admin {
-        return Err(DashboardError::Forbidden);
-    }
     let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_readable(&state, id, &user, reveal).await?;
     let trace = row
@@ -115,16 +131,16 @@ async fn viewer(
     )))
 }
 
-/// `GET /dashboard/admin/recall-traces/:id/data` — the viewer's JSON feed.
+/// `GET /dashboard/recall-traces/:id/data` — the viewer's JSON feed.
+///
+/// The one that actually carries the recalled fact bodies, so it goes
+/// through [`load_readable`] exactly like the page does.
 async fn data(
     State(state): State<DashboardState>,
     user: SessionUser,
     jar: CookieJar,
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Response> {
-    if !user.is_admin {
-        return Err(DashboardError::Forbidden);
-    }
     let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_readable(&state, id, &user, reveal).await?;
     let trace = row
@@ -164,16 +180,19 @@ async fn load_readable(
 
 // ---------- Rendering: the journal ----------
 
-fn render_index_body(rows: &[TraceRow], reveal: bool) -> Markup {
+/// `is_admin` only decides whether the "widen this with reveal" hint is
+/// worth showing: reveal is admin-only, so pointing a regular user at a
+/// switch they do not have would be an invitation to a dead end.
+fn render_index_body(rows: &[TraceRow], reveal: bool, is_admin: bool) -> Markup {
     html! {
         @if reveal { (crate::reveal::banner()) }
         p class="text-text-dim max-w-prose" {
-            "The last " (recall_trace::TRACE_KEEP) " recalls, newest first — what each user "
-            "action pulled out of memory and what was injected back into the consumer. "
-            "Open a trace to replay the navigator's route."
+            "The last " (recall_trace::TRACE_KEEP) " recalls, newest first — what your "
+            "own turns pulled out of memory and what was injected back into the "
+            "consumer. Open a trace to replay the navigator's route."
             @if reveal {
                 " Admin reveal is on, so this is every user's recall."
-            } @else {
+            } @else if is_admin {
                 " Only your own recalls are listed; turn on Admin reveal in "
                 a href="/dashboard/settings/me" { "Settings" }
                 " to see everyone's."
@@ -210,7 +229,7 @@ fn render_index_row(row: &TraceRow) -> Markup {
     // A payload that fails to decode still gets a row (id + link) — the
     // viewer will surface the decode error loudly.
     let trace = row.parse().ok();
-    let href = format!("/dashboard/admin/recall-traces/{}", row.id);
+    let href = format!("/dashboard/recall-traces/{}", row.id);
     html! {
         tr {
             td { (compact_stamp(&row.created_at)) }

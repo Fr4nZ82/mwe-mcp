@@ -1,7 +1,7 @@
 /* Recall-trace 3D replay — the animated route of one recall run.
  *
  * Mounted on #trace-stage by the admin viewer page
- * (/dashboard/admin/recall-traces/:id). Fetches the trace JSON from the
+ * (/dashboard/recall-traces/:id). Fetches the trace JSON from the
  * sibling /data endpoint and replays it as a guided scene:
  *
  *   1. the turn text appears;

@@ -291,7 +291,7 @@ async fn a_frozen_instance_hides_the_controls_it_refuses() {
     }
     // …and the read surfaces an admin still has are still linked.
     assert!(
-        html.contains(r#"href="/dashboard/admin/recall-traces""#),
+        html.contains(r#"href="/dashboard/recall-traces""#),
         "{html}"
     );
     assert!(html.contains(r#"href="/dashboard/wiki""#), "{html}");

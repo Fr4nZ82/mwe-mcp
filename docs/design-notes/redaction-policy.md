@@ -457,14 +457,19 @@ honour it today:
   table. The act tools (`apply` / `confirm` / `revert`) are unchanged:
   an admin may still act on any proposal *by id* (the addressee gate
   admits admins), so reveal governs discovery, not authority.
-- **The recall-traces journal** (`/dashboard/admin/recall-traces`, its
-  viewer and its `/data` feed). By default every operator — admins
-  included — sees only the traces whose `sender_id` is themself; another
-  user's trace is `404` on the viewer and on the feed (not `403`: the id
-  space is a dense autoincrement, so a `403` would confirm the row
-  exists). A trace journals the recalled fact bodies verbatim and is not
-  re-projected per reader, so the exposure class is the facts table's;
-  reveal lifts an admin to the whole journal. See
+- **The recall-traces journal** (`/dashboard/recall-traces`, its viewer
+  and its `/data` feed). This one is **not** admin-gated at all: a trace
+  belongs to the sender it was recorded for, and every signed-in user
+  reads their own — seeing how the memory reached the answer it gave you
+  is transparency, not operator telemetry. Another user's trace is `404`
+  on the viewer and on the feed (not `403`: the id space is a dense
+  autoincrement, so a `403` would confirm the row exists), and with no
+  role gate above it that check in the route is the whole boundary. What
+  reveal governs here is the **deployment-wide listing**: a trace
+  journals the recalled fact bodies verbatim and is not re-projected per
+  reader, so widening past yourself is the facts table's exposure class.
+  Reveal being admin-only is also why a regular user can never widen —
+  a forged `mwe_admin_reveal` on a non-admin session does nothing. See
   [dashboard.md](dashboard.md).
 
 A banner marks the mode so a revealed-private fragment / fact is never
@@ -641,7 +646,11 @@ would move into a localized table. For now they are constants.
   (`journal_hides_another_users_trace_until_admin_reveal` — the admin's
   own trace is listed, another user's is absent from the list and `404`
   on both the viewer and the `/data` feed, and reveal turns all three
-  around).
+  around; and
+  `a_regular_user_reads_their_own_traces_and_cannot_reach_anybody_elses`
+  — a non-admin opens the journal and their own trace by id, is `404` on
+  somebody else's on both the page and the feed, and gains nothing from a
+  hand-written reveal cookie).
 - **The server lock** — `reveal_lock.rs` pins
   `instance.admin_reveal_locked` from all three directions plus its
   baseline: the forged cookie works when unlocked

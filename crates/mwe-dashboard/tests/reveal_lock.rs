@@ -113,7 +113,7 @@ async fn a_hand_written_reveal_cookie_works_when_the_server_does_not_lock_it() {
 
     let html = get_body(
         &app,
-        "/admin/recall-traces",
+        "/recall-traces",
         &format!("{cookie}; mwe_admin_reveal=1"),
     )
     .await;
@@ -125,7 +125,7 @@ async fn a_hand_written_reveal_cookie_works_when_the_server_does_not_lock_it() {
     let response = send(
         &app,
         Request::builder()
-            .uri(format!("/admin/recall-traces/{bob_id}/data"))
+            .uri(format!("/recall-traces/{bob_id}/data"))
             .header(header::COOKIE, format!("{cookie}; mwe_admin_reveal=1"))
             .body(Body::empty())
             .unwrap(),
@@ -172,7 +172,7 @@ async fn a_locked_reveal_cannot_be_switched_on_by_form_route_or_cookie() {
     //    entirely. This is the assertion that matters: a build that only
     //    hid the checkbox would fail here.
     let forged = format!("{cookie}; mwe_admin_reveal=1");
-    let html = get_body(&app, "/admin/recall-traces", &forged).await;
+    let html = get_body(&app, "/recall-traces", &forged).await;
     assert!(
         !html.contains(BOBS_TURN),
         "locked: a forged cookie must not widen the journal: {html}"
@@ -181,7 +181,7 @@ async fn a_locked_reveal_cannot_be_switched_on_by_form_route_or_cookie() {
     let response = send(
         &app,
         Request::builder()
-            .uri(format!("/admin/recall-traces/{bob_id}/data"))
+            .uri(format!("/recall-traces/{bob_id}/data"))
             .header(header::COOKIE, forged.clone())
             .body(Body::empty())
             .unwrap(),

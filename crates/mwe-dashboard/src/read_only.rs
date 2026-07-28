@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn reading_and_navigation_always_pass() {
-        for path in ["/home", "/wiki/franz", "/facts", "/admin/recall-traces"] {
+        for path in ["/home", "/wiki/franz", "/facts", "/recall-traces"] {
             assert!(
                 !refused(&Method::GET, path),
                 "GET {path} must pass in read-only mode"
