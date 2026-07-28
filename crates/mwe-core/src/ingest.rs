@@ -4871,7 +4871,25 @@ pub async fn wiki_ingest_message(
                 // other turn it is a model slip — skip rather than mis-file. The
                 // model's `target_wiki_id` is ignored: the engine knows the
                 // agent's own wiki, the model cannot name it.
-                if unit.owner_id == Some("self") {
+                //
+                // The sentinel has TWO spellings in the wild. `self` is the one
+                // Part 12 prescribes; a model that knows its own principal
+                // writes it out instead (`user:<agent>`) — the identical claim,
+                // "this fact is about me". Only the literal used to match, so
+                // the spelled-out form fell through to the normal path and the
+                // diary entry landed in whatever wiki the model had named: 40
+                // agent-owned facts sitting in their users' wikis on the live
+                // deployment (2026-07-28). Both spellings route here now. No
+                // false positives: on a user turn `agent_sender` is `None`, so
+                // a user's fact ABOUT the agent is untouched, and on an
+                // assistant turn owner==the-speaking-agent IS the self case.
+                let self_owned = unit.owner_id.is_some_and(|raw| {
+                    raw == "self"
+                        || agent_sender.as_ref().is_some_and(|agent| {
+                            Principal::from_str(raw).is_ok_and(|owner| owner == *agent)
+                        })
+                });
+                if self_owned {
                     if let Some(Principal::User(agent_id)) = agent_sender.as_ref() {
                         if let Some(fact_id) = capture_agent_self_fact(
                             tree,
@@ -9324,6 +9342,7 @@ mod tests {
                 usage: crate::llm::CompletionUsage {
                     prompt_tokens: None,
                     completion_tokens: None,
+                    cached_prompt_tokens: None,
                 },
             })
         }
@@ -10332,6 +10351,116 @@ mod tests {
                 .unwrap(),
             0,
             "owner_id=self never lands in the user's wiki, even when target_wiki_id names it"
+        );
+        drop(dir);
+    }
+
+    /// The sentinel's OTHER spelling. A model that knows its own principal
+    /// writes `owner_id: "user:<agent>"` where Part 12 asks for `self` — the
+    /// identical claim, "this fact is about me". Only the literal used to
+    /// match, so the spelled-out form fell through to the normal path and the
+    /// agent's diary entry landed in whichever wiki `target_wiki_id` named (40
+    /// such facts on the live deployment, 2026-07-28). Both spellings must be
+    /// the same route: agent's wiki, owned by the agent, tagged with the served
+    /// user, user's wiki untouched.
+    #[tokio::test]
+    async fn ingest_assistant_turn_owner_spelled_as_the_agent_files_into_the_agent_wiki() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        let json = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"owner_id\":\"user:samvisebot\",\
+            \"body\":\"L'agente ha aiutato Alice con la pratica INPS.\",\
+            \"fact_type\":\"episode\",\"salience\":\"normal\"}]}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let policy = IngestPolicy::default();
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            IngestRequest {
+                author: MessageRole::Assistant,
+                ..req_consumer("ho aiutato Alice con l'INPS", "alice", "botdeploy")
+            },
+            &policy,
+        )
+        .await
+        .expect("ingest");
+
+        assert_eq!(resp.intent, IntentKind::Capture);
+        let agent_facts = fact_index::find_by_filters(
+            &pool,
+            &fact_index::FactFilters {
+                wiki_id: Some("samvisebot".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            agent_facts.len(),
+            1,
+            "owner spelled as the agent's own principal routes like `self`"
+        );
+        assert_eq!(
+            agent_facts[0].owner_id,
+            Principal::User("samvisebot".into()),
+            "owned by the AGENT — its own self-knowledge, not about the user"
+        );
+        assert!(
+            agent_facts[0].topics.contains(&"alice".to_owned()),
+            "and gets the same served-user auto-tag the `self` spelling gets"
+        );
+        assert_eq!(
+            fact_index::count_active_in_wiki(&pool, "alice")
+                .await
+                .unwrap(),
+            0,
+            "the diary entry no longer lands in the user's wiki"
+        );
+        drop(dir);
+    }
+
+    /// The boundary the alias must not cross. On a USER turn `agent_sender` is
+    /// `None` by construction, so `owner_id: "user:<agent>"` keeps its ordinary
+    /// meaning — a fact stated on the USER's turn that happens to be owned by
+    /// the agent principal — and stays on the normal path. The self path
+    /// short-circuits ahead of every capture validator and ignores
+    /// `target_wiki_id`, so its absence is decisive on its own: had the alias
+    /// fired, this extraction would sit in the agent's wiki whatever the rest
+    /// of the pipeline decided. It does not.
+    #[tokio::test]
+    async fn ingest_user_turn_owner_naming_the_agent_is_not_a_self_fact() {
+        let (dir, tree, pool) = setup_agent_workdir().await;
+        let json = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+            \"owner_id\":\"user:samvisebot\",\
+            \"body\":\"L'agente ha aiutato Alice con la pratica INPS.\",\
+            \"fact_type\":\"episode\",\"salience\":\"normal\"}]}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let policy = IngestPolicy::default();
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req_consumer(
+                "ho parlato con l'agente della pratica INPS",
+                "alice",
+                "botdeploy",
+            ),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+
+        assert_eq!(
+            fact_index::count_active_in_wiki(&pool, "samvisebot")
+                .await
+                .unwrap(),
+            0,
+            "the alias must not fire on a user turn — nothing is diverted into the agent's wiki"
         );
         drop(dir);
     }

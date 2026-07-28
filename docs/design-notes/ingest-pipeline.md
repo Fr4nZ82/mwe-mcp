@@ -254,6 +254,116 @@ LLM responded (even with garbage), `false` when the call failed at the
 transport layer. It is the only way to distinguish a real
 classification of `skip` from a fallback `skip`.
 
+## The replay differential — measuring a prompt change
+
+`ingest.md` is ~26k tokens and renders on every classified turn, so every
+proposal to shrink or split it is really a bet that the decisions stay the
+same. That bet is now measurable rather than argued.
+[`ingest_replay`](../../crates/mwe-core/examples/ingest_replay.rs) takes real
+requests out of the [training spool](llm-functions.md#6-the-training-spool--teacher-traces-for-local-slot-distillation),
+re-runs them against a modified system prompt, and diffs the two plans field
+by field.
+
+```text
+cargo run -p mwe-core --example ingest_replay --release -- --spool <dir> --out base-a.jsonl
+cargo run -p mwe-core --example ingest_replay --release -- --spool <dir> --out base-b.jsonl
+cargo run -p mwe-core --example ingest_replay --release -- --spool <dir> --variant gated --out gated.jsonl
+cargo run -p mwe-core --example ingest_replay --   --compare base-a.jsonl base-b.jsonl
+```
+
+Three properties make it trustworthy, and all three were learned the hard way:
+
+- **The reference is a fresh baseline, not the recorded answer.** Spooled
+  completions came from older prompt versions; only a re-run of today's
+  bundled prompt over the same requests is a fair control.
+- **Two baselines, always.** The second one is the noise floor — see below,
+  it is large. A variant means nothing except relative to it.
+- **An absent field is its schema default.** A model that omits
+  `engine_rule` has not decided differently from one that writes
+  `false`; comparing raw JSON inflates every diff by tens of points of
+  pure noise.
+
+It reports two rates: agreement on *every* compared field, and agreement on
+the consequential subset — intent, how many facts, and each fact's wiki,
+owner and audience. Free prose (`body`, `page_description`, `topics`) is
+never compared. Runs resume, so a rate-limited pass is re-runnable for the
+cost of what it missed, and `--dry-run` prints what a pass would send
+without sending it. It is a manual example, never part of `cargo test`: it
+spends real tokens.
+
+### What it measured first: the classifier is not reproducible
+
+Replaying 340 production turns twice through the **identical** prompt:
+
+| | agreement, run vs identical run |
+|---|---|
+| every compared field | **51.2%** |
+| intent + fact count + wiki + owner + audience | **67.9%** |
+| …restricted to turns that captured something | **45.7%** |
+
+So on a turn that files memory, the same message with the same recalled
+context lands the same way barely half the time — the wiki differs on 16%
+of turns, the owner on 13%, the audience on 16%.
+
+This is not a prompt-size effect. The `ingest` slot runs on Gemini 3, which
+**mandates `temperature: 1.0`** — the backend clamps the caller's requested
+`0.1` up to it, because sub-1 values make the model loop
+([llm.rs `GEMINI_TEMPERATURE`](../../crates/mwe-core/src/llm.rs)). The
+classifier is therefore sampling at full temperature over a genuinely
+ambiguous task, and the spread is the honest consequence.
+
+**Read those figures as an upper bound.** They come from comparing raw plan
+fields, and a large part of what that counts is *notation*, not decision —
+see the next section. The comparison now measures the reader set instead;
+the numbers above predate the fix and have not been re-run.
+
+One thing does follow regardless: **no prompt A/B on this slot can resolve an
+effect smaller than that floor**, which is why the roadmap-49 variants below
+came back "indistinguishable" rather than "good" or "bad".
+
+### What it costs on disk: a spelling problem, not a governance one
+
+Measured on a read-only production snapshot, 1 001 active facts (2026-07-28).
+Of 28 near-identical fact pairs living side by side, **not one diverges on
+who may read it** — every divergence is `owner_id` and/or `wiki_id`.
+
+The reason is that read access is `owner ∪ allow ∪ sender`
+([identity-and-acl.md](../concepts/identity-and-acl.md#the-single-rule)) —
+**all three, and none of them sufficient alone** — so one audience has
+several equally valid spellings. For a fact about one member that the whole
+group may read, production holds both, in the same notebook:
+
+```
+owner=user:galadriel  allow=["group:famiglia"]    74 rows
+owner=group:famiglia  allow=[]                    38 rows
+```
+
+**54% of active facts sit in a (notebook, audience) group written more than
+one way.** The residue of genuine defects is small: one escaped duplicate,
+~6 agent-activity notes with no settled owner, 50 rows that name the group
+twice. No leak, no wrong audience.
+
+Two hypotheses this killed, both worth not re-forming:
+
+- **Dedup/supersede does not absorb the spread.** Of 238 supersedes only
+  **7** replaced a near-identical text; the rest is ordinary information
+  updating done by the classifier during conversation (spread across the day,
+  not the nightly window; 199 of 217 successors absorb exactly one
+  predecessor). There is no cleanup layer catching classifier noise.
+- **Deterministic code cannot take the audience decision off the model.**
+  The obvious rule — *the notebook implies the audience* — holds for only
+  **56%** of facts, because a personal notebook legitimately mixes private,
+  family-shared and agent-operational material.
+
+**Production is deliberately left as it is.** The notation has no effect on
+recall — `can_read` unions all three fields, so every spelling retrieves
+identically — and only owner-axis queries ("everything about X") see the
+difference. The house rule for *new* writes: when a fact is shared with a
+group, the group goes in `allow`; it may additionally be the `owner` when the
+group really is the subject. Rewriting history is not on the table: a
+group-owned row cannot be re-attributed without re-reading the sentence,
+since `sender_id` records who *said* a fact, not who it is *about*.
+
 ## Why one LLM call (and not many)
 
 A multi-stage pipeline — classify intent
@@ -1211,7 +1321,15 @@ wiki: Part 12's `owner_id: "self"` sentinel routes an extraction through
 `capture_agent_self_fact` into the calling agent's wiki, **owned by the agent**
 (`owner == sender == the agent` ⇒ no separate sender), auto-tagged with the
 served user — *except* a high-salience **identity** fact, which stays untagged so
-it is user-agnostic. **The engine chooses the page too**
+it is user-agnostic. **The sentinel has two accepted spellings**: the literal
+`self` the prompt prescribes, and the agent's own principal written out
+(`user:<agent>`) — the identical claim, and the form a model that knows its own
+id reaches for instead. Both route here, because a claim the engine does not
+recognise does not degrade gracefully: it files the diary entry in whatever wiki
+`target_wiki_id` named, scattering the agent's history across its users' wikis.
+The alias is unambiguous by construction — the agent principal resolves only on
+a turn the agent authored, so on a user turn an owner naming the agent keeps its
+ordinary meaning. **The engine chooses the page too**
 ([`agent_self_fact_page`](../../crates/mwe-core/src/ingest.rs)): an identity
 self-fact lands on the agent's `index.md`, where the REM consolidates the
 autobiography; a relationship self-fact lands on `esperienze_<served-user>.md`

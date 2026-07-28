@@ -127,10 +127,62 @@ fn warn_if_truncated_chat(backend: &'static str, model: &str, response: &ChatRes
 pub struct CompletionUsage {
     /// Tokens consumed by the prompt (system + user). `None` when the
     /// backend does not report it.
+    ///
+    /// **Inclusive of [`Self::cached_prompt_tokens`]** on every backend
+    /// that reports both (Gemini's `promptTokenCount` counts the cached
+    /// prefix; Anthropic's `input_tokens` does *not* — see that field).
     pub prompt_tokens: Option<u32>,
     /// Tokens emitted by the model. `None` when the backend does not
     /// report it.
     pub completion_tokens: Option<u32>,
+    /// Prompt tokens served from the provider's **prefix cache** at a
+    /// discount — the observable that tells us whether the repeated
+    /// standing half of a prompt is actually being billed once
+    /// (roadmap 49). `None` when the backend does not report it,
+    /// `Some(0)` when it reports a miss.
+    ///
+    /// Provider semantics differ and the difference matters when
+    /// reading the number:
+    ///
+    /// - **Gemini** (`usageMetadata.cachedContentTokenCount`) — a
+    ///   *subset* of `promptTokenCount`. Hit ratio is
+    ///   `cached / prompt`. Implicit caching writes on the first call
+    ///   of a burst and reads on the rest, so a lone call reports 0.
+    /// - **Anthropic** (`usage.cache_read_input_tokens`) — sits
+    ///   *beside* `input_tokens`, which excludes it. Total prompt is
+    ///   `input_tokens + cache_read + cache_creation`; we fold the
+    ///   cached read into `prompt_tokens` here so the field means the
+    ///   same thing on both backends.
+    /// - **Ollama / `OpenRouter`** — not reported, stays `None`.
+    pub cached_prompt_tokens: Option<u32>,
+}
+
+impl CompletionUsage {
+    /// Emit the prefix-cache accounting for one call (roadmap 49).
+    ///
+    /// Silent on backends that report nothing, so this is safe to call
+    /// unconditionally from any completion path. A `0` read is logged
+    /// like any other: a miss is the interesting case, since implicit
+    /// caching only pays off when calls arrive close enough together
+    /// to land inside the provider's window.
+    fn log_prefix_cache(&self, backend: &'static str, model: &str) {
+        let (Some(cached), Some(prompt)) = (self.cached_prompt_tokens, self.prompt_tokens) else {
+            return;
+        };
+        let ratio = if prompt == 0 {
+            0.0
+        } else {
+            f64::from(cached) / f64::from(prompt)
+        };
+        tracing::info!(
+            backend,
+            model,
+            prompt_tokens = prompt,
+            cached_prompt_tokens = cached,
+            cache_hit_ratio = format!("{:.2}", ratio),
+            "llm prefix cache"
+        );
+    }
 }
 
 /// One image riding a completion request (the vision path of the
@@ -951,6 +1003,8 @@ fn parse_chat_response(parsed: OllamaChatResponse) -> Result<ChatResponse> {
         usage: CompletionUsage {
             prompt_tokens: parsed.prompt_eval_count,
             completion_tokens: parsed.eval_count,
+            // Ollama has no prefix-cache accounting on the wire.
+            cached_prompt_tokens: None,
         },
     })
 }
@@ -1025,6 +1079,8 @@ impl LlmBackend for OllamaBackend {
             usage: CompletionUsage {
                 prompt_tokens: parsed.prompt_eval_count,
                 completion_tokens: parsed.eval_count,
+                // Ollama has no prefix-cache accounting on the wire.
+                cached_prompt_tokens: None,
             },
         };
         warn_if_truncated("ollama", &self.model, &request, &resp);
@@ -1633,11 +1689,9 @@ impl AnthropicBackend {
         let resp = CompletionResponse {
             text,
             finish_reason: classify_anthropic_stop_reason(parsed.stop_reason.as_deref()),
-            usage: CompletionUsage {
-                prompt_tokens: parsed.usage.as_ref().and_then(|u| u.input_tokens),
-                completion_tokens: parsed.usage.as_ref().and_then(|u| u.output_tokens),
-            },
+            usage: anthropic_usage(parsed.usage.as_ref()),
         };
+        resp.usage.log_prefix_cache("anthropic", &self.model);
         warn_if_truncated("anthropic", &self.model, &request, &resp);
         Ok(resp)
     }
@@ -1855,10 +1909,48 @@ enum AnthropicContentBlockIn {
 
 #[derive(Debug, Deserialize)]
 struct AnthropicUsage {
-    #[serde(default)]
-    input_tokens: Option<u32>,
-    #[serde(default)]
-    output_tokens: Option<u32>,
+    /// Prompt tokens billed at full rate. **Excludes** both cache
+    /// fields below — Anthropic reports the three side by side.
+    #[serde(default, rename = "input_tokens")]
+    input: Option<u32>,
+    #[serde(default, rename = "output_tokens")]
+    output: Option<u32>,
+    /// Prompt tokens served from the prefix cache (billed at the read
+    /// discount). Present as `0` on a miss; absent on API versions
+    /// that predate caching.
+    #[serde(default, rename = "cache_read_input_tokens")]
+    cache_read: Option<u32>,
+    /// Prompt tokens written *into* the cache by this call (billed at a
+    /// premium). Part of the prompt, so it counts toward the total.
+    #[serde(default, rename = "cache_creation_input_tokens")]
+    cache_creation: Option<u32>,
+}
+
+/// Fold Anthropic's three-way prompt accounting into one
+/// [`CompletionUsage`].
+///
+/// `input_tokens` excludes both cache buckets, so `prompt_tokens` here
+/// is their **sum** — which makes the field mean what Gemini's
+/// `promptTokenCount` means (every prompt token, cached ones included)
+/// and keeps a cross-backend comparison honest. `None` only when the
+/// provider reported no usage at all.
+fn anthropic_usage(u: Option<&AnthropicUsage>) -> CompletionUsage {
+    let Some(u) = u else {
+        return CompletionUsage::default();
+    };
+    let prompt_tokens = match (u.input, u.cache_read, u.cache_creation) {
+        (None, None, None) => None,
+        (a, b, c) => Some(
+            a.unwrap_or(0)
+                .saturating_add(b.unwrap_or(0))
+                .saturating_add(c.unwrap_or(0)),
+        ),
+    };
+    CompletionUsage {
+        prompt_tokens,
+        completion_tokens: u.output,
+        cached_prompt_tokens: u.cache_read,
+    }
 }
 
 const fn classify_anthropic_stop_reason(raw: Option<&str>) -> FinishReason {
@@ -2092,11 +2184,9 @@ impl LlmBackend for AnthropicBackend {
                 tool_call_id: None,
             },
             finish_reason: classify_anthropic_stop_reason(parsed.stop_reason.as_deref()),
-            usage: CompletionUsage {
-                prompt_tokens: parsed.usage.as_ref().and_then(|u| u.input_tokens),
-                completion_tokens: parsed.usage.as_ref().and_then(|u| u.output_tokens),
-            },
+            usage: anthropic_usage(parsed.usage.as_ref()),
         };
+        resp.usage.log_prefix_cache("anthropic", &self.model);
         warn_if_truncated_chat("anthropic", &self.model, &resp);
         Ok(resp)
     }
@@ -2579,10 +2669,30 @@ struct GeminiFunctionCallIn {
 
 #[derive(Debug, Deserialize)]
 struct GeminiUsageMetadata {
+    /// Every prompt token, **including** the cached prefix below.
     #[serde(default, rename = "promptTokenCount")]
-    prompt_token_count: Option<u32>,
+    prompt: Option<u32>,
     #[serde(default, rename = "candidatesTokenCount")]
-    candidates_token_count: Option<u32>,
+    candidates: Option<u32>,
+    /// Prompt tokens served from Gemini's prefix cache at a discount.
+    /// Omitted entirely on a miss — implicit caching writes on the
+    /// first call of a burst and reads on the rest, so an isolated
+    /// call legitimately reports nothing here.
+    #[serde(default, rename = "cachedContentTokenCount")]
+    cached: Option<u32>,
+}
+
+/// Map Gemini's `usageMetadata` onto [`CompletionUsage`].
+///
+/// `promptTokenCount` already includes `cachedContentTokenCount`, so
+/// both pass through untouched and the hit ratio a caller wants is
+/// `cached / prompt`.
+fn gemini_usage(u: Option<&GeminiUsageMetadata>) -> CompletionUsage {
+    CompletionUsage {
+        prompt_tokens: u.and_then(|u| u.prompt),
+        completion_tokens: u.and_then(|u| u.candidates),
+        cached_prompt_tokens: u.and_then(|u| u.cached),
+    }
 }
 
 /// Map Gemini's `finishReason` vocabulary onto [`FinishReason`].
@@ -2830,17 +2940,9 @@ impl LlmBackend for GeminiBackend {
         let resp = CompletionResponse {
             text,
             finish_reason: classify_gemini_finish_reason(finish_raw),
-            usage: CompletionUsage {
-                prompt_tokens: parsed
-                    .usage_metadata
-                    .as_ref()
-                    .and_then(|u| u.prompt_token_count),
-                completion_tokens: parsed
-                    .usage_metadata
-                    .as_ref()
-                    .and_then(|u| u.candidates_token_count),
-            },
+            usage: gemini_usage(parsed.usage_metadata.as_ref()),
         };
+        resp.usage.log_prefix_cache("gemini", &self.model);
         warn_if_truncated_parts("gemini", &self.model, cap, truncation_expected, &resp);
         Ok(resp)
     }
@@ -2942,17 +3044,9 @@ impl LlmBackend for GeminiBackend {
                 tool_call_id: None,
             },
             finish_reason: classify_gemini_finish_reason(finish_raw),
-            usage: CompletionUsage {
-                prompt_tokens: parsed
-                    .usage_metadata
-                    .as_ref()
-                    .and_then(|u| u.prompt_token_count),
-                completion_tokens: parsed
-                    .usage_metadata
-                    .as_ref()
-                    .and_then(|u| u.candidates_token_count),
-            },
+            usage: gemini_usage(parsed.usage_metadata.as_ref()),
         };
+        resp.usage.log_prefix_cache("gemini", &self.model);
         warn_if_truncated_chat("gemini", &self.model, &resp);
         Ok(resp)
     }
@@ -3469,6 +3563,8 @@ impl LlmBackend for OpenRouterBackend {
             usage: CompletionUsage {
                 prompt_tokens: parsed.usage.as_ref().and_then(|u| u.prompt_tokens),
                 completion_tokens: parsed.usage.as_ref().and_then(|u| u.completion_tokens),
+                // The OpenAI-shaped payload carries no prefix-cache count.
+                cached_prompt_tokens: None,
             },
         };
         warn_if_truncated_parts(
@@ -3558,6 +3654,8 @@ impl LlmBackend for OpenRouterBackend {
             usage: CompletionUsage {
                 prompt_tokens: parsed.usage.as_ref().and_then(|u| u.prompt_tokens),
                 completion_tokens: parsed.usage.as_ref().and_then(|u| u.completion_tokens),
+                // The OpenAI-shaped payload carries no prefix-cache count.
+                cached_prompt_tokens: None,
             },
         };
         warn_if_truncated_chat("openrouter", &self.model, &resp);
@@ -3693,6 +3791,7 @@ impl LlmBackend for FakeLlmBackend {
             usage: CompletionUsage {
                 prompt_tokens: Some(prompt_words),
                 completion_tokens: None,
+                cached_prompt_tokens: None,
             },
         })
     }
@@ -4282,6 +4381,159 @@ mod tests {
         assert_eq!(resp.usage.prompt_tokens, Some(7));
         assert_eq!(resp.usage.completion_tokens, Some(2));
         assert_eq!(backend.model_id(), "claude-haiku-4-5");
+    }
+
+    /// Roadmap 49 — the prefix-cache observable, Anthropic flavour.
+    ///
+    /// Anthropic reports the prompt in THREE buckets and `input_tokens`
+    /// excludes the other two, so a naive read under-reports the prompt
+    /// by exactly the cached part — the failure mode that would make a
+    /// cache look free when it is merely invisible. `prompt_tokens` is
+    /// the sum (7 + 20 000 + 300) and `cached_prompt_tokens` is the read.
+    #[tokio::test]
+    async fn anthropic_backend_folds_cache_buckets_into_prompt_tokens() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "msg_01ABC",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-haiku-4-5",
+                "content": [{ "type": "text", "text": "Hi." }],
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 7,
+                    "output_tokens": 2,
+                    "cache_read_input_tokens": 20_000,
+                    "cache_creation_input_tokens": 300
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = AnthropicBackend::new(fake_key(), "claude-haiku-4-5", "ANTHROPIC_API_KEY")
+            .expect("new")
+            .with_base_url(server.uri());
+        let resp = backend
+            .complete(CompletionRequest::new("Hello"))
+            .await
+            .expect("complete");
+        assert_eq!(resp.usage.prompt_tokens, Some(20_307));
+        assert_eq!(resp.usage.cached_prompt_tokens, Some(20_000));
+        assert_eq!(resp.usage.completion_tokens, Some(2));
+    }
+
+    /// A provider that reports no cache fields at all (older API
+    /// version, or a call that never touched the cache) must leave
+    /// `cached_prompt_tokens` at `None` — NOT `Some(0)`, which would
+    /// read as a measured miss instead of "not reported".
+    #[tokio::test]
+    async fn anthropic_backend_reports_no_cache_field_as_unknown() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "msg_01ABC",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-haiku-4-5",
+                "content": [{ "type": "text", "text": "Hi." }],
+                "stop_reason": "end_turn",
+                "usage": { "input_tokens": 7, "output_tokens": 2 }
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = AnthropicBackend::new(fake_key(), "claude-haiku-4-5", "ANTHROPIC_API_KEY")
+            .expect("new")
+            .with_base_url(server.uri());
+        let resp = backend
+            .complete(CompletionRequest::new("Hello"))
+            .await
+            .expect("complete");
+        assert_eq!(resp.usage.prompt_tokens, Some(7));
+        assert_eq!(resp.usage.cached_prompt_tokens, None);
+    }
+
+    /// Pin the *other* provider convention: Gemini's
+    /// `promptTokenCount` already CONTAINS `cachedContentTokenCount`,
+    /// so both pass through untouched and the hit ratio is
+    /// `cached / prompt` (here 24 544 / 27 493 — the ratio measured
+    /// against production on 2026-07-28). Summing them, as the
+    /// Anthropic path must, would double-count.
+    #[tokio::test]
+    async fn gemini_backend_passes_cached_content_token_count_through() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(
+                "/v1beta/models/gemini-3-flash-preview:generateContent",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "candidates": [{
+                    "content": { "parts": [{ "text": "Hi." }], "role": "model" },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 27_493,
+                    "candidatesTokenCount": 104,
+                    "cachedContentTokenCount": 24_544
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = GeminiBackend::new(
+            fake_gemini_key(),
+            "gemini-3-flash-preview",
+            "GEMINI_API_KEY",
+        )
+        .expect("new")
+        .with_base_url(server.uri());
+        let resp = backend
+            .complete(CompletionRequest::new("Hello"))
+            .await
+            .expect("complete");
+        assert_eq!(resp.usage.prompt_tokens, Some(27_493));
+        assert_eq!(resp.usage.cached_prompt_tokens, Some(24_544));
+    }
+
+    /// A cache MISS is a measurement, not an absence: Gemini omits the
+    /// field entirely when the prefix was not served from cache, which
+    /// must surface as `None` rather than being confused with a hit.
+    #[tokio::test]
+    async fn gemini_backend_reports_cache_miss_as_unknown() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(
+                "/v1beta/models/gemini-3-flash-preview:generateContent",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "candidates": [{
+                    "content": { "parts": [{ "text": "Hi." }], "role": "model" },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 27_493,
+                    "candidatesTokenCount": 104
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = GeminiBackend::new(
+            fake_gemini_key(),
+            "gemini-3-flash-preview",
+            "GEMINI_API_KEY",
+        )
+        .expect("new")
+        .with_base_url(server.uri());
+        let resp = backend
+            .complete(CompletionRequest::new("Hello"))
+            .await
+            .expect("complete");
+        assert_eq!(resp.usage.prompt_tokens, Some(27_493));
+        assert_eq!(resp.usage.cached_prompt_tokens, None);
     }
 
     /// Pin the image wire shapes of the three providers: Anthropic

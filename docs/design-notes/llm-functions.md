@@ -68,6 +68,64 @@ by the Anthropic backend (`cache_control` on the last system block); every
 other backend ignores it. See
 [narrative-compiler §the cacheable split](narrative-compiler.md#the-cacheable-split--why-the-page-comes-last).
 
+### Reading the prefix cache — `cached_prompt_tokens`
+
+`cache_system` is the *request* side. The *answer* side is
+[`CompletionUsage::cached_prompt_tokens`](../../crates/mwe-core/src/llm.rs):
+how many prompt tokens the provider actually served from its prefix cache.
+Without it a repeated standing half looks free when it may simply be
+invisible, so every completion path logs one `llm prefix cache` line
+(`prompt_tokens`, `cached_prompt_tokens`, `cache_hit_ratio`) and the training
+spool records the field per call.
+
+**The two providers do not mean the same thing by it**, and conflating them
+under-reports the prompt by exactly the cached part:
+
+| Backend | Wire field | Relation to the prompt total |
+|---|---|---|
+| Gemini | `usageMetadata.cachedContentTokenCount` | a **subset** of `promptTokenCount`; both pass through untouched, hit ratio = `cached / prompt`. Omitted on a miss. |
+| Anthropic | `usage.cache_read_input_tokens` | sits **beside** `input_tokens`, which excludes it. `prompt_tokens` here is `input + cache_read + cache_creation`, so the field means the same thing on both backends. |
+| Ollama · `OpenRouter` | — | not reported; stays `None`. |
+
+`None` means *not reported*, never *zero* — a measured miss is `Some(0)`, and
+the difference decides whether a low number is a caching problem or a
+telemetry gap.
+
+**Gemini caches implicitly**, with no request-side flag: a prefix repeated
+soon enough is discounted automatically. Measured against production on
+2026-07-28 with the real `ingest` payload — **24 544 of 27 493 prompt tokens
+(89%)** served from cache on every repeat of an identical system prompt, still
+hitting 6 minutes after the write. That is why `cache_system` being
+Anthropic-only costs nothing on the Gemini slots today; what matters there is
+that the standing half stays byte-identical and calls arrive close together.
+
+#### The cache is block-quantised — shortening a prompt can cost more
+
+The discount is not granted per token but per **block of ~4 090 tokens**. Every
+cached span measured across 1 360 production replays is a whole multiple of it:
+8 125 · 12 270 · 16 350 · 20 450 · 24 544. The consequence is the rule that now
+governs every prompt edit on a hot slot:
+
+> A prompt edit is priced in whole cache blocks, not in bytes. Removing text
+> from the **middle** re-aligns everything downstream and can lose more blocks
+> than the text was worth; only a cut at the **tail** is guaranteed to bank
+> what it removes.
+
+Measured on the `ingest` prompt (340 real production requests per variant,
+billed-equivalent = `0.25 × cached + uncached`):
+
+| Variant | prompt tokens | cached span | **actual bill** |
+|---|---|---|---|
+| bundled prompt | 27 589 | 24 544 (6 blocks) | — |
+| gate two optional sections | −6.4% | 20 450 (5 blocks) | **−1.1%** |
+| delete one 14%-of-prompt section | −13.4% | 16 360 (4 blocks) | **+26.1%** |
+
+A 13% shorter prompt that costs a quarter more is the whole lesson: never
+estimate a prompt change from its byte count — replay it and read
+`cached_prompt_tokens`. The instrument for that is
+[`ingest_replay`](../../crates/mwe-core/examples/ingest_replay.rs), see
+[ingest-pipeline.md](ingest-pipeline.md#the-replay-differential--measuring-a-prompt-change).
+
 ### 1.1 `hub_writer` — index regeneration (+ operational-chat fallback)
 
 `hub_writer`'s primary consumer is the REM `regenerate_index` sub-job;
@@ -575,7 +633,9 @@ captures them.
 - **Record** — one JSON line per successful call into
   `<workdir>/training-spool/YYYY-MM-DD.jsonl`: slot, backend tag,
   model id, the full request (system + prompt, or messages + tools on
-  the chat path), the full response, finish reason, token usage.
+  the chat path), the full response, finish reason, token usage
+  (`prompt_tokens`, `completion_tokens`, and `cached_prompt_tokens` — the
+  prefix-cache read, see above).
   Prompts are recorded verbatim — a truncated prompt is useless as a
   training pair. Image attachments ride as MIME types only. Health
   probes and failed calls are never recorded.
@@ -589,6 +649,16 @@ captures them.
   must treat the directory like the wikis themselves and scrub before
   a dataset leaves the host.
 
-The consumers of the spool (dataset filtering, the golden-set eval
-harness, the distillation run itself) are offline tooling, not part of
-the server — this page documents only the recorder that ships.
+The consumers of the spool are offline tooling, not part of the server.
+One of them ships in-repo:
+[`cargo run -p mwe-core --example ingest_replay`](../../crates/mwe-core/examples/ingest_replay.rs)
+replays recorded `ingest` requests against a modified prompt and diffs the
+answers — the measurement any prompt change has to clear, documented in
+[ingest-pipeline.md](ingest-pipeline.md#the-replay-differential--measuring-a-prompt-change).
+Dataset filtering and the distillation run itself remain outside the tree.
+
+One trap the spool sets for every consumer: **a record is labelled by
+slot, not by prompt.** The `ingest` slot also carries `cronista`,
+`conciliatore`, `regenerate-index` and `ingest-closures`, so filtering on
+`function == "ingest"` over-counts the classifier by ~75% (591 records vs
+335 real ones over nine days). Filter on a marker in the system prompt.

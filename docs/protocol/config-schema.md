@@ -511,7 +511,8 @@ Maps to `TrainingSpoolConfig` and gates
 — the prompt/completion recorder behind every LLM slot. When enabled,
 each internal-LLM exchange (any slot, any backend) is appended as one
 JSON line — slot, backend tag, model id, full request, full response,
-token usage — to a per-day file under `<workdir>/training-spool/`.
+token usage (`prompt_tokens`, `completion_tokens`, `cached_prompt_tokens`)
+— to a per-day file under `<workdir>/training-spool/`.
 Purpose: the strong API slots act as teachers and their traces become
 the distillation dataset for fine-tuning the local slot models. Health
 probes and failed calls are never recorded; image attachments are

@@ -2774,6 +2774,7 @@ mod tests {
                 usage: crate::llm::CompletionUsage {
                     prompt_tokens: None,
                     completion_tokens: None,
+                    cached_prompt_tokens: None,
                 },
             })
         }
