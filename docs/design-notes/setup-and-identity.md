@@ -254,7 +254,7 @@ chokepoint as a single ingest call.
 | `nickname` | "mi chiamano anche X" |
 | `birthday` | "sono nato il X" |
 | `address` | "vivo a X" |
-| `language` | "la mia lingua principale è X" |
+| `language` | "la mia lingua principale è X" — prose only. **It does not reach `enrollment_users.locale`**, so a user who fills it in still has no declared language and falls to the deployment default. The column is settable from the users page (below); wiring the primer field to it is open work. |
 | `timezone` | "il mio fuso orario è X" — **and** the value lands in `enrollment_users.timezone` (light shape check), the column that drives per-sender reference-time stamping at ingest; the admin can edit it later from the users page |
 | `pronouns` | "i miei pronomi sono X" |
 | `phone` | "il mio numero di telefono è X" |
@@ -384,9 +384,16 @@ slot and retry.
   promoted to notifications, SSO, and the like. The two exceptions are
   the columns the *engine plumbing* needs deterministically — `locale`
   (prompt LANGUAGE directive) and `timezone` (per-sender reference-time
-  stamping, migration 0061) — which the wizard and the users page also
-  populate. A group's only operator prose is its `scope` (what the
-  ingest classifier routes on).
+  stamping, migration 0061). **The users page populates both**, on create
+  and on edit: `locale` is a BCP-47 tag (`it`, `en-GB`) validated by the
+  same loose shape check as `timezone` — blank means *undeclared*, which
+  is a real state and is never silently defaulted at the form. The
+  welcome wizard populates `timezone` only; its `language` field is still
+  composed into prose (see the step-1 table above), so a deployment whose
+  users onboarded through the wizard has an empty `locale` column until
+  an admin fills it in. A group's only operator prose is its `scope`
+  (what the ingest classifier routes on) — a group has no locale, so a
+  page owned by one resolves no declared language.
 
 These gaps are planned future work — see the
 roadmap.

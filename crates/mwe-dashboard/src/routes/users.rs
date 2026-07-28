@@ -59,7 +59,14 @@ type UserListRow = (String, i64, Option<String>, Option<String>, Option<String>)
 
 /// Raw tuple from the edit-form load query (`email`, `aliases` JSON,
 /// `is_admin`, `require_2fa`, `timezone`).
-type EditUserRow = (Option<String>, Option<String>, i64, i64, Option<String>);
+type EditUserRow = (
+    Option<String>,
+    Option<String>,
+    i64,
+    i64,
+    Option<String>,
+    Option<String>,
+);
 
 /// Row shape used by the listing page.
 #[derive(Debug)]
@@ -198,6 +205,42 @@ pub struct NewUserSubmission {
     /// the deployment-wide `recall.ingest_timezone` applies.
     #[serde(default)]
     pub timezone: String,
+    /// BCP-47 language this person's memory is written in (`it`, `en-GB`).
+    /// Empty → the engine falls back to English, so an admin onboarding a
+    /// non-English household should set it here rather than leave it blank.
+    #[serde(default)]
+    pub locale: String,
+}
+
+/// Shape-check the two columns the *engine plumbing* reads off a user
+/// row — `timezone` (reference-time stamping) and `locale` (the prompt
+/// LANGUAGE directive). Both forms parse them the same way and reject
+/// with the same message, so they are parsed together and the caller
+/// only has to decide how to re-render.
+fn parse_engine_columns(
+    timezone: &str,
+    locale: &str,
+) -> std::result::Result<(Option<String>, Option<String>), String> {
+    Ok((parse_timezone_field(timezone)?, parse_locale_field(locale)?))
+}
+
+/// Light shape check for a typed BCP-47 locale field: empty → `None`;
+/// otherwise a single token of at most 32 chars. This is the language
+/// the engine writes this person's memory in — every slot that composes
+/// prose resolves it through [`mwe_core::enrollment::locale_for`], so a
+/// blank here is not cosmetic: it drops the user to the deployment
+/// fallback. Same deliberately loose gate as the timezone field above —
+/// the tag reaches the prompt verbatim and "obviously not a locale" is
+/// all we check.
+fn parse_locale_field(raw: &str) -> std::result::Result<Option<String>, String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    if t.len() > 32 || t.chars().any(char::is_whitespace) {
+        return Err("Language must be a single BCP-47 tag like en, en-GB or it-IT.".to_owned());
+    }
+    Ok(Some(t.to_owned()))
 }
 
 /// Light shape check for a typed IANA timezone field: empty → `None`;
@@ -239,8 +282,8 @@ async fn new_submit(
         return Ok(Html(render_new_form(admin.session(), &form, Some(&msg))).into_response());
     }
 
-    let timezone = match parse_timezone_field(&form.timezone) {
-        Ok(tz) => tz,
+    let (timezone, locale) = match parse_engine_columns(&form.timezone, &form.locale) {
+        Ok(pair) => pair,
         Err(msg) => {
             return Ok(Html(render_new_form(admin.session(), &form, Some(&msg))).into_response());
         },
@@ -257,13 +300,14 @@ async fn new_submit(
 
     let mut tx = state.pool.begin().await?;
     sqlx::query(
-        "INSERT INTO enrollment_users (user_id, email, aliases, is_admin, timezone)
-         VALUES (?, ?, ?, 0, ?)",
+        "INSERT INTO enrollment_users (user_id, email, aliases, is_admin, timezone, locale)
+         VALUES (?, ?, ?, 0, ?, ?)",
     )
     .bind(user_id)
     .bind(email)
     .bind(&aliases_json)
     .bind(timezone.as_deref())
+    .bind(locale.as_deref())
     .execute(&mut *tx)
     .await?;
     sqlx::query(
@@ -362,6 +406,12 @@ fn render_new_form(
             p.help.muted { "The user signs in with this email. Required, and only you (the admin) can change it later." }
             (components::text_field("aliases", "Aliases (comma-separated)", "text", &form.aliases, false))
             (components::text_field("timezone", "Timezone (IANA, optional)", "text", &form.timezone, false))
+            (components::text_field("locale", "Language (BCP-47, e.g. en-GB or it)", "text", &form.locale, false))
+            p.help.muted {
+                "The language this person's memory is written in. It is not only how an "
+                "assistant replies: every page the engine compiles for them is written in it. "
+                "Leave it blank and the deployment falls back to English."
+            }
             p.help.muted {
                 "Where this user lives, e.g. " code { "Europe/Rome" } " or "
                 code { "Australia/Sydney" } ". Times they speak (\"tomorrow at 9\") "
@@ -476,6 +526,9 @@ pub struct EditUserSubmission {
     /// Optional IANA timezone — see [`NewUserSubmission::timezone`].
     #[serde(default)]
     pub timezone: String,
+    /// BCP-47 language — see [`NewUserSubmission::locale`].
+    #[serde(default)]
+    pub locale: String,
     /// Admin "require 2FA on this account" checkbox — present only when
     /// checked (roadmap 28).
     #[serde(default)]
@@ -488,13 +541,13 @@ async fn edit_form(
     Path(user_id): Path<String>,
 ) -> Result<Html<String>> {
     let row: Option<EditUserRow> = sqlx::query_as(
-        "SELECT email, aliases, is_admin, require_2fa, timezone
+        "SELECT email, aliases, is_admin, require_2fa, timezone, locale
            FROM enrollment_users WHERE user_id = ?",
     )
     .bind(&user_id)
     .fetch_optional(&state.pool)
     .await?;
-    let (email, aliases_json, is_admin, require_2fa, timezone) =
+    let (email, aliases_json, is_admin, require_2fa, timezone, locale) =
         row.ok_or(DashboardError::NotFound)?;
     let aliases: Vec<String> = aliases_json
         .as_deref()
@@ -504,6 +557,7 @@ async fn edit_form(
         email: email.unwrap_or_default(),
         aliases: aliases.join(", "),
         timezone: timezone.unwrap_or_default(),
+        locale: locale.unwrap_or_default(),
         require_2fa: (require_2fa != 0).then(|| "1".to_owned()),
     };
     let twofa_enabled = crate::twofa::is_enabled(&state.pool, &user_id).await?;
@@ -540,6 +594,7 @@ async fn edit_submit(
             email: form.email.clone(),
             aliases: form.aliases.clone(),
             timezone: form.timezone.clone(),
+            locale: form.locale.clone(),
             require_2fa: require_2fa.then(|| "1".to_owned()),
         };
         Html(render_edit_form(
@@ -556,8 +611,8 @@ async fn edit_submit(
         let twofa_enabled = crate::twofa::is_enabled(&state.pool, &user_id).await?;
         return Ok(reject(&msg, twofa_enabled));
     }
-    let timezone = match parse_timezone_field(&form.timezone) {
-        Ok(tz) => tz,
+    let (timezone, locale) = match parse_engine_columns(&form.timezone, &form.locale) {
+        Ok(pair) => pair,
         Err(msg) => {
             let twofa_enabled = crate::twofa::is_enabled(&state.pool, &user_id).await?;
             return Ok(reject(&msg, twofa_enabled));
@@ -570,13 +625,14 @@ async fn edit_submit(
 
     sqlx::query(
         "UPDATE enrollment_users
-            SET email = ?, aliases = ?, require_2fa = ?, timezone = ?
+            SET email = ?, aliases = ?, require_2fa = ?, timezone = ?, locale = ?
           WHERE user_id = ?",
     )
     .bind(email)
     .bind(&aliases_json)
     .bind(i64::from(require_2fa))
     .bind(timezone.as_deref())
+    .bind(locale.as_deref())
     .bind(&user_id)
     .execute(&state.pool)
     .await?;
@@ -621,6 +677,12 @@ fn render_edit_form(
             p.help.muted { "The user's sign-in email. You are the only one who can change it." }
             (components::text_field("aliases", "Aliases (comma-separated)", "text", &form.aliases, false))
             (components::text_field("timezone", "Timezone (IANA, optional)", "text", &form.timezone, false))
+            (components::text_field("locale", "Language (BCP-47, e.g. en-GB or it)", "text", &form.locale, false))
+            p.help.muted {
+                "The language this person's memory is written in. It is not only how an "
+                "assistant replies: every page the engine compiles for them is written in it. "
+                "Leave it blank and the deployment falls back to English."
+            }
             p.help.muted {
                 "Where this user lives, e.g. " code { "Europe/Rome" } " or "
                 code { "Australia/Sydney" } ". Times they speak (\"tomorrow at 9\") "
@@ -859,4 +921,46 @@ fn parse_aliases(raw: &str) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+#[cfg(test)]
+mod locale_field_tests {
+    use super::parse_locale_field;
+
+    /// The declared tag is what the admin typed, kept verbatim: this field
+    /// is the *source of truth* for the language the engine writes this
+    /// person's memory in, so it must not be silently normalised into
+    /// something the operator did not choose.
+    #[test]
+    fn a_declared_tag_is_kept_verbatim() {
+        assert_eq!(parse_locale_field("it"), Ok(Some("it".to_owned())));
+        assert_eq!(parse_locale_field("en-GB"), Ok(Some("en-GB".to_owned())));
+        // Surrounding whitespace is an input artefact, not a choice.
+        assert_eq!(
+            parse_locale_field("  it-IT \n"),
+            Ok(Some("it-IT".to_owned()))
+        );
+    }
+
+    /// Blank means "not declared", which is a real state and not an error:
+    /// it drops the user to the deployment fallback. It must NOT be coerced
+    /// into a default here — the fallback belongs to the engine, so that
+    /// there is exactly one place that decides what "undeclared" means.
+    #[test]
+    fn blank_is_undeclared_not_a_default() {
+        assert_eq!(parse_locale_field(""), Ok(None));
+        assert_eq!(parse_locale_field("   "), Ok(None));
+        // The negation that matters: blank never becomes a language.
+        assert_ne!(parse_locale_field(""), Ok(Some("en".to_owned())));
+    }
+
+    /// A sentence is a common mis-fill ("English please") and would reach
+    /// the prompt verbatim, so it is refused rather than stored.
+    #[test]
+    fn prose_and_overlong_input_are_refused() {
+        assert!(parse_locale_field("English please").is_err());
+        assert!(parse_locale_field(&"x".repeat(33)).is_err());
+        // Just under the cap still passes — the gate is shape, not taste.
+        assert!(parse_locale_field(&"x".repeat(32)).is_ok());
+    }
 }
