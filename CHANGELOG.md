@@ -9,6 +9,78 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## 1.6.0 — 2026-07-28
+
+### Added
+
+- **Memory is now written in the language its owner declared — on every
+  slot, not just the two that asked.** `enrollment_users.locale` has
+  driven the LANGUAGE directive since migration 0020, but nothing ever
+  wrote it: the welcome wizard turned its `language` answer into a prose
+  clause and left the column NULL, and the users page had no field at
+  all, so an admin who wanted a household's memory in its own language
+  had to reach for `sqlite3`. The column is now a real field on both
+  dashboard forms and a required wizard answer, pre-filled from
+  `Accept-Language` and written *before* the primer is ingested, so the
+  primer's own facts come out in the language just declared. And the
+  directive reaches the slots that actually compose prose: eleven
+  prompts put natural language in front of a person and only two were
+  told which one to use — the rest answered in the language of their own
+  few-shot examples, which are Italian, so an English deployment got
+  Italian page titles and Italian document summaries over English facts.
+  The Cronista, both hub writers, comment-apply, the three
+  document-ingest phases and the REM cartographers now all carry it. A
+  wiki's language is its scope principal's: a user wiki speaks its
+  owner's declared language, a group wiki speaks the one every member
+  declared and has none when they disagree. Undeclared resolves to
+  "mirror the user's message" on the two slots that answer a live turn,
+  and to English on the compiling slots, which never see a turn to
+  mirror. `prompts::PROSE_REGISTRY` classifies every bundled prompt as
+  prose or internal and **fails the build** on one it does not name, so
+  a new slot cannot be merged without answering the language question.
+- **Three REM slots regrouped so a language directive can mean
+  something.** The cartographer, the conciliator and the date normaliser
+  each batched the whole forest into one call, where a statement about
+  one language says nothing. Each now groups by source wiki before
+  chunking. The batch is what narrows — the *context* each model is
+  shown is unchanged, and the normaliser still spends the same per-cycle
+  cap — with the side benefit that one wiki's transport failure no
+  longer sinks the whole sweep.
+- **The prompt cache is measurable.** `CompletionUsage` gains
+  `cached_prompt_tokens`, folding Gemini's `cachedContentTokenCount` and
+  Anthropic's `cache_read_input_tokens` into one field whose meaning is
+  written down (both are *inclusive* of the prompt count beside them),
+  with a per-call hit-ratio log line and the value recorded on the
+  training spool. The finding it produced: the cached span is
+  **block-quantised** at ~4 090 tokens, so a shorter prompt can cost
+  *more* — trimming 6.4% of the `ingest` prompt lowered the bill by
+  1.1%, while deleting a section from its middle cut 13.4% of the tokens
+  and raised the bill 26.1%, by dropping the cached prefix from six
+  blocks to four.
+- **A replay differential for prompt changes**
+  (`examples/ingest_replay.rs`): replays recorded production requests
+  against a modified system prompt and diffs the resulting plans field
+  by field, with resume, bounded retry and a compare mode. Its first
+  result is about the classifier rather than any prompt — replaying the
+  same turns twice against the *unmodified* prompt agrees on 51.2% of
+  fields and 45.7% of capturing turns, because Gemini 3 mandates
+  `temperature: 1.0`. Every prompt A/B has to be read against that noise
+  floor.
+
+### Fixed
+
+- **An agent's diary stops scattering into its users' pages.** Part 12's
+  `owner_id: "self"` routes a fact the agent states about *itself* into
+  its own wiki, and the engine matched that sentinel as a literal
+  string. A model that writes its own principal instead
+  (`user:<agent>`) is making the identical claim, but fell through to
+  the normal path and filed the diary entry in whatever wiki
+  `target_wiki_id` named — 40 agent-owned facts sitting in their users'
+  wikis on the reference deployment. Both spellings now route to the
+  self path. The alias cannot misfire: the agent principal resolves only
+  on a turn that agent authored, so on a user turn an owner naming the
+  agent keeps its ordinary meaning.
+
 ## 1.5.6 — 2026-07-27
 
 ### Fixed
