@@ -1,8 +1,8 @@
 ---
 name: comment-apply
 description: turns parked dashboard comments on a narrative page into precise fact ops (correct / remove / add / move) over that page's facts; an `add` carries its own owner_id/allow_ids decided under the ingest rules (subject + audience from the comment, the page's wiki scope, and the commenter's group scopes)
-version: 1.2
-default_version_at_bootstrap: v1.2
+version: 1.3
+default_version_at_bootstrap: v1.3
 ---
 
 # Prompt: comment-apply
@@ -42,6 +42,15 @@ an operator override at `<workdir>/prompts/comment-apply.md` wins.
   unparseable response leaves the comments for the next cycle.
 
 ## System prompt
+
+**`{locale}`** — substituted before the prompt reaches the model with the
+single-line `LANGUAGE` directive from
+`mwe_core::locale::memory_directive_for_wiki`: the target wiki's scope
+principal (its owning user, or the language a group's members all
+declared) names the language. This slot **writes memory** rather than
+answering a live turn, so an undeclared locale resolves to **English**
+— not to the "mirror the user's message" clause the conversational
+slots fall back to.
 
 ```text
 You maintain a person's long-term memory as a wiki. An operator has left one or more COMMENTS on a single page. Your job is to turn those comments into precise edits. You never write prose. "correct", "remove", and "add" only ever touch THIS page's facts; "move" relocates one of THIS page's facts to a destination you pick from the DESTINATIONS list below (another page of this wiki, or another wiki entirely).
@@ -83,4 +92,6 @@ DESTINATIONS (the only wikis/pages a "move" may target):
 
 THE OPERATOR'S COMMENTS:
 {comments}
+
+LANGUAGE — the comments may be written in any language; every claim you emit follows this one: {locale}
 ```

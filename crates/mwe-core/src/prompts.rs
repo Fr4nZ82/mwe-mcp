@@ -272,6 +272,73 @@ pub const BUNDLED: &[(&str, &str)] = &[
     ),
 ];
 
+/// Whether a bundled prompt's output ends up in front of a person.
+///
+/// The distinction decides one thing: whether the prompt must carry a
+/// `{locale}` placeholder for the language directive. See
+/// [`PROSE_REGISTRY`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptOutput {
+    /// The reply contains free natural language that gets persisted
+    /// into the memory wiki and read back by a human — page prose,
+    /// page and sub-wiki names, fact claims, summaries, descriptions.
+    /// **Must** carry `{locale}`: without a directive the model
+    /// answers in the language of the prompt's own few-shot examples,
+    /// which is how a deployment that never speaks Italian ended up
+    /// with Italian page titles.
+    Prose,
+    /// The reply is a verdict, an id, a number, an enum choice, or an
+    /// existing page/wiki identifier the prompt was handed. **Must
+    /// not** carry `{locale}`: there is no natural language to steer,
+    /// and a directive would only be tokens the operator pays for.
+    /// A short `reason` / `note` string that never leaves the audit
+    /// trail counts as internal.
+    Internal,
+}
+
+/// Every prompt in [`BUNDLED`], classified by [`PromptOutput`].
+///
+/// This is the roster the language directive is wired against, and it
+/// is deliberately **exhaustive**: `prose_registry_covers_every_bundled`
+/// fails the build when a prompt is added to [`BUNDLED`] without a
+/// verdict here, and `prose_prompts_carry_the_locale_placeholder`
+/// fails when a `Prose` entry's body forgot `{locale}`. Adding a slot
+/// therefore forces the language question to be answered once, at the
+/// moment the slot is added, instead of being discovered later by a
+/// user reading a page in a language they do not speak.
+///
+/// `mwe-dashboard` ships its own bundled prompt and pins the same
+/// placeholder property for it next to its own `BUNDLED_PROMPTS`
+/// slice in `crates/mwe-dashboard/src/lib.rs`.
+pub const PROSE_REGISTRY: &[(&str, PromptOutput)] = &[
+    // --- writes memory a person reads ---
+    ("ingest", PromptOutput::Prose),
+    ("cronista", PromptOutput::Prose),
+    ("regenerate-index", PromptOutput::Prose),
+    ("cartografo", PromptOutput::Prose),
+    ("conciliatore", PromptOutput::Prose),
+    ("comment-apply", PromptOutput::Prose),
+    ("rem-dates", PromptOutput::Prose),
+    ("rem-page-grouping", PromptOutput::Prose),
+    ("document-classify", PromptOutput::Prose),
+    ("document-extract", PromptOutput::Prose),
+    ("document-merge", PromptOutput::Prose),
+    // --- emits judgements, ids, numbers, enum choices ---
+    ("ingest-closures", PromptOutput::Internal),
+    ("navigator", PromptOutput::Internal),
+    ("query-seeds", PromptOutput::Internal),
+    ("rem-dedup", PromptOutput::Internal),
+    ("rem-promotions", PromptOutput::Internal),
+    ("rem-completion", PromptOutput::Internal),
+    ("rem-contradiction", PromptOutput::Internal),
+    ("rem-refile", PromptOutput::Internal),
+    ("rem-recall-repair", PromptOutput::Internal),
+    ("rem-merge", PromptOutput::Internal),
+];
+
+/// The placeholder a [`PromptOutput::Prose`] prompt must carry.
+pub const LOCALE_PLACEHOLDER: &str = "{locale}";
+
 /// Outcome of one [`seed_bundled_into`] call.
 ///
 /// A freshly
@@ -447,6 +514,8 @@ pub fn parse_default_version_at_bootstrap(md: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use tempfile::TempDir;
 
@@ -546,6 +615,60 @@ mod tests {
             assert!(
                 !body.trim().is_empty(),
                 "bundled prompt `{name}` parsed to an empty body"
+            );
+        }
+    }
+
+    // ---------- the prose registry ----------
+
+    /// The registry names every bundled prompt and nothing else. A
+    /// prompt added to `BUNDLED` without a verdict fails here, which
+    /// is the whole point: the language question gets answered when
+    /// the slot is written, not when a user reads the wrong language.
+    #[test]
+    fn prose_registry_covers_every_bundled() {
+        let bundled: BTreeSet<&str> = BUNDLED.iter().map(|(n, _)| *n).collect();
+        let classified: BTreeSet<&str> = PROSE_REGISTRY.iter().map(|(n, _)| *n).collect();
+        let unclassified: Vec<&&str> = bundled.difference(&classified).collect();
+        assert!(
+            unclassified.is_empty(),
+            "bundled prompts with no PROSE_REGISTRY verdict: {unclassified:?} — \
+             decide whether the slot writes prose a person reads (add `{{locale}}` \
+             to its body and classify it Prose) or only internal judgements (Internal)"
+        );
+        let stale: Vec<&&str> = classified.difference(&bundled).collect();
+        assert!(
+            stale.is_empty(),
+            "PROSE_REGISTRY names prompts that are not bundled: {stale:?}"
+        );
+        assert_eq!(
+            PROSE_REGISTRY.len(),
+            classified.len(),
+            "PROSE_REGISTRY has a duplicate entry"
+        );
+    }
+
+    /// And the negation, which is what makes the classification a
+    /// decision rather than a label: an `Internal` slot must NOT carry
+    /// the placeholder. Copy-pasting a prose prompt into a new
+    /// judgement slot would otherwise ship a directive nobody renders
+    /// — `substitute` would leave the literal `{locale}` in the
+    /// prompt the model reads.
+    #[test]
+    fn internal_prompts_do_not_carry_the_locale_placeholder() {
+        for (name, md) in BUNDLED {
+            let Some((_, kind)) = PROSE_REGISTRY.iter().find(|(n, _)| n == name) else {
+                continue;
+            };
+            if *kind != PromptOutput::Internal {
+                continue;
+            }
+            let body = extract_fenced_text(md, name, "<bundled>").expect("bundled parses");
+            assert!(
+                !body.contains(LOCALE_PLACEHOLDER),
+                "prompt `{name}` is classified Internal but carries \
+                 `{LOCALE_PLACEHOLDER}` — reclassify it Prose and wire the \
+                 directive at its call site, or drop the placeholder"
             );
         }
     }

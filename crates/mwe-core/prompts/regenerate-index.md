@@ -1,8 +1,8 @@
 ---
 name: regenerate-index
 description: Hub Writer prompt — regenerate `index.md` of a parent wiki from its children list + most recent active facts (the REM regenerator); also reused by the compiler's hub-page pass (`compiler::compile_hub_page`)
-version: 1.2
-default_version_at_bootstrap: v1.2
+version: 1.3
+default_version_at_bootstrap: v1.3
 source_of_truth: crates/mwe-core/src/rem.rs (fn regenerate_index)
 ---
 
@@ -79,6 +79,15 @@ workhorse's ~4k context budget on a co-resident embedder.
 
 ## Prompt
 
+**`{locale}`** — substituted before the prompt reaches the model with the
+single-line `LANGUAGE` directive from
+`mwe_core::locale::memory_directive_for_wiki`: the target wiki's scope
+principal (its owning user, or the language a group's members all
+declared) names the language. This slot **writes memory** rather than
+answering a live turn, so an undeclared locale resolves to **English**
+— not to the "mirror the user's message" clause the conversational
+slots fall back to.
+
 ```text
 Regenerate the `index.md` for the memory wiki below.
 Title: {title}
@@ -92,4 +101,6 @@ Context to summarise (most-recent first):
 {snippet}
 
 Output the new index.md body in markdown. No frontmatter. Concise — 6-12 lines.
+
+LANGUAGE: {locale}
 ```

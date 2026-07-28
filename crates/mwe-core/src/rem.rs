@@ -2254,6 +2254,11 @@ async fn run_page_grouping_for_wiki(
 
     let inventory = grouping_inventory(&candidates, facts);
     let existing = grouping_existing_wikis(&children);
+    // The new sub-wiki's title and description are read by a human, so they
+    // follow the wiki's declared language rather than whatever language the
+    // page inventory happens to be in.
+    let language_directive =
+        crate::locale::memory_directive_for_wiki_meta(pool, tree, &d.meta).await;
     let prompt = page_grouping_prompt(
         tree,
         d,
@@ -2261,6 +2266,7 @@ async fn run_page_grouping_for_wiki(
         policy.auto_promote_group_min_pages,
         &existing,
         &inventory,
+        &language_directive,
     )?;
     // The memo keys on the rendered prompt, so it re-opens by itself
     // the moment the inventory changes (a page added, split, renamed).
@@ -2543,6 +2549,7 @@ fn page_grouping_prompt(
     min_pages: usize,
     existing: &str,
     inventory: &str,
+    language_directive: &str,
 ) -> Result<String> {
     let wiki_pages_s = wiki_pages.to_string();
     let min_pages_s = min_pages.to_string();
@@ -2551,6 +2558,7 @@ fn page_grouping_prompt(
         tree.workdir(),
         BUNDLED_REM_PAGE_GROUPING_MD,
         &[
+            ("locale", language_directive),
             ("wiki", d.meta.title.as_str()),
             ("wiki_pages", wiki_pages_s.as_str()),
             ("min_pages", min_pages_s.as_str()),
@@ -5549,12 +5557,14 @@ fn regenerate_index_prompt(
     wiki_id: &str,
     children: &str,
     snippet: &str,
+    language_directive: &str,
 ) -> Result<String> {
     prompts::render(
         "regenerate-index",
         tree.workdir(),
         BUNDLED_REGENERATE_INDEX_MD,
         &[
+            ("locale", language_directive),
             ("title", title),
             ("wiki_type", wiki_type),
             ("wiki_id", wiki_id),
@@ -5594,6 +5604,8 @@ async fn regenerate_index(
         .map(|c| format!("- [[{}]]", c.wiki_id))
         .collect::<Vec<_>>()
         .join("\n");
+    let language_directive =
+        crate::locale::memory_directive_for_wiki_meta(pool, tree, &d.meta).await;
     let prompt = regenerate_index_prompt(
         tree,
         &d.meta.title,
@@ -5601,6 +5613,7 @@ async fn regenerate_index(
         d.meta.wiki_id.as_str(),
         &children,
         &snippet,
+        &language_directive,
     )?;
     let resp = llm
         .complete(

@@ -206,6 +206,16 @@ pub async fn apply_comments(
     // owner. With an author and/or an LLM `owner_id` the `add` follows the
     // captured-message rules instead (see `apply_add`).
     let add_owner = tree.resolve_scope_principal(handle.meta())?;
+    // The language every claim this pass writes comes out in. The operator may
+    // comment in any language; the page keeps the one its wiki declares, so a
+    // correction never leaves a page speaking two languages. Resolved once per
+    // wiki off the principal already in hand.
+    let language_directive = crate::locale::render_memory_language_directive(
+        crate::enrollment::locale_for_principal(pool, &add_owner)
+            .await
+            .unwrap_or_default()
+            .as_deref(),
+    );
 
     // Group the pending comments by the page their citation anchors to.
     let mut by_page: std::collections::BTreeMap<String, Vec<(i64, String, Option<String>)>> =
@@ -232,6 +242,7 @@ pub async fn apply_comments(
             llm,
             wiki_id,
             &add_owner,
+            &language_directive,
             &source_path,
             &comments,
             now,
@@ -261,6 +272,7 @@ async fn apply_page(
     llm: &dyn LlmBackend,
     wiki_id: &WikiId,
     add_owner: &Principal,
+    language_directive: &str,
     source_path: &str,
     comments: &[(i64, String, Option<String>)],
     now: &str,
@@ -299,6 +311,7 @@ async fn apply_page(
         tree.workdir(),
         BUNDLED_COMMENT_APPLY_MD,
         &[
+            ("locale", language_directive),
             ("facts", facts_desc.as_str()),
             ("comments", comments_desc.as_str()),
             ("scope", scope_ctx.as_str()),

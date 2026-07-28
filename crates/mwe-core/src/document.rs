@@ -1200,6 +1200,12 @@ pub struct ClassifyInput<'a> {
     pub forced_format: Option<DocFormat>,
     /// Owning principal — its identity wiki is the routing fallback.
     pub owner: &'a Principal,
+    /// The rendered `LANGUAGE` directive for the `{locale}` placeholder:
+    /// the title and summary this phase coins are memory a person reads,
+    /// so they follow the submitter's declared language rather than the
+    /// document's own. Built by
+    /// [`crate::locale::memory_directive_for_user`].
+    pub language_directive: &'a str,
 }
 
 /// The validated classify outcome — everything the anchor + extraction
@@ -1339,7 +1345,12 @@ pub async fn classify_document(
     policy: &DocumentPolicy,
     input: &ClassifyInput<'_>,
 ) -> Result<ResolvedPlan> {
-    let system = prompts::load("document-classify", workdir, BUNDLED_DOCUMENT_CLASSIFY_MD)?;
+    let system = prompts::render(
+        "document-classify",
+        workdir,
+        BUNDLED_DOCUMENT_CLASSIFY_MD,
+        &[("locale", input.language_directive)],
+    )?;
     let sample = truncate_chars(input.text, policy.classify_sample_chars);
     let mut user = String::new();
     user.push_str("source_kind: ");
@@ -1524,6 +1535,7 @@ async fn extract_segment(
     known_users: &[crate::enrollment::EnrolledUserLite],
     segment: &Segment,
     position: (i64, i64),
+    language_directive: &str,
 ) -> Result<Vec<CandidateFact>> {
     use std::fmt::Write as _;
 
@@ -1539,7 +1551,7 @@ async fn extract_segment(
         "document-extract",
         workdir,
         BUNDLED_DOCUMENT_EXTRACT_MD,
-        &[("selectivity", selectivity)],
+        &[("selectivity", selectivity), ("locale", language_directive)],
     )?;
     let current_time = seg_occurred_at
         .or(job.occurred_at.as_deref())
@@ -1652,6 +1664,7 @@ async fn reduce_candidates(
     workdir: &Path,
     policy: &DocumentPolicy,
     candidates: Vec<CandidateFact>,
+    language_directive: &str,
 ) -> Result<Vec<CandidateFact>> {
     if candidates.len() < 2 {
         return Ok(candidates);
@@ -1666,7 +1679,12 @@ async fn reduce_candidates(
             continue;
         }
         let members: Vec<&CandidateFact> = cluster.iter().map(|&i| &candidates[i]).collect();
-        let system = prompts::load("document-merge", workdir, BUNDLED_DOCUMENT_MERGE_MD)?;
+        let system = prompts::render(
+            "document-merge",
+            workdir,
+            BUNDLED_DOCUMENT_MERGE_MD,
+            &[("locale", language_directive)],
+        )?;
         let mut user = String::from("candidates:\n");
         for (n, m) in members.iter().enumerate() {
             use std::fmt::Write as _;
@@ -1779,6 +1797,15 @@ async fn process_job(
         job.status = "running".into();
     }
     let (owner, allow, sender) = job_acl(&job)?;
+    // Every phase below writes memory a person reads — the document's own
+    // language does not govern it, the submitter's declared one does.
+    // Resolved once per job: three phases, one lookup.
+    let language_directive = crate::locale::render_memory_language_directive(
+        crate::enrollment::locale_for_principal(pool, &owner)
+            .await
+            .unwrap_or_default()
+            .as_deref(),
+    );
 
     // Phase: classify. The plan's testata seeds (topics / style /
     // page_description) ride the anchor capture below; they are held in memory
@@ -1797,6 +1824,7 @@ async fn process_job(
                     .and_then(Disposition::parse),
                 forced_format: job.format_requested.as_deref().and_then(DocFormat::parse),
                 owner: &owner,
+                language_directive: &language_directive,
             };
             let plan = classify_document(llm, tree, workdir, policy, &input).await?;
             touch_job(
@@ -2010,6 +2038,7 @@ async fn process_job(
                 &known_users,
                 &segment,
                 (seq + 1, total_segments),
+                &language_directive,
             )
             .await;
             match facts {
@@ -2092,7 +2121,15 @@ async fn process_job(
                     candidates.append(&mut facts);
                 }
             }
-            let reduced = reduce_candidates(llm, embedder, workdir, policy, candidates).await?;
+            let reduced = reduce_candidates(
+                llm,
+                embedder,
+                workdir,
+                policy,
+                candidates,
+                &language_directive,
+            )
+            .await?;
             let json = serde_json::to_string(&reduced)
                 .map_err(|e| DocumentError::Invalid(format!("reduced_json: {e}")))?;
             touch_job(pool, &job.job_id, "reduced_json = ?", &[&json]).await?;
@@ -3047,9 +3084,16 @@ mod tests {
             body: "Gimli si occupa della prenotazione del viaggio.".into(),
             ..first.clone()
         };
-        let out = reduce_candidates(&llm, &embedder, dir.path(), &policy(), vec![first, second])
-            .await
-            .expect("reduce");
+        let out = reduce_candidates(
+            &llm,
+            &embedder,
+            dir.path(),
+            &policy(),
+            vec![first, second],
+            "LANGUAGE-DIRECTIVE",
+        )
+        .await
+        .expect("reduce");
         assert_eq!(out.len(), 1, "the cluster folds to one fact");
         let m = &out[0];
         assert_eq!(m.body, "Gimli prenota il viaggio in Norvegia.");

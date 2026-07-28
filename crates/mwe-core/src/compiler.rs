@@ -218,6 +218,11 @@ pub async fn compile_dirty_pages(
         );
     }
     let mut tone_cache: HashMap<String, String> = HashMap::new();
+    // Sibling of the tone memo, and memoised for the same reason: resolving a
+    // wiki's language walks the scope chain to the root wiki (a `tree.walk()`
+    // per hop) and then hits the DB. Both are per-wiki constants for the whole
+    // run, and a compile touches many pages of the same wiki.
+    let mut locale_cache: HashMap<String, String> = HashMap::new();
     // The page index is a pure function of the plan, so it is built once per
     // run and handed to every leaf: it is the same ~3.5k tokens for all of
     // them, which is exactly what makes it the cacheable half of the Cronista
@@ -242,6 +247,7 @@ pub async fn compile_dirty_pages(
             cronista,
             hub,
             &mut tone_cache,
+            &mut locale_cache,
             &page_index,
             now,
         )
@@ -542,6 +548,7 @@ async fn compile_page(
     cronista: &dyn LlmBackend,
     hub: &dyn LlmBackend,
     tone_cache: &mut HashMap<String, String>,
+    locale_cache: &mut HashMap<String, String>,
     page_index: &str,
     now: &str,
 ) -> Result<PageOutcome> {
@@ -555,7 +562,8 @@ async fn compile_page(
             PageType::ConceptHub | PageType::GroupTheme | PageType::EmergedIndex
         );
     if is_hub {
-        return compile_hub_page(tree, plan, page, hub, now).await;
+        let language = cached_language_directive(pool, tree, &page.wiki_id, locale_cache).await;
+        return compile_hub_page(tree, plan, page, hub, &language, now).await;
     }
     // Il Cronista a 3 stili. A leaf whose ingest-decided style (`page.style`) is
     // `lista` holds atomic-record data (a shopping list, a filmography), not
@@ -578,7 +586,31 @@ async fn compile_page(
         .entry(page.wiki_id.clone())
         .or_insert_with(|| resolve_tone(tree, &page.wiki_id))
         .clone();
-    compile_leaf_page(pool, tree, plan, page, cronista, &tone, page_index, now).await
+    let language = cached_language_directive(pool, tree, &page.wiki_id, locale_cache).await;
+    compile_leaf_page(
+        pool, tree, plan, page, cronista, &tone, &language, page_index, now,
+    )
+    .await
+}
+
+/// The wiki's `LANGUAGE` directive, resolved once per wiki per run.
+///
+/// The deterministic renders (list pages, fact-less leaves) never call
+/// this: they write no prose, so they must not pay the scope-chain walk
+/// either. Only the two LLM branches above ask.
+async fn cached_language_directive(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    wiki_id: &str,
+    cache: &mut HashMap<String, String>,
+) -> String {
+    if let Some(hit) = cache.get(wiki_id) {
+        return hit.clone();
+    }
+    let directive =
+        crate::locale::memory_directive_for_wiki(pool, tree, &parse_wiki_id(wiki_id)).await;
+    cache.insert(wiki_id.to_owned(), directive.clone());
+    directive
 }
 
 /// The deterministic render of a fact-less leaf — usually a foundation
@@ -619,6 +651,11 @@ fn compile_empty_leaf(tree: &WikiTree, page: &PagePlan, now: &str) -> Result<Pag
 
 // ---------- Il Cronista (leaf) ----------
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the per-run constants (tone, language directive, page index, clock) \
+              are resolved once by the caller and threaded, not rebuilt per page"
+)]
 async fn compile_leaf_page(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -626,6 +663,7 @@ async fn compile_leaf_page(
     page: &PagePlan,
     llm: &dyn LlmBackend,
     tone: &str,
+    language_directive: &str,
     page_index: &str,
     now: &str,
 ) -> Result<PageOutcome> {
@@ -634,6 +672,7 @@ async fn compile_leaf_page(
         tree.workdir(),
         BUNDLED_CRONISTA_MD,
         &[
+            ("locale", language_directive),
             ("title", page.title.as_str()),
             ("slug", page.slug.as_str()),
             ("parent_hub", page.parent_hub.as_deref().unwrap_or("—")),
@@ -1300,6 +1339,7 @@ async fn compile_hub_page(
     plan: &CompilationPlan,
     page: &PagePlan,
     llm: &dyn LlmBackend,
+    language_directive: &str,
     now: &str,
 ) -> Result<PageOutcome> {
     let children = page
@@ -1328,6 +1368,7 @@ async fn compile_hub_page(
         tree.workdir(),
         crate::rem::BUNDLED_REGENERATE_INDEX_MD,
         &[
+            ("locale", language_directive),
             ("title", page.title.as_str()),
             ("wiki_type", "hub"),
             ("wiki_id", page.slug.as_str()),

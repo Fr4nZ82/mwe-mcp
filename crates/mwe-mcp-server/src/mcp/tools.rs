@@ -1922,6 +1922,15 @@ async fn ingest_external_dry_run(
     let llm = llm_slot
         .build_backend(LlmFunction::Ingest)
         .map_err(|e| ToolError::new(ToolErrorClass::ServiceUnavailable, format!("llm: {e}")))?;
+    // Same language rule as the real run (`document::process_job`): the plan
+    // the caller previews must be the plan they would get, title and summary
+    // included.
+    let language_directive = mwe_core::locale::render_memory_language_directive(
+        mwe_core::enrollment::locale_for_principal(&state.pool, &resolved.owner)
+            .await
+            .unwrap_or_default()
+            .as_deref(),
+    );
     let input = document::ClassifyInput {
         text: &resolved.text,
         title_hint: resolved.title_hint.as_deref(),
@@ -1930,6 +1939,7 @@ async fn ingest_external_dry_run(
         forced_disposition: disposition,
         forced_format: format,
         owner: &resolved.owner,
+        language_directive: &language_directive,
     };
     let plan = document::classify_document(
         llm.as_ref(),

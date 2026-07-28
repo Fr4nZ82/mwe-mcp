@@ -1,8 +1,8 @@
 ---
 name: document-merge
 description: document-ingest reduce phase — folds one cluster of near-duplicate candidate facts (embedding-prefiltered) into a single best phrasing
-version: 1.0
-default_version_at_bootstrap: v1.0
+version: 1.1
+default_version_at_bootstrap: v1.1
 ---
 
 # Prompt: document-merge
@@ -28,11 +28,22 @@ The system prompt for the document-ingest **reduce** phase
 - Design narrative:
   document ingest.
 
+**`{locale}`** — substituted before the prompt reaches the model with the
+single-line `LANGUAGE` directive from
+`mwe_core::locale::memory_directive_for_user`: the person who submitted
+the document names the language, which is why a foreign-language
+document still lands in memory in the reader's own language. This slot **writes memory** rather than
+answering a live turn, so an undeclared locale resolves to **English**
+— not to the "mirror the user's message" clause the conversational
+slots fall back to.
+
 ```text
 You are deduplicating candidate facts extracted from one document. The candidates below say (nearly) the same thing in different words — a long document repeats itself.
 
-TASK: produce the ONE best phrasing that preserves every distinct piece of information across the candidates. Same language as the candidates. If a candidate carries a detail the others lack (a date, a name, a number), the merged body must keep it.
+TASK: produce the ONE best phrasing that preserves every distinct piece of information across the candidates. If a candidate carries a detail the others lack (a date, a name, a number), the merged body must keep it.
 
 Reply with ONE JSON object only:
 {"body": "..."}
+
+LANGUAGE: {locale}
 ```

@@ -358,6 +358,45 @@ of the user's message. …"). The directive always exempts the
 wire-form vocabulary (tool names, JSON keys, argument enums) from
 translation — only the natural-language replies follow the locale.
 
+### The memory-writing slots take the same directive with a different fallback
+
+`ingest` and the chat panel answer a live turn, so mirroring the user's
+words is a sane last resort. The slots that **compile memory** — page
+prose, page and sub-wiki names, coined titles and descriptions,
+document summaries, the date normaliser's rewrites — never see a user
+turn: they are handed facts. For them the mirror clause is not a
+fallback but a coin toss the prompt's own few-shot examples decide, and
+those examples are written in Italian.
+
+`locale::render_memory_language_directive` renders the same directive
+body from the same table and resolves an undeclared locale to
+**English** instead. The declared language always wins; English is only
+what a deployment gets until the locale is set, from the users page,
+on the people whose memory it is.
+
+Two resolvers feed it, because these slots belong to two different
+things:
+
+| resolver | used by | the language of record |
+| --- | --- | --- |
+| `locale::memory_directive_for_wiki` / `…_for_wiki_meta` | `cronista`, `regenerate-index`, `comment-apply`, `rem-page-grouping` | the target wiki's **scope principal** — a `wiki-user` line speaks its owner's declared locale; a `wiki-group` line speaks the one **every** member declared, and has none when they disagree or anyone left it blank (`enrollment::locale_for_principal`) |
+| `locale::memory_directive_for_user` | `document-classify`, `document-extract`, `document-merge` | the person who submitted the document — which is why an English PDF read by an Italian user lands in memory in Italian |
+
+Both are best-effort: an unresolvable scope chain or a DB failure logs
+a warning and yields the English fallback rather than failing the
+compile.
+
+### The registry that keeps this from rotting
+
+`prompts::PROSE_REGISTRY` classifies **every** bundled prompt as
+`Prose` (its reply becomes natural language a person reads) or
+`Internal` (verdicts, ids, numbers, enum choices, existing page
+identifiers). Three tests hold the line: the registry must name every
+prompt in `prompts::BUNDLED` and nothing else, a `Prose` body must
+carry `{locale}`, and an `Internal` body must not. A new slot therefore
+cannot be merged without answering the language question, which is the
+failure this whole section exists to prevent.
+
 The dashboard agentic chat path resolves the signed-in operator's
 locale the same way (tier 2 → tier 3; there is no per-message
 `metadata.locale` on that path) and injects the same directive into

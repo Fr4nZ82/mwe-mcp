@@ -1,8 +1,8 @@
 ---
 name: rem-page-grouping
 description: REM page-group → wiki cartographer — read a wiki's whole page inventory and group the pages that are already one subject area
-version: 1.0
-default_version_at_bootstrap: v1.0
+version: 1.1
+default_version_at_bootstrap: v1.1
 ---
 
 # Prompt: rem-page-grouping
@@ -99,6 +99,15 @@ paragraph pass.
 
 ## Prompt
 
+**`{locale}`** — substituted before the prompt reaches the model with the
+single-line `LANGUAGE` directive from
+`mwe_core::locale::memory_directive_for_wiki`: the target wiki's scope
+principal (its owning user, or the language a group's members all
+declared) names the language. This slot **writes memory** rather than
+answering a live turn, so an undeclared locale resolves to **English**
+— not to the "mirror the user's message" clause the conversational
+slots fall back to.
+
 ```text
 You are the REM page-group cartographer for mwe-mcp.
 The wiki "{wiki}" holds {wiki_pages} topic pages, listed below with their active-fact count and a couple of verbatim excerpts.
@@ -117,7 +126,7 @@ Rules:
 
 For a "create" group, describe the new wiki so it is not born blind to future placement and recall:
 - "slug": short, lowercase, hyphenated.
-- "title": human-readable, in the language of the pages.
+- "title": human-readable, in the language named under LANGUAGE below.
 - "style": its DOMINANT style default — "prosa" (interconnected knowledge), "prosa-tecnica" (bullets + short notes), or "lista" (atomic records). A HINT, not a rule: a page may deviate with reason. Use null when genuinely mixed.
 - "description": a short natural-language "what goes in here". Let the wording carry how strict the style hint is.
 
@@ -129,4 +138,6 @@ Existing sub-wikis of this wiki:
 
 Pages:
 {inventory}
+
+LANGUAGE: {locale}
 ```

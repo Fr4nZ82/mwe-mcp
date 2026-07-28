@@ -138,4 +138,23 @@ mod tests {
             );
         }
     }
+
+    /// The chat panel answers the operator in natural language, so it
+    /// is a prose slot and must carry the `{locale}` placeholder — the
+    /// same property `mwe_core::prompts::PROSE_REGISTRY` pins for the
+    /// core roster, applied to this crate's slice. A dashboard prompt
+    /// added here without a directive would answer in the language of
+    /// its own examples, which are Italian.
+    #[test]
+    fn every_shipped_bundled_prompt_carries_the_locale_placeholder() {
+        for (name, md) in BUNDLED_PROMPTS {
+            let body = mwe_core::prompts::extract_fenced_text(md, name, "<bundled>")
+                .expect("bundled prompt parses");
+            assert!(
+                body.contains(mwe_core::prompts::LOCALE_PLACEHOLDER),
+                "dashboard prompt `{name}` has no `{}` in its body",
+                mwe_core::prompts::LOCALE_PLACEHOLDER
+            );
+        }
+    }
 }

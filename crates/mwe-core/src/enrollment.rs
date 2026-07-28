@@ -27,6 +27,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use thiserror::Error;
 
+use crate::types::Principal;
+
 /// Bundle of users + groups handed to [`validate`] / [`mirror_to_db`].
 /// Layout mirrors `schemi.md §4.1` so the same shape can be reused
 /// for the future admin "import existing enrollment.yaml" action.
@@ -538,6 +540,58 @@ pub async fn locale_for(pool: &SqlitePool, user_id: &str) -> Result<Option<Strin
     // user row is absent, inner None when the row exists but `locale`
     // is NULL. Both surface as `None` to the caller.
     Ok(row.flatten().filter(|s| !s.trim().is_empty()))
+}
+
+/// Look up the locale that governs everything written under a wiki
+/// whose scope principal is `principal`.
+///
+/// A page is not owned by a message sender, so the per-user
+/// [`locale_for`] is not enough for the slots that compile memory
+/// (page prose, page names, fact rewrites). Those resolve their wiki
+/// to a [`Principal`] first and land here:
+///
+/// - [`Principal::User`] — that user's configured locale.
+/// - [`Principal::Group`] — the locale **every** enrolled member of
+///   the group declared, and only when they all declared the same one.
+///   A group whose members disagree, or where anyone left the field
+///   blank, has no single language of record and returns `None`; the
+///   caller's fallback then applies. Unanimity is the only reading
+///   that does not pick one member's language over another's.
+/// - The builtin `global` group is universal membership, so it names
+///   no concrete roster and returns `None` without a query.
+///
+/// # Errors
+///
+/// Propagates the underlying `sqlx` error.
+pub async fn locale_for_principal(
+    pool: &SqlitePool,
+    principal: &Principal,
+) -> Result<Option<String>, sqlx::Error> {
+    match principal {
+        Principal::User(id) => locale_for(pool, id).await,
+        // `global` is everyone; `members_for` returns empty for it and an
+        // empty roster is unanimous about nothing.
+        Principal::Group(id) if is_global_group(id) => Ok(None),
+        Principal::Group(id) => {
+            let members = members_for(pool, id).await?;
+            if members.is_empty() {
+                return Ok(None);
+            }
+            let mut agreed: Option<String> = None;
+            for member in &members {
+                let Some(loc) = locale_for(pool, member).await? else {
+                    // One silent member is enough to break unanimity.
+                    return Ok(None);
+                };
+                match &agreed {
+                    None => agreed = Some(loc),
+                    Some(prev) if prev.eq_ignore_ascii_case(&loc) => {},
+                    Some(_) => return Ok(None),
+                }
+            }
+            Ok(agreed)
+        },
+    }
 }
 
 /// Look up the IANA timezone configured for `user_id` (admin users
@@ -1828,6 +1882,105 @@ mod tests {
 
         let v = locale_for(&pool, "ghost").await.expect("lookup ghost");
         assert!(v.is_none(), "whitespace-only locale must collapse to None");
+    }
+
+    /// `locale_for_principal` on a user principal is just `locale_for`.
+    #[tokio::test]
+    async fn locale_for_principal_user_reads_that_user() {
+        let pool = crate::db::open_or_init(
+            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
+        )
+        .await
+        .expect("open db");
+        let file = canonical_file();
+        validate(&file).expect("validate");
+        mirror_to_db(&pool, &file).await.expect("mirror");
+
+        let alice = locale_for_principal(&pool, &Principal::User("alice".into()))
+            .await
+            .expect("alice");
+        assert_eq!(alice.as_deref(), Some("it-IT"));
+        let bob = locale_for_principal(&pool, &Principal::User("bob".into()))
+            .await
+            .expect("bob");
+        assert!(bob.is_none());
+    }
+
+    /// A group speaks a language only when **every** member declared
+    /// the same one. The three branches that matter — unanimous, one
+    /// dissenter, one silent member — are pinned together because the
+    /// tempting cheaper rule (take the first member's locale) would
+    /// pass the first case and fail the other two.
+    #[tokio::test]
+    async fn locale_for_principal_group_requires_unanimity() {
+        let pool = crate::db::open_or_init(
+            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
+        )
+        .await
+        .expect("open db");
+        for (user, locale) in [
+            ("ita_one", Some("it-IT")),
+            ("ita_two", Some("it-IT")),
+            ("eng_one", Some("en-GB")),
+            ("silent", None),
+        ] {
+            sqlx::query(
+                "INSERT INTO enrollment_users (user_id, aliases, is_admin, locale)
+                 VALUES (?, '[]', 0, ?)",
+            )
+            .bind(user)
+            .bind(locale)
+            .execute(&pool)
+            .await
+            .expect("insert user");
+        }
+        for (group, members) in [
+            ("agree", r#"["ita_one","ita_two"]"#),
+            ("disagree", r#"["ita_one","eng_one"]"#),
+            ("partial", r#"["ita_one","silent"]"#),
+            ("empty", "[]"),
+        ] {
+            sqlx::query("INSERT INTO enrollment_groups (group_id, members) VALUES (?, ?)")
+                .bind(group)
+                .bind(members)
+                .execute(&pool)
+                .await
+                .expect("insert group");
+        }
+        let of = async |g: &str| {
+            locale_for_principal(&pool, &Principal::Group(g.to_owned()))
+                .await
+                .expect("lookup")
+        };
+        assert_eq!(
+            of("agree").await.as_deref(),
+            Some("it-IT"),
+            "members that all declared it-IT give the group a language"
+        );
+        assert!(
+            of("disagree").await.is_none(),
+            "two declared languages leave the group without one"
+        );
+        assert!(
+            of("partial").await.is_none(),
+            "one member who never declared breaks unanimity"
+        );
+        assert!(of("empty").await.is_none(), "no members, no language");
+    }
+
+    /// The builtin `global` group is universal membership, so it names
+    /// no roster to be unanimous about — `None` without a query.
+    #[tokio::test]
+    async fn locale_for_principal_global_group_has_no_language() {
+        let pool = crate::db::open_or_init(
+            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
+        )
+        .await
+        .expect("open db");
+        let v = locale_for_principal(&pool, &Principal::global())
+            .await
+            .expect("global");
+        assert!(v.is_none());
     }
 
     /// `timezone_for` mirrors `locale_for`: a configured zone
