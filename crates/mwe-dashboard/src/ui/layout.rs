@@ -39,22 +39,39 @@ use crate::state::DashboardState;
 /// reviewer would have to be told to look.
 ///
 /// Threaded from the handler (which holds [`DashboardState`]) down to
-/// [`shell`]. `Copy` and two words wide, so passing it costs nothing and
-/// a render helper can take it by value.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// [`shell`]. Cheap to clone (a bool and a refcount bump), so a render
+/// helper can take it by value.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Chrome {
     /// The deployment is frozen ([`crate::read_only`]). The frame drops
     /// the chat panel and every nav entry whose page is not mounted, and
     /// carries a standing notice instead.
     pub read_only: bool,
+    /// The identities a visitor may become without a password, in button
+    /// order — empty unless the demo entrance is configured
+    /// ([`crate::routes::demo`]). Non-empty puts the one-click identity
+    /// switcher in the top bar, on every page: comparing the *same* page
+    /// as two people is the demonstration, and a switcher that lived only
+    /// on the sign-in screen would make the visitor navigate back each
+    /// time.
+    ///
+    /// `Arc<[String]>` rather than a slice so `Chrome` stays owned and
+    /// threadable through the render helpers without a lifetime; cloning
+    /// is a refcount bump.
+    pub demo_identities: std::sync::Arc<[String]>,
 }
 
 impl Chrome {
     /// The posture of the deployment this request is being served by.
     #[must_use]
-    pub const fn of(state: &DashboardState) -> Self {
+    pub fn of(state: &DashboardState) -> Self {
         Self {
             read_only: state.config.read_only,
+            demo_identities: if state.config.demo_entrance_enabled() {
+                std::sync::Arc::clone(&state.config.demo_identities)
+            } else {
+                std::sync::Arc::from([])
+            },
         }
     }
 
@@ -63,7 +80,7 @@ impl Chrome {
     /// `has-chat-panel` reserves the right gutter the panel occupies; a
     /// frozen deployment renders no panel, so reserving the space would
     /// leave a permanent empty column.
-    const fn body_class(self, reading: bool) -> &'static str {
+    const fn body_class(&self, reading: bool) -> &'static str {
         match (self.read_only, reading) {
             (false, false) => "has-chat-panel",
             (false, true) => "has-chat-panel reading-main",
@@ -118,6 +135,28 @@ pub fn anonymous_reading_page(title: &str, body: &Markup) -> String {
     shell(Chrome::default(), title, None, "reading-main", body).into_string()
 }
 
+/// Like [`anonymous_reading_page`] but centred — a **hero**: one line of
+/// explanation and a row of large buttons, with nothing else on the page.
+///
+/// The centring is on `<body>` so the shell's `<h1>` inherits it too.
+/// Rendering the title flush left above a centred row of buttons reads as
+/// two pages stacked, and this is the first screen a stranger sees of the
+/// product. Anything inside the body that must stay flush left (a form's
+/// labels and fields) says so locally.
+///
+/// Only the demo sign-in screen uses it ([`crate::routes::demo`]).
+#[must_use]
+pub fn anonymous_hero_page(title: &str, body: &Markup) -> String {
+    shell(
+        Chrome::default(),
+        title,
+        None,
+        "reading-main text-center",
+        body,
+    )
+    .into_string()
+}
+
 /// Render the full HTML page for an authenticated visitor; the top nav
 /// includes admin-gated entries when `user.is_admin`, minus the ones the
 /// deployment's [`Chrome`] does not mount.
@@ -128,7 +167,8 @@ pub fn authenticated_page(
     user: &SessionUser,
     body: &Markup,
 ) -> String {
-    shell(chrome, title, Some(user), chrome.body_class(false), body).into_string()
+    let class = chrome.body_class(false);
+    shell(chrome, title, Some(user), class, body).into_string()
 }
 
 /// Like [`authenticated_page`] but for a **reading / single-form** surface
@@ -145,7 +185,8 @@ pub fn authenticated_reading_page(
     user: &SessionUser,
     body: &Markup,
 ) -> String {
-    shell(chrome, title, Some(user), chrome.body_class(true), body).into_string()
+    let class = chrome.body_class(true);
+    shell(chrome, title, Some(user), class, body).into_string()
 }
 
 /// Shared body used both by the error converter and by ad-hoc
@@ -170,6 +211,14 @@ fn shell(
     body_class: &str,
     body: &Markup,
 ) -> Markup {
+    // Destructured rather than borrowed field by field: the two halves
+    // are used in four places between `<head>`, the top bar and the
+    // panel mounts, and taking the whole thing apart once keeps every
+    // one of them a plain value.
+    let Chrome {
+        read_only,
+        demo_identities,
+    } = chrome;
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -197,7 +246,7 @@ fn shell(
                     script src="/dashboard/static/ui.js" defer {}
                     // chat.js only ever drives the chat panel, which a frozen
                     // deployment does not render.
-                    @if !chrome.read_only { script src="/dashboard/static/chat.js" defer {} }
+                    @if !read_only { script src="/dashboard/static/chat.js" defer {} }
                     // Keep the sliding session alive while the user is
                     // actively interacting (esp. the multi-step welcome
                     // primer, which makes no request until final submit).
@@ -205,7 +254,7 @@ fn shell(
                 }
             }
             body class=(body_class) {
-                (header(chrome, user))
+                (header(read_only, &demo_identities, user))
                 // Content width: the old hard 1040px cap left big dead zones
                 // on wide (≥2k / 4k) screens. We now let `main` use the width
                 // up to a generous cap and manage readability at the element
@@ -216,7 +265,7 @@ fn shell(
                 // and every per-element rule collapse to a single column on
                 // small viewports.
                 main class="w-full app-main mx-auto px-4 md:px-6 lg:px-8 mt-6 md:mt-8" {
-                    @if chrome.read_only && user.is_some() {
+                    @if read_only && user.is_some() {
                         div class="mb-4" { (crate::read_only::banner()) }
                     }
                     h1 class="text-xl md:text-2xl mb-4 mt-0" { (title) }
@@ -229,7 +278,7 @@ fn shell(
                 // deployment does not render it — nor its reopen FAB, nor the
                 // Help overlay, which is entirely about how to operate the
                 // memory through that chat.
-                @if user.is_some() && !chrome.read_only {
+                @if user.is_some() && !read_only {
                     (chat_panel())
                     (chat_reopen_fab())
                     // Help overlay. Hidden;
@@ -253,7 +302,7 @@ fn shell(
 /// of `tailwind/app.css` translates into a stacked column underneath
 /// the topbar. The session badge is hidden on mobile to keep the
 /// topbar single-row when the nav is closed.
-fn header(chrome: Chrome, user: Option<&SessionUser>) -> Markup {
+fn header(read_only: bool, demo_identities: &[String], user: Option<&SessionUser>) -> Markup {
     html! {
         header class="site-header sticky top-0 z-30 flex flex-wrap items-center gap-3 px-4 md:px-6 py-3 border-b border-border bg-bg-2" {
             a href="/dashboard/"
@@ -297,7 +346,7 @@ fn header(chrome: Chrome, user: Option<&SessionUser>) -> Markup {
                         // not mount them at all (`routes::build`), so linking
                         // them would be linking to a 404 — keep the two lists
                         // in step.
-                        @if !chrome.read_only {
+                        @if !read_only {
                             (nav_link("/dashboard/users", "Users"))
                             (nav_link("/dashboard/groups", "Groups"))
                             (nav_link("/dashboard/tokens", "Tokens"))
@@ -333,7 +382,7 @@ fn header(chrome: Chrome, user: Option<&SessionUser>) -> Markup {
                     // runs — polling /dashboard/dream/status — then swaps it for
                     // the one-line outcome (click to dismiss). Inline design
                     // tokens, no new Tailwind utility to recompile.
-                    @if u.is_admin && !chrome.read_only {
+                    @if u.is_admin && !read_only {
                         span id="dream-indicator"
                             style="display:none;align-items:center;padding:.1rem .55rem;font-size:.72rem;font-weight:700;border-radius:9999px;white-space:nowrap;color:var(--bg);background:var(--p)" {}
                     }
@@ -351,7 +400,7 @@ fn header(chrome: Chrome, user: Option<&SessionUser>) -> Markup {
                     // needs recompiling.
                     // Nothing is actionable on a frozen deployment, and the
                     // badge's whole affordance is "open this in chat".
-                    @if !chrome.read_only {
+                    @if !read_only {
                         a id="in-flight-badge" href="/dashboard/chat"
                             style="display:none;align-items:center;padding:.1rem .55rem;font-size:.72rem;font-weight:700;color:var(--bg);background:var(--amber);border-radius:9999px;text-decoration:none;white-space:nowrap"
                             title="Things you can still act on — open in chat" {
@@ -362,8 +411,29 @@ fn header(chrome: Chrome, user: Option<&SessionUser>) -> Markup {
                     // panel header (see `chat_panel`), not here — Help is
                     // about the chat, so it sits with it. The in-flight
                     // badge stays in the topnav.
-                    span class="session-badge text-xs text-text-dim hidden md:inline" {
-                        "Signed in as "
+                    // The one-click identity switcher. It sits in the frame,
+                    // not on the sign-in screen, because the demonstration is
+                    // reading the *same page* as two people: the switch has to
+                    // land the visitor back where they were reading, and a
+                    // sign-out-and-in round trip would end the comparison.
+                    @if !demo_identities.is_empty() {
+                        (crate::routes::demo::buttons(
+                            demo_identities,
+                            Some(&u.sender_id),
+                            /* compact */ true,
+                        ))
+                    }
+                    // The badge normally hides below `md` to keep the mobile
+                    // topbar to one row. On a demo instance it stays: whose
+                    // eyes you are using is the single most important thing
+                    // on the screen, and the switcher next to it is useless
+                    // without it.
+                    span class=(if demo_identities.is_empty() {
+                        "session-badge text-xs text-text-dim hidden md:inline"
+                    } else {
+                        "session-badge text-xs text-text-dim"
+                    }) {
+                        @if demo_identities.is_empty() { "Signed in as " } @else { "You are " }
                         strong class="text-text font-bold" { (u.sender_id) }
                         @if u.is_admin {
                             " · "

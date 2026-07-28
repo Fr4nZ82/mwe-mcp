@@ -618,7 +618,7 @@ async fn edit_submit(
             require_2fa: require_2fa.then(|| "1".to_owned()),
         };
         Html(render_edit_form(
-            chrome,
+            chrome.clone(),
             admin.session(),
             &user_id,
             is_admin_raw != 0,

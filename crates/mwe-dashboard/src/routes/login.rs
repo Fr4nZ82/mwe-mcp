@@ -50,7 +50,7 @@ pub async fn form(
     if !admin_exists(&state).await? {
         return Ok(Redirect::to("/dashboard/setup").into_response());
     }
-    Ok(render_form(None, "", q.next.as_deref()).into_response())
+    Ok(render_form(&state, None, "", q.next.as_deref()).into_response())
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +87,7 @@ pub async fn submit(
     let password = form.password.as_str();
     let generic = || {
         render_form(
+            &state,
             Some("Invalid credentials."),
             identifier,
             form.next.as_deref(),
@@ -159,18 +160,61 @@ pub async fn submit(
     Ok((jar.add(cookie), Redirect::to(&destination)).into_response())
 }
 
-fn render_form(error: Option<&str>, email: &str, next: Option<&str>) -> Html<String> {
+fn render_form(
+    state: &DashboardState,
+    error: Option<&str>,
+    email: &str,
+    next: Option<&str>,
+) -> Html<String> {
+    // On a demo instance the buttons *are* the sign-in screen: a visitor
+    // who has to type credentials to look at a demonstration mostly does
+    // not. The password form is still reachable — the operator has to get
+    // in somehow — but folded away, because offering a stranger two ways
+    // in makes them choose instead of click.
+    if state.config.demo_entrance_enabled() {
+        let body = maud::html! {
+            @if let Some(msg) = error { (components::flash("error", msg)) }
+            p class="max-w-prose mx-auto" {
+                "This is a live demonstration instance. Pick somebody to look as — "
+                "the memory answers differently to each of them, and you can switch "
+                "at any time from the top of any page."
+            }
+            (super::demo::buttons(&state.config.demo_identities, None, false))
+            p class="muted" {
+                "Nothing here can be changed, by you or by anybody: the instance is read-only."
+            }
+            details class="mt-10" {
+                summary class="text-text-dim text-sm cursor-pointer" { "Sign in with a password" }
+                div class="mt-4 mx-auto text-left" style="max-width:22rem" {
+                    (password_form(email, next))
+                }
+            }
+        };
+        // The centred hero, not the 30rem single-form column: three
+        // buttons on one row is the whole shape of this screen, and at
+        // 30rem the third wraps onto a line of its own and reads as a
+        // mistake.
+        return Html(layout::anonymous_hero_page("Look around", &body));
+    }
     let body = maud::html! {
         @if let Some(msg) = error { (components::flash("error", msg)) }
+        (password_form(email, next))
+        p.muted {
+            a href="/dashboard/forgot-password" { "Forgot your password?" }
+        }
+    };
+    Html(layout::anonymous_page("Sign in", &body))
+}
+
+/// The email + password form, shared by the plain sign-in page and the
+/// folded-away operator path on a demo instance.
+fn password_form(email: &str, next: Option<&str>) -> maud::Markup {
+    maud::html! {
         form action="/dashboard/login" method="post" {
             (components::text_field_ac("email", "Email", "email", email, true, "username"))
             (components::password_field("password", "Password", "current-password"))
             @if let Some(n) = next { input type="hidden" name="next" value=(n); }
             (components::submit("Sign in"))
         }
-        p.muted {
-            a href="/dashboard/forgot-password" { "Forgot your password?" }
-        }
-    };
-    Html(layout::anonymous_page("Sign in", &body))
+    }
 }

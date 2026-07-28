@@ -193,7 +193,9 @@ If you are new, read in this order:
   `instance.read_only`: refusing every change to memory or configuration
   across the dashboard, the MCP dispatcher and `/media` while identity,
   reading and navigation keep working, and hiding the controls that are
-  refused rather than letting them fail.
+  refused rather than letting them fail; plus `instance.demo_identities`,
+  the passwordless *Enter as …* entrance and the one-click identity
+  switcher that make a frozen instance showable to a stranger.
 - [single-writer-lockfile.md](design-notes/single-writer-lockfile.md) —
   why `mwe-core::lockfile` relies on the kernel's advisory lock.
 - [applicative-wal.md](design-notes/applicative-wal.md) — the journaling

@@ -8,16 +8,20 @@ last_review: "2026-07-28"
 # Read-only instance — `instance.read_only`
 
 An instance you show to people who are not you needs a posture the
-product did not have: **everything readable, nothing changeable**. This
-page describes that posture — what it refuses, what it deliberately does
-not refuse, and why the second list is not a compromise.
+product did not have: **everything readable, nothing changeable**, and a
+front door a stranger will actually walk through. This page describes
+that posture — what it refuses, what it deliberately does not refuse,
+why the second list is not a compromise, and
+[the passwordless entrance](#the-demo-entrance) that makes the frozen
+instance worth showing.
 
-Turned on by one key
+Two keys
 ([config-schema.md § `instance`](../protocol/config-schema.md#instance)):
 
 ```yaml
 instance:
   read_only: true
+  demo_identities: [bob, alice, zoe]   # optional; requires read_only
 ```
 
 Like the rest of the `instance:` section it has **no dashboard editor**.
@@ -145,6 +149,75 @@ box with "you don't have write access to it". On a frozen deployment
 nobody has write access, so the page says *that* instead. A wrong
 explanation of a correct refusal is still a wrong explanation.
 
+## The demo entrance
+
+A frozen instance is safe to show. It is not yet *showable*: a memory
+product is only legible when you read the same page through two people's
+eyes, and asking a stranger to type an email and a password before they
+may see that loses most of them at the door — asking them to do it
+twice, to compare, loses the rest.
+
+So `instance.demo_identities` turns the sign-in screen into a row of
+buttons — *Enter as Bob · Enter as Alice · Enter as Zoe* — and puts the
+same row, compact, in the **panel frame**, on every page. That second
+placement is the load-bearing one: the comparison is opening one page
+and changing whose eyes you are using without leaving it. A switcher
+that lived only on the sign-in screen would make the visitor navigate
+back each time, and the demonstration would die of friction. The switch
+returns to the page it was made from (`Referer`, reduced to a local
+`/dashboard/` path, home otherwise), and the button for whoever is
+already signed in is not rendered.
+
+Implementation: [`routes/demo.rs`](../../crates/mwe-dashboard/src/routes/demo.rs).
+
+**It exists only under the demo configuration**, and that is enforced in
+two places rather than one:
+
+- The config **refuses to load** when `demo_identities` is non-empty and
+  `read_only` is false (`ConfigError::DemoIdentitiesNeedReadOnly`). A
+  passwordless door on a writable deployment must not be reachable by
+  any combination of settings, and a misconfiguration that quietly
+  disabled itself would be worse than one that stops the server — the
+  operator would believe the demo works and find out from a visitor.
+- The router **does not mount** `demo::router()` unless both halves
+  hold, so the path is not a route that refuses; it is a route that does
+  not exist. The read-only guard has the one special case that keeps
+  that true (`read_only::DEMO_ENTER`): without it, `/demo/enter` on a
+  frozen instance with no demo cast would answer `303` where an unknown
+  path answers `403`, and the difference is exactly the tell that "the
+  route is mounted and merely refusing".
+
+A demo session is the smallest thing that works: the id must be on the
+configured list (the form field is checked against it, never trusted)
+and must exist in `enrollment_users` (so a config typo mints nothing),
+and the session is **never admin**, whatever the row says. Everything
+downstream — ACL projection, recall, redaction — then behaves exactly as
+it does for that person on any deployment. The visitor is not shown a
+mock-up of Bob; they are shown Bob.
+
+The operator still needs a way in, so the password form survives behind
+a `Sign in with a password` disclosure. Folded away rather than beside
+the buttons: offering a stranger two ways in makes them choose instead
+of click.
+
+### The screen itself
+
+The sign-in screen is the first thing a stranger sees of the product, so
+its layout is part of the feature and was checked in a browser, not
+inferred from the markup:
+
+- it uses the centred **hero** shell (`layout::anonymous_hero_page`),
+  not the 30 rem single-form column — at that width the third button
+  wrapped onto a line of its own and read as a mistake;
+- the centring is on `<body>` so the shell's `<h1>` inherits it; a title
+  flush left above a centred row of buttons reads as two pages stacked;
+- below the `sm` breakpoint the buttons stack full width instead of
+  wrapping 2 + 1;
+- and the "You are &lt;id&gt;" badge, normally hidden on mobile to keep
+  the top bar to one row, stays visible on a demo instance: whose eyes
+  you are using is the single most important thing on the screen, and
+  the switcher beside it is useless without it.
+
 ## Tests
 
 - **Dashboard** — `crates/mwe-dashboard/tests/read_only.rs`, one test per
@@ -169,6 +242,22 @@ explanation of a correct refusal is still a wrong explanation.
   added without being classified fails this test rather than quietly
   shipping a write. Plus the open-instance baseline, the reads that must
   still work, and `dashboard_link`'s refusal.
+- **Demo entrance** — `crates/mwe-dashboard/tests/demo_entrance.rs`. The
+  gate is asserted as a **comparison**, not a status code:
+  `without_the_demo_configuration_the_entrance_route_does_not_exist`
+  walks the three ways to be "almost" a demo and requires
+  `POST /demo/enter` to be answered *exactly* as
+  `POST /no-such-route-was-ever-defined`. No fixed code would do — this
+  router bounces an unmatched request to the sign-in page rather than
+  answering `404`, and a frozen deployment refuses an unknown write with
+  `403` before routing gets a say, so the expected code differs per
+  posture while the property does not. The rest pin the entrance
+  (`a_visitor_enters_with_one_click_and_no_credentials`), the frame
+  switcher and its return path
+  (`the_switcher_is_on_every_page_and_returns_to_the_same_page`), the
+  never-admin rule, the off-list refusal, and the configured-but-absent
+  typo. `config.rs` pins the load-time refusal
+  (`demo_identities_without_read_only_refuse_to_load`).
 
 ## See also
 

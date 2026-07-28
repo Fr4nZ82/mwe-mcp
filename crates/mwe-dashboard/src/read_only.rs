@@ -73,6 +73,19 @@ pub const ALLOWED_WRITES: &[&str] = &[
     "/settings/reveal",
 ];
 
+/// The passwordless entrance ([`crate::routes::demo`]) — the one path
+/// whose verdict depends on configuration rather than on the list above.
+///
+/// It is the same class as `/login` (it mints a session and nothing
+/// else) and it is only *routed* under the demo configuration. But a
+/// blanket entry would make it answer differently from a path that does
+/// not exist on a frozen instance that has no demo cast — `303` to the
+/// sign-in page instead of the guard's `403` — which is exactly the tell
+/// that "the route is mounted and merely refusing". So the guard refuses
+/// it unless the entrance is really configured, and the door stays
+/// indistinguishable from a wall.
+pub const DEMO_ENTER: &str = "/demo/enter";
+
 /// Mutating `GET`s that must still be refused.
 ///
 /// The guard's rule of thumb is "safe methods pass", which holds for
@@ -91,8 +104,11 @@ pub const REFUSAL: &str =
 /// Path-first and allow-list shaped on purpose: a new write route is
 /// refused by default and its author has to come here to exempt it, which
 /// is the direction the mistake should point.
+///
+/// `demo_entrance` is whether the passwordless door is configured; see
+/// [`DEMO_ENTER`] for why that one path is not simply on the list.
 #[must_use]
-pub fn refuses(method: &Method, path: &str) -> bool {
+pub fn refuses(method: &Method, path: &str, demo_entrance: bool) -> bool {
     if REFUSED_READS.contains(&path) {
         return true;
     }
@@ -100,6 +116,9 @@ pub fn refuses(method: &Method, path: &str) -> bool {
     // this mode exists to keep.
     if method.is_safe() {
         return false;
+    }
+    if path == DEMO_ENTER {
+        return !demo_entrance;
     }
     !ALLOWED_WRITES.contains(&path)
 }
@@ -114,7 +133,7 @@ pub async fn guard(State(state): State<DashboardState>, request: Request, next: 
     if state.config.read_only {
         let method = request.method().clone();
         let path = request.uri().path().to_owned();
-        if refuses(&method, &path) {
+        if refuses(&method, &path, state.config.demo_entrance_enabled()) {
             tracing::info!(%method, %path, "read-only instance: request refused");
             return (StatusCode::FORBIDDEN, REFUSAL).into_response();
         }
@@ -166,11 +185,17 @@ pub fn notice() -> Markup {
 mod tests {
     use super::*;
 
+    /// The third argument is "is the demo entrance configured"; the
+    /// tests that do not exercise it pass `false`, the plainer posture.
+    fn refused(method: &Method, path: &str) -> bool {
+        refuses(method, path, false)
+    }
+
     #[test]
     fn reading_and_navigation_always_pass() {
         for path in ["/home", "/wiki/franz", "/facts", "/admin/recall-traces"] {
             assert!(
-                !refuses(&Method::GET, path),
+                !refused(&Method::GET, path),
                 "GET {path} must pass in read-only mode"
             );
         }
@@ -180,7 +205,7 @@ mod tests {
     fn identity_still_works_but_credential_minting_does_not() {
         for path in ALLOWED_WRITES {
             assert!(
-                !refuses(&Method::POST, path),
+                !refused(&Method::POST, path),
                 "POST {path} is the identity surface and must pass"
             );
         }
@@ -194,7 +219,7 @@ mod tests {
             "/webagentoauth/authorize",
         ] {
             assert!(
-                refuses(&Method::POST, path),
+                refused(&Method::POST, path),
                 "POST {path} mints an identity or a capability and must be refused"
             );
         }
@@ -202,13 +227,27 @@ mod tests {
 
     #[test]
     fn a_mutating_get_is_refused_even_though_get_is_safe() {
-        assert!(refuses(&Method::GET, "/admin/claude-login/callback"));
+        assert!(refused(&Method::GET, "/admin/claude-login/callback"));
         // …and the other mutating GET is not, because it is identity.
-        assert!(!refuses(&Method::GET, "/auth/link"));
+        assert!(!refused(&Method::GET, "/auth/link"));
     }
 
     #[test]
     fn an_unknown_write_route_is_refused_by_default() {
-        assert!(refuses(&Method::POST, "/some/route/added/next/year"));
+        assert!(refused(&Method::POST, "/some/route/added/next/year"));
+    }
+
+    /// The passwordless door passes only where it is actually cut. On a
+    /// frozen instance with no demo cast it is refused like any other
+    /// unknown write, so it answers the same as a path that does not
+    /// exist instead of betraying itself with a different code.
+    #[test]
+    fn the_demo_entrance_passes_only_where_it_is_configured() {
+        assert!(!refuses(&Method::POST, DEMO_ENTER, true));
+        assert!(refuses(&Method::POST, DEMO_ENTER, false));
+        assert_eq!(
+            refuses(&Method::POST, DEMO_ENTER, false),
+            refuses(&Method::POST, "/no-such-route", false),
+        );
     }
 }

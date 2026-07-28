@@ -71,6 +71,30 @@ pub struct DashboardConfig {
     /// no dashboard editor for it on purpose: this is the machine
     /// operator's switch, not the panel admin's.
     pub admin_reveal_locked: bool,
+
+    /// The identities a visitor may enter as without a password
+    /// (`mwe-mcp.config.yaml > instance.demo_identities`), in button
+    /// order. Empty on every normal installation, which is what keeps
+    /// [`crate::routes::demo`] unmounted.
+    ///
+    /// `Arc<[String]>` so cloning the state stays a refcount bump: this
+    /// list is read on every rendered page (the identity switcher lives
+    /// in the frame) and written never.
+    pub demo_identities: Arc<[String]>,
+}
+
+impl DashboardConfig {
+    /// Is the passwordless demo entrance mounted?
+    ///
+    /// Mirrors [`mwe_core::config::InstanceConfig::demo_entrance_enabled`]
+    /// on the dashboard's own copy of the two knobs. Both halves are
+    /// required and the config loader has already refused any file where
+    /// they disagree; restating it here means the router and the page
+    /// frame read the same predicate, not two spellings of it.
+    #[must_use]
+    pub fn demo_entrance_enabled(&self) -> bool {
+        self.read_only && !self.demo_identities.is_empty()
+    }
 }
 
 impl Default for DashboardConfig {
@@ -83,6 +107,7 @@ impl Default for DashboardConfig {
             cookie_secure: false,
             read_only: false,
             admin_reveal_locked: false,
+            demo_identities: Arc::from([]),
         }
     }
 }

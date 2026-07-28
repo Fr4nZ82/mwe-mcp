@@ -582,18 +582,21 @@ cannot reach it has no business being hot-swappable from the panel.
 
 ```yaml
 instance:
-  read_only: true             # default false — see below
-  admin_reveal_locked: true   # default false — see below
+  read_only: true                       # default false — see below
+  admin_reveal_locked: true             # default false — see below
+  demo_identities: [bob, alice, zoe]    # default [] — requires read_only
 ```
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `read_only` | bool | `false` | Freeze the deployment: refuse every operation that changes memory or configuration, on all three surfaces (dashboard HTTP tree, MCP dispatcher, `POST /media`), and do not start the background loops that would rewrite memory on their own (REM, the light dream, the document worker, automatic backups). Identity, reading and navigation keep working — signing in and out are the writes it deliberately still accepts. The dashboard also **hides** what it refuses, and does not mount the write-only consoles at all. Full story: [read-only-instance.md](../design-notes/read-only-instance.md). |
 | `admin_reveal_locked` | bool | `false` | Takes the [admin ACL-reveal](../design-notes/redaction-policy.md#the-machine-operator-can-lock-reveal) switch away from the dashboard admin. When set, `reveal::active` returns false unconditionally, `POST /dashboard/settings/reveal` answers `403`, and a hand-written `mwe_admin_reveal` cookie is ignored; the Settings page replaces the checkbox with a line naming this key. Leaves everything else about the admin role untouched. |
+| `demo_identities` | list of user ids | `[]` | The identities a visitor may enter as **without a password**, in button order. Non-empty turns the sign-in page into *Enter as Bob · Enter as Alice · Enter as Zoe* and puts a one-click identity switcher in the panel frame. **Requires `read_only: true`** — a file that sets this without it does not load (`instance.demo_identities is set … but instance.read_only is false`), so no combination of settings gives a writable deployment a door with no password. Empty means the routes are not mounted at all: `POST /dashboard/demo/enter` is answered exactly as a path that does not exist, not with a `403`. Sessions minted here are never admin. See [read-only-instance.md § The demo entrance](../design-notes/read-only-instance.md#the-demo-entrance). |
 
-The two are independent. Read-only is about *changing* things; the
-reveal lock is about *seeing* them. A public instance usually wants
-both; an office deployment may want only the second.
+The first two are independent. Read-only is about *changing* things;
+the reveal lock is about *seeing* them. A public instance usually wants
+both; an office deployment may want only the second. The third is the
+public instance's front door and needs the first.
 
 ### `embedding`
 
@@ -1196,6 +1199,7 @@ backup:
 instance:
   read_only: false            # true → nothing in this deployment can be changed
   admin_reveal_locked: false  # true → the dashboard admin cannot bypass the ACL
+  demo_identities: []         # non-empty → passwordless entrance; needs read_only
 
 # ── features (PARSED-BUT-INERT in config.rs: check the consuming code) ─
 features:

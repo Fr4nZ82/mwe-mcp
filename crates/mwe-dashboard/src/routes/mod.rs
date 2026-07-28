@@ -17,6 +17,7 @@ mod briefing;
 mod chat;
 mod cite;
 mod claude_login;
+pub(crate) mod demo;
 mod dream;
 mod email_settings;
 mod embedding_settings;
@@ -147,6 +148,16 @@ pub fn build(state: DashboardState) -> Router {
         .merge(webagentoauth::consent_router())
         .merge(crate::assets::router())
         .with_state(state.clone());
+
+    // The passwordless entrance, mounted only under the demo
+    // configuration — so on every normal installation `POST
+    // /demo/enter` is a `404`, not a `403`: there is no door to refuse
+    // at. Public, because becoming somebody is how a visitor arrives.
+    let public = if state.config.demo_entrance_enabled() {
+        public.merge(demo::router().with_state(state.clone()))
+    } else {
+        public
+    };
 
     // The freeze goes over **both** halves, and last, so it sees every
     // route in the tree — including the public ones (`/setup`,

@@ -1986,6 +1986,7 @@ fn dashboard_config_from(config: &Config) -> mwe_dashboard::DashboardConfig {
     mwe_dashboard::DashboardConfig {
         read_only: config.instance.read_only,
         admin_reveal_locked: config.instance.admin_reveal_locked,
+        demo_identities: config.instance.demo_identities.as_slice().into(),
         ..mwe_dashboard::DashboardConfig::default()
     }
 }

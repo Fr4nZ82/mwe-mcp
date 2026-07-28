@@ -56,6 +56,22 @@ pub enum ConfigError {
         detail: String,
     },
 
+    /// `instance.demo_identities` is non-empty without
+    /// `instance.read_only`.
+    ///
+    /// A hard refusal rather than a silent ignore: the whole point of
+    /// the demo entrance is that no writable deployment ever has a door
+    /// with no password on it, and an operator whose demo quietly did
+    /// nothing would believe it worked.
+    #[error(
+        "config instance.demo_identities is set ({count} identities) but instance.read_only is \
+         false: the passwordless demo entrance is only available on a read-only instance"
+    )]
+    DemoIdentitiesNeedReadOnly {
+        /// How many identities the file listed.
+        count: usize,
+    },
+
     /// `logging.level` value was not one of the accepted choices.
     #[error("config logging.level {value:?}: expected `info` or `debug`")]
     InvalidLogLevel {
@@ -2000,7 +2016,7 @@ const fn default_backup_retention_auto() -> u32 {
 ///
 /// Off by default in every field, so a plain `mwe-mcp serve` behaves
 /// exactly as it did before the section existed.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceConfig {
     /// Freeze the deployment: refuse every operation that changes memory
     /// or configuration, while leaving identity, reading and navigation
@@ -2044,6 +2060,46 @@ pub struct InstanceConfig {
     /// unconditionally, so no surface can honour it by accident.
     #[serde(default)]
     pub admin_reveal_locked: bool,
+
+    /// The identities a visitor may enter as **without a password**, in
+    /// the order the buttons should appear.
+    ///
+    /// Empty by default, which is the only value a normal installation
+    /// ever has: an empty list means the passwordless door does not
+    /// exist — its routes are not mounted, so they answer `404`, not
+    /// `403`.
+    ///
+    /// It exists for one job. Asking a stranger to type credentials
+    /// before they may look at a demonstration loses most of them at the
+    /// door, and a memory product is not demonstrable at all without
+    /// reading the same page as two different people. So a shown
+    /// instance offers *Enter as Bob · Enter as Alice · Enter as Zoe*
+    /// and nothing else.
+    ///
+    /// **Requires [`Self::read_only`]**, and the loader refuses to start
+    /// otherwise ([`ConfigError::DemoIdentitiesNeedReadOnly`]). No
+    /// combination of settings may give a writable deployment a door
+    /// with no password on it, and a misconfiguration that quietly
+    /// disabled itself would be worse than one that stops the server:
+    /// the operator would believe the demo works.
+    ///
+    /// Sessions minted here are **never admin**, whatever the listed
+    /// user's row says. A passwordless door hands out the smallest thing
+    /// that makes the demonstration work.
+    #[serde(default)]
+    pub demo_identities: Vec<String>,
+}
+
+impl InstanceConfig {
+    /// Is the passwordless demo entrance mounted?
+    ///
+    /// Both halves are required, and the config loader has already
+    /// refused any file where they disagree — this is the same predicate
+    /// stated where the router can reach it.
+    #[must_use]
+    pub const fn demo_entrance_enabled(&self) -> bool {
+        self.read_only && !self.demo_identities.is_empty()
+    }
 }
 
 // ---------- Config ----------
@@ -2197,6 +2253,13 @@ impl Config {
             path: path.to_path_buf(),
             detail: format!("schema: {e}"),
         })?;
+        // Typed rather than YAML-shaped, unlike the four above: the rule
+        // is a relation between two keys, not the spelling of one.
+        if !cfg.instance.demo_identities.is_empty() && !cfg.instance.read_only {
+            return Err(ConfigError::DemoIdentitiesNeedReadOnly {
+                count: cfg.instance.demo_identities.len(),
+            });
+        }
         Ok(cfg)
     }
 
@@ -3354,6 +3417,43 @@ mod tests {
         let yaml = serde_yaml::to_string(&cfg).expect("serialize");
         assert!(yaml.contains("backend: gemini"), "{yaml}");
         assert!(yaml.contains("api_key_env: GEMINI_API_KEY"), "{yaml}");
+    }
+
+    // ---------- instance posture ----------
+
+    /// A passwordless door on a writable deployment must not be
+    /// reachable by any combination of settings, so the loader refuses
+    /// the file outright rather than ignoring the key. Silently
+    /// disabling it would be worse: the operator would believe the demo
+    /// works, and find out from a visitor.
+    #[test]
+    fn demo_identities_without_read_only_refuse_to_load() {
+        let body = "instance:\n  demo_identities: [bob, alice, zoe]\n";
+        match Config::parse(&PathBuf::from("test"), body) {
+            Err(ConfigError::DemoIdentitiesNeedReadOnly { count }) => assert_eq!(count, 3),
+            Err(other) => panic!("unexpected error: {other:?}"),
+            Ok(_) => panic!("a writable deployment must not accept a passwordless entrance"),
+        }
+    }
+
+    #[test]
+    fn the_demo_entrance_needs_both_halves() {
+        let with_both = "instance:\n  read_only: true\n  demo_identities: [bob, zoe]\n";
+        let cfg = Config::parse(&PathBuf::from("test"), with_both).expect("parse");
+        assert!(cfg.instance.demo_entrance_enabled());
+        assert_eq!(cfg.instance.demo_identities, vec!["bob", "zoe"]);
+
+        // Frozen but with no cast: the door is not cut.
+        let frozen_only = "instance:\n  read_only: true\n";
+        let cfg = Config::parse(&PathBuf::from("test"), frozen_only).expect("parse");
+        assert!(!cfg.instance.demo_entrance_enabled());
+
+        // And the section is entirely optional.
+        let cfg =
+            Config::parse(&PathBuf::from("test"), "logging:\n  level: info\n").expect("parse");
+        assert!(!cfg.instance.read_only);
+        assert!(!cfg.instance.admin_reveal_locked);
+        assert!(!cfg.instance.demo_entrance_enabled());
     }
 
     // ---------- temperature / max_tokens ----------
