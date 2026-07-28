@@ -396,7 +396,7 @@ async fn index(
     // the table lists every user's facts and the owner-or-admin actions
     // (ACL / validity / delete) become reachable on them. Gated on
     // `is_admin` inside `reveal::active`, so a non-admin can never trip it.
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
 
     // The facts table reads `fact_index` (promoted facts). A freshly-ingested
     // claim sits un-promoted in `capture_buffer` until the light dream
@@ -476,7 +476,7 @@ async fn edit_form(
 ) -> Result<Html<String>> {
     let fact_id =
         FactId::parse(&fact_id_raw).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_visible_fact(&state, &user, &fact_id, reveal).await?;
     // Both structured forms gate on the **owner** axis (the write-authority
     // model — docs/concepts/identity-and-acl.md): ACL (visibility) is the
@@ -595,7 +595,7 @@ async fn edit_submit(
 ) -> Result<Html<String>> {
     let fact_id =
         FactId::parse(&fact_id_raw).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_visible_fact(&state, &user, &fact_id, reveal).await?;
     let delta = form_to_delta(&form);
     let Some(message) = compose_edit_message(&fact_id, &row, &delta) else {
@@ -699,7 +699,7 @@ async fn acl_submit(
 ) -> Result<Response> {
     let fact_id =
         FactId::parse(&fact_id_raw).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_visible_fact(&state, &user, &fact_id, reveal).await?;
     enforce_owner_or_admin(&user, &row)?;
     enforce_standard_wiki(&state, &row.wiki_id)?;
@@ -774,7 +774,7 @@ async fn validity_submit(
 ) -> Result<Response> {
     let fact_id =
         FactId::parse(&fact_id_raw).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_visible_fact(&state, &user, &fact_id, reveal).await?;
     // Validity is an *update* of the fact (not a destruction): the owner's act
     // (the write-authority model), the same owner axis as ACL.
@@ -845,7 +845,7 @@ async fn delete_fact(
 ) -> Result<Response> {
     let fact_id =
         FactId::parse(&fact_id_raw).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_visible_fact(&state, &user, &fact_id, reveal).await?;
     enforce_sender_or_admin(&user, &row)?;
     let tombstoned = if let Some(memory) = state.memory.as_ref() {

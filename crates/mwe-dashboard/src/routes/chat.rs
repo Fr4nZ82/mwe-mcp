@@ -620,7 +620,7 @@ async fn post_agentic(
         ));
     }
     let history = parse_chat_history(form.history.as_deref());
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
     let turn = agentic_submission(&state, &user, text, &history, reveal).await?;
     Ok(axum::Json(turn))
 }

@@ -80,12 +80,13 @@ pub(super) async fn render_page(
     error: Option<&str>,
     success: Option<&str>,
 ) -> Result<Html<String>> {
-    let reveal_on = crate::reveal::active(user, jar);
+    let reveal_on = crate::reveal::active(state, user, jar);
     let global_2fa = admin_global_require(state, user).await?;
     let cfg = admin_config(state, user)?;
     Ok(Html(render(
         user,
         reveal_on,
+        state.config.admin_reveal_locked,
         global_2fa,
         cfg.as_ref(),
         error,
@@ -201,21 +202,38 @@ async fn submit(
 
 /// The admin-only Admin reveal section: a short explainer + the
 /// dashboard-wide ACL-bypass checkbox (and its banner when active).
-fn reveal_section(reveal_on: bool) -> Markup {
+///
+/// `locked` is `instance.admin_reveal_locked` from the on-disk config:
+/// the switch belongs to whoever runs the machine, so the explainer says
+/// so whether or not it is currently exercised, and the control itself
+/// gives way to [`crate::reveal::checkbox`]'s locked notice.
+fn reveal_section(reveal_on: bool, locked: bool) -> Markup {
     html! {
         section.admin-reveal-settings {
             h2 { "Admin reveal" }
             @if reveal_on { (crate::reveal::banner()) }
             p.muted {
                 "When on, the whole dashboard bypasses the per-user ACL projection: "
-                "wiki pages show every fragment (highlighted) and the "
+                "wiki pages show every fragment (highlighted), the "
                 a href="/dashboard/facts" { "facts table" }
                 " lists every user's facts, so the owner-or-admin ACL / validity / "
-                "delete actions reach them. It never affects the MCP tool surface, "
-                "and it is honoured only for admins. Leave it off unless you are "
-                "actively supervising."
+                "delete actions reach them, and the "
+                a href="/dashboard/admin/recall-traces" { "recall traces" }
+                " journal widens from your own recalls to everybody's. It never "
+                "affects the MCP tool surface, and it is honoured only for admins. "
+                "Leave it off unless you are actively supervising."
             }
-            (crate::reveal::checkbox(reveal_on, SETTINGS_RETURN_TO))
+            p.muted {
+                "This switch can be taken away from the dashboard: setting "
+                code { "instance.admin_reveal_locked" }
+                " in " code { "mwe-mcp.config.yaml" }
+                " turns reveal off for good, and no page here can undo it — only "
+                "somebody with access to the machine can. Use it wherever "
+                "administering the panel and running the server are not the same "
+                "person: the admin keeps the deployment, the members keep their "
+                "private fragments."
+            }
+            (crate::reveal::checkbox(reveal_on, locked, SETTINGS_RETURN_TO))
         }
     }
 }
@@ -248,6 +266,7 @@ fn global_require_section(on: bool) -> Markup {
 fn render(
     user: &SessionUser,
     reveal_on: bool,
+    reveal_locked: bool,
     global_2fa: bool,
     cfg: Option<&Config>,
     error: Option<&str>,
@@ -293,7 +312,7 @@ fn render(
 
         @if user.is_admin {
             (global_require_section(global_2fa))
-            (reveal_section(reveal_on))
+            (reveal_section(reveal_on, reveal_locked))
             @if let Some(cfg) = cfg {
                 (super::email_settings::section(&cfg.email))
                 (super::server_settings::sections(cfg))

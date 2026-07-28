@@ -16,6 +16,25 @@
 //! surface opts in simply by consulting [`active`] and skipping its ACL
 //! projection when it returns true. Documented in
 //! the redaction-policy design note.
+//!
+//! # The machine operator can take the switch away
+//!
+//! `mwe-mcp.config.yaml > instance.admin_reveal_locked` (surfaced as
+//! [`DashboardConfig::admin_reveal_locked`](crate::DashboardConfig)) is
+//! read from disk and has **no dashboard editor**, so it constrains the
+//! panel admin instead of being one more thing they can flip. It
+//! separates *who administers the panel* from *who runs the machine*: in
+//! a household they are the same person, in an office the manager can be
+//! the dashboard admin without a shell on the host — and there the
+//! difference is the whole point.
+//!
+//! The lock is enforced in [`active`], not in the UI. Hiding the
+//! checkbox would be a curtain: the POST route is still there and the
+//! cookie is a string anybody can type. So all three doors are shut —
+//! [`toggle`] answers `403`, [`checkbox`] renders an explanation instead
+//! of a control, and a hand-written `mwe_admin_reveal=1` is ignored
+//! because the one predicate every surface consults returns false before
+//! it ever looks at the jar.
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -40,13 +59,17 @@ const SETTINGS_PATH: &str = "/dashboard/settings/me";
 
 /// Is admin reveal active for this request?
 ///
-/// True only when the user is an admin **and** the reveal cookie is set —
-/// the server-side admin check is the authority, the cookie is merely the
-/// on/off preference. Every reveal-aware surface routes through this
-/// single predicate.
+/// True only when the deployment allows reveal at all, **and** the user
+/// is an admin, **and** the reveal cookie is set — the two server-side
+/// checks are the authority, the cookie is merely the on/off preference.
+/// Every reveal-aware surface routes through this single predicate, so
+/// the server lock reaches all of them without any of them knowing about
+/// it.
 #[must_use]
-pub fn active(user: &SessionUser, jar: &CookieJar) -> bool {
-    user.is_admin && jar.get(COOKIE_NAME).is_some_and(|c| c.value() == "1")
+pub fn active(state: &DashboardState, user: &SessionUser, jar: &CookieJar) -> bool {
+    !state.config.admin_reveal_locked
+        && user.is_admin
+        && jar.get(COOKIE_NAME).is_some_and(|c| c.value() == "1")
 }
 
 /// Build the reveal cookie set to `on` (value `"1"`) or cleared.
@@ -92,12 +115,29 @@ pub struct ToggleForm {
 /// admin toggled from (the Settings page by default). The [`AdminUser`]
 /// extractor is the gate, so a non-admin session cannot reach this
 /// handler at all.
+///
+/// Refuses with `403` when the machine operator has locked reveal. The
+/// refusal is belt-and-braces — [`active`] would ignore the cookie
+/// anyway — but handing back a `Set-Cookie` for a preference nothing
+/// honours would be a lie told at the only place an operator can see it.
+///
+/// # Errors
+///
+/// [`crate::error::DashboardError::Forbidden`] when
+/// `instance.admin_reveal_locked` is set.
 pub async fn toggle(
     State(state): State<DashboardState>,
     admin: AdminUser,
     jar: CookieJar,
     HtmlForm(form): HtmlForm<ToggleForm>,
 ) -> Result<Response> {
+    if state.config.admin_reveal_locked {
+        tracing::warn!(
+            actor = admin.sender_id(),
+            "dashboard ACL-reveal toggle refused — locked by instance.admin_reveal_locked"
+        );
+        return Err(crate::error::DashboardError::Forbidden);
+    }
     let on = form.on.as_deref() == Some("1");
     let dest = safe_return_to(&form.return_to);
     tracing::info!(
@@ -112,8 +152,26 @@ pub async fn toggle(
 /// The admin-only checkbox that flips [`active`], rendered on the
 /// Settings page. Submits on change (with a no-JS fallback button);
 /// `return_to` brings the admin back to where they toggled it.
+///
+/// When the machine operator has locked reveal (`locked`), the control
+/// is replaced by a line saying so — there is nothing here for the admin
+/// to do, and a checkbox that bounces off a `403` would be worse than no
+/// checkbox.
 #[must_use]
-pub fn checkbox(on: bool, return_to: &str) -> Markup {
+pub fn checkbox(on: bool, locked: bool, return_to: &str) -> Markup {
+    if locked {
+        return html! {
+            p.muted.acl-reveal-locked {
+                strong { "Locked by the server." }
+                " Admin reveal is switched off in this deployment's "
+                code { "mwe-mcp.config.yaml" }
+                " (" code { "instance.admin_reveal_locked" } "), which no dashboard page can "
+                "edit — only somebody with access to the machine can lift it. That is the "
+                "point: it lets a deployment give one person the panel without giving them "
+                "everybody's private fragments."
+            }
+        };
+    }
     html! {
         form.acl-reveal-toggle method="post" action="/dashboard/settings/reveal" {
             input type="hidden" name="return_to" value=(return_to);

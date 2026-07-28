@@ -479,16 +479,58 @@ three sides:
   flag into `recall::wiki_facts_full_for` / `wiki_buffered_full_for` that
   skips the per-row gate. The predicate itself keeps its no-admin-bypass
   invariant (and the `admin_does_not_bypass` test stays green).
-- **It is gated server-side on the admin role.** The toggle is a cookie
-  (`mwe_admin_reveal`), but it is *honoured* only when the session's
-  `is_admin` is true (`reveal::active`); a forged cookie on a non-admin
-  session does nothing. The cookie merely records the on/off preference.
+- **It is gated server-side on the admin role, and the deployment can
+  withdraw it entirely.** The toggle is a cookie (`mwe_admin_reveal`),
+  but it is *honoured* only when the session's `is_admin` is true **and**
+  `instance.admin_reveal_locked` is unset (`reveal::active`); a forged
+  cookie on a non-admin session, or on a locked deployment, does nothing.
+  The cookie merely records the on/off preference. See
+  [The machine operator can lock reveal](#the-machine-operator-can-lock-reveal).
 - **It is dashboard-only.** No MCP tool can reach it; `wiki_read` /
   `wiki_search` / recall — and the `pending_attention` in-flight count on
   the `wiki_ingest_message` response — always honour the ACL, scoped to
   the calling identity even for an admin consumer. Reveal changes only
   what the *admin* sees and can act on **through the dashboard**, never
   what a consumer agent can read.
+
+### The machine operator can lock reveal
+
+Reveal is gated on the admin role, and that is the right gate exactly
+when the admin *is* the household. It is the wrong gate whenever the
+deployment's point is that the admin **cannot** read what members did not
+share with them.
+
+`mwe-mcp.config.yaml > instance.admin_reveal_locked`
+([config-schema.md § `instance`](../protocol/config-schema.md#instance))
+is the switch that separates the two roles: **who administers the panel**
+and **who runs the machine**. In a household they are the same person and
+the distinction costs nothing. In an office they are not — the manager
+can hold the dashboard admin account without having a shell on the host —
+and there the whole value is in the gap: the admin keeps the deployment,
+the members keep their private fragments. The section has **no dashboard
+editor by design**; a switch a panel admin can flip is not a switch that
+constrains a panel admin.
+
+The lock is enforced inside `reveal::active`, which is why every
+reveal-aware surface inherits it without knowing it exists. All three
+doors are shut, and the distinction matters:
+
+| Door | Locked behaviour |
+|---|---|
+| The Settings checkbox | Replaced by a line naming `instance.admin_reveal_locked` and saying only machine access lifts it. |
+| `POST /dashboard/settings/reveal` called directly | `403 Forbidden`, and **no** `Set-Cookie` — handing back a preference nothing honours would be a lie told where the operator can see it. |
+| A hand-written `mwe_admin_reveal=1` cookie | Ignored: `active` returns false before it looks at the jar. |
+
+Only the third one is the lock. Hiding the checkbox is a curtain — the
+route is still routed and the cookie is a string anyone can type — so
+`crates/mwe-dashboard/tests/reveal_lock.rs` tries all three, and its
+first test is the **baseline**: without the lock the same hand-written
+cookie *does* widen the journal, so the locked assertions cannot pass for
+an unrelated reason.
+
+The lock does not touch anything else about the admin role: an admin
+still administers users, tokens and configuration. It removes exactly one
+capability — reading past the per-fragment ACL.
 
 > Reveal is **not** "presentation-only": on `/facts` it is precisely what
 > lets an admin act on another user's fact (the structured ACL change is
@@ -600,6 +642,15 @@ would move into a localized table. For now they are constants.
   own trace is listed, another user's is absent from the list and `404`
   on both the viewer and the `/data` feed, and reveal turns all three
   around).
+- **The server lock** — `reveal_lock.rs` pins
+  `instance.admin_reveal_locked` from all three directions plus its
+  baseline: the forged cookie works when unlocked
+  (`a_hand_written_reveal_cookie_works_when_the_server_does_not_lock_it`),
+  and when locked the route `403`s without a `Set-Cookie`, the forged
+  cookie is inert, and only then is the Settings notice checked
+  (`a_locked_reveal_cannot_be_switched_on_by_form_route_or_cookie`); a
+  third test keeps the default install unchanged
+  (`an_unlocked_deployment_still_offers_the_toggle`).
 - **Segmented variants** — `render.rs` pins the segment contract
   (readable region carries its map-covered fact id, redacted placeholder
   and connective prose are fact-less, a map-uncovered region shows

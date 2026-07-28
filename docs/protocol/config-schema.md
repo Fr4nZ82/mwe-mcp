@@ -76,9 +76,9 @@ hot-reloadable today.
 
 ## Top-level sections
 
-Only nine sections are materialised into typed Rust structs today:
+Only ten sections are materialised into typed Rust structs today:
 `logging`, `llm`, `embedding`, `email`, `rem`, `recall`, `document`,
-`training_spool`, `backup`. The schema documents several more —
+`training_spool`, `backup`, `instance`. The schema documents several more —
 `deployment_id`, `storage`, `features`, `http`, `budget`,
 `rate_limits` — and these **parse without error** but are currently
 carried opaquely in `Config::extra` (forward-compat passthrough),
@@ -561,6 +561,33 @@ backup:
 | `initial_delay_secs` | int (seconds) | `600` (10 min) | Warm-up before the scheduler's first due-check after startup. Boot-only (not hot-swapped). |
 | `dir` | path \| _unset_ | _unset_ → `<workdir-name>-snapshots` sibling | The snapshots home: automatic (`auto-*`), console-suggested manual (`manual-*`), and staged-recovery safety (`pre-restore-*` / `pre-reset-*`) snapshots. Must be **outside** the workdir. Snapshots contain secrets and cleartext memory — keep it owner-only. |
 | `retention_auto` | int | `7` | `auto-*` snapshots kept; older ones are pruned after each successful run. `0` keeps everything. Manual, safety, and foreign snapshots are never pruned. |
+
+### `instance`
+
+Maps to `InstanceConfig`. The one section with **no dashboard editor, on
+purpose**: it holds the switches that belong to whoever runs the machine
+rather than to whoever administers the panel.
+
+Every other section here is also reachable from a dashboard console,
+because the two roles are usually the same person — in a household they
+always are. In an office they are not: the manager can be the dashboard
+admin without having a shell on the host. This section is the part of the
+posture only the second one can change, so a panel admin cannot lift it
+and the loader never writes it back from a dashboard save.
+
+Read once at boot, into
+[`DashboardConfig`](../../crates/mwe-dashboard/src/state.rs). Changing it
+needs a restart — deliberately: a setting whose point is that the panel
+cannot reach it has no business being hot-swappable from the panel.
+
+```yaml
+instance:
+  admin_reveal_locked: true   # default false — see below
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `admin_reveal_locked` | bool | `false` | Takes the [admin ACL-reveal](../design-notes/redaction-policy.md#the-machine-operator-can-lock-reveal) switch away from the dashboard admin. When set, `reveal::active` returns false unconditionally, `POST /dashboard/settings/reveal` answers `403`, and a hand-written `mwe_admin_reveal` cookie is ignored; the Settings page replaces the checkbox with a line naming this key. Leaves everything else about the admin role untouched. |
 
 ### `embedding`
 
@@ -1156,6 +1183,12 @@ backup:
   initial_delay_secs: 600     # warm-up before the first due-check (boot-only)
   retention_auto: 7           # auto-* snapshots kept; 0 keeps all
   # dir: /mnt/backups/mwe     # default: <workdir-name>-snapshots sibling
+
+# ── instance ──────────────────────────────────────────────────────────
+# The machine operator's switches. No dashboard editor, on purpose: a
+# switch the panel admin can flip is not a switch that constrains them.
+instance:
+  admin_reveal_locked: false  # true → the dashboard admin cannot bypass the ACL
 
 # ── features (PARSED-BUT-INERT in config.rs: check the consuming code) ─
 features:

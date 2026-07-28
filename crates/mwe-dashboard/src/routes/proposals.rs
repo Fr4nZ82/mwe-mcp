@@ -90,7 +90,7 @@ async fn in_flight_count(
     jar: CookieJar,
 ) -> Result<axum::Json<InFlightCountJson>> {
     let recipient =
-        (!crate::reveal::active(&user, &jar)).then(|| format!("user:{}", user.sender_id));
+        (!crate::reveal::active(&state, &user, &jar)).then(|| format!("user:{}", user.sender_id));
     let counts = proposals::count_in_flight(&state.pool, recipient.as_deref(), chrono::Utc::now())
         .await
         .map_err(|e| DashboardError::Internal(format!("count_in_flight: {e}")))?;
@@ -275,7 +275,7 @@ async fn open_in_chat(
     Path(proposal_id): Path<String>,
 ) -> Result<Html<String>> {
     let primer = compose_primer(&proposal_id);
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
     // Fresh primed conversation — no prior turns to replay.
     let turn = chat::agentic_submission(&state, &user, &primer, &[], reveal).await?;
     let intro = html! {
@@ -312,7 +312,7 @@ async fn in_flight_chat_turn(
     user: SessionUser,
     jar: CookieJar,
 ) -> Result<axum::Json<chat::AgenticTurn>> {
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
     let turn = chat::agentic_submission(&state, &user, IN_FLIGHT_PRIMER, &[], reveal).await?;
     Ok(axum::Json(turn))
 }

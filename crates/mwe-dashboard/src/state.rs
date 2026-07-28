@@ -54,6 +54,16 @@ pub struct DashboardConfig {
     /// works out of the box; production deployments behind a TLS proxy
     /// flip this on via the operator-facing config.
     pub cookie_secure: bool,
+
+    /// The admin ACL-reveal switch is taken away from the dashboard
+    /// admin (`mwe-mcp.config.yaml > instance.admin_reveal_locked`).
+    ///
+    /// Enforced in one place — [`crate::reveal::active`] — so every
+    /// reveal-aware surface inherits it, and the toggle route refuses
+    /// rather than silently setting a cookie nothing honours. There is
+    /// no dashboard editor for it on purpose: this is the machine
+    /// operator's switch, not the panel admin's.
+    pub admin_reveal_locked: bool,
 }
 
 impl Default for DashboardConfig {
@@ -64,6 +74,7 @@ impl Default for DashboardConfig {
             reset_ttl_minutes: 30,
             session_ttl_minutes: 60,
             cookie_secure: false,
+            admin_reveal_locked: false,
         }
     }
 }

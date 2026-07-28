@@ -2095,6 +2095,13 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
         reindex_tx: Some(reindex_tx),
     };
     let dashboard_state = DashboardState::new(pool, secret, blacklist, delegations)
+        // The `instance:` section is the machine operator's, so it is read
+        // from disk at boot and never re-read from a dashboard save: the
+        // dashboard has no editor for it, by design.
+        .with_config(mwe_dashboard::DashboardConfig {
+            admin_reveal_locked: config.instance.admin_reveal_locked,
+            ..mwe_dashboard::DashboardConfig::default()
+        })
         .with_memory(MemoryHandles {
             tree,
             embedder,

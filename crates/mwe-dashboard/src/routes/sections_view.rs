@@ -128,7 +128,7 @@ async fn index(
     Query(filters): Query<SectionsFilters>,
 ) -> Result<Html<String>> {
     let (page, page_size) = normalise_pagination(&filters);
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
 
     // Which smart wikis may this viewer read? One decision per wiki, from
     // the registry — the wiki-level ACL a smart wiki actually has. Under

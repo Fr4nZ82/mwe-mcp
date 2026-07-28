@@ -71,7 +71,7 @@ async fn index(
     if !user.is_admin {
         return Err(DashboardError::Forbidden);
     }
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
     let rows = recall_trace::recent_traces(&state.pool, recall_trace::TRACE_KEEP)
         .await
         .map_err(|e| DashboardError::Internal(format!("recall_trace::recent_traces: {e}")))?;
@@ -99,7 +99,7 @@ async fn viewer(
     if !user.is_admin {
         return Err(DashboardError::Forbidden);
     }
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_readable(&state, id, &user, reveal).await?;
     let trace = row
         .parse()
@@ -121,7 +121,7 @@ async fn data(
     if !user.is_admin {
         return Err(DashboardError::Forbidden);
     }
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_readable(&state, id, &user, reveal).await?;
     let trace = row
         .parse()

@@ -1984,6 +1984,43 @@ const fn default_backup_retention_auto() -> u32 {
     7
 }
 
+// ---------- Instance posture ----------
+
+/// `instance:` section — the switches that belong to whoever runs the
+/// **machine**, not to whoever administers the **panel**.
+///
+/// Every other section of this file is also reachable from a dashboard
+/// editor, because panel-admin and machine-operator are usually the same
+/// person: in a household they always are. In an office they are not —
+/// the manager can be the dashboard admin without having a shell on the
+/// host — and this section is the part of the posture that only the
+/// second one can change. There is deliberately **no** dashboard editor
+/// for it: a switch a panel admin can flip is not a switch that
+/// constrains a panel admin.
+///
+/// Off by default in every field, so a plain `mwe-mcp serve` behaves
+/// exactly as it did before the section existed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceConfig {
+    /// Take the [admin ACL-reveal](crate::config) switch away from the
+    /// dashboard admin.
+    ///
+    /// Reveal is a supervision lens: it makes the dashboard show every
+    /// user's fragments and facts, bypassing the per-fragment ACL. It is
+    /// gated on the admin role, which is the right gate when the admin
+    /// is the household. It is the wrong gate when the deployment's
+    /// point is that the admin *cannot* read what members did not share
+    /// with them — an office, a shared instance, a public demo.
+    ///
+    /// When true the dashboard refuses to switch reveal on: the Settings
+    /// checkbox is replaced by a line saying who locked it, the toggle
+    /// route answers `403`, and a hand-written `mwe_admin_reveal` cookie
+    /// is ignored — the single `reveal::active` predicate returns false
+    /// unconditionally, so no surface can honour it by accident.
+    #[serde(default)]
+    pub admin_reveal_locked: bool,
+}
+
 // ---------- Config ----------
 
 /// Top-level config object.
@@ -2029,6 +2066,10 @@ pub struct Config {
     /// [`BackupConfig`].
     #[serde(default)]
     pub backup: BackupConfig,
+    /// `instance:` section — the machine operator's switches, with no
+    /// dashboard editor by design. See [`InstanceConfig`].
+    #[serde(default)]
+    pub instance: InstanceConfig,
     /// Every other key in the YAML, preserved verbatim so we never
     /// strip an operator's settings during a round-trip.
     #[serde(flatten)]

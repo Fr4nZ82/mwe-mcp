@@ -491,7 +491,7 @@ async fn list(
     // Derived wiki visibility: filter the list to wikis the reader can read ≥1
     // fact in (admin reveal lists all), so the list never leaks the id/title of
     // a wiki whose facts are entirely outside the reader's ACL.
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
     let sender_groups = if reveal {
         Vec::new()
     } else {
@@ -604,7 +604,7 @@ async fn view(
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let meta = wiki_get_meta(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
 
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
     // Derived wiki visibility (non-reveal): the wiki surfaces only to a reader
     // who can read ≥1 fact in it; otherwise 404 — never a wiki-level render of
     // its prose / page list / structure. An admin with reveal on sees all.
@@ -890,7 +890,7 @@ async fn view_page(
     }
     let raw_body = wiki_read(&memory.tree, &wiki_id, &rel).map_err(map_wiki_err)?;
 
-    let reveal = crate::reveal::active(&user, &jar);
+    let reveal = crate::reveal::active(&state, &user, &jar);
     // Derived wiki visibility (non-reveal): a reader who can read ≥1 fact in
     // the wiki sees the page (fragments still redacted per-fragment below); one
     // who can read nothing gets 404. Admin reveal sees all.
