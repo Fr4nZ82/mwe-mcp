@@ -92,14 +92,22 @@ fn human_bytes(bytes: u64) -> String {
 }
 
 async fn page(State(state): State<DashboardState>, admin: AdminUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let workdir = workdir_of(&state)?;
     let cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
-    let body = render(admin.session(), cfg.training_spool.enabled, &workdir, None);
+    let body = render(
+        chrome,
+        admin.session(),
+        cfg.training_spool.enabled,
+        &workdir,
+        None,
+    );
     Ok(Html(body))
 }
 
 fn render(
+    chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     enabled: bool,
     workdir: &Path,
@@ -171,7 +179,7 @@ fn render(
             "no completion to record."
         }
     };
-    layout::authenticated_page("Training spool", session, &body)
+    layout::authenticated_page(chrome, "Training spool", session, &body)
 }
 
 // ---------- POST ----------
@@ -181,6 +189,7 @@ async fn save(
     admin: AdminUser,
     HtmlForm(form): HtmlForm<HashMap<String, String>>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     // Checkbox idiom: the field is present only when checked.
     let enabled = form.contains_key("enabled");
 
@@ -232,6 +241,7 @@ async fn save(
         "Training spool disabled — recording stopped; existing files stay on disk."
     };
     let body = render(
+        chrome,
         admin.session(),
         enabled,
         &workdir,

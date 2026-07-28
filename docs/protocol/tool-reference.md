@@ -146,6 +146,7 @@ JSON-RPC numeric code.
 | `500` | `internal_error` | Unexpected bug — generic message. |
 | `503` | `service_unavailable` | Backing infra down, or the feature is not yet implemented. |
 | `501` | `not_implemented_phase_c` | Tool exists, full implementation is not yet wired (e.g. `wiki_ingest_external` non-inline sources). |
+| `403` | `instance_read_only` | The deployment runs with `instance.read_only` and the tool changes memory or configuration. Raised in the dispatcher, before the tool's own argument parsing, for every tool outside the reader allow-list (`mcp::READ_ONLY_TOOLS`). It names the *instance*, not the caller: no token, role or consumer class lifts it. See [read-only-instance.md](../design-notes/read-only-instance.md). |
 
 The smart-wiki admin tools add their own classes
 (`requires_consumer_class_smart`, `wiki_owned_by_other_user`,

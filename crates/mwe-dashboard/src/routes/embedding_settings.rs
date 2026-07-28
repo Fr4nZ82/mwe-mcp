@@ -54,13 +54,15 @@ struct Flash<'a> {
 // ---------- GET ----------
 
 async fn page(State(state): State<DashboardState>, admin: AdminUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let workdir = workdir_of(&state)?;
     let cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
-    Ok(Html(render(admin.session(), &cfg.embedding, None)))
+    Ok(Html(render(chrome, admin.session(), &cfg.embedding, None)))
 }
 
 fn render(
+    chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     cfg: &EmbeddingConfig,
     flash: Option<Flash<'_>>,
@@ -100,7 +102,7 @@ fn render(
             a href="/dashboard/admin/recall-settings" { "Recall settings" } "."
         }
     };
-    layout::authenticated_page("Embedding settings", session, &body)
+    layout::authenticated_page(chrome, "Embedding settings", session, &body)
 }
 
 /// The `<form>` block — split out of [`render`] to keep that function within
@@ -202,6 +204,7 @@ async fn save(
     admin: AdminUser,
     HtmlForm(form): HtmlForm<HashMap<String, String>>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let parsed = parse_form(&form)?;
 
     // Preserve every non-embedding section by re-loading from disk (raw
@@ -246,6 +249,7 @@ async fn save(
     };
 
     let body = render(
+        chrome,
         admin.session(),
         &parsed,
         Some(Flash {

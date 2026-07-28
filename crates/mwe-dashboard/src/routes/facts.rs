@@ -374,6 +374,7 @@ async fn index(
     jar: CookieJar,
     Query(filters): Query<FactsFilters>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let (page, page_size) = normalise_pagination(&filters);
 
     // Load the FULL visible window (ACL-projected in-process), count it to
@@ -443,6 +444,7 @@ async fn index(
     );
 
     Ok(Html(render_index(
+        chrome,
         &user,
         &filters,
         page,
@@ -593,6 +595,7 @@ async fn edit_submit(
     AxumPath(fact_id_raw): AxumPath<String>,
     Form(form): Form<EditFactForm>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let fact_id =
         FactId::parse(&fact_id_raw).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let reveal = crate::reveal::active(&state, &user, &jar);
@@ -648,6 +651,7 @@ async fn edit_submit(
         }
     };
     Ok(Html(layout::authenticated_page(
+        chrome,
         "Fact edit in chat",
         &user,
         &body,
@@ -1341,6 +1345,7 @@ fn sort_header(filters: &FactsFilters, page_size: usize, token: &str, label: &st
 
 #[allow(clippy::too_many_arguments)]
 fn render_index(
+    chrome: layout::Chrome,
     user: &SessionUser,
     filters: &FactsFilters,
     page: usize,
@@ -1396,7 +1401,7 @@ fn render_index(
                 tbody {
                     @for row in page_rows {
                         tr.fresh-row[row.fresh].inactive[!row.active] {
-                            td.actions-cell { (action_cell(user, row)) }
+                            td.actions-cell { (action_cell(user, row, chrome.read_only)) }
                             td { (id_cell(&row.fact_id)) }
                             td { (status_cell(row)) }
                             td { code { (row.wiki_id) } }
@@ -1446,7 +1451,7 @@ fn render_index(
 
         (pagination_links(filters, page, page_size, total, total_pages, total_is_estimate))
     };
-    layout::authenticated_page("Facts", user, &body)
+    layout::authenticated_page(chrome, "Facts", user, &body)
 }
 
 /// The page's lead paragraph. Under the reveal lens the list is no longer
@@ -1532,7 +1537,7 @@ fn filter_form(filters: &FactsFilters, page_size: usize) -> Markup {
     }
 }
 
-fn action_cell(user: &SessionUser, row: &FactRow) -> Markup {
+fn action_cell(user: &SessionUser, row: &FactRow, frozen: bool) -> Markup {
     let wiki_link = format!("/dashboard/wiki/{}", row.wiki_id);
     // The delete button is author-direct (the write-authority model —
     // docs/concepts/identity-and-acl.md): show it only to
@@ -1544,11 +1549,13 @@ fn action_cell(user: &SessionUser, row: &FactRow) -> Markup {
     let can_delete = user.is_admin || row.sender_id.as_deref() == Some(self_principal.as_str());
     html! {
         a href=(wiki_link) { "wiki" }
+        // A frozen deployment refuses every one of these, so the cell keeps
+        // only the link that reads.
         // A fresh capture has no `fact_index` row yet, and an inactive
         // (superseded / deleted) fact is not a sensible edit target — the
         // edit / ACL / validity / delete actions operate on active promoted
         // facts only.
-        @if !row.fresh && row.active {
+        @if !row.fresh && row.active && !frozen {
             " · "
             a href=(format!("/dashboard/facts/{}/edit", row.fact_id)) { "edit" }
             @if can_delete {
@@ -1692,15 +1699,24 @@ fn render_edit_form(
     is_smart: bool,
     flash: Option<&str>,
 ) -> String {
+    let chrome = layout::Chrome::of(state);
     let body = html! {
         @if let Some(message) = flash {
             (components::flash("error", message))
         }
         (fact_summary_dl(fact_id, row, &rendered_fact_body(state, row)))
-        (structured_actions_section(fact_id, row, can_acl, can_validity, is_smart))
-        (supersede_section(fact_id))
+        // Reachable by URL on a frozen deployment (the fact record is a
+        // read surface and stays linkable), but every control on it is
+        // refused, so the page carries the record and says why the
+        // actions are gone.
+        @if chrome.read_only {
+            (crate::read_only::notice())
+        } @else {
+            (structured_actions_section(fact_id, row, can_acl, can_validity, is_smart))
+            (supersede_section(fact_id))
+        }
     };
-    layout::authenticated_reading_page("Edit fact", user, &body)
+    layout::authenticated_reading_page(chrome, "Edit fact", user, &body)
 }
 
 /// The fact's canonical text rendered as safe HTML — markdown, media

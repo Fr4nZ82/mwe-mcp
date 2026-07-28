@@ -147,9 +147,12 @@ pub async fn submit(
     let cookie = issue_session_cookie(&state, &user_id, is_admin)?;
     // A local `next` (e.g. the OAuth consent deep-link) wins; otherwise the
     // profile-wizard gate sends never-initialised users to `/welcome` instead
-    // of straight home. See `welcome.rs` for the flag semantics.
+    // of straight home. See `welcome.rs` for the flag semantics. A frozen
+    // deployment does not mount the wizard at all, so the gate is skipped
+    // there — the same reasoning as the return path in `home.rs`.
     let destination = match safe_next(form.next.as_deref()) {
         Some(n) => n,
+        None if crate::read_only::hides_writes(&state) => "/dashboard/home".to_owned(),
         None if user_already_initialized(&state, &user_id).await? => "/dashboard/home".to_owned(),
         None => "/dashboard/welcome".to_owned(),
     };

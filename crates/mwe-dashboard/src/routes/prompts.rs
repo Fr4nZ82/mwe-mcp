@@ -292,6 +292,7 @@ fn require_memory(state: &DashboardState) -> Result<&MemoryHandles> {
 // ---------- list ----------
 
 async fn list(State(state): State<DashboardState>, admin: AdminUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let mut rows: Vec<PromptRow> = Vec::new();
     for (name, body) in bundled_iter() {
@@ -305,10 +306,11 @@ async fn list(State(state): State<DashboardState>, admin: AdminUser) -> Result<H
         });
     }
     rows.sort_by_key(|r| r.name);
-    Ok(Html(render_list(admin.session(), &rows, None)))
+    Ok(Html(render_list(chrome, admin.session(), &rows, None)))
 }
 
 fn render_list(
+    chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     rows: &[PromptRow],
     flash_msg: Option<(&str, &str)>,
@@ -394,7 +396,7 @@ fn render_list(
             }
         }
     };
-    layout::authenticated_page("Prompts", session, &body)
+    layout::authenticated_page(chrome, "Prompts", session, &body)
 }
 
 // ---------- edit form + save ----------
@@ -409,6 +411,7 @@ async fn edit_form(
     admin: AdminUser,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let Some(bundled) = bundled_lookup(&name) else {
         return Err(DashboardError::NotFound);
     };
@@ -418,6 +421,7 @@ async fn edit_form(
     let drift = drift_for(&path, bundled)?;
     let current_body = current_body_for(&path, bundled)?;
     Ok(Html(render_edit_form(
+        chrome,
         admin.session(),
         &name,
         status,
@@ -450,6 +454,7 @@ async fn save(
     AxumPath(name): AxumPath<String>,
     axum::Form(form): axum::Form<PromptSaveSubmission>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let Some(bundled) = bundled_lookup(&name) else {
         return Err(DashboardError::NotFound);
     };
@@ -464,6 +469,7 @@ async fn save(
         let drift = drift_for(&path, bundled)?;
         let msg = format!("Refused to save: {e}");
         return Ok(Html(render_edit_form(
+            chrome,
             admin.session(),
             &name,
             status,
@@ -493,6 +499,7 @@ async fn save(
         format!("Saved {name}. Previous content backed up as {name}.md.bak.")
     };
     Ok(Html(render_edit_form(
+        chrome,
         admin.session(),
         &name,
         new_status,
@@ -504,6 +511,7 @@ async fn save(
 }
 
 fn render_edit_form(
+    chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     name: &str,
     status: PromptStatus,
@@ -602,7 +610,7 @@ fn render_edit_form(
 
         p { a href="/dashboard/prompts" { "Back to the prompt list" } }
     };
-    layout::authenticated_page(&title, session, &markup)
+    layout::authenticated_page(chrome, &title, session, &markup)
 }
 
 // ---------- reset ----------
@@ -612,6 +620,7 @@ async fn reset(
     admin: AdminUser,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let Some(bundled) = bundled_lookup(&name) else {
         return Err(DashboardError::NotFound);
     };
@@ -640,6 +649,7 @@ async fn reset(
     rows.sort_by_key(|r| r.name);
     let msg = format!("Reset {name} to bundled default. Previous content saved as {name}.md.bak.");
     Ok(Html(render_list(
+        chrome,
         admin.session(),
         &rows,
         Some(("success", &msg)),

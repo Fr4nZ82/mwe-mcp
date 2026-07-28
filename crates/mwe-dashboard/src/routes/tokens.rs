@@ -131,11 +131,13 @@ async fn fetch_user_ids(state: &DashboardState) -> Result<Vec<String>> {
 }
 
 async fn landing(State(state): State<DashboardState>, admin: AdminUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let users = fetch_user_ids(&state).await?;
     let delegations = fetch_delegations(&state).await?;
     let blacklist = fetch_blacklist(&state).await?;
     let connections = fetch_connections(&state).await?;
     Ok(Html(render_landing(
+        chrome,
         admin.session(),
         &users,
         &delegations,
@@ -191,6 +193,7 @@ impl IssueFormState {
 }
 
 fn render_landing(
+    chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     users: &[String],
     delegations: &[DelegationRow],
@@ -248,7 +251,7 @@ fn render_landing(
             "Token contents are recoverable only from the holder's environment."
         }
     };
-    layout::authenticated_page("Tokens", session, &body)
+    layout::authenticated_page(chrome, "Tokens", session, &body)
 }
 
 /// The act-as checkbox list shared by the issue form and the delegation
@@ -521,6 +524,7 @@ async fn issue_submit(
     admin: AdminUser,
     HtmlForm(submission): HtmlForm<IssueSubmission>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let users = fetch_user_ids(&state).await?;
     let smart = submission.consumer_class != "standard";
     let sticky = build_sticky(&submission);
@@ -611,6 +615,7 @@ async fn issue_submit(
     let blacklist = fetch_blacklist(&state).await?;
     let connections = fetch_connections(&state).await?;
     Ok(Html(render_landing(
+        chrome,
         admin.session(),
         &users,
         &delegations,
@@ -850,10 +855,12 @@ async fn render_issue_error(
     msg: &str,
     sticky: &IssueFormState,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(state);
     let delegations = fetch_delegations(state).await?;
     let blacklist = fetch_blacklist(state).await?;
     let connections = fetch_connections(state).await?;
     Ok(Html(render_landing(
+        chrome,
         session,
         users,
         &delegations,
@@ -876,6 +883,7 @@ async fn revoke_submit(
     admin: AdminUser,
     HtmlForm(submission): HtmlForm<RevokeSubmission>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let jti = submission.jti.trim();
     if jti.is_empty() {
         return Err(DashboardError::Validation("jti is required.".into()));
@@ -904,6 +912,7 @@ async fn revoke_submit(
     let connections = fetch_connections(&state).await?;
     let msg = format!("Revoked {jti}.");
     Ok(Html(render_landing(
+        chrome,
         admin.session(),
         &users,
         &delegations,
@@ -929,6 +938,7 @@ async fn connection_revoke_submit(
     admin: AdminUser,
     HtmlForm(submission): HtmlForm<ConnectionRevokeSubmission>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let sender_id = submission.sender_id.trim();
     let consumer_id = submission.consumer_id.trim();
     if sender_id.is_empty() || consumer_id.is_empty() {
@@ -953,6 +963,7 @@ async fn connection_revoke_submit(
     let connections = fetch_connections(&state).await?;
     let msg = format!("Disconnected {consumer_id} ({sender_id}).");
     Ok(Html(render_landing(
+        chrome,
         admin.session(),
         &users,
         &delegations,
@@ -975,6 +986,7 @@ async fn delegation_form(
     admin: AdminUser,
     Path(consumer_id): Path<String>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let row: Option<String> = sqlx::query_scalar(
         "SELECT allowed_sender_ids FROM consumer_delegations WHERE consumer_id = ?",
     )
@@ -988,6 +1000,7 @@ async fn delegation_form(
     let users = fetch_user_ids(&state).await?;
 
     Ok(Html(render_delegation_form(
+        chrome,
         admin.session(),
         &users,
         &DelegationFormState {
@@ -1010,6 +1023,7 @@ async fn delegation_submit(
     Path(consumer_id): Path<String>,
     HtmlForm(submission): HtmlForm<DelegationSubmission>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let exists: i64 =
         sqlx::query_scalar("SELECT count(*) FROM consumer_delegations WHERE consumer_id = ?")
             .bind(&consumer_id)
@@ -1023,6 +1037,7 @@ async fn delegation_submit(
         // `guest` is delegable without enrollment (the builtin pseudo-identity).
         if !users.iter().any(|u| u == s) && !enrollment::is_guest(s) {
             return Ok(Html(render_delegation_form(
+                chrome,
                 admin.session(),
                 &users,
                 &DelegationFormState {
@@ -1061,6 +1076,7 @@ async fn delegation_submit(
 }
 
 fn render_delegation_form(
+    chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     users: &[String],
     form: &DelegationFormState,
@@ -1090,7 +1106,7 @@ fn render_delegation_form(
         }
         p { a href="/dashboard/tokens" { "Back to tokens" } }
     };
-    layout::authenticated_page(&title, session, &body)
+    layout::authenticated_page(chrome, &title, session, &body)
 }
 
 /// Format a unix timestamp as RFC3339 for human display.

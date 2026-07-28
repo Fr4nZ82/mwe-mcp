@@ -148,8 +148,9 @@ fn clamp_chars(s: &str, max: usize) -> String {
     out
 }
 
-async fn get_page(user: SessionUser) -> Html<String> {
-    Html(render_page(&user, None))
+async fn get_page(State(state): State<DashboardState>, user: SessionUser) -> Html<String> {
+    let chrome = layout::Chrome::of(&state);
+    Html(render_page(chrome, &user, None))
 }
 
 async fn post_message(
@@ -158,12 +159,13 @@ async fn post_message(
     headers: HeaderMap,
     axum::Form(form): axum::Form<ChatSubmission>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let text = form.text.trim();
     if text.is_empty() {
-        return Ok(render_validation_error(&user, &headers));
+        return Ok(render_validation_error(chrome, &user, &headers));
     }
     let turn = process_submission(&state, &user, text).await?;
-    Ok(render_turn(&user, &turn, &headers))
+    Ok(render_turn(chrome, &user, &turn, &headers))
 }
 
 /// A processed user turn — the verbatim input plus the engine's response.
@@ -271,7 +273,12 @@ pub async fn process_submission(
 /// - Anything else → full HTML page with the inline response panel, the
 ///   no-JS fallback that still works if the visitor lands on
 ///   `/dashboard/chat` directly.
-fn render_turn(user: &SessionUser, turn: &ChatTurn, headers: &HeaderMap) -> Response {
+fn render_turn(
+    chrome: layout::Chrome,
+    user: &SessionUser,
+    turn: &ChatTurn,
+    headers: &HeaderMap,
+) -> Response {
     if wants_json(headers) {
         let fragment = response_panel(&turn.response).into_string();
         let body = json!({
@@ -280,11 +287,15 @@ fn render_turn(user: &SessionUser, turn: &ChatTurn, headers: &HeaderMap) -> Resp
         });
         axum::Json(body).into_response()
     } else {
-        Html(render_page(user, Some(turn))).into_response()
+        Html(render_page(chrome, user, Some(turn))).into_response()
     }
 }
 
-fn render_validation_error(user: &SessionUser, headers: &HeaderMap) -> Response {
+fn render_validation_error(
+    chrome: layout::Chrome,
+    user: &SessionUser,
+    headers: &HeaderMap,
+) -> Response {
     if wants_json(headers) {
         (
             axum::http::StatusCode::BAD_REQUEST,
@@ -293,6 +304,7 @@ fn render_validation_error(user: &SessionUser, headers: &HeaderMap) -> Response 
             .into_response()
     } else {
         Html(render_page_with_error(
+            chrome,
             user,
             "Type a message before sending.",
         ))
@@ -307,7 +319,7 @@ fn wants_json(headers: &HeaderMap) -> bool {
         .is_some_and(|s| s.contains("application/json"))
 }
 
-fn render_page(user: &SessionUser, turn: Option<&ChatTurn>) -> String {
+fn render_page(chrome: layout::Chrome, user: &SessionUser, turn: Option<&ChatTurn>) -> String {
     let body = html! {
         p.muted {
             "Type a natural-language command or question. The dashboard runs it through "
@@ -327,10 +339,10 @@ fn render_page(user: &SessionUser, turn: Option<&ChatTurn>) -> String {
             }
         }
     };
-    layout::authenticated_page("Chat", user, &body)
+    layout::authenticated_page(chrome, "Chat", user, &body)
 }
 
-fn render_page_with_error(user: &SessionUser, error: &str) -> String {
+fn render_page_with_error(chrome: layout::Chrome, user: &SessionUser, error: &str) -> String {
     let body = html! {
         (components::flash("error", error))
         p.muted {
@@ -338,7 +350,7 @@ fn render_page_with_error(user: &SessionUser, error: &str) -> String {
             code { "chat.js" } " and persists history in " code { "localStorage" } "."
         }
     };
-    layout::authenticated_page("Chat", user, &body)
+    layout::authenticated_page(chrome, "Chat", user, &body)
 }
 
 /// Trace of a single tool execution recorded by the agentic loop.

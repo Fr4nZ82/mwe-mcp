@@ -25,11 +25,18 @@ pub async fn index(
     headers: HeaderMap,
     user: SessionUser,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     // First-run guard: a user who has not finished (or skipped) the
     // profile wizard is sent back to it. This is the return path — the
     // brand logo (`/dashboard/` → home) and the Home tab both land here,
     // so an accidental click away from the wizard never strands them.
-    if !crate::routes::welcome::user_already_initialized(&state, &user.sender_id).await? {
+    //
+    // A frozen deployment does not mount the wizard (it writes a person's
+    // first facts), so the redirect would strand every visitor on a 404
+    // instead. There the identities are seeded already; skip it.
+    if !crate::read_only::hides_writes(&state)
+        && !crate::routes::welcome::user_already_initialized(&state, &user.sender_id).await?
+    {
         return Ok(Redirect::to("/dashboard/welcome").into_response());
     }
     let users: i64 = sqlx::query_scalar("SELECT count(*) FROM enrollment_users")
@@ -86,6 +93,7 @@ pub async fn index(
         format!("{scheme}://{host}/mcp")
     };
 
+    let frozen = crate::read_only::hides_writes(&state);
     let body = maud::html! {
         section.kpi-grid {
             div.kpi { strong { (wiki_count) } " wikis with facts" }
@@ -102,10 +110,12 @@ pub async fn index(
         section.endpoint-card {
             p { "Point any MCP consumer at this server:" }
             pre.endpoint-display { (mcp_url) }
-            p {
-                a href="/dashboard/tokens" { "Issue a token →" }
-                " — a bearer credential; pick " strong { "smart" } " vs "
-                strong { "standard" } " at mint time."
+            @if !frozen {
+                p {
+                    a href="/dashboard/tokens" { "Issue a token →" }
+                    " — a bearer credential; pick " strong { "smart" } " vs "
+                    strong { "standard" } " at mint time."
+                }
             }
             p {
                 a href="/dashboard/bridges" { "Wire a consumer →" }
@@ -124,11 +134,18 @@ pub async fn index(
                 ul {
                     li { a href="/dashboard/wiki" { "Browse wikis" } }
                     li { a href="/dashboard/facts" { "Browse facts" } }
-                    li { a href="/dashboard/chat" { "Review pending changes in the chat" } }
+                    // The chat is how pending changes get acted on, and a
+                    // frozen deployment neither mounts it nor has anything
+                    // pending to act on.
+                    @if !frozen {
+                        li { a href="/dashboard/chat" { "Review pending changes in the chat" } }
+                    }
                 }
             }
 
-            @if user.is_admin {
+            // Every entry below leads to a console a frozen deployment
+            // does not mount (`routes::build`), so the whole card goes.
+            @if user.is_admin && !frozen {
                 section.home-card {
                     h2 { "Admin actions" }
                     ul {
@@ -142,14 +159,16 @@ pub async fn index(
                 }
             }
 
-            section.home-card {
-                h2 { "Your account" }
-                ul {
-                    li { a href="/dashboard/settings/me" { "Change your password" } }
+            @if !frozen {
+                section.home-card {
+                    h2 { "Your account" }
+                    ul {
+                        li { a href="/dashboard/settings/me" { "Change your password" } }
+                    }
                 }
             }
         }
     };
 
-    Ok(Html(layout::authenticated_page("Home", &user, &body)).into_response())
+    Ok(Html(layout::authenticated_page(chrome, "Home", &user, &body)).into_response())
 }

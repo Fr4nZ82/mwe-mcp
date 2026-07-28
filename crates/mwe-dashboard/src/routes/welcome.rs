@@ -169,6 +169,7 @@ async fn form(
     user: SessionUser,
     headers: HeaderMap,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     if user_already_initialized(&state, &user.sender_id).await? {
         return Ok(Redirect::to("/dashboard/home").into_response());
     }
@@ -179,7 +180,14 @@ async fn form(
         .and_then(|m| m.defaults_for(LlmFunction::Ingest))
         .is_some();
     let locale_default = preferred_locale(&headers);
-    Ok(render_form(&user, email.as_deref(), ingest_available, &locale_default).into_response())
+    Ok(render_form(
+        chrome,
+        &user,
+        email.as_deref(),
+        ingest_available,
+        &locale_default,
+    )
+    .into_response())
 }
 
 async fn submit(
@@ -187,6 +195,7 @@ async fn submit(
     user: SessionUser,
     axum::Form(form): axum::Form<ProfileSubmission>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     if user_already_initialized(&state, &user.sender_id).await? {
         return Ok(Redirect::to("/dashboard/home").into_response());
     }
@@ -271,7 +280,7 @@ async fn submit(
     // turn shows up as soon as chat.js runs).
     Ok(primer_turn.map_or_else(
         || Redirect::to("/dashboard/home").into_response(),
-        |turn| Html(render_welcome_landing(&user, &turn)).into_response(),
+        |turn| Html(render_welcome_landing(chrome, &user, &turn)).into_response(),
     ))
 }
 
@@ -282,7 +291,7 @@ async fn submit(
 /// hydration time. The script is the only piece of glue the welcome
 /// flow needs; everything else (storage, rendering, scrolling) is the
 /// chat panel's job.
-fn render_welcome_landing(user: &SessionUser, turn: &ChatTurn) -> String {
+fn render_welcome_landing(chrome: layout::Chrome, user: &SessionUser, turn: &ChatTurn) -> String {
     let response_html = chat::response_panel(&turn.response).into_string();
     let payload = serde_json::json!({
         "user_text": turn.user_text,
@@ -318,7 +327,7 @@ fn render_welcome_landing(user: &SessionUser, turn: &ChatTurn) -> String {
             )))
         }
     };
-    layout::authenticated_page("Welcome", user, &body)
+    layout::authenticated_page(chrome, "Welcome", user, &body)
 }
 
 /// Has the user already completed (or skipped) the wizard?
@@ -635,6 +644,7 @@ fn compose_preferences_section(form: &ProfileSubmission) -> String {
 }
 
 fn render_form(
+    chrome: layout::Chrome,
     user: &SessionUser,
     email: Option<&str>,
     ingest_available: bool,
@@ -677,7 +687,7 @@ fn render_form(
             (PreEscaped(WELCOME_SUBMIT_SPINNER_JS))
         }
     };
-    Html(layout::authenticated_page("Welcome", user, &body))
+    Html(layout::authenticated_page(chrome, "Welcome", user, &body))
 }
 
 /// Step 1 fieldset → `index.md`: the identity card plus the always-on
@@ -1094,7 +1104,15 @@ mod tests {
             is_admin: false,
             session_jti: "test-jti".into(),
         };
-        let html = render_form(&user, Some("frodo@example.com"), true, "en").0;
+        // No DashboardState in this unit test, so the default (unfrozen) chrome.
+        let html = render_form(
+            layout::Chrome::default(),
+            &user,
+            Some("frodo@example.com"),
+            true,
+            "en",
+        )
+        .0;
         assert!(html.contains("data-step=\"1\""), "{html}");
         assert!(html.contains("data-step=\"2\""), "{html}");
         assert!(html.contains("data-step=\"3\""), "{html}");

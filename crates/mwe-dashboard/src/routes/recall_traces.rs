@@ -68,6 +68,7 @@ async fn index(
     user: SessionUser,
     jar: CookieJar,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     if !user.is_admin {
         return Err(DashboardError::Forbidden);
     }
@@ -83,6 +84,7 @@ async fn index(
         .filter(|r| readable(r, &user, reveal))
         .collect();
     Ok(Html(layout::authenticated_page(
+        chrome,
         "Recall traces",
         &user,
         &render_index_body(&rows, reveal),
@@ -96,6 +98,7 @@ async fn viewer(
     jar: CookieJar,
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     if !user.is_admin {
         return Err(DashboardError::Forbidden);
     }
@@ -105,6 +108,7 @@ async fn viewer(
         .parse()
         .map_err(|e| DashboardError::Internal(format!("recall_trace payload: {e}")))?;
     Ok(Html(layout::authenticated_page(
+        chrome,
         &format!("Recall trace #{id}"),
         &user,
         &render_viewer_body(&row, &trace, reveal),

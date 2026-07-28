@@ -55,6 +55,7 @@ pub fn router() -> Router<DashboardState> {
 /// `GET /dashboard/dream` — the console page: the three trigger forms, then the
 /// persisted run history (newest first). Admin-only.
 async fn index(State(state): State<DashboardState>, user: SessionUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     if !user.is_admin {
         return Err(DashboardError::Forbidden);
     }
@@ -62,6 +63,7 @@ async fn index(State(state): State<DashboardState>, user: SessionUser) -> Result
         .await
         .map_err(|e| DashboardError::Internal(format!("dream_journal::recent_runs: {e}")))?;
     Ok(Html(layout::authenticated_page(
+        chrome,
         "Dream",
         &user,
         &render_index_body(&runs),
@@ -403,6 +405,7 @@ async fn run_dream(
     user: &SessionUser,
     kind: DreamKind,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(state);
     if !user.is_admin {
         return Err(DashboardError::Forbidden);
     }
@@ -417,7 +420,7 @@ async fn run_dream(
     // gate with the interval scheduler is the tracked `rem-manual-trigger-scheduler-gate`
     // follow-up; during interactive use the scheduler is effectively dormant.)
     let Ok(_guard) = state.rem_gate.try_lock() else {
-        return Ok(Html(render_busy(user)));
+        return Ok(Html(render_busy(chrome, user)));
     };
     let started = now_rfc3339();
 
@@ -448,7 +451,7 @@ async fn run_dream(
                 &now_rfc3339(),
             )
             .await;
-            render_report(user, "Dream · Light", &summary, &out)
+            render_report(chrome, user, "Dream · Light", &summary, &out)
         },
         DreamKind::Compile => {
             let backends = DreamBackends::resolve(memory)?;
@@ -476,7 +479,7 @@ async fn run_dream(
                 &now_rfc3339(),
             )
             .await;
-            render_report(user, "Dream · Compile", &summary, &report)
+            render_report(chrome, user, "Dream · Compile", &summary, &report)
         },
         DreamKind::Full => {
             let backends = DreamBackends::resolve(memory)?;
@@ -506,7 +509,7 @@ async fn run_dream(
                 &now_rfc3339(),
             )
             .await;
-            render_report(user, "Dream · Full REM", &summary, &out)
+            render_report(chrome, user, "Dream · Full REM", &summary, &out)
         },
     };
     Ok(Html(body))
@@ -747,19 +750,20 @@ fn fmt_ts(raw: &str) -> String {
 }
 
 /// Rendered when the REM gate is already held (a dream is running).
-fn render_busy(user: &SessionUser) -> String {
+fn render_busy(chrome: layout::Chrome, user: &SessionUser) -> String {
     let body = html! {
         section class="flash-info" {
             p { "A dream is already running — try again shortly." }
         }
         p { a href="/dashboard/dream" { "← Dream" } " · " a href="/dashboard/home" { "Home" } }
     };
-    layout::authenticated_page("Dream", user, &body)
+    layout::authenticated_page(chrome, "Dream", user, &body)
 }
 
 /// Full report dump for the no-JS synchronous path — a `<pre>` under a one-line
 /// summary, with a link back to the console.
 fn render_report<R: std::fmt::Debug>(
+    chrome: layout::Chrome,
     user: &SessionUser,
     title: &str,
     summary: &str,
@@ -777,5 +781,5 @@ fn render_report<R: std::fmt::Debug>(
             a href="/dashboard/home" { "Home" }
         }
     };
-    layout::authenticated_page(title, user, &body)
+    layout::authenticated_page(chrome, title, user, &body)
 }

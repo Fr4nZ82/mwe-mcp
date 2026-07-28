@@ -187,7 +187,13 @@ If you are new, read in this order:
   `mwe-core::parser` (zero regex).
 - [redaction-policy.md](design-notes/redaction-policy.md) — the
   `can_read` ACL predicate and the `render_for_sender` region-by-region
-  projection (callout for regions, silent drop for prose/embeds).
+  projection (callout for regions, silent drop for prose/embeds), plus
+  the dashboard admin reveal and the config switch that withdraws it.
+- [read-only-instance.md](design-notes/read-only-instance.md) —
+  `instance.read_only`: refusing every change to memory or configuration
+  across the dashboard, the MCP dispatcher and `/media` while identity,
+  reading and navigation keep working, and hiding the controls that are
+  refused rather than letting them fail.
 - [single-writer-lockfile.md](design-notes/single-writer-lockfile.md) —
   why `mwe-core::lockfile` relies on the kernel's advisory lock.
 - [applicative-wal.md](design-notes/applicative-wal.md) — the journaling

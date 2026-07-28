@@ -95,6 +95,13 @@ pub enum ToolErrorClass {
     /// 50, matching the per-wiki notify rate-limit cap). The caller
     /// should split the marks across multiple pushes.
     TooManyBriefingItems,
+    /// `403 instance_read_only` — the deployment runs with
+    /// `instance.read_only`, and the tool changes memory or
+    /// configuration. Reading, searching and navigating are unaffected;
+    /// the refusal is the whole write half of the surface at once, so
+    /// the class names the *instance*, not the caller: no token, role or
+    /// consumer class lifts it.
+    InstanceReadOnly,
     /// `400 wiki_type_requires_parent` — the requested `wiki_type`
     /// declares `requires_parent: true` and the create
     /// call did not pass a `parent_wiki_id`. Day-one user is
@@ -129,6 +136,7 @@ impl ToolErrorClass {
             Self::WikiLockedByLease => "wiki_locked_by_lease",
             Self::UnknownBriefingItemId => "unknown_briefing_item_id",
             Self::TooManyBriefingItems => "too_many_briefing_items",
+            Self::InstanceReadOnly => "instance_read_only",
             Self::WikiTypeRequiresParent => "wiki_type_requires_parent",
         }
     }

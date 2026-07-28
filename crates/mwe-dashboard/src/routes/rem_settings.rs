@@ -195,16 +195,18 @@ struct Flash<'a> {
 }
 
 async fn page(State(state): State<DashboardState>, admin: AdminUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     // The runtime handle holds the resolved policy; the Option-shaped
     // overrides this form edits live in the YAML, so read them there.
     let workdir = workdir_of(&state)?;
     let cfg = Config::load_raw(&workdir)
         .map_err(|e| DashboardError::Internal(format!("config load: {e}")))?;
-    let body = render(admin.session(), &cfg.rem.policy, None);
+    let body = render(chrome, admin.session(), &cfg.rem.policy, None);
     Ok(Html(body))
 }
 
 fn render(
+    chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     cfg: &RemPolicyConfig,
     flash: Option<Flash<'_>>,
@@ -270,7 +272,7 @@ fn render(
             "."
         }
     };
-    layout::authenticated_page("REM settings", session, &body)
+    layout::authenticated_page(chrome, "REM settings", session, &body)
 }
 
 // ---------- POST ----------
@@ -280,6 +282,7 @@ async fn save(
     admin: AdminUser,
     HtmlForm(form): HtmlForm<HashMap<String, String>>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let parsed = parse_form(&form)?;
 
     // Preserve every non-REM-policy section of the existing Config by
@@ -320,6 +323,7 @@ async fn save(
     );
 
     let body = render(
+        chrome,
         admin.session(),
         &parsed,
         Some(Flash {

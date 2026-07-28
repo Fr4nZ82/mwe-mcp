@@ -136,9 +136,17 @@ async fn meta_json<T: serde::de::DeserializeOwned>(state: &DashboardState, key: 
 // ---------- GET ----------
 
 async fn page(State(state): State<DashboardState>, admin: AdminUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let ctx = page_ctx(&state).await?;
     let dest = suggested_dest(&ctx.snapshots_dir);
-    Ok(Html(render(admin.session(), &ctx, &dest, None, None)))
+    Ok(Html(render(
+        chrome,
+        admin.session(),
+        &ctx,
+        &dest,
+        None,
+        None,
+    )))
 }
 
 // ---------- POST: manual snapshot ----------
@@ -148,6 +156,7 @@ async fn run(
     admin: AdminUser,
     HtmlForm(form): HtmlForm<HashMap<String, String>>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let workdir = workdir_of(&state)?;
     let dest = form
         .get("dest")
@@ -189,6 +198,7 @@ async fn run(
     let ctx = page_ctx(&state).await?;
     let field = field.unwrap_or_else(|| suggested_dest(&ctx.snapshots_dir));
     Ok(Html(render(
+        chrome,
         admin.session(),
         &ctx,
         &field,
@@ -204,6 +214,7 @@ async fn save_settings(
     admin: AdminUser,
     HtmlForm(form): HtmlForm<HashMap<String, String>>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let workdir = workdir_of(&state)?;
     let parsed = parse_settings(&form)?;
 
@@ -239,6 +250,7 @@ async fn save_settings(
     let ctx = page_ctx(&state).await?;
     let dest = suggested_dest(&ctx.snapshots_dir);
     Ok(Html(render(
+        chrome,
         admin.session(),
         &ctx,
         &dest,
@@ -298,6 +310,7 @@ async fn schedule_restore(
     admin: AdminUser,
     HtmlForm(form): HtmlForm<HashMap<String, String>>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let workdir = workdir_of(&state)?;
     let ctx = page_ctx(&state).await?;
     let snapshot = named_snapshot(&ctx, &form)?;
@@ -320,6 +333,7 @@ async fn schedule_restore(
     let ctx = page_ctx(&state).await?;
     let dest = suggested_dest(&ctx.snapshots_dir);
     Ok(Html(render(
+        chrome,
         admin.session(),
         &ctx,
         &dest,
@@ -333,6 +347,7 @@ async fn schedule_reset(
     admin: AdminUser,
     HtmlForm(form): HtmlForm<HashMap<String, String>>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let workdir = workdir_of(&state)?;
     let typed = form.get("confirm").map(|s| s.trim()).unwrap_or_default();
     if typed != RESET_CONFIRM_PHRASE {
@@ -355,6 +370,7 @@ async fn schedule_reset(
     let ctx = page_ctx(&state).await?;
     let dest = suggested_dest(&ctx.snapshots_dir);
     Ok(Html(render(
+        chrome,
         admin.session(),
         &ctx,
         &dest,
@@ -367,6 +383,7 @@ async fn cancel_pending(
     State(state): State<DashboardState>,
     admin: AdminUser,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let workdir = workdir_of(&state)?;
     let flash = match recovery::cancel(&workdir) {
         Ok(true) => Flash::success("Pending recovery cancelled."),
@@ -376,6 +393,7 @@ async fn cancel_pending(
     let ctx = page_ctx(&state).await?;
     let dest = suggested_dest(&ctx.snapshots_dir);
     Ok(Html(render(
+        chrome,
         admin.session(),
         &ctx,
         &dest,
@@ -389,6 +407,7 @@ async fn delete_snapshot(
     admin: AdminUser,
     HtmlForm(form): HtmlForm<HashMap<String, String>>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let ctx = page_ctx(&state).await?;
     let snapshot = named_snapshot(&ctx, &form)?;
     // A snapshot the pending restore points at must stay until the
@@ -417,6 +436,7 @@ async fn delete_snapshot(
     let ctx = page_ctx(&state).await?;
     let dest = suggested_dest(&ctx.snapshots_dir);
     Ok(Html(render(
+        chrome,
         admin.session(),
         &ctx,
         &dest,
@@ -448,6 +468,7 @@ async fn restart_now(
     State(state): State<DashboardState>,
     admin: AdminUser,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let Some(handle) = &state.restart else {
         return Err(DashboardError::Validation(
             "restart is not available on this build".to_owned(),
@@ -476,6 +497,7 @@ async fn restart_now(
         p { a href="/dashboard/admin/backup" { "Back to the Backup console" } }
     };
     Ok(Html(layout::authenticated_page(
+        chrome,
         "Restarting",
         admin.session(),
         &body,
@@ -497,6 +519,7 @@ fn recovery_hint(state: &DashboardState) -> bool {
     reason = "one linear page template — splitting it would scatter the console's layout"
 )]
 fn render(
+    chrome: layout::Chrome,
     session: &SessionUser,
     ctx: &PageCtx,
     dest_value: &str,
@@ -720,7 +743,7 @@ fn render(
             p { button type="submit" class="danger" { "Stage memory reset" } }
         }
     };
-    layout::authenticated_page("Backup", session, &body)
+    layout::authenticated_page(chrome, "Backup", session, &body)
 }
 
 /// A suggested manual destination inside the snapshots home:

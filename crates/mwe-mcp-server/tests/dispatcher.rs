@@ -70,6 +70,7 @@ async fn fixture_with_llm(
         workdir: dir.path().to_path_buf(),
         document_policy: mwe_core::document::DocumentPolicy::default(),
         reindex_tx: None,
+        read_only: false,
     };
     let identity = IdentityProfile {
         sender_id: "alice".into(),
@@ -1168,6 +1169,7 @@ async fn wiki_admin_push_queues_section_indexing_when_reindex_channel_is_wired()
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let state = McpState {
         reindex_tx: Some(tx),
+        read_only: false,
         ..state
     };
 
@@ -1729,4 +1731,88 @@ async fn wiki_forget_bulk_page_scope_and_validation() {
     .await
     .expect_err("bad scope");
     assert!(err.contains("invalid_input"), "{err}");
+}
+
+// ---------- read-only instance (`instance.read_only`) ----------
+
+/// A frozen deployment: same fixture, one flag flipped.
+async fn read_only_fixture() -> (McpState, IdentityProfile, tempfile::TempDir) {
+    let (mut state, identity, dir) = fixture(true, None).await;
+    state.read_only = true;
+    (state, identity, dir)
+}
+
+/// The whole surface, classified. Every tool the server advertises is
+/// either on the reader allow-list or refused with `instance_read_only`
+/// — there is no third answer, and a tool added tomorrow without being
+/// classified fails this test rather than quietly shipping a write.
+///
+/// The guard runs before argument validation, so the empty args below
+/// are enough: a refused tool never reaches its own parser.
+#[tokio::test]
+async fn read_only_classifies_every_advertised_tool() {
+    let (state, identity, _dir) = read_only_fixture().await;
+    for tool in mwe_mcp_server::mcp::schemas::all_tools() {
+        let name = tool.name.to_string();
+        let refused = call(&state, &identity, &name, json!({}))
+            .await
+            .err()
+            .is_some_and(|e| e.contains("instance_read_only"));
+        let allowed = mwe_mcp_server::mcp::READ_ONLY_TOOLS.contains(&name.as_str());
+        assert_eq!(
+            refused, !allowed,
+            "`{name}`: allow-listed={allowed} but instance_read_only={refused} — a frozen \
+             instance must refuse exactly the tools that are not on the reader list"
+        );
+    }
+}
+
+/// The baseline that keeps the test above honest: the same call on an
+/// unfrozen instance is *not* refused for being a write. (It fails for
+/// its own reasons — missing arguments — which is a different class.)
+#[tokio::test]
+async fn the_same_write_is_not_refused_when_the_instance_is_not_frozen() {
+    let (state, identity, _dir) = fixture(true, None).await;
+    let err = call(&state, &identity, "wiki_forget", json!({}))
+        .await
+        .expect_err("no fact_id");
+    assert!(
+        !err.contains("instance_read_only"),
+        "an unfrozen instance must not refuse a write as read-only: {err}"
+    );
+    assert!(err.contains("invalid_input"), "{err}");
+}
+
+/// Reading and navigating are the whole point of a shown instance, so
+/// they answer normally — including `wiki_navigate`, which appends to
+/// the capped recall-trace journal and is on the allow-list anyway.
+#[tokio::test]
+async fn read_only_still_serves_reads() {
+    let (state, identity, _dir) = read_only_fixture().await;
+    let out = call(
+        &state,
+        &identity,
+        "wiki_search",
+        json!({"query": "anything"}),
+    )
+    .await
+    .expect("search must work on a frozen instance");
+    assert!(out.get("results").is_some(), "{out}");
+
+    let out = call(&state, &identity, "skill_list", json!({}))
+        .await
+        .expect("skill_list must work on a frozen instance");
+    assert!(out.get("skills").is_some(), "{out}");
+}
+
+/// `dashboard_link` writes nothing, and is refused anyway: it mints a
+/// signed dashboard session. Handing out a credential that outlives the
+/// call is not a write — it is the thing a write would need.
+#[tokio::test]
+async fn read_only_refuses_to_mint_a_dashboard_session() {
+    let (state, identity, _dir) = read_only_fixture().await;
+    let err = call(&state, &identity, "dashboard_link", json!({}))
+        .await
+        .expect_err("dashboard_link must be refused on a frozen instance");
+    assert!(err.contains("instance_read_only"), "{err}");
 }

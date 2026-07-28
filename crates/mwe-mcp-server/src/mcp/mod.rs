@@ -188,18 +188,62 @@ fn resolve_identity(ctx: &RequestContext<RoleServer>) -> Result<IdentityProfile,
     ))
 }
 
+/// The tools a **frozen** deployment (`instance.read_only`) still
+/// serves — an allow-list, so a tool added tomorrow is refused until
+/// somebody comes here and vouches for it.
+///
+/// The line is "does it change memory or configuration". Two of these
+/// do touch the database and are here deliberately, because what they
+/// write is telemetry about the reader rather than content:
+///
+/// - `wiki_navigate` appends to the recall-trace journal, which is
+///   capped at the last ten runs and is the surface that makes the
+///   navigator demonstrable at all;
+/// - `events_poll` stamps `consumers.last_seen_at`, a heartbeat column.
+///
+/// `dashboard_link` is **not** here even though it writes nothing: it
+/// mints a signed dashboard session. A frozen instance refuses writes;
+/// handing out a credential that outlives the call is not a write, it is
+/// worse.
+pub const READ_ONLY_TOOLS: &[&str] = &[
+    "wiki_read",
+    "wiki_search",
+    "wiki_navigate",
+    "wiki_lint",
+    "wiki_admin_pull",
+    "tool_log_search",
+    "skill_list",
+    "skill_fetch",
+    "smart_bootstrap",
+    "recall_core_global",
+    "events_poll",
+];
+
 /// Direct dispatcher entry point — public for integration tests.
 ///
 /// Also used by callers that want to drive a single tool without
 /// spinning up a transport. Soft contract identical to the
 /// `ServerHandler::call_tool` path: the audit row is **not** written
 /// here (the dispatcher writes it around this call).
+///
+/// On a frozen deployment this is the one choke point every tool call
+/// passes through, so the write half of the surface is refused here in a
+/// single place — including tools that do not exist yet.
 pub async fn dispatch(
     state: &McpState,
     identity: &IdentityProfile,
     tool_name: &str,
     args: Value,
 ) -> Result<Value, ToolError> {
+    if state.read_only && !READ_ONLY_TOOLS.contains(&tool_name) {
+        tracing::info!(tool = tool_name, "read-only instance: tool call refused");
+        return Err(ToolError::new(
+            ToolErrorClass::InstanceReadOnly,
+            format!(
+                "`{tool_name}` changes memory or configuration, and this instance is read-only"
+            ),
+        ));
+    }
     match tool_name {
         "wiki_ingest_message" => tools::call_wiki_ingest_message(state, identity, args).await,
         "events_poll" => tools::call_events_poll(state, identity, args).await,

@@ -582,12 +582,18 @@ cannot reach it has no business being hot-swappable from the panel.
 
 ```yaml
 instance:
+  read_only: true             # default false — see below
   admin_reveal_locked: true   # default false — see below
 ```
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
+| `read_only` | bool | `false` | Freeze the deployment: refuse every operation that changes memory or configuration, on all three surfaces (dashboard HTTP tree, MCP dispatcher, `POST /media`), and do not start the background loops that would rewrite memory on their own (REM, the light dream, the document worker, automatic backups). Identity, reading and navigation keep working — signing in and out are the writes it deliberately still accepts. The dashboard also **hides** what it refuses, and does not mount the write-only consoles at all. Full story: [read-only-instance.md](../design-notes/read-only-instance.md). |
 | `admin_reveal_locked` | bool | `false` | Takes the [admin ACL-reveal](../design-notes/redaction-policy.md#the-machine-operator-can-lock-reveal) switch away from the dashboard admin. When set, `reveal::active` returns false unconditionally, `POST /dashboard/settings/reveal` answers `403`, and a hand-written `mwe_admin_reveal` cookie is ignored; the Settings page replaces the checkbox with a line naming this key. Leaves everything else about the admin role untouched. |
+
+The two are independent. Read-only is about *changing* things; the
+reveal lock is about *seeing* them. A public instance usually wants
+both; an office deployment may want only the second.
 
 ### `embedding`
 
@@ -1188,6 +1194,7 @@ backup:
 # The machine operator's switches. No dashboard editor, on purpose: a
 # switch the panel admin can flip is not a switch that constrains them.
 instance:
+  read_only: false            # true → nothing in this deployment can be changed
   admin_reveal_locked: false  # true → the dashboard admin cannot bypass the ACL
 
 # ── features (PARSED-BUT-INERT in config.rs: check the consuming code) ─

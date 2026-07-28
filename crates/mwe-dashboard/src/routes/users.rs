@@ -115,11 +115,13 @@ async fn fetch_users(state: &DashboardState) -> Result<Vec<UserRow>> {
 }
 
 async fn list(State(state): State<DashboardState>, admin: AdminUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let users = fetch_users(&state).await?;
-    Ok(Html(render_list(&users, admin.session(), None)))
+    Ok(Html(render_list(chrome, &users, admin.session(), None)))
 }
 
 fn render_list(
+    chrome: layout::Chrome,
     users: &[UserRow],
     session: &crate::auth::SessionUser,
     flash_msg: Option<(&str, &str)>,
@@ -187,7 +189,7 @@ fn render_list(
             }
         }
     };
-    layout::authenticated_page("Users", session, &body)
+    layout::authenticated_page(chrome, "Users", session, &body)
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -259,33 +261,46 @@ fn parse_timezone_field(raw: &str) -> std::result::Result<Option<String>, String
     Ok(Some(t.to_owned()))
 }
 
-async fn new_form(admin: AdminUser) -> Html<String> {
+async fn new_form(State(state): State<DashboardState>, admin: AdminUser) -> Html<String> {
+    let chrome = layout::Chrome::of(&state);
     Html(render_new_form(
+        chrome,
         admin.session(),
         &NewUserSubmission::default(),
         None,
     ))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear create-user flow: validate, insert, invite, re-render"
+)]
 async fn new_submit(
     State(state): State<DashboardState>,
     admin: AdminUser,
     headers: HeaderMap,
     axum::Form(form): axum::Form<NewUserSubmission>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let user_id = form.user_id.trim();
     if let Some(msg) = validate_user_id_for_create(&state, user_id).await? {
-        return Ok(Html(render_new_form(admin.session(), &form, Some(&msg))).into_response());
+        return Ok(
+            Html(render_new_form(chrome, admin.session(), &form, Some(&msg))).into_response(),
+        );
     }
     let email = form.email.trim();
     if let Some(msg) = validate_email_for_account(&state, email, None).await? {
-        return Ok(Html(render_new_form(admin.session(), &form, Some(&msg))).into_response());
+        return Ok(
+            Html(render_new_form(chrome, admin.session(), &form, Some(&msg))).into_response(),
+        );
     }
 
     let (timezone, locale) = match parse_engine_columns(&form.timezone, &form.locale) {
         Ok(pair) => pair,
         Err(msg) => {
-            return Ok(Html(render_new_form(admin.session(), &form, Some(&msg))).into_response());
+            return Ok(
+                Html(render_new_form(chrome, admin.session(), &form, Some(&msg))).into_response(),
+            );
         },
     };
 
@@ -377,6 +392,7 @@ async fn new_submit(
         },
     );
     Ok(Html(render_list(
+        chrome,
         &users,
         admin.session(),
         Some(("success", &msg)),
@@ -385,6 +401,7 @@ async fn new_submit(
 }
 
 fn render_new_form(
+    chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     form: &NewUserSubmission,
     error: Option<&str>,
@@ -422,7 +439,7 @@ fn render_new_form(
 
         p { a href="/dashboard/users" { "Cancel and return to the list" } }
     };
-    layout::authenticated_reading_page("Add user", session, &body)
+    layout::authenticated_reading_page(chrome, "Add user", session, &body)
 }
 
 async fn validate_user_id_for_create(
@@ -540,6 +557,7 @@ async fn edit_form(
     admin: AdminUser,
     Path(user_id): Path<String>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let row: Option<EditUserRow> = sqlx::query_as(
         "SELECT email, aliases, is_admin, require_2fa, timezone, locale
            FROM enrollment_users WHERE user_id = ?",
@@ -562,6 +580,7 @@ async fn edit_form(
     };
     let twofa_enabled = crate::twofa::is_enabled(&state.pool, &user_id).await?;
     Ok(Html(render_edit_form(
+        chrome,
         admin.session(),
         &user_id,
         is_admin != 0,
@@ -577,6 +596,7 @@ async fn edit_submit(
     Path(user_id): Path<String>,
     axum::Form(form): axum::Form<EditUserSubmission>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let is_admin_raw: Option<i64> =
         sqlx::query_scalar("SELECT is_admin FROM enrollment_users WHERE user_id = ?")
             .bind(&user_id)
@@ -598,6 +618,7 @@ async fn edit_submit(
             require_2fa: require_2fa.then(|| "1".to_owned()),
         };
         Html(render_edit_form(
+            chrome,
             admin.session(),
             &user_id,
             is_admin_raw != 0,
@@ -642,6 +663,7 @@ async fn edit_submit(
     let users = fetch_users(&state).await?;
     let msg = format!("Updated user {user_id}.");
     Ok(Html(render_list(
+        chrome,
         &users,
         admin.session(),
         Some(("success", &msg)),
@@ -650,6 +672,7 @@ async fn edit_submit(
 }
 
 fn render_edit_form(
+    chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     user_id: &str,
     is_admin: bool,
@@ -718,7 +741,7 @@ fn render_edit_form(
 
         p { a href="/dashboard/users" { "Back to the list" } }
     };
-    layout::authenticated_reading_page(&title, session, &body)
+    layout::authenticated_reading_page(chrome, &title, session, &body)
 }
 
 /// Admin break-glass: clear a user's 2FA enrollment (lost authenticator).
@@ -727,11 +750,13 @@ async fn reset_2fa(
     admin: AdminUser,
     Path(user_id): Path<String>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     crate::twofa::disable(&state.pool, &user_id).await?;
     tracing::info!(actor = admin.sender_id(), user = %user_id, "dashboard reset user 2FA");
     let users = fetch_users(&state).await?;
     let msg = format!("Cleared two-factor for {user_id}.");
     Ok(Html(render_list(
+        chrome,
         &users,
         admin.session(),
         Some(("success", &msg)),
@@ -811,6 +836,7 @@ async fn reinvite(
     headers: HeaderMap,
     Path(user_id): Path<String>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let row: Option<(i64, Option<String>)> =
         sqlx::query_as("SELECT is_admin, email FROM enrollment_users WHERE user_id = ?")
             .bind(&user_id)
@@ -879,6 +905,7 @@ async fn reinvite(
         },
     );
     Ok(Html(render_list(
+        chrome,
         &users,
         admin.session(),
         Some(("success", &msg)),

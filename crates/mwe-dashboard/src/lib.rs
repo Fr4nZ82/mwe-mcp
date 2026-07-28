@@ -32,6 +32,7 @@ pub mod error;
 pub mod form;
 pub mod md_render;
 pub mod ratelimit;
+pub mod read_only;
 pub mod reveal;
 pub mod routes;
 pub mod state;

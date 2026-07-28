@@ -26,7 +26,7 @@
 //! built-in memory, and restart.
 
 use axum::Router;
-use axum::extract::{Host, Path};
+use axum::extract::{Host, Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
@@ -787,8 +787,14 @@ async fn public_bridge_page(Path(consumer): Path<String>, Host(host): Host) -> R
 
 // --- dashboard tab (authenticated shell, links resolve under /dashboard) ---
 
-async fn tab_bridges_index(user: SessionUser, Host(host): Host) -> Html<String> {
+async fn tab_bridges_index(
+    State(state): State<DashboardState>,
+    user: SessionUser,
+    Host(host): Host,
+) -> Html<String> {
+    let chrome = layout::Chrome::of(&state);
     Html(layout::authenticated_page(
+        chrome,
         "Bridges",
         &user,
         &catalog_body("/dashboard", &origin_from_host(&host)),
@@ -796,14 +802,17 @@ async fn tab_bridges_index(user: SessionUser, Host(host): Host) -> Html<String> 
 }
 
 async fn tab_bridge_page(
+    State(state): State<DashboardState>,
     Path(consumer): Path<String>,
     Host(host): Host,
     user: SessionUser,
 ) -> Response {
+    let chrome = layout::Chrome::of(&state);
     bridge_label(&consumer).map_or_else(
         || StatusCode::NOT_FOUND.into_response(),
         |label| {
             Html(layout::authenticated_page(
+                chrome,
                 &format!("{label} bridge"),
                 &user,
                 &guide_body(&consumer, &origin_from_host(&host)),

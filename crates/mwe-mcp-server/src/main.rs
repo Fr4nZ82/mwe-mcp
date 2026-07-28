@@ -1625,6 +1625,22 @@ async fn cmd_serve_http(
         Err(error) => warn!(%error, "boot housekeeping failed; serving anyway"),
     }
 
+    // A frozen deployment (`instance.read_only`) refuses writes that
+    // arrive over a wire; the background loops arrive over nobody's wire
+    // and would rewrite the very memory the instance exists to show. A
+    // dream that recompiles pages overnight, or a document job that
+    // extracts new facts, would falsify the mode's name while nobody was
+    // watching, so none of the three start. The reindex watcher stays
+    // armed: it derives the index from files that no longer change, so
+    // it is a no-op that keeps the safety net honest if one ever does.
+    let frozen = config.instance.read_only;
+    if frozen {
+        info!(
+            "instance.read_only: REM, the light dream, automatic backups and the document \
+             worker are not started — nothing in this deployment changes on its own"
+        );
+    }
+
     // REM scheduler. Built before
     // the listener starts accepting traffic so a misconfigured
     // `llm.hub_writer` / `llm.rem_dedup_semantic` slot surfaces in the
@@ -1634,14 +1650,16 @@ async fn cmd_serve_http(
     let llms = rem_scheduler::build_backends(&config.llm)
         .context("building REM LLM backends")?
         .map(std::sync::Arc::new);
-    if llms.is_none() {
+    if llms.is_none() && !frozen {
         warn!(
             "rem scheduler: `llm.hub_writer` or `llm.rem_dedup_semantic` not configured — \
              the REM full cycle will not auto-run (configure both or use `mwe-mcp rem run-cycle`); \
              the light dream still promotes captures but cannot compile prose without the slots"
         );
     }
-    let scheduler_handle = if let Some(llms) = &llms {
+    let scheduler_handle = if let Some(llms) = &llms
+        && !frozen
+    {
         let mut rx = shutdown_tx.subscribe();
         rem_scheduler::spawn(
             config.rem.schedule,
@@ -1662,47 +1680,59 @@ async fn cmd_serve_http(
     // Promotion is deterministic, so it runs even without the LLM bag; the
     // compile step is skipped when `llms` is None.
     let mut light_shutdown_rx = shutdown_tx.subscribe();
-    let light_handle = rem_scheduler::spawn_light(
-        config.rem.schedule,
-        state.pool.clone(),
-        state.tree.clone(),
-        state.embedder.clone(),
-        llms.clone(),
-        async move {
-            let _ = light_shutdown_rx.recv().await;
-        },
-    );
+    let light_handle = if frozen {
+        None
+    } else {
+        rem_scheduler::spawn_light(
+            config.rem.schedule,
+            state.pool.clone(),
+            state.tree.clone(),
+            state.embedder.clone(),
+            llms.clone(),
+            async move {
+                let _ = light_shutdown_rx.recv().await;
+            },
+        )
+    };
 
     // Backup scheduler: the automatic-snapshot due-check loop (`backup:`
     // config section). Always armed — a disabled schedule idles, and the
     // Backup console can enable it without a restart.
     let mut backup_shutdown_rx = shutdown_tx.subscribe();
-    let backup_handle = backup_scheduler::spawn(
-        config.backup.initial_delay_secs,
-        backup_schedule,
-        state.pool.clone(),
-        workdir.to_path_buf(),
-        async move {
-            let _ = backup_shutdown_rx.recv().await;
-        },
-    );
+    let backup_handle = if frozen {
+        None
+    } else {
+        Some(backup_scheduler::spawn(
+            config.backup.initial_delay_secs,
+            backup_schedule,
+            state.pool.clone(),
+            workdir.to_path_buf(),
+            async move {
+                let _ = backup_shutdown_rx.recv().await;
+            },
+        ))
+    };
 
     // Document worker: drives queued `wiki_ingest_external` jobs
     // (classify → segment → anchor → extract → reduce → file). Runs on
     // the `ingest` slot, built per tick; without the slot the loop idles
     // (enqueue already refuses, so the queue only holds runnable jobs).
     let mut document_shutdown_rx = shutdown_tx.subscribe();
-    let document_handle = tokio::spawn(mwe_core::document::run_worker_loop(
-        state.pool.clone(),
-        state.tree.clone(),
-        state.embedder.clone(),
-        config.llm.clone(),
-        workdir.to_path_buf(),
-        config.document.resolved_policy(),
-        async move {
-            let _ = document_shutdown_rx.recv().await;
-        },
-    ));
+    let document_handle = if frozen {
+        None
+    } else {
+        Some(tokio::spawn(mwe_core::document::run_worker_loop(
+            state.pool.clone(),
+            state.tree.clone(),
+            state.embedder.clone(),
+            config.llm.clone(),
+            workdir.to_path_buf(),
+            config.document.resolved_policy(),
+            async move {
+                let _ = document_shutdown_rx.recv().await;
+            },
+        )))
+    };
 
     println!("mwe-mcp serve: ready (transport=http)");
     println!("workdir : {}", workdir.display());
@@ -1753,15 +1783,19 @@ async fn cmd_serve_http(
             Err(_) => warn!("light dream: did not exit within 5s timeout"),
         }
     }
-    match tokio::time::timeout(std::time::Duration::from_secs(5), document_handle).await {
-        Ok(Ok(())) => info!("document worker: joined cleanly"),
-        Ok(Err(e)) => warn!(error = %e, "document worker: task panicked on shutdown"),
-        Err(_) => warn!("document worker: did not exit within 5s timeout"),
+    if let Some(handle) = document_handle {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
+            Ok(Ok(())) => info!("document worker: joined cleanly"),
+            Ok(Err(e)) => warn!(error = %e, "document worker: task panicked on shutdown"),
+            Err(_) => warn!("document worker: did not exit within 5s timeout"),
+        }
     }
-    match tokio::time::timeout(std::time::Duration::from_secs(5), backup_handle).await {
-        Ok(Ok(())) => info!("backup scheduler: joined cleanly"),
-        Ok(Err(e)) => warn!(error = %e, "backup scheduler: task panicked on shutdown"),
-        Err(_) => warn!("backup scheduler: did not exit within 5s timeout"),
+    if let Some(handle) = backup_handle {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
+            Ok(Ok(())) => info!("backup scheduler: joined cleanly"),
+            Ok(Err(e)) => warn!(error = %e, "backup scheduler: task panicked on shutdown"),
+            Err(_) => warn!("backup scheduler: did not exit within 5s timeout"),
+        }
     }
 
     // A dashboard-requested restart exits with the deliberate non-zero
@@ -1941,6 +1975,21 @@ async fn boot_smart_wiki_passes(pool: &sqlx::SqlitePool, tree: &mwe_core::wiki::
     }
 }
 
+/// Project the on-disk `instance:` section onto the dashboard's runtime
+/// knobs.
+///
+/// Read once, here, and never refreshed from a dashboard save: the
+/// `instance:` section is the machine operator's and has no dashboard
+/// editor by design (see `docs/protocol/config-schema.md`), so
+/// hot-reloading it would mean the panel could reach it after all.
+fn dashboard_config_from(config: &Config) -> mwe_dashboard::DashboardConfig {
+    mwe_dashboard::DashboardConfig {
+        read_only: config.instance.read_only,
+        admin_reveal_locked: config.instance.admin_reveal_locked,
+        ..mwe_dashboard::DashboardConfig::default()
+    }
+}
+
 /// Shared startup helper used by both transports.
 ///
 /// 1. Health-check every configured LLM slot (no silent fallbacks).
@@ -2020,8 +2069,12 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
 
     // Refresh the operator's Obsidian collector index (`wikis/index.md`) to
     // realign after any external edits/deletions while the server was down.
-    // Admin convenience only — best-effort, never blocks serving.
-    if let Err(e) = mwe_core::wiki::write_root_collector_index(&tree) {
+    // Admin convenience only — best-effort, never blocks serving. Skipped on
+    // a frozen deployment: it is a file write inside `wikis/`, and "nothing
+    // changes" has to include the bytes we would write ourselves at boot.
+    if !config.instance.read_only
+        && let Err(e) = mwe_core::wiki::write_root_collector_index(&tree)
+    {
         warn!(error = %e, "root collector index: bootstrap refresh failed (non-fatal)");
     }
 
@@ -2093,15 +2146,10 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
         workdir: workdir.to_path_buf(),
         document_policy: config.document.resolved_policy(),
         reindex_tx: Some(reindex_tx),
+        read_only: config.instance.read_only,
     };
     let dashboard_state = DashboardState::new(pool, secret, blacklist, delegations)
-        // The `instance:` section is the machine operator's, so it is read
-        // from disk at boot and never re-read from a dashboard save: the
-        // dashboard has no editor for it, by design.
-        .with_config(mwe_dashboard::DashboardConfig {
-            admin_reveal_locked: config.instance.admin_reveal_locked,
-            ..mwe_dashboard::DashboardConfig::default()
-        })
+        .with_config(dashboard_config_from(config))
         .with_memory(MemoryHandles {
             tree,
             embedder,

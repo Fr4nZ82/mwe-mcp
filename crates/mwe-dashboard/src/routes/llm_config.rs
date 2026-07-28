@@ -451,9 +451,10 @@ struct Flash<'a> {
 }
 
 async fn page(State(state): State<DashboardState>, admin: AdminUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let onboarding = in_onboarding(&state, &admin).await?;
-    let body = render(admin.session(), memory, None, onboarding);
+    let body = render(chrome, admin.session(), memory, None, onboarding);
     Ok(Html(body))
 }
 
@@ -555,6 +556,7 @@ fn onboarding_banner(ingest_ready: bool) -> Markup {
 }
 
 fn render(
+    chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     memory: &MemoryHandles,
     flash: Option<Flash<'_>>,
@@ -626,7 +628,7 @@ fn render(
         (embed_config_data(&catalog, &auth))
         script src="/dashboard/static/llm-config.js" defer {}
     };
-    layout::authenticated_page("LLM config", session, &body)
+    layout::authenticated_page(chrome, "LLM config", session, &body)
 }
 
 /// The provider/credentials cards: the local backend, then the cloud
@@ -853,6 +855,7 @@ fn embed_config_data(catalog: &Catalog, auth: &ProviderAuth) -> Markup {
 /// OAuth exchange — the same direct-render pattern the `save` handler
 /// uses (the module is private, so `pub` here stays crate-internal).
 pub fn render_status_page(
+    chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     memory: &MemoryHandles,
     kind: &'static str,
@@ -862,7 +865,7 @@ pub fn render_status_page(
     // step-1 onboarding banner; it reappears on the next page GET, which
     // recomputes the gate. Not worth threading the async profile lookup
     // through every claude_login caller.
-    render(session, memory, Some(Flash { kind, msg }), false)
+    render(chrome, session, memory, Some(Flash { kind, msg }), false)
 }
 
 /// The Claude Code login controls inside the Anthropic credential card —
@@ -1066,6 +1069,7 @@ async fn save(
     admin: AdminUser,
     HtmlForm(form): HtmlForm<HashMap<String, String>>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let parsed = parse_form_into_llm_config(&form, &memory.llm_config_snapshot())?;
     persist_llm_config(memory, parsed)?;
@@ -1077,6 +1081,7 @@ async fn save(
 
     let onboarding = in_onboarding(&state, &admin).await?;
     let body = render(
+        chrome,
         admin.session(),
         memory,
         Some(Flash {
@@ -1353,6 +1358,7 @@ async fn apply_profile(
     admin: AdminUser,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let profile = mwe_core::config::LlmProfile::parse(&name)
         .map_err(|bad| DashboardError::Validation(format!("unknown profile: `{bad}`")))?;
@@ -1369,6 +1375,7 @@ async fn apply_profile(
     );
     let onboarding = in_onboarding(&state, &admin).await?;
     let body = render(
+        chrome,
         admin.session(),
         memory,
         Some(Flash {
@@ -1389,10 +1396,12 @@ async fn refresh_catalog(
     State(state): State<DashboardState>,
     admin: AdminUser,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let onboarding = in_onboarding(&state, &admin).await?;
     let body = match model_catalog::refresh(&memory.workdir).await {
         Ok(n) => render(
+            chrome,
             admin.session(),
             memory,
             Some(Flash {
@@ -1404,6 +1413,7 @@ async fn refresh_catalog(
         Err(e) => {
             tracing::warn!(error = %e, "llm-catalog: refresh failed");
             render(
+                chrome,
                 admin.session(),
                 memory,
                 Some(Flash {

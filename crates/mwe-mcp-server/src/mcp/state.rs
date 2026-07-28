@@ -115,6 +115,15 @@ pub struct McpState {
     /// (tests, degraded boot without the watcher) falls back to inline
     /// synchronous indexing.
     pub reindex_tx: Option<tokio::sync::mpsc::UnboundedSender<mwe_core::watcher::WatchedChange>>,
+    /// The deployment is frozen (`mwe-mcp.config.yaml >
+    /// instance.read_only`): the dispatcher serves the read half of the
+    /// tool surface and refuses the rest with
+    /// [`ToolErrorClass::InstanceReadOnly`](super::error::ToolErrorClass::InstanceReadOnly).
+    ///
+    /// A property of the instance, not of the caller, so it lives here
+    /// rather than on [`IdentityProfile`]: no token, role or consumer
+    /// class lifts it.
+    pub read_only: bool,
 }
 
 impl std::fmt::Debug for McpState {

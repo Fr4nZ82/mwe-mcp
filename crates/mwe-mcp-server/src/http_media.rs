@@ -115,6 +115,15 @@ async fn upload_media(
     axum::Extension(profile): axum::Extension<IdentityProfile>,
     multipart: Multipart,
 ) -> Response {
+    // The one write surface that reaches neither the MCP dispatcher nor
+    // the dashboard router, so it carries the read-only refusal itself.
+    if state.read_only {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "instance_read_only",
+            "this instance is read-only: media cannot be uploaded",
+        );
+    }
     // Guest turns are ephemeral (roadmap 40): an upload is a permanent
     // catalog row + blob, so the builtin guest pseudo-identity gets none.
     if mwe_core::enrollment::is_guest(&profile.sender_id) {
@@ -403,6 +412,7 @@ mod tests {
             workdir: dir.path().to_path_buf(),
             document_policy: mwe_core::document::DocumentPolicy::default(),
             reindex_tx: None,
+            read_only: false,
         };
         (state, secret, pool, dir)
     }

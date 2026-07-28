@@ -127,6 +127,7 @@ async fn index(
     jar: CookieJar,
     Query(filters): Query<SectionsFilters>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let (page, page_size) = normalise_pagination(&filters);
     let reveal = crate::reveal::active(&state, &user, &jar);
 
@@ -187,6 +188,7 @@ async fn index(
     );
 
     Ok(Html(render_index(
+        chrome,
         &user,
         &filters,
         page,
@@ -205,6 +207,7 @@ async fn index(
     reason = "a render function threading the page state it displays; grouping it into a struct would only move the argument list"
 )]
 fn render_index(
+    chrome: layout::Chrome,
     user: &SessionUser,
     filters: &SectionsFilters,
     page: usize,
@@ -292,7 +295,7 @@ fn render_index(
 
         (pagination_links(filters, page, page_size, total, total_pages, total_is_estimate))
     };
-    layout::authenticated_page("Sections", user, &body)
+    layout::authenticated_page(chrome, "Sections", user, &body)
 }
 
 /// Deep-link a section's page into the wiki viewer.

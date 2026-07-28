@@ -72,6 +72,7 @@ async fn start(
     headers: HeaderMap,
     HtmlForm(form): HtmlForm<StartForm>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let pkce = oauth::generate_pkce().map_err(|e| oauth_err(&e))?;
     let csrf = oauth::generate_state().map_err(|e| oauth_err(&e))?;
 
@@ -101,7 +102,7 @@ async fn start(
     if seamless {
         Ok(Redirect::to(&authorize_url).into_response())
     } else {
-        Ok(Html(render_manual_page(admin.session(), &authorize_url)).into_response())
+        Ok(Html(render_manual_page(chrome, admin.session(), &authorize_url)).into_response())
     }
 }
 
@@ -259,8 +260,10 @@ fn status_page(
     kind: &'static str,
     msg: &str,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(state);
     let memory = llm_config::require_memory(state)?;
     Ok(Html(llm_config::render_status_page(
+        chrome,
         admin.session(),
         memory,
         kind,
@@ -269,7 +272,11 @@ fn status_page(
     .into_response())
 }
 
-fn render_manual_page(session: &SessionUser, authorize_url: &str) -> String {
+fn render_manual_page(
+    chrome: layout::Chrome,
+    session: &SessionUser,
+    authorize_url: &str,
+) -> String {
     let body = html! {
         h2 { "Log in with Claude Code" }
         p.muted {
@@ -293,7 +300,7 @@ fn render_manual_page(session: &SessionUser, authorize_url: &str) -> String {
         }
         p { a href="/dashboard/admin/llm-config" { "← back to LLM config" } }
     };
-    layout::authenticated_page("Claude Code login", session, &body)
+    layout::authenticated_page(chrome, "Claude Code login", session, &body)
 }
 
 fn host_header(headers: &HeaderMap) -> Option<String> {

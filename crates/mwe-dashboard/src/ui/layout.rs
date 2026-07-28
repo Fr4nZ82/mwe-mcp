@@ -26,6 +26,52 @@ use axum::http::StatusCode;
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use crate::auth::SessionUser;
+use crate::state::DashboardState;
+
+/// What the page **frame** needs to know about the deployment, as
+/// distinct from what it knows about the visitor.
+///
+/// `SessionUser` answers "who is looking at this"; `Chrome` answers "what
+/// kind of instance are they looking at it on". Keeping them apart is why
+/// the deployment posture is a parameter of the layout rather than a
+/// field on the session: an identity is per-request, a posture is per
+/// process, and conflating them would put a config value somewhere a
+/// reviewer would have to be told to look.
+///
+/// Threaded from the handler (which holds [`DashboardState`]) down to
+/// [`shell`]. `Copy` and two words wide, so passing it costs nothing and
+/// a render helper can take it by value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Chrome {
+    /// The deployment is frozen ([`crate::read_only`]). The frame drops
+    /// the chat panel and every nav entry whose page is not mounted, and
+    /// carries a standing notice instead.
+    pub read_only: bool,
+}
+
+impl Chrome {
+    /// The posture of the deployment this request is being served by.
+    #[must_use]
+    pub const fn of(state: &DashboardState) -> Self {
+        Self {
+            read_only: state.config.read_only,
+        }
+    }
+
+    /// `<body>` classes for an authenticated page.
+    ///
+    /// `has-chat-panel` reserves the right gutter the panel occupies; a
+    /// frozen deployment renders no panel, so reserving the space would
+    /// leave a permanent empty column.
+    const fn body_class(self, reading: bool) -> &'static str {
+        match (self.read_only, reading) {
+            (false, false) => "has-chat-panel",
+            (false, true) => "has-chat-panel reading-main",
+            (true, false) => "",
+            (true, true) => "reading-main",
+        }
+    }
+}
 
 /// Session keepalive: on user interaction (click / keypress), throttled to
 /// at most once every 4 minutes and only while the tab is visible, ping
@@ -55,7 +101,7 @@ pub fn anonymous_page(title: &str, body: &Markup) -> String {
     // No nav, a single focused form (login / setup / invite / recovery): the
     // `anon-shell` class centers it as a narrow column (see app.css) instead of
     // pinning it to the left of a wide empty page.
-    shell(title, None, "anon-shell", body).into_string()
+    shell(Chrome::default(), title, None, "anon-shell", body).into_string()
 }
 
 /// Like [`anonymous_page`] but for an *informational / onboarding* anonymous
@@ -69,14 +115,20 @@ pub fn anonymous_page(title: &str, body: &Markup) -> String {
 /// panel: the visitor is anonymous.
 #[must_use]
 pub fn anonymous_reading_page(title: &str, body: &Markup) -> String {
-    shell(title, None, "reading-main", body).into_string()
+    shell(Chrome::default(), title, None, "reading-main", body).into_string()
 }
 
 /// Render the full HTML page for an authenticated visitor; the top nav
-/// includes admin-gated entries when `user.is_admin`.
+/// includes admin-gated entries when `user.is_admin`, minus the ones the
+/// deployment's [`Chrome`] does not mount.
 #[must_use]
-pub fn authenticated_page(title: &str, user: &SessionUser, body: &Markup) -> String {
-    shell(title, Some(user), "has-chat-panel", body).into_string()
+pub fn authenticated_page(
+    chrome: Chrome,
+    title: &str,
+    user: &SessionUser,
+    body: &Markup,
+) -> String {
+    shell(chrome, title, Some(user), chrome.body_class(false), body).into_string()
 }
 
 /// Like [`authenticated_page`] but for a **reading / single-form** surface
@@ -87,15 +139,20 @@ pub fn authenticated_page(title: &str, user: &SessionUser, body: &Markup) -> Str
 /// rather than pinned to the left of a wide screen. Data-heavy pages (tables,
 /// config grids, dashboards) keep [`authenticated_page`] and use the full width.
 #[must_use]
-pub fn authenticated_reading_page(title: &str, user: &SessionUser, body: &Markup) -> String {
-    shell(title, Some(user), "has-chat-panel reading-main", body).into_string()
+pub fn authenticated_reading_page(
+    chrome: Chrome,
+    title: &str,
+    user: &SessionUser,
+    body: &Markup,
+) -> String {
+    shell(chrome, title, Some(user), chrome.body_class(true), body).into_string()
 }
 
 /// Shared body used both by the error converter and by ad-hoc
 /// non-page payloads (e.g. CLI bootstrap response).
 #[must_use]
 pub fn render_page(title: &str, body: &Markup) -> String {
-    shell(title, None, "anon-shell", body).into_string()
+    shell(Chrome::default(), title, None, "anon-shell", body).into_string()
 }
 
 /// The HTML shell — `<head>`, top nav, page header, body slot, footer.
@@ -106,7 +163,13 @@ pub fn render_page(title: &str, body: &Markup) -> String {
 /// drives the hamburger and chat toggles. `chat.js` keeps the chat
 /// content responsibilities (hydration from `localStorage`, agentic
 /// submit, drag-resize); `ui.js` keeps the shell-toggle ones.
-fn shell(title: &str, user: Option<&SessionUser>, body_class: &str, body: &Markup) -> Markup {
+fn shell(
+    chrome: Chrome,
+    title: &str,
+    user: Option<&SessionUser>,
+    body_class: &str,
+    body: &Markup,
+) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -132,7 +195,9 @@ fn shell(title: &str, user: Option<&SessionUser>, body_class: &str, body: &Marku
                     // browser. Set before the deferred chat.js runs.
                     script { (PreEscaped(format!("window.__mweUser={:?};", u.sender_id))) }
                     script src="/dashboard/static/ui.js" defer {}
-                    script src="/dashboard/static/chat.js" defer {}
+                    // chat.js only ever drives the chat panel, which a frozen
+                    // deployment does not render.
+                    @if !chrome.read_only { script src="/dashboard/static/chat.js" defer {} }
                     // Keep the sliding session alive while the user is
                     // actively interacting (esp. the multi-step welcome
                     // primer, which makes no request until final submit).
@@ -140,7 +205,7 @@ fn shell(title: &str, user: Option<&SessionUser>, body_class: &str, body: &Marku
                 }
             }
             body class=(body_class) {
-                (header(user))
+                (header(chrome, user))
                 // Content width: the old hard 1040px cap left big dead zones
                 // on wide (≥2k / 4k) screens. We now let `main` use the width
                 // up to a generous cap and manage readability at the element
@@ -151,13 +216,20 @@ fn shell(title: &str, user: Option<&SessionUser>, body_class: &str, body: &Marku
                 // and every per-element rule collapse to a single column on
                 // small viewports.
                 main class="w-full app-main mx-auto px-4 md:px-6 lg:px-8 mt-6 md:mt-8" {
+                    @if chrome.read_only && user.is_some() {
+                        div class="mb-4" { (crate::read_only::banner()) }
+                    }
                     h1 class="text-xl md:text-2xl mb-4 mt-0" { (title) }
                     (body)
                 }
                 footer class="site-footer mt-12 mb-6 text-text-dim text-xs text-center" {
                     span { "mwe-mcp " (PreEscaped(crate::VERSION)) }
                 }
-                @if user.is_some() {
+                // The chat panel captures memory on every turn, so a frozen
+                // deployment does not render it — nor its reopen FAB, nor the
+                // Help overlay, which is entirely about how to operate the
+                // memory through that chat.
+                @if user.is_some() && !chrome.read_only {
                     (chat_panel())
                     (chat_reopen_fab())
                     // Help overlay. Hidden;
@@ -181,7 +253,7 @@ fn shell(title: &str, user: Option<&SessionUser>, body_class: &str, body: &Marku
 /// of `tailwind/app.css` translates into a stacked column underneath
 /// the topbar. The session badge is hidden on mobile to keep the
 /// topbar single-row when the nav is closed.
-fn header(user: Option<&SessionUser>) -> Markup {
+fn header(chrome: Chrome, user: Option<&SessionUser>) -> Markup {
     html! {
         header class="site-header sticky top-0 z-30 flex flex-wrap items-center gap-3 px-4 md:px-6 py-3 border-b border-border bg-bg-2" {
             a href="/dashboard/"
@@ -217,25 +289,31 @@ fn header(user: Option<&SessionUser>) -> Markup {
                     (nav_link("/dashboard/facts", "Facts"))
                     (nav_link("/dashboard/bridges", "Bridges"))
                     @if u.is_admin {
-                        (nav_link("/dashboard/users", "Users"))
-                        (nav_link("/dashboard/groups", "Groups"))
-                        (nav_link("/dashboard/tokens", "Tokens"))
-                        (nav_link("/dashboard/prompts", "Prompts"))
-                        (nav_link("/dashboard/admin/llm-config", "LLM"))
-                        (nav_link("/dashboard/admin/embedding", "Embedding"))
-                        (nav_link("/dashboard/admin/recall-settings", "Recall"))
                         // Admin "Traces" — the recall journal + 3D replay
                         // viewer (the last few recalls, whole route).
                         (nav_link("/dashboard/admin/recall-traces", "Traces"))
-                        (nav_link("/dashboard/admin/rem-settings", "REM"))
-                        // Admin "Spool" — the training-pair recorder
-                        // (distillation dataset toggle + inventory).
-                        (nav_link("/dashboard/admin/training-spool", "Spool"))
                         (nav_link("/dashboard/admin/health", "Health"))
-                        (nav_link("/dashboard/admin/backup", "Backup"))
-                        // Admin "Dream" — the on-demand console + run history
-                        // (forms at the top, the journal table below).
-                        (nav_link("/dashboard/dream", "Dream"))
+                        // The write-only consoles. A frozen deployment does
+                        // not mount them at all (`routes::build`), so linking
+                        // them would be linking to a 404 — keep the two lists
+                        // in step.
+                        @if !chrome.read_only {
+                            (nav_link("/dashboard/users", "Users"))
+                            (nav_link("/dashboard/groups", "Groups"))
+                            (nav_link("/dashboard/tokens", "Tokens"))
+                            (nav_link("/dashboard/prompts", "Prompts"))
+                            (nav_link("/dashboard/admin/llm-config", "LLM"))
+                            (nav_link("/dashboard/admin/embedding", "Embedding"))
+                            (nav_link("/dashboard/admin/recall-settings", "Recall"))
+                            (nav_link("/dashboard/admin/rem-settings", "REM"))
+                            // Admin "Spool" — the training-pair recorder
+                            // (distillation dataset toggle + inventory).
+                            (nav_link("/dashboard/admin/training-spool", "Spool"))
+                            (nav_link("/dashboard/admin/backup", "Backup"))
+                            // Admin "Dream" — the on-demand console + run history
+                            // (forms at the top, the journal table below).
+                            (nav_link("/dashboard/dream", "Dream"))
+                        }
                     }
                     (nav_link("/dashboard/settings/me", "Settings"))
                 }
@@ -255,7 +333,7 @@ fn header(user: Option<&SessionUser>) -> Markup {
                     // runs — polling /dashboard/dream/status — then swaps it for
                     // the one-line outcome (click to dismiss). Inline design
                     // tokens, no new Tailwind utility to recompile.
-                    @if u.is_admin {
+                    @if u.is_admin && !chrome.read_only {
                         span id="dream-indicator"
                             style="display:none;align-items:center;padding:.1rem .55rem;font-size:.72rem;font-weight:700;border-radius:9999px;white-space:nowrap;color:var(--bg);background:var(--p)" {}
                     }
@@ -271,10 +349,14 @@ fn header(user: Option<&SessionUser>) -> Markup {
                     // failed to attach). Styled with inline design tokens
                     // (like the Dream/Help modals) so no new Tailwind utility
                     // needs recompiling.
-                    a id="in-flight-badge" href="/dashboard/chat"
-                        style="display:none;align-items:center;padding:.1rem .55rem;font-size:.72rem;font-weight:700;color:var(--bg);background:var(--amber);border-radius:9999px;text-decoration:none;white-space:nowrap"
-                        title="Things you can still act on — open in chat" {
-                        span id="in-flight-badge-count" {}
+                    // Nothing is actionable on a frozen deployment, and the
+                    // badge's whole affordance is "open this in chat".
+                    @if !chrome.read_only {
+                        a id="in-flight-badge" href="/dashboard/chat"
+                            style="display:none;align-items:center;padding:.1rem .55rem;font-size:.72rem;font-weight:700;color:var(--bg);background:var(--amber);border-radius:9999px;text-decoration:none;white-space:nowrap"
+                            title="Things you can still act on — open in chat" {
+                            span id="in-flight-badge-count" {}
+                        }
                     }
                     // The operative-chat Help trigger lives in the chat
                     // panel header (see `chat_panel`), not here — Help is

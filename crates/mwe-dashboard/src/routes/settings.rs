@@ -80,10 +80,12 @@ pub(super) async fn render_page(
     error: Option<&str>,
     success: Option<&str>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(state);
     let reveal_on = crate::reveal::active(state, user, jar);
     let global_2fa = admin_global_require(state, user).await?;
     let cfg = admin_config(state, user)?;
     Ok(Html(render(
+        chrome,
         user,
         reveal_on,
         state.config.admin_reveal_locked,
@@ -264,6 +266,7 @@ fn global_require_section(on: bool) -> Markup {
 }
 
 fn render(
+    chrome: layout::Chrome,
     user: &SessionUser,
     reveal_on: bool,
     reveal_locked: bool,
@@ -280,44 +283,55 @@ fn render(
             (components::flash("success", msg))
         }
         p.muted {
-            "You are signed in as " strong { (user.sender_id) } ". "
-            "Changing your password keeps you signed in on this session — "
-            "other sessions remain valid until they expire or you revoke them."
-        }
-        form action="/dashboard/settings/me" method="post" {
-            // Hidden username anchor for browser password managers
-            // (Chrome / Safari) so the new password gets associated
-            // with the right account. Not submitted as a meaningful
-            // field — the route reads the signed-in user from the
-            // session cookie regardless.
-            input
-                type="text"
-                name="username"
-                autocomplete="username"
-                value=(user.sender_id)
-                hidden;
-            (components::password_field("current_password", "Current password", "current-password"))
-            (components::password_field("new_password", "New password", "new-password"))
-            (components::password_field("new_password_confirm", "Confirm new password", "new-password"))
-            (components::submit("Update password"))
-        }
-
-        section.twofa-link {
-            h2 { "Two-factor authentication" }
-            p.muted {
-                "Add a one-time code from an authenticator app to your sign-in."
+            "You are signed in as " strong { (user.sender_id) } "."
+            @if !chrome.read_only {
+                " Changing your password keeps you signed in on this session — "
+                "other sessions remain valid until they expire or you revoke them."
             }
-            p { a href="/dashboard/settings/2fa" { "Manage two-factor authentication →" } }
+        }
+        // A frozen deployment stores no new credential and mounts no 2FA
+        // routes, so both are gone; the page stays because it is also
+        // where an admin reads the reveal posture.
+        @if chrome.read_only {
+            (crate::read_only::notice())
+        } @else {
+            form action="/dashboard/settings/me" method="post" {
+                // Hidden username anchor for browser password managers
+                // (Chrome / Safari) so the new password gets associated
+                // with the right account. Not submitted as a meaningful
+                // field — the route reads the signed-in user from the
+                // session cookie regardless.
+                input
+                    type="text"
+                    name="username"
+                    autocomplete="username"
+                    value=(user.sender_id)
+                    hidden;
+                (components::password_field("current_password", "Current password", "current-password"))
+                (components::password_field("new_password", "New password", "new-password"))
+                (components::password_field("new_password_confirm", "Confirm new password", "new-password"))
+                (components::submit("Update password"))
+            }
+
+            section.twofa-link {
+                h2 { "Two-factor authentication" }
+                p.muted {
+                    "Add a one-time code from an authenticator app to your sign-in."
+                }
+                p { a href="/dashboard/settings/2fa" { "Manage two-factor authentication →" } }
+            }
         }
 
         @if user.is_admin {
-            (global_require_section(global_2fa))
+            @if !chrome.read_only {
+                (global_require_section(global_2fa))
+            }
             (reveal_section(reveal_on, reveal_locked))
-            @if let Some(cfg) = cfg {
+            @if let Some(cfg) = cfg && !chrome.read_only {
                 (super::email_settings::section(&cfg.email))
                 (super::server_settings::sections(cfg))
             }
         }
     };
-    layout::authenticated_reading_page("Settings", user, &body)
+    layout::authenticated_reading_page(chrome, "Settings", user, &body)
 }

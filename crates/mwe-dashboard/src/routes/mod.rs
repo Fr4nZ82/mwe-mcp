@@ -59,40 +59,59 @@ mod wiki_view;
 
 /// Build the dashboard router, ready to be mounted under `/dashboard`.
 pub fn build(state: DashboardState) -> Router {
-    let authenticated = Router::new()
+    let frozen = state.config.read_only;
+
+    let mut authenticated = Router::new()
         .route("/home", get(home::index))
         .route("/logout", post(logout::handler))
-        .merge(users::router())
-        .merge(groups::router())
-        .merge(tokens::router())
         .merge(settings::router())
-        .merge(two_factor::settings_router())
         .merge(proposals::router())
         .merge(wiki_view::router())
         .merge(smart_view::router())
         .merge(skills_view::router())
         .merge(bridges::dashboard_tab_router())
-        .merge(dream::router())
         .merge(facts::router())
         .merge(sections_view::router())
         .merge(media::router())
         .merge(help::router())
         .merge(briefing::router())
         .merge(chat::router())
-        .merge(prompts::router())
-        .merge(llm_config::router())
-        .merge(claude_login::router())
-        .merge(recall_settings::router())
         .merge(recall_traces::router())
-        .merge(rem_settings::router())
-        .merge(training_spool::router())
-        .merge(embedding_settings::router())
-        .merge(email_settings::router())
-        .merge(server_settings::router())
         .merge(health::router())
-        .merge(backup::router())
-        .merge(welcome::router())
-        .merge(keepalive::router())
+        .merge(keepalive::router());
+
+    // The consoles that exist only to change things. On a frozen
+    // deployment every control on these pages is refused, and a page
+    // whose whole content is dead controls is worse than a page that is
+    // not there: it invites a stranger to try. So they are not mounted at
+    // all — see [`crate::read_only`], and keep this list in step with the
+    // admin block of the top nav (`ui::layout`), which hides the same
+    // entries.
+    if !frozen {
+        authenticated = authenticated
+            .merge(users::router())
+            .merge(groups::router())
+            .merge(tokens::router())
+            .merge(two_factor::settings_router())
+            .merge(dream::router())
+            .merge(prompts::router())
+            .merge(llm_config::router())
+            .merge(claude_login::router())
+            .merge(recall_settings::router())
+            .merge(rem_settings::router())
+            .merge(training_spool::router())
+            .merge(embedding_settings::router())
+            .merge(email_settings::router())
+            .merge(server_settings::router())
+            .merge(backup::router())
+            // The profile wizard's whole job is to write a person's first
+            // facts. On a frozen instance the identities are already
+            // seeded, so nobody should be sent here — and `home` no
+            // longer redirects to it in this mode.
+            .merge(welcome::router());
+    }
+
+    let authenticated = authenticated
         .layer(from_fn_with_state(state.clone(), refresh_session_layer))
         .with_state(state.clone());
 
@@ -127,9 +146,16 @@ pub fn build(state: DashboardState) -> Router {
         // `webagentoauth_public_router`.
         .merge(webagentoauth::consent_router())
         .merge(crate::assets::router())
-        .with_state(state);
+        .with_state(state.clone());
 
-    public.merge(authenticated)
+    // The freeze goes over **both** halves, and last, so it sees every
+    // route in the tree — including the public ones (`/setup`,
+    // `/accept-invite`, `/reset-password`, the OAuth consent) that sit
+    // outside the session layer by design and would otherwise be the way
+    // in. Inert unless `instance.read_only` is set.
+    public
+        .merge(authenticated)
+        .layer(from_fn_with_state(state, crate::read_only::guard))
 }
 
 /// Standalone router exposing only the `/cite/:bi_id` resolver.
@@ -165,5 +191,10 @@ pub fn public_site_router() -> Router {
 /// step (`/dashboard/webagentoauth/authorize`) lives in the authenticated tree
 /// above.
 pub fn webagentoauth_public_router(state: DashboardState) -> Router {
-    webagentoauth::public_router().with_state(state)
+    // Same freeze as the dashboard tree: registration and the token
+    // endpoint hand out credentials, which a shown instance does not do.
+    // Discovery is a `GET` and keeps answering.
+    webagentoauth::public_router()
+        .layer(from_fn_with_state(state.clone(), crate::read_only::guard))
+        .with_state(state)
 }

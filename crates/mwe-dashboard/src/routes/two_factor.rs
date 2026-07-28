@@ -172,6 +172,7 @@ async fn settings_page(
 /// Begin enrollment: mint a secret, store it unconfirmed, show the QR +
 /// the confirm form.
 async fn enroll(State(state): State<DashboardState>, user: SessionUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let secret = twofa::generate_secret_bytes();
     twofa::begin_enrollment(&state.pool, &state.secret, &user.sender_id, &secret).await?;
     let account = account_label(&state, &user.sender_id).await?;
@@ -182,6 +183,7 @@ async fn enroll(State(state): State<DashboardState>, user: SessionUser) -> Resul
         (enroll_panel(&url, &qr, None))
     };
     Ok(Html(layout::authenticated_reading_page(
+        chrome,
         "Two-factor authentication",
         &user,
         &body,
@@ -200,6 +202,7 @@ async fn confirm(
     user: SessionUser,
     axum::Form(form): axum::Form<ConfirmSubmission>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     if twofa::state_of(&state.pool, &user.sender_id).await? != State2fa::Pending {
         // Nothing pending — re-render the status page.
         return render_settings(
@@ -223,6 +226,7 @@ async fn confirm(
             (enroll_panel(&url, &qr, Some("That code didn't match. Try the current one.")))
         };
         return Ok(Html(layout::authenticated_reading_page(
+            chrome,
             "Two-factor authentication",
             &user,
             &body,
@@ -239,6 +243,7 @@ async fn confirm(
         p { a href="/dashboard/settings/2fa" { "← Back to two-factor settings" } }
     };
     Ok(Html(layout::authenticated_reading_page(
+        chrome,
         "Recovery codes",
         &user,
         &body,
@@ -273,6 +278,7 @@ async fn regen_codes(
     State(state): State<DashboardState>,
     user: SessionUser,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     if !twofa::is_enabled(&state.pool, &user.sender_id).await? {
         return render_settings(&state, &user, Some(("error", "Enable two-factor first."))).await;
     }
@@ -288,6 +294,7 @@ async fn regen_codes(
         p { a href="/dashboard/settings/2fa" { "← Back to two-factor settings" } }
     };
     Ok(Html(layout::authenticated_reading_page(
+        chrome,
         "Recovery codes",
         &user,
         &body,
@@ -301,6 +308,7 @@ async fn render_settings(
     user: &SessionUser,
     flash: Option<(&str, &str)>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(state);
     let st = twofa::state_of(&state.pool, &user.sender_id).await?;
     let obliged = twofa::is_obliged(&state.pool, &user.sender_id).await?;
     let unused = if st == State2fa::Enabled {
@@ -347,6 +355,7 @@ async fn render_settings(
         }
     };
     Ok(Html(layout::authenticated_reading_page(
+        chrome,
         "Two-factor authentication",
         user,
         &body,

@@ -256,6 +256,7 @@ async fn delete_confirm(
     admin: AdminUser,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let subtree = wiki_delete::collect_subtree(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
@@ -330,6 +331,7 @@ async fn delete_confirm(
         }
     };
     Ok(Html(layout::authenticated_reading_page(
+        chrome,
         "Delete wiki",
         admin.session(),
         &body,
@@ -483,6 +485,7 @@ async fn list(
     user: SessionUser,
     jar: CookieJar,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let discovered = memory
         .tree
@@ -538,12 +541,36 @@ async fn list(
     }
     rows.sort();
 
-    let body = html! {
+    let body = render_wikis_index(
+        &user,
+        &rows,
+        reveal,
+        crate::read_only::hides_writes(&state),
+        &memory.tree.wikis_dir().display().to_string(),
+    );
+
+    Ok(Html(layout::authenticated_page(
+        chrome, "Wikis", &user, &body,
+    )))
+}
+
+/// The standard-wiki table. Split out of [`list`] so the handler stays
+/// under the line cap: everything above it is the query, this is the page.
+///
+/// `rows` is `(id, title, type, active fact count, live-identity)`.
+fn render_wikis_index(
+    user: &SessionUser,
+    rows: &[(String, String, String, i64, bool)],
+    reveal: bool,
+    frozen: bool,
+    wikis_dir: &str,
+) -> Markup {
+    html! {
         (wiki_family_tabs(/* smart_active */ false))
         @if reveal { (crate::reveal::banner()) }
         p.muted {
             "Read-only view of every standard-family wiki the engine has indexed under "
-            code { (memory.tree.wikis_dir().display().to_string()) }
+            code { (wikis_dir) }
             ". Smart-consumer wikis live on the "
             a href="/dashboard/wiki/smart" { "Smart" } " tab."
         }
@@ -560,16 +587,19 @@ async fn list(
                     th { "Title" }
                     th { "Type" }
                     th { "Active facts" }
-                    @if user.is_admin { th { "Actions" } }
+                    @if user.is_admin && !frozen { th { "Actions" } }
                 } }
                 tbody {
-                    @for (id, title, kind, count, live_identity) in &rows {
+                    @for (id, title, kind, count, live_identity) in rows {
                         tr {
                             td { a href=(format!("/dashboard/wiki/{id}")) { code { (id) } } }
                             td { (title) }
                             td.muted { (kind) }
                             td { (count) }
-                            @if user.is_admin {
+                            // Deleting a whole wiki subtree is the most
+                            // destructive control in the panel; a frozen
+                            // deployment drops the column entirely.
+                            @if user.is_admin && !frozen {
                                 td {
                                     @if *live_identity {
                                         span.muted
@@ -589,9 +619,7 @@ async fn list(
                 }
             }
         }
-    };
-
-    Ok(Html(layout::authenticated_page("Wikis", &user, &body)))
+    }
 }
 
 async fn view(
@@ -600,6 +628,7 @@ async fn view(
     jar: CookieJar,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let meta = wiki_get_meta(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
@@ -710,7 +739,7 @@ async fn view(
 
     let title = format!("Wiki — {}", wiki_id.as_str());
     Ok(Html(layout::authenticated_reading_page(
-        &title, &user, &body,
+        chrome, &title, &user, &body,
     )))
 }
 
@@ -878,6 +907,7 @@ async fn view_page(
     AxumPath((id, page_path)): AxumPath<(String, String)>,
     Query(q): Query<ViewPageQuery>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let meta = wiki_get_meta(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
@@ -961,10 +991,17 @@ async fn view_page(
     // comment endpoints enforce, so we never render a dead "+ Comment"
     // link. Reveal does not factor in (it is a read lens, not a write
     // grant; see `can_comment_on`).
-    let can_comment = can_comment_on(&state.pool, memory, &wiki_id, &user.sender_id).await?;
+    // A frozen deployment refuses both endpoints, so neither affordance
+    // is offered — but the page says *that* rather than the ACL reason
+    // (`render_view_page_body` branches on `frozen` first): telling a
+    // visitor they lack write access, when in truth nobody has any,
+    // would be a wrong explanation of a correct refusal.
+    let frozen = crate::read_only::hides_writes(&state);
+    let can_comment =
+        !frozen && can_comment_on(&state.pool, memory, &wiki_id, &user.sender_id).await?;
     // Whether to offer the "✎ what goes here" affordance: standard wiki +
     // owner-or-admin. A non-owner reader never sees a link that would 404.
-    let can_edit_meta = may_edit_page_meta(&state.pool, memory, &wiki_id, &user).await?;
+    let can_edit_meta = !frozen && may_edit_page_meta(&state.pool, memory, &wiki_id, &user).await?;
 
     // Relative markdown links resolve against this page's directory,
     // same as the browser would — but rewritten to the canonical view
@@ -983,6 +1020,7 @@ async fn view_page(
             can_comment,
             can_edit_meta,
             reveal,
+            frozen,
         },
         &|target| resolve_wikilink_href(&link_index, Some(wiki_id.as_str()), target),
         &|dest| {
@@ -996,7 +1034,10 @@ async fn view_page(
     );
 
     let title = format!("View — {}/{}", wiki_id.as_str(), page_path);
-    Ok(Html(layout::authenticated_reading_page(&title, &user, &body)).into_response())
+    Ok(Html(layout::authenticated_reading_page(
+        chrome, &title, &user, &body,
+    ))
+    .into_response())
 }
 
 /// Raw row shape projected by [`view_page`]'s query against
@@ -1486,6 +1527,10 @@ struct PageViewFlags {
     /// `[redacted]`, and show the reveal banner. (Implies admin: it can
     /// only be true for an admin, see [`crate::reveal::active`].)
     reveal: bool,
+    /// The deployment is frozen ([`crate::read_only`]). Implies both
+    /// `can_comment` and `can_edit_meta` are false, and changes the
+    /// *reason* the page gives for it.
+    frozen: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1506,6 +1551,7 @@ fn render_view_page_body(
         can_comment,
         can_edit_meta,
         reveal,
+        frozen,
     } = flags;
     let view_url = format!("/dashboard/wiki/{}/view/{}", wiki_id.as_str(), page_path);
     let comment_mode_url = format!("{view_url}?mode=comment");
@@ -1584,7 +1630,7 @@ fn render_view_page_body(
                     span.muted { " — opens a per-heading affordance to leave feedback for the smart consumer." }
                 }
             }
-        } @else {
+        } @else if !frozen {
             p.comment-mode-toggle.muted {
                 "You can't comment on this page — you don't have write access to it."
             }
@@ -1617,14 +1663,27 @@ fn render_view_page_body(
             (render_describe_affordance(wiki_id, page_path))
         }
 
-        (blessed_channels_footer(&comment_mode_url, can_comment))
+        (blessed_channels_footer(&comment_mode_url, can_comment, frozen))
     }
 }
 
 /// The "blessed channels" footer: how to change the page without the
 /// (removed) raw editor. The inline-comments link is offered only when
 /// the viewer can actually comment, so it is never a dead link.
-fn blessed_channels_footer(comment_mode_url: &str, can_comment: bool) -> Markup {
+///
+/// On a frozen deployment there are no channels at all — the footer would
+/// otherwise be a list of three links to things that refuse — so it says
+/// that instead.
+fn blessed_channels_footer(comment_mode_url: &str, can_comment: bool, frozen: bool) -> Markup {
+    if frozen {
+        return html! {
+            p class="blessed-channels-footer muted" {
+                "This instance is read-only, so this page cannot be changed from here "
+                "by anybody — not through comments, not through the chat, not through "
+                "the fact actions."
+            }
+        };
+    }
     html! {
         // Manual free-text editing from the dashboard is forbidden
         // (smart) / admin-only-discouraged (standard) per roadmap 6j —
@@ -1748,6 +1807,7 @@ async fn comment_form(
     AxumPath((id, page_path)): AxumPath<(String, String)>,
     Query(q): Query<CommentAnchor>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let _meta = wiki_get_meta(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
@@ -1776,6 +1836,7 @@ async fn comment_form(
         resolve_heading_label(&memory.tree, &wiki_id, &rel, &anchor).map_err(map_wiki_err)?;
 
     Ok(Html(render_comment_form(
+        chrome,
         &user,
         &id,
         &page_path,
@@ -1967,6 +2028,7 @@ fn derive_topic(body: &str) -> String {
 }
 
 fn render_comment_form(
+    chrome: layout::Chrome,
     user: &SessionUser,
     wiki_id: &str,
     page_path: &str,
@@ -2038,7 +2100,7 @@ fn render_comment_form(
             a href=(view_url) { "← Back to page" }
         }
     };
-    layout::authenticated_reading_page(&title, user, &html_body)
+    layout::authenticated_reading_page(chrome, &title, user, &html_body)
 }
 
 /// Whether `sender_id` may leave a dashboard comment on `wiki_id`:
@@ -2109,6 +2171,7 @@ async fn edit_form(
     user: SessionUser,
     AxumPath((id, page_path)): AxumPath<(String, String)>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
 
@@ -2146,6 +2209,7 @@ async fn edit_form(
     };
 
     Ok(Html(render_edit_form(
+        chrome,
         &user,
         &id,
         &page_path,
@@ -2161,6 +2225,7 @@ async fn submit_edit(
     AxumPath((id, page_path)): AxumPath<(String, String)>,
     HtmlForm(form): HtmlForm<PageEditSubmission>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
 
@@ -2238,6 +2303,7 @@ async fn submit_edit(
         Err(err) => {
             let msg = render_admin_error(&err);
             Ok(Html(render_edit_form(
+                chrome,
                 &user,
                 &id,
                 &page_path,
@@ -2271,6 +2337,7 @@ fn render_admin_error(err: &AdminError) -> String {
 }
 
 fn render_edit_form(
+    chrome: layout::Chrome,
     user: &SessionUser,
     wiki_id: &str,
     page_path: &str,
@@ -2321,7 +2388,7 @@ fn render_edit_form(
             a href=(format!("/dashboard/wiki/{wiki_id}")) { "← Back to wiki" }
         }
     };
-    layout::authenticated_reading_page(&title, user, &html_body)
+    layout::authenticated_reading_page(chrome, &title, user, &html_body)
 }
 
 /// Returns `Ok(())` if the caller owns the wiki, `Err(NotFound)`
@@ -2441,6 +2508,7 @@ async fn describe_form(
     user: SessionUser,
     AxumPath((id, page_path)): AxumPath<(String, String)>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     if !may_edit_page_meta(&state.pool, memory, &wiki_id, &user).await? {
@@ -2450,7 +2518,10 @@ async fn describe_form(
     let current = mwe_core::meta_annotate::read_page_description(&abs)
         .map_err(|e| DashboardError::Internal(format!("read page description: {e}")))?
         .unwrap_or_default();
-    Ok(Html(render_describe_form(&user, &id, &page_path, &current, None)).into_response())
+    Ok(Html(render_describe_form(
+        chrome, &user, &id, &page_path, &current, None,
+    ))
+    .into_response())
 }
 
 async fn submit_describe(
@@ -2459,6 +2530,7 @@ async fn submit_describe(
     AxumPath((id, page_path)): AxumPath<(String, String)>,
     HtmlForm(form): HtmlForm<DescribeSubmission>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     if !may_edit_page_meta(&state.pool, memory, &wiki_id, &user).await? {
@@ -2471,6 +2543,7 @@ async fn submit_describe(
             "Too long — keep «what goes here» under {MAX_PAGE_DESCRIPTION_LEN} characters."
         );
         return Ok(Html(render_describe_form(
+            chrome,
             &user,
             &id,
             &page_path,
@@ -2497,6 +2570,7 @@ async fn submit_describe(
 }
 
 fn render_describe_form(
+    chrome: layout::Chrome,
     user: &SessionUser,
     id: &str,
     page_path: &str,
@@ -2537,7 +2611,7 @@ fn render_describe_form(
         }
     };
     let title = format!("Describe — {page_path}");
-    layout::authenticated_reading_page(&title, user, &body)
+    layout::authenticated_reading_page(chrome, &title, user, &body)
 }
 
 /// Gate the raw free-text page editor (roadmap 6j: manual wiki editing

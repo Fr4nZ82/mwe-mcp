@@ -195,11 +195,13 @@ struct Flash<'a> {
 }
 
 async fn page(State(state): State<DashboardState>, admin: AdminUser) -> Result<Html<String>> {
-    let body = render(admin.session(), &state.recall_snapshot(), None);
+    let chrome = layout::Chrome::of(&state);
+    let body = render(chrome, admin.session(), &state.recall_snapshot(), None);
     Ok(Html(body))
 }
 
 fn render(
+    chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     cfg: &RecallConfig,
     flash: Option<Flash<'_>>,
@@ -265,7 +267,7 @@ fn render(
             "."
         }
     };
-    layout::authenticated_page("Recall settings", session, &body)
+    layout::authenticated_page(chrome, "Recall settings", session, &body)
 }
 
 // ---------- POST ----------
@@ -275,6 +277,7 @@ async fn save(
     admin: AdminUser,
     HtmlForm(form): HtmlForm<HashMap<String, String>>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let mut parsed = parse_form(&form)?;
 
     // Preserve every non-recall section of the existing Config by
@@ -319,6 +322,7 @@ async fn save(
     );
 
     let body = render(
+        chrome,
         admin.session(),
         &parsed,
         Some(Flash {

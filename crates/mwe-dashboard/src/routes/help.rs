@@ -9,6 +9,7 @@
 //! modal and the fallback page cannot drift.
 
 use axum::Router;
+use axum::extract::State;
 use axum::response::Html;
 use axum::routing::get;
 use maud::html;
@@ -27,7 +28,8 @@ pub fn router() -> Router<DashboardState> {
 /// topnav Help modal shows, rendered as a normal page. Available to
 /// every authenticated user (the operative chat needs discoverability
 /// for non-admins too).
-async fn index(user: SessionUser) -> Result<Html<String>> {
+async fn index(State(state): State<DashboardState>, user: SessionUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let body = html! {
         (layout::help_body())
         p style="margin-top:1rem" {
@@ -37,6 +39,7 @@ async fn index(user: SessionUser) -> Result<Html<String>> {
         }
     };
     Ok(Html(layout::authenticated_reading_page(
+        chrome,
         "Talking to the chat",
         &user,
         &body,

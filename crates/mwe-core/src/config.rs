@@ -2002,6 +2002,31 @@ const fn default_backup_retention_auto() -> u32 {
 /// exactly as it did before the section existed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceConfig {
+    /// Freeze the deployment: refuse every operation that changes memory
+    /// or configuration, while leaving identity, reading and navigation
+    /// working.
+    ///
+    /// This is **not** a transport-level ban on writes. Half the point of
+    /// a shown instance is reading the same page as one person and then
+    /// as another, so signing in, signing out and switching identity have
+    /// to keep working — they write session state by nature. What the
+    /// mode refuses is the *substance*: facts, wiki pages, comments,
+    /// proposals, dreams, users, tokens, prompts, and every YAML editor.
+    ///
+    /// Enforced on all three surfaces the instance is reachable through —
+    /// the dashboard's HTTP tree, the MCP tool dispatcher, and the media
+    /// upload endpoint — and the background schedulers that would rewrite
+    /// memory on their own (REM, the document worker, automatic backups)
+    /// do not start.
+    ///
+    /// Two deliberate exceptions, because "changes memory" is the test
+    /// and neither of these does: `wiki_navigate` still appends to the
+    /// capped recall-trace journal, and `events_poll` still stamps a
+    /// consumer's `last_seen_at`. Both are telemetry about the reader,
+    /// not content.
+    #[serde(default)]
+    pub read_only: bool,
+
     /// Take the [admin ACL-reveal](crate::config) switch away from the
     /// dashboard admin.
     ///

@@ -55,6 +55,13 @@ pub struct DashboardConfig {
     /// flip this on via the operator-facing config.
     pub cookie_secure: bool,
 
+    /// The deployment is frozen (`mwe-mcp.config.yaml >
+    /// instance.read_only`): every request that would change memory or
+    /// configuration is refused, and the dashboard hides the controls it
+    /// refuses instead of offering them and failing. Identity, reading
+    /// and navigation are untouched. See [`crate::read_only`].
+    pub read_only: bool,
+
     /// The admin ACL-reveal switch is taken away from the dashboard
     /// admin (`mwe-mcp.config.yaml > instance.admin_reveal_locked`).
     ///
@@ -74,6 +81,7 @@ impl Default for DashboardConfig {
             reset_ttl_minutes: 30,
             session_ttl_minutes: 60,
             cookie_secure: false,
+            read_only: false,
             admin_reveal_locked: false,
         }
     }

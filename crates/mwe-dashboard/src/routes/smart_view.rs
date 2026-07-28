@@ -89,6 +89,7 @@ async fn list_smart_wikis(
     State(state): State<DashboardState>,
     user: SessionUser,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
 
     let discovered = memory
@@ -176,7 +177,9 @@ async fn list_smart_wikis(
         }
     };
 
-    Ok(Html(layout::authenticated_page("Wikis", &user, &body)))
+    Ok(Html(layout::authenticated_page(
+        chrome, "Wikis", &user, &body,
+    )))
 }
 
 async fn view_briefing(
@@ -184,6 +187,7 @@ async fn view_briefing(
     user: SessionUser,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let _meta = wiki_get_meta(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
@@ -238,7 +242,9 @@ async fn view_briefing(
     };
 
     let title = format!("Briefing — {}", wiki_id.as_str());
-    Ok(Html(layout::authenticated_page(&title, &user, &body)))
+    Ok(Html(layout::authenticated_page(
+        chrome, &title, &user, &body,
+    )))
 }
 
 #[derive(Debug)]
@@ -305,6 +311,7 @@ async fn view_op_log(
     AxumPath(id): AxumPath<String>,
     Query(q): Query<OpLogFlashQuery>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let _meta = wiki_get_meta(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
@@ -352,6 +359,7 @@ async fn view_op_log(
         .collect();
 
     Ok(Html(render_op_log(
+        chrome,
         &user,
         &wiki_id,
         &entries,
@@ -360,6 +368,7 @@ async fn view_op_log(
 }
 
 fn render_op_log(
+    chrome: layout::Chrome,
     user: &SessionUser,
     wiki_id: &WikiId,
     entries: &[OpLogEntry],
@@ -374,9 +383,13 @@ fn render_op_log(
         p.muted {
             "Append-only audit log of every " code { "wiki_admin_*" }
             " mutation on this wiki. Showing the most recent 200 entries. "
-            "Admin users can revert individual " code { "push_*" } " rows "
-            "via the strict-conflict policy: a refusal banner "
-            "fires when any later op touched the same page."
+            @if chrome.read_only {
+                "This instance is read-only, so nothing here can be reverted."
+            } @else {
+                "Admin users can revert individual " code { "push_*" } " rows "
+                "via the strict-conflict policy: a refusal banner "
+                "fires when any later op touched the same page."
+            }
         }
         @if entries.is_empty() {
             p.muted { "No admin operations recorded yet." }
@@ -407,7 +420,7 @@ fn render_op_log(
                             td.muted { code { (&e.payload_hash[..16.min(e.payload_hash.len())]) "…" } }
                             td.muted { (e.ts) }
                             td.muted {
-                                (render_revert_cell(user, wiki_id, e))
+                                (render_revert_cell(user, wiki_id, e, chrome.read_only))
                             }
                         }
                     }
@@ -422,13 +435,19 @@ fn render_op_log(
     };
 
     let title = format!("Op log — {}", wiki_id.as_str());
-    layout::authenticated_page(&title, user, &body)
+    layout::authenticated_page(chrome, &title, user, &body)
 }
 
-fn render_revert_cell(user: &SessionUser, wiki_id: &WikiId, entry: &OpLogEntry) -> Markup {
+fn render_revert_cell(
+    user: &SessionUser,
+    wiki_id: &WikiId,
+    entry: &OpLogEntry,
+    frozen: bool,
+) -> Markup {
     // Only admin users see any revert affordance at all — non-admins
-    // get a muted dash so the column still aligns cleanly.
-    if !user.is_admin {
+    // get a muted dash so the column still aligns cleanly, and a frozen
+    // deployment reverts nothing at all.
+    if !user.is_admin || frozen {
         return html! { span.muted { "—" } };
     }
     if let Some(reason) = revert_disabled_reason(entry) {
@@ -614,8 +633,9 @@ async fn view_sharing(
     user: SessionUser,
     AxumPath(id): AxumPath<String>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let sharing = load_sharing(&state, &user, &id)?;
-    Ok(Html(render_sharing(&user, &sharing, None)))
+    Ok(Html(render_sharing(chrome, &user, &sharing, None)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -630,6 +650,7 @@ async fn submit_sharing(
     AxumPath(id): AxumPath<String>,
     HtmlForm(submission): HtmlForm<SharingSubmission>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let sharing = load_sharing(&state, &user, &id)?;
 
     let mut new_roster = Vec::new();
@@ -645,7 +666,7 @@ async fn submit_sharing(
                 let mut sticky = sharing;
                 sticky.shared_with =
                     parse_lines(&submission.shared_with_raw).unwrap_or(sticky.shared_with);
-                return Ok(Html(render_sharing(&user, &sticky, Some(&msg))).into_response());
+                return Ok(Html(render_sharing(chrome, &user, &sticky, Some(&msg))).into_response());
             },
         }
     }
@@ -723,7 +744,12 @@ fn update_shared_with(
     tree.resolve_scope_principal(&meta).map_err(map_wiki_err)
 }
 
-fn render_sharing(user: &SessionUser, sharing: &SharingState, error: Option<&str>) -> String {
+fn render_sharing(
+    chrome: layout::Chrome,
+    user: &SessionUser,
+    sharing: &SharingState,
+    error: Option<&str>,
+) -> String {
     let roster_text: String = sharing
         .shared_with
         .iter()
@@ -754,15 +780,20 @@ fn render_sharing(user: &SessionUser, sharing: &SharingState, error: Option<&str
             code { "group:<id>" } ", or " code { "global" } "."
         }
 
-        form action=(format!("/dashboard/wiki/{}/sharing", sharing.wiki_id)) method="post" {
-            p {
-                label for="shared_with_raw" { "Roster" }
-                textarea id="shared_with_raw" name="shared_with_raw" rows="8" cols="60"
-                    placeholder="user:bob\ngroup:lnprint-devs\nglobal" {
-                    (roster_text)
+        @if chrome.read_only {
+            (crate::read_only::notice())
+            pre { (roster_text) }
+        } @else {
+            form action=(format!("/dashboard/wiki/{}/sharing", sharing.wiki_id)) method="post" {
+                p {
+                    label for="shared_with_raw" { "Roster" }
+                    textarea id="shared_with_raw" name="shared_with_raw" rows="8" cols="60"
+                        placeholder="user:bob\ngroup:lnprint-devs\nglobal" {
+                        (roster_text)
+                    }
                 }
+                (components::submit("Save"))
             }
-            (components::submit("Save"))
         }
 
         p {
@@ -773,7 +804,7 @@ fn render_sharing(user: &SessionUser, sharing: &SharingState, error: Option<&str
     };
 
     let title = format!("Sharing — {}", sharing.wiki_id);
-    layout::authenticated_page(&title, user, &body)
+    layout::authenticated_page(chrome, &title, user, &body)
 }
 
 fn map_wiki_err(e: mwe_core::wiki::WikiError) -> DashboardError {

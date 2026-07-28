@@ -30,7 +30,8 @@ pub fn router() -> Router<DashboardState> {
         .route("/skills/:name", get(view))
 }
 
-async fn list(State(_state): State<DashboardState>, user: SessionUser) -> Result<Html<String>> {
+async fn list(State(state): State<DashboardState>, user: SessionUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let bundled = skills::list_bundled()
         .map_err(|e| DashboardError::Internal(format!("list skills: {e}")))?;
 
@@ -50,7 +51,9 @@ async fn list(State(_state): State<DashboardState>, user: SessionUser) -> Result
         }
     };
 
-    Ok(Html(layout::authenticated_page("Skills", &user, &body)))
+    Ok(Html(layout::authenticated_page(
+        chrome, "Skills", &user, &body,
+    )))
 }
 
 fn render_skill_table(entries: &[Skill]) -> Markup {
@@ -87,10 +90,11 @@ fn render_skill_row(s: &Skill) -> Markup {
 }
 
 async fn view(
-    State(_state): State<DashboardState>,
+    State(state): State<DashboardState>,
     user: SessionUser,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let (skill, body_md) = match skills::fetch(&name) {
         Ok(hit) => hit,
         Err(skills::SkillError::NotFound(_)) => return Err(DashboardError::NotFound),
@@ -119,5 +123,7 @@ async fn view(
     };
 
     let title = format!("Skill — {}", skill.name);
-    Ok(Html(layout::authenticated_page(&title, &user, &body)))
+    Ok(Html(layout::authenticated_page(
+        chrome, &title, &user, &body,
+    )))
 }

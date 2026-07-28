@@ -43,6 +43,7 @@ pub fn router() -> Router<DashboardState> {
 }
 
 async fn page(State(state): State<DashboardState>, admin: AdminUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let memory = state.memory.as_ref().ok_or_else(|| {
         DashboardError::Internal(
             "memory handles missing — start the server with `mwe-mcp serve`".to_owned(),
@@ -53,7 +54,7 @@ async fn page(State(state): State<DashboardState>, admin: AdminUser) -> Result<H
         .await
         .map_err(|e| DashboardError::Internal(format!("diagnostics: {e:#}")))?;
 
-    Ok(Html(render(admin.session(), &db)))
+    Ok(Html(render(chrome, admin.session(), &db)))
 }
 
 /// Slow companion to [`page`]: probes each LLM slot (a network round-trip
@@ -68,6 +69,7 @@ async fn llm_slots(
     admin: AdminUser,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let memory = state.memory.as_ref().ok_or_else(|| {
         DashboardError::Internal(
             "memory handles missing — start the server with `mwe-mcp serve`".to_owned(),
@@ -103,6 +105,7 @@ async fn llm_slots(
             (slots_section(&slots))
         };
         Ok(Html(layout::authenticated_page(
+            chrome,
             "LLM slots",
             admin.session(),
             &body,
@@ -110,7 +113,11 @@ async fn llm_slots(
     }
 }
 
-fn render(session: &crate::auth::SessionUser, db: &DbDiagnostics) -> String {
+fn render(
+    chrome: layout::Chrome,
+    session: &crate::auth::SessionUser,
+    db: &DbDiagnostics,
+) -> String {
     let body = html! {
         h2 { "Health" }
         p.muted {
@@ -126,7 +133,7 @@ fn render(session: &crate::auth::SessionUser, db: &DbDiagnostics) -> String {
             "the " code { "MWE_TOKEN_SECRET" } " env var, and a JWT self-test."
         }
     };
-    layout::authenticated_page("Health", session, &body)
+    layout::authenticated_page(chrome, "Health", session, &body)
 }
 
 /// The fast diagnostics tables (engine DB + workdir permissions) — pulled

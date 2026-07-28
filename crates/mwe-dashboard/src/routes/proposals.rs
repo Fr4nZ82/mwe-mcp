@@ -274,6 +274,7 @@ async fn open_in_chat(
     jar: CookieJar,
     Path(proposal_id): Path<String>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let primer = compose_primer(&proposal_id);
     let reveal = crate::reveal::active(&state, &user, &jar);
     // Fresh primed conversation — no prior turns to replay.
@@ -289,6 +290,7 @@ async fn open_in_chat(
         }
     };
     Ok(Html(land_turn_in_chat(
+        chrome,
         &user,
         "Proposal in chat",
         &intro,
@@ -335,6 +337,7 @@ const IN_FLIGHT_PRIMER: &str = "Show me everything I have in flight: \
 /// [`in_flight_chat_turn`] JSON path (rendered inline in the panel)
 /// instead.
 fn land_turn_in_chat(
+    chrome: layout::Chrome,
     user: &SessionUser,
     title: &str,
     intro: &maud::Markup,
@@ -356,7 +359,7 @@ fn land_turn_in_chat(
             (PreEscaped(format!("window.__mweChatPrimer = {payload_js};")))
         }
     };
-    layout::authenticated_page(title, user, &body)
+    layout::authenticated_page(chrome, title, user, &body)
 }
 
 /// Compose the review/apply primer injected into the agentic loop for a

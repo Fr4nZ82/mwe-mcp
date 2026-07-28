@@ -83,11 +83,13 @@ async fn fetch_user_ids(pool: &SqlitePool) -> Result<Vec<String>> {
 }
 
 async fn list(State(state): State<DashboardState>, admin: AdminUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let groups = fetch_groups(&state).await?;
-    Ok(Html(render_list(&groups, admin.session(), None)))
+    Ok(Html(render_list(chrome, &groups, admin.session(), None)))
 }
 
 fn render_list(
+    chrome: layout::Chrome,
     groups: &[GroupRow],
     session: &crate::auth::SessionUser,
     flash_msg: Option<(&str, &str)>,
@@ -138,7 +140,7 @@ fn render_list(
             }
         }
     };
-    layout::authenticated_page("Groups", session, &body)
+    layout::authenticated_page(chrome, "Groups", session, &body)
 }
 
 #[derive(Debug, Default)]
@@ -149,8 +151,10 @@ struct GroupForm {
 }
 
 async fn new_form(State(state): State<DashboardState>, admin: AdminUser) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let users = fetch_user_ids(&state.pool).await?;
     Ok(Html(render_form(
+        chrome,
         admin.session(),
         &FormMode::New,
         &GroupForm::default(),
@@ -178,6 +182,7 @@ async fn new_submit(
     admin: AdminUser,
     HtmlForm(submission): HtmlForm<GroupSubmission>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let group_id = submission.group_id.as_deref().unwrap_or("").trim();
     let users = fetch_user_ids(&state.pool).await?;
 
@@ -189,6 +194,7 @@ async fn new_submit(
 
     if let Some(msg) = validate_group_id_for_create(&state, group_id).await? {
         return Ok(Html(render_form(
+            chrome,
             admin.session(),
             &FormMode::New,
             &form,
@@ -199,6 +205,7 @@ async fn new_submit(
     }
     if let Some(msg) = validate_members(&submission.members, &users) {
         return Ok(Html(render_form(
+            chrome,
             admin.session(),
             &FormMode::New,
             &form,
@@ -254,6 +261,7 @@ async fn new_submit(
     let groups = fetch_groups(&state).await?;
     let msg = format!("Created group {group_id}.");
     Ok(Html(render_list(
+        chrome,
         &groups,
         admin.session(),
         Some(("success", &msg)),
@@ -266,6 +274,7 @@ async fn edit_form(
     admin: AdminUser,
     Path(group_id): Path<String>,
 ) -> Result<Html<String>> {
+    let chrome = layout::Chrome::of(&state);
     let row: Option<(String, Option<String>)> =
         sqlx::query_as("SELECT members, scope FROM enrollment_groups WHERE group_id = ?")
             .bind(&group_id)
@@ -281,6 +290,7 @@ async fn edit_form(
         scope: scope.unwrap_or_default(),
     };
     Ok(Html(render_form(
+        chrome,
         admin.session(),
         &FormMode::Edit(&group_id),
         &form,
@@ -295,6 +305,7 @@ async fn edit_submit(
     Path(group_id): Path<String>,
     HtmlForm(submission): HtmlForm<GroupSubmission>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     let exists: i64 =
         sqlx::query_scalar("SELECT count(*) FROM enrollment_groups WHERE group_id = ?")
             .bind(&group_id)
@@ -316,6 +327,7 @@ async fn edit_submit(
     let is_global = enrollment::is_global_group(&group_id);
     if !is_global && let Some(msg) = validate_members(&submission.members, &users) {
         return Ok(Html(render_form(
+            chrome,
             admin.session(),
             &FormMode::Edit(&group_id),
             &form,
@@ -347,6 +359,7 @@ async fn edit_submit(
     let groups = fetch_groups(&state).await?;
     let msg = format!("Updated group {group_id}.");
     Ok(Html(render_list(
+        chrome,
         &groups,
         admin.session(),
         Some(("success", &msg)),
@@ -359,11 +372,13 @@ async fn delete(
     admin: AdminUser,
     Path(group_id): Path<String>,
 ) -> Result<Response> {
+    let chrome = layout::Chrome::of(&state);
     // The builtin universal group is not deletable — it is the public/world
     // ACL principal, not an operator-managed collaborative group.
     if enrollment::is_global_group(&group_id) {
         let groups = fetch_groups(&state).await?;
         return Ok(Html(render_list(
+            chrome,
             &groups,
             admin.session(),
             Some(("error", "The builtin “global” group cannot be deleted.")),
@@ -410,6 +425,7 @@ enum FormMode<'a> {
 }
 
 fn render_form(
+    chrome: layout::Chrome,
     session: &crate::auth::SessionUser,
     mode: &FormMode<'_>,
     form: &GroupForm,
@@ -473,7 +489,7 @@ fn render_form(
 
         p { a href="/dashboard/groups" { "Back to the list" } }
     };
-    layout::authenticated_reading_page(&title, session, &body)
+    layout::authenticated_reading_page(chrome, &title, session, &body)
 }
 
 async fn validate_group_id_for_create(
