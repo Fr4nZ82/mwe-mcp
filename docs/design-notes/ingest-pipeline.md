@@ -1494,12 +1494,13 @@ optional string in the existing `metadata` object alongside
 the `llm:` section in addition to `logging:`. Five canonical slots
 (`hub_writer`, `ingest`, `rem_promotions`, `rem_dedup_semantic`,
 `cronista`) each carry `{backend, model, api_key_env?, base_url?}`.
-Three backends are wired in
+Five backends are wired in
 [`LlmFunctionConfig::build_backend`]: `ollama` (local, no key),
-`anthropic` (`AnthropicBackend`, key from `api_key_env`) and `gemini`
+`anthropic` (`AnthropicBackend`, key from `api_key_env`), `gemini`
 (`GeminiBackend`, hits `generativelanguage.googleapis.com`, key from
-`api_key_env`). Any other backend string (e.g. `openai`) still raises
-`ConfigError::UnsupportedLlmBackend`. So pointing a single slot — say
+`api_key_env`), `openai` (`OpenAiBackend`, Chat Completions) and
+`openrouter` (the OpenAI-compatible aggregator). Any other backend string
+raises `ConfigError::UnsupportedLlmBackend`. So pointing a single slot — say
 `ingest` — at a hosted model is a config change, not new code: set
 `backend: gemini`, a `model`, and `api_key_env` (the key itself lives
 in `<workdir>/mwe-mcp.env`, loaded via `dotenvy`). This is how the

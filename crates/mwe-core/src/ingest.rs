@@ -1373,8 +1373,26 @@ async fn load_attachment_images(
     pool: &SqlitePool,
     workdir: &std::path::Path,
     attachments: &[IngestAttachment],
+    llm: &dyn LlmBackend,
 ) -> Vec<ImageInput> {
     use base64::Engine as _;
+    // A model that cannot see gets no images at all: sending them anyway
+    // is a 400 that takes the *whole turn* with it, while leaving them out
+    // still files the fact from the caption.
+    if !llm.accepts_images() {
+        let photos = attachments
+            .iter()
+            .filter(|a| a.kind == media::kind::PHOTO && a.description.is_none())
+            .count();
+        if photos > 0 {
+            tracing::warn!(
+                model = llm.model_id(),
+                photos,
+                "ingest: the classifier's model does not accept images — filing from the caption"
+            );
+        }
+        return Vec::new();
+    }
     let mut out = Vec::new();
     let mut total = 0usize;
     for att in attachments {
@@ -1402,6 +1420,20 @@ async fn load_attachment_images(
         if !row.mime.starts_with("image/") {
             continue;
         }
+        // The declared type has to be one every provider accepts. A
+        // consumer's `image/jpg` is the registered `image/jpeg` and is
+        // normalised; a HEIC — which Gemini reads and the others refuse —
+        // is dropped here, where it costs one photo, rather than at the
+        // API, where it costs the turn.
+        let mime = media::canonical_mime(&row.mime);
+        if !crate::llm::image_mime_is_portable(&mime) {
+            tracing::warn!(
+                catalog_id = %att.catalog_id,
+                mime = %mime,
+                "ingest: image type not accepted by every provider — photo not shown to the classifier"
+            );
+            continue;
+        }
         let blob_abs = media::blob_path(workdir, &row.sha256);
         let bytes = match std::fs::read(&blob_abs) {
             Ok(b) => b,
@@ -1420,7 +1452,7 @@ async fn load_attachment_images(
         }
         total += bytes.len();
         out.push(ImageInput {
-            mime_type: row.mime,
+            mime_type: mime,
             data_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
         });
     }
@@ -4654,7 +4686,7 @@ pub async fn wiki_ingest_message(
             tracing::warn!(catalog_id = %att.catalog_id, error = %e, "ingest: annotation backfill failed");
         }
     }
-    let images = load_attachment_images(pool, tree.workdir(), &request.attachments).await;
+    let images = load_attachment_images(pool, tree.workdir(), &request.attachments, llm).await;
     if !images.is_empty() {
         tracing::info!(
             images = images.len(),
@@ -12122,13 +12154,25 @@ mod tests {
     // ---------- media attachments (the media pipeline) ----------
 
     async fn seed_photo(pool: &SqlitePool, workdir: &Path, owner: &str, bytes: &[u8]) -> CatalogId {
+        seed_photo_typed(pool, workdir, owner, bytes, "image/jpeg").await
+    }
+
+    /// Same, with the MIME type the consumer declared — the interesting
+    /// axis once a provider started refusing types another accepted.
+    async fn seed_photo_typed(
+        pool: &SqlitePool,
+        workdir: &Path,
+        owner: &str,
+        bytes: &[u8],
+        mime: &str,
+    ) -> CatalogId {
         let stored = crate::media::store_media(
             pool,
             workdir,
             crate::media::NewMedia {
                 bytes: bytes.to_vec(),
                 kind: crate::media::kind::PHOTO.to_owned(),
-                mime: "image/jpeg".to_owned(),
+                mime: mime.to_owned(),
                 owner: owner.parse().unwrap(),
                 uploaded_by_consumer: None,
                 caption: None,
@@ -12244,6 +12288,84 @@ mod tests {
             llm.last_images().is_empty(),
             "described photo must not ride"
         );
+        drop(dir);
+    }
+
+    /// `image/jpg` is not a MIME type — the registered name is
+    /// `image/jpeg` — but it is what a real bridge declared for every one
+    /// of the 27 photos in the production catalog. Gemini accepted it;
+    /// Anthropic answers HTTP 400 and, before this, took the whole turn
+    /// with it. The catalog stores the registered name and the model sees
+    /// the registered name.
+    #[tokio::test]
+    async fn a_clients_image_jpg_becomes_image_jpeg_on_the_row_and_on_the_wire() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let cid =
+            seed_photo_typed(&pool, dir.path(), "user:alice", b"jpegbytes", "image/JPG").await;
+        let row = crate::media::find_by_id(&pool, &cid)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(row.mime, "image/jpeg", "canonicalised at the catalog");
+
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
+        let mut request = req("guarda", "alice");
+        request.attachments = vec![attachment(&cid, Some("al cancello"), None)];
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            request,
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        let images = llm.last_images();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].mime_type, "image/jpeg");
+        drop(dir);
+    }
+
+    /// An encoding only some providers read — HEIC, straight off a phone —
+    /// costs the photo, not the turn. Before this it reached the API and
+    /// the 400 came back as "LLM unavailable", so the message was never
+    /// classified at all.
+    #[tokio::test]
+    async fn an_image_type_not_every_provider_reads_is_dropped_not_fatal() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let cid =
+            seed_photo_typed(&pool, dir.path(), "user:alice", b"heicbytes", "image/heic").await;
+        let json = "{\"intent\":\"capture\",\"extractions\":[{\
+             \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+             \"owner_id\":\"user:alice\",\"allow_ids\":[],\
+             \"body\":\"Frodo al cancello del giardino.\"}],\
+             \"suggested_seed\":\"Bella foto!\"}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let mut request = req("guarda", "alice");
+        request.attachments = vec![attachment(&cid, Some("al cancello"), None)];
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            request,
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("the turn survives the unreadable photo");
+        assert_eq!(resp.intent, IntentKind::Capture);
+        assert!(resp.capture_id.is_some(), "the fact is still filed");
+        assert!(
+            llm.last_images().is_empty(),
+            "the unreadable photo never reaches the provider"
+        );
+        // The caption still reached the prompt, so the classifier had
+        // something to file.
+        let prompt = llm.last_prompt().expect("prompt recorded");
+        assert!(prompt.contains("al cancello"), "{prompt}");
         drop(dir);
     }
 

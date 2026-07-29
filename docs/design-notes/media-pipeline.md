@@ -106,6 +106,31 @@ what it sees with the user's caption into an extraction's `body` and to
 **claim** the attachment by listing its `catalog_id` in the
 extraction's `attachments` array.
 
+### Which photos actually ride
+
+Two filters stand between a catalogued photo and the provider, and both
+exist because failing at the API costs the **whole turn**, not the photo:
+a rejected image comes back as a 400, the classifier call is lost, and the
+message is never classified at all.
+
+- **The declared type must be one every provider reads** —
+  `image/jpeg`, `image/png`, `image/gif`, `image/webp`
+  (`llm::PORTABLE_IMAGE_MIMES`). Anthropic and OpenAI enumerate exactly
+  those four; Gemini reads more, including HEIC, so the portable set is
+  the intersection. The type is normalised first
+  (`media::canonical_mime`): a client's `image/jpg` is the registered
+  `image/jpeg`, and that misspelling — not an exotic format — is what
+  every photo in one production catalog carried, and what took an ingest
+  turn down on 2026-07-29 the day the slot moved from Gemini to
+  Anthropic. Anything still outside the set is dropped with a `warn`
+  naming the type.
+- **The model must be able to see** (`LlmBackend::accepts_images`,
+  answered from the model catalog, `true` when it has never heard of the
+  model). A text-only ingest slot gets no image parts at all.
+
+In both cases the caption / description path still files the fact, which
+is the point: the memory loses a photograph, never a turn.
+
 The markers are **rendered by code, never by the model** (the same
 invariant as region markers): the orchestrator validates each claimed
 id against the turn's attachment window (anti-hallucination — unknown
@@ -131,7 +156,9 @@ vision pass and feeds the description to the classifier as text. This
 is also the degrade path for a text-only ingest slot (the `all-local`
 profile's workhorse cannot see) — vision capability is a **deployment
 property of the ingest slot**, not a code guarantee
-([config schema](../protocol/config-schema.md)).
+([config schema](../protocol/config-schema.md)). The engine no longer
+*discovers* that property from a failed call, though: it asks the catalog
+and leaves the images out (see «Which photos actually ride» above).
 
 ### The never-dead guarantee (described media)
 
