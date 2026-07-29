@@ -359,13 +359,18 @@ for the cheap dedup pass.
 
 ### Backends materialised today
 
-`LlmFunctionConfig::build_backend` constructs **`ollama`,
-`anthropic`, and `gemini`** today. `openai` is *parsed* (so an
-operator's existing YAML survives an upgrade) but materialising it
-raises `ConfigError::UnsupportedLlmBackend`; an `openai` adapter is not
-implemented today. Cloud backends require a non-empty `api_key_env`
-naming an env-var that is set at boot, or the boot health-check fails
-with `ConfigError::MissingApiKeyEnv`. The embedder (`bge-m3` on
+`LlmFunctionConfig::build_backend` constructs **`ollama`, `anthropic`,
+`gemini`, `openai` and `openrouter`** — a key the operator already holds
+is never a reason to open an account somewhere else. A tag outside that
+list is *parsed* (so an operator's existing YAML survives an upgrade) but
+materialising it raises `ConfigError::UnsupportedLlmBackend`. Cloud
+backends require a non-empty `api_key_env` naming an env-var that is set
+at boot, or the boot health-check fails with
+`ConfigError::MissingApiKeyEnv`. What each provider is sent — whether
+`temperature` goes out, how much output ceiling a reasoning model gets,
+which role carries the system prompt — is resolved per model from the
+catalog rather than hardcoded per slot; see
+[config-schema.md](../protocol/config-schema.md#what-the-engine-sends-a-model-and-how-it-knows). The embedder (`bge-m3` on
 local Ollama) is always local and is configured separately from these
 five LLM slots.
 

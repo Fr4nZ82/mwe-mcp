@@ -187,6 +187,43 @@ pub fn inline_safe(mime: &str) -> bool {
         || essence == "application/pdf"
 }
 
+/// The registered MIME type for a declared one: lowercased, parameters
+/// dropped, and the common misspellings mapped onto the name the
+/// registries actually list.
+///
+/// **Why this exists.** A consumer declares the type; nobody validates it
+/// against a registry, and `image/jpg` — which is not a MIME type, the
+/// registered name has always been `image/jpeg` — is what a real bridge
+/// sent us for **27 of 27** photos in production. Gemini accepted it.
+/// Anthropic replies *"`media_type`: Input should be 'image/jpeg',
+/// 'image/png', 'image/gif' or 'image/webp'"* with HTTP 400, and on
+/// 2026-07-29 that cost a whole ingest turn — not just the photo. `OpenAI`
+/// accepts the same four names. So the declared string is normalised once,
+/// here, on the way into the catalog, and read back through the same
+/// function for anything that leaves the machine.
+///
+/// Parameters are dropped rather than preserved: the catalog holds
+/// photos, video, audio and documents, where a `charset` is meaningless,
+/// and a parameter must never be the thing that makes two identical types
+/// compare unequal.
+#[must_use]
+pub fn canonical_mime(declared: &str) -> String {
+    let essence = declared
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    match essence.as_str() {
+        // Not MIME types, but what clients send. The `x-` forms predate
+        // registration; `image/jpg` is simply the file extension.
+        "image/jpg" | "image/pjpeg" | "image/x-jpeg" => "image/jpeg".to_owned(),
+        "image/x-png" => "image/png".to_owned(),
+        "image/x-webp" => "image/webp".to_owned(),
+        _ => essence,
+    }
+}
+
 /// Absolute path of the blob for `sha256` under `workdir`.
 ///
 /// Layout: `<workdir>/media/<aa>/<sha256>` where `aa` is the first two
@@ -259,10 +296,11 @@ pub async fn store_media(
         std::fs::rename(&tmp, &blob_abs)?;
     }
 
-    let mime = if media.mime.trim().is_empty() {
-        "application/octet-stream".to_owned()
-    } else {
-        media.mime.trim().to_owned()
+    // Empty *or* parameters-only (`"; charset=x"`) lands on the generic
+    // type — the catalog never stores a blank content type.
+    let mime = match canonical_mime(&media.mime) {
+        m if m.is_empty() => "application/octet-stream".to_owned(),
+        m => m,
     };
     let ext = derive_ext(media.original_filename.as_deref(), &mime);
     let now = chrono::Utc::now();
@@ -816,6 +854,42 @@ mod tests {
         assert_eq!(derive_ext(Some("weird.TAR.GZ"), "audio/mpeg"), "gz");
         assert_eq!(derive_ext(None, "application/pdf"), "pdf");
         assert_eq!(derive_ext(None, "application/x-mystery"), "bin");
+    }
+
+    /// The production case, first: `image/jpg` is what the bridge sent for
+    /// 27 of 27 photos, and it is not a MIME type. Everything else here is
+    /// the same normalisation — case, parameters, `x-` legacy names.
+    #[test]
+    fn canonical_mime_maps_what_clients_send_onto_what_registries_list() {
+        assert_eq!(canonical_mime("image/jpg"), "image/jpeg");
+        assert_eq!(canonical_mime("image/JPG"), "image/jpeg");
+        assert_eq!(canonical_mime(" image/pjpeg "), "image/jpeg");
+        assert_eq!(canonical_mime("image/x-png"), "image/png");
+        assert_eq!(canonical_mime("image/jpeg; charset=binary"), "image/jpeg");
+        // Untouched when it is already right, and passed through when it
+        // is simply unknown — this is a normaliser, not a whitelist.
+        assert_eq!(canonical_mime("image/heic"), "image/heic");
+        assert_eq!(canonical_mime("application/pdf"), "application/pdf");
+        assert_eq!(canonical_mime("audio/ogg; codecs=opus"), "audio/ogg");
+        // Degenerate input reduces to empty, which `store_media` turns
+        // into the generic type rather than storing blank.
+        assert_eq!(canonical_mime("  ; charset=x"), "");
+    }
+
+    #[tokio::test]
+    async fn store_media_canonicalises_the_declared_type() {
+        let pool = make_pool().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut new = sample_media("user:alice");
+        new.mime = "image/JPG; charset=binary".to_owned();
+        let out = store_media(&pool, dir.path(), new).await.expect("store");
+        assert_eq!(out.row.mime, "image/jpeg");
+
+        let mut blank = sample_media("user:bob");
+        blank.bytes = b"other bytes".to_vec();
+        blank.mime = "  ; charset=x".to_owned();
+        let out = store_media(&pool, dir.path(), blank).await.expect("store");
+        assert_eq!(out.row.mime, "application/octet-stream");
     }
 
     #[test]

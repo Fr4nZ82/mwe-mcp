@@ -105,14 +105,13 @@ pub enum ConfigError {
     /// An `llm.<function>` sub-section names an `backend` that this
     /// build cannot construct.
     ///
-    /// Today the build supports `ollama`, `anthropic`, and `gemini`.
-    /// `openai` lands with a follow-up adapter milestone; until then a
-    /// config that names it is loaded without error but
-    /// [`LlmFunctionConfig::build_backend`] refuses to materialise the
-    /// backend so the operator's mistake surfaces at startup, not at
-    /// the first request.
+    /// The build supports `ollama`, `anthropic`, `gemini`, `openai` and
+    /// `openrouter`. A config naming anything else is loaded without
+    /// error, but [`LlmFunctionConfig::build_backend`] refuses to
+    /// materialise the backend so the operator's mistake surfaces at
+    /// startup, not at the first request.
     #[error(
-        "config llm.{function}.backend {backend:?}: only `ollama`, `anthropic`, and `gemini` are supported in this build"
+        "config llm.{function}.backend {backend:?}: only `ollama`, `anthropic`, `gemini`, `openai` and `openrouter` are supported in this build"
     )]
     UnsupportedLlmBackend {
         /// Which `llm.*` slot referenced the backend.
@@ -359,9 +358,10 @@ impl LlmFunctionConfig {
     /// # Errors
     ///
     /// - [`ConfigError::UnsupportedLlmBackend`] when `backend` is none
-    ///   of `"ollama"`, `"anthropic"`, `"gemini"`, `"openrouter"`.
+    ///   of `"ollama"`, `"anthropic"`, `"gemini"`, `"openai"`,
+    ///   `"openrouter"`.
     /// - [`ConfigError::MissingApiKeyEnv`] when `backend` is a cloud
-    ///   provider (`anthropic`, `gemini`, or `openrouter`) but
+    ///   provider (`anthropic`, `gemini`, `openai` or `openrouter`) but
     ///   `api_key_env` is
     ///   missing, names an unset env-var, or resolves to an empty
     ///   string.
@@ -530,6 +530,30 @@ impl LlmFunctionConfig {
                         detail: format!("gemini: {e}"),
                     })?
                     .with_reasoning_effort(self.reasoning_effort.as_deref());
+                if let Some(base_url) = self.base_url.as_deref() {
+                    backend = backend.with_base_url(base_url);
+                }
+                Ok(Box::new(backend))
+            },
+            "openai" => {
+                let (env_name, raw) = resolve_cloud_api_key(
+                    "openai",
+                    function,
+                    self.api_key_env.as_deref(),
+                    &mut env,
+                )?;
+                let key = crate::llm::OpenAiApiKey::new(raw).map_err(|e| ConfigError::Parse {
+                    path: PathBuf::from(format!("llm.{}", function.yaml_key())),
+                    detail: format!("openai: {e}"),
+                })?;
+                let mut backend = crate::llm::OpenAiBackend::new(key, self.model.clone(), env_name)
+                    .map_err(|e| ConfigError::Parse {
+                        path: PathBuf::from(format!("llm.{}", function.yaml_key())),
+                        detail: format!("openai: {e}"),
+                    })?
+                    .with_reasoning_effort(self.reasoning_effort.as_deref());
+                // Same override as the other cloud backends: Azure OpenAI
+                // or a corporate gateway is a `base_url`, not a fork.
                 if let Some(base_url) = self.base_url.as_deref() {
                     backend = backend.with_base_url(base_url);
                 }
@@ -3203,12 +3227,12 @@ mod tests {
 
     #[test]
     fn build_backend_rejects_unknown_backend() {
-        // `openai` is the one cloud backend that does not have an
-        // adapter yet — the perfect "loaded but unsupported" probe.
+        // A provider with no adapter must fail at build time, naming both
+        // the slot and the tag, rather than at the first request.
         let cfg = LlmFunctionConfig {
-            backend: "openai".into(),
-            model: "gpt-4o".into(),
-            api_key_env: Some("OPENAI_API_KEY".into()),
+            backend: "cohere".into(),
+            model: "command-r".into(),
+            api_key_env: Some("COHERE_API_KEY".into()),
             base_url: None,
             reasoning_effort: None,
             temperature: None,
@@ -3218,11 +3242,39 @@ mod tests {
         match result {
             Err(ConfigError::UnsupportedLlmBackend { function, backend }) => {
                 assert_eq!(function, "ingest");
-                assert_eq!(backend, "openai");
+                assert_eq!(backend, "cohere");
             },
             Err(other) => panic!("unexpected error: {other:?}"),
             Ok(_) => panic!("expected unsupported-backend error"),
         }
+    }
+
+    /// An operator with an `OpenAI` key must be able to use it directly:
+    /// no aggregator account, no third party in the path the memory
+    /// travels. The slot builds from `backend: openai` alone.
+    #[test]
+    fn build_backend_constructs_openai_from_the_operators_own_key() {
+        let cfg = openai("gpt-5.4", "OPENAI_API_KEY");
+        let backend = cfg
+            .build_backend_with_env(LlmFunction::Ingest, |k| {
+                (k == "OPENAI_API_KEY").then(|| "sk-test-key".to_owned())
+            })
+            .expect("openai slot builds");
+        assert_eq!(backend.model_id(), "gpt-5.4");
+    }
+
+    /// …and a missing key names the env-var it looked for, like every
+    /// other cloud backend.
+    #[test]
+    fn build_backend_openai_without_a_key_names_the_env_var() {
+        let cfg = openai("gpt-5.4", "OPENAI_API_KEY");
+        let Err(err) = cfg.build_backend_with_env(LlmFunction::Ingest, |_| None) else {
+            panic!("no key, no backend");
+        };
+        assert!(
+            format!("{err}").contains("OPENAI_API_KEY"),
+            "the operator must see which variable is missing, got {err}"
+        );
     }
 
     #[test]

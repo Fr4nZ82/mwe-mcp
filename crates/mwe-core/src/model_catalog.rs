@@ -4,12 +4,12 @@
 //! The source of truth is <https://models.dev/api.json>, a
 //! community-maintained database of model metadata (context window, per-
 //! million-token cost, capability flags). We ship a compact, filtered
-//! snapshot — the three buildable cloud backends `anthropic` / `google`
-//! (Gemini) / `openrouter` — vendored at `assets/model-catalog.json` and
-//! embedded at compile time, so the picker works fully offline. [`refresh`]
-//! re-fetches the live data into a workdir cache that [`load`] prefers over
-//! the bundled copy, so a model id added upstream shows up without a
-//! rebuild.
+//! snapshot — the four buildable cloud backends `anthropic` / `google`
+//! (Gemini) / `openai` / `openrouter` — vendored at
+//! `assets/model-catalog.json` and embedded at compile time, so the picker
+//! works fully offline. [`refresh`] re-fetches the live data into a workdir
+//! cache that [`load`] prefers over the bundled copy, so a model id added
+//! upstream shows up without a rebuild.
 //!
 //! Ollama is intentionally absent: its installed models are discovered live
 //! from `/api/tags` (the registry is not listable), so the dashboard
@@ -18,6 +18,23 @@
 //! The dashboard uses this to populate the model combobox (a free-text
 //! `datalist`) and the per-model metadata strip; see the admin LLM config
 //! wiki page.
+//!
+//! ## Not only a picker: the backends read it too
+//!
+//! [`capabilities_for`] answers *what does this model accept* — today
+//! whether it takes the sampling parameters (`temperature` and friends) and
+//! whether it reasons before answering, both of which change the request a
+//! backend must send. That is a fact about a model, not about a deployment,
+//! and models.dev already carries it: `temperature: false` covers exactly
+//! the Anthropic families that 400 on the parameter, and the whole `gpt-5` /
+//! o-series line at `OpenAI`. Resolution order is **live cache → bundled
+//! snapshot → unknown**, and `unknown` is a real answer that callers must
+//! handle conservatively rather than a synonym for "supported": a model
+//! released this morning is in neither file.
+//!
+//! Backends reach it through [`snapshot`], a process-wide copy installed at
+//! boot and replaced after every refresh — they are built without a workdir,
+//! so they cannot call [`load`] themselves.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -40,16 +57,17 @@ pub const CACHE_FILENAME: &str = "model-catalog.json";
 /// models.dev provider ids we keep, in picker display order. Note Google's
 /// models.dev id is `google` while the mwe-mcp backend tag is `gemini`
 /// (see [`catalog_key_for_backend`]).
-const CATALOG_PROVIDERS: &[&str] = &["anthropic", "google", "openrouter"];
+const CATALOG_PROVIDERS: &[&str] = &["anthropic", "google", "openai", "openrouter"];
 
 /// Map an mwe-mcp `backend` tag to the models.dev provider key. Returns
-/// `None` for backends without a catalog here — `ollama` (discovered live
-/// from `/api/tags`) and `openai` (gated / not buildable).
+/// `None` only for `ollama`, whose installed models are discovered live from
+/// `/api/tags`, and for unknown tags.
 #[must_use]
 pub fn catalog_key_for_backend(backend: &str) -> Option<&'static str> {
     match backend {
         "anthropic" => Some("anthropic"),
         "gemini" => Some("google"),
+        "openai" => Some("openai"),
         "openrouter" => Some("openrouter"),
         _ => None,
     }
@@ -84,6 +102,13 @@ pub struct CatalogModel {
     /// Has an extended-thinking / reasoning mode.
     #[serde(default)]
     pub reasoning: bool,
+    /// Accepts the sampling parameters (`temperature`, `top_p`, `top_k`).
+    /// `Some(false)` on the families that reject them outright — the Claude
+    /// 5 generation, Opus 4.7+, the whole `gpt-5` line and the o-series.
+    /// `None` when the upstream entry omits the field, which is *not* the
+    /// same as `Some(true)`: see [`capabilities_for`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<bool>,
 }
 
 /// The catalog: models grouped by models.dev provider id. Serialises
@@ -105,6 +130,20 @@ impl Catalog {
     #[must_use]
     pub fn lookup(&self, backend: &str, model_id: &str) -> Option<&CatalogModel> {
         self.models_for(backend).iter().find(|m| m.id == model_id)
+    }
+
+    /// What this catalog knows a model accepts. All-`None` when the model
+    /// is not listed — see [`ModelCapabilities`] on why that is not `false`
+    /// and not `true`.
+    #[must_use]
+    pub fn capabilities(&self, backend: &str, model_id: &str) -> ModelCapabilities {
+        self.lookup(backend, model_id)
+            .map_or_else(ModelCapabilities::default, |m| ModelCapabilities {
+                accepts_sampling_params: m.temperature,
+                reasons: Some(m.reasoning),
+                max_output: m.max_output,
+                image_input: Some(m.vision),
+            })
     }
 
     /// Total model count across all providers (for diagnostics / the
@@ -223,7 +262,80 @@ fn slim_model(v: &Value) -> Option<CatalogModel> {
             .unwrap_or(false),
         tools: v.get("tool_call").and_then(Value::as_bool).unwrap_or(false),
         reasoning: v.get("reasoning").and_then(Value::as_bool).unwrap_or(false),
+        // Deliberately *not* defaulted: a missing flag means "upstream does
+        // not say", and the backends treat that differently from `false`.
+        temperature: v.get("temperature").and_then(Value::as_bool),
     })
+}
+
+/// What a model accepts, as far as anyone here knows.
+///
+/// Every field is `Option` because **unknown is a distinct answer**: the
+/// model may have been released after both the cache and the bundled
+/// snapshot were written, and a caller that reads `None` as "supported"
+/// reproduces exactly the outage this type exists to prevent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ModelCapabilities {
+    /// Accepts `temperature` / `top_p` / `top_k` on a request.
+    pub accepts_sampling_params: Option<bool>,
+    /// Reasons before answering, spending output budget to do it.
+    pub reasons: Option<bool>,
+    /// Documented output ceiling in tokens.
+    pub max_output: Option<u32>,
+    /// Accepts image input.
+    pub image_input: Option<bool>,
+}
+
+impl ModelCapabilities {
+    /// `true` when nothing at all is known about the model — the caller is
+    /// on its own (offline fallback list, then whatever the provider says
+    /// on the first real call).
+    #[must_use]
+    pub fn is_unknown(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Look up [`ModelCapabilities`] for an mwe-mcp `backend` tag + model id in
+/// the process-wide [`snapshot`].
+///
+/// Returns an all-`None` value for a model the catalog has not heard of,
+/// for `ollama` (no catalog by design) and for any unknown backend tag.
+#[must_use]
+pub fn capabilities_for(backend: &str, model_id: &str) -> ModelCapabilities {
+    snapshot().capabilities(backend, model_id)
+}
+
+/// The process-wide catalog the backends read, defaulting to the bundled
+/// snapshot until [`install`] replaces it.
+fn snapshot_cell() -> &'static std::sync::RwLock<std::sync::Arc<Catalog>> {
+    static CELL: OnceLock<std::sync::RwLock<std::sync::Arc<Catalog>>> = OnceLock::new();
+    CELL.get_or_init(|| std::sync::RwLock::new(std::sync::Arc::new(bundled().clone())))
+}
+
+/// Publish a catalog for the whole process.
+///
+/// Called once at boot with [`load`]'s result and again after every
+/// successful [`refresh`], so a long-running instance resolves
+/// capabilities against data that ages by hours rather than by releases.
+pub fn install(catalog: Catalog) {
+    if catalog.is_empty() {
+        return;
+    }
+    if let Ok(mut slot) = snapshot_cell().write() {
+        *slot = std::sync::Arc::new(catalog);
+    }
+}
+
+/// The catalog currently published to the process. Falls back to the
+/// bundled snapshot if the lock is poisoned, because a capability lookup
+/// must never be the thing that takes an instance down.
+#[must_use]
+pub fn snapshot() -> std::sync::Arc<Catalog> {
+    snapshot_cell().read().map_or_else(
+        |_| std::sync::Arc::new(bundled().clone()),
+        |slot| std::sync::Arc::clone(&slot),
+    )
 }
 
 /// Errors raised by [`refresh`].
@@ -262,13 +374,96 @@ mod tests {
     fn gemini_backend_maps_to_google_provider() {
         assert_eq!(catalog_key_for_backend("gemini"), Some("google"));
         assert_eq!(catalog_key_for_backend("anthropic"), Some("anthropic"));
+        assert_eq!(catalog_key_for_backend("openai"), Some("openai"));
         assert_eq!(catalog_key_for_backend("openrouter"), Some("openrouter"));
-        // No catalog for the live-discovered / gated backends.
+        // Ollama's installed models are discovered live from `/api/tags`.
         assert_eq!(catalog_key_for_backend("ollama"), None);
-        assert_eq!(catalog_key_for_backend("openai"), None);
         // The `gemini` tag actually resolves to populated `google` models.
         let cat = bundled();
         assert!(!cat.models_for("gemini").is_empty());
+        assert!(
+            !cat.models_for("openai").is_empty(),
+            "openai models present"
+        );
+    }
+
+    /// The fact that cost a production outage: the models that reject
+    /// `temperature` are named as such in the snapshot we ship, on both
+    /// providers, so no hand-maintained list has to be right for a listed
+    /// model to work.
+    #[test]
+    fn bundled_snapshot_knows_which_models_refuse_sampling_params() {
+        let cat = bundled();
+        for (backend, model) in [
+            ("anthropic", "claude-opus-5"),
+            ("anthropic", "claude-sonnet-5"),
+            ("openai", "gpt-5"),
+            ("openai", "o3"),
+        ] {
+            assert_eq!(
+                cat.capabilities(backend, model).accepts_sampling_params,
+                Some(false),
+                "{backend}/{model} rejects the sampling params"
+            );
+        }
+        for (backend, model) in [
+            ("anthropic", "claude-haiku-4-5"),
+            ("anthropic", "claude-sonnet-4-6"),
+            ("openai", "gpt-4o"),
+        ] {
+            assert_eq!(
+                cat.capabilities(backend, model).accepts_sampling_params,
+                Some(true),
+                "{backend}/{model} accepts them"
+            );
+        }
+    }
+
+    /// A model nobody has heard of yet reads as *unknown*, never as
+    /// *supported* — the whole point of the `Option`s.
+    #[test]
+    fn an_unlisted_model_is_unknown_not_permissive() {
+        let caps = bundled().capabilities("anthropic", "claude-opus-9-released-tomorrow");
+        assert!(caps.is_unknown());
+        assert_eq!(caps.accepts_sampling_params, None);
+        // Same for a backend with no catalog at all.
+        assert!(bundled().capabilities("ollama", "qwen3:8b").is_unknown());
+    }
+
+    /// The only test that touches the process-wide slot, so it cannot race
+    /// with the ones above (which read `bundled()` directly).
+    #[test]
+    fn install_publishes_a_catalog_to_the_process() {
+        let mut cat = bundled().clone();
+        cat.0.insert(
+            "anthropic".to_owned(),
+            vec![CatalogModel {
+                id: "claude-installed-only".to_owned(),
+                name: "Installed".to_owned(),
+                context: None,
+                max_output: Some(4096),
+                input_cost: None,
+                output_cost: None,
+                vision: false,
+                tools: false,
+                reasoning: true,
+                temperature: Some(false),
+            }],
+        );
+        install(cat);
+        let caps = capabilities_for("anthropic", "claude-installed-only");
+        assert_eq!(caps.accepts_sampling_params, Some(false));
+        assert_eq!(caps.reasons, Some(true));
+        assert_eq!(caps.max_output, Some(4096));
+        // An empty catalog never replaces a good one.
+        install(Catalog::default());
+        assert_eq!(
+            capabilities_for("anthropic", "claude-installed-only").max_output,
+            Some(4096)
+        );
+        // Restore the default so a later reader of `snapshot()` is not
+        // surprised by this test's leftovers.
+        install(bundled().clone());
     }
 
     #[test]
@@ -295,20 +490,25 @@ mod tests {
                     "attachment": true,
                     "tool_call": true,
                     "reasoning": true,
+                    "temperature": false,
                     "limit": { "context": 1_000_000, "output": 128_000 },
                     "cost": { "input": 3, "output": 15 }
-                }
+                },
+                "openai/no-flag": { "id": "openai/no-flag", "name": "No Flag" }
             }},
             // A provider we don't keep — must be ignored.
             "mistral": { "models": { "x": { "id": "x", "name": "X" } } }
         });
         let cat = compact_from_models_dev(&raw);
         let models = cat.models_for("openrouter");
-        assert_eq!(models.len(), 1);
+        assert_eq!(models.len(), 2);
         assert_eq!(models[0].id, "anthropic/claude-sonnet-latest");
         assert_eq!(models[0].context, Some(1_000_000));
         assert!((models[0].input_cost.expect("cost") - 3.0).abs() < f64::EPSILON);
         assert!(models[0].vision && models[0].tools && models[0].reasoning);
+        assert_eq!(models[0].temperature, Some(false), "flag round-trips");
+        // A missing flag stays missing rather than defaulting to `true`.
+        assert_eq!(models[1].temperature, None);
         // Unkept provider absent.
         assert!(cat.models_for("gemini").is_empty());
     }

@@ -70,6 +70,7 @@ const ENV_FILENAME: &str = "mwe-mcp.env";
 const WELL_KNOWN_KEYS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",
+    "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
     // Optional Bearer for a remote / cloud Ollama; a local daemon needs none.
     "OLLAMA_API_KEY",
@@ -82,12 +83,11 @@ const WELL_KNOWN_KEYS: &[&str] = &[
 /// file.
 const OLLAMA_BASE_URL_ENV: &str = "OLLAMA_BASE_URL";
 
-/// Backends accepted by the per-role provider dropdown. Pinned to the four
+/// Backends accepted by the per-role provider dropdown. Pinned to the five
 /// the runtime can actually materialise
 /// ([`LlmFunctionConfig::build_backend`]); other strings parsed from YAML
-/// are tolerated by `Config::load` but the editor refuses to emit them
-/// (e.g. the gated `openai`).
-const ALLOWED_BACKENDS: &[&str] = &["ollama", "anthropic", "gemini", "openrouter"];
+/// are tolerated by `Config::load` but the editor refuses to emit them.
+const ALLOWED_BACKENDS: &[&str] = &["ollama", "anthropic", "gemini", "openai", "openrouter"];
 
 /// A provider surfaced in the credentials section and the per-role
 /// provider dropdown.
@@ -112,6 +112,10 @@ const PROVIDERS: &[ProviderInfo] = &[
     ProviderInfo {
         tag: "gemini",
         label: "Google Gemini",
+    },
+    ProviderInfo {
+        tag: "openai",
+        label: "OpenAI",
     },
     ProviderInfo {
         tag: "openrouter",
@@ -470,9 +474,14 @@ const INPUT_STYLE: &str = "width:100%;background:var(--bg);border:1px solid var(
 
 /// Which providers currently have usable authentication — drives the
 /// per-role "needs a key" warning and the JS gating map.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one flag per cloud provider — the set is fixed and known at compile time; a map would only hide that"
+)]
 struct ProviderAuth {
     anthropic: bool,
     gemini: bool,
+    openai: bool,
     openrouter: bool,
 }
 
@@ -489,6 +498,7 @@ fn provider_auth(rows: &[ApiKeyRow]) -> ProviderAuth {
     ProviderAuth {
         anthropic: has("ANTHROPIC_API_KEY") || claude_logged,
         gemini: has("GEMINI_API_KEY"),
+        openai: has("OPENAI_API_KEY"),
         openrouter: has("OPENROUTER_API_KEY"),
     }
 }
@@ -510,6 +520,7 @@ fn backend_usable(backend: &str, auth: &ProviderAuth) -> bool {
         "ollama" => true,
         "anthropic" => auth.anthropic,
         "gemini" => auth.gemini,
+        "openai" => auth.openai,
         "openrouter" => auth.openrouter,
         // empty (disabled), or a tag the editor never emits.
         _ => false,
@@ -646,6 +657,14 @@ fn providers_section(
             (provider_card_ollama(memory, rows))
             (provider_card_anthropic(rows, llm, anthropic_login))
             (provider_card_key("Google Gemini", "GEMINI_API_KEY", rows, None))
+            (provider_card_key(
+                "OpenAI",
+                "OPENAI_API_KEY",
+                rows,
+                Some("Your own OpenAI key, used directly: no aggregator account and \
+                      nobody else in the path. Reasoning models (the gpt-5 line, the \
+                      o-series) are handled from their documented behaviour."),
+            ))
             (provider_card_key(
                 "OpenRouter",
                 "OPENROUTER_API_KEY",
@@ -817,7 +836,7 @@ fn profile_button(name: &str, label: &str) -> Markup {
 /// catalog — the suggestions behind the free-text model combobox.
 fn model_datalists(catalog: &Catalog) -> Markup {
     html! {
-        @for backend in ["anthropic", "gemini", "openrouter"] {
+        @for backend in ["anthropic", "gemini", "openai", "openrouter"] {
             datalist id=(format!("models-{backend}")) {
                 @for m in catalog.models_for(backend) {
                     option value=(m.id) { (m.name) }
@@ -834,12 +853,14 @@ fn embed_config_data(catalog: &Catalog, auth: &ProviderAuth) -> Markup {
         "catalog": {
             "anthropic": catalog.models_for("anthropic"),
             "gemini": catalog.models_for("gemini"),
+            "openai": catalog.models_for("openai"),
             "openrouter": catalog.models_for("openrouter"),
         },
         "auth": {
             "ollama": true,
             "anthropic": auth.anthropic,
             "gemini": auth.gemini,
+            "openai": auth.openai,
             "openrouter": auth.openrouter,
         },
     });
@@ -1025,6 +1046,7 @@ fn model_list_for(backend: &str) -> &'static str {
     match backend {
         "anthropic" => "models-anthropic",
         "gemini" => "models-gemini",
+        "openai" => "models-openai",
         "openrouter" => "models-openrouter",
         _ => "",
     }
@@ -1167,6 +1189,7 @@ fn derive_api_key_env(backend: &str, anthropic_login: bool) -> Option<String> {
         "anthropic" if anthropic_login => Some(mwe_core::oauth::CLAUDE_CODE_LOGIN.to_owned()),
         "anthropic" => Some("ANTHROPIC_API_KEY".to_owned()),
         "gemini" => Some("GEMINI_API_KEY".to_owned()),
+        "openai" => Some("OPENAI_API_KEY".to_owned()),
         "openrouter" => Some("OPENROUTER_API_KEY".to_owned()),
         _ => None,
     }

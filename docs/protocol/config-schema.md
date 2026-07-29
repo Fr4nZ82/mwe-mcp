@@ -206,10 +206,10 @@ Each slot accepts:
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `backend` | `ollama` \| `anthropic` \| `gemini` \| `openrouter` \| `openai` | yes | The provider tag. `openai` parses but is **not buildable** in this build (see [Backends](#supported-backends)). |
+| `backend` | `ollama` \| `anthropic` \| `gemini` \| `openai` \| `openrouter` | yes | The provider tag. All five build (see [Backends](#supported-backends)). |
 | `model` | string | yes | The model id passed to the backend. |
-| `api_key_env` | string | cloud backends only | **The name of the env-var** holding the API key — not the key itself. Anthropic / Gemini require it; Ollama ignores it. For Anthropic the value may instead be a **Claude Code / OAuth token** (auto-detected by prefix → subscription auth; see [Anthropic Claude Code / OAuth auth](#anthropic-claude-code--oauth-auth)). |
-| `base_url` | string (URL) | no | Override the backend's base URL — self-hosted Ollama on a custom port, a regional Gemini gateway, an Anthropic-compatible proxy. |
+| `api_key_env` | string | cloud backends only | **The name of the env-var** holding the API key — not the key itself. Anthropic / Gemini / OpenAI / OpenRouter require it; Ollama ignores it. For Anthropic the value may instead be a **Claude Code / OAuth token** (auto-detected by prefix → subscription auth; see [Anthropic Claude Code / OAuth auth](#anthropic-claude-code--oauth-auth)). |
+| `base_url` | string (URL) | no | Override the backend's base URL — self-hosted Ollama on a custom port, a regional Gemini gateway, an Anthropic-compatible proxy, Azure OpenAI or a corporate OpenAI-compatible gateway. |
 | `reasoning_effort` | string | no | Backend-specific reasoning hint. Common values: `low`, `medium`, `high`, `extra-high`. Adapter-specific mapping below. |
 | `temperature` | float | no | A **default** sampling temperature filled in *only when the caller leaves it unset*. Call sites that pin temperature for determinism (ingest at `0.1`, the REM revisor) are unaffected. Omitted from serialized YAML when unset. |
 | `max_tokens` | int | no | A **default** `max_tokens` ceiling, same fill-only-if-unset semantics as `temperature`. Omitted from serialized YAML when unset. |
@@ -238,15 +238,14 @@ Each slot accepts:
   custom `temperature` is dropped while thinking is on (Anthropic rejects
   it). The agentic `chat` path does **not** apply thinking — it cannot
   round-trip the `thinking` blocks Anthropic requires alongside `tool_use`.
-  Independently of thinking, the newer Anthropic families that dropped the
-  sampling parameters (Opus 4.7+, Fable / Mythos — sending `temperature`
-  returns HTTP 400 `invalid_request_error`) have it stripped on every call;
-  the boot liveness probe pins no `temperature` at all (and asks for a
-  small but non-trivial `max_tokens`, since a one-token probe can come back
-  with zero content blocks), so an unlisted future family only risks a 400
-  on a deliberately configured `temperature`, never on boot.
-- **OpenAI** o-series: forwarded as `reasoning_effort` *(the OpenAI
-  backend is gated and not buildable today)*.
+  Independently of thinking, a model that refuses the sampling parameters
+  has `temperature` stripped on every call — see
+  [What the engine sends a model, and how it knows](#what-the-engine-sends-a-model-and-how-it-knows).
+- **OpenAI**: mapped onto the top-level `reasoning_effort` string by
+  `OpenAiBackend::with_reasoning_effort` — `minimal` / `low` / `medium` /
+  `high`; `extra-high` clamps to `high`, unset sends nothing, and an
+  unrecognised value floors to `medium`. Sent **only** to a model that
+  reasons: the field is itself a 400 on the others.
 - **OpenRouter**: mapped onto `reasoning.effort` by
   `OpenRouterBackend::with_reasoning_effort` — `low` / `medium` / `high`;
   `extra-high` clamps to `high`, unset / `minimal` sends **no**
@@ -871,7 +870,8 @@ Rate-limit enforcement is future work; today this section is advisory.
 ## Supported backends
 
 `LlmFunctionConfig::build_backend` is what actually materialises a live
-backend from a slot. Four backends build; one is gated.
+backend from a slot. All five build: a key the operator already holds is
+never a reason to open an account somewhere else.
 
 | Backend tag | Buildable? | API key | Notes |
 |---|---|---|---|
@@ -879,7 +879,12 @@ backend from a slot. Four backends build; one is gated.
 | `anthropic` | ✅ | required via `api_key_env` | Console API key (`x-api-key`) **or** a Claude Code / OAuth token (Bearer — **test/personal only**, see below). Extended thinking via `reasoning_effort` → `budget_tokens`. Optional `base_url` for a compatible proxy. |
 | `gemini` | ✅ | required via `api_key_env` | Hard policies enforced at the boundary — see below. |
 | `openrouter` | ✅ | required via `api_key_env` | OpenAI-compatible aggregator: one key (`OPENROUTER_API_KEY`), models as `vendor/model` slugs (`anthropic/claude-sonnet-4-6`, `google/gemini-3-pro`, …). `complete` + tools-enabled `chat` + vision. `reasoning_effort` → `reasoning.effort`. Optional `base_url` for a proxy. |
-| `openai` | ❌ **gated** | — | Parses without error so an existing config does not break on upgrade, but `build_backend` returns `ConfigError::UnsupportedLlmBackend` — the operator's mistake surfaces **at startup**, not on the first request. The OpenAI adapter is not implemented today (planned — see the roadmap). |
+| `openai` | ✅ | required via `api_key_env` (`OPENAI_API_KEY`) | First-party Chat Completions. Sends `max_completion_tokens` (never `max_tokens`, which the reasoning models reject), puts the system prompt on the `developer` role for a reasoning model and on `system` otherwise, `reasoning_effort` as a bare string, images as `image_url` data URLs, and reads the prompt-cache hit from `usage.prompt_tokens_details`. `base_url` covers Azure OpenAI and corporate gateways. |
+
+A backend tag outside that list — `cohere`, a typo — parses without error
+so an unfamiliar config does not abort the load, but `build_backend`
+returns `ConfigError::UnsupportedLlmBackend`, so the mistake surfaces **at
+startup** rather than on the first request.
 
 A config that names a cloud backend but is **missing `api_key_env`**, or
 names an env-var that is **unset or empty** in the process environment,
@@ -888,6 +893,42 @@ the offending env-var so the operator can find it in `mwe-mcp.env`
 without diffing files. This check runs at boot (via the LLM-slot health
 check), so a missing key never silently corrupts the first request.
 Whitespace-only values count as unset.
+
+### What the engine sends a model, and how it knows
+
+Providers differ in ways that are invisible until a call is live: the
+Claude 5 generation and OpenAI's `gpt-5` line reject `temperature`
+outright, and both reason before answering out of the same `max_tokens`
+the answer needs. A slot has to work anyway, including on a model released
+after this binary was built. Three layers, in order:
+
+1. **The model catalog.** `<workdir>/model-catalog.json`, refreshed from
+   models.dev at boot and every six hours, carries `temperature`,
+   `reasoning` and the output ceiling per model.
+   `model_catalog::capabilities_for` answers from it, and a fact learned
+   upstream this morning is in force six hours later without a restart.
+2. **Hand-written family lists**, consulted **only** for a model the
+   catalog has never heard of (`anthropic_rejects_sampling_params`,
+   `anthropic_thinks_adaptively`, `openai_reasoning_family` in
+   `crates/mwe-core/src/llm.rs`).
+3. **The provider's own refusal.** A 400 naming a sampling parameter
+   causes one retry with it stripped, and the refusal is remembered for
+   the rest of the run; on OpenAI a 400 naming the message role retries
+   once with `developer` ⇄ `system` swapped. This is the layer that makes
+   a model nobody has catalogued still answer.
+
+What the resolved policy changes: whether `temperature` goes out at all;
+whether the caller's `max_tokens` is widened by 4096 tokens of reasoning
+headroom (a ceiling is not a spend — an unused one costs nothing) and then
+**clamped to the model's documented maximum**, since a ceiling past it is
+its own 400; and which role carries the system prompt on OpenAI.
+
+**Unknown is not "supported".** A model absent from both the cache and the
+bundled snapshot resolves to *unknown*, and the engine falls back rather
+than assuming the permissive answer. The boot liveness probe pins the same
+temperature the determinism-sensitive callers pin (`0.1`), so boot
+exercises the request shape the engine actually sends: a probe that omits
+it reports every slot reachable while every real call 400s.
 
 ### Anthropic Claude Code / OAuth auth
 

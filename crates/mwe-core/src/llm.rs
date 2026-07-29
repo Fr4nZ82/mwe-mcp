@@ -7,7 +7,7 @@
 //! `rem_promotions`, `rem_dedup_semantic`, `cronista` — all want the
 //! same thing: feed a prompt (optionally with a system message) to a
 //! model, get back the completion. The provider behind that contract
-//! is a deployment choice (Ollama for local-only, Anthropic/OpenAI/
+//! is a deployment choice (Ollama for local-only, Anthropic/`OpenAI`/
 //! Google for cloud) that the operator pins per-function in
 //! `mwe-mcp.config.yaml`.
 //!
@@ -34,7 +34,7 @@
 //!   the network.
 //!
 //! Anthropic / Google (Gemini) providers also ship, plus `OpenRouter` (an
-//! OpenAI-compatible aggregator — one key, hundreds of `vendor/model`
+//! `OpenAI`-compatible aggregator — one key, hundreds of `vendor/model`
 //! slugs); a direct first-party `OpenAI` adapter is deferred.
 
 use async_trait::async_trait;
@@ -666,6 +666,17 @@ pub trait LlmBackend: Send + Sync {
         )))
     }
 
+    /// Whether the configured model accepts image input at all.
+    ///
+    /// Answered from the model catalog where it knows, `true` where it
+    /// does not — an image is worth attempting on an unknown model, and a
+    /// refusal is one dropped photo rather than a wrong answer. Callers
+    /// use it to leave the images out of a request the model cannot read,
+    /// instead of paying for a 400 that kills the whole turn.
+    fn accepts_images(&self) -> bool {
+        true
+    }
+
     /// Sanity check that this backend is reachable and the configured
     /// model responds. Called at `mwe-mcp serve` boot
     /// (LLM functions) for every
@@ -684,12 +695,17 @@ pub trait LlmBackend: Send + Sync {
     /// produces. The caller (boot path, doctor) renders the error to
     /// the operator.
     async fn health_check(&self) -> Result<()> {
-        // No pinned `temperature` (some models reject sampling params with
-        // a 400) and a small-but-non-trivial `max_tokens` (a `max_tokens: 1`
-        // probe can return zero content blocks). Backends with stricter
-        // needs override this (see `AnthropicBackend::health_check`).
+        // Pins the temperature the determinism-sensitive callers pin, so
+        // boot exercises the request shape the engine actually sends rather
+        // than a stripped-down one that always passes — the 2026-07-29
+        // lesson, in the default rather than in one backend. Safe now that
+        // [`ModelPolicy`] drops the parameter for models known to refuse it
+        // and the OpenAI-shaped backends retry once without it when a model
+        // refuses unexpectedly. A small-but-non-trivial `max_tokens`
+        // because a `max_tokens: 1` probe can return zero content blocks.
         let probe = CompletionRequest::new("ping")
             .with_max_tokens(16)
+            .with_temperature(HOT_PATH_TEMPERATURE)
             .with_truncation_expected();
         let _ = self.complete(probe).await?;
         Ok(())
@@ -1638,28 +1654,33 @@ impl AnthropicBackend {
             AnthropicMessageContent::Blocks(blocks)
         };
         // Forward the caller's temperature, except to models that reject
-        // sampling params outright (Opus 4.7+, Fable / Mythos: a 400). A
+        // sampling params outright (the catalog's `temperature: false`, or
+        // the offline list for a model it has not heard of: a 400). A
         // thinking budget stacks on the caller's output ceiling (keeping
         // `budget_tokens < max_tokens`) and forces temperature off too —
         // the API rejects a custom temperature alongside thinking.
+        let policy = ModelPolicy::resolve(ANTHROPIC_BACKEND_TAG, &self.model);
         let caller_max = request.max_tokens.unwrap_or(Self::DEFAULT_MAX_TOKENS);
-        let plain_temperature = if anthropic_rejects_sampling_params(&self.model) {
-            None
-        } else {
-            request.temperature
-        };
-        let (max_tokens, thinking, temperature) =
-            budget.map_or((caller_max, None, plain_temperature), |budget_tokens| {
+        let plain_temperature = policy.temperature_for(request.temperature);
+        // With no explicit budget the ceiling is the caller's — plus
+        // headroom on a model that reasons anyway, or the reasoning eats
+        // the answer and the response comes back with no text block at
+        // all. See [`ADAPTIVE_THINKING_HEADROOM`]. Both paths stay inside
+        // the model's own documented maximum.
+        let (max_tokens, thinking, temperature) = budget.map_or_else(
+            || (policy.ceiling_for(caller_max), None, plain_temperature),
+            |budget_tokens| {
                 (
-                    caller_max.saturating_add(budget_tokens),
+                    policy.cap_output(caller_max.saturating_add(budget_tokens), budget_tokens),
                     Some(AnthropicThinking {
                         kind: "enabled",
                         budget_tokens,
                     }),
                     None,
                 )
-            });
-        let body = AnthropicMessagesRequest {
+            },
+        );
+        let mut body = AnthropicMessagesRequest {
             model: &self.model,
             max_tokens,
             messages: vec![AnthropicMessage {
@@ -1672,20 +1693,35 @@ impl AnthropicBackend {
             stop_sequences: &request.stop,
         };
 
-        let token = self.credential.resolve().await?;
-        let response =
-            apply_anthropic_auth(self.client.post(url), &token, self.credential.is_oauth())
-                .header("anthropic-version", ANTHROPIC_API_VERSION)
-                .header("content-type", "application/json")
-                .json(&body)
-                .send()
-                .await
-                .map_err(transport_error)?;
+        // One retry, at most: a 400 that names a sampling parameter means
+        // this model does not take it, whatever the catalog and the lists
+        // believed. Strip it, go again, and remember — so the *next* call
+        // is built right rather than paying for the same refusal.
+        let parsed: AnthropicMessagesResponse = loop {
+            let token = self.credential.resolve().await?;
+            let response =
+                apply_anthropic_auth(self.client.post(&url), &token, self.credential.is_oauth())
+                    .header("anthropic-version", ANTHROPIC_API_VERSION)
+                    .header("content-type", "application/json")
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(transport_error)?;
 
-        let status = response.status();
-        if !status.is_success() {
+            let status = response.status();
+            if status.is_success() {
+                break response.json().await.map_err(|e| {
+                    LlmError::Protocol(format!("decoding anthropic response: {e}"))
+                })?;
+            }
+
             let body_text = response.text().await.unwrap_or_default();
             let trimmed = body_text.chars().take(500).collect::<String>();
+            if status == 400 && body.temperature.is_some() && blames_a_sampling_param(&trimmed) {
+                note_sampling_params_refused(ANTHROPIC_BACKEND_TAG, &self.model, &trimmed);
+                body.temperature = None;
+                continue;
+            }
             return Err(match status.as_u16() {
                 401 | 403 => LlmError::Auth(format!(
                     "HTTP {status} from Anthropic — check `{}` in mwe-mcp.env: {trimmed}",
@@ -1695,12 +1731,7 @@ impl AnthropicBackend {
                 400 => LlmError::Invalid(format!("HTTP {status}: {trimmed}")),
                 _ => LlmError::Backend(format!("HTTP {status}: {trimmed}")),
             });
-        }
-
-        let parsed: AnthropicMessagesResponse = response
-            .json()
-            .await
-            .map_err(|e| LlmError::Protocol(format!("decoding anthropic response: {e}")))?;
+        };
 
         let mut text = String::new();
         let mut saw_text_block = false;
@@ -1764,6 +1795,54 @@ fn anthropic_thinking_budget(effort: Option<&str>) -> Option<u32> {
 /// [`AnthropicBackend::health_check`].
 const HOT_PATH_TEMPERATURE: f32 = 0.1;
 
+/// Extra output ceiling handed to models that think **adaptively**, on
+/// top of whatever the caller asked for.
+///
+/// The Claude 5 generation reasons before it answers whether or not a
+/// `thinking` block was requested, and that reasoning is spent from
+/// `max_tokens`. A caller who sized the ceiling for the answer alone can
+/// therefore get back a response containing a thinking block and **no
+/// text block at all** — which the parser reports as
+/// `LlmError::Protocol("anthropic response has no `text` content block")`
+/// and every caller treats as a failure.
+///
+/// Measured on 2026-07-29, the first hours of a household running on
+/// Claude 5: the REM dedup revisor lost 14 of 120 calls this way and the
+/// boot probe (`max_tokens: 16`) could not get a single word out of Opus
+/// 5, which took the whole deployment down in a restart loop. The
+/// explicit-budget path already stacks its allowance on top of the
+/// caller's ceiling; this is the same courtesy for the implicit one.
+///
+/// A ceiling is not a spend — raising it costs nothing on a call that
+/// does not use it.
+const ADAPTIVE_THINKING_HEADROOM: u32 = 4_096;
+
+/// `true` for Anthropic models that reason before answering with no
+/// `thinking` field in the request, spending output budget to do it.
+///
+/// Kept separate from [`anthropic_rejects_sampling_params`] even though
+/// the two lists overlap today: they are different facts about a model,
+/// and Opus 4.7 / 4.8 reject sampling params while still answering a
+/// 16-token probe. Conflating them would have hidden which property
+/// actually caused the outage.
+///
+/// **Offline fallback only.** [`ModelPolicy::resolve`] asks the model
+/// catalog first and reaches this list for a model the catalog has never
+/// heard of. Where the catalog does answer it cannot tell "reasons when
+/// asked" from "reasons unbidden", so the policy reads the pair *reasons +
+/// refuses sampling params* — which is broader than this list by exactly
+/// Opus 4.7 / 4.8, models that get headroom they do not need. That is the
+/// intended trade: an unused ceiling costs nothing, a missing one cost a
+/// deployment.
+fn anthropic_thinks_adaptively(model: &str) -> bool {
+    let m = model.trim();
+    m.starts_with("claude-opus-5")
+        || m.starts_with("claude-sonnet-5")
+        || m.starts_with("claude-haiku-5")
+        || m.starts_with("claude-fable")
+        || m.starts_with("claude-mythos")
+}
+
 /// `true` for Anthropic models that reject the sampling parameters
 /// (`temperature`, `top_p`, `top_k`) outright — sending any returns
 /// HTTP 400 `invalid_request_error`. Opus 4.7+, the whole Claude 5
@@ -1788,6 +1867,206 @@ fn anthropic_rejects_sampling_params(model: &str) -> bool {
         || m.starts_with("claude-haiku-5")
         || m.starts_with("claude-fable")
         || m.starts_with("claude-mythos")
+}
+
+/// `true` for the `OpenAI` families that reason before answering and reject
+/// the sampling parameters: the whole `gpt-5` line and the o-series. Same
+/// two facts as the Anthropic pair above, and at `OpenAI` they happen to
+/// coincide — *"Unsupported value: 'temperature' does not support 0.1 with
+/// this model. Only the default (1) value is supported."*
+///
+/// Accepts a bare id (`gpt-5.4`) or an `OpenRouter` `vendor/model` slug
+/// (`openai/gpt-5.4`). Crude on purpose: it is the **offline** answer,
+/// used only for a model the catalog has never heard of. `gpt-5.3-chat-latest`
+/// does take a temperature and the catalog knows it; this list would guess
+/// wrong, and [`ModelPolicy::resolve`] never asks it when the catalog can
+/// answer.
+fn openai_reasoning_family(model: &str) -> bool {
+    let m = model.trim();
+    let m = m.rsplit('/').next().unwrap_or(m);
+    m.starts_with("gpt-5") || m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4")
+}
+
+/// The image encodings every provider accepts, and therefore the only
+/// ones an [`ImageInput`] may carry.
+///
+/// Anthropic and `OpenAI` both enumerate exactly these four and reject the
+/// rest with HTTP 400; Gemini takes more (HEIC/HEIF among them) but takes
+/// these too. So the portable set is the intersection, and a photo outside
+/// it is dropped before the request is built rather than costing the whole
+/// call — the turn still files its fact from the caption.
+pub const PORTABLE_IMAGE_MIMES: [&str; 4] = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+
+/// Whether a declared image type is one every provider accepts.
+///
+/// Normalised by [`crate::media::canonical_mime`] first: `image/jpg` is not
+/// a MIME type, but it is what real clients send, and it is the exact
+/// string that took an ingest turn down on 2026-07-29.
+#[must_use]
+pub fn image_mime_is_portable(declared: &str) -> bool {
+    let canonical = crate::media::canonical_mime(declared);
+    PORTABLE_IMAGE_MIMES.contains(&canonical.as_str())
+}
+
+/// mwe-mcp backend tags, as the model catalog keys them.
+const ANTHROPIC_BACKEND_TAG: &str = "anthropic";
+const OPENAI_BACKEND_TAG: &str = "openai";
+const OPENROUTER_BACKEND_TAG: &str = "openrouter";
+
+/// What the engine will actually send to one model, resolved per request.
+///
+/// **Why this is not a table in this file.** Both facts below cost a
+/// production incident on 2026-07-29 and were first patched as prefix lists
+/// here — which only ever works for models that existed when the binary was
+/// built. models.dev carries them, we already mirror it into
+/// `<workdir>/model-catalog.json` every six hours, and its `temperature`
+/// flag reproduces the hand-written Anthropic list exactly while also
+/// covering `OpenAI`. So the catalog answers first and the lists survive only
+/// as the offline fallback for a model nobody has published yet.
+///
+/// Resolution order, per field: **catalog → hand list → send it and see**
+/// (the last step being [`sampling_params_refused`], which remembers a
+/// provider's own refusal for the rest of the process).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ModelPolicy {
+    /// Put `temperature` / `top_p` on the request at all.
+    send_sampling_params: bool,
+    /// Add [`ADAPTIVE_THINKING_HEADROOM`] to the caller's output ceiling,
+    /// because the model reasons before answering and spends that budget
+    /// doing it.
+    headroom_for_reasoning: bool,
+    /// The model's documented output ceiling, when known — the headroom
+    /// above must not push `max_tokens` past it, which is its own 400.
+    output_ceiling: Option<u32>,
+    /// Accepts image input. `true` when unknown: worth attempting.
+    accepts_images: bool,
+}
+
+impl ModelPolicy {
+    /// Resolve the policy for `model` on the backend tagged `backend_tag`.
+    fn resolve(backend_tag: &str, model: &str) -> Self {
+        let caps = crate::model_catalog::capabilities_for(backend_tag, model);
+        let send_sampling_params = caps
+            .accepts_sampling_params
+            .unwrap_or_else(|| !offline_rejects_sampling_params(backend_tag, model))
+            && !sampling_params_refused(backend_tag, model);
+        // `reasoning: true` alone is the wrong signal — Haiku 4.5 carries
+        // it and still answers a 16-token probe, because it reasons only
+        // when *asked*. What breaks a small `max_tokens` is the generation
+        // that reasons whether or not you asked, and its tell in the
+        // catalog is the pair: **reasons, and refuses the sampling
+        // parameters**. That is Claude 5 / Opus 4.7+ on one side and the
+        // `gpt-5` line + o-series on the other, and it excludes every model
+        // that merely *has* a thinking mode. The hand list still votes, so
+        // a family the catalog has not caught up with is covered too.
+        let reasoning_first =
+            caps.reasons == Some(true) && caps.accepts_sampling_params == Some(false);
+        Self {
+            send_sampling_params,
+            headroom_for_reasoning: reasoning_first
+                || offline_reasons_before_answering(backend_tag, model),
+            output_ceiling: caps.max_output,
+            accepts_images: caps.image_input.unwrap_or(true),
+        }
+    }
+
+    /// `requested`, capped to the model's documented output ceiling and
+    /// never at or below `floor` (an extended-thinking budget must stay
+    /// strictly under `max_tokens`).
+    fn cap_output(self, requested: u32, floor: u32) -> u32 {
+        match self.output_ceiling {
+            Some(ceiling) if requested > ceiling => ceiling.max(floor.saturating_add(1)),
+            _ => requested,
+        }
+    }
+
+    /// The output ceiling to send for a caller's `max_tokens`: reasoning
+    /// headroom added where the model needs it, the model's own maximum
+    /// respected.
+    fn ceiling_for(self, caller_max: u32) -> u32 {
+        let with_headroom = if self.headroom_for_reasoning {
+            caller_max.saturating_add(ADAPTIVE_THINKING_HEADROOM)
+        } else {
+            caller_max
+        };
+        self.cap_output(with_headroom, 0)
+    }
+
+    /// The temperature to send: the caller's, or none at all on a model
+    /// that refuses it.
+    const fn temperature_for(self, requested: Option<f32>) -> Option<f32> {
+        if self.send_sampling_params {
+            requested
+        } else {
+            None
+        }
+    }
+}
+
+/// Offline answer to "does this model refuse the sampling parameters" —
+/// consulted only for a model the catalog does not list.
+fn offline_rejects_sampling_params(backend_tag: &str, model: &str) -> bool {
+    match backend_tag {
+        ANTHROPIC_BACKEND_TAG => anthropic_rejects_sampling_params(model),
+        OPENAI_BACKEND_TAG | OPENROUTER_BACKEND_TAG => openai_reasoning_family(model),
+        _ => false,
+    }
+}
+
+/// Offline answer to "does this model reason before answering, out of the
+/// caller's output budget" — same fallback rule as above.
+fn offline_reasons_before_answering(backend_tag: &str, model: &str) -> bool {
+    match backend_tag {
+        ANTHROPIC_BACKEND_TAG => anthropic_thinks_adaptively(model),
+        OPENAI_BACKEND_TAG | OPENROUTER_BACKEND_TAG => openai_reasoning_family(model),
+        _ => false,
+    }
+}
+
+/// Models that told us themselves, with a 400, that they do not take the
+/// sampling parameters. Process-wide and never persisted: it is a cache of
+/// something the provider will happily repeat, not a fact worth writing to
+/// disk where it could go stale unnoticed.
+fn sampling_refusals() -> &'static std::sync::RwLock<std::collections::HashSet<String>> {
+    static CELL: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    CELL.get_or_init(|| std::sync::RwLock::new(std::collections::HashSet::new()))
+}
+
+/// Whether this model has already refused the sampling parameters in this
+/// process.
+fn sampling_params_refused(backend_tag: &str, model: &str) -> bool {
+    sampling_refusals()
+        .read()
+        .is_ok_and(|set| set.contains(&format!("{backend_tag}/{model}")))
+}
+
+/// Record a refusal, warning once so the operator sees the downgrade
+/// without a line per call for the rest of the day.
+fn note_sampling_params_refused(backend_tag: &str, model: &str, detail: &str) {
+    let key = format!("{backend_tag}/{model}");
+    if let Ok(mut set) = sampling_refusals().write()
+        && set.insert(key)
+    {
+        tracing::warn!(
+            backend = backend_tag,
+            model,
+            detail = detail.chars().take(200).collect::<String>(),
+            "model refused the sampling parameters — retrying without them and \
+             dropping them for the rest of this run"
+        );
+    }
+}
+
+/// Does this error body blame one of the sampling parameters?
+///
+/// Every provider names the offending field in the message — Anthropic
+/// *"temperature is deprecated for this model"*, `OpenAI` *"Unsupported
+/// value: 'temperature'"* — so this reads the body rather than guessing
+/// from the status code alone.
+fn blames_a_sampling_param(body: &str) -> bool {
+    let b = body.to_ascii_lowercase();
+    b.contains("temperature") || b.contains("top_p") || b.contains("top_k")
 }
 
 #[derive(Debug, Serialize)]
@@ -2107,6 +2386,10 @@ fn split_anthropic_messages(
 impl LlmBackend for AnthropicBackend {
     fn model_id(&self) -> &str {
         &self.model
+    }
+
+    fn accepts_images(&self) -> bool {
+        ModelPolicy::resolve(ANTHROPIC_BACKEND_TAG, &self.model).accepts_images
     }
 
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
@@ -2916,6 +3199,14 @@ impl LlmBackend for GeminiBackend {
         &self.model
     }
 
+    /// Gemini has its own hard request policy, but the vision question is
+    /// still a fact about the model, and the catalog answers it.
+    fn accepts_images(&self) -> bool {
+        crate::model_catalog::capabilities_for("gemini", &self.model)
+            .image_input
+            .unwrap_or(true)
+    }
+
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
         if request.prompt.is_empty() {
             return Err(LlmError::Invalid("empty prompt".into()));
@@ -3193,7 +3484,7 @@ impl std::fmt::Debug for OpenRouterApiKey {
     }
 }
 
-/// HTTP client for `OpenRouter`'s OpenAI-compatible Chat Completions API.
+/// HTTP client for `OpenRouter`'s `OpenAI`-compatible Chat Completions API.
 ///
 /// - `complete` sends `[system?, user]` and reads `choices[0].message.content`.
 /// - `chat` converts the full [`ChatMessage`] history to `OpenAI` message
@@ -3280,6 +3571,43 @@ impl OpenRouterBackend {
             .as_deref()
             .map(|effort| OpenRouterReasoning { effort })
     }
+
+    /// POST a chat body and hand back the successful response.
+    ///
+    /// One retry, at most: a 400 naming a sampling parameter means the
+    /// upstream behind this slug does not take it — strip it, go again, and
+    /// remember for the rest of the run. Shared by `complete` and `chat` so
+    /// the tools path is not the one that keeps 400ing.
+    async fn send_chat(&self, body: &mut OpenRouterChatBody<'_>) -> Result<reqwest::Response> {
+        loop {
+            let response = self
+                .client
+                .post(self.chat_completions_url())
+                .bearer_auth(self.api_key.as_str())
+                .header("content-type", "application/json")
+                .header("x-title", "mwe-mcp")
+                .json(&*body)
+                .send()
+                .await
+                .map_err(transport_error)?;
+
+            let status = response.status();
+            if status.is_success() {
+                return Ok(response);
+            }
+            let body_text = response.text().await.unwrap_or_default();
+            if status == 400 && body.temperature.is_some() && blames_a_sampling_param(&body_text) {
+                note_sampling_params_refused(OPENROUTER_BACKEND_TAG, &self.model, &body_text);
+                body.temperature = None;
+                continue;
+            }
+            return Err(map_openrouter_http_error(
+                status,
+                &body_text,
+                &self.api_key_env,
+            ));
+        }
+    }
 }
 
 // ---- OpenRouter wire types (request) ----
@@ -3287,7 +3615,7 @@ impl OpenRouterBackend {
 #[derive(Debug, Serialize)]
 struct OpenRouterChatBody<'a> {
     model: &'a str,
-    messages: Vec<OpenRouterMessageOut<'a>>,
+    messages: Vec<OpenAiMessageOut<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3295,7 +3623,7 @@ struct OpenRouterChatBody<'a> {
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     stop: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    tools: Vec<OpenRouterToolDef<'a>>,
+    tools: Vec<OpenAiToolDef<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<OpenRouterReasoning<'a>>,
 }
@@ -3306,12 +3634,12 @@ struct OpenRouterReasoning<'a> {
 }
 
 #[derive(Debug, Serialize)]
-struct OpenRouterMessageOut<'a> {
+struct OpenAiMessageOut<'a> {
     role: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<OpenRouterContentOut<'a>>,
+    content: Option<OpenAiContentOut<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    tool_calls: Vec<OpenRouterToolCallOut<'a>>,
+    tool_calls: Vec<OpenAiToolCallOut<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<&'a str>,
 }
@@ -3321,50 +3649,50 @@ struct OpenRouterMessageOut<'a> {
 /// variant we built.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-enum OpenRouterContentOut<'a> {
+enum OpenAiContentOut<'a> {
     Text(&'a str),
-    Parts(Vec<OpenRouterContentPart<'a>>),
+    Parts(Vec<OpenAiContentPart<'a>>),
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
-enum OpenRouterContentPart<'a> {
+enum OpenAiContentPart<'a> {
     #[serde(rename = "text")]
     Text { text: &'a str },
     #[serde(rename = "image_url")]
-    ImageUrl { image_url: OpenRouterImageUrl },
+    ImageUrl { image_url: OpenAiImageUrl },
 }
 
 #[derive(Debug, Serialize)]
-struct OpenRouterImageUrl {
+struct OpenAiImageUrl {
     /// `data:{mime};base64,{data}` URL.
     url: String,
 }
 
 #[derive(Debug, Serialize)]
-struct OpenRouterToolDef<'a> {
+struct OpenAiToolDef<'a> {
     #[serde(rename = "type")]
     kind: &'static str,
-    function: OpenRouterFunctionDef<'a>,
+    function: OpenAiFunctionDef<'a>,
 }
 
 #[derive(Debug, Serialize)]
-struct OpenRouterFunctionDef<'a> {
+struct OpenAiFunctionDef<'a> {
     name: &'a str,
     description: &'a str,
     parameters: &'a serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
-struct OpenRouterToolCallOut<'a> {
+struct OpenAiToolCallOut<'a> {
     id: &'a str,
     #[serde(rename = "type")]
     kind: &'static str,
-    function: OpenRouterFunctionCallOut<'a>,
+    function: OpenAiFunctionCallOut<'a>,
 }
 
 #[derive(Debug, Serialize)]
-struct OpenRouterFunctionCallOut<'a> {
+struct OpenAiFunctionCallOut<'a> {
     name: &'a str,
     /// `OpenAI` passes tool-call arguments as a JSON-encoded **string**.
     arguments: String,
@@ -3373,39 +3701,39 @@ struct OpenRouterFunctionCallOut<'a> {
 // ---- OpenRouter wire types (response) ----
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterChatResponse {
+struct OpenAiChatResponse {
     #[serde(default)]
-    choices: Vec<OpenRouterChoice>,
+    choices: Vec<OpenAiChoice>,
     #[serde(default)]
-    usage: Option<OpenRouterUsage>,
+    usage: Option<OpenAiUsage>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterChoice {
+struct OpenAiChoice {
     #[serde(default)]
-    message: Option<OpenRouterMessageIn>,
+    message: Option<OpenAiMessageIn>,
     #[serde(default)]
     finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterMessageIn {
+struct OpenAiMessageIn {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
-    tool_calls: Vec<OpenRouterToolCallIn>,
+    tool_calls: Vec<OpenAiToolCallIn>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterToolCallIn {
+struct OpenAiToolCallIn {
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
-    function: Option<OpenRouterFunctionCallIn>,
+    function: Option<OpenAiFunctionCallIn>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterFunctionCallIn {
+struct OpenAiFunctionCallIn {
     #[serde(default)]
     name: String,
     #[serde(default)]
@@ -3413,15 +3741,35 @@ struct OpenRouterFunctionCallIn {
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterUsage {
+struct OpenAiUsage {
     #[serde(default)]
     prompt_tokens: Option<u32>,
     #[serde(default)]
     completion_tokens: Option<u32>,
+    /// Prompt-cache detail. `OpenAI` reports the cached share of the prompt
+    /// here; aggregators may or may not pass it through, hence `Option`
+    /// all the way down.
+    #[serde(default)]
+    prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
 }
 
-/// Map OpenAI/OpenRouter `finish_reason` onto [`FinishReason`].
-const fn classify_openrouter_finish_reason(raw: Option<&str>) -> FinishReason {
+#[derive(Debug, Deserialize)]
+struct OpenAiPromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u32>,
+}
+
+impl OpenAiUsage {
+    /// Tokens served from the provider's prompt cache, when reported.
+    fn cached_prompt_tokens(&self) -> Option<u32> {
+        self.prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cached_tokens)
+    }
+}
+
+/// Map `OpenAI`/`OpenRouter` `finish_reason` onto [`FinishReason`].
+const fn classify_openai_finish_reason(raw: Option<&str>) -> FinishReason {
     match raw {
         Some(s) if matches!(s.as_bytes(), b"stop" | b"end_turn") => FinishReason::EndOfTurn,
         Some(s) if matches!(s.as_bytes(), b"length") => FinishReason::MaxTokens,
@@ -3455,7 +3803,7 @@ fn map_openrouter_http_error(
 /// Parse `OpenAI`'s JSON-string tool-call arguments into a [`serde_json::Value`],
 /// degrading an empty / malformed payload to an empty object so the
 /// agentic loop always gets a structurally valid argument bag.
-fn parse_openrouter_tool_args(raw: &str) -> serde_json::Value {
+fn parse_openai_tool_args(raw: &str) -> serde_json::Value {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return serde_json::json!({});
@@ -3466,36 +3814,43 @@ fn parse_openrouter_tool_args(raw: &str) -> serde_json::Value {
 /// Build the `[system?, user]` message list for a single completion,
 /// using image content parts (the media-pipeline vision path) when the
 /// request carries images.
-fn openrouter_completion_messages<'a>(
+///
+/// `system_role` is a parameter rather than the literal `"system"`
+/// because `OpenAI`'s reasoning models replaced that role with
+/// `developer` and **reject** the old name — see
+/// [`OpenAiBackend::system_role`]. `OpenRouter` normalises it upstream and
+/// passes `"system"`.
+fn openai_completion_messages<'a>(
     prompt: &'a str,
     system: Option<&'a str>,
     images: &'a [ImageInput],
-) -> Vec<OpenRouterMessageOut<'a>> {
-    let mut messages: Vec<OpenRouterMessageOut<'a>> = Vec::with_capacity(2);
+    system_role: &'static str,
+) -> Vec<OpenAiMessageOut<'a>> {
+    let mut messages: Vec<OpenAiMessageOut<'a>> = Vec::with_capacity(2);
     if let Some(system) = system {
-        messages.push(OpenRouterMessageOut {
-            role: "system",
-            content: Some(OpenRouterContentOut::Text(system)),
+        messages.push(OpenAiMessageOut {
+            role: system_role,
+            content: Some(OpenAiContentOut::Text(system)),
             tool_calls: Vec::new(),
             tool_call_id: None,
         });
     }
     // User turn: a plain text string, or text + image parts (vision path).
     let user_content = if images.is_empty() {
-        OpenRouterContentOut::Text(prompt)
+        OpenAiContentOut::Text(prompt)
     } else {
-        let mut parts: Vec<OpenRouterContentPart<'a>> = images
+        let mut parts: Vec<OpenAiContentPart<'a>> = images
             .iter()
-            .map(|img| OpenRouterContentPart::ImageUrl {
-                image_url: OpenRouterImageUrl {
+            .map(|img| OpenAiContentPart::ImageUrl {
+                image_url: OpenAiImageUrl {
                     url: format!("data:{};base64,{}", img.mime_type, img.data_base64),
                 },
             })
             .collect();
-        parts.push(OpenRouterContentPart::Text { text: prompt });
-        OpenRouterContentOut::Parts(parts)
+        parts.push(OpenAiContentPart::Text { text: prompt });
+        OpenAiContentOut::Parts(parts)
     };
-    messages.push(OpenRouterMessageOut {
+    messages.push(OpenAiMessageOut {
         role: "user",
         content: Some(user_content),
         tool_calls: Vec::new(),
@@ -3508,17 +3863,17 @@ fn openrouter_completion_messages<'a>(
 /// assistant `tool_calls` serialised to JSON-string arguments, `tool`
 /// results keyed by `tool_call_id`, and pure-tool-call turns with an
 /// omitted `content`.
-fn openrouter_messages(history: &[ChatMessage]) -> Vec<OpenRouterMessageOut<'_>> {
+fn openai_chat_messages(history: &[ChatMessage]) -> Vec<OpenAiMessageOut<'_>> {
     history
         .iter()
         .map(|msg| {
-            let tool_calls: Vec<OpenRouterToolCallOut<'_>> = msg
+            let tool_calls: Vec<OpenAiToolCallOut<'_>> = msg
                 .tool_calls
                 .iter()
-                .map(|tc| OpenRouterToolCallOut {
+                .map(|tc| OpenAiToolCallOut {
                     id: tc.id.as_str(),
                     kind: "function",
-                    function: OpenRouterFunctionCallOut {
+                    function: OpenAiFunctionCallOut {
                         name: tc.name.as_str(),
                         arguments: serde_json::to_string(&tc.arguments)
                             .unwrap_or_else(|_| "{}".to_owned()),
@@ -3528,9 +3883,9 @@ fn openrouter_messages(history: &[ChatMessage]) -> Vec<OpenRouterMessageOut<'_>>
             let content = if msg.content.is_empty() && !tool_calls.is_empty() {
                 None
             } else {
-                Some(OpenRouterContentOut::Text(msg.content.as_str()))
+                Some(OpenAiContentOut::Text(msg.content.as_str()))
             };
-            OpenRouterMessageOut {
+            OpenAiMessageOut {
                 role: msg.role.as_str(),
                 content,
                 tool_calls,
@@ -3541,12 +3896,12 @@ fn openrouter_messages(history: &[ChatMessage]) -> Vec<OpenRouterMessageOut<'_>>
 }
 
 /// Convert [`Tool`] descriptors to chat-completions `tools[]` entries.
-fn openrouter_tools(tools: &[Tool]) -> Vec<OpenRouterToolDef<'_>> {
+fn openai_tools(tools: &[Tool]) -> Vec<OpenAiToolDef<'_>> {
     tools
         .iter()
-        .map(|t| OpenRouterToolDef {
+        .map(|t| OpenAiToolDef {
             kind: "function",
-            function: OpenRouterFunctionDef {
+            function: OpenAiFunctionDef {
                 name: t.name.as_str(),
                 description: t.description.as_str(),
                 parameters: &t.parameters,
@@ -3559,6 +3914,10 @@ fn openrouter_tools(tools: &[Tool]) -> Vec<OpenRouterToolDef<'_>> {
 impl LlmBackend for OpenRouterBackend {
     fn model_id(&self) -> &str {
         &self.model
+    }
+
+    fn accepts_images(&self) -> bool {
+        ModelPolicy::resolve(OPENROUTER_BACKEND_TAG, &self.model).accepts_images
     }
 
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
@@ -3578,38 +3937,24 @@ impl LlmBackend for OpenRouterBackend {
             return Err(LlmError::Invalid("empty prompt".into()));
         }
 
-        let body = OpenRouterChatBody {
+        // The aggregator fans out to upstreams with different rules — an
+        // `openai/gpt-5*` or `anthropic/claude-*-5` slug reaches a model
+        // that refuses the sampling parameters just as surely as the
+        // native backends do, so the same policy applies here.
+        let policy = ModelPolicy::resolve(OPENROUTER_BACKEND_TAG, &self.model);
+        let mut body = OpenRouterChatBody {
             model: &self.model,
-            messages: openrouter_completion_messages(&prompt, system.as_deref(), &images),
-            max_tokens,
-            temperature,
+            messages: openai_completion_messages(&prompt, system.as_deref(), &images, "system"),
+            max_tokens: max_tokens.map(|m| policy.ceiling_for(m)),
+            temperature: policy.temperature_for(temperature),
             stop,
             tools: Vec::new(),
             reasoning: self.reasoning(),
         };
 
-        let response = self
-            .client
-            .post(self.chat_completions_url())
-            .bearer_auth(self.api_key.as_str())
-            .header("content-type", "application/json")
-            .header("x-title", "mwe-mcp")
-            .json(&body)
-            .send()
-            .await
-            .map_err(transport_error)?;
+        let response = self.send_chat(&mut body).await?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let body_text = response.text().await.unwrap_or_default();
-            return Err(map_openrouter_http_error(
-                status,
-                &body_text,
-                &self.api_key_env,
-            ));
-        }
-
-        let parsed: OpenRouterChatResponse = response
+        let parsed: OpenAiChatResponse = response
             .json()
             .await
             .map_err(|e| LlmError::Protocol(format!("decoding openrouter response: {e}")))?;
@@ -3630,12 +3975,18 @@ impl LlmBackend for OpenRouterBackend {
 
         let resp = CompletionResponse {
             text,
-            finish_reason: classify_openrouter_finish_reason(finish_raw),
+            finish_reason: classify_openai_finish_reason(finish_raw),
             usage: CompletionUsage {
                 prompt_tokens: parsed.usage.as_ref().and_then(|u| u.prompt_tokens),
                 completion_tokens: parsed.usage.as_ref().and_then(|u| u.completion_tokens),
-                // The OpenAI-shaped payload carries no prefix-cache count.
-                cached_prompt_tokens: None,
+                // OpenAI reports the cached share of the prompt under
+                // `usage.prompt_tokens_details`; aggregators pass it
+                // through or they do not. There is no write-side counter
+                // in this shape — the cache is implicit, not requested.
+                cached_prompt_tokens: parsed
+                    .usage
+                    .as_ref()
+                    .and_then(OpenAiUsage::cached_prompt_tokens),
                 cache_write_tokens: None,
             },
         };
@@ -3660,38 +4011,20 @@ impl LlmBackend for OpenRouterBackend {
             return Err(LlmError::Invalid("empty messages".into()));
         }
 
-        let body = OpenRouterChatBody {
+        let policy = ModelPolicy::resolve(OPENROUTER_BACKEND_TAG, &self.model);
+        let mut body = OpenRouterChatBody {
             model: &self.model,
-            messages: openrouter_messages(&history),
-            max_tokens,
-            temperature,
+            messages: openai_chat_messages(&history),
+            max_tokens: max_tokens.map(|m| policy.ceiling_for(m)),
+            temperature: policy.temperature_for(temperature),
             stop: Vec::new(),
-            tools: openrouter_tools(&tool_descs),
+            tools: openai_tools(&tool_descs),
             reasoning: self.reasoning(),
         };
 
-        let response = self
-            .client
-            .post(self.chat_completions_url())
-            .bearer_auth(self.api_key.as_str())
-            .header("content-type", "application/json")
-            .header("x-title", "mwe-mcp")
-            .json(&body)
-            .send()
-            .await
-            .map_err(transport_error)?;
+        let response = self.send_chat(&mut body).await?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let body_text = response.text().await.unwrap_or_default();
-            return Err(map_openrouter_http_error(
-                status,
-                &body_text,
-                &self.api_key_env,
-            ));
-        }
-
-        let parsed: OpenRouterChatResponse = response
+        let parsed: OpenAiChatResponse = response
             .json()
             .await
             .map_err(|e| LlmError::Protocol(format!("decoding openrouter chat response: {e}")))?;
@@ -3710,7 +4043,7 @@ impl LlmBackend for OpenRouterBackend {
             tool_calls.push(ToolCall {
                 id: tc.id.unwrap_or_else(|| format!("call_{idx}")),
                 name: func.name,
-                arguments: parse_openrouter_tool_args(&func.arguments),
+                arguments: parse_openai_tool_args(&func.arguments),
                 thought_signature: None,
             });
         }
@@ -3722,16 +4055,483 @@ impl LlmBackend for OpenRouterBackend {
                 tool_calls,
                 tool_call_id: None,
             },
-            finish_reason: classify_openrouter_finish_reason(finish_raw),
+            finish_reason: classify_openai_finish_reason(finish_raw),
             usage: CompletionUsage {
                 prompt_tokens: parsed.usage.as_ref().and_then(|u| u.prompt_tokens),
                 completion_tokens: parsed.usage.as_ref().and_then(|u| u.completion_tokens),
-                // The OpenAI-shaped payload carries no prefix-cache count.
-                cached_prompt_tokens: None,
+                // OpenAI reports the cached share of the prompt under
+                // `usage.prompt_tokens_details`; aggregators pass it
+                // through or they do not. There is no write-side counter
+                // in this shape — the cache is implicit, not requested.
+                cached_prompt_tokens: parsed
+                    .usage
+                    .as_ref()
+                    .and_then(OpenAiUsage::cached_prompt_tokens),
                 cache_write_tokens: None,
             },
         };
         warn_if_truncated_chat("openrouter", &self.model, &resp);
+        Ok(resp)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OpenAiBackend — first-party OpenAI Chat Completions client
+// (<https://platform.openai.com/docs/api-reference/chat>).
+//
+// Why it exists rather than "use OpenRouter for GPT": an operator who
+// already holds an OpenAI key must be able to paste it and be finished.
+// Requiring an aggregator account would add a margin on every call and,
+// worse, put a third party in the path the memory travels — indefensible
+// for a product whose pitch is where the data goes.
+//
+// The wire format is the one `OpenRouterBackend` already speaks, so the
+// message / tool / response types above are shared verbatim. What differs
+// is documented, not discovered, because we have no key to test with:
+//
+// - **`max_completion_tokens`, never `max_tokens`.** The reasoning models
+//   reject the old field outright, and it is deprecated for the rest.
+// - **No `temperature` on the reasoning models** — *"Unsupported value:
+//   'temperature' does not support 0.1 with this model. Only the default
+//   (1) value is supported."* [`ModelPolicy`] already knows this from the
+//   catalog (`temperature: false` on the whole `gpt-5` line and the
+//   o-series).
+// - **Reasoning tokens are billed as output and spent from the ceiling**,
+//   exactly the trap that crash-looped production on Anthropic. Same
+//   remedy: [`ADAPTIVE_THINKING_HEADROOM`], clamped to the model's
+//   documented maximum. OpenAI's own guidance is to reserve at least 25k
+//   for a long reasoning answer, which is a caller's decision, not ours.
+// - **The `developer` role replaced `system`** on o1 and newer, and those
+//   models *reject* `system` (there is no automatic mapping). We send
+//   `developer` to a reasoning model and `system` to everything else, and
+//   the downgrade path below rescues the pairing we get wrong.
+// - **`reasoning_effort`** is a top-level string (`minimal` / `low` /
+//   `medium` / `high`), not OpenRouter's `reasoning: { effort }` object,
+//   and sending it to a non-reasoning model is itself a 400 — so it goes
+//   out only where the policy says the model reasons.
+//
+// Untested against the live API by construction: every assertion above is
+// pinned by a wiremock test that matches the exact request body, which is
+// how the other cloud backends are covered too. A live smoke test on a
+// real key is the last step before claiming it works.
+// ---------------------------------------------------------------------------
+
+/// Default `OpenAI` API base URL. Path-suffix-free; the backend appends
+/// `/chat/completions`. Overridable for Azure `OpenAI`, a corporate
+/// gateway, or any `OpenAI`-compatible endpoint.
+pub const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1";
+
+/// API key for `OpenAI`, `Debug`-redacted like its siblings.
+#[derive(Clone)]
+pub struct OpenAiApiKey(String);
+
+impl OpenAiApiKey {
+    /// Wrap a raw key. Empty input is rejected here so a misread env-var
+    /// surfaces at construction instead of as an opaque 401.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError::Invalid`] when `raw` is empty after trimming.
+    pub fn new(raw: impl Into<String>) -> Result<Self> {
+        let s = raw.into();
+        if s.trim().is_empty() {
+            return Err(LlmError::Invalid("openai api key is empty".into()));
+        }
+        Ok(Self(s))
+    }
+
+    /// Expose the raw key — only the HTTP layer needs it.
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for OpenAiApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiApiKey")
+            .field("len", &self.0.len())
+            .field("value", &"<redacted>")
+            .finish()
+    }
+}
+
+/// HTTP client for `OpenAI`'s Chat Completions API.
+pub struct OpenAiBackend {
+    client: Client,
+    base_url: String,
+    model: String,
+    api_key: OpenAiApiKey,
+    /// Env-var the key came from — echoed back on auth errors.
+    api_key_env: String,
+    /// Optional `reasoning_effort`. `None` omits the field.
+    reasoning_effort: Option<String>,
+}
+
+impl OpenAiBackend {
+    /// Build a backend pointing at the canonical `OpenAI` endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError::Transport`] when the `reqwest` client cannot be
+    /// constructed (TLS init, runtime issues).
+    pub fn new(
+        api_key: OpenAiApiKey,
+        model: impl Into<String>,
+        api_key_env: impl Into<String>,
+    ) -> Result<Self> {
+        let client = Client::builder()
+            .timeout(DEFAULT_TIMEOUT)
+            .build()
+            .map_err(transport_error)?;
+        Ok(Self {
+            client,
+            base_url: DEFAULT_OPENAI_URL.to_owned(),
+            model: model.into(),
+            api_key,
+            api_key_env: api_key_env.into(),
+            reasoning_effort: None,
+        })
+    }
+
+    /// Map the slot's `reasoning_effort` hint onto `OpenAI`'s own vocabulary
+    /// (`minimal` / `low` / `medium` / `high`). `extra-high` folds to
+    /// `high`, unset stays unset, and an unrecognised value floors to
+    /// `medium` so a config typo never sends an invalid effort.
+    #[must_use]
+    pub fn with_reasoning_effort(mut self, effort: Option<&str>) -> Self {
+        self.reasoning_effort = match effort.map(str::trim) {
+            None | Some("") => None,
+            Some("minimal") => Some("minimal".to_owned()),
+            Some("low") => Some("low".to_owned()),
+            Some("high" | "extra-high") => Some("high".to_owned()),
+            Some(_) => Some("medium".to_owned()),
+        };
+        self
+    }
+
+    /// Builder: replace the default base URL — wiremock in tests, Azure
+    /// `OpenAI` or a gateway in production.
+    #[must_use]
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = base_url.into();
+        self
+    }
+
+    fn chat_completions_url(&self) -> String {
+        format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
+    }
+
+    /// Which role carries the system prompt: `developer` on a reasoning
+    /// model, `system` everywhere else.
+    ///
+    /// o1 and newer replaced the role and **reject** the old name rather
+    /// than remapping it, so this is not a stylistic choice. The first
+    /// pairing can still be wrong for a model we have never met — the
+    /// send path retries once with the other role.
+    const fn system_role(policy: ModelPolicy) -> &'static str {
+        if policy.headroom_for_reasoning {
+            "developer"
+        } else {
+            "system"
+        }
+    }
+
+    /// `reasoning_effort` for this request: only on a model that reasons,
+    /// since the field is itself rejected by the others.
+    fn effort_for(&self, policy: ModelPolicy) -> Option<&str> {
+        if policy.headroom_for_reasoning {
+            self.reasoning_effort.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// POST a body and hand back the successful response, downgrading at
+    /// most once per quirk when `OpenAI` names the offending field:
+    ///
+    /// - a 400 blaming a sampling parameter drops `temperature` (and is
+    ///   remembered for the rest of the run);
+    /// - a 400 blaming the message role swaps `developer` ⇄ `system`.
+    ///
+    /// This is what lets a model nobody has catalogued still answer.
+    async fn send_chat(&self, body: &mut OpenAiChatBody<'_>) -> Result<reqwest::Response> {
+        let mut role_swapped = false;
+        loop {
+            let response = self
+                .client
+                .post(self.chat_completions_url())
+                .bearer_auth(self.api_key.as_str())
+                .header("content-type", "application/json")
+                .json(&*body)
+                .send()
+                .await
+                .map_err(transport_error)?;
+
+            let status = response.status();
+            if status.is_success() {
+                return Ok(response);
+            }
+            let body_text = response.text().await.unwrap_or_default();
+            if status == 400 && body.temperature.is_some() && blames_a_sampling_param(&body_text) {
+                note_sampling_params_refused(OPENAI_BACKEND_TAG, &self.model, &body_text);
+                body.temperature = None;
+                continue;
+            }
+            if status == 400 && !role_swapped && blames_the_message_role(&body_text) {
+                role_swapped = true;
+                if body.swap_system_role() {
+                    tracing::warn!(
+                        model = %self.model,
+                        "openai rejected the system-message role — retrying with the other one"
+                    );
+                    continue;
+                }
+            }
+            return Err(map_openai_http_error(status, &body_text, &self.api_key_env));
+        }
+    }
+}
+
+/// `OpenAI` Chat Completions request body. Shares every message / tool type
+/// with the `OpenRouter` body; the two fields that differ are the output
+/// ceiling's name and the reasoning knob's shape.
+#[derive(Debug, Serialize)]
+struct OpenAiChatBody<'a> {
+    model: &'a str,
+    messages: Vec<OpenAiMessageOut<'a>>,
+    /// `max_tokens` is rejected by the reasoning models and deprecated
+    /// for the others, so only this one is ever sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'a str>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    stop: &'a [String],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<OpenAiToolDef<'a>>,
+}
+
+impl OpenAiChatBody<'_> {
+    /// Swap `developer` ⇄ `system` on the leading instruction message.
+    /// Returns `false` when there is no such message to swap, so the
+    /// caller does not retry an identical request.
+    fn swap_system_role(&mut self) -> bool {
+        let mut swapped = false;
+        for msg in &mut self.messages {
+            msg.role = match msg.role {
+                "developer" => {
+                    swapped = true;
+                    "system"
+                },
+                "system" => {
+                    swapped = true;
+                    "developer"
+                },
+                other => other,
+            };
+        }
+        swapped
+    }
+}
+
+/// Does this error body blame the message role? `OpenAI` says
+/// *"Unsupported value: 'messages\[0\].role' does not support 'system'
+/// with this model."*
+fn blames_the_message_role(body: &str) -> bool {
+    let b = body.to_ascii_lowercase();
+    b.contains(".role") || b.contains("'role'") || b.contains("\"role\"")
+}
+
+/// Map an unsuccessful `OpenAI` HTTP response onto an [`LlmError`], with the
+/// same variant discipline as the other cloud backends.
+fn map_openai_http_error(
+    status: reqwest::StatusCode,
+    body_text: &str,
+    api_key_env: &str,
+) -> LlmError {
+    let trimmed = body_text.chars().take(500).collect::<String>();
+    match status.as_u16() {
+        401 | 403 => LlmError::Auth(format!(
+            "openai rejected the key from `{api_key_env}` (HTTP {status}): {trimmed}"
+        )),
+        429 => LlmError::RateLimit(format!("openai rate-limited (HTTP {status}): {trimmed}")),
+        400 => LlmError::Invalid(format!(
+            "openai rejected the request (HTTP {status}): {trimmed}"
+        )),
+        _ => LlmError::Backend(format!("openai HTTP {status}: {trimmed}")),
+    }
+}
+
+#[async_trait]
+impl LlmBackend for OpenAiBackend {
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+
+    fn accepts_images(&self) -> bool {
+        ModelPolicy::resolve(OPENAI_BACKEND_TAG, &self.model).accepts_images
+    }
+
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        let CompletionRequest {
+            prompt,
+            system,
+            max_tokens,
+            temperature,
+            stop,
+            images,
+            truncation_expected,
+            // OpenAI's prompt cache is automatic — nothing to mark on the
+            // way out; the read side shows up in `prompt_tokens_details`.
+            cache_system: _,
+        } = request;
+        if prompt.is_empty() {
+            return Err(LlmError::Invalid("empty prompt".into()));
+        }
+
+        let policy = ModelPolicy::resolve(OPENAI_BACKEND_TAG, &self.model);
+        let mut body = OpenAiChatBody {
+            model: &self.model,
+            messages: openai_completion_messages(
+                &prompt,
+                system.as_deref(),
+                &images,
+                Self::system_role(policy),
+            ),
+            max_completion_tokens: max_tokens.map(|m| policy.ceiling_for(m)),
+            temperature: policy.temperature_for(temperature),
+            reasoning_effort: self.effort_for(policy),
+            stop: &stop,
+            tools: Vec::new(),
+        };
+
+        let response = self.send_chat(&mut body).await?;
+        let parsed: OpenAiChatResponse = response
+            .json()
+            .await
+            .map_err(|e| LlmError::Protocol(format!("decoding openai response: {e}")))?;
+
+        let choice = parsed
+            .choices
+            .into_iter()
+            .next()
+            .ok_or_else(|| LlmError::Protocol("openai response has no `choices`".into()))?;
+        let finish_raw = choice.finish_reason.as_deref();
+        let text = choice
+            .message
+            .and_then(|m| m.content)
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| {
+                // The reasoning-eats-the-answer shape, in OpenAI's
+                // vocabulary: a `length` finish with empty content means
+                // the ceiling went entirely on reasoning tokens.
+                LlmError::Protocol("openai response has no message content".into())
+            })?;
+
+        let resp = CompletionResponse {
+            text,
+            finish_reason: classify_openai_finish_reason(finish_raw),
+            usage: CompletionUsage {
+                prompt_tokens: parsed.usage.as_ref().and_then(|u| u.prompt_tokens),
+                completion_tokens: parsed.usage.as_ref().and_then(|u| u.completion_tokens),
+                cached_prompt_tokens: parsed
+                    .usage
+                    .as_ref()
+                    .and_then(OpenAiUsage::cached_prompt_tokens),
+                cache_write_tokens: None,
+            },
+        };
+        resp.usage.log_prefix_cache("openai", &self.model);
+        warn_if_truncated_parts(
+            "openai",
+            &self.model,
+            max_tokens,
+            truncation_expected,
+            &resp,
+        );
+        Ok(resp)
+    }
+
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+        let ChatRequest {
+            messages: history,
+            tools: tool_descs,
+            max_tokens,
+            temperature,
+        } = request;
+        if history.is_empty() {
+            return Err(LlmError::Invalid("empty messages".into()));
+        }
+
+        let policy = ModelPolicy::resolve(OPENAI_BACKEND_TAG, &self.model);
+        let mut messages = openai_chat_messages(&history);
+        // The history speaks `system`; a reasoning model wants
+        // `developer`. Rewrite on the way out rather than teaching every
+        // caller which provider it is talking to.
+        if policy.headroom_for_reasoning {
+            for msg in &mut messages {
+                if msg.role == "system" {
+                    msg.role = "developer";
+                }
+            }
+        }
+        let mut body = OpenAiChatBody {
+            model: &self.model,
+            messages,
+            max_completion_tokens: max_tokens.map(|m| policy.ceiling_for(m)),
+            temperature: policy.temperature_for(temperature),
+            reasoning_effort: self.effort_for(policy),
+            stop: &[],
+            tools: openai_tools(&tool_descs),
+        };
+
+        let response = self.send_chat(&mut body).await?;
+        let parsed: OpenAiChatResponse = response
+            .json()
+            .await
+            .map_err(|e| LlmError::Protocol(format!("decoding openai chat response: {e}")))?;
+
+        let choice =
+            parsed.choices.into_iter().next().ok_or_else(|| {
+                LlmError::Protocol("openai chat response has no `choices`".into())
+            })?;
+        let finish_raw = choice.finish_reason.as_deref();
+        let (content_opt, raw_tool_calls) = choice
+            .message
+            .map_or((None, Vec::new()), |m| (m.content, m.tool_calls));
+
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+        for (idx, tc) in raw_tool_calls.into_iter().enumerate() {
+            let Some(func) = tc.function else { continue };
+            tool_calls.push(ToolCall {
+                id: tc.id.unwrap_or_else(|| format!("call_{idx}")),
+                name: func.name,
+                arguments: parse_openai_tool_args(&func.arguments),
+                thought_signature: None,
+            });
+        }
+
+        let resp = ChatResponse {
+            message: ChatMessage {
+                role: Role::Assistant,
+                content: content_opt.unwrap_or_default(),
+                tool_calls,
+                tool_call_id: None,
+            },
+            finish_reason: classify_openai_finish_reason(finish_raw),
+            usage: CompletionUsage {
+                prompt_tokens: parsed.usage.as_ref().and_then(|u| u.prompt_tokens),
+                completion_tokens: parsed.usage.as_ref().and_then(|u| u.completion_tokens),
+                cached_prompt_tokens: parsed
+                    .usage
+                    .as_ref()
+                    .and_then(OpenAiUsage::cached_prompt_tokens),
+                cache_write_tokens: None,
+            },
+        };
+        warn_if_truncated_chat("openai", &self.model, &resp);
         Ok(resp)
     }
 }
@@ -4859,14 +5659,19 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
             // No `temperature`: Opus 4.7+ reject sampling params with a
-            // 400, so `anthropic_rejects_sampling_params` drops it here
-            // exactly as it does on a real call. `max_tokens` is
-            // non-trivial (a `max_tokens: 1` reply can carry zero content
-            // blocks). `with_reasoning_effort` below is ignored — the
-            // probe never thinks, so there is no `thinking` field.
+            // 400, so the policy drops it here exactly as it does on a real
+            // call. `with_reasoning_effort` below is ignored — the probe
+            // never thinks, so there is no `thinking` field.
+            //
+            // `max_tokens` is the probe's 16 **plus the reasoning
+            // headroom**: in the catalog this model is indistinguishable
+            // from the generation that reasons unbidden (reasons + refuses
+            // sampling params), and a ceiling it does not use costs
+            // nothing. Losing a whole deployment to a 16-token probe once
+            // was enough.
             .and(body_json(serde_json::json!({
                 "model": "claude-opus-4-8",
-                "max_tokens": 16,
+                "max_tokens": 16 + ADAPTIVE_THINKING_HEADROOM,
                 "messages": [ { "role": "user", "content": "ping" } ],
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -4926,11 +5731,208 @@ mod tests {
         backend.health_check().await.expect("health check");
     }
 
-    /// The probe fails the boot when the model rejects the sampling
-    /// params it was not known to reject — the whole point of pinning
-    /// one. An unlisted family that returns 400 `invalid_request_error`
-    /// must surface to the operator at startup, not as a silently worse
-    /// answer on every subsequent recall.
+    /// A model that reasons before answering gets headroom above the
+    /// caller's ceiling, even with no `thinking` block requested.
+    ///
+    /// The regression this guards took production down on 2026-07-29.
+    /// Opus 5 was configured on the REM promotions slot; the boot probe
+    /// asks for `max_tokens: 16`; the model spent all sixteen reasoning
+    /// and returned a response with no text block; the health check
+    /// refuses to bind the listener on a failed slot, so the service
+    /// crash-looped. The same cause, quieter, had already cost the REM
+    /// dedup revisor 14 of 120 calls that night.
+    ///
+    /// `body_json` is exact-match, so this also pins that no `thinking`
+    /// field is sent: the headroom is the *implicit* path, not a
+    /// backdoor into extended thinking.
+    #[tokio::test]
+    async fn anthropic_adds_headroom_for_a_model_that_thinks_adaptively() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_json(serde_json::json!({
+                "model": "claude-opus-5",
+                // 16 asked for + ADAPTIVE_THINKING_HEADROOM.
+                "max_tokens": 16 + 4096,
+                "messages": [ { "role": "user", "content": "ping" } ],
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "msg_01ABC",
+                "type": "message",
+                "role": "assistant",
+                "content": [ { "type": "text", "text": "pong" } ],
+                "stop_reason": "end_turn",
+                "usage": { "input_tokens": 1, "output_tokens": 1 }
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = AnthropicBackend::new(fake_key(), "claude-opus-5", "ANTHROPIC_API_KEY")
+            .expect("new")
+            .with_base_url(server.uri());
+        backend.health_check().await.expect("health check");
+    }
+
+    /// The headroom is for the models that need it and nobody else: a
+    /// model of the previous generation keeps the caller's ceiling
+    /// exactly, so an unrelated slot's budget is not quietly inflated.
+    #[test]
+    fn adaptive_thinking_list_is_narrower_than_the_sampling_reject_list() {
+        for m in ["claude-opus-5", "claude-sonnet-5", "claude-fable-5"] {
+            assert!(anthropic_thinks_adaptively(m), "{m} thinks adaptively");
+        }
+        // Opus 4.7/4.8 reject sampling params yet answer a 16-token
+        // probe — the two properties are not the same fact, and
+        // conflating them would have hidden the real cause.
+        for m in ["claude-opus-4-7", "claude-opus-4-8"] {
+            assert!(anthropic_rejects_sampling_params(m));
+            assert!(!anthropic_thinks_adaptively(m), "{m} answers a small probe");
+        }
+        for m in ["claude-sonnet-4-6", "claude-haiku-4-5-20251001"] {
+            assert!(!anthropic_thinks_adaptively(m));
+        }
+    }
+
+    /// The catalog answers before either hand list, and the hand lists
+    /// answer only for a model it has never heard of.
+    ///
+    /// The two `claude-*-5` entries are the models whose absence from a
+    /// hand-written list took production down; they are in the vendored
+    /// snapshot with `temperature: false`, so no list has to be right for
+    /// them to be handled. Sonnet 4.6 proves the catalog is read rather
+    /// than assumed — a blanket "recent Claude refuses temperature" rule
+    /// would get it wrong.
+    #[test]
+    fn model_policy_prefers_the_catalog_over_the_hand_lists() {
+        for model in ["claude-opus-5", "claude-sonnet-5"] {
+            let p = ModelPolicy::resolve(ANTHROPIC_BACKEND_TAG, model);
+            assert!(!p.send_sampling_params, "{model} refuses temperature");
+            assert!(p.headroom_for_reasoning, "{model} reasons unbidden");
+            assert_eq!(p.output_ceiling, Some(128_000));
+        }
+        let sonnet = ModelPolicy::resolve(ANTHROPIC_BACKEND_TAG, "claude-sonnet-4-6");
+        assert!(sonnet.send_sampling_params, "4.6 still takes a temperature");
+        assert!(
+            !sonnet.headroom_for_reasoning,
+            "reasoning-on-request needs no headroom"
+        );
+        // OpenAI, a provider we cannot test against: same two facts, same
+        // resolution, from the same file.
+        let gpt5 = ModelPolicy::resolve(OPENAI_BACKEND_TAG, "gpt-5.4");
+        assert!(!gpt5.send_sampling_params);
+        assert!(gpt5.headroom_for_reasoning);
+        let gpt4o = ModelPolicy::resolve(OPENAI_BACKEND_TAG, "gpt-4o");
+        assert!(gpt4o.send_sampling_params);
+        assert!(!gpt4o.headroom_for_reasoning);
+    }
+
+    /// A model released after this binary — in neither the cache nor the
+    /// bundled snapshot — still gets a sensible request, from the hand
+    /// list. This is the case the catalog can never cover.
+    #[test]
+    fn model_policy_falls_back_to_the_hand_lists_for_an_unlisted_model() {
+        let unlisted = ModelPolicy::resolve(ANTHROPIC_BACKEND_TAG, "claude-opus-5-20991231");
+        assert!(
+            !unlisted.send_sampling_params,
+            "family prefix still matches"
+        );
+        assert!(unlisted.headroom_for_reasoning);
+        assert_eq!(unlisted.output_ceiling, None, "nothing known to clamp to");
+        // The OpenAI list reads a bare id and an OpenRouter slug alike.
+        assert!(openai_reasoning_family("gpt-5.9-nano"));
+        assert!(openai_reasoning_family("openai/o4-mini-2027"));
+        assert!(!openai_reasoning_family("openai/gpt-4o-mini"));
+        assert!(
+            !ModelPolicy::resolve(OPENROUTER_BACKEND_TAG, "meta/llama-9").headroom_for_reasoning
+        );
+    }
+
+    /// Headroom must never push `max_tokens` past the model's own
+    /// documented maximum — that is a 400 in its own right — and must
+    /// never land at or below an extended-thinking budget, which the API
+    /// requires to stay strictly under the ceiling.
+    #[test]
+    fn model_policy_caps_the_ceiling_at_the_model_maximum() {
+        let p = ModelPolicy::resolve(ANTHROPIC_BACKEND_TAG, "claude-haiku-4-5");
+        assert_eq!(p.output_ceiling, Some(64_000));
+        assert_eq!(p.ceiling_for(1_000), 1_000, "well under: untouched");
+        assert_eq!(p.ceiling_for(70_000), 64_000, "over: clamped");
+        // A clamp must still leave room above the thinking budget.
+        assert_eq!(p.cap_output(70_000, 64_000), 64_001);
+    }
+
+    /// The self-healing path: a model nobody had listed refuses the
+    /// temperature, and instead of failing the call the backend strips the
+    /// parameter, retries once, and remembers — so the *next* call is
+    /// built right rather than paying for the same refusal.
+    ///
+    /// This is what makes an unknown model work at all: no catalog entry,
+    /// no hand-list entry, and the call still returns an answer.
+    #[tokio::test]
+    async fn anthropic_downgrades_and_retries_when_a_model_refuses_temperature() {
+        let model = "claude-surprise-1";
+        let server = MockServer::start().await;
+        // First shape: with the temperature the caller asked for.
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_json(serde_json::json!({
+                "model": model,
+                "max_tokens": 1024,
+                "messages": [ { "role": "user", "content": "ping" } ],
+                "temperature": 0.1,
+            })))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "`temperature` is not supported with this model."
+                }
+            })))
+            .mount(&server)
+            .await;
+        // Second shape: the same request with the parameter dropped.
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_json(serde_json::json!({
+                "model": model,
+                "max_tokens": 1024,
+                "messages": [ { "role": "user", "content": "ping" } ],
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "msg_01ABC",
+                "type": "message",
+                "role": "assistant",
+                "content": [ { "type": "text", "text": "pong" } ],
+                "stop_reason": "end_turn",
+                "usage": { "input_tokens": 1, "output_tokens": 1 }
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = AnthropicBackend::new(fake_key(), model, "ANTHROPIC_API_KEY")
+            .expect("new")
+            .with_base_url(server.uri());
+        let resp = backend
+            .complete(CompletionRequest::new("ping").with_temperature(0.1))
+            .await
+            .expect("the downgrade rescues the call");
+        assert_eq!(resp.text, "pong");
+        assert!(
+            sampling_params_refused(ANTHROPIC_BACKEND_TAG, model),
+            "the refusal is remembered, so the next call skips the 400"
+        );
+        assert!(
+            !ModelPolicy::resolve(ANTHROPIC_BACKEND_TAG, model).send_sampling_params,
+            "and the policy reflects it"
+        );
+    }
+
+    /// The probe fails the boot when a model rejects the sampling params
+    /// *and* the downgrade does not rescue it — here the mock refuses
+    /// every shape, so there is nothing left to try. A model that only
+    /// dislikes the parameter now boots fine (see the test above); one
+    /// that is broken for another reason must still stop the deploy
+    /// rather than degrade every later recall.
     #[tokio::test]
     async fn anthropic_health_check_surfaces_an_unlisted_model_that_rejects_temperature() {
         let server = MockServer::start().await;
@@ -6756,20 +7758,20 @@ mod tests {
     /// `stop` → `EndOfTurn`, `length` → `MaxTokens`, everything else
     /// (incl. `tool_calls`) → `Other`.
     #[test]
-    fn classify_openrouter_finish_reason_maps_stop_and_length() {
+    fn classify_openai_finish_reason_maps_stop_and_length() {
         assert_eq!(
-            classify_openrouter_finish_reason(Some("stop")),
+            classify_openai_finish_reason(Some("stop")),
             FinishReason::EndOfTurn
         );
         assert_eq!(
-            classify_openrouter_finish_reason(Some("length")),
+            classify_openai_finish_reason(Some("length")),
             FinishReason::MaxTokens
         );
         assert_eq!(
-            classify_openrouter_finish_reason(Some("tool_calls")),
+            classify_openai_finish_reason(Some("tool_calls")),
             FinishReason::Other
         );
-        assert_eq!(classify_openrouter_finish_reason(None), FinishReason::Other);
+        assert_eq!(classify_openai_finish_reason(None), FinishReason::Other);
     }
 
     /// `reasoning_effort` maps onto `reasoning.effort`; `minimal`/unset
@@ -6796,17 +7798,14 @@ mod tests {
     /// payloads degrade to an empty object so the agentic loop always
     /// gets a structurally valid bag.
     #[test]
-    fn parse_openrouter_tool_args_degrades_empty_and_malformed() {
+    fn parse_openai_tool_args_degrades_empty_and_malformed() {
         assert_eq!(
-            parse_openrouter_tool_args("{\"q\":1}"),
+            parse_openai_tool_args("{\"q\":1}"),
             serde_json::json!({ "q": 1 })
         );
-        assert_eq!(parse_openrouter_tool_args(""), serde_json::json!({}));
-        assert_eq!(parse_openrouter_tool_args("   "), serde_json::json!({}));
-        assert_eq!(
-            parse_openrouter_tool_args("not json"),
-            serde_json::json!({})
-        );
+        assert_eq!(parse_openai_tool_args(""), serde_json::json!({}));
+        assert_eq!(parse_openai_tool_args("   "), serde_json::json!({}));
+        assert_eq!(parse_openai_tool_args("not json"), serde_json::json!({}));
     }
 
     /// Happy path: `POST /chat/completions` with a `Bearer` token and the
@@ -6983,5 +7982,271 @@ mod tests {
             .await
             .expect_err("must reject");
         assert!(matches!(err, LlmError::Invalid(_)), "{err:?}");
+    }
+
+    // ---- OpenAI ----------------------------------------------------
+    //
+    // We have no OpenAI key to test against, so these pin the request
+    // body against the published behaviour of the API. Exact-match
+    // (`body_json`) throughout: a field we send that OpenAI does not take
+    // is as much a bug as one we omit.
+
+    fn openai_test_backend(model: &str, base_url: String) -> OpenAiBackend {
+        OpenAiBackend::new(
+            OpenAiApiKey::new("sk-fake-key").expect("non-empty key"),
+            model,
+            "OPENAI_API_KEY",
+        )
+        .expect("new")
+        .with_base_url(base_url)
+    }
+
+    fn openai_ok_body(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "choices": [
+                { "index": 0, "message": { "role": "assistant", "content": text }, "finish_reason": "stop" }
+            ],
+            "usage": { "prompt_tokens": 11, "completion_tokens": 3 }
+        })
+    }
+
+    /// A reasoning model gets the shape its documentation demands:
+    /// `max_completion_tokens` (never `max_tokens`), no `temperature`
+    /// (*"Only the default (1) value is supported"*), the instruction on
+    /// the `developer` role rather than `system`, `reasoning_effort` as a
+    /// bare string, and the caller's ceiling widened by the reasoning
+    /// headroom — because on this line the reasoning is billed as output
+    /// and spent from that same ceiling.
+    #[tokio::test]
+    async fn openai_reasoning_model_gets_the_documented_request_shape() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_json(serde_json::json!({
+                "model": "gpt-5.4",
+                "messages": [
+                    { "role": "developer", "content": "be brief" },
+                    { "role": "user", "content": "ping" }
+                ],
+                "max_completion_tokens": 500 + ADAPTIVE_THINKING_HEADROOM,
+                "reasoning_effort": "high",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_ok_body("pong")))
+            .mount(&server)
+            .await;
+
+        let backend =
+            openai_test_backend("gpt-5.4", server.uri()).with_reasoning_effort(Some("extra-high"));
+        let resp = backend
+            .complete(
+                CompletionRequest::new("ping")
+                    .with_system("be brief")
+                    .with_max_tokens(500)
+                    // Asked for and deliberately dropped: this model
+                    // refuses it, and the catalog says so.
+                    .with_temperature(0.1),
+            )
+            .await
+            .expect("complete");
+        assert_eq!(resp.text, "pong");
+    }
+
+    /// A classic model keeps everything the reasoning line refuses: the
+    /// `system` role, the caller's temperature, the caller's ceiling
+    /// untouched, and no `reasoning_effort` — which would itself be a 400
+    /// on a model that does not reason.
+    #[tokio::test]
+    async fn openai_classic_model_keeps_temperature_and_the_system_role() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_json(serde_json::json!({
+                "model": "gpt-4o",
+                "messages": [
+                    { "role": "system", "content": "be brief" },
+                    { "role": "user", "content": "ping" }
+                ],
+                "max_completion_tokens": 500,
+                "temperature": 0.1,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_ok_body("pong")))
+            .mount(&server)
+            .await;
+
+        let backend =
+            openai_test_backend("gpt-4o", server.uri()).with_reasoning_effort(Some("high"));
+        backend
+            .complete(
+                CompletionRequest::new("ping")
+                    .with_system("be brief")
+                    .with_max_tokens(500)
+                    .with_temperature(0.1),
+            )
+            .await
+            .expect("complete");
+    }
+
+    /// o1-mini takes neither `system` nor `developer`, and a model we
+    /// have never met can surprise us either way. A 400 that names the
+    /// role buys one retry with the other one instead of a failed call.
+    #[tokio::test]
+    async fn openai_swaps_the_instruction_role_when_the_model_refuses_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_json(serde_json::json!({
+                "model": "gpt-4o",
+                "messages": [
+                    { "role": "system", "content": "be brief" },
+                    { "role": "user", "content": "ping" }
+                ],
+                "max_completion_tokens": 500,
+            })))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": {
+                    "message": "Unsupported value: 'messages[0].role' does not support 'system' with this model.",
+                    "type": "invalid_request_error"
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_json(serde_json::json!({
+                "model": "gpt-4o",
+                "messages": [
+                    { "role": "developer", "content": "be brief" },
+                    { "role": "user", "content": "ping" }
+                ],
+                "max_completion_tokens": 500,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_ok_body("pong")))
+            .mount(&server)
+            .await;
+
+        let backend = openai_test_backend("gpt-4o", server.uri());
+        let resp = backend
+            .complete(
+                CompletionRequest::new("ping")
+                    .with_system("be brief")
+                    .with_max_tokens(500),
+            )
+            .await
+            .expect("the role swap rescues the call");
+        assert_eq!(resp.text, "pong");
+    }
+
+    /// `OpenAI`'s prompt cache is automatic, and it reports the hit under
+    /// `usage.prompt_tokens_details.cached_tokens`. The usage ledger
+    /// charges cached input at a different rate, so dropping it would
+    /// overstate the bill.
+    #[tokio::test]
+    async fn openai_reads_the_prompt_cache_count_from_usage_details() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "chatcmpl-1",
+                "choices": [
+                    { "index": 0, "message": { "role": "assistant", "content": "pong" }, "finish_reason": "stop" }
+                ],
+                "usage": {
+                    "prompt_tokens": 2048,
+                    "completion_tokens": 7,
+                    "prompt_tokens_details": { "cached_tokens": 1920 }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = openai_test_backend("gpt-4o", server.uri());
+        let resp = backend
+            .complete(CompletionRequest::new("ping"))
+            .await
+            .expect("complete");
+        assert_eq!(resp.usage.prompt_tokens, Some(2048));
+        assert_eq!(resp.usage.cached_prompt_tokens, Some(1920));
+    }
+
+    /// An auth failure names the env-var the key came from, like every
+    /// other cloud backend — the operator should not have to guess which
+    /// of several keys the slot used.
+    #[tokio::test]
+    async fn openai_maps_401_to_auth_error_with_env_var_name() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("unauthorized"))
+            .mount(&server)
+            .await;
+
+        let backend = openai_test_backend("gpt-4o", server.uri());
+        let err = backend
+            .complete(CompletionRequest::new("hi"))
+            .await
+            .expect_err("must fail");
+        match err {
+            LlmError::Auth(msg) => assert!(msg.contains("OPENAI_API_KEY"), "{msg}"),
+            other => panic!("expected Auth, got {other:?}"),
+        }
+    }
+
+    /// The portable set is an intersection, not a preference: Anthropic
+    /// and `OpenAI` enumerate exactly these four, Gemini reads more. A type
+    /// outside it must never be built into a request.
+    #[test]
+    fn only_the_types_every_provider_reads_are_portable() {
+        for mime in ["image/jpeg", "image/png", "image/gif", "image/webp"] {
+            assert!(image_mime_is_portable(mime), "{mime}");
+        }
+        // Normalised first — this is the string production actually sent.
+        assert!(image_mime_is_portable("image/jpg"));
+        assert!(image_mime_is_portable("image/JPEG; charset=binary"));
+        // Gemini reads HEIC; the others answer 400, so it is not portable.
+        assert!(!image_mime_is_portable("image/heic"));
+        assert!(!image_mime_is_portable("image/svg+xml"));
+        assert!(!image_mime_is_portable("application/pdf"));
+    }
+
+    /// Whether a model can see is a fact about the model, so it comes
+    /// from the catalog — and a text-only model gets no images rather
+    /// than a 400 that takes the turn with it.
+    #[test]
+    fn a_text_only_model_reports_that_it_takes_no_images() {
+        let seeing = OpenAiBackend::new(
+            OpenAiApiKey::new("sk-fake").expect("key"),
+            "gpt-4o",
+            "OPENAI_API_KEY",
+        )
+        .expect("new");
+        assert!(seeing.accepts_images());
+
+        let blind = OpenAiBackend::new(
+            OpenAiApiKey::new("sk-fake").expect("key"),
+            "gpt-3.5-turbo",
+            "OPENAI_API_KEY",
+        )
+        .expect("new");
+        assert!(!blind.accepts_images(), "text-only in the catalog");
+
+        // Unknown model: worth attempting, so `true`.
+        let unknown = OpenAiBackend::new(
+            OpenAiApiKey::new("sk-fake").expect("key"),
+            "gpt-9-released-tomorrow",
+            "OPENAI_API_KEY",
+        )
+        .expect("new");
+        assert!(unknown.accepts_images());
+    }
+
+    #[test]
+    fn openai_api_key_is_redacted_and_rejects_empty() {
+        assert!(OpenAiApiKey::new("   ").is_err());
+        let key = OpenAiApiKey::new("sk-secret-value").expect("key");
+        let shown = format!("{key:?}");
+        assert!(!shown.contains("secret"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
     }
 }

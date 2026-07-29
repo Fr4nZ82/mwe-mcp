@@ -44,7 +44,7 @@ use mwe_dashboard::{DashboardState, MemoryHandles};
 use mwe_mcp_server::tracing_setup;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use mwe_mcp_server::mcp::state::McpState;
 
@@ -1758,6 +1758,61 @@ async fn cmd_serve_http(
         )))
     };
 
+    // Model catalog refresher. The picker on the LLM page reads
+    // `<workdir>/model-catalog.json`, falling back to the snapshot
+    // vendored into the binary — and a vendored snapshot ages the moment
+    // it ships. On 2026-07-29 the bundled copy stopped at Opus 4.8 while
+    // the deployment was configured for Sonnet 5, so a model the engine
+    // was *actively running* could not be selected from the dropdown that
+    // exists to select models. The operator had to know that a manual
+    // refresh button existed.
+    //
+    // So the catalog refreshes itself: once shortly after boot, then
+    // every six hours. Best-effort throughout — a failure logs at debug
+    // and leaves the previous cache (or the bundled snapshot) in place,
+    // because an offline or air-gapped deployment must still boot and
+    // still show a picker. Not started on a frozen instance: it writes a
+    // file into the workdir, which is exactly what `read_only` promises
+    // not to do.
+    //
+    // The boot fetch is delayed rather than immediate so it never sits
+    // between the listener and the first request.
+    let catalog_handle = if frozen {
+        None
+    } else {
+        let catalog_workdir = workdir.to_path_buf();
+        let mut catalog_shutdown_rx = shutdown_tx.subscribe();
+        Some(tokio::spawn(async move {
+            const BOOT_DELAY: Duration = Duration::from_secs(30);
+            const EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+            let mut wait = BOOT_DELAY;
+            loop {
+                tokio::select! {
+                    () = tokio::time::sleep(wait) => {},
+                    _ = catalog_shutdown_rx.recv() => return,
+                }
+                wait = EVERY;
+                match mwe_core::model_catalog::refresh(&catalog_workdir).await {
+                    Ok(n) => {
+                        // Republish, so the running backends resolve
+                        // capabilities against what was just downloaded
+                        // instead of against boot-time data. A model
+                        // released this morning is understood six hours
+                        // later, not at the next restart.
+                        mwe_core::model_catalog::install(mwe_core::model_catalog::load(
+                            &catalog_workdir,
+                        ));
+                        info!(models = n, "model catalog: refreshed from models.dev");
+                    },
+                    Err(e) => debug!(
+                        error = %e,
+                        "model catalog: refresh failed, keeping the cached or bundled copy"
+                    ),
+                }
+            }
+        }))
+    };
+
     println!("mwe-mcp serve: ready (transport=http)");
     println!("workdir : {}", workdir.display());
     println!("listen  : http://{addr}");
@@ -1812,6 +1867,13 @@ async fn cmd_serve_http(
             Ok(Ok(())) => info!("document worker: joined cleanly"),
             Ok(Err(e)) => warn!(error = %e, "document worker: task panicked on shutdown"),
             Err(_) => warn!("document worker: did not exit within 5s timeout"),
+        }
+    }
+    if let Some(handle) = catalog_handle {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
+            Ok(Ok(())) => info!("model catalog: joined cleanly"),
+            Ok(Err(e)) => warn!(error = %e, "model catalog: task panicked on shutdown"),
+            Err(_) => warn!("model catalog: did not exit within 5s timeout"),
         }
     }
     if let Some(handle) = backup_handle {
@@ -2030,6 +2092,14 @@ fn dashboard_config_from(config: &Config) -> mwe_dashboard::DashboardConfig {
 /// 8. Build the shared `McpState` and the matching `DashboardState`
 ///    (cloned from the same handles).
 async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, DashboardState)> {
+    // Publish the model catalog to the process before anything talks to a
+    // provider: the backends read it to decide what a model accepts (the
+    // sampling parameters, reasoning headroom), and the first thing that
+    // asks is the health-check probe on the next line. A workdir cache
+    // written by an earlier run wins over the vendored snapshot; if neither
+    // exists the lookup answers "unknown" and the backends fall back.
+    mwe_core::model_catalog::install(mwe_core::model_catalog::load(workdir));
+
     // Every configured LLM slot must be reachable before we
     // accept traffic. Refuse to bind the listener if even one slot
     // fails its health check. The check runs *before* the lockfile

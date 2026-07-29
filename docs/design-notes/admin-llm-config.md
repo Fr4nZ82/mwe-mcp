@@ -56,7 +56,7 @@ editor. The flow is documented in
 ## Section 1 — providers & credentials
 
 One card per backend, in display order: **Ollama** (local or remote),
-**Anthropic**, **Google Gemini**, **OpenRouter**. Each cloud card shows the
+**Anthropic**, **Google Gemini**, **OpenAI**, **OpenRouter**. Each cloud card shows the
 key status — a `set` / `no key` badge, a 4-char fingerprint of
 the value's last characters, and the origin (`live override` / `shell` /
 `env file`) — and a one-input `type=password` form that POSTs to
@@ -110,9 +110,9 @@ with a **capability-tier hint** (the operator-facing guidance that is the
 point of the redesign: "strong — not the 9B", "workhorse — a local 9B is
 fine"), then the controls:
 
-- **Provider** — `<select>` over the four
+- **Provider** — `<select>` over the five
   [`ALLOWED_BACKENDS`](../../crates/mwe-dashboard/src/routes/llm_config.rs)
-  (`ollama` / `anthropic` / `gemini` / `openrouter`), or "— disabled —"
+  (`ollama` / `anthropic` / `gemini` / `openai` / `openrouter`), or "— disabled —"
   (empty) to drop the slot from config. A role on a provider without usable
   auth shows an inline warning (filled client-side from the embedded
   per-provider auth map).
@@ -179,9 +179,9 @@ complete one. A slot's health is whether **its own** calls work.
 The model combobox is backed by
 [`mwe_core::model_catalog`](../../crates/mwe-core/src/model_catalog.rs), a
 compact projection of [models.dev](https://models.dev) — per-model metadata
-(context window, per-million-token cost, vision / tools / reasoning flags)
-for the three cloud backends (`anthropic`, `google` → the `gemini` tag,
-`openrouter`). A filtered snapshot is **vendored** at
+(context window, per-million-token cost, vision / tools / reasoning flags,
+and whether the model accepts `temperature`) for the four cloud backends
+(`anthropic`, `google` → the `gemini` tag, `openai`, `openrouter`). A filtered snapshot is **vendored** at
 `crates/mwe-core/assets/model-catalog.json` and embedded at compile time, so
 the picker works fully offline. `POST /admin/llm-catalog/refresh` re-fetches
 the live `api.json` into `<workdir>/model-catalog.json`, which `load` prefers
@@ -189,6 +189,34 @@ over the bundled copy — a model added upstream then shows up without a
 rebuild. Ollama is absent by design (its installed models live on the running
 server and the registry is not listable), so the Ollama model field stays
 free-text.
+
+**The refresh also runs on its own**: `serve` spawns a task that fetches the
+catalog 30 s after boot and every 6 h thereafter. A vendored snapshot ages
+from the day it ships, and the failure it produces is a confusing one — on
+2026-07-29 the bundled copy ended at Opus 4.8 while the deployment was
+*actively running* Sonnet 5, so the dropdown could not offer the model the
+engine was already using, and only an operator who knew the refresh button
+existed would ever have found out. The loop is best-effort in every
+direction: failures log at `debug` and leave the previous cache (or the
+bundled snapshot) in place, so an offline or air-gapped deployment boots and
+shows a picker exactly as before. It does **not** start on a frozen instance
+(`instance.read_only`) — it writes a file into the workdir, which is the one
+thing that mode promises not to do.
+
+A stale catalog never blocks a configuration: the model field accepts
+anything, and the catalog only drives suggestions and the metadata badges.
+
+**It is not only a picker, though.** models.dev carries `temperature` — a
+per-model flag for whether the API accepts the sampling parameters at all —
+and that flag reproduces the hand-written
+`anthropic_rejects_sampling_params` list exactly, while also covering
+OpenAI's whole `gpt-5` line and the o-series. So `capabilities_for` is what
+the backends ask before building a request, and the hand lists in `llm.rs`
+are the fallback for a model the catalog has never heard of. A model
+released this morning is understood after the next six-hourly refresh
+instead of after an incident. The full resolution order, and what each fact
+changes on the wire, is in
+[config-schema.md](../protocol/config-schema.md#what-the-engine-sends-a-model-and-how-it-knows).
 
 The catalog + a per-provider usable-auth map are embedded in the page as an
 inline JSON blob (`#llm-config-data`) that
@@ -296,9 +324,9 @@ live values.
 The editor refuses to persist configurations the runtime would reject:
 
 - **Unknown backend** → 422 with the allowed list. `ollama` / `anthropic` /
-  `gemini` / `openrouter` ship; `openai` is parsed by `Config::load` (so an
-  operator's existing YAML survives upgrades) but the editor will not commit
-  it.
+  `gemini` / `openai` / `openrouter` all ship and are all selectable; a tag
+  outside that list is parsed by `Config::load` (so an operator's existing
+  YAML survives upgrades) but the editor will not commit it.
 - **Model required** → 422 naming the role when a provider is set without a
   model.
 
@@ -326,8 +354,12 @@ assignment.
 - The catalog module has its own unit suite in
   [`model_catalog.rs`](../../crates/mwe-core/src/model_catalog.rs) (bundled
   parse, `gemini`→`google` mapping, alias stripping, cache-vs-bundled
-  resolution), and the OpenRouter backend is covered by wiremock round-trips
-  in [`llm.rs`](../../crates/mwe-core/src/llm.rs).
+  resolution, capability lookup, process-wide install), and the OpenRouter
+  and OpenAI backends are covered by wiremock round-trips in
+  [`llm.rs`](../../crates/mwe-core/src/llm.rs) — for OpenAI those tests are
+  the *only* verification, since there is no key here to call the live API
+  with, so they match the request body exactly against the published
+  behaviour.
 
 ## Not yet supported
 
