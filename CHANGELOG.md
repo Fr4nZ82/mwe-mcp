@@ -9,6 +9,82 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## 1.8.0 — 2026-07-29
+
+### Added
+
+- **OpenAI is a backend of its own — your key goes straight in the box.**
+  `backend: openai` builds, the dashboard offers it in the provider
+  dropdown, and `OPENAI_API_KEY` has its own credential card. Until now
+  the only route to a GPT model was an OpenRouter account, which means a
+  margin on every call and a third party in the path your memory travels;
+  for a product sold on where the data goes, that could not stay the only
+  door. The adapter is written from the published API behaviour and pinned
+  by tests that assert the exact request body: `max_completion_tokens`
+  (never `max_tokens`, which the reasoning models reject), no
+  `temperature` where the model refuses it, the system prompt on the
+  `developer` role for a reasoning model and `system` elsewhere,
+  `reasoning_effort` only where it is accepted, images as `image_url` data
+  URLs, and the prompt-cache hit read from `usage.prompt_tokens_details`.
+  `base_url` covers Azure OpenAI and corporate gateways.
+
+- **The engine asks the model catalog what a model accepts, instead of a
+  list somebody has to keep current.** `ModelPolicy` resolves per
+  (backend, model) whether the sampling parameters go out, whether the
+  output ceiling needs reasoning headroom, and what the model's documented
+  maximum is — from `<workdir>/model-catalog.json`, which already
+  refreshes from models.dev every six hours and carries `temperature` per
+  model. That flag reproduces the hand-written Anthropic list exactly and
+  covers the whole `gpt-5` line and the o-series as well. The hand lists
+  survive only as the offline answer for a model the catalog has never
+  heard of, and the catalog is now republished to the running process
+  after every refresh, so a model released this morning is understood six
+  hours later rather than at the next restart.
+
+- **A provider's own refusal is now a repair, not a failure.** An HTTP 400
+  naming a sampling parameter costs one retry with it stripped, remembered
+  for the rest of the run and warned once; on OpenAI a 400 naming the
+  message role retries with `developer` ⇄ `system` swapped. This is what
+  lets a model no catalogue has heard of answer at all — and it let the
+  default boot probe start sending the temperature the hot paths pin, so
+  boot exercises the request shape the engine actually sends.
+
+### Fixed
+
+- **A photo the provider cannot read costs the photo, not the turn.** A
+  client that declares `image/jpg` — not a MIME type; the registered name
+  has always been `image/jpeg` — was accepted by Gemini and refused by
+  Anthropic with HTTP 400. Because the image rides the classifier call,
+  that 400 was logged as "LLM unavailable" and the whole message was never
+  classified: one turn of memory lost over a misspelling, and it was the
+  declared type on *every* photo in one production catalog. The type is
+  now normalised on the way into the media catalog and again on the way
+  out to a provider (so photos already catalogued are covered without a
+  migration), only the encodings every provider reads are sent, and
+  anything else is dropped with a warning while the caption still files
+  the fact.
+
+- **A text-only model is no longer told about photos.** Whether the
+  configured model accepts images is answered from the catalog before the
+  request is built, so an ingest slot that cannot see degrades to the
+  caption instead of paying for a rejection that takes the turn with it.
+
+- **Models that reason unbidden get room to answer.** The Claude 5
+  generation reasons whether or not a `thinking` block was requested, and
+  spends the caller's `max_tokens` doing it — a response could come back
+  with a thinking block and no text at all. The output ceiling now carries
+  headroom for those models, clamped to the model's own documented
+  maximum, and the boot probe no longer refuses to start a deployment
+  whose strong slot thinks before it speaks.
+
+### Changed
+
+- The model catalog covers `openai` alongside `anthropic`, `google` and
+  `openrouter`, and the vendored snapshot has been refreshed.
+- `LlmFunctionConfig::build_backend` now materialises five backends; a tag
+  outside that set still fails at startup rather than at the first
+  request.
+
 ## 1.7.0 — 2026-07-29
 
 ### Added
