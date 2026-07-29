@@ -60,9 +60,7 @@ mod wiki_view;
 
 /// Build the dashboard router, ready to be mounted under `/dashboard`.
 pub fn build(state: DashboardState) -> Router {
-    let frozen = state.config.read_only;
-
-    let mut authenticated = Router::new()
+    let authenticated = Router::new()
         .route("/home", get(home::index))
         .route("/logout", post(logout::handler))
         .merge(settings::router())
@@ -79,38 +77,45 @@ pub fn build(state: DashboardState) -> Router {
         .merge(chat::router())
         .merge(recall_traces::router())
         .merge(health::router())
-        .merge(keepalive::router());
-
-    // The consoles that exist only to change things. On a frozen
-    // deployment every control on these pages is refused, and a page
-    // whose whole content is dead controls is worse than a page that is
-    // not there: it invites a stranger to try. So they are not mounted at
-    // all — see [`crate::read_only`], and keep this list in step with the
-    // admin block of the top nav (`ui::layout`), which hides the same
-    // entries.
-    if !frozen {
-        authenticated = authenticated
-            .merge(users::router())
-            .merge(groups::router())
-            .merge(tokens::router())
-            .merge(two_factor::settings_router())
-            .merge(dream::router())
-            .merge(prompts::router())
-            .merge(llm_config::router())
-            .merge(claude_login::router())
-            .merge(recall_settings::router())
-            .merge(rem_settings::router())
-            .merge(training_spool::router())
-            .merge(embedding_settings::router())
-            .merge(email_settings::router())
-            .merge(server_settings::router())
-            .merge(backup::router())
-            // The profile wizard's whole job is to write a person's first
-            // facts. On a frozen instance the identities are already
-            // seeded, so nobody should be sent here — and `home` no
-            // longer redirects to it in this mode.
-            .merge(welcome::router());
-    }
+        .merge(keepalive::router())
+        // The operator's consoles. These are mounted on **every**
+        // deployment, frozen or not. A memory server is an operator's
+        // tool as much as a reader's, so an instance that hides them is
+        // not showing the product — it is showing half of it, and the
+        // half that answers "what is this thing" least well.
+        //
+        // They were once left unmounted when frozen, so that a page of
+        // dead controls could not invite a stranger to try. The freeze
+        // is the boundary that matters and it is enforced by path in
+        // [`crate::read_only`] whatever is mounted; what the visitor
+        // gets now is the real surface, inert. Keep this list in step
+        // with the admin block of the top nav (`ui::layout`).
+        //
+        // The consequence is about **content**, not routing: on a frozen
+        // instance these pages are readable by anybody who walks through
+        // the passwordless door, so putting such an instance on the
+        // public internet means having looked at what they print.
+        .merge(users::router())
+        .merge(groups::router())
+        .merge(tokens::router())
+        .merge(two_factor::settings_router())
+        .merge(dream::router())
+        .merge(prompts::router())
+        .merge(llm_config::router())
+        .merge(claude_login::router())
+        .merge(recall_settings::router())
+        .merge(rem_settings::router())
+        .merge(training_spool::router())
+        .merge(embedding_settings::router())
+        .merge(email_settings::router())
+        .merge(server_settings::router())
+        .merge(backup::router())
+        // The profile wizard's whole job is to write a person's first
+        // facts. On a frozen instance the identities are already
+        // seeded, so nobody is *sent* here — `home` does not redirect
+        // to it in this mode — but the page itself is reachable like
+        // any other.
+        .merge(welcome::router());
 
     let authenticated = authenticated
         .layer(from_fn_with_state(state.clone(), refresh_session_layer))

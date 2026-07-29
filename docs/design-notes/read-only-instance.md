@@ -109,22 +109,31 @@ the call is not a write — it is what a write would need.
 ## Hide the handle, but shut the door first
 
 A control that returns an error in front of a stranger is worse than a
-control that is not there, so the dashboard hides what it refuses. That
-is a **second** job, not the same one: hiding alone would be a curtain,
-since every route would still be routed. The order matters and the tests
-follow it — `read_only.rs` asserts the refusals **by path** before it
-ever looks at any HTML.
+control that works, so the dashboard renders what it refuses and then
+takes the handle off it. That is a **second** job, not the same one: on
+its own it would be a curtain, since every route would still be routed.
+The order matters and the tests follow it — `read_only.rs` asserts the
+refusals **by path** before it ever looks at any HTML.
 
 Three mechanisms, in decreasing order of strength:
 
-- **Not mounted.** The consoles that exist only to change things — users,
-  groups, tokens, prompts, the LLM / embedding / recall / REM / spool /
-  email / server / backup editors, the Dream console, the profile wizard
-  — are not merged into the router
-  ([`routes::build`](../../crates/mwe-dashboard/src/routes/mod.rs)). A
-  page whose whole content is dead controls invites a visitor to try; a
-  route that does not exist cannot be found by anybody. Keep this list in
-  step with the top-nav admin block, which hides the same entries.
+- **Mounted, and inert.** The consoles that exist only to change things —
+  users, groups, tokens, prompts, the LLM / embedding / recall / REM /
+  spool / email / server / backup editors, the Dream console, the profile
+  wizard — *are* merged into the router
+  ([`routes::build`](../../crates/mwe-dashboard/src/routes/mod.rs)) on
+  every deployment, frozen or not, and the top nav links them.
+  A memory server is an operator's tool as much as a reader's, and an
+  instance that hid them would be showing the half of the product that
+  answers "what is this thing" least well.
+  Their controls are then rendered and disabled by
+  [`read-only.js`](../../crates/mwe-dashboard/assets/read-only.js), which
+  is handed the server's own `ALLOWED_WRITES` (`read_only::live_writes_js`)
+  rather than a copy of it, so what stays clickable is exactly what the
+  guard still accepts. **This is chrome, not the boundary**: re-enabling a
+  control from a browser console gets you a `403` from the guard, which
+  is the intended order — shut the door, then take the handle off the
+  inside.
 - **Frame.** [`layout::Chrome`](../../crates/mwe-dashboard/src/ui/layout.rs)
   carries the deployment posture into the page shell, next to but
   distinct from `SessionUser`: the session answers *who is looking*, the
@@ -133,11 +142,15 @@ Three mechanisms, in decreasing order of strength:
   turn), its reopen FAB, the Help overlay (which is about operating the
   memory through that chat), the in-flight badge and the dream indicator,
   and adds a standing read-only notice.
-- **Per-control.** The read surfaces that stay mounted drop their own
-  write affordances: the wiki page's comment and describe controls, the
-  wiki list's delete column, the facts table's edit/delete cell and the
-  fact record's action forms, the smart wiki's sharing form and op-log
-  revert cell, the Settings password and 2FA forms.
+- **Per-control.** A few read surfaces drop their own write affordances
+  outright rather than showing them greyed, because they sit inline in a
+  page somebody is *reading* and a disabled box there is noise: the wiki
+  page's comment and describe controls, the wiki list's delete column,
+  the facts table's edit/delete cell and the fact record's action forms,
+  the smart wiki's sharing form and op-log revert cell. The Settings page
+  is the counter-example and the deliberate one — it renders every
+  section it always had, inert, because it is the page an operator would
+  go to first to understand what the product manages.
 
 Where a control's absence would otherwise read as a bug, `read_only::notice()`
 puts one line in its place. Where the control sat among others, it is
@@ -200,11 +213,26 @@ two places rather than one:
 
 A demo session is the smallest thing that works: the id must be on the
 configured list (the form field is checked against it, never trusted)
-and must exist in `enrollment_users` (so a config typo mints nothing),
-and the session is **never admin**, whatever the row says. Everything
-downstream — ACL projection, recall, redaction — then behaves exactly as
-it does for that person on any deployment. The visitor is not shown a
-mock-up of Bob; they are shown Bob.
+and must exist in `enrollment_users` (so a config typo mints nothing).
+The session carries **that person's own role**, admin included.
+Everything downstream — ACL projection, recall, redaction — then behaves
+exactly as it does for that person on any deployment. The visitor is not
+shown a mock-up of Bob; they are shown Bob.
+
+The entrance once downgraded every session to non-admin, reasoning that
+a door with no password should not hand out the panel. That contradicted
+the sentence above — an admin shown as a non-admin *is* a mock-up — and
+it hid most of the product. What makes the door safe is the freeze, not
+the role: on a frozen instance nothing an admin can do changes anything,
+and the guard refuses by path whatever the session says. **The role
+decides what you may see; the freeze decides what you may change, and
+only the second is load-bearing for safety.**
+
+The consequence for whoever puts such an instance on the public
+internet: every operator console is then readable by anybody who clicks
+a button, so it is worth walking those pages and looking at what they
+print. Host paths, private endpoints and real addresses are properties
+of the deployment's own configuration, not of this mode.
 
 The operator still needs a way in, so the password form survives behind
 a `Sign in with a password` disclosure. Folded away rather than beside
@@ -239,8 +267,12 @@ inferred from the markup:
   baseline that keeps it honest — a `403` from the guard is not the same
   thing as a `404` or a validation bounce.
   `identity_still_works_on_a_frozen_instance` signs out and back in.
-  `a_frozen_instance_hides_the_controls_it_refuses` checks the frame and
-  then that the consoles are `404`, not merely unlinked.
+  `a_frozen_instance_shows_every_console_and_arms_none_of_them` is the
+  inverted one: the consoles must answer `200` and be linked in the nav,
+  the frame must ship `read-only.js` with the server's live-write list,
+  and the same paths must still answer `403` to a `POST`. Both halves in
+  one test on purpose — a change that satisfies either by breaking the
+  other fails here.
   `an_open_instance_keeps_its_consoles_and_its_chat_panel` pins that the
   default install is untouched.
 - **Unit** — `read_only.rs`'s own module tests pin the path predicate,
@@ -270,7 +302,10 @@ inferred from the markup:
   (`the_switcher_is_on_every_page_and_returns_to_the_same_page`), the
   destination rule itself (`demo.rs`'s
   `entering_from_the_door_lands_in_the_panel_and_not_back_on_the_door`),
-  the never-admin rule, the off-list refusal, and the configured-but-absent
+  `a_demo_session_carries_the_role_of_the_person_it_signs_in_as` (both
+  directions: the admin identity gets the admin nav, the ordinary one
+  does not), `a_frozen_instance_shows_the_operator_consoles_and_still_refuses_them`,
+  the off-list refusal, and the configured-but-absent
   typo. `config.rs` pins the load-time refusal
   (`demo_identities_without_read_only_refuse_to_load`).
 

@@ -247,6 +247,15 @@ fn shell(
                     // chat.js only ever drives the chat panel, which a frozen
                     // deployment does not render.
                     @if !read_only { script src="/dashboard/static/chat.js" defer {} }
+                    // A frozen instance renders every write control and then
+                    // makes them visibly inert. The exempt list is the
+                    // server's own `ALLOWED_WRITES`, handed to the script
+                    // rather than restated in it, so what stays clickable is
+                    // exactly what the guard still accepts.
+                    @if read_only {
+                        script { (PreEscaped(crate::read_only::live_writes_js())) }
+                        script src="/dashboard/static/read-only.js" defer {}
+                    }
                     // Keep the sliding session alive while the user is
                     // actively interacting (esp. the multi-step welcome
                     // primer, which makes no request until final submit).
@@ -345,27 +354,26 @@ fn header(read_only: bool, demo_identities: &[String], user: Option<&SessionUser
                     (nav_link("/dashboard/recall-traces", "Traces"))
                     @if u.is_admin {
                         (nav_link("/dashboard/admin/health", "Health"))
-                        // The write-only consoles. A frozen deployment does
-                        // not mount them at all (`routes::build`), so linking
-                        // them would be linking to a 404 — keep the two lists
-                        // in step.
-                        @if !read_only {
-                            (nav_link("/dashboard/users", "Users"))
-                            (nav_link("/dashboard/groups", "Groups"))
-                            (nav_link("/dashboard/tokens", "Tokens"))
-                            (nav_link("/dashboard/prompts", "Prompts"))
-                            (nav_link("/dashboard/admin/llm-config", "LLM"))
-                            (nav_link("/dashboard/admin/embedding", "Embedding"))
-                            (nav_link("/dashboard/admin/recall-settings", "Recall"))
-                            (nav_link("/dashboard/admin/rem-settings", "REM"))
-                            // Admin "Spool" — the training-pair recorder
-                            // (distillation dataset toggle + inventory).
-                            (nav_link("/dashboard/admin/training-spool", "Spool"))
-                            (nav_link("/dashboard/admin/backup", "Backup"))
-                            // Admin "Dream" — the on-demand console + run history
-                            // (forms at the top, the journal table below).
-                            (nav_link("/dashboard/dream", "Dream"))
-                        }
+                        // The operator's consoles, linked on every
+                        // deployment including a frozen one: `routes::build`
+                        // mounts them unconditionally, and a shown instance
+                        // that hid them would be showing half the product.
+                        // Keep the two lists in step.
+                        (nav_link("/dashboard/users", "Users"))
+                        (nav_link("/dashboard/groups", "Groups"))
+                        (nav_link("/dashboard/tokens", "Tokens"))
+                        (nav_link("/dashboard/prompts", "Prompts"))
+                        (nav_link("/dashboard/admin/llm-config", "LLM"))
+                        (nav_link("/dashboard/admin/embedding", "Embedding"))
+                        (nav_link("/dashboard/admin/recall-settings", "Recall"))
+                        (nav_link("/dashboard/admin/rem-settings", "REM"))
+                        // Admin "Spool" — the training-pair recorder
+                        // (distillation dataset toggle + inventory).
+                        (nav_link("/dashboard/admin/training-spool", "Spool"))
+                        (nav_link("/dashboard/admin/backup", "Backup"))
+                        // Admin "Dream" — the on-demand console + run history
+                        // (forms at the top, the journal table below).
+                        (nav_link("/dashboard/dream", "Dream"))
                     }
                     (nav_link("/dashboard/settings/me", "Settings"))
                 }

@@ -289,45 +289,44 @@ fn render(
                 "other sessions remain valid until they expire or you revoke them."
             }
         }
-        // A frozen deployment stores no new credential and mounts no 2FA
-        // routes, so both are gone; the page stays because it is also
-        // where an admin reads the reveal posture.
+        // A frozen deployment shows this page whole and lets none of it
+        // fire: the sections below are the real ones, rendered inert by
+        // `read-only.js` and refused by the guard if anybody re-enables
+        // them. The one exception on this page is the reveal switch,
+        // which changes a per-browser cookie and no server state.
         @if chrome.read_only {
             (crate::read_only::notice())
-        } @else {
-            form action="/dashboard/settings/me" method="post" {
-                // Hidden username anchor for browser password managers
-                // (Chrome / Safari) so the new password gets associated
-                // with the right account. Not submitted as a meaningful
-                // field — the route reads the signed-in user from the
-                // session cookie regardless.
-                input
-                    type="text"
-                    name="username"
-                    autocomplete="username"
-                    value=(user.sender_id)
-                    hidden;
-                (components::password_field("current_password", "Current password", "current-password"))
-                (components::password_field("new_password", "New password", "new-password"))
-                (components::password_field("new_password_confirm", "Confirm new password", "new-password"))
-                (components::submit("Update password"))
-            }
+        }
+        form action="/dashboard/settings/me" method="post" {
+            // Hidden username anchor for browser password managers
+            // (Chrome / Safari) so the new password gets associated
+            // with the right account. Not submitted as a meaningful
+            // field — the route reads the signed-in user from the
+            // session cookie regardless.
+            input
+                type="text"
+                name="username"
+                autocomplete="username"
+                value=(user.sender_id)
+                hidden;
+            (components::password_field("current_password", "Current password", "current-password"))
+            (components::password_field("new_password", "New password", "new-password"))
+            (components::password_field("new_password_confirm", "Confirm new password", "new-password"))
+            (components::submit("Update password"))
+        }
 
-            section.twofa-link {
-                h2 { "Two-factor authentication" }
-                p.muted {
-                    "Add a one-time code from an authenticator app to your sign-in."
-                }
-                p { a href="/dashboard/settings/2fa" { "Manage two-factor authentication →" } }
+        section.twofa-link {
+            h2 { "Two-factor authentication" }
+            p.muted {
+                "Add a one-time code from an authenticator app to your sign-in."
             }
+            p { a href="/dashboard/settings/2fa" { "Manage two-factor authentication →" } }
         }
 
         @if user.is_admin {
-            @if !chrome.read_only {
-                (global_require_section(global_2fa))
-            }
+            (global_require_section(global_2fa))
             (reveal_section(reveal_on, reveal_locked))
-            @if let Some(cfg) = cfg && !chrome.read_only {
+            @if let Some(cfg) = cfg {
                 (super::email_settings::section(&cfg.email))
                 (super::server_settings::sections(cfg))
             }

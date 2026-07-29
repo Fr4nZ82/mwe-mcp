@@ -31,9 +31,11 @@ pub async fn index(
     // brand logo (`/dashboard/` → home) and the Home tab both land here,
     // so an accidental click away from the wizard never strands them.
     //
-    // A frozen deployment does not mount the wizard (it writes a person's
-    // first facts), so the redirect would strand every visitor on a 404
-    // instead. There the identities are seeded already; skip it.
+    // A frozen deployment skips the redirect. The wizard is mounted like
+    // every other page and can be walked into deliberately, but its whole
+    // job is to write a person's first facts: sending a visitor there on
+    // arrival would open the demonstration on the one screen that cannot
+    // work, before they have seen anything that does.
     if !crate::read_only::hides_writes(&state)
         && !crate::routes::welcome::user_already_initialized(&state, &user.sender_id).await?
     {

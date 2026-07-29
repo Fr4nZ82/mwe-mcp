@@ -249,12 +249,24 @@ async fn identity_still_works_on_a_frozen_instance() {
     assert!(extract_set_cookie(&response, "mwe_session").is_some());
 }
 
-/// Property 3: the frame does not offer what the guard refuses. The
-/// chat panel captures memory on every turn, and the write-only consoles
-/// are not mounted at all — so neither their nav links nor their pages
-/// exist.
+/// Property 3: a frozen instance shows the **whole** product and lets
+/// none of it fire.
+///
+/// This one inverted. The consoles used to be left unmounted, so that a
+/// page of dead controls could not invite a stranger to try; the cost
+/// was that the instance we show to strangers hid the half of the
+/// product that answers "what is this thing". A memory server is an
+/// operator's tool as much as a reader's.
+///
+/// So the pages are mounted and linked, the guard refuses them by path,
+/// and `read-only.js` renders their controls inert. The order still
+/// matters and it is still the same order: the door is shut first
+/// (asserted by property 1), and only then is the handle taken off.
+///
+/// The chat panel stays out, because it is not a page — it is a widget
+/// in the frame whose only purpose is to capture memory on every turn.
 #[tokio::test]
-async fn a_frozen_instance_hides_the_controls_it_refuses() {
+async fn a_frozen_instance_shows_every_console_and_arms_none_of_them() {
     let (app, cookie, _dir) = frozen_app_with_admin().await;
     let html = body_string(
         send(
@@ -277,26 +289,32 @@ async fn a_frozen_instance_hides_the_controls_it_refuses() {
         !html.contains("chat-panel-form"),
         "the chat panel writes memory and must not be rendered: {html}"
     );
-    for gone in [
+    // The frame ships the inert-controls script, and hands it the
+    // server's own allow-list rather than a copy.
+    assert!(
+        html.contains("/dashboard/static/read-only.js"),
+        "the frozen frame must load the inert-controls script: {html}"
+    );
+    assert!(
+        html.contains("window.__mweLiveWrites=") && html.contains("/dashboard/settings/reveal"),
+        "the script must be handed the live-write list: {html}"
+    );
+    for linked in [
         r#"href="/dashboard/users""#,
         r#"href="/dashboard/tokens""#,
         r#"href="/dashboard/prompts""#,
         r#"href="/dashboard/dream""#,
         r#"href="/dashboard/admin/backup""#,
+        r#"href="/dashboard/recall-traces""#,
+        r#"href="/dashboard/wiki""#,
     ] {
         assert!(
-            !html.contains(gone),
-            "a link to a console that is not mounted: {gone}"
+            html.contains(linked),
+            "a shown instance must link the whole product, missing {linked}: {html}"
         );
     }
-    // …and the read surfaces an admin still has are still linked.
-    assert!(
-        html.contains(r#"href="/dashboard/recall-traces""#),
-        "{html}"
-    );
-    assert!(html.contains(r#"href="/dashboard/wiki""#), "{html}");
 
-    // The consoles themselves are gone, not merely unlinked.
+    // The consoles are reachable, not merely linked…
     for uri in [
         "/users",
         "/tokens",
@@ -317,8 +335,30 @@ async fn a_frozen_instance_hides_the_controls_it_refuses() {
         .await;
         assert_eq!(
             response.status(),
-            StatusCode::NOT_FOUND,
-            "GET {uri} must not exist on a frozen instance"
+            StatusCode::OK,
+            "GET {uri} must render on a shown instance"
+        );
+    }
+
+    // …and every one of them still refuses to be written to. Property 1
+    // walks the write surface in full; this is the half that would break
+    // first if somebody "simplified" the mounting above.
+    for uri in ["/users/new", "/tokens", "/admin/backup"] {
+        let response = send(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::COOKIE, cookie.clone())
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from("x=1"))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "POST {uri} must still be refused on a shown instance"
         );
     }
 }

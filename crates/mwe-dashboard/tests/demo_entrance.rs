@@ -241,40 +241,133 @@ async fn a_visitor_enters_with_one_click_and_no_credentials() {
     assert!(page.contains("bob"), "the session must be bob's: {page}");
 }
 
-/// A passwordless door hands out the smallest thing that works. `alice`
-/// is the deployment's admin; entering as her from the demo door still
-/// produces a non-admin session, so the admin nav never appears.
+/// The visitor is shown that person, role included.
+///
+/// `alice` is the deployment's admin and `bob` is not, so the same door
+/// must produce two different panels. This entrance once downgraded
+/// every session to non-admin; that hid most of the product and showed a
+/// mock-up of Alice rather than Alice. What keeps the door safe is the
+/// freeze, not the role — see `read_only.rs`.
 #[tokio::test]
-async fn a_demo_session_is_never_admin_even_for_an_admin_identity() {
+async fn a_demo_session_carries_the_role_of_the_person_it_signs_in_as() {
     let (app, _pool, _dir) = make_app(true, &["bob", "alice", "zoe"]).await;
+
+    // `/admin/health` is admin-only and survives the freeze, so its nav
+    // link is a clean tell for the role. (The traces journal is
+    // deliberately *not* the tell: it is open to every signed-in user,
+    // scoped to their own recalls.)
+    for (identity, expect_admin) in [("alice", true), ("bob", false)] {
+        let response = enter_as(&app, identity, None).await;
+        let cookie = extract_cookie_value(
+            &extract_set_cookie(&response, "mwe_session").expect("session cookie"),
+        );
+        let page = body_string(
+            send(
+                &app,
+                Request::builder()
+                    .uri("/home")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            page.contains(r#"href="/dashboard/admin/health""#),
+            expect_admin,
+            "entering as {identity} must produce is_admin={expect_admin}: {page}"
+        );
+        // …and the surfaces every demo visitor is meant to reach are there.
+        assert!(
+            page.contains(r#"href="/dashboard/recall-traces""#),
+            "a demo visitor must still reach their own recall traces: {page}"
+        );
+    }
+}
+
+/// The operator's consoles are **mounted** on a frozen instance, and
+/// every one of them still refuses to be written to.
+///
+/// Both halves matter and they pull in opposite directions, which is why
+/// they are asserted together: showing the product means the pages are
+/// reachable, and freezing it means nothing on them fires. A change that
+/// satisfies one by breaking the other fails here.
+#[tokio::test]
+async fn a_frozen_instance_shows_the_operator_consoles_and_still_refuses_them() {
+    let (app, _pool, _dir) = make_app(true, &["alice"]).await;
     let response = enter_as(&app, "alice", None).await;
     let cookie = extract_cookie_value(
         &extract_set_cookie(&response, "mwe_session").expect("session cookie"),
     );
-    let page = body_string(
-        send(
+
+    for path in [
+        "/users",
+        "/groups",
+        "/tokens",
+        "/prompts",
+        "/dream",
+        "/admin/llm-config",
+        "/admin/embedding",
+        "/admin/recall-settings",
+        "/admin/rem-settings",
+        "/admin/training-spool",
+        "/admin/backup",
+        "/settings/me",
+    ] {
+        let response = send(
             &app,
             Request::builder()
-                .uri("/home")
-                .header(header::COOKIE, cookie)
+                .uri(path)
+                .header(header::COOKIE, cookie.clone())
                 .body(Body::empty())
                 .unwrap(),
         )
-        .await,
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a shown instance must render {path}, not hide it"
+        );
+    }
+
+    // The same pages, written to: refused by the guard, by path.
+    for path in ["/users/new", "/tokens", "/prompts/cronista/reset"] {
+        let response = send(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header(header::COOKIE, cookie.clone())
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from("x=1"))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "a frozen instance must refuse POST {path}"
+        );
+    }
+
+    // …and the one control that stays live, because it sets a
+    // per-browser cookie and changes nothing on the server.
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/settings/reveal")
+            .header(header::COOKIE, cookie)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from("on=1&return_to=/dashboard/home"))
+            .unwrap(),
     )
     .await;
-    // `/admin/health` is admin-only and read-only, so it survives the
-    // freeze and its nav link is a clean tell for the role. (The traces
-    // journal is deliberately *not* the tell any more: it is open to
-    // every signed-in user, scoped to their own recalls.)
     assert!(
-        !page.contains(r#"href="/dashboard/admin/health""#),
-        "a demo session must not carry the admin role: {page}"
-    );
-    // …and the surfaces a demo visitor is meant to reach are there.
-    assert!(
-        page.contains(r#"href="/dashboard/recall-traces""#),
-        "a demo visitor must still reach their own recall traces: {page}"
+        response.status().is_redirection(),
+        "admin reveal must stay operable on a shown instance: {}",
+        response.status()
     );
 }
 

@@ -40,12 +40,32 @@
 //!   checked against it, never trusted;
 //! - and must exist in `enrollment_users`, so a typo in the config mints
 //!   nothing;
-//! - the session is **never admin**, whatever the row says. A door with
-//!   no password on it does not hand out the panel.
+//! - the session carries **that person's own role**, admin included.
 //!
 //! Everything else — reading, ACL projection, recall — then behaves
 //! exactly as it does for that person on any deployment, which is the
 //! point: the visitor is not shown a mock-up of Bob, they are shown Bob.
+//!
+//! # Why the role is inherited rather than downgraded
+//!
+//! This entrance once minted a permanently non-admin session, on the
+//! reasoning that a door with no password on it should not hand out the
+//! panel. That was the wrong cut, and it contradicted the paragraph
+//! above: an admin shown as a non-admin *is* a mock-up of Bob. It also
+//! hid most of the product — a memory server is an operator's tool as
+//! much as a reader's, and the consoles are where that shows.
+//!
+//! What makes the passwordless door safe is not a downgraded session, it
+//! is [`crate::read_only`]: on a frozen instance nothing an admin can do
+//! changes anything, and the guard refuses by path whatever the role. So
+//! the role decides **what you may see**, the freeze decides **what you
+//! may change**, and only the second one is load-bearing for safety.
+//!
+//! The consequence to keep in view when adding a page: on a frozen
+//! instance every operator console is readable by anybody who clicks a
+//! button, so whoever puts such an instance on the public internet has
+//! to have looked at what those pages print. That is a property of the
+//! pages and of the deployment, not of this module.
 
 use axum::Router;
 use axum::extract::State;
@@ -169,23 +189,26 @@ pub async fn enter(
         );
         return Err(DashboardError::Forbidden);
     }
-    let known: i64 = sqlx::query_scalar("SELECT count(*) FROM enrollment_users WHERE user_id = ?")
-        .bind(wanted)
-        .fetch_one(&state.pool)
-        .await?;
-    if known == 0 {
+    let role: Option<i64> =
+        sqlx::query_scalar("SELECT is_admin FROM enrollment_users WHERE user_id = ?")
+            .bind(wanted)
+            .fetch_optional(&state.pool)
+            .await?;
+    let Some(is_admin) = role else {
         // Configured but absent: an operator typo, not a visitor's doing.
         tracing::error!(
             requested = wanted,
             "demo entrance: configured identity is not in enrollment_users"
         );
         return Err(DashboardError::NotFound);
-    }
+    };
 
-    // Never admin, whatever `enrollment_users.is_admin` says.
-    let cookie = issue_session_cookie(&state, wanted, false)?;
+    // The visitor is shown that person, role included. What keeps this
+    // safe is the freeze, not a downgraded session.
+    let is_admin = is_admin != 0;
+    let cookie = issue_session_cookie(&state, wanted, is_admin)?;
     let landing = destination(headers.get(REFERER).and_then(|v| v.to_str().ok()));
-    tracing::info!(identity = wanted, "demo entrance: session issued");
+    tracing::info!(identity = wanted, is_admin, "demo entrance: session issued");
     Ok((jar.add(cookie), Redirect::to(&landing)).into_response())
 }
 

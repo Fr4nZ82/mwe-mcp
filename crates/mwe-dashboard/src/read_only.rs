@@ -141,6 +141,29 @@ pub async fn guard(State(state): State<DashboardState>, request: Request, next: 
     next.run(request).await
 }
 
+/// The still-live write paths, as a JS global for `read-only.js`.
+///
+/// The frozen chrome renders every write control and then disables it
+/// ([`crate::ui::layout`]); this is the exemption list it consults, and
+/// it is **generated from [`ALLOWED_WRITES`]** rather than restated in
+/// the script. A hand-copied list in JavaScript would drift the first
+/// time somebody exempts a path here, and it would drift silently — the
+/// visible result being a control that looks usable and is not, or the
+/// reverse.
+///
+/// Paths are emitted absolute (`/dashboard/…`) because that is the form
+/// a form `action` takes in the rendered HTML; the guard sees them after
+/// nesting has stripped the prefix.
+#[must_use]
+pub fn live_writes_js() -> String {
+    let paths: Vec<String> = ALLOWED_WRITES
+        .iter()
+        .chain(std::iter::once(&DEMO_ENTER))
+        .map(|p| format!("\"/dashboard{p}\""))
+        .collect();
+    format!("window.__mweLiveWrites=[{}];", paths.join(","))
+}
+
 /// Should the dashboard hide the controls it would refuse?
 ///
 /// The same flag as [`guard`], read at every render site that owns a
