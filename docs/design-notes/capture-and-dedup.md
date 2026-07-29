@@ -71,7 +71,11 @@ buffer write side is documented in
    mirror would collapse onto an existing entry or a reserved file
    (`wiki::page_path_case_hazard` + `wiki::page_case_conflict` →
    `PageCaseConflict`); appends to an existing byte-exact page skip the
-   check.
+   check. **"Byte-exact" is asked of the directory listing**
+   (`wiki::page_exists_byte_exact`), never of `Path::exists`: on a
+   case-folding filesystem the latter answers `true` for `Intro.md` when
+   the file on disk is `intro.md`, which skipped the guard and appended
+   one page's facts into another's.
 3. **Embed**: call the supplied `Arc<dyn Embedder>` on the body. A
    remote-embedder failure short-circuits *before* any durable write.
 4. **Dedup**: fetch every active fact in the wiki **owned by the same

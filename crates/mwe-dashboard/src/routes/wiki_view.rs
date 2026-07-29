@@ -2799,6 +2799,20 @@ mod tests {
 
     // ---------- wikilink href resolution ----------
 
+    /// Does this filesystem tell `a.md` and `A.md` apart? macOS and
+    /// Windows do not, which makes a case-variant fixture impossible to
+    /// build there — the assertions that need one are skipped rather than
+    /// deleted (the twin of `mwe_core::wiki::fs_distinguishes_case`).
+    fn fs_distinguishes_case(dir: &std::path::Path) -> bool {
+        let probe = dir.join("mwe-case-probe.tmp");
+        if std::fs::write(&probe, b"x").is_err() {
+            return false;
+        }
+        let distinguishes = !dir.join("MWE-CASE-PROBE.TMP").exists();
+        let _ = std::fs::remove_file(&probe);
+        distinguishes
+    }
+
     fn link_index_fixture() -> (
         tempfile::TempDir,
         std::collections::BTreeMap<String, PathBuf>,
@@ -2926,11 +2940,17 @@ mod tests {
             resolve_relative_page_href(alice, "alice", "modules", "../notes.md").as_deref(),
             Some("/dashboard/wiki/alice/view/notes.md")
         );
-        // `./` and case variants normalize to the on-disk spelling.
-        assert_eq!(
-            resolve_relative_page_href(alice, "alice", "", "./Modules/Auth.MD").as_deref(),
-            Some("/dashboard/wiki/alice/view/modules/auth.md")
-        );
+        // `./` and case variants normalize to the on-disk spelling — only
+        // where the filesystem keeps spellings apart. On macOS/Windows
+        // `Modules/Auth.MD` *is* the on-disk file, so the byte-exact probe
+        // hits first and the href keeps the caller's spelling; it resolves
+        // to the same page either way.
+        if fs_distinguishes_case(alice) {
+            assert_eq!(
+                resolve_relative_page_href(alice, "alice", "", "./Modules/Auth.MD").as_deref(),
+                Some("/dashboard/wiki/alice/view/modules/auth.md")
+            );
+        }
         // A fragment rides along on the rewritten href.
         assert_eq!(
             resolve_relative_page_href(alice, "alice", "", "notes.md#history").as_deref(),

@@ -241,7 +241,12 @@ case-collides with an existing on-disk entry (`Index.md` vs `index.md`,
 `Modules/` vs `modules/`) is refused with the existing spelling echoed
 back (`wiki::page_case_conflict`) — the server disk is case-sensitive
 but the consumer's local mirror usually is not, and two case-twin
-entries would silently clobber each other on the next pull.
+entries would silently clobber each other on the next pull. Whether the
+page "already exists" (upsert) or is new (and must pass the guard) is
+decided by `wiki::page_exists_byte_exact`, which reads the directory
+listing: a server running on macOS or Windows would otherwise take
+`Path::exists`' word for it and overwrite `index.md` with a push aimed
+at `Index.md`.
 
 **`mode: create`**:
 [`push_create`](../../crates/mwe-core/src/wiki_admin.rs) derives a

@@ -394,7 +394,7 @@ pub async fn wiki_capture_with_source(
     // case-insensitive mirror would collapse onto an existing entry or
     // a reserved file, and `.md` spelled in a case the index ignores.
     // Appends to an existing byte-exact page carry no such risk.
-    if !handle.abs_dir().join(&req.page).is_file()
+    if !crate::wiki::page_exists_byte_exact(handle.abs_dir(), &req.page)
         && let Some(reason) = crate::wiki::page_path_case_hazard(&req.page)
             .or_else(|| crate::wiki::page_case_conflict(handle.abs_dir(), &req.page))
     {
@@ -760,7 +760,7 @@ pub fn wiki_link(
     let abs_page = handle.abs_dir().join(in_page);
     // Same create-time guard as `wiki_capture`: a link append may forge
     // the source page, and a case-colliding name must never reach disk.
-    if !abs_page.is_file()
+    if !crate::wiki::page_exists_byte_exact(handle.abs_dir(), in_page)
         && let Some(reason) = crate::wiki::page_path_case_hazard(in_page)
             .or_else(|| crate::wiki::page_case_conflict(handle.abs_dir(), in_page))
     {
@@ -1221,7 +1221,9 @@ mod tests {
         let pool = make_pool().await;
 
         // Seed `intro.md`, then try to create its case twin: one file on
-        // a case-insensitive mirror, so the capture must refuse.
+        // a case-insensitive mirror, so the capture must refuse — and it
+        // must refuse identically on a filesystem that folds case, where
+        // the twin would land *inside* the existing page.
         wiki_capture(&tree, &pool, embedder(), sample_request("I love pasta"))
             .await
             .expect("seed capture");

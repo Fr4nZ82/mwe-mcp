@@ -1400,6 +1400,36 @@ pub fn page_path_case_hazard(rel: &Path) -> Option<String> {
     None
 }
 
+/// Does `rel` exist under `abs_dir` **with this exact spelling**?
+///
+/// [`Path::exists`] cannot answer that on a case-folding filesystem: it
+/// says `Intro.md` exists when the file on disk is `intro.md`, because
+/// the two are the same file there. Every caller that branches on "does
+/// this page already exist" is really asking the byte-exact question —
+/// the answer decides whether a write *appends to an existing page* or
+/// *creates a new one*, and getting it wrong on macOS or Windows silently
+/// merged two different pages into one.
+///
+/// Walks the directory listing per component, which reads the same on
+/// every filesystem. One `read_dir` per level, on page-write paths only.
+#[must_use]
+pub fn page_exists_byte_exact(abs_dir: &Path, rel: &Path) -> bool {
+    let mut cur = abs_dir.to_path_buf();
+    for comp in rel.components() {
+        let std::path::Component::Normal(s) = comp else {
+            return false;
+        };
+        let Ok(entries) = std::fs::read_dir(&cur) else {
+            return false;
+        };
+        if !entries.flatten().any(|e| e.file_name() == s) {
+            return false;
+        }
+        cur.push(s);
+    }
+    true
+}
+
 /// Scan for an on-disk entry that collides with `rel` on a
 /// case-insensitive filesystem: the first path component matching an
 /// existing sibling ASCII-case-insensitively without being byte-equal.
@@ -1421,21 +1451,39 @@ pub fn page_case_conflict(abs_dir: &Path, rel: &Path) -> Option<String> {
         let std::path::Component::Normal(s) = comp else {
             return None;
         };
-        if cur.join(s).exists() {
+        // Ask the *directory listing* what the real spelling is, never
+        // `Path::exists`. On a case-folding filesystem (macOS, Windows)
+        // `_Meta.md`.exists() is true because it resolves to `_meta.md`,
+        // and trusting it made this function report "byte-exact, carry
+        // on" for a name that is not on disk at all — so a capture aimed
+        // at `_Meta.md` appended into the wiki's own `_meta.md`. The
+        // listing is the same on both kinds of filesystem, so the guard
+        // now behaves identically wherever the server runs. One `read_dir`
+        // per component, on page creation only.
+        let entries = std::fs::read_dir(&cur).ok()?;
+        let name = s.to_string_lossy();
+        let mut byte_exact = false;
+        let mut folded: Option<std::ffi::OsString> = None;
+        for e in entries.flatten() {
+            let existing = e.file_name();
+            if existing == s {
+                byte_exact = true;
+                break;
+            }
+            if folded.is_none() && existing.to_string_lossy().eq_ignore_ascii_case(&name) {
+                folded = Some(existing);
+            }
+        }
+        if byte_exact {
             cur.push(s);
             prefix.push(s);
             continue;
         }
-        let entries = std::fs::read_dir(&cur).ok()?;
-        let name = s.to_string_lossy();
-        for e in entries.flatten() {
-            let existing = e.file_name();
-            if existing.to_string_lossy().eq_ignore_ascii_case(&name) {
-                let found = prefix.join(&existing).to_string_lossy().replace('\\', "/");
-                return Some(format!(
-                    "case-collides with existing `{found}` — a case-insensitive mirror treats them as the same file; reuse that exact spelling"
-                ));
-            }
+        if let Some(existing) = folded {
+            let found = prefix.join(&existing).to_string_lossy().replace('\\', "/");
+            return Some(format!(
+                "case-collides with existing `{found}` — a case-insensitive mirror treats them as the same file; reuse that exact spelling"
+            ));
         }
         // Nothing at this level, so no deeper component can exist either.
         return None;
@@ -2126,6 +2174,34 @@ pub fn write_wiki_dir(
     atomic_write(&meta_path, meta_doc.as_bytes())?;
     atomic_write(&dir.join("index.md"), index_body.as_bytes())?;
     Ok(dir)
+}
+
+/// Does this filesystem tell `a.md` and `A.md` apart?
+///
+/// Test-only, and shared across the crate's test modules because several
+/// of them build the same fixture: two files differing only by case.
+/// **That fixture cannot exist on macOS or Windows** — the second write
+/// lands on the first file — so the assertions that depend on it are
+/// skipped there rather than deleted. Nothing is lost by skipping: the
+/// guard those tests exercise ([`page_case_conflict`]) scans for a
+/// sibling matching case-insensitively, and on a folding filesystem the
+/// pair it protects against is unrepresentable in the first place. The
+/// guard exists for the **server**, which stores wikis on a
+/// case-sensitive filesystem and must not hand a mirror two files that
+/// would collapse into one.
+///
+/// Probed at runtime rather than by `cfg!(target_os)`: a Linux box can
+/// mount a case-folding directory and a Mac can mount a case-sensitive
+/// volume, and it is the filesystem under the fixture that decides.
+#[cfg(test)]
+pub(crate) fn fs_distinguishes_case(dir: &Path) -> bool {
+    let probe = dir.join("mwe-case-probe.tmp");
+    if std::fs::write(&probe, b"x").is_err() {
+        return false;
+    }
+    let distinguishes = !dir.join("MWE-CASE-PROBE.TMP").exists();
+    let _ = std::fs::remove_file(&probe);
+    distinguishes
 }
 
 #[cfg(test)]
@@ -3241,6 +3317,8 @@ mod tests {
         std::fs::write(dir.join("recipes/pasta.md"), "x").unwrap();
 
         // Same name, different case → conflict naming the existing file.
+        // Asserted on every filesystem: the guard reads the directory
+        // listing, so a folding one answers the same as a strict one.
         let c = page_case_conflict(dir, Path::new("Setup.md")).unwrap();
         assert!(c.contains("setup.md"), "{c}");
         // Directory component case variant → conflict too.
@@ -3266,14 +3344,20 @@ mod tests {
             resolve_page_case_insensitive(dir, Path::new("Docs/Setup.md")),
             Some(PathBuf::from("Docs/Setup.md"))
         );
+        // Missing target stays unresolved; a directory is not a page.
+        assert!(resolve_page_case_insensitive(dir, Path::new("docs/other.md")).is_none());
+        assert!(resolve_page_case_insensitive(dir, Path::new("docs")).is_none());
+        // The rest is only meaningful where the filesystem keeps the
+        // spellings apart: elsewhere the byte-exact probe already hits,
+        // and two case-variant entries cannot both exist to be ambiguous.
+        if !fs_distinguishes_case(dir) {
+            return;
+        }
         // Case-drifted link resolves to the on-disk spelling.
         assert_eq!(
             resolve_page_case_insensitive(dir, Path::new("docs/setup.md")),
             Some(PathBuf::from("Docs/Setup.md"))
         );
-        // Missing target stays unresolved; a directory is not a page.
-        assert!(resolve_page_case_insensitive(dir, Path::new("docs/other.md")).is_none());
-        assert!(resolve_page_case_insensitive(dir, Path::new("docs")).is_none());
         // Two entries differing only by case → ambiguous, refuse.
         std::fs::write(dir.join("Docs/SETUP.md"), "x").unwrap();
         assert!(resolve_page_case_insensitive(dir, Path::new("docs/setup.md")).is_none());
