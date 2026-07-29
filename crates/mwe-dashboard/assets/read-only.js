@@ -44,20 +44,22 @@
   }
 
   function freeze(root) {
-    var forms = root.querySelectorAll('form');
+    var forms = root.querySelectorAll ? root.querySelectorAll('form') : [];
     for (var i = 0; i < forms.length; i++) {
       var form = forms[i];
       if (isLive(form)) continue;
-      form.setAttribute('data-read-only', '1');
-      form.addEventListener('submit', function (e) {
-        e.preventDefault();
-      });
+      if (!form.getAttribute('data-read-only')) {
+        form.setAttribute('data-read-only', '1');
+        form.addEventListener('submit', function (e) {
+          e.preventDefault();
+        });
+      }
       var controls = form.querySelectorAll('input, select, textarea, button');
       for (var j = 0; j < controls.length; j++) {
         var c = controls[j];
         // A hidden input carries no affordance; disabling it only makes
         // the markup noisier.
-        if (c.type === 'hidden') continue;
+        if (c.type === 'hidden' || c.disabled) continue;
         c.disabled = true;
         c.setAttribute('aria-disabled', 'true');
         if (!c.title) c.title = REASON;
@@ -67,11 +69,43 @@
     }
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () {
+  // A single pass at load is not enough, and the page that proved it is
+  // Tokens. `tokens.js` shows one of two branches of the issue form and
+  // disables the inputs of the hidden one, which means it *enables* the
+  // inputs of the visible one — `disabled = !on` — every time the class
+  // radio syncs. It adds no node while doing it, so watching for
+  // insertions alone never sees it: the control was frozen, and then
+  // quietly thawed.
+  //
+  // Hence `attributes` as well as `childList`. Any page script that
+  // re-enables a control in place is doing the same thing, and the one
+  // live control on a frozen instance should not be whichever feature
+  // shipped most recently.
+  //
+  // This does not loop: `freeze` skips a control that is already
+  // disabled, so the mutation it causes produces no further mutation.
+  function watch() {
+    freeze(document);
+    if (typeof MutationObserver !== 'function') return;
+    var observer = new MutationObserver(function () {
       freeze(document);
     });
-  } else {
-    freeze(document);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['disabled'],
+    });
   }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', watch);
+  } else {
+    watch();
+  }
+  // Deferred page scripts run before `load`; sweeping again there closes
+  // the window between them and the observer being armed.
+  window.addEventListener('load', function () {
+    freeze(document);
+  });
 })();
