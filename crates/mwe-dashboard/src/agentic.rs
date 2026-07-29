@@ -927,6 +927,41 @@ struct PageInfoSnippet {
     size: u64,
 }
 
+/// Parse an operator-supplied wiki id, refusing with the one mistake this panel
+/// actually makes spelled out.
+///
+/// The dashboard's own address bar reads `…/wiki/<wiki_id>/view/<page>`, so an
+/// operator who pastes what they are looking at hands the model a path, and the
+/// model splits it wherever it likes — `wiki_id: "alice-work/view"` is the
+/// observed case. Two things follow. [`WikiId::parse`] already quotes the
+/// offending value and names the character, so the old wrapper repeated the
+/// value a second time in its own quoting style and said nothing new; and a
+/// refusal that does not say what the right shape *is* costs a whole iteration
+/// of the 8-step budget to rediscover. `field` is named because
+/// `wiki_change_scope` carries two wiki ids and "invalid wiki id" alone would
+/// not say which.
+///
+/// Only for ids the **operator** supplied: a `wiki_id` read back out of the DB
+/// that fails to parse is an [`AgenticToolError::InternalFailure`], not bad
+/// input, and those sites stay as they are.
+fn parse_operator_wiki_id(
+    raw: &str,
+    field: &'static str,
+    tool: &'static str,
+) -> Result<WikiId, AgenticToolError> {
+    WikiId::parse(raw).map_err(|e| {
+        let mut detail = format!("`{field}`: {e}");
+        if raw.contains('/') {
+            detail.push_str(
+                " — a wiki id is bare, never a path. In a dashboard address \
+                 `…/wiki/<wiki_id>/view/<page>` the id is the segment before \
+                 `/view/`, and the page after it belongs in the `page` argument.",
+            );
+        }
+        AgenticToolError::InvalidArguments { tool, detail }
+    })
+}
+
 fn dispatch_wiki_list_pages(
     arguments: &serde_json::Value,
     ctx: &AgenticContext<'_>,
@@ -937,10 +972,8 @@ fn dispatch_wiki_list_pages(
             detail: e.to_string(),
         }
     })?;
-    let wiki_id = WikiId::parse(&args.wiki_id).map_err(|e| AgenticToolError::InvalidArguments {
-        tool: AgenticTool::WikiListPages.name(),
-        detail: format!("invalid wiki_id `{}`: {e}", args.wiki_id),
-    })?;
+    let wiki_id =
+        parse_operator_wiki_id(&args.wiki_id, "wiki_id", AgenticTool::WikiListPages.name())?;
     let pages = mwe_core::wiki::wiki_list_pages(ctx.tree, &wiki_id).map_err(|e| {
         AgenticToolError::InternalFailure {
             tool: AgenticTool::WikiListPages.name(),
@@ -968,10 +1001,7 @@ fn dispatch_wiki_get_meta(
             detail: e.to_string(),
         }
     })?;
-    let wiki_id = WikiId::parse(&args.wiki_id).map_err(|e| AgenticToolError::InvalidArguments {
-        tool,
-        detail: format!("invalid wiki_id `{}`: {e}", args.wiki_id),
-    })?;
+    let wiki_id = parse_operator_wiki_id(&args.wiki_id, "wiki_id", tool)?;
     let meta = mwe_core::wiki::wiki_get_meta(ctx.tree, &wiki_id).map_err(|e| {
         AgenticToolError::InternalFailure {
             tool,
@@ -1722,19 +1752,18 @@ async fn dispatch_wiki_change_scope(
             detail: e.to_string(),
         }
     })?;
-    let source_id =
-        WikiId::parse(&args.source_wiki_id).map_err(|e| AgenticToolError::InvalidArguments {
-            tool: AgenticTool::WikiChangeScope.name(),
-            detail: format!("invalid source_wiki_id `{}`: {e}", args.source_wiki_id),
-        })?;
+    let source_id = parse_operator_wiki_id(
+        &args.source_wiki_id,
+        "source_wiki_id",
+        AgenticTool::WikiChangeScope.name(),
+    )?;
     let new_parent_id = match args.new_parent_wiki_id.as_deref() {
         None | Some("") => None,
-        Some(raw) => Some(
-            WikiId::parse(raw).map_err(|e| AgenticToolError::InvalidArguments {
-                tool: AgenticTool::WikiChangeScope.name(),
-                detail: format!("invalid new_parent_wiki_id `{raw}`: {e}"),
-            })?,
-        ),
+        Some(raw) => Some(parse_operator_wiki_id(
+            raw,
+            "new_parent_wiki_id",
+            AgenticTool::WikiChangeScope.name(),
+        )?),
     };
     // A smart wiki's wiki-level read audience derives from its position in the
     // tree (the scope principal), so a re-parent would change effective read
@@ -1944,6 +1973,20 @@ struct WikiDeletePageReport {
     /// for `structure_proposal_revert`. `None` when the page had no facts.
     #[serde(skip_serializing_if = "Option::is_none")]
     bundle_proposal_id: Option<String>,
+    /// Days the **rendered page file** outlives this call.
+    ///
+    /// The deletion disposes of the page's *facts*; the file itself is left in
+    /// place on purpose, because the whole thing is one revertable bundle and a
+    /// husk removed now would have nothing to be reverted into. The nightly
+    /// husk-GC ([`mwe_core::rem`], sub-job 16) drops it on the first cycle after
+    /// every row is tombstoned past [`mwe_core::proposals::REVERT_WINDOW`] — a
+    /// floor, not a schedule: that sweep is capped per cycle.
+    ///
+    /// Reported because without it the model has only "N facts tombstoned" to
+    /// summarise from and says *"page deleted"*, while the operator is looking
+    /// at the page still sitting in the explorer. Recall stops immediately —
+    /// it is the structure that lingers — and the answer has to say both.
+    page_file_retained_days: i64,
 }
 
 /// Delete a page: tombstone the operator's own facts, evacuate foreign-authored
@@ -1962,10 +2005,7 @@ async fn dispatch_wiki_delete_page(
             detail: e.to_string(),
         }
     })?;
-    let wiki_id = WikiId::parse(&args.wiki_id).map_err(|e| AgenticToolError::InvalidArguments {
-        tool,
-        detail: format!("invalid wiki_id `{}`: {e}", args.wiki_id),
-    })?;
+    let wiki_id = parse_operator_wiki_id(&args.wiki_id, "wiki_id", tool)?;
     let handle = ctx
         .tree
         .locate(&wiki_id)
@@ -2025,6 +2065,7 @@ async fn dispatch_wiki_delete_page(
         facts_tombstoned: outcome.facts_tombstoned,
         facts_evacuated: outcome.facts_evacuated,
         bundle_proposal_id: outcome.bundle_proposal_id,
+        page_file_retained_days: mwe_core::proposals::REVERT_WINDOW.num_days(),
     };
     serialise_result("deleted", &report)
 }
@@ -2045,10 +2086,7 @@ async fn move_fact_cross_wiki(
     reason: &str,
 ) -> Result<mwe_core::promote::DirectApplied, AgenticToolError> {
     let tool = AgenticTool::WikiMoveFact.name();
-    let dest_id = WikiId::parse(dest).map_err(|e| AgenticToolError::InvalidArguments {
-        tool,
-        detail: format!("invalid dest_wiki_id `{dest}`: {e}"),
-    })?;
+    let dest_id = parse_operator_wiki_id(dest, "dest_wiki_id", tool)?;
     let dest_handle =
         ctx.tree
             .locate(&dest_id)
@@ -2723,6 +2761,78 @@ mod tests {
             },
             other => panic!("expected InvalidArguments, got {other:?}"),
         }
+    }
+
+    /// A pasted dashboard address is the mistake this panel actually makes —
+    /// the operator copies `…/wiki/<id>/view/<page>` out of the browser and the
+    /// model hands a tool `alice-work/view`. The refusal has to teach the
+    /// shape, or the model spends an iteration rediscovering it; and it must
+    /// name the value once, not twice as the old wrapper did.
+    #[test]
+    fn a_pasted_dashboard_path_is_refused_with_the_shape_that_would_have_worked() {
+        let err = parse_operator_wiki_id("alice-work/view", "wiki_id", "wiki_list_pages")
+            .expect_err("a path is not a wiki id");
+        let AgenticToolError::InvalidArguments { detail, .. } = err else {
+            panic!("expected InvalidArguments");
+        };
+        assert!(
+            detail.contains("/view/") && detail.contains("`page` argument"),
+            "the refusal must name the split that works, not just say no: {detail}"
+        );
+        assert_eq!(
+            detail.matches("alice-work/view").count(),
+            1,
+            "the offending value belongs in the message exactly once: {detail}"
+        );
+        assert!(
+            detail.contains("`wiki_id`"),
+            "`wiki_change_scope` carries two wiki ids, so the field has to be named: {detail}"
+        );
+    }
+
+    /// The delete-page answer the model composes from must carry BOTH halves.
+    /// With only the tombstone count in hand it says "page deleted", and the
+    /// operator — who is looking at the still-present page in the explorer —
+    /// has been told something false. The retention is pinned to the revert
+    /// window itself, so lengthening the undo window cannot leave the chat
+    /// quoting a stale number.
+    #[test]
+    fn the_delete_page_report_admits_the_page_file_outlives_the_call() {
+        let report = WikiDeletePageReport {
+            wiki_id: "alice-work".to_owned(),
+            page: "acme_fair.md".to_owned(),
+            facts_tombstoned: 1,
+            facts_evacuated: 0,
+            bundle_proposal_id: Some("bundle-1".to_owned()),
+            page_file_retained_days: mwe_core::proposals::REVERT_WINDOW.num_days(),
+        };
+        let payload = serialise_result("deleted", &report).expect("serialises");
+        let v: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
+        let days = v
+            .pointer("/deleted/page_file_retained_days")
+            .and_then(serde_json::Value::as_i64)
+            .expect("the model must be told the husk outlives the call");
+        assert_eq!(
+            days,
+            mwe_core::proposals::REVERT_WINDOW.num_days(),
+            "retention must track REVERT_WINDOW, not a hand-copied constant"
+        );
+        assert!(days > 0, "a zero would read as 'already gone'");
+    }
+
+    /// …and the hint is only for the mistake it describes: an id that is merely
+    /// malformed gets the plain reason, with no path lecture attached.
+    #[test]
+    fn a_malformed_id_that_is_not_a_path_gets_no_path_hint() {
+        let err = parse_operator_wiki_id("INVALID--id", "wiki_id", "wiki_get_meta")
+            .expect_err("uppercase is not a wiki id");
+        let AgenticToolError::InvalidArguments { detail, .. } = err else {
+            panic!("expected InvalidArguments");
+        };
+        assert!(
+            !detail.contains("/view/"),
+            "no path hint when there is no path: {detail}"
+        );
     }
 
     /// Insert a row already in `applied` with a future `revert_deadline` and
