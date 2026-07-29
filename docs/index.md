@@ -180,6 +180,12 @@ If you are new, read in this order:
 - [llm-functions.md](design-notes/llm-functions.md) — the model of the
   configurable internal LLM: the active function slots, the deployment
   profiles, the language policy, the robust-parser strategy.
+- [llm-usage-ledger.md](design-notes/llm-usage-ledger.md) — the per-call
+  token ledger (`llm_usage`) behind the dashboard's Usage & spend page:
+  why it is a table and not the training spool, the three-way prompt
+  split providers price separately, `billing` as its own axis, the
+  `source`/`tag` columns that make a month readable, and the rule that
+  money is shown only where the operator declared a rate.
 - [logging.md](design-notes/logging.md) — the two-level filter (`info`,
   `debug`) controlled by `mwe-mcp.config.yaml`, with `RUST_LOG` overrides.
 - [marker-grammar.md](design-notes/marker-grammar.md) — the full

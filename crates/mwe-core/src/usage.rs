@@ -503,6 +503,12 @@ impl UsageBucket {
     /// free" and "nobody told us what it costs" is the whole point of
     /// the surface. A non-metered bucket (subscription, local model) is
     /// `Some(0.0)`: that one really is zero.
+    ///
+    /// **Only ever call this on a bucket that came out of the query.** A
+    /// bucket from [`fold`] carries a model id only when every folded
+    /// bucket shared one, so a mixed fold answers `None` here rather
+    /// than pricing a whole deployment at one model's rate. To price a
+    /// group, use [`total_cost`] over its buckets.
     #[must_use]
     pub fn estimated_cost(&self, pricing: &LlmPricingConfig) -> Option<f64> {
         if !Billing::from_db(&self.billing).is_metered() {
@@ -595,19 +601,39 @@ pub async fn first_day(pool: &SqlitePool) -> crate::Result<Option<String>> {
 /// Sum a slice of buckets into one.
 ///
 /// The page folds the same slice several ways (by slot, by model, by
-/// day); this is the fold, and it keeps the dimension fields of the
-/// first bucket so a caller that grouped by one axis still has that
-/// axis's value on the result.
+/// day, by whose traffic). The counters add up; the **dimensions only
+/// survive when every bucket agrees on them**, and are blanked
+/// otherwise.
+///
+/// That rule is not tidiness, it is the guard on
+/// [`UsageBucket::estimated_cost`]. Keeping the first bucket's
+/// dimensions — the obvious implementation, and the one that shipped
+/// first — makes a fold across several models carry *one* model id, so
+/// pricing it charges the whole group at whichever model happened to
+/// sort first. Measured on a seeded month it turned €11.54 into €34.05
+/// on the same screen as the correct figure. Blanked, the same call
+/// answers `None` ("not priced") instead of a confident wrong number,
+/// and a caller that wants the money for a group has to do the only
+/// correct thing: price each bucket and add ([`total_cost`]).
 #[must_use]
 pub fn fold(buckets: &[UsageBucket]) -> UsageBucket {
-    let mut out = buckets.first().cloned().unwrap_or(UsageBucket {
-        day: String::new(),
-        slot: String::new(),
-        backend: String::new(),
-        model: String::new(),
-        billing: String::new(),
-        source: String::new(),
-        tag: None,
+    let uniform = |f: fn(&UsageBucket) -> &str| -> String {
+        match buckets.first() {
+            Some(first) if buckets.iter().all(|b| f(b) == f(first)) => f(first).to_owned(),
+            _ => String::new(),
+        }
+    };
+    let mut out = UsageBucket {
+        day: uniform(|b| &b.day),
+        slot: uniform(|b| &b.slot),
+        backend: uniform(|b| &b.backend),
+        model: uniform(|b| &b.model),
+        billing: uniform(|b| &b.billing),
+        source: uniform(|b| &b.source),
+        tag: match buckets.first() {
+            Some(first) if buckets.iter().all(|b| b.tag == first.tag) => first.tag.clone(),
+            _ => None,
+        },
         calls: 0,
         failed: 0,
         prompt_tokens: 0,
@@ -615,7 +641,7 @@ pub fn fold(buckets: &[UsageBucket]) -> UsageBucket {
         cache_write_tokens: 0,
         completion_tokens: 0,
         latency_ms_total: 0,
-    });
+    };
     out.calls = 0;
     out.failed = 0;
     out.prompt_tokens = 0;
@@ -954,6 +980,56 @@ mod tests {
         assert_eq!(f.calls, 2);
         assert_eq!(f.slot, "cronista", "the grouped-on axis survives the fold");
         assert_eq!(f.plain_prompt_tokens(), 30 - 3 - 6);
+    }
+
+    /// The bug this rule exists for, pinned in the direction it broke.
+    ///
+    /// Two models in one group: the fold must not claim either of them,
+    /// because pricing the sum at one model's rate is a wrong number
+    /// that looks exactly like a right one. Found on screen, where the
+    /// headline (correct, per-bucket) and the total row (folded) sat
+    /// four lines apart and disagreed by a factor of three.
+    #[test]
+    fn a_fold_across_two_models_prices_as_unknown_not_as_the_first_model() {
+        let pricing = priced("cheap-model", 0.30, None, None, 2.50);
+        let cheap = bucket_with("cheap-model", 1_000_000, 0, 0, 0);
+        let mut dear = bucket_with("dear-model", 1_000_000, 0, 0, 0);
+        dear.billing = "api".to_owned();
+
+        // Each on its own prices normally; only one of them is known.
+        assert_eq!(cheap.estimated_cost(&pricing), Some(0.30));
+        assert_eq!(dear.estimated_cost(&pricing), None);
+
+        let f = fold(&[cheap.clone(), dear.clone()]);
+        assert_eq!(f.prompt_tokens, 2_000_000, "the counters still add up");
+        assert_eq!(f.model, "", "but the fold claims no single model");
+        assert_eq!(
+            f.estimated_cost(&pricing),
+            None,
+            "so it cannot be priced at the first model's rate"
+        );
+
+        // The only correct way to price the group, and what the page does.
+        let (total, unpriced) = total_cost(&[cheap, dear], &pricing);
+        assert!((total - 0.30).abs() < 1e-9);
+        assert_eq!(unpriced, 1);
+    }
+
+    /// Same guard on the axis that decides whether tokens are money at
+    /// all: a group mixing metered and subscription traffic must not
+    /// inherit "subscription" and report the lot as free.
+    #[test]
+    fn a_fold_across_two_billing_modes_claims_neither() {
+        let pricing = priced("m", 3.0, None, None, 15.0);
+        let mut free = bucket_with("m", 1_000_000, 0, 0, 0);
+        free.billing = "subscription".to_owned();
+        let paid = bucket_with("m", 1_000_000, 0, 0, 0);
+
+        let f = fold(&[free.clone(), paid.clone()]);
+        assert_eq!(f.billing, "");
+        let (total, unpriced) = total_cost(&[free, paid], &pricing);
+        assert!((total - 3.0).abs() < 1e-9, "only the metered half costs");
+        assert_eq!(unpriced, 0);
     }
 
     #[test]

@@ -223,6 +223,19 @@ operational chat + first-login welcome wizard**.
   LLM call — no restart. The page states the privacy stance: the spool
   holds raw prompts, including recalled memory content, and stays on
   the host.
+- **Usage & spend** — `/dashboard/admin/usage` admin-only, and the only
+  console that is **read-only by construction**: the period and the
+  production-traffic filter are query parameters, so there is no write
+  path to allow-list and the page works unchanged on a frozen instance.
+  Reads the per-call token ledger ([llm-usage-ledger.md](llm-usage-ledger.md))
+  and breaks the window down by slot, by model, by day, by month and by
+  whose traffic it was, with the prefix-cache read and write shown as
+  what they are — subsets of the prompt, priced differently. Money is
+  layered on top and rendered **only where the operator declared a rate**
+  in [`llm_pricing:`](../protocol/config-schema.md#llm_pricing); with no
+  price list the cost columns do not exist and the page prints the YAML
+  that would create them. The price list itself is YAML-only today (no
+  dashboard editor yet), unlike the other config sections here.
 - **Embedding settings** — `/dashboard/admin/embedding` admin-only editor
   for the [`embedding:` config section](../protocol/config-schema.md#embedding):
   backend selector (`ollama` / `bundled` / `openai`), `model`, Ollama

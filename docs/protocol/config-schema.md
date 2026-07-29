@@ -76,9 +76,10 @@ hot-reloadable today.
 
 ## Top-level sections
 
-Only ten sections are materialised into typed Rust structs today:
+Only twelve sections are materialised into typed Rust structs today:
 `logging`, `llm`, `embedding`, `email`, `rem`, `recall`, `document`,
-`training_spool`, `backup`, `instance`. The schema documents several more —
+`training_spool`, `usage`, `llm_pricing`, `backup`, `instance`. The schema
+documents several more —
 `deployment_id`, `storage`, `features`, `http`, `budget`,
 `rate_limits` — and these **parse without error** but are currently
 carried opaquely in `Config::extra` (forward-compat passthrough),
@@ -534,6 +535,82 @@ sharing a dataset). Wiring: `LlmFunctionConfig::build_backend` wraps
 every backend it builds in the recording decorator whenever the server
 has installed the process-wide spool handle at startup; the enabled
 flag is checked per call.
+
+### `usage`
+
+Maps to `UsageConfig` and bounds
+[`mwe-core::usage`](../../crates/mwe-core/src/usage.rs) — the per-call
+**token ledger** (`llm_usage`, migration `0066`) behind the dashboard
+[Usage & spend page](../design-notes/llm-usage-ledger.md).
+
+Unlike `training_spool` there is no on/off switch, and that is the
+design: a row is ~120 bytes and holds **no prompt text**, so counting
+costs nothing and carries nothing, while a deployment that only starts
+counting once somebody wonders about the bill has already lost the month
+they wanted to read.
+
+```yaml
+usage:
+  retention_days: 400         # ~13 months; 0 keeps everything
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `retention_days` | int | `400` | Rows older than this are swept, at most once per UTC day, by the ledger itself. Over a year on purpose — the first question asked of a spend page after twelve months is how this July compares with last July. `0` disables the sweep. |
+
+One env var participates and is deliberately not a config key:
+**`MWE_USAGE_TAG`**. Set it on a process (`MWE_USAGE_TAG=prompt-ab
+mwe-mcp rem run-cycle`) and every call that process makes is stamped
+with the tag, so a deliberate experiment can be subtracted from the
+month afterwards. It is read once at startup, because a process is an
+experiment or it is not. The coarse half of the same separation —
+`serve` vs a hand-run `rem run-*` vs `recall eval` — is recorded with no
+operator action at all.
+
+### `llm_pricing`
+
+Maps to `LlmPricingConfig`. What this operator pays per **1M tokens** —
+the unit every provider publishes, so the numbers can be copied off a
+pricing page without arithmetic.
+
+**Empty by default, and it stays empty unless you fill it in.** No price
+list is bundled: published rates move without warning, a real contract
+can differ from the published rate, and the currency is not ours to
+assume. With no rates configured the Usage page shows **tokens only** —
+no cost columns, no zeros, no dashes — and prints the YAML below. Tokens
+are the measurement; the price is your own contract.
+
+```yaml
+llm_pricing:
+  currency: EUR               # printed beside the totals, never converted
+  models:
+    - model: "gemini-3-flash-*"   # exact model id, or a prefix wildcard
+      input: 0.30                 # plain prompt tokens
+      cached_input: 0.075         # prefix-cache read
+      cache_write: 0.375          # prefix-cache write
+      output: 2.50
+    - model: "claude-sonnet-*"
+      input: 3.0
+      cached_input: 0.30
+      cache_write: 3.75
+      output: 15.0
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `currency` | string | *(none)* | Display label only. **No conversion is ever performed** — mixing rates entered in two currencies produces a meaningless sum, and guessing an exchange rate would produce a wrong one. |
+| `models[].model` | string | — | Exact model id, or a `prefix*` wildcard. An exact id outranks every wildcard; among wildcards the **longest match wins**, so a specific `claude-opus-*` beats a catch-all `claude-*` whatever order they are written in. |
+| `models[].input` | float | — | Plain prompt tokens: the total minus both cache buckets. |
+| `models[].cached_input` | float | `input` | Prefix-cache read, typically a fraction of `input`. Omitted ⇒ falls back to `input`, so a half-filled entry gives an **upper bound** rather than a discount nobody promised. |
+| `models[].cache_write` | float | `input` | Prefix-cache write, typically a premium over `input`. Omitted ⇒ falls back to `input`, for the same reason. |
+| `models[].output` | float | — | Tokens the model emitted. |
+
+A model with no matching entry is reported as **"not priced"**, never as
+`0.00`: the difference between "this was free" and "nobody told us what
+it costs" is the whole point of the surface. Slots on a flat
+subscription (`api_key_env: claude-code`) or on a local Ollama model are
+a real `0.00` — their tokens are still counted, because on those the
+tokens are the load rather than the bill.
 
 ### `backup`
 

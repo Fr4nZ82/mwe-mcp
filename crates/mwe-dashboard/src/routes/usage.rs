@@ -245,8 +245,16 @@ fn token_headers(with_money: bool) -> Markup {
     }
 }
 
-/// The token cells for one folded bucket.
-fn token_cells(f: &UsageBucket, pricing: &LlmPricingConfig, with_money: bool) -> Markup {
+/// The token cells for one group of buckets.
+///
+/// Takes the **group**, not just its fold, because the tokens and the
+/// money are answered at different grains. Tokens add up at any grain;
+/// a price belongs to a model, so the money for a row that spans two
+/// models is the sum of two priced buckets and can never be recovered
+/// from their sum. Handing this function only the fold is how the total
+/// row came to disagree with the headline by a factor of three.
+fn token_cells(rows: &[UsageBucket], pricing: &LlmPricingConfig, with_money: bool) -> Markup {
+    let f = usage::fold(rows);
     html! {
         td { (thousands(f.calls)) @if f.failed > 0 { " " span.muted { "(" (f.failed) " failed)" } } }
         td { (thousands(f.prompt_tokens)) }
@@ -254,12 +262,31 @@ fn token_cells(f: &UsageBucket, pricing: &LlmPricingConfig, with_money: bool) ->
         td.muted { (thousands(f.cache_write_tokens)) }
         td { (thousands(f.completion_tokens)) }
         td { strong { (thousands(f.total_tokens())) } }
-        @if with_money {
-            td {
-                @match f.estimated_cost(pricing) {
-                    Some(c) => (money(c)),
-                    // Not zero — nobody said what this model costs.
-                    None => span.muted title="No rate configured for this model" { "not priced" },
+        @if with_money { (cost_cell(rows, pricing)) }
+    }
+}
+
+/// The money cell for one group: each bucket priced at its own model's
+/// rate, then added.
+///
+/// Three outcomes, kept distinct because collapsing them is how a page
+/// lies. Nothing priced ⇒ say so rather than print `0.00`. Everything
+/// priced ⇒ the figure. Partly priced ⇒ the figure **plus** what it
+/// leaves out, because a total that quietly omits calls is worse than
+/// no total.
+fn cost_cell(rows: &[UsageBucket], pricing: &LlmPricingConfig) -> Markup {
+    let (cost, unpriced_calls) = usage::total_cost(rows, pricing);
+    let priced_calls: i64 = rows.iter().map(|r| r.calls).sum::<i64>() - unpriced_calls;
+    html! {
+        td {
+            @if priced_calls == 0 {
+                span.muted title="No rate configured for these models" { "not priced" }
+            } @else {
+                (money(cost))
+                @if unpriced_calls > 0 {
+                    " " span.muted title="Calls on models with no configured rate are not in this figure" {
+                        "+" (thousands(unpriced_calls)) " unpriced"
+                    }
                 }
             }
         }
@@ -399,7 +426,7 @@ fn render(
                             @let f = usage::fold(rows);
                             tr {
                                 td { code { (slot) } }
-                                (token_cells(&f, pricing, with_money))
+                                (token_cells(rows, pricing, with_money))
                                 td.muted {
                                     @if f.calls > 0 { (thousands(f.latency_ms_total / f.calls)) " ms" }
                                     @else { "—" }
@@ -408,7 +435,7 @@ fn render(
                         }
                         tr {
                             td { strong { "Total" } }
-                            (token_cells(&total, pricing, with_money))
+                            (token_cells(buckets, pricing, with_money))
                             td {}
                         }
                     }
@@ -433,8 +460,11 @@ fn render(
                             @let f = usage::fold(rows);
                             tr {
                                 td { code { (model) } " " span.muted { (backend) } }
-                                td.muted { (f.billing) }
-                                (token_cells(&f, pricing, with_money))
+                                // Blank when one model was reached two ways
+                                // (a key rotated onto a subscription, say);
+                                // `fold` refuses to claim either.
+                                td.muted { @if f.billing.is_empty() { "mixed" } @else { (f.billing) } }
+                                (token_cells(rows, pricing, with_money))
                             }
                         }
                     }
@@ -449,8 +479,7 @@ fn render(
                         thead { tr { th { "Month" } (token_headers(with_money)) } }
                         tbody {
                             @for (month, rows) in by_month.iter().rev() {
-                                @let f = usage::fold(rows);
-                                tr { td { (month) } (token_cells(&f, pricing, with_money)) }
+                                tr { td { (month) } (token_cells(rows, pricing, with_money)) }
                             }
                         }
                     }
@@ -469,7 +498,7 @@ fn render(
                             tr {
                                 td { (day) }
                                 td { (bar(f.total_tokens(), day_peak)) }
-                                (token_cells(&f, pricing, with_money))
+                                (token_cells(rows, pricing, with_money))
                             }
                         }
                     }
@@ -488,14 +517,13 @@ fn render(
                         thead { tr { th { "Source" } th { "Tag" } (token_headers(with_money)) } }
                         tbody {
                             @for ((source, tag), rows) in &by_traffic {
-                                @let f = usage::fold(rows);
                                 tr {
                                     td { code { (source) } }
                                     td { @match tag {
                                         Some(t) => code { (t) },
                                         None => span.muted { "—" },
                                     } }
-                                    (token_cells(&f, pricing, with_money))
+                                    (token_cells(rows, pricing, with_money))
                                 }
                             }
                         }
@@ -511,14 +539,24 @@ fn render(
                 "None configured. Rates go in " code { (CONFIG_FILENAME) }
                 ", per 1M tokens, in whatever currency you are billed in:"
             }
-            pre { code {
+            // The block scrolls inside itself. A `pre` holds lines that
+            // must not be re-wrapped, so on a narrow screen it is the one
+            // element on this page wide enough to push the *document*
+            // sideways — measured at 675px against a 390px viewport, and
+            // the only uncontained overflow on any dashboard page. Every
+            // table here is already inside `.table-wrap`, which does the
+            // same job; this is the same rule for the one block that is
+            // not a table. Inline design tokens, so no Tailwind utility
+            // has to be recompiled for one element.
+            pre style="overflow-x:auto;max-width:100%" { code {
 "llm_pricing:
   currency: EUR
   models:
-    - model: \"gemini-3-flash-*\"   # exact id, or a prefix wildcard
+    # exact model id, or a prefix wildcard
+    - model: \"gemini-3-flash-*\"
       input: 0.30
-      cached_input: 0.075          # prefix-cache read — usually a fraction
-      cache_write: 0.375           # prefix-cache write — usually a premium
+      cached_input: 0.075   # cache read
+      cache_write: 0.375    # cache write
       output: 2.50"
             } }
             p.muted {
@@ -609,6 +647,65 @@ mod tests {
         }
     }
 
+    /// The defect that only a screen could show: the headline and the
+    /// total row are the same quantity computed two ways, and they must
+    /// agree.
+    ///
+    /// They did not. The headline priced each bucket at its own model's
+    /// rate; the total row priced the *sum* of every bucket at whichever
+    /// model sorted first, and on a seeded month printed 34.05 against
+    /// the correct 11.54, four lines apart, both in the same currency
+    /// and both plausible. Every per-day, per-month and per-traffic
+    /// figure was wrong the same way; only the per-slot rows happened to
+    /// be right, because those groups held one model each.
+    ///
+    /// The data here is built so the two answers cannot coincide: a
+    /// cheap model and a dear one, equal token counts, so pricing the
+    /// pair at either single rate is visibly not the sum.
+    #[test]
+    fn the_total_row_agrees_with_the_headline_across_two_models() {
+        let pricing = LlmPricingConfig {
+            currency: Some("EUR".to_owned()),
+            models: vec![
+                ModelPrice {
+                    model: "cheap-1".to_owned(),
+                    input: 1.0,
+                    cached_input: None,
+                    cache_write: None,
+                    output: 1.0,
+                },
+                ModelPrice {
+                    model: "dear-1".to_owned(),
+                    input: 100.0,
+                    cached_input: None,
+                    cache_write: None,
+                    output: 100.0,
+                },
+            ],
+            extra: serde_yaml::Mapping::new(),
+        };
+        // 1M prompt each, no completion: 1.00 + 100.00 = 101.00.
+        let mut cheap = bucket("2026-07-29", "ingest", "cheap-1", 1_000_000, 0);
+        cheap.completion_tokens = 0;
+        let mut dear = bucket("2026-07-29", "cronista", "dear-1", 1_000_000, 0);
+        dear.completion_tokens = 0;
+        let rows = vec![cheap, dear];
+
+        let html = render(&rows, &pricing, 30, false, 0, None).into_string();
+        assert!(html.contains("101.00"), "the honest total must appear");
+        // The two single-rate answers a fold could have produced.
+        assert!(
+            !html.contains("2.00") && !html.contains("200.00"),
+            "neither model's rate may be applied to the whole group"
+        );
+        // Headline + By-slot total + By-day row + By-month is absent
+        // (one month) — the figure recurs, and never a different one.
+        assert!(
+            html.matches("101.00").count() >= 3,
+            "headline, total row and day row are the same number"
+        );
+    }
+
     /// The founder's rule, and the demo's behaviour, are the same rule:
     /// with no price list the page renders tokens and says nothing at
     /// all about money — no zeros, no currency, no "not priced" column
@@ -662,6 +759,37 @@ mod tests {
         let html = render(&[], &LlmPricingConfig::default(), 30, false, 0, None).into_string();
         assert!(html.contains("The ledger is empty"));
         assert!(!html.contains("By slot"));
+    }
+
+    /// Every wide block on this page carries its own horizontal scroll,
+    /// so the document never scrolls sideways on a phone.
+    ///
+    /// The tables get it from `.table-wrap`; the YAML example is the one
+    /// block that is not a table, and it was the only uncontained
+    /// overflow on any dashboard page when this was measured in a
+    /// browser (675px of `<code>` against a 390px viewport). A markup
+    /// test cannot measure pixels — what it can do is refuse to let the
+    /// declaration be deleted by someone editing the example text.
+    #[test]
+    fn the_wide_blocks_all_declare_their_own_scroll() {
+        let html = render(&[], &LlmPricingConfig::default(), 30, false, 0, None).into_string();
+        assert!(
+            html.contains("<pre style=\"overflow-x:auto;max-width:100%\">"),
+            "the config example must scroll inside itself"
+        );
+        let rows = vec![bucket(
+            "2026-07-29",
+            "ingest",
+            "claude-haiku-4-5",
+            1_000,
+            800,
+        )];
+        let with_tables = render(&rows, &priced(), 30, false, 0, None).into_string();
+        assert_eq!(
+            with_tables.matches("<table").count(),
+            with_tables.matches("table-wrap").count(),
+            "every table sits in a scrolling wrapper"
+        );
     }
 
     #[test]
