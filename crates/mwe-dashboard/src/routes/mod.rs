@@ -53,6 +53,7 @@ mod skills_view;
 mod tokens;
 mod training_spool;
 mod two_factor;
+mod usage;
 mod users;
 mod webagentoauth;
 mod welcome;
@@ -106,6 +107,7 @@ pub fn build(state: DashboardState) -> Router {
         .merge(recall_settings::router())
         .merge(rem_settings::router())
         .merge(training_spool::router())
+        .merge(usage::router())
         .merge(embedding_settings::router())
         .merge(email_settings::router())
         .merge(server_settings::router())

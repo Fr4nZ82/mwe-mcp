@@ -399,11 +399,35 @@ impl LlmFunctionConfig {
         F: FnMut(&str) -> Option<String>,
     {
         let inner = self.build_backend_raw_with_env(function, env)?;
-        Ok(crate::training_spool::maybe_wrap(
-            inner,
+        // Two decorators, innermost first, and the order does not
+        // matter for correctness — both are pure observers. The usage
+        // ledger goes outside so the latency it records is the one the
+        // caller waited, spooling included.
+        let spooled = crate::training_spool::maybe_wrap(inner, function, &self.backend);
+        Ok(crate::usage::maybe_wrap(
+            spooled,
             function,
             &self.backend,
+            self.billing(),
         ))
+    }
+
+    /// How this slot's tokens are paid for.
+    ///
+    /// Not a property of the backend tag: `anthropic` is metered
+    /// against an API key in one config and covered by a flat
+    /// subscription in the next, and only the first turns tokens into
+    /// money. Read at build time, where both the tag and the key
+    /// selector are in scope.
+    #[must_use]
+    pub fn billing(&self) -> crate::usage::Billing {
+        if self.backend == "ollama" {
+            return crate::usage::Billing::Local;
+        }
+        if self.api_key_env.as_deref() == Some(crate::oauth::CLAUDE_CODE_LOGIN) {
+            return crate::usage::Billing::Subscription;
+        }
+        crate::usage::Billing::Api
     }
 
     /// The dispatch itself — one arm per backend tag, spool-free.
@@ -1907,6 +1931,141 @@ pub struct TrainingSpoolConfig {
     pub enabled: bool,
 }
 
+// ---------- Usage ledger + price list ----------
+
+/// `usage:` section — the per-call LLM token ledger (see
+/// [`crate::usage`]).
+///
+/// Always on: counting four integers per model call costs nothing and
+/// carries no prompt text, and a deployment that only starts counting
+/// once somebody wonders about the bill has already lost the month
+/// they wanted to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageConfig {
+    /// Days of ledger history kept; older rows are swept once a day.
+    /// `0` disables the sweep entirely (keep everything).
+    #[serde(default = "default_usage_retention_days")]
+    pub retention_days: i64,
+}
+
+const fn default_usage_retention_days() -> i64 {
+    crate::usage::DEFAULT_RETENTION_DAYS
+}
+
+impl Default for UsageConfig {
+    fn default() -> Self {
+        Self {
+            retention_days: default_usage_retention_days(),
+        }
+    }
+}
+
+/// `llm_pricing:` section — what this operator pays for tokens.
+///
+/// **Empty by default, and deliberately so.** Shipping a bundled price
+/// list would be wrong in three ways at once: published rates change
+/// without warning, a real contract can differ from the published rate,
+/// and the currency is not ours to assume. A product that invents a
+/// price the operator never declared is guaranteed to be wrong about
+/// somebody's money.
+///
+/// So the rule the dashboard follows is: **money is shown only where a
+/// rate was configured.** With no price list at all the Usage page
+/// shows tokens and nothing else — which is the honest reading anyway,
+/// since tokens are the measurement and the price is the operator's
+/// own contract. This is also why the public demo needs no special
+/// case: it simply has no price list, like any freshly installed
+/// deployment.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LlmPricingConfig {
+    /// Currency label, printed beside the totals verbatim (`EUR`,
+    /// `USD`, …). No conversion is ever performed — mixing rates
+    /// entered in two currencies produces a meaningless sum, and
+    /// guessing an exchange rate would produce a wrong one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    /// Per-model rates. First exact match wins; otherwise the longest
+    /// matching `prefix*` entry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ModelPrice>,
+    /// Unknown keys, preserved on round-trip like everywhere else.
+    #[serde(flatten)]
+    pub extra: serde_yaml::Mapping,
+}
+
+impl LlmPricingConfig {
+    /// Has the operator declared any price at all?
+    ///
+    /// The switch the Usage page reads: false ⇒ render tokens only, no
+    /// money column, no "not priced" noise on every row.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.models.is_empty()
+    }
+
+    /// The rate for `model`, or `None` when nobody priced it.
+    ///
+    /// Exact match first; then the **longest** matching wildcard, so a
+    /// specific `claude-opus-*` entry always beats a catch-all
+    /// `claude-*` regardless of the order they were written in — an
+    /// operator should not have to know that a config file is
+    /// order-sensitive.
+    #[must_use]
+    pub fn rate_for(&self, model: &str) -> Option<&ModelPrice> {
+        if let Some(exact) = self.models.iter().find(|m| m.model == model) {
+            return Some(exact);
+        }
+        self.models
+            .iter()
+            .filter_map(|m| {
+                let prefix = m.model.strip_suffix('*')?;
+                model.starts_with(prefix).then_some((prefix.len(), m))
+            })
+            .max_by_key(|(len, _)| *len)
+            .map(|(_, m)| m)
+    }
+}
+
+/// One row of the price list, in **currency units per 1M tokens** —
+/// the unit every provider publishes, so an operator can copy the
+/// numbers off a pricing page without arithmetic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelPrice {
+    /// Model id, or a `prefix*` wildcard (`claude-opus-*`).
+    pub model: String,
+    /// Plain input — prompt tokens that were neither read from nor
+    /// written to the provider's prefix cache.
+    pub input: f64,
+    /// Prompt tokens served from the prefix cache, typically a tenth of
+    /// [`Self::input`]. Omitted ⇒ falls back to `input`, so an operator
+    /// who has not filled this in gets an **upper bound** rather than a
+    /// discount nobody promised.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input: Option<f64>,
+    /// Prompt tokens written into the prefix cache, typically a quarter
+    /// more than [`Self::input`]. Omitted ⇒ falls back to `input`, for
+    /// the same reason — an unstated premium is understated, never
+    /// invented.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write: Option<f64>,
+    /// Tokens the model emitted.
+    pub output: f64,
+}
+
+impl ModelPrice {
+    /// Effective cache-read rate ([`Self::input`] when unstated).
+    #[must_use]
+    pub fn cached_input_rate(&self) -> f64 {
+        self.cached_input.unwrap_or(self.input)
+    }
+
+    /// Effective cache-write rate ([`Self::input`] when unstated).
+    #[must_use]
+    pub fn cache_write_rate(&self) -> f64 {
+        self.cache_write.unwrap_or(self.input)
+    }
+}
+
 // ---------- Backup ----------
 
 /// `backup:` section — automatic workdir snapshots (roadmap 4d).
@@ -2143,6 +2302,15 @@ pub struct Config {
     /// spool. See [`TrainingSpoolConfig`].
     #[serde(default)]
     pub training_spool: TrainingSpoolConfig,
+    /// `usage:` section — retention of the per-call token ledger. See
+    /// [`UsageConfig`].
+    #[serde(default)]
+    pub usage: UsageConfig,
+    /// `llm_pricing:` section — what this operator pays per million
+    /// tokens. Empty by default; money is shown only where a rate was
+    /// declared. See [`LlmPricingConfig`].
+    #[serde(default)]
+    pub llm_pricing: LlmPricingConfig,
     /// `backup:` section — automatic workdir snapshots. See
     /// [`BackupConfig`].
     #[serde(default)]
@@ -3567,5 +3735,132 @@ mod tests {
         slot.apply_defaults_to_chat(&mut req);
         assert_eq!(req.temperature, Some(0.6));
         assert_eq!(req.max_tokens, Some(2048));
+    }
+
+    // ---------- Usage ledger + price list ----------
+
+    fn price(model: &str, input: f64) -> ModelPrice {
+        ModelPrice {
+            model: model.to_owned(),
+            input,
+            cached_input: None,
+            cache_write: None,
+            output: input * 5.0,
+        }
+    }
+
+    /// A fresh install has no price list, and that is the whole
+    /// mechanism behind "the demo shows tokens only": no special case,
+    /// just an operator who has not declared what they pay.
+    #[test]
+    fn a_default_config_declares_no_prices_at_all() {
+        let cfg = Config::default();
+        assert!(cfg.llm_pricing.is_empty());
+        assert_eq!(cfg.llm_pricing.rate_for("claude-opus-4-8"), None);
+        assert_eq!(
+            cfg.usage.retention_days,
+            crate::usage::DEFAULT_RETENTION_DAYS
+        );
+    }
+
+    /// The specific wildcard must beat the catch-all whichever order
+    /// they were written in — a config file that silently depends on
+    /// line order is a trap nobody can see.
+    #[test]
+    fn the_longest_wildcard_wins_regardless_of_order() {
+        let pricing = LlmPricingConfig {
+            currency: Some("USD".to_owned()),
+            models: vec![price("claude-*", 1.0), price("claude-opus-*", 15.0)],
+            extra: serde_yaml::Mapping::new(),
+        };
+        assert_eq!(
+            pricing.rate_for("claude-opus-4-8").map(|m| m.input),
+            Some(15.0)
+        );
+        assert_eq!(
+            pricing.rate_for("claude-haiku-4-5").map(|m| m.input),
+            Some(1.0)
+        );
+        assert_eq!(pricing.rate_for("gemini-3-flash").map(|m| m.input), None);
+
+        // Reversed source order, identical verdicts.
+        let reversed = LlmPricingConfig {
+            currency: Some("USD".to_owned()),
+            models: vec![price("claude-opus-*", 15.0), price("claude-*", 1.0)],
+            extra: serde_yaml::Mapping::new(),
+        };
+        assert_eq!(
+            reversed.rate_for("claude-opus-4-8").map(|m| m.input),
+            Some(15.0)
+        );
+        assert_eq!(
+            reversed.rate_for("claude-haiku-4-5").map(|m| m.input),
+            Some(1.0)
+        );
+    }
+
+    /// An exact id outranks any wildcard, including a longer one that
+    /// also matches.
+    #[test]
+    fn an_exact_model_id_outranks_every_wildcard() {
+        let pricing = LlmPricingConfig {
+            currency: None,
+            models: vec![
+                price("claude-opus-4-8-thinking-*", 30.0),
+                price("claude-opus-4-8", 15.0),
+            ],
+            extra: serde_yaml::Mapping::new(),
+        };
+        assert_eq!(
+            pricing.rate_for("claude-opus-4-8").map(|m| m.input),
+            Some(15.0)
+        );
+    }
+
+    /// The same provider tag is paid for three different ways, and only
+    /// the metered one turns tokens into money. Deriving `billing` from
+    /// the backend name alone would bill a subscription slot twice.
+    #[test]
+    fn billing_reads_the_key_selector_not_just_the_backend_tag() {
+        use crate::usage::Billing;
+        let mut slot = LlmFunctionConfig {
+            backend: "anthropic".to_owned(),
+            model: "claude-opus-4-8".to_owned(),
+            api_key_env: Some("ANTHROPIC_API_KEY".to_owned()),
+            base_url: None,
+            reasoning_effort: None,
+            temperature: None,
+            max_tokens: None,
+        };
+        assert_eq!(slot.billing(), Billing::Api);
+
+        slot.api_key_env = Some(crate::oauth::CLAUDE_CODE_LOGIN.to_owned());
+        assert_eq!(slot.billing(), Billing::Subscription);
+
+        slot.backend = "ollama".to_owned();
+        slot.api_key_env = None;
+        assert_eq!(slot.billing(), Billing::Local);
+    }
+
+    /// The section round-trips, and an omitted cache rate reads back as
+    /// omitted (so the estimate stays an upper bound) rather than as 0.
+    #[test]
+    fn the_price_list_round_trips_through_yaml() {
+        let raw = "llm_pricing:\n  currency: EUR\n  models:\n    - model: 'gemini-3-flash-*'\n      input: 0.30\n      cached_input: 0.075\n      output: 2.50\n";
+        let cfg = Config::parse(Path::new("test.yaml"), raw).expect("parse");
+        let rate = cfg
+            .llm_pricing
+            .rate_for("gemini-3-flash-preview")
+            .expect("matched");
+        assert!((rate.input - 0.30).abs() < f64::EPSILON);
+        assert_eq!(rate.cached_input, Some(0.075));
+        assert_eq!(rate.cache_write, None);
+        // Unstated premium ⇒ the input rate, never a free write.
+        assert!((rate.cache_write_rate() - 0.30).abs() < f64::EPSILON);
+        assert_eq!(cfg.llm_pricing.currency.as_deref(), Some("EUR"));
+
+        let back = serde_yaml::to_string(&cfg).expect("serialize");
+        let again = Config::parse(Path::new("test.yaml"), &back).expect("reparse");
+        assert_eq!(again.llm_pricing, cfg.llm_pricing);
     }
 }

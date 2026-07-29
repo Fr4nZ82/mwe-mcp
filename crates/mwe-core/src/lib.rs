@@ -82,6 +82,7 @@ pub mod slug;
 pub mod smart;
 pub mod training_spool;
 pub mod types;
+pub mod usage;
 pub mod votes;
 pub mod wal;
 pub mod watcher;

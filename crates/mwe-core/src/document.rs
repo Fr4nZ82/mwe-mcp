@@ -2775,6 +2775,7 @@ mod tests {
                     prompt_tokens: None,
                     completion_tokens: None,
                     cached_prompt_tokens: None,
+                    cache_write_tokens: None,
                 },
             })
         }

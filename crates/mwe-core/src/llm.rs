@@ -128,9 +128,13 @@ pub struct CompletionUsage {
     /// Tokens consumed by the prompt (system + user). `None` when the
     /// backend does not report it.
     ///
-    /// **Inclusive of [`Self::cached_prompt_tokens`]** on every backend
-    /// that reports both (Gemini's `promptTokenCount` counts the cached
-    /// prefix; Anthropic's `input_tokens` does *not* — see that field).
+    /// **Inclusive of [`Self::cached_prompt_tokens`] and
+    /// [`Self::cache_write_tokens`]** on every backend that reports
+    /// them (Gemini's `promptTokenCount` counts the cached prefix;
+    /// Anthropic's `input_tokens` does *not*, and
+    /// [`anthropic_usage`] folds its three-way split into this one
+    /// total — see those fields). Plain, full-rate input is therefore
+    /// the total minus both cache buckets, never the total itself.
     pub prompt_tokens: Option<u32>,
     /// Tokens emitted by the model. `None` when the backend does not
     /// report it.
@@ -155,6 +159,27 @@ pub struct CompletionUsage {
     ///   same thing on both backends.
     /// - **Ollama / `OpenRouter`** — not reported, stays `None`.
     pub cached_prompt_tokens: Option<u32>,
+    /// Prompt tokens written *into* the provider's prefix cache by this
+    /// call, at a **premium** over plain input (Anthropic charges about
+    /// a quarter more). Also a *subset* of [`Self::prompt_tokens`], so
+    /// plain input is
+    /// `prompt_tokens - cached_prompt_tokens - cache_write_tokens`.
+    ///
+    /// The companion of [`Self::cached_prompt_tokens`], and the half
+    /// that says what caching *costs* rather than what it saves: a read
+    /// is the discount, a write is the deposit paid to earn it. Kept
+    /// separate because a prompt whose prefix differs on every call
+    /// pays the deposit every time and never collects — the failure
+    /// mode a spend surface exists to catch, and one that looks exactly
+    /// like ordinary input once the two are added together.
+    ///
+    /// - **Anthropic** (`usage.cache_creation_input_tokens`) — reported
+    ///   beside `input_tokens`; present as `0` when the call wrote
+    ///   nothing.
+    /// - **Gemini** — implicit caching, no write accounting on the
+    ///   wire; stays `None`.
+    /// - **Ollama / `OpenRouter`** — not reported, stays `None`.
+    pub cache_write_tokens: Option<u32>,
 }
 
 impl CompletionUsage {
@@ -179,6 +204,10 @@ impl CompletionUsage {
             model,
             prompt_tokens = prompt,
             cached_prompt_tokens = cached,
+            // Logged beside the read so a line can be read on its own:
+            // a large write with a small read is a prefix that is not
+            // stable, which costs more than not caching at all.
+            cache_write_tokens = self.cache_write_tokens.unwrap_or(0),
             cache_hit_ratio = format!("{:.2}", ratio),
             "llm prefix cache"
         );
@@ -1003,8 +1032,10 @@ fn parse_chat_response(parsed: OllamaChatResponse) -> Result<ChatResponse> {
         usage: CompletionUsage {
             prompt_tokens: parsed.prompt_eval_count,
             completion_tokens: parsed.eval_count,
-            // Ollama has no prefix-cache accounting on the wire.
+            // Ollama has no prefix-cache accounting on the wire —
+            // neither reads nor writes.
             cached_prompt_tokens: None,
+            cache_write_tokens: None,
         },
     })
 }
@@ -1079,8 +1110,10 @@ impl LlmBackend for OllamaBackend {
             usage: CompletionUsage {
                 prompt_tokens: parsed.prompt_eval_count,
                 completion_tokens: parsed.eval_count,
-                // Ollama has no prefix-cache accounting on the wire.
+                // Ollama has no prefix-cache accounting on the wire —
+                // neither reads nor writes.
                 cached_prompt_tokens: None,
+                cache_write_tokens: None,
             },
         };
         warn_if_truncated("ollama", &self.model, &request, &resp);
@@ -1934,6 +1967,13 @@ struct AnthropicUsage {
 /// `promptTokenCount` means (every prompt token, cached ones included)
 /// and keeps a cross-backend comparison honest. `None` only when the
 /// provider reported no usage at all.
+///
+/// Both buckets are *also* carried through on their own
+/// (`cache_read_input_tokens` → `cached_prompt_tokens`,
+/// `cache_creation_input_tokens` → `cache_write_tokens`) because they
+/// are billed at different rates than the plain input they were summed
+/// into: a reader that wants money, rather than load, has to take them
+/// back out.
 fn anthropic_usage(u: Option<&AnthropicUsage>) -> CompletionUsage {
     let Some(u) = u else {
         return CompletionUsage::default();
@@ -1950,6 +1990,7 @@ fn anthropic_usage(u: Option<&AnthropicUsage>) -> CompletionUsage {
         prompt_tokens,
         completion_tokens: u.output,
         cached_prompt_tokens: u.cache_read,
+        cache_write_tokens: u.cache_creation,
     }
 }
 
@@ -2692,6 +2733,9 @@ fn gemini_usage(u: Option<&GeminiUsageMetadata>) -> CompletionUsage {
         prompt_tokens: u.and_then(|u| u.prompt),
         completion_tokens: u.and_then(|u| u.candidates),
         cached_prompt_tokens: u.and_then(|u| u.cached),
+        // Gemini caches implicitly: there is no request-side flag and
+        // no write accounting on the wire, only the read count.
+        cache_write_tokens: None,
     }
 }
 
@@ -3565,6 +3609,7 @@ impl LlmBackend for OpenRouterBackend {
                 completion_tokens: parsed.usage.as_ref().and_then(|u| u.completion_tokens),
                 // The OpenAI-shaped payload carries no prefix-cache count.
                 cached_prompt_tokens: None,
+                cache_write_tokens: None,
             },
         };
         warn_if_truncated_parts(
@@ -3656,6 +3701,7 @@ impl LlmBackend for OpenRouterBackend {
                 completion_tokens: parsed.usage.as_ref().and_then(|u| u.completion_tokens),
                 // The OpenAI-shaped payload carries no prefix-cache count.
                 cached_prompt_tokens: None,
+                cache_write_tokens: None,
             },
         };
         warn_if_truncated_chat("openrouter", &self.model, &resp);
@@ -3792,6 +3838,7 @@ impl LlmBackend for FakeLlmBackend {
                 prompt_tokens: Some(prompt_words),
                 completion_tokens: None,
                 cached_prompt_tokens: None,
+                cache_write_tokens: None,
             },
         })
     }
@@ -4389,7 +4436,10 @@ mod tests {
     /// excludes the other two, so a naive read under-reports the prompt
     /// by exactly the cached part — the failure mode that would make a
     /// cache look free when it is merely invisible. `prompt_tokens` is
-    /// the sum (7 + 20 000 + 300) and `cached_prompt_tokens` is the read.
+    /// the sum (7 + 20 000 + 300), `cached_prompt_tokens` is the read
+    /// and `cache_write_tokens` is the creation — the three have to come
+    /// back out separately because they are billed at three different
+    /// rates, so the sum alone cannot be turned back into money.
     #[tokio::test]
     async fn anthropic_backend_folds_cache_buckets_into_prompt_tokens() {
         let server = MockServer::start().await;
@@ -4421,7 +4471,16 @@ mod tests {
             .expect("complete");
         assert_eq!(resp.usage.prompt_tokens, Some(20_307));
         assert_eq!(resp.usage.cached_prompt_tokens, Some(20_000));
+        assert_eq!(resp.usage.cache_write_tokens, Some(300));
         assert_eq!(resp.usage.completion_tokens, Some(2));
+        // Plain, full-rate input is what is left after both buckets —
+        // the quantity the pricing table multiplies by the input rate.
+        assert_eq!(
+            resp.usage.prompt_tokens.unwrap()
+                - resp.usage.cached_prompt_tokens.unwrap()
+                - resp.usage.cache_write_tokens.unwrap(),
+            7
+        );
     }
 
     /// A provider that reports no cache fields at all (older API
@@ -4454,6 +4513,7 @@ mod tests {
             .expect("complete");
         assert_eq!(resp.usage.prompt_tokens, Some(7));
         assert_eq!(resp.usage.cached_prompt_tokens, None);
+        assert_eq!(resp.usage.cache_write_tokens, None);
     }
 
     /// Pin the *other* provider convention: Gemini's
@@ -4496,6 +4556,9 @@ mod tests {
             .expect("complete");
         assert_eq!(resp.usage.prompt_tokens, Some(27_493));
         assert_eq!(resp.usage.cached_prompt_tokens, Some(24_544));
+        // Gemini's implicit cache has no write accounting on the wire:
+        // `None` (not reported), never `Some(0)` (a measured zero).
+        assert_eq!(resp.usage.cache_write_tokens, None);
     }
 
     /// A cache MISS is a measurement, not an absence: Gemini omits the

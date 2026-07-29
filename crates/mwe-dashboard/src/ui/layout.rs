@@ -370,6 +370,10 @@ fn header(read_only: bool, demo_identities: &[String], user: Option<&SessionUser
                         // Admin "Spool" — the training-pair recorder
                         // (distillation dataset toggle + inventory).
                         (nav_link("/dashboard/admin/training-spool", "Spool"))
+                        // Admin "Usage" — the LLM token ledger: what each
+                        // slot consumed, and what it cost where the
+                        // operator declared a rate.
+                        (nav_link("/dashboard/admin/usage", "Usage"))
                         (nav_link("/dashboard/admin/backup", "Backup"))
                         // Admin "Dream" — the on-demand console + run history
                         // (forms at the top, the journal table below).

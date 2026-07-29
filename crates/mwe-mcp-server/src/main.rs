@@ -34,6 +34,7 @@ use mwe_core::{
     },
     lockfile, prompts,
     reindex::{self, SAFETY_NET_INTERVAL},
+    usage,
     wal::{self, DEFAULT_STALE_AFTER, NoopInverse},
     watcher::{WikiWatcher, sweep_stale_markers},
     wiki::WikiTree,
@@ -682,6 +683,25 @@ async fn cmd_backup(workdir: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Install the process-wide LLM usage ledger over `pool`.
+///
+/// Every backend built after this call records one row per model call
+/// (`mwe_core::usage`), so this must run **before** the first
+/// `build_backend` of the command — the decorator is attached at build
+/// time, not at call time.
+///
+/// `source` is the clean-month label: it separates the running server's
+/// traffic from an operator's hand-run cycle or evaluation, at the
+/// moment the call is made rather than by guessing afterwards, which is
+/// the thing that could not be done retroactively.
+fn install_usage_ledger(pool: &sqlx::SqlitePool, config: &Config, source: usage::UsageSource) {
+    usage::install_global(Arc::new(usage::UsageLedger::new(
+        pool.clone(),
+        source,
+        config.usage.retention_days,
+    )));
+}
+
 /// Run one REM cycle synchronously and print a one-line summary. The
 /// CLI escape hatch for cron-driven deployments and manual triggers
 /// (the headless side of the REM-cycle scheduling story).
@@ -699,6 +719,7 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
     let pool = db::open_or_init(workdir)
         .await
         .context("opening engine.db")?;
+    install_usage_ledger(&pool, config, usage::UsageSource::RemCli);
     let tree = WikiTree::open(workdir).context("opening wikis/ tree")?;
     let embedder: Arc<dyn Embedder> = config
         .embedding
@@ -771,6 +792,7 @@ async fn cmd_rem_run_light(workdir: &Path, config: &Config) -> Result<()> {
     let pool = db::open_or_init(workdir)
         .await
         .context("opening engine.db")?;
+    install_usage_ledger(&pool, config, usage::UsageSource::RemCli);
     let tree = WikiTree::open(workdir).context("opening wikis/ tree")?;
     let embedder: Arc<dyn Embedder> = config
         .embedding
@@ -822,6 +844,7 @@ async fn cmd_rem_run_compile(workdir: &Path, config: &Config) -> Result<()> {
     let pool = db::open_or_init(workdir)
         .await
         .context("opening engine.db")?;
+    install_usage_ledger(&pool, config, usage::UsageSource::RemCli);
     let tree = WikiTree::open(workdir).context("opening wikis/ tree")?;
     let llms = rem_scheduler::build_backends(&config.llm)?.ok_or_else(|| {
         anyhow!(
@@ -870,6 +893,7 @@ async fn cmd_recall_eval(
     let pool = db::open_or_init(workdir)
         .await
         .context("opening engine.db")?;
+    install_usage_ledger(&pool, config, usage::UsageSource::EvalCli);
     let tree = WikiTree::open(workdir).context("opening wikis/ tree")?;
     let embedder: Arc<dyn Embedder> = config
         .embedding
@@ -2024,6 +2048,8 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
     let pool = db::open_or_init(workdir)
         .await
         .context("opening engine.db")?;
+
+    install_usage_ledger(&pool, config, usage::UsageSource::Serve);
 
     let secret = ensure_secret(workdir).context("resolving MWE_TOKEN_SECRET")?;
 
