@@ -9,6 +9,28 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## 1.8.1 — 2026-07-30
+
+### Fixed
+
+- **On macOS and Windows, a new page could be written inside an existing
+  one.** Those filesystems treat `Intro.md` and `intro.md` as the same
+  file, and three write paths decided whether a page "already exists" by
+  asking the operating system whether the path resolves — which answers
+  *yes* for a spelling that is not on disk. The guard that refuses
+  case-colliding page names was therefore skipped exactly where it is
+  needed, and the write landed in the existing page: two different pages
+  merged into one, or a mirror push aimed at `Index.md` overwriting
+  `index.md`. A capture aimed at `_Meta.md` appended a fact into the
+  wiki's own `_meta.md`.
+
+  The question is now asked of the directory listing
+  (`wiki::page_exists_byte_exact`), which reads the same on every
+  filesystem, and that is the only way a write path answers it. A server
+  on Linux was never affected; the published macOS and Windows binaries
+  were. The tests that cover this now pass on both kinds of filesystem —
+  the macOS CI job is green for the first time.
+
 ## 1.8.0 — 2026-07-29
 
 ### Added
