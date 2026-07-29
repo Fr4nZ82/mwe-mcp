@@ -919,7 +919,7 @@ is written verbatim.
 | `parent_wiki_id` | string | for `create` | New wiki lands as a child. |
 | `slug` | string | for `create` | Directory slug. |
 | `title` | string | for `create` | Display title. |
-| `wiki_type` | string | for `create` | A bare, free-form type string. A `wiki-companion*` value makes the new wiki smart, stamped into its `_meta.md` `smart:` flag. |
+| `wiki_type` | string | for `create` | A bare, free-form type string. A `wiki-companion*` value makes the new wiki smart, stamped into its `_meta.md` `smart:` flag. **`agent` is reserved**: a consumer may set it only on its own operational wiki (the one forged at consent, whose slug is the caller's `consumer_id`) — anywhere else it is `400 invalid_input`. Operator writes from the dashboard are not gated. |
 | `project_id` | string | no | Stable opaque project id; stamped into `_meta.md.extra.project_id`. |
 | `pages` | `array<{ path, content }>` | yes | `content` is full markdown including frontmatter. |
 | `deletes` | `array<string>` | no | Honoured only on `upsert`. `_meta.md` is not deletable. |
@@ -1296,6 +1296,15 @@ project the session is working in, derived by the caller per the bundled
 
 Sort order: `matches_project_id` desc, `matches_project_hint` desc,
 `is_self` desc, `last_op_log_ts` desc, `wiki_id` alphabetical.
+
+`is_self` is `true` for the caller's **own operational wiki**: its slug is the
+caller's `consumer_id` *and* it is an agent's memory — the engine-written
+`is_agent` marker, or the `agent` label for a wiki forged before the marker
+existed. A wiki that merely shares the connection's name is not it. When the
+marker is missing on a wiki that qualifies, the bootstrap **stamps it** (the
+smart-consumer twin of the stamp the MCP auth middleware applies for a
+standard consumer at connect), so the answer converges on the engine-written
+signal after one session.
 
 `first_connect` is **absent** (`null`) unless the caller passed a
 `project_id`. When it is present: `wiki_id` names the caller's own smart

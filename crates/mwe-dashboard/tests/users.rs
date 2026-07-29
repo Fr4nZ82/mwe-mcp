@@ -396,3 +396,42 @@ async fn admin_can_change_user_email_and_login_follows() {
         "old email must stop working"
     );
 }
+
+/// A consumer agent's identity is enrolled like anyone else, so it shows up in
+/// this listing — but it is a bot, and the row used to read `user` with the
+/// status "no credentials, no invitation", which is equally true of a human
+/// who has not accepted their invite yet. The operator could not tell them
+/// apart; now the role column names it and the status says why it has no login.
+#[tokio::test]
+async fn user_list_tells_a_consumer_agent_from_a_person() {
+    let (app, pool, _tree, _dir) = common::make_app_with_memory().await;
+    let admin_cookie = login_as_admin(&app).await;
+    sqlx::query(
+        "INSERT INTO enrollment_users (user_id, aliases, is_admin, is_agent)
+              VALUES ('hermes1', '[]', 0, 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    create_user(&app, &admin_cookie, "galadriel").await;
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/users")
+            .header(header::COOKIE, &admin_cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(html.contains("<td>agent</td>"), "{html}");
+    assert!(
+        html.contains("consumer agent (no login by design)"),
+        "the status explains the missing login instead of implying an unsent invite: {html}"
+    );
+    // The invited human keeps the ordinary role and the invitation status.
+    assert!(html.contains("<td>user</td>"), "{html}");
+    assert!(html.contains("invited"), "{html}");
+}

@@ -582,10 +582,13 @@ async fn compile_page(
     if page.primary_facts.is_empty() {
         return compile_empty_leaf(tree, page, now);
     }
-    let tone = tone_cache
+    let wiki_tone = tone_cache
         .entry(page.wiki_id.clone())
-        .or_insert_with(|| resolve_tone(tree, &page.wiki_id))
-        .clone();
+        .or_insert_with(|| resolve_tone(tree, &page.wiki_id));
+    // Per PAGE, not per wiki: an agent's wiki holds pages about other people
+    // too (see `tone_for_page`), and those must not be narrated as the agent's
+    // own life.
+    let tone = tone_for_page(wiki_tone, page);
     let language = cached_language_directive(pool, tree, &page.wiki_id, locale_cache).await;
     compile_leaf_page(
         pool, tree, plan, page, cronista, &tone, &language, page_index, now,
@@ -1363,6 +1366,13 @@ async fn compile_hub_page(
         .collect::<Vec<_>>()
         .join("\n");
     // Reuse the existing Hub Writer prompt (regenerate-index), fed from the plan.
+    // A hub of an agent's wiki is a page of that agent's autobiography like any
+    // other, so it carries the same first-person directive the REM regenerator
+    // passes — resolved from the wiki, not from the page (a hub has no subject
+    // of its own). An unresolvable wiki simply gets the default voice.
+    let subject = tree
+        .locate(&parse_wiki_id(&page.wiki_id))
+        .map_or("", |h| crate::wiki::subject_directive(h.meta()));
     let prompt = prompts::render(
         "regenerate-index",
         tree.workdir(),
@@ -1372,6 +1382,7 @@ async fn compile_hub_page(
             ("title", page.title.as_str()),
             ("wiki_type", "hub"),
             ("wiki_id", page.slug.as_str()),
+            ("subject", subject),
             ("children", children.as_str()),
             ("snippet", snippet.as_str()),
         ],
@@ -1732,22 +1743,72 @@ pub(crate) fn normalize_style(style: Option<&str>) -> &'static str {
     }
 }
 
+/// The autobiography voice: the wiki's subject is an agent and it is writing
+/// about itself. Legended in `cronista.md` under TONE.
+const AGENT_TONE: &str = "agent-autobiography-first-person";
+
+/// The voice of a person's own wiki, and the fallback for a page inside an
+/// agent's wiki whose subject is somebody else.
+const IDENTITY_TONE: &str = "narrative-first-person-when-sender-equals-owner";
+
 /// Resolve the prose tone of a page's wiki from its `wiki_type`.
 ///
 /// The known actor / root wiki types map straight to a fixed tone; every
 /// other wiki type (emergent topic wikis, content wikis) falls back to a
-/// neutral narrative tone. Cached per wiki within a compile run.
+/// neutral narrative tone. Cached per wiki within a compile run — which is why
+/// the per-page narrowing lives in [`tone_for_page`] and not here.
 fn resolve_tone(tree: &WikiTree, wiki_id: &str) -> String {
     let Ok(handle) = tree.locate(&parse_wiki_id(wiki_id)) else {
         return "narrative".to_owned();
     };
+    // An agent's own wiki is a `wiki-user` like a human's — the agent IS an
+    // enrolled user — so the type alone would give it a human's voice, and its
+    // self-facts ("l'agente ha aiutato l'utente…") would compile into a service
+    // log written about it in the third person. It is an autobiography: the
+    // subject writes it, so the voice is first person. Checked before the type
+    // because it is the more specific claim about the same wiki.
+    if handle.meta().is_agent {
+        return AGENT_TONE.to_owned();
+    }
     match handle.meta().wiki_type.as_str() {
-        "wiki-user" => "narrative-first-person-when-sender-equals-owner",
+        "wiki-user" => IDENTITY_TONE,
         "wiki-group" => "shared",
         "wiki-root" => "telegraphic",
         _ => "narrative",
     }
     .to_owned()
+}
+
+/// Narrow the agent wiki's first-person voice to the pages that are actually
+/// **about** the agent.
+///
+/// A wiki is one container, not one subject. An agent's wiki accumulates pages
+/// whose subject is somebody else — misrouted before the agent-wiki guard was
+/// live (the live deployment carries ~30% such residue: whole topic pages about
+/// a user's pregnancy sitting in the assistant's wiki), and the residue does not
+/// disappear the day the guard starts working. Compiling those in the first
+/// person would have the assistant narrate a user's life as its own — a far
+/// worse failure than the third-person log the voice exists to fix.
+///
+/// So the voice follows the page's dominant subject: the autobiography tone
+/// only when most of the page's facts are owned by the agent itself. An
+/// identity wiki's id is its principal's id, which is the whole test. Pages of
+/// every other wiki are untouched.
+fn tone_for_page(wiki_tone: &str, page: &PagePlan) -> String {
+    if wiki_tone != AGENT_TONE {
+        return wiki_tone.to_owned();
+    }
+    let agent = Principal::User(page.wiki_id.clone());
+    let mine = page
+        .primary_facts
+        .iter()
+        .filter(|f| f.owner == agent)
+        .count();
+    if mine * 2 > page.primary_facts.len() {
+        AGENT_TONE.to_owned()
+    } else {
+        IDENTITY_TONE.to_owned()
+    }
 }
 
 fn parse_wiki_id(s: &str) -> crate::types::WikiId {
@@ -1830,6 +1891,89 @@ mod tests {
         std::fs::write(wikis.join("alice/index.md"), "# alice\n").unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         (dir, tree, pool)
+    }
+
+    /// An agent's own wiki gets the autobiography voice, and it wins over the
+    /// type: the wiki IS a `wiki-user` (the agent is an enrolled user), so
+    /// reading the type alone would compile its self-facts into a third-person
+    /// dossier about it — "l'agente ha aiutato l'utente…" — instead of its own
+    /// memory of the episode.
+    #[tokio::test]
+    async fn resolve_tone_gives_an_agent_wiki_the_first_person_voice() {
+        let (dir, _tree, _pool) = setup().await;
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(wikis.join("hermes1")).unwrap();
+        std::fs::write(
+            wikis.join("hermes1/_meta.md"),
+            "---\nwiki_id: hermes1\nwiki_type: wiki-user\nslug: hermes1\ntitle: Hermes\n\
+             acl_default: 'user:hermes1'\nis_agent: true\n---\n",
+        )
+        .unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+
+        assert_eq!(resolve_tone(&tree, "hermes1"), AGENT_TONE);
+        assert_eq!(
+            resolve_tone(&tree, "alice"),
+            IDENTITY_TONE,
+            "a human's wiki keeps the ordinary voice"
+        );
+    }
+
+    /// …but only on the pages that are about it. An agent's wiki carries pages
+    /// whose subject is somebody else — residue misrouted before the
+    /// agent-wiki guard went live, ~30% of the live assistant's wiki — and
+    /// compiling those in the first person would have the assistant narrate a
+    /// user's pregnancy as its own life.
+    #[test]
+    fn tone_for_page_keeps_the_first_person_off_another_subjects_page() {
+        let mut mine = page_with_owners("hermes1", &["user:hermes1", "user:hermes1"]);
+        assert_eq!(tone_for_page(AGENT_TONE, &mine), AGENT_TONE);
+
+        // One stray fact does not flip a page that is mostly the agent's.
+        mine.primary_facts
+            .push(ffp_owned(9, "Carol parte lunedì", "user:carol"));
+        assert_eq!(tone_for_page(AGENT_TONE, &mine), AGENT_TONE);
+
+        let hers = page_with_owners("hermes1", &["user:carol", "user:carol"]);
+        assert_eq!(
+            tone_for_page(AGENT_TONE, &hers),
+            IDENTITY_TONE,
+            "a page about someone else keeps the ordinary voice"
+        );
+
+        // A human's wiki is untouched by the narrowing.
+        let plain = page_with_owners("alice", &["user:alice"]);
+        assert_eq!(tone_for_page(IDENTITY_TONE, &plain), IDENTITY_TONE);
+    }
+
+    /// A `PagePlan` carrying one fact per owner string, for the tone tests.
+    fn page_with_owners(wiki_id: &str, owners: &[&str]) -> PagePlan {
+        PagePlan {
+            slug: "pagina".to_owned(),
+            title: "Pagina".to_owned(),
+            description: String::new(),
+            style: None,
+            page_type: PageType::ConceptLeaf,
+            owner_scope: None,
+            parent_hub: None,
+            child_leaves: Vec::new(),
+            primary_facts: owners
+                .iter()
+                .enumerate()
+                .map(|(i, o)| ffp_owned(u8::try_from(i).unwrap_or(0), "un fatto", o))
+                .collect(),
+            outgoing_links: Vec::new(),
+            incoming_links: Vec::new(),
+            wiki_id: wiki_id.to_owned(),
+            page_path: "pagina.md".to_owned(),
+        }
+    }
+
+    fn ffp_owned(seed: u8, text: &str, owner: &str) -> FactForPage {
+        FactForPage {
+            owner: owner.parse::<Principal>().unwrap(),
+            ..ffp(seed, text)
+        }
     }
 
     fn ffp(id_seed: u8, text: &str) -> FactForPage {

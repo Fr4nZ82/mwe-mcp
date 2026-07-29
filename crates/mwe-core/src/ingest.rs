@@ -1092,6 +1092,20 @@ pub(crate) fn normalize_capture_page(raw: Option<&str>, default: &Path) -> PathB
     }
 }
 
+/// True when `wiki_id` is the identity wiki of `owner` itself.
+///
+/// An identity wiki is a root whose id **is** its principal's id
+/// (`create_identity_wiki`), so the string compare is the whole test — no tree
+/// lookup, and it holds for a user and a group alike. Used by the agent-wiki
+/// guard to tell "someone else's fact parked in the agent's space" (what the
+/// guard exists to stop) from "the agent's own fact, at home" (what the wiki is
+/// for).
+fn owner_is_the_wikis_own_principal(owner: &Principal, wiki_id: &str) -> bool {
+    match owner {
+        Principal::User(id) | Principal::Group(id) => id == wiki_id,
+    }
+}
+
 fn validate_capture_plan(
     unit: &CaptureUnit<'_>,
     request: &IngestRequest,
@@ -1123,24 +1137,41 @@ fn validate_capture_plan(
         Some(s) => Principal::from_str(s)?,
         None => Principal::User(request.sender_id.clone()),
     };
-    // Guard (item 47-x2): a non-`self` fact must never be physically filed into
-    // an AGENT's own wiki — that space is the agent's `owner_id:"self"`
-    // autobiography (roadmap 27). owner↔wiki are otherwise DECOUPLED by design
-    // (a group-owned fact may live in a user wiki and vice versa — 47-x2a), so
+    // Guard (item 47-x2): a fact about SOMEONE ELSE must never be physically
+    // filed into an AGENT's own wiki — that space is the agent's autobiography
+    // (roadmap 27). owner↔wiki are otherwise DECOUPLED by design (a
+    // group-owned fact may live in a user wiki and vice versa — 47-x2a), so
     // this fires ONLY when the target wiki is flagged `is_agent`. `self` and
-    // behaviour-rule facts are handled before this function and never reach here,
-    // so every owner arriving is a user/group. Redirect to the owner's OWN wiki
-    // when it is in the window; otherwise drop this extraction rather than
-    // fragment the principal's memory across two wikis (Finding D).
+    // behaviour-rule facts are handled before this function and never reach
+    // here. Redirect to the owner's OWN wiki when it is in the window;
+    // otherwise drop this extraction rather than fragment the principal's
+    // memory across two wikis (Finding D).
+    //
+    // The owner being the agent ITSELF is the exception, and it is why the
+    // test is `home != target` and not "is the target an agent wiki": an
+    // identity wiki's id IS its principal's id, so `home == target` means the
+    // agent's wiki is the owner's own home — the one place that fact belongs.
+    // It arrives here whenever a USER states something about the agent ("sei
+    // bravo con l'INPS"): the `self` sentinel upstream only fires on an
+    // assistant turn, so without this exception the guard would look for a
+    // *non*-agent wiki named after the agent, find none, and silently drop
+    // every user-stated fact about the assistant.
     if available
         .iter()
         .find(|w| w.wiki_id == target_wiki_str)
         .is_some_and(|w| w.is_agent)
+        && !owner_is_the_wikis_own_principal(&owner, target_wiki_str)
     {
         let home = match &owner {
             Principal::User(id) | Principal::Group(id) => id.as_str(),
         };
-        match available.iter().find(|w| w.wiki_id == home && !w.is_agent) {
+        // `wiki_id == home` is the whole test: an identity wiki's id IS its
+        // principal's, so a match is the owner's own wiki by construction. It
+        // deliberately does NOT also demand a non-agent wiki — with two bots
+        // enrolled, a fact about bot B aimed at bot A's wiki has a perfectly
+        // good home (B's own), and rejecting it for being an agent wiki would
+        // drop it on the floor.
+        match available.iter().find(|w| w.wiki_id == home) {
             Some(w) => {
                 tracing::warn!(
                     from = %target_wiki_str,
@@ -2820,6 +2851,13 @@ fn build_prompt(
     // prefers tea") routes `owner_id` to the named person via this roster
     // rather than filing it under the sender. Aliases let the model resolve
     // informal references to the canonical `user_id`.
+    //
+    // The assistant is in this roster too — it is an enrolled user like any
+    // other (the diagonal identity model) — and `is_agent: true` says which
+    // entry it is. Without it the classifier reads its own id as one more
+    // person: the "you" of every turn is then a stranger in the list, and a
+    // sentence addressed TO the assistant looks like a sentence ABOUT a
+    // third party. Emitted only when set, like `available_wikis` below.
     out.push_str("\nknown_users:\n");
     if known_users.is_empty() {
         out.push_str("  (none)\n");
@@ -2831,6 +2869,9 @@ fn build_prompt(
                 out.push_str("\n    aliases: ");
                 out.push_str(&u.aliases.join(", "));
             }
+            if u.is_agent {
+                out.push_str("\n    is_agent: true");
+            }
             out.push('\n');
         }
     }
@@ -2839,6 +2880,14 @@ fn build_prompt(
     // prose (the category description) — a placement signal AND an audience
     // signal: the destination wiki's scope is one of the inputs to the
     // `allow_ids` decision, alongside the group `scope` above.
+    //
+    // An AGENT's own wiki also carries `is_agent: true`. Its `wiki_type` is
+    // `wiki-user` like a human's — an agent is an enrolled user (the diagonal
+    // identity model) — so without the flag the classifier can only tell the
+    // two apart by guessing at the title, and a fact about a person may be
+    // routed into the agent's autobiography. The flag is emitted only when
+    // set: the vast majority of wikis are human, and a `false` on every line
+    // would be prompt weight spent on nothing.
     out.push_str("\navailable_wikis:\n");
     if available_wikis.is_empty() {
         out.push_str("  (none yet — capture will need a wiki to be forged first)\n");
@@ -2850,6 +2899,9 @@ fn build_prompt(
             out.push_str(&w.title);
             out.push_str("\n    type: ");
             out.push_str(&w.wiki_type);
+            if w.is_agent {
+                out.push_str("\n    is_agent: true");
+            }
             out.push_str("\n    scope: ");
             match w.scope.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
                 Some(s) => out.push_str(&truncate(s, policy.max_group_scope_chars)),
@@ -4620,6 +4672,24 @@ pub async fn wiki_ingest_message(
         .complete(
             CompletionRequest::new(prompt)
                 .with_system(system_prompt)
+                // The classifier's system half is `ingest.md` with only
+                // `{locale}` substituted — identical call-to-call for a
+                // given deployment — while everything that varies per turn
+                // (the user roster, the sender's rules, the recall block,
+                // the message itself) rides in the user half. That split is
+                // what makes the prefix cacheable, and it is nearly the
+                // whole request: `ingest.md` is ~30k tokens against a
+                // measured 27.8k average per call over the 174-call corpus
+                // rebuild of 2026-07-29, which ran with cache reads at zero
+                // because this was the one hot caller never marked.
+                //
+                // The 1 h window means the discount lands on bursts (a
+                // conversation, a replay, a REM night) and an isolated turn
+                // arriving after the window pays the write surcharge
+                // instead. Net positive on any real traffic shape, but it
+                // is a measured claim: `llm_usage.cached_prompt_tokens` is
+                // the number to read, not this comment.
+                .with_cached_system()
                 .with_temperature(0.1)
                 .with_max_tokens(4096)
                 .with_images(images),
@@ -6323,6 +6393,65 @@ mod tests {
         );
     }
 
+    /// The exception the guard needs to be a guard and not a shredder: a fact
+    /// whose owner IS the agent belongs in the agent's wiki, because that wiki
+    /// is the owner's own home. It reaches this function whenever a USER states
+    /// something about the assistant — the `self` sentinel upstream only fires
+    /// on an assistant turn. Without the exception the guard hunts for a
+    /// *non*-agent wiki named `hermes1`, finds none, and drops the fact.
+    #[test]
+    fn validate_capture_plan_keeps_an_agent_owned_fact_in_the_agent_wiki() {
+        let request = req("sei bravo con le pratiche INPS", "morgana");
+        let policy = IngestPolicy::default();
+        let available = vec![
+            sample_agent_available("hermes1"),
+            sample_available("morgana"),
+        ];
+        let plan = parse_plan(
+            "{\"intent\":\"capture\",\"target_wiki_id\":\"hermes1\",\
+             \"owner_id\":\"user:hermes1\",\"body\":\"L'agente è competente sulle pratiche INPS\"}",
+        )
+        .expect("plan parses");
+        let cap = validate_capture_plan(&first_unit(&plan), &request, &policy, &available, true)
+            .expect("the agent's own fact stays home");
+        assert_eq!(cap.wiki_id.as_str(), "hermes1");
+        assert_eq!(cap.owner, Principal::User("hermes1".to_owned()));
+
+        // And it is not a blanket bypass: another principal's fact aimed at the
+        // same wiki still leaves it.
+        let other = parse_plan(
+            "{\"intent\":\"capture\",\"target_wiki_id\":\"hermes1\",\
+             \"owner_id\":\"user:morgana\",\"body\":\"Morgana ha una pratica INPS aperta\"}",
+        )
+        .expect("plan parses");
+        let cap = validate_capture_plan(&first_unit(&other), &request, &policy, &available, true)
+            .expect("redirect");
+        assert_eq!(cap.wiki_id.as_str(), "morgana");
+    }
+
+    /// Two bots enrolled: a fact about bot B aimed at bot A's wiki goes to B's
+    /// own wiki. The redirect looks for the owner's home and nothing else — a
+    /// home that happens to be another agent's wiki is still the right home,
+    /// and refusing it would drop a perfectly placeable fact.
+    #[test]
+    fn validate_capture_plan_redirects_between_two_agent_wikis() {
+        let request = req("some fact", "morgana");
+        let policy = IngestPolicy::default();
+        let available = vec![
+            sample_agent_available("hermes1"),
+            sample_agent_available("samvisebot"),
+            sample_available("morgana"),
+        ];
+        let plan = parse_plan(
+            "{\"intent\":\"capture\",\"target_wiki_id\":\"hermes1\",\
+             \"owner_id\":\"user:samvisebot\",\"body\":\"Samvise gestisce le prenotazioni\"}",
+        )
+        .expect("plan parses");
+        let cap = validate_capture_plan(&first_unit(&plan), &request, &policy, &available, true)
+            .expect("redirect to the other agent's own wiki");
+        assert_eq!(cap.wiki_id.as_str(), "samvisebot");
+    }
+
     // ---------- supersede_target validation ----------
 
     fn sample_recall_hit(fact_id_str: &str) -> RecallHit {
@@ -6606,6 +6735,40 @@ mod tests {
         );
     }
 
+    /// The routing window marks an AGENT's own wiki. Its `wiki_type` is
+    /// `wiki-user` exactly like a human's — an agent is an enrolled user — so
+    /// without the line the classifier can only guess from the title, and a
+    /// fact about a person lands in the agent's autobiography (which the x2
+    /// guard then has to undo). A human's entry stays lean: no `is_agent:
+    /// false` on every wiki of the window.
+    #[test]
+    fn build_prompt_flags_an_agent_wiki_in_the_routing_window() {
+        let request = req("la mia pressione è alta", "alice");
+        let policy = IngestPolicy::default();
+        let available = [sample_available("alice"), sample_agent_available("hermes1")];
+        let prompt = build_prompt(
+            &request,
+            &[],
+            &available,
+            &[],
+            &[],
+            None,
+            None,
+            now_fixture(),
+            &policy,
+        );
+        assert!(
+            prompt.contains(
+                "- wiki_id: hermes1\n    title: hermes1\n    type: wiki-user\n    is_agent: true\n"
+            ),
+            "the agent wiki must announce itself; prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("- wiki_id: alice\n    title: alice\n    type: wiki-user\n    scope:"),
+            "a human's wiki carries no is_agent line; prompt was:\n{prompt}"
+        );
+    }
+
     /// The sender's `rules.md` policy is injected into the
     /// `sender_rules` section so the classifier can honour it when assigning
     /// per-fact ACL; absent → an explicit `(none)`, and an over-long policy is
@@ -6674,10 +6837,12 @@ mod tests {
             enrollment::EnrolledUserLite {
                 user_id: "bob".to_owned(),
                 aliases: vec!["Bob".to_owned(), "Bobby".to_owned()],
+                is_agent: false,
             },
             enrollment::EnrolledUserLite {
                 user_id: "alice".to_owned(),
                 aliases: Vec::new(),
+                is_agent: false,
             },
         ];
         let prompt = build_prompt(
@@ -6695,6 +6860,53 @@ mod tests {
         assert!(prompt.contains("- id: bob"));
         assert!(prompt.contains("aliases: Bob, Bobby"));
         assert!(prompt.contains("- id: alice"));
+        assert!(
+            !prompt.contains("is_agent"),
+            "a roster of humans says nothing about agents"
+        );
+    }
+
+    /// The assistant is in the roster like any other principal, and says so:
+    /// without the flag the classifier reads its own id as one more person.
+    #[test]
+    fn build_prompt_names_the_agent_in_the_known_users_roster() {
+        let request = req("Gandalf, che ore sono?", "alice");
+        let policy = IngestPolicy::default();
+        let known = vec![
+            enrollment::EnrolledUserLite {
+                user_id: "alice".to_owned(),
+                aliases: Vec::new(),
+                is_agent: false,
+            },
+            enrollment::EnrolledUserLite {
+                user_id: "hermes1".to_owned(),
+                aliases: vec!["Gandalf".to_owned()],
+                is_agent: true,
+            },
+        ];
+        let prompt = build_prompt(
+            &request,
+            &[],
+            &[],
+            &[],
+            &known,
+            None,
+            None,
+            now_fixture(),
+            &policy,
+        );
+        assert!(
+            prompt.contains("- id: hermes1\n    aliases: Gandalf\n    is_agent: true"),
+            "the agent's own roster entry carries the flag: {prompt}"
+        );
+        let alice_line = prompt
+            .split("- id: alice")
+            .nth(1)
+            .expect("alice in the roster");
+        assert!(
+            !alice_line.starts_with("\n    is_agent"),
+            "a human's entry stays flagless"
+        );
     }
 
     /// With no enrolled users the section renders an explicit `(none)`.
@@ -11362,6 +11574,44 @@ mod tests {
         assert!(
             system.contains("Respond in Italian"),
             "language name must be derived from the BCP-47 primary subtag: {system}"
+        );
+        drop(dir);
+    }
+
+    /// The classifier declares its system half a cacheable prefix.
+    ///
+    /// It is the engine's heaviest repeated caller by a wide margin —
+    /// the 2026-07-29 corpus rebuild spent 4.84M prompt tokens across
+    /// 174 ingest calls against 56k of output — and the system half is
+    /// `ingest.md` with only `{locale}` substituted, so it repeats
+    /// verbatim while everything per-turn rides in the user half. That
+    /// rebuild ran with `cached_prompt_tokens` at zero on every single
+    /// call, because this was the one hot caller never marked.
+    ///
+    /// Nothing in the response reveals the flag, so dropping it would
+    /// cost money silently and no test would notice. Hence this one.
+    #[tokio::test]
+    async fn ingest_marks_its_system_prompt_cacheable() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"skip\"}");
+        let policy = IngestPolicy::default();
+        let request = IngestRequest {
+            text: "the boiler engineer comes on Thursday".to_owned(),
+            author: MessageRole::User,
+            sender_id: "alice".to_owned(),
+            consumer_id: None,
+            recent_messages: Vec::new(),
+            context_hint: ContextHint::Conversation,
+            disambig_choice: None,
+            metadata: IngestMetadata::default(),
+            attachments: Vec::new(),
+        };
+        wiki_ingest_message(&pool, &tree, fake_embedder(), &llm, None, request, &policy)
+            .await
+            .expect("ingest");
+        assert!(
+            llm.last_cache_system(),
+            "the classifier's system prompt must be marked as a cacheable prefix"
         );
         drop(dir);
     }

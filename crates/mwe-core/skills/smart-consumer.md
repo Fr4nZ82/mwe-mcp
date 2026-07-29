@@ -1,6 +1,6 @@
 ---
 name: smart-consumer
-version: 1.15.0
+version: 1.16.0
 description: "Project-bound mode for smart consumers: authoritative management of a project's smart wiki via wiki_admin_push/pull (whole, narrowed by paths, or shape-only) + project signposts (wiki_admin_signpost, so the user's standard memory knows the project exists) + _briefing.md lifecycle + cooperative lease + graceful degradation on token revoke. First connect is NOT here — it lives in smart-onboarding, fetched when the server volunteers first_connect.hint. Smart wikis are markerless and content-indexed — the consumer writes plain markdown freely (create / edit / move / rename / delete pages), exactly the way this repo's engineering wiki is maintained; the ACL is wiki-level in _meta (no per-fragment markers or ACL — those are the pillar of standard memory wikis only). Superset (group 17): the user↔agent conversation ALSO runs the standard personal-memory pipeline via wiki_ingest_message, joined to the project wiki by provenance links (authored_refs), with a per-message router (drop / personal-fact→standard / document-import / project-wiki / your-operational-wiki). Auto recall+capture, never dump everything into the user's standard memory."
 depends_on: ["core"]
 applies_to:
@@ -274,6 +274,43 @@ recallable — you are bounding each page's mass, not discarding history.
 The codebase specialisation (a project wiki's `log.md` — first-class
 content, structured by date and paged into archives, never dropped) is in
 `smart-codebase`.
+
+## Nothing tidies a smart wiki but you
+
+The nightly REM cycle runs **no write-jobs** on a smart wiki (above): no dedup
+merge, no auto-promote, no page merge, no compiler rewrite, no forgetting.
+That is deliberate — you own these bytes and a server-side rewrite would fight
+you. Internalise the consequence: **a standard memory wiki gets a janitor every
+night; yours has you.** Left alone it only accretes — the same conclusion
+restated five times across five sessions, decisions that stopped being true
+sitting next to the ones that replaced them, scaffolding notes nobody will read
+again. That is not a tidiness problem: recall returns the loudest match, so a
+corpus of near-duplicates is a corpus that answers with noise.
+
+Do the upkeep **where you already are**, never on a timer you cannot keep. You
+pull at session start and push as you work; the cheap moment is the push you
+were making anyway, on the pages that push touches. Each pass, on those pages
+only:
+
+- **Fold restatements.** Three entries saying one thing become one entry at the
+  clearest wording. Two near-identical entries about **different** people,
+  projects or occasions are *not* duplicates — that distinction is the whole
+  point of a memory, and collapsing it loses the very thing that made the two
+  worth keeping.
+- **Retire what stopped being true.** A superseded decision is not history to
+  preserve in place: state the current truth and let the dated log page carry
+  the "we used to do X" if it earns its keep. Pages describe the present; the
+  log describes the past.
+- **Re-shape when the content moved.** Split a page that grew a second subject,
+  merge two that turned out to be one, rename what is misnamed. You may move
+  pages freely — there is no server-side plan to keep in sync.
+- **Drop the scaffolding** — the note whose only value was getting you through
+  one task that is now done.
+
+Keep the pass **bounded**: minutes on this session's pages, not an audit of the
+whole wiki. A wiki you rewrite wholesale every session is one whose history
+nobody can trust; a wiki you never revisit is one that quietly rots. The same
+duty covers a **project** wiki you own — same absence of a janitor, same rule.
 
 ## Day-to-day editing loop
 

@@ -418,6 +418,12 @@ pub struct EnrolledUserLite {
     pub user_id: String,
     /// Alternate names/spellings the operator declared for this person.
     pub aliases: Vec<String>,
+    /// This principal is an **AI agent**, not a person (migration 0050, the
+    /// diagonal identity model: a standard consumer authenticates as its own
+    /// credential-less system user). The classifier roster carries it so the
+    /// assistant is recognisable as itself in the list of people it can
+    /// attribute facts to.
+    pub is_agent: bool,
 }
 
 /// Enumerate every enrolled user (id + aliases), ordered by `user_id`.
@@ -435,15 +441,17 @@ pub struct EnrolledUserLite {
 ///
 /// Propagates the underlying `sqlx` error.
 pub async fn list_users(pool: &SqlitePool) -> Result<Vec<EnrolledUserLite>, sqlx::Error> {
-    let rows: Vec<(String, String)> =
-        sqlx::query_as("SELECT user_id, aliases FROM enrollment_users ORDER BY user_id ASC")
-            .fetch_all(pool)
-            .await?;
+    let rows: Vec<(String, String, bool)> = sqlx::query_as(
+        "SELECT user_id, aliases, is_agent FROM enrollment_users ORDER BY user_id ASC",
+    )
+    .fetch_all(pool)
+    .await?;
     Ok(rows
         .into_iter()
-        .map(|(user_id, aliases_json)| EnrolledUserLite {
+        .map(|(user_id, aliases_json, is_agent)| EnrolledUserLite {
             user_id,
             aliases: serde_json::from_str(&aliases_json).unwrap_or_default(),
+            is_agent,
         })
         .collect())
 }

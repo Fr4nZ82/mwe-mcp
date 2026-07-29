@@ -1,8 +1,8 @@
 ---
 name: rem-contradiction
 description: REM contradiction sweep — given one freshly contradicted/superseded fact (and its successor, when any) plus a numbered list of OPEN candidate facts from this wiki family (the top-level wiki and every wiki nested under it), decide which candidates fall with it (the satellites of a cancelled event); strict JSON out; the cluster half of the temporal-validity model
-version: 1.1
-default_version_at_bootstrap: v1.1
+version: 1.2
+default_version_at_bootstrap: v1.2
 ---
 
 # Prompt: rem-contradiction
@@ -21,7 +21,11 @@ The confirmation prompt for the REM **contradiction sweep** sub-job
 - **Placeholders**: `{contradicted_text}` (the seed — the fact that just
   fell), `{successor_text}` (what replaced it, or `(none)` for a pure
   closure), `{candidates}` (numbered open items:
-  `fact_id · created_at · text`).
+  `fact_id · created_at · text`), `{subject_note}` — empty for an ordinary
+  family; on an **agent's own** family (the scope root carries the
+  `is_agent` marker) it fences the satellites to the same relationship
+  thread as the seed. Resolved per family by `agent_families`, never per
+  case.
 - **Output**: one strict JSON object, parsed by the first-balanced-`{}`
   scanner. Empty `invalidated` = the cluster ends at the seed.
 - **Runtime parameters**: temperature 0.1, max_tokens 400.
@@ -41,6 +45,7 @@ Rules:
 - `valid_to` = when the invalidation happened, when you can say (usually the contradiction's own moment); otherwise null — the engine uses the seed's closure instant.
 - `target` must be a fact_id copied EXACTLY from the candidate list. Never invent one.
 - Closures here are act-first but revertable from the dashboard; when in doubt, leave the candidate open (an empty list is a fine answer).
+{subject_note}
 
 CONTRADICTED FACT:
 {contradicted_text}

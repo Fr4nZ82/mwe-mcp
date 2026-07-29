@@ -503,14 +503,11 @@ async fn list(
             .map_err(|e| DashboardError::Internal(format!("groups_for: {e}")))?
     };
 
-    // Per-row tuple: (id, title, type, active fact count, live-identity). The
-    // flag drives the delete affordance — a living principal's identity wiki
-    // is removed through the user/group flow, not deleted here, while an
-    // orphaned one (principal already deleted) is deletable. Smart wikis are
-    // skipped: they live on the Smart tab (`smart_view::list_smart_wikis`),
-    // which surfaces the columns that matter for them (last push, unread
-    // briefing) — so each wiki shows up under exactly one tab.
-    let mut rows: Vec<(String, String, String, i64, bool)> = Vec::with_capacity(discovered.len());
+    // Smart wikis are skipped: they live on the Smart tab
+    // (`smart_view::list_smart_wikis`), which surfaces the columns that matter
+    // for them (last push, unread briefing) — so each wiki shows up under
+    // exactly one tab.
+    let mut rows: Vec<WikiIndexRow> = Vec::with_capacity(discovered.len());
     for d in discovered {
         if d.meta.smart {
             continue;
@@ -531,15 +528,16 @@ async fn list(
             .await
             .map_err(|e| DashboardError::Internal(format!("count_active_in_wiki: {e}")))?;
         let live_identity = is_live_identity(&state, &d.meta.wiki_type, &d.meta.wiki_id).await?;
-        rows.push((
-            d.meta.wiki_id.as_str().to_owned(),
-            d.meta.title.clone(),
-            d.meta.wiki_type.clone(),
-            count,
+        rows.push(WikiIndexRow {
+            id: d.meta.wiki_id.as_str().to_owned(),
+            title: d.meta.title.clone(),
+            wiki_type: d.meta.wiki_type.clone(),
+            facts: count,
             live_identity,
-        ));
+            is_agent: d.meta.is_agent,
+        });
     }
-    rows.sort();
+    rows.sort_by(|a, b| a.id.cmp(&b.id));
 
     let body = render_wikis_index(
         &user,
@@ -554,13 +552,32 @@ async fn list(
     )))
 }
 
+/// One row of the standard-wiki table.
+struct WikiIndexRow {
+    /// Canonical wiki id (the row's link target).
+    id: String,
+    /// Display title from `_meta.md`.
+    title: String,
+    /// Free-form `wiki_type` label from `_meta.md`.
+    wiki_type: String,
+    /// Active facts currently in the wiki.
+    facts: i64,
+    /// The wiki belongs to a principal that still exists. Drives the delete
+    /// affordance: a living principal's identity wiki is removed through the
+    /// user / group flow, not here, while an orphaned one is deletable.
+    live_identity: bool,
+    /// The wiki's subject is a consumer AGENT (the `_meta.md` `is_agent`
+    /// marker). Its `wiki_type` reads `wiki-user` like a human's — an agent is
+    /// an enrolled user — so without the badge the operator cannot tell the
+    /// autobiography of a bot from the memory of a person.
+    is_agent: bool,
+}
+
 /// The standard-wiki table. Split out of [`list`] so the handler stays
 /// under the line cap: everything above it is the query, this is the page.
-///
-/// `rows` is `(id, title, type, active fact count, live-identity)`.
 fn render_wikis_index(
     user: &SessionUser,
-    rows: &[(String, String, String, i64, bool)],
+    rows: &[WikiIndexRow],
     reveal: bool,
     frozen: bool,
     wikis_dir: &str,
@@ -590,18 +607,25 @@ fn render_wikis_index(
                     @if user.is_admin && !frozen { th { "Actions" } }
                 } }
                 tbody {
-                    @for (id, title, kind, count, live_identity) in rows {
+                    @for row in rows {
+                        @let id = &row.id;
                         tr {
                             td { a href=(format!("/dashboard/wiki/{id}")) { code { (id) } } }
-                            td { (title) }
-                            td.muted { (kind) }
-                            td { (count) }
+                            td { (row.title) }
+                            td.muted {
+                                (row.wiki_type)
+                                // An agent's wiki is a `wiki-user` like a
+                                // human's; the badge is the only thing that
+                                // tells them apart at a glance.
+                                @if row.is_agent { " " span.badge { "agent" } }
+                            }
+                            td { (row.facts) }
                             // Deleting a whole wiki subtree is the most
                             // destructive control in the panel; a frozen
                             // deployment drops the column entirely.
                             @if user.is_admin && !frozen {
                                 td {
-                                    @if *live_identity {
+                                    @if row.live_identity {
                                         span.muted
                                             title="Identity wiki — remove via the user / group flow" {
                                             "—"
@@ -682,7 +706,14 @@ async fn view(
             dl {
                 dt { "id" } dd { code { (wiki_id.as_str()) } }
                 dt { "title" } dd { (meta.title) }
-                dt { "type" } dd { (meta.wiki_type) }
+                dt { "type" }
+                dd {
+                    (meta.wiki_type)
+                    // Same reason as the list badge: an agent's own wiki is
+                    // typed `wiki-user`, so the type alone hides whose memory
+                    // this is.
+                    @if meta.is_agent { " " span.badge { "agent" } }
+                }
                 dt { "slug" } dd { code { (meta.slug.as_str()) } }
                 dt { "facts" } dd { (fact_count) " active" }
                 dt { "owner" } dd { (owner_label) }

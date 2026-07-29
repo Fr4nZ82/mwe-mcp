@@ -9,6 +9,101 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## 1.7.0 — 2026-07-29
+
+### Added
+
+- **An agent's own wiki now says so, and the whole pipeline reads it.**
+  `is_agent` existed on `FamilyScope` but only the dedup revisor looked at
+  it. It is now flattened to a `wiki_id → bool` map that completion,
+  contradiction and page-merge all consult, and it reaches the
+  classifier's `known_users` roster as well: one entry can be marked as
+  the assistant itself, with the rule that a human name never resolves
+  onto it and a name *addressed* to the agent is vocative, not
+  attribution. `smart_bootstrap.is_self` no longer guesses from the slug —
+  it requires the marker (or the legacy label) and repairs it on the
+  caller's own operating wiki — and `wiki_admin_push` reserves the `agent`
+  label for a consumer's own wiki. The page-merge guard matters most:
+  `slug_kinship` was proposing one person's page and another's as twins
+  because they share a token, and merging them would have undone the
+  per-person separation the engine works to keep.
+
+- **The autobiographical voice follows the page's subject, not the wiki.**
+  An agent's wiki is its autobiography and gets the first-person voice —
+  but measured against a real deployment, 31% of the facts in one agent's
+  wiki turned out to be about other people, residue from before the
+  routing guard existed. Compiling those in the first person would have
+  had the assistant narrate someone else's life as its own. So the tone is
+  decided per page (`compiler::tone_for_page`, by majority of fact
+  ownership), and misrouted residue keeps the ordinary identity voice.
+
+### Fixed
+
+- **A slot that passed the boot health-check could still fail every real
+  call.** `temperature` is deprecated for the Claude 5 generation, which
+  was missing from the list of families that reject sampling parameters —
+  so with Sonnet 5 behind the navigator, every recall returned HTTP 400
+  while the boot line read *all configured slots reachable*. The failure
+  is silent by design (`recall_nav` keeps the partial walk and logs a
+  warning), so recall degraded without anything failing. Both halves are
+  fixed: the Claude 5 family is on the list, **and the probe now pins the
+  temperature the hot paths use**, so an unlisted family that drops
+  sampling params fails at boot instead of degrading every answer. A probe
+  gentler than production is not a check.
+
+- **The navigator retries once when the model answers with no text.** Two
+  of 276 calls in a corpus rebuild came back with no text block at all —
+  the budget went to a thinking block — and each silently cost that turn
+  its navigation. Retried on protocol, transport and backend failures
+  only; a 400 reproduces exactly and auth or rate-limit errors want the
+  operator or a back-off window instead.
+
+- **A fumbled model response no longer costs the whole night.** The dedup
+  revisor was the only one of the four confirmers that propagated a
+  per-pair error, and `dream::run_full` aborts the cycle on any error from
+  `rem::run_cycle` — so one bad response skipped promotion, reorg and
+  every queued recompile, with the next attempt 24 hours away. The pair is
+  now skipped as a soft error (no negative verdict memoised, so it stays a
+  candidate) and only five *consecutive* failures stop the cycle, which is
+  an outage rather than a fumble.
+
+- **Facts about the assistant, said by a person, reach the assistant's
+  wiki.** The `self` sentinel only fires on the assistant's own turn, so
+  on a user turn ("you are good with paperwork") the fact arrived at the
+  routing guard owned by the agent and was dropped. Also: with two bots, a
+  fact about B aimed at A was binned instead of redirected home; and the
+  marker check walked the entire tree on every request when the wiki did
+  not exist.
+
+### Changed
+
+- **The ingest classifier declares its system prompt cacheable.** It is
+  the engine's heaviest repeated caller by a wide margin — 4.84M prompt
+  tokens against 56k of output over a 174-call corpus rebuild — and its
+  system half is the bundled prompt with only the locale substituted,
+  while everything per-turn rides in the user half. That split was already
+  right; the flag was simply never set, so every call paid full price for
+  a prefix it had already sent. Measured on a live run afterwards: 27,077
+  of 28,174 prompt tokens served from cache on the second consecutive
+  turn. The one-hour window means the discount lands on bursts — a
+  conversation, a replay, a REM night — while an isolated turn arriving
+  after it expires pays the write surcharge instead.
+
+- **A smart consumer's operating wiki is the agent's to maintain.** REM
+  skips every write job on a smart wiki by design, so nothing tidies it
+  but its owner. The `smart-consumer` skill (1.15.0 → 1.16.0) now says so
+  and describes the maintenance: merge repetitions (never two twins about
+  different people or occasions), retire what stopped being true, re-cut
+  pages when the content moved, throw away scaffolding — bounded to the
+  pages the session already touched, on the push it was about to make
+  anyway.
+
+### Operational notes
+
+- A restart resets the REM timer (`initial_delay_secs: 300`), so every
+  deploy triggers a full cycle five minutes later. Worth knowing when
+  restarting with dirty pages queued.
+
 ## 1.6.0 — 2026-07-28
 
 ### Added

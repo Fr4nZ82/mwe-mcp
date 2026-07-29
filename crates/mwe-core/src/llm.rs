@@ -1757,21 +1757,35 @@ fn anthropic_thinking_budget(effort: Option<&str>) -> Option<u32> {
     }
 }
 
+/// The sampling temperature the engine's determinism-sensitive callers
+/// pin (`recall_nav`, the REM revisor, the ingest classifier). The
+/// Anthropic health probe sends this same value so that boot exercises
+/// the request shape the hot paths actually use — see
+/// [`AnthropicBackend::health_check`].
+const HOT_PATH_TEMPERATURE: f32 = 0.1;
+
 /// `true` for Anthropic models that reject the sampling parameters
 /// (`temperature`, `top_p`, `top_k`) outright — sending any returns
-/// HTTP 400 `invalid_request_error`. Opus 4.7+ and the Fable / Mythos
-/// family removed them in favour of adaptive thinking + effort; Sonnet
-/// 4.6, Opus 4.6, Haiku and the 3.x line still accept `temperature`.
+/// HTTP 400 `invalid_request_error`. Opus 4.7+, the whole Claude 5
+/// generation and the Fable / Mythos family removed them in favour of
+/// adaptive thinking + effort; Sonnet 4.6, Opus 4.6, Haiku 4.5 and the
+/// 3.x line still accept `temperature`.
 ///
 /// Matched on the family prefix so point releases are covered. A newer
-/// family that drops sampling params must be added here — but a miss is
-/// not fatal: the boot health-check pins no temperature, so an unlisted
-/// model only risks a 400 on a *deliberately configured* `temperature`,
-/// never on boot.
+/// family that drops sampling params must be added here, and a miss is
+/// worse than it looks: the boot health-check pins no temperature, so
+/// every slot reports reachable while the slots that *do* pin one (the
+/// navigator and the REM revisor, at 0.1 for determinism) take a 400 on
+/// every real call. The navigator swallows it as a partial recall — a
+/// warning in the log, an answer that is quietly worse — so an unlisted
+/// model degrades recall without ever failing a health check.
 fn anthropic_rejects_sampling_params(model: &str) -> bool {
     let m = model.trim();
     m.starts_with("claude-opus-4-7")
         || m.starts_with("claude-opus-4-8")
+        || m.starts_with("claude-opus-5")
+        || m.starts_with("claude-sonnet-5")
+        || m.starts_with("claude-haiku-5")
         || m.starts_with("claude-fable")
         || m.starts_with("claude-mythos")
 }
@@ -2239,16 +2253,29 @@ impl LlmBackend for AnthropicBackend {
     /// when the API key is missing or the model is misspelled.
     ///
     /// Calls `complete_inner` with `None` so the probe never engages
-    /// extended thinking even on a slot that configured it. Two details
-    /// keep it compatible with the current model line-up: it pins **no**
-    /// `temperature` (Opus 4.7+ reject sampling params outright, a 400),
-    /// and it asks for a small-but-non-trivial `max_tokens` — a
-    /// `max_tokens: 1` request can come back with **zero** content blocks
-    /// on some models (the ceiling is hit before any text is emitted),
-    /// which the response parser rejects as "no `text` content block".
+    /// extended thinking even on a slot that configured it. It asks for a
+    /// small-but-non-trivial `max_tokens` — a `max_tokens: 1` request can
+    /// come back with **zero** content blocks on some models (the ceiling
+    /// is hit before any text is emitted), which the response parser
+    /// rejects as "no `text` content block".
+    ///
+    /// It **pins a temperature**, and that is the point of the probe
+    /// rather than an oversight. The hot paths pin one (the navigator and
+    /// the REM revisor at 0.1, ingest likewise), so a probe that omits it
+    /// tests a request shape the engine never actually sends: on
+    /// 2026-07-29 a temperature-free probe reported every slot reachable
+    /// while Sonnet 5 returned HTTP 400 on all 16 navigator calls of the
+    /// first 20 turns, and `recall_nav` swallowed each one as a partial
+    /// recall. Nothing is lost by pinning it, because
+    /// [`anthropic_rejects_sampling_params`] strips the parameter for the
+    /// families known to reject it *before* the probe goes out — exactly
+    /// as it does for a real call. So a listed model still passes, and an
+    /// **unlisted** model that has quietly dropped sampling params fails
+    /// here, at boot, instead of degrading every answer in silence.
     async fn health_check(&self) -> Result<()> {
         let probe = CompletionRequest::new("ping")
             .with_max_tokens(16)
+            .with_temperature(HOT_PATH_TEMPERATURE)
             .with_truncation_expected();
         let _ = self.complete_inner(probe, None).await?;
         Ok(())
@@ -3742,6 +3769,12 @@ pub struct FakeLlmBackend {
     /// Images of the most recent `complete` call — lets ingest tests
     /// assert the vision bytes actually reached the backend.
     last_images: std::sync::Mutex<Vec<ImageInput>>,
+    /// Whether the most recent `complete` call declared its system
+    /// prompt a cacheable prefix. Costs nothing on the wire but a great
+    /// deal on the bill, and it is invisible in the response, so the
+    /// callers that must set it are guarded by a test rather than by a
+    /// reviewer noticing its absence.
+    last_cache_system: std::sync::Mutex<bool>,
 }
 
 #[cfg(any(test, feature = "test-fakes"))]
@@ -3758,7 +3791,18 @@ impl FakeLlmBackend {
             last_system_prompt: std::sync::Mutex::new(None),
             last_prompt: std::sync::Mutex::new(None),
             last_images: std::sync::Mutex::new(Vec::new()),
+            last_cache_system: std::sync::Mutex::new(false),
         }
+    }
+
+    /// Whether the last `complete` call marked its system prompt as a
+    /// cacheable prefix. `false` when no `complete` has run yet.
+    #[must_use]
+    pub fn last_cache_system(&self) -> bool {
+        *self
+            .last_cache_system
+            .lock()
+            .expect("last_cache_system mutex poisoned")
     }
 
     /// Snapshot of the `system` prompt the last `complete` call
@@ -3830,6 +3874,10 @@ impl LlmBackend for FakeLlmBackend {
             .lock()
             .expect("last_images mutex poisoned")
             .clone_from(&request.images);
+        *self
+            .last_cache_system
+            .lock()
+            .expect("last_cache_system mutex poisoned") = request.cache_system;
         let prompt_words = u32::try_from(request.prompt.split_whitespace().count()).unwrap_or(0);
         Ok(CompletionResponse {
             text: self.response.clone(),
@@ -4800,18 +4848,22 @@ mod tests {
     }
 
     /// The liveness probe never engages thinking even on a slot that set
-    /// `reasoning_effort`: the body keeps `max_tokens: 1` + `temperature:
-    /// 0.0` and carries no `thinking` field (`body_json` is exact-match).
+    /// `reasoning_effort`: the body keeps its `max_tokens` and carries no
+    /// `thinking` field (`body_json` is exact-match). This model is on the
+    /// reject list, so the probe's pinned temperature is stripped before
+    /// the request goes out — the sibling test below covers the model
+    /// families that keep it.
     #[tokio::test]
     async fn anthropic_health_check_probe_never_thinks() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
-            // The probe pins no `temperature` (Opus 4.7+ reject sampling
-            // params with a 400) and asks for a non-trivial `max_tokens`
-            // (a `max_tokens: 1` reply can carry zero content blocks).
-            // `with_reasoning_effort` below is ignored — the probe never
-            // thinks, so there is no `thinking` field.
+            // No `temperature`: Opus 4.7+ reject sampling params with a
+            // 400, so `anthropic_rejects_sampling_params` drops it here
+            // exactly as it does on a real call. `max_tokens` is
+            // non-trivial (a `max_tokens: 1` reply can carry zero content
+            // blocks). `with_reasoning_effort` below is ignored — the
+            // probe never thinks, so there is no `thinking` field.
             .and(body_json(serde_json::json!({
                 "model": "claude-opus-4-8",
                 "max_tokens": 16,
@@ -4835,20 +4887,96 @@ mod tests {
         backend.health_check().await.expect("health check");
     }
 
+    /// On a model that still accepts sampling params the probe **does**
+    /// send `temperature`, and it sends the value the hot paths pin.
+    ///
+    /// This is the regression guard for 2026-07-29: a temperature-free
+    /// probe logged "all configured slots reachable" while every
+    /// navigator call against Sonnet 5 came back 400 and `recall_nav`
+    /// swallowed each one as a partial recall. Boot must exercise the
+    /// request shape the engine actually sends, or an unlisted model that
+    /// has dropped sampling params degrades recall in silence.
+    /// `body_json` is exact-match, so the assertion is that the field is
+    /// present *and* carries `HOT_PATH_TEMPERATURE`.
+    #[tokio::test]
+    async fn anthropic_health_check_probe_pins_the_hot_path_temperature() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_json(serde_json::json!({
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 16,
+                "messages": [ { "role": "user", "content": "ping" } ],
+                "temperature": 0.1,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "msg_01ABC",
+                "type": "message",
+                "role": "assistant",
+                "content": [ { "type": "text", "text": "pong" } ],
+                "stop_reason": "end_turn",
+                "usage": { "input_tokens": 1, "output_tokens": 1 }
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = AnthropicBackend::new(fake_key(), "claude-sonnet-4-6", "ANTHROPIC_API_KEY")
+            .expect("new")
+            .with_base_url(server.uri());
+        backend.health_check().await.expect("health check");
+    }
+
+    /// The probe fails the boot when the model rejects the sampling
+    /// params it was not known to reject — the whole point of pinning
+    /// one. An unlisted family that returns 400 `invalid_request_error`
+    /// must surface to the operator at startup, not as a silently worse
+    /// answer on every subsequent recall.
+    #[tokio::test]
+    async fn anthropic_health_check_surfaces_an_unlisted_model_that_rejects_temperature() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "`temperature` is deprecated for this model."
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = AnthropicBackend::new(fake_key(), "claude-newfamily-9", "ANTHROPIC_API_KEY")
+            .expect("new")
+            .with_base_url(server.uri());
+        let err = backend.health_check().await.expect_err("boot must fail");
+        assert!(
+            matches!(err, LlmError::Invalid(ref m) if m.contains("temperature")),
+            "the operator must see the rejected parameter, got {err}"
+        );
+    }
+
     #[test]
     fn anthropic_rejects_sampling_params_matches_the_no_temperature_family() {
-        // Opus 4.7+ and the Fable / Mythos family reject `temperature`
-        // (a 400); dated snapshots share the family prefix.
+        // Opus 4.7+, the whole Claude 5 generation and the Fable /
+        // Mythos family reject `temperature` (a 400); dated snapshots
+        // share the family prefix. Sonnet 5 is the load-bearing entry:
+        // it is the default model for every non-ingest slot, and the
+        // navigator pins temperature 0.1 on every recall.
         for m in [
             "claude-opus-4-7",
             "claude-opus-4-8",
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-haiku-5",
             "claude-fable-5",
             "claude-mythos-5",
             "claude-opus-4-8-20260101",
+            "claude-sonnet-5-20260115",
         ] {
             assert!(anthropic_rejects_sampling_params(m), "{m} should reject");
         }
-        // Sonnet 4.6, Opus 4.6, Haiku and the 3.x line still accept it.
+        // Sonnet 4.6, Opus 4.6, Haiku 4.5 and the 3.x line still accept it.
         for m in [
             "claude-sonnet-4-6",
             "claude-opus-4-6",

@@ -194,13 +194,13 @@ A wiki's kind is a **bare `wiki_type` string** in its `_meta.md` — there
 is no registry, no template, no schema to register against, and no
 runtime type-forge. Only **four actor kinds** are created from internal
 logic, never from a template: `wiki-user` (a human **or** a standard
-consumer agent — both are enrolled users that own a personal `wiki-user`;
-today they are told apart only by their owning identity, the agent
-authenticating as a credential-less *system user* per the [diagonal
-identity model](identity-and-acl.md). A self-describing `is_agent` marker
-on the wiki's `_meta.md` — mirroring `smart: true`, so the agent's
-wiki is recognisable *as a wiki* without a DB lookup — is planned; see
-roadmap §4), `wiki-group`, `wiki-companion`
+consumer agent — both are enrolled users that own a personal `wiki-user`,
+the agent authenticating as a credential-less *system user* per the
+[diagonal identity model](identity-and-acl.md). The two are told apart by
+the self-describing **`is_agent`** marker on the wiki's `_meta.md`,
+mirroring `smart: true`: the agent's wiki is recognisable *as a wiki*,
+without a DB lookup, by every pass that reads the tree — see "the agent's
+wiki" below), `wiki-group`, `wiki-companion`
 (smart-consumer-administered — carries `smart: true`), and
 `wiki-root`. An *emerged* sub-wiki carries a neutral placeholder string
 and has no behavioural type at all. Several attributes are decided at
@@ -243,6 +243,33 @@ the engine's own author is not just a routing destination for behaviour rules bu
 a peer with an emergent, remembered self. See
 [`ingest-pipeline.md`](../design-notes/ingest-pipeline.md) (the
 self side of agent-authored memory) and roadmap §27.
+
+**Where the marker is written, and what reads it.** The DB binding stays the
+source of truth; the marker is its mirror on disk, and it is stamped on the
+paths every agent wiki goes through: at creation
+(`IdentityKind::Agent`), when the operator mints the bot's token, and — the
+one that catches an agent enrolled through the ordinary user CRUD — on **every
+standard-token connect**, from the MCP auth middleware. The marker also rides
+the *other* shape of agent wiki: the **operational wiki** a smart consumer's
+sign-in flow forges (a smart child of its owner's wiki, its working memory
+rather than an identity). That one also carries `wiki_type: agent`, but the
+type string is a free-form label the consumer chooses on `wiki_admin_push`, so
+only the server-written marker is trusted — and a consumer may claim the
+`agent` label on **its own** operational wiki alone, never on somebody else's
+(`wiki_admin_push` refuses it). A smart consumer's `smart_bootstrap` also
+*heals* the marker on its own wiki at session start, so an operational wiki
+forged before the marker existed converges after one session.
+
+Reading it: the ingest router (an
+agent's wiki is announced in `available_wikis`, a fact about a person is
+never filed there, and the assistant's own entry in the `known_users` roster
+is flagged so the classifier knows which principal is the one being talked
+*to*), the REM (first-person voice for an autobiography, and the four
+consolidation passes each swap in an agent-subject rubric —
+[rem-cycle.md](../design-notes/rem-cycle.md)), the signpost nudge (private
+working memory is not a project), `smart_bootstrap` (`is_self`), and the
+dashboard (the `agent` badge on the wiki lists and the `agent` role in the
+user list).
 
 > **The author is the engine, not a per-turn agent.** mwe-mcp is
 > agent-agnostic, so the engine itself is the author: for a standard wiki an

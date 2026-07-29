@@ -167,6 +167,41 @@ pub struct BriefingItemSummary {
     pub ts: String,
 }
 
+/// Is `d` the **caller's own operational wiki** — and, if it is, make sure it
+/// says so on disk.
+///
+/// The identity link is the slug: the wiki is forged at consent under the
+/// caller's own `consumer_id` (`webagentoauth::ensure_dedicated_wiki`), so the
+/// two are equal by construction. What the slug alone cannot say is that the
+/// wiki is an AGENT's memory at all — a human's smart wiki that happened to
+/// share the name would claim `is_self`. The engine-written `is_agent` marker
+/// settles that, and because this is the agent's session start it is also the
+/// natural place to *heal* the marker: the smart-consumer twin of the stamp
+/// the MCP auth middleware does for a standard consumer at connect.
+/// `wiki_type: agent` stays a fallback for wikis forged before the marker
+/// existed — the label is consumer-chosen and never trusted alone, but paired
+/// with a slug that matches the caller it is enough to keep the hint working.
+fn own_operational_wiki(caller: &AdminCaller, d: &crate::wiki::DiscoveredWiki) -> bool {
+    let owned_by_caller = caller.consumer_id.as_deref() == Some(d.meta.slug.as_str());
+    let is_self =
+        owned_by_caller && (d.meta.is_agent || d.meta.wiki_type == crate::wiki::AGENT_WIKI_TYPE);
+    if is_self && !d.meta.is_agent {
+        match crate::wiki::ensure_is_agent_marker_in(&d.abs_dir) {
+            Ok(true) => tracing::info!(
+                wiki_id = d.meta.wiki_id.as_str(),
+                "smart bootstrap: is_agent marker healed on the caller's own wiki"
+            ),
+            Ok(false) => {},
+            Err(e) => tracing::warn!(
+                error = %e,
+                wiki_id = d.meta.wiki_id.as_str(),
+                "smart bootstrap: is_agent stamp failed (non-fatal)"
+            ),
+        }
+    }
+    is_self
+}
+
 /// Response of [`bootstrap`].
 #[derive(Debug, Clone)]
 pub struct BootstrapResponse {
@@ -302,8 +337,7 @@ pub async fn bootstrap(
             _ => false,
         };
 
-        // Own operational wiki = its slug equals the caller's `consumer_id`.
-        let is_self = caller.consumer_id.as_deref() == Some(d.meta.slug.as_str());
+        let is_self = own_operational_wiki(caller, &d);
 
         summaries.push(SmartWikiSummary {
             wiki_id: d.meta.wiki_id.clone(),
@@ -672,6 +706,46 @@ mod tests {
         resp.wiki_id
     }
 
+    /// The caller's **own operational wiki** as the consent flow forges it:
+    /// slug == the caller's `consumer_id` AND the `agent` label. Both halves
+    /// matter — `is_self` needs the wiki to be an agent's memory, not just to
+    /// share a name with the connection.
+    async fn create_own_operational_wiki(
+        pool: &SqlitePool,
+        tree: &WikiTree,
+        caller: &AdminCaller,
+        slug: &str,
+        title: &str,
+    ) -> WikiId {
+        let parent = WikiId::parse(&caller.sender_id).expect("parent id");
+        let resp = wiki_admin::push(
+            pool,
+            tree,
+            caller,
+            ActorKind::SmartConsumer,
+            PushRequest {
+                mode: PushMode::Create,
+                wiki_id: None,
+                parent_wiki_id: Some(parent),
+                slug: Some(slug.to_owned()),
+                title: Some(title.to_owned()),
+                wiki_type: Some(crate::wiki::AGENT_WIKI_TYPE.to_owned()),
+                smart: true,
+                project_id: None,
+                pages: vec![PushPage {
+                    path: "index.md".to_owned(),
+                    content: format!("# {title}\n"),
+                }],
+                deletes: Vec::new(),
+                mark_processed: Vec::new(),
+                expected_op_log_head: None,
+            },
+        )
+        .await
+        .expect("create operational wiki");
+        resp.wiki_id
+    }
+
     /// Bump the latest `op_log` row for `wiki_id` to `ts`. The smart-wiki
     /// creation above already stamps one row; this helper rewrites its
     /// timestamp so the test can pin ordering deterministically.
@@ -861,7 +935,7 @@ mod tests {
         let (_dir, tree, pool) = seeded_tree().await;
         // alice_smart()'s consumer_id is "cc-laptop"; its operational wiki has that slug.
         let own =
-            create_smart_wiki_for(&pool, &tree, &alice_smart(), "cc-laptop", "CC Laptop", None)
+            create_own_operational_wiki(&pool, &tree, &alice_smart(), "cc-laptop", "CC Laptop")
                 .await;
         let other =
             create_smart_wiki_for(&pool, &tree, &alice_smart(), "acme", "Acme", Some("acme")).await;
@@ -885,6 +959,37 @@ mod tests {
         assert!(!other_summary.is_self, "a different wiki is not is_self");
         // No project hint ⇒ the caller's own operational wiki floats to the top.
         assert_eq!(resp.smart_wikis[0].wiki_id, own);
+        // The bootstrap healed the engine-written marker on the way past.
+        let handle = tree.locate(&own).expect("own wiki");
+        assert!(
+            handle.meta().is_agent,
+            "the caller's own operational wiki carries the is_agent marker after bootstrap"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_is_self_needs_more_than_a_matching_slug() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        // A plain smart wiki that happens to be named like the connection:
+        // same slug as the caller's consumer_id, but not an agent's memory.
+        let namesake =
+            create_smart_wiki_for(&pool, &tree, &alice_smart(), "cc-laptop", "Notes", None).await;
+        let resp = bootstrap(&pool, &tree, &alice_smart(), BootstrapRequest::default())
+            .await
+            .expect("bootstrap");
+        let summary = resp
+            .smart_wikis
+            .iter()
+            .find(|c| c.wiki_id == namesake)
+            .expect("wiki present");
+        assert!(
+            !summary.is_self,
+            "a namesake wiki that is not an agent's own memory never claims is_self"
+        );
+        assert!(
+            !tree.locate(&namesake).expect("wiki").meta().is_agent,
+            "and it is not stamped either"
+        );
     }
 
     #[tokio::test]

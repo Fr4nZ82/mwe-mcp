@@ -2605,6 +2605,17 @@ async fn cmd_doctor(workdir: &Path) -> Result<()> {
         );
     }
 
+    // Identity wikis: every enrolled principal should own one, and an agent
+    // identity should carry the `is_agent` marker in it. Both are places where
+    // the DB and the tree can silently disagree — a wiki whose creation failed
+    // leaves a principal with nowhere to remember (the failure path already
+    // tells the operator to "run mwe-mcp doctor", which until now said nothing
+    // about it), and an unmarked agent wiki leaves the ingest guard, the REM
+    // voice and the dashboard badge reading it as a person's. A standard
+    // consumer re-stamps its own marker on its next connect, so a lone marker
+    // finding is a "not seen since the upgrade", not a fault.
+    report_identity_wikis(&pool, workdir).await?;
+
     // Touch the JWT module so the secret is exercised end-to-end.
     if let Ok(secret) = load_secret_from_env() {
         let test_claims =
@@ -2628,6 +2639,84 @@ async fn cmd_doctor(workdir: &Path) -> Result<()> {
     }
 
     println!("doctor        : ok");
+    Ok(())
+}
+
+/// Split of [`report_identity_wikis`] that touches the tree, so the rule can be
+/// tested without a DB or captured stdout.
+///
+/// Returns `(principals with no wiki on disk, agent identities whose wiki lacks
+/// the marker)`. `users` is `(user_id, is_agent)`; an identity wiki is a root,
+/// so a principal's id is its directory name.
+fn identity_wiki_findings(
+    users: &[(String, i64)],
+    group_ids: &[String],
+    wikis_dir: &Path,
+) -> (Vec<String>, Vec<String>) {
+    let mut missing_wiki: Vec<String> = Vec::new();
+    let mut unmarked_agents: Vec<String> = Vec::new();
+    for (id, is_agent) in users {
+        let Ok(raw) = std::fs::read_to_string(wikis_dir.join(id).join("_meta.md")) else {
+            missing_wiki.push(id.clone());
+            continue;
+        };
+        if *is_agent != 0 && !raw.contains("is_agent: true") {
+            unmarked_agents.push(id.clone());
+        }
+    }
+    missing_wiki.extend(
+        group_ids
+            .iter()
+            .filter(|id| !wikis_dir.join(id).join("_meta.md").exists())
+            .cloned(),
+    );
+    (missing_wiki, unmarked_agents)
+}
+
+/// The `identity wikis` line of [`cmd_doctor`]: enrolled principals whose wiki
+/// is missing, and agent identities whose wiki does not carry the marker.
+///
+/// Read-only — it reports, it does not repair. Repair belongs to the paths that
+/// own the write (the user CRUD creates the wiki, the connect path stamps the
+/// marker), and a diagnostic that silently fixes things hides the fault it was
+/// run to find.
+async fn report_identity_wikis(pool: &sqlx::SqlitePool, workdir: &Path) -> Result<()> {
+    let users: Vec<(String, i64)> =
+        sqlx::query_as("SELECT user_id, is_agent FROM enrollment_users ORDER BY user_id")
+            .fetch_all(pool)
+            .await
+            .context("listing enrolled users")?;
+    let groups: Vec<(String,)> =
+        sqlx::query_as("SELECT group_id FROM enrollment_groups ORDER BY group_id")
+            .fetch_all(pool)
+            .await
+            .context("listing enrolled groups")?;
+
+    let group_ids: Vec<String> = groups.into_iter().map(|(id,)| id).collect();
+    let (missing_wiki, unmarked_agents) =
+        identity_wiki_findings(&users, &group_ids, &workdir.join("wikis"));
+
+    let agents = users.iter().filter(|(_, a)| *a != 0).count();
+    println!(
+        "identity wikis: {} users ({agents} agent), {} groups",
+        users.len(),
+        group_ids.len()
+    );
+    if !missing_wiki.is_empty() {
+        println!(
+            "                [WARN] no wiki on disk for: {} — the principal has nowhere to \
+             remember; re-create it from the dashboard (Users / Groups)",
+            missing_wiki.join(", ")
+        );
+    }
+    if !unmarked_agents.is_empty() {
+        println!(
+            "                [WARN] agent identity without the is_agent marker in _meta.md: {} \
+             — its next standard-token connect stamps it; if it never connects, mint its token \
+             from the dashboard (Tokens) to backfill",
+            unmarked_agents.join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -2900,6 +2989,46 @@ mod tests {
         assert!(
             unit.contains("--bind 0.0.0.0 --port 9000"),
             "custom bind/port must reach ExecStart:\n{unit}"
+        );
+    }
+
+    /// The doctor's identity-wiki rule: a principal with no wiki on disk is a
+    /// principal with nowhere to remember, and an agent identity whose wiki
+    /// lacks the marker reads as a person's to every pass that walks the tree.
+    /// A human without the marker is not a finding — that is the normal case.
+    #[test]
+    fn identity_wiki_findings_reports_missing_wikis_and_unmarked_agents() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wikis = dir.path().join("wikis");
+        let write = |id: &str, marker: bool| {
+            let d = wikis.join(id);
+            std::fs::create_dir_all(&d).unwrap();
+            let extra = if marker { "is_agent: true\n" } else { "" };
+            std::fs::write(
+                d.join("_meta.md"),
+                format!("---\nwiki_id: {id}\nwiki_type: wiki-user\nslug: {id}\ntitle: {id}\n{extra}---\n"),
+            )
+            .unwrap();
+        };
+        write("franz", false);
+        write("hermes1", false);
+        write("samvisebot", true);
+        write("famiglia", false);
+
+        let users = vec![
+            ("franz".to_owned(), 0),
+            ("hermes1".to_owned(), 1),
+            ("samvisebot".to_owned(), 1),
+            ("ghostbot".to_owned(), 1),
+        ];
+        let groups = vec!["famiglia".to_owned(), "lavoro".to_owned()];
+        let (missing, unmarked) = identity_wiki_findings(&users, &groups, &wikis);
+
+        assert_eq!(missing, vec!["ghostbot".to_owned(), "lavoro".to_owned()]);
+        assert_eq!(
+            unmarked,
+            vec!["hermes1".to_owned()],
+            "only an is_agent identity whose wiki lacks the marker is a finding"
         );
     }
 }

@@ -142,6 +142,18 @@ pub enum AdminError {
         /// The non-smart `wiki_type` that was targeted.
         wiki_type: String,
     },
+    /// A consumer claimed the reserved `agent` label on a wiki that is not
+    /// its own operational wiki. The label names "the working memory of the
+    /// agent connected as this consumer"; the engine forges exactly one such
+    /// wiki per connection, at consent, and its slug is the consumer's own id.
+    #[error(
+        "wiki_type \"agent\" is reserved for your own operational wiki (slug == your consumer_id); \
+         wiki {slug:?} is not it"
+    )]
+    AgentLabelReserved {
+        /// The slug the caller tried to label.
+        slug: String,
+    },
     /// Target wiki's derived scope principal is something other than a
     /// single user (Global or Group). MVP smart-wikis require a user owner.
     #[error("wiki {wiki_id} has owner {acl_default:?}; smart-wikis require a user owner")]
@@ -497,6 +509,42 @@ pub struct AdminCaller {
     pub consumer_class: ConsumerClass,
 }
 
+/// Reserve the `agent` `wiki_type` for the caller's **own** operational wiki.
+///
+/// The label is free-form by design — it is a tone hint, not a registry — and
+/// nothing downstream trusts it any more (agent-ness is the engine-written
+/// `is_agent` marker). What it still does is *name* a wiki to the humans
+/// reading the dashboard, so a consumer labelling somebody else's wiki "agent"
+/// is a lie the UI would repeat. A consumer may claim it on exactly one wiki:
+/// the one the engine forged for it at consent, whose slug is its own
+/// `consumer_id`. Operator/dashboard writes are unaffected — the operator may
+/// label anything.
+fn guard_agent_label(
+    tree: &WikiTree,
+    caller: &AdminCaller,
+    actor_kind: ActorKind,
+    req: &PushRequest,
+) -> Result<(), AdminError> {
+    if actor_kind != ActorKind::SmartConsumer
+        || req.wiki_type.as_deref() != Some(crate::wiki::AGENT_WIKI_TYPE)
+    {
+        return Ok(());
+    }
+    let slug = match req.mode {
+        PushMode::Create => req.slug.clone().unwrap_or_default(),
+        PushMode::Upsert => req
+            .wiki_id
+            .as_ref()
+            .and_then(|id| tree.locate(id).ok())
+            .map_or_else(String::new, |h| h.meta().slug.as_str().to_owned()),
+    };
+    if caller.consumer_id.as_deref() == Some(slug.as_str()) {
+        Ok(())
+    } else {
+        Err(AdminError::AgentLabelReserved { slug })
+    }
+}
+
 /// Run a `wiki_admin_push` against the workdir. See module docstring
 /// for invariants and deferred features.
 ///
@@ -522,6 +570,7 @@ pub async fn push(
     if actor_kind == ActorKind::SmartConsumer && !caller.consumer_class.is_smart() {
         return Err(AdminError::RequiresSmart);
     }
+    guard_agent_label(tree, caller, actor_kind, &req)?;
     // Fail-fast on the size cap before doing any other work.
     // Per-id parsing happens inside each branch once the effective
     // `wiki_id` is known (create derives it from parent + slug; upsert
@@ -688,7 +737,11 @@ async fn push_create(
         // power-user create lands `false` (the default); a smart-consumer
         // smart-wiki create passes `smart: true`.
         smart: is_smart_family,
-        // A smart-consumer wiki create is never an agent's own identity wiki.
+        // Never stamped here: an agent identity wiki is not created through
+        // this path at all, and the one smart wiki whose subject IS an agent
+        // (a consumer's operational wiki) is stamped by the sign-in flow right
+        // after this create — `is_agent` is a server-written marker with no
+        // field on the tool surface, so a pushing consumer cannot claim it.
         is_agent: false,
         created: Some(now_iso.clone()),
         updated: Some(now_iso),
@@ -2313,6 +2366,46 @@ mod tests {
             .await
             .expect_err("must reject non-smart create");
         assert!(matches!(err, AdminError::WikiTypeNotAdminWritable { .. }));
+    }
+
+    /// The `agent` label names "the working memory of the agent connected as
+    /// this consumer". A consumer may claim it on its own wiki and nowhere
+    /// else — otherwise the dashboard would repeat a claim nobody checked.
+    #[tokio::test]
+    async fn create_refuses_the_agent_label_on_someone_elses_wiki() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        let mut req = create_smart_wiki_request("lnprint");
+        req.wiki_type = Some(crate::wiki::AGENT_WIKI_TYPE.to_owned());
+        let err = push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
+            .await
+            .expect_err("must reject the reserved label");
+        assert!(
+            matches!(&err, AdminError::AgentLabelReserved { slug } if slug == "lnprint"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// …and on its own it goes through: the caller's `consumer_id` is the slug
+    /// the consent flow forged the wiki under.
+    #[tokio::test]
+    async fn create_allows_the_agent_label_on_the_callers_own_wiki() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        let mut req = create_smart_wiki_request("cc-laptop");
+        req.wiki_type = Some(crate::wiki::AGENT_WIKI_TYPE.to_owned());
+        push(&pool, &tree, &alice_smart(), ActorKind::SmartConsumer, req)
+            .await
+            .expect("own operational wiki may carry the agent label");
+    }
+
+    /// The dashboard is not a consumer: the operator may label anything.
+    #[tokio::test]
+    async fn dashboard_may_label_any_wiki_agent() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        let mut req = create_smart_wiki_request("lnprint");
+        req.wiki_type = Some(crate::wiki::AGENT_WIKI_TYPE.to_owned());
+        push(&pool, &tree, &alice_smart(), ActorKind::Dashboard, req)
+            .await
+            .expect("dashboard writes are not gated by the consumer's identity");
     }
 
     #[tokio::test]

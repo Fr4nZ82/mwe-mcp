@@ -1,8 +1,8 @@
 ---
 name: rem-completion
 description: REM completion sweep — given one freshly captured EVIDENCE fact and a numbered list of OPEN candidate items from this wiki family (the top-level wiki and every wiki nested under it), decide which candidates the evidence completes (the consumable intention was spent); strict JSON out; the safety net behind the ingest closure verb
-version: 1.1
-default_version_at_bootstrap: v1.1
+version: 1.2
+default_version_at_bootstrap: v1.2
 ---
 
 # Prompt: rem-completion
@@ -20,7 +20,11 @@ The confirmation prompt for the REM **completion sweep** sub-job
   tier, shared by every REM confirmer sweep) — REM-only.
 - **Placeholders**: `{evidence_text}`, `{evidence_date}` (the evidence
   fact's capture instant), `{candidates}` (numbered open items:
-  `fact_id · created_at · text`).
+  `fact_id · created_at · text`), `{subject_note}` — empty for an ordinary
+  family; on an **agent's own** family (the scope root carries the
+  `is_agent` marker) it says that the corpus narrates the agent's service,
+  so helping with an item never completes it. Resolved per family by
+  `agent_families`, never per case.
 - **Output**: one strict JSON object, parsed by the first-balanced-`{}`
   scanner. Empty `completions` = nothing closes.
 - **Runtime parameters**: temperature 0.1, max_tokens 400.
@@ -44,6 +48,7 @@ Rules:
 - `valid_to` = WHEN it happened, when the evidence says so (resolve relative phrases against the evidence's capture date, shown below); otherwise null — the engine then uses the evidence's own date.
 - `target` must be a fact_id copied EXACTLY from the candidate list. Never invent one.
 - Closures here are act-first but revertable from the dashboard; still, when in doubt, leave the candidate open (empty list is a fine answer).
+{subject_note}
 
 EVIDENCE (captured {evidence_date}):
 {evidence_text}

@@ -52,10 +52,17 @@ pub fn router() -> Router<DashboardState> {
         .route("/users/:id/reset-2fa", post(reset_2fa))
 }
 
-/// Raw tuple from the user-list query (`user_id`, `is_admin`, `email`,
-/// `cred_id`, open `invitation_id`). Aliased to keep the `query_as`
+/// Raw tuple from the user-list query (`user_id`, `is_admin`, `is_agent`,
+/// `email`, `cred_id`, open `invitation_id`). Aliased to keep the `query_as`
 /// turbofish under clippy's type-complexity bar.
-type UserListRow = (String, i64, Option<String>, Option<String>, Option<String>);
+type UserListRow = (
+    String,
+    i64,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 /// Raw tuple from the edit-form load query (`email`, `aliases` JSON,
 /// `is_admin`, `require_2fa`, `timezone`).
@@ -73,6 +80,13 @@ type EditUserRow = (
 struct UserRow {
     user_id: String,
     is_admin: bool,
+    /// A consumer agent's credential-less system user (`enrollment_users
+    /// .is_agent`, the authoritative side of the diagonal identity model).
+    /// Mutually exclusive with a login, and the reason the listing separates
+    /// it from `user`: a bot showed up here as an ordinary user whose status
+    /// happened to read "no credentials, no invitation" — true of a human
+    /// mid-onboarding too, so the operator could not tell them apart.
+    is_agent: bool,
     /// Login email, set by the admin at invite. `None` only for legacy
     /// rows created before the email became mandatory.
     email: Option<String>,
@@ -85,6 +99,7 @@ async fn fetch_users(state: &DashboardState) -> Result<Vec<UserRow>> {
     let rows: Vec<UserListRow> = sqlx::query_as(
         "SELECT u.user_id,
                 u.is_admin,
+                u.is_agent,
                 u.email,
                 c.user_id AS cred_id,
                 (SELECT invitation_id FROM user_invitations i
@@ -103,9 +118,10 @@ async fn fetch_users(state: &DashboardState) -> Result<Vec<UserRow>> {
     Ok(rows
         .into_iter()
         .map(
-            |(user_id, is_admin, email, cred_id, invitation_id)| UserRow {
+            |(user_id, is_admin, is_agent, email, cred_id, invitation_id)| UserRow {
                 user_id,
                 is_admin: is_admin != 0,
+                is_agent: is_agent != 0,
                 email,
                 has_credentials: cred_id.is_some(),
                 open_invitation: invitation_id,
@@ -149,9 +165,17 @@ fn render_list(
                             @if let Some(email) = &u.email { (email) }
                             @else { span.muted { "— no email (can't sign in)" } }
                         }
-                        td { @if u.is_admin { "admin" } @else { "user" } }
+                        // An agent is an enrolled identity like any other, so
+                        // its row is here — but it is a bot's memory identity,
+                        // never a person, and it can never hold a login.
                         td {
-                            @if u.has_credentials { "active" }
+                            @if u.is_admin { "admin" }
+                            @else if u.is_agent { "agent" }
+                            @else { "user" }
+                        }
+                        td {
+                            @if u.is_agent { "consumer agent (no login by design)" }
+                            @else if u.has_credentials { "active" }
                             @else if let Some(invitation_id) = &u.open_invitation {
                                 "invited — "
                                 a href=(format!("/dashboard/accept-invite/{invitation_id}")) {

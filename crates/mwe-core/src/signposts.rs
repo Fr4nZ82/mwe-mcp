@@ -392,15 +392,22 @@ pub struct SignpostStatus {
 /// that is not smart, whose owner is a group, or that is **not bound to
 /// a project** simply has no signposts.
 ///
-/// "Not a project" means the `_meta.md` `wiki_type` is
-/// [`crate::wiki::AGENT_WIKI_TYPE`]: the consumer's own operational
-/// wiki, forged by the sign-in flow, is private working memory and
-/// signposting it would only add noise to the owner's `projects.md` —
+/// "Not a project" means the wiki is an **agent's own**: the consumer's
+/// operational wiki, forged by the sign-in flow, is private working memory
+/// and signposting it would only add noise to the owner's `projects.md` —
 /// observed live on `franz-ubestia-cc`, where the nudge fired twice and
-/// was correctly ignored twice. The test is deliberately that flag and
+/// was correctly ignored twice. The test is deliberately that property and
 /// not "has a `project_id`": `project_id` is optional on create, so a
 /// project wiki pushed without one would otherwise go silently
 /// undiscoverable, which is the failure this whole area exists to fix.
+///
+/// The property is read from the server-written `is_agent` marker, with the
+/// [`crate::wiki::AGENT_WIKI_TYPE`] label kept as a fallback: that label is a
+/// free-form string the *consumer* chooses on `wiki_admin_push`, so it can be
+/// claimed by anything and is trustworthy only on the wikis the sign-in flow
+/// wrote. Either alone would leak — the marker misses an operational wiki
+/// forged before it existed and not yet re-authed, the label misses nothing
+/// but can be spoofed — so the union is the honest test.
 ///
 /// # Errors
 ///
@@ -414,7 +421,7 @@ pub async fn status(
     if !project.meta().smart {
         return Ok(None);
     }
-    if project.meta().wiki_type == crate::wiki::AGENT_WIKI_TYPE {
+    if project.meta().is_agent || project.meta().wiki_type == crate::wiki::AGENT_WIKI_TYPE {
         return Ok(None);
     }
     let Principal::User(owner) = tree.resolve_scope_principal(project.meta())? else {
@@ -823,6 +830,34 @@ mod tests {
                 .await
                 .expect("status")
                 .is_none()
+        );
+    }
+
+    /// The same silence, keyed on the marker the SERVER writes rather than on
+    /// the `wiki_type` string the consumer chooses. A consumer that pushed its
+    /// operational wiki under some other label — anything is legal there — used
+    /// to collect signpost nudges on its private working memory.
+    #[tokio::test]
+    async fn status_stays_silent_on_an_operational_wiki_under_any_label() {
+        let dir = tempdir().unwrap();
+        seed_tree(dir.path(), "");
+        let agent = dir.path().join("wikis/alice/cc-laptop");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(
+            agent.join("_meta.md"),
+            "---\nwiki_id: alice-cc-laptop\nwiki_type: wiki-scratch\nparent_wiki_id: alice\n\
+             slug: cc-laptop\ntitle: Claude Code (cc-laptop)\nsmart: true\nis_agent: true\n---\n",
+        )
+        .unwrap();
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+        let pool = make_pool().await;
+
+        assert!(
+            status(&pool, &tree, &WikiId::parse("alice-cc-laptop").unwrap())
+                .await
+                .expect("status")
+                .is_none(),
+            "the is_agent marker settles it, whatever the label says"
         );
     }
 

@@ -1,8 +1,8 @@
 ---
 name: rem-dedup
 description: REM revisor — binary dedup confirmer between two facts (pair nominated by the jaccard band or the embedding-cosine channel), each shown with the page it lives on
-version: 1.2
-default_version_at_bootstrap: v1.2
+version: 1.3
+default_version_at_bootstrap: v1.3
 ---
 
 # Prompt: rem-dedup
@@ -45,6 +45,11 @@ below the prompt build.
   so a subject the page establishes and the prose elides is judged in
   context
 - `{old_page}` — same, for the older fact
+- `{subject_note}` — empty for an ordinary family; on an **agent's own**
+  family (the scope root carries the `is_agent` marker) it carries the extra
+  rubric line saying that WHO an episode was lived with is part of the fact,
+  so two near-identical sentences about two different people stay two
+  memories. Resolved once per family scope by `family_scopes`, never per pair
 
 **Output schema**: strict JSON, exactly one of `{"same": true}` or
 `{"same": false}`. No prose. Parsed by `parse_llm_yes` in
@@ -84,6 +89,7 @@ You are the REM dedup confirmer for mwe-mcp.
 Two facts follow, each with the wiki page it lives on. Decide if they encode the *same* fact (paraphrase / restatement / very minor delta).
 The page frames the subject: compiled prose routinely elides a subject the page itself establishes — "È nato il 23 maggio 1984" on a person's own page states THAT person's birth date. Resolve such elisions against each fact's page before judging; two facts whose claims coincide once each subject is resolved ARE the same fact — INCLUDING when they live on different pages or wikis of the same family. Same page is NOT a precondition.
 Example (split identity across pages, the flagship case): A = "È il padre di Franz" on the family wiki's own page, B = "Bruno è il padre di Franz" on Bruno's sub-wiki page. Once each page's subject is resolved they state the SAME fact — the family scope pairs them across the two pages, so answer {"same": true}.
+{subject_note}
 Reply STRICT JSON: {"same": true} or {"same": false}. No prose.
 
 A (page: {new_page}):

@@ -1,8 +1,8 @@
 ---
 name: regenerate-index
 description: Hub Writer prompt — regenerate `index.md` of a parent wiki from its children list + most recent active facts (the REM regenerator); also reused by the compiler's hub-page pass (`compiler::compile_hub_page`)
-version: 1.3
-default_version_at_bootstrap: v1.3
+version: 1.4
+default_version_at_bootstrap: v1.4
 source_of_truth: crates/mwe-core/src/rem.rs (fn regenerate_index)
 ---
 
@@ -40,6 +40,12 @@ consumer's responsibility).
 - `{wiki_type}` — the parent wiki's `wiki_type` slug (e.g.
   `wiki-user`, `wiki-group`, `wiki-root`)
 - `{wiki_id}` — canonical wiki id of the parent
+- `{subject}` — whose memory this is, from `wiki::subject_directive`:
+  **empty** for an ordinary wiki, and the first-person directive when the
+  wiki carries the `is_agent` marker (its index is the opening page of that
+  agent's autobiography, not a profile of it). Both consumers pass it; the
+  compiler's hub pass resolves it from the page's wiki, since a hub has no
+  subject of its own
 - `{children}` — markdown bullet list of children as **canonical
   wikilinks** (the link grammar of
   recall-pipeline.md):
@@ -93,6 +99,7 @@ Regenerate the `index.md` for the memory wiki below.
 Title: {title}
 Type: {wiki_type}
 Wiki id: {wiki_id}
+{subject}
 
 Children (a list of [[wikilinks]] — keep every link EXACTLY as written, character-for-character; group sensibly, never restyle or rewrite a link target):
 {children}

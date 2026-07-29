@@ -555,14 +555,24 @@ for today). The push is the right moment: the agent is already here, and
 something worth signposting just happened.
 
 The nudge is **silent on a consumer's own operational wiki** — the wiki
-the sign-in flow forges with `wiki_type: agent`
-([`wiki::AGENT_WIKI_TYPE`](../../crates/mwe-core/src/wiki.rs)). That wiki
+the sign-in flow forges. That wiki
 is the agent's private working memory, not a project, and signposting it
 would only add noise to the page whose whole job is to let a turn
-discover *projects*. The test is deliberately the server-written
-`wiki_type` and not "has a `project_id`": that field is optional on
-create, so keying on it would silently un-signpost a real project wiki
-pushed without one — the exact failure this area exists to prevent.
+discover *projects*. The test is deliberately that property and not "has
+a `project_id`": that field is optional on create, so keying on it would
+silently un-signpost a real project wiki pushed without one — the exact
+failure this area exists to prevent.
+
+What identifies the wiki is the **`is_agent` marker** the sign-in flow
+stamps on it, with the `wiki_type: agent` label
+([`wiki::AGENT_WIKI_TYPE`](../../crates/mwe-core/src/wiki.rs)) kept as the
+fallback for an operational wiki forged before the marker existed and not
+yet re-authed. The label alone was never a safe test: `wiki_type` is a
+free-form string the **consumer** passes to `wiki_admin_push`, so any wiki
+can claim `agent` and dodge the nudge, while a consumer that labelled its
+operational wiki anything else collected nudges on its private working
+memory. `is_agent` has no field on the tool surface — only the server
+writes it.
 
 ### 4. Ingest filter — and the conversation superset
 
@@ -684,6 +694,14 @@ in two: the write-jobs **never touch smart wikis** (the smart
 consumer owns those writes via `wiki_admin_push`), and two
 smart-wiki-only **read-jobs** post observations into `_briefing.md` so
 the smart consumer can act on them next session.
+
+The corollary is a **standing ruling**, not an oversight to fix later: a smart
+wiki — including an agent's own **operational** wiki — is never consolidated,
+deduped, re-shaped or forgotten by the engine, and the upkeep is the owning
+consumer's job. Anything that goes wrong there is corrected in the **bundled
+skill** ([`smart-consumer`](../../crates/mwe-core/skills/smart-consumer.md),
+§"Nothing tidies a smart wiki but you"), never by carving a server-side
+exception into the split above. See planning item 27d-smart for the decision.
 
 The split is enforced through a single cycle-scoped `SmartWikiIndex`
 loaded by [`load_smart_wiki_index`](../../crates/mwe-core/src/rem.rs):

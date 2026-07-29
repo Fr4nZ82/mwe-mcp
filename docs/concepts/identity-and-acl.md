@@ -247,6 +247,14 @@ class closes that footgun by construction. Three places enforce it:
    `wiki_ingest_message` consumer) is wired anyway, not left silently
    unbound. The link consumer ↔ system-user ↔ wiki is thus explicit, never
    inferred from "this user happens to have no password".
+   The same middleware stamps the **wiki-side mirror** of the marker
+   (`wiki::ensure_is_agent_marker` → `is_agent: true` in the agent wiki's
+   `_meta.md`), because the passes that must know whose wiki this is read
+   the tree, not the DB — the ingest router, the REM, the dashboard. It is
+   idempotent and best-effort (one `stat` + read once the marker is there),
+   and it is on the connect path rather than only on bot creation for the
+   case that actually occurs: an agent enrolled through the ordinary user
+   CRUD, whose wiki was therefore created as a plain `wiki-user`.
 
 A **system user** is an `enrollment_users` row with no `user_credentials`
 row — a pure memory identity that cannot log into the dashboard. The

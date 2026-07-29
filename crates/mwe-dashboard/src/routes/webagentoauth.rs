@@ -651,6 +651,11 @@ async fn ensure_dedicated_wiki(
     };
     let wiki_id = WikiId::child_of(&parent, slug);
     if memory.tree.locate(&wiki_id).is_ok() {
+        // Re-auth on a wiki forged before the marker existed: stamp it now, so
+        // an operational wiki self-describes as an agent's the same way an
+        // agent identity wiki does. Best-effort — the sign-in must not fail
+        // over a metadata mirror.
+        stamp_agent_marker(state, &wiki_id);
         return Ok(wiki_id);
     }
     let caller = wiki_admin::AdminCaller {
@@ -686,11 +691,37 @@ async fn ensure_dedicated_wiki(
     )
     .await
     {
-        Ok(_) => Ok(wiki_id),
+        Ok(_) => {
+            stamp_agent_marker(state, &wiki_id);
+            Ok(wiki_id)
+        },
         Err(e) => {
             tracing::error!(error = %e, wiki = %wiki_id, "webagentoauth: forge wiki failed");
             Err(consent_error("Could not create the dedicated wiki."))
         },
+    }
+}
+
+/// Mark the operational wiki as an agent's in its own `_meta.md`.
+///
+/// The wiki already carries `wiki_type: agent`, but that string is a
+/// **free-form label the consumer chooses** on `wiki_admin_push` — anything may
+/// claim it, so nothing downstream should trust it. `is_agent` is written by
+/// the server alone (`wiki_admin_push` has no field for it), which makes it the
+/// flag the dashboard badge and the signpost nudge key on. Best-effort and
+/// idempotent: it is a self-description, never the source of truth.
+fn stamp_agent_marker(state: &DashboardState, wiki_id: &WikiId) {
+    let Some(memory) = state.memory.as_ref() else {
+        return;
+    };
+    // The operational wiki is a CHILD (`wikis/<user>/<connection>/`), so its id
+    // is not a path and it has to be located — a tree walk, affordable exactly
+    // here because this runs once per sign-in.
+    let Ok(handle) = memory.tree.locate(wiki_id) else {
+        return;
+    };
+    if let Err(e) = mwe_core::wiki::ensure_is_agent_marker_in(handle.abs_dir()) {
+        tracing::warn!(error = %e, wiki = %wiki_id, "webagentoauth: is_agent stamp failed (non-fatal)");
     }
 }
 

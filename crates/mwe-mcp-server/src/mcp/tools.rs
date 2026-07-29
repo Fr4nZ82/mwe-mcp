@@ -2761,6 +2761,9 @@ fn admin_error_to_tool_error(err: &mwe_core::wiki_admin::AdminError) -> ToolErro
         E::WikiTypeNotAdminWritable { .. } => {
             (ToolErrorClass::WikiTypeNotAdminWritable, err.to_string())
         },
+        // The reserved `agent` label is a caller mistake about its own
+        // identity, not a wiki-type capability question: plain invalid input.
+        E::AgentLabelReserved { .. } => (ToolErrorClass::InvalidInput, err.to_string()),
         // The child-only template gate gets its
         // own wire code so callers can branch without string-matching.
         E::WikiTypeRequiresParent { .. } => {

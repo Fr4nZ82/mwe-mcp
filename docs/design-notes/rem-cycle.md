@@ -156,7 +156,24 @@ lives, not what it is called). Smart wikis are excluded entirely;
 **arbitrary cross-wiki pairs stay out of scope** (the `morgana` ↔
 `hermes1` class of contradiction is
 self-correcting REM's future
-business). Within a line the passes stay god-mode as they always were —
+business).
+
+Each scope also carries **`is_agent`** — read off the family root's `_meta.md`
+during the same walk, so it costs nothing per candidate. `agent_families`
+flattens it to `wiki_id → bool` for the passes that judge one case at a time,
+and each of the four then swaps in its own `{subject_note}` rubric line: the
+subject of that family is an **AI agent's own memory**, not a person's life.
+Dedup keeps two look-alike episodes lived with two different people apart;
+the completion sweep is told that "the agent advised X" is service, never
+evidence that someone's intention was spent; the contradiction sweep fences
+satellites to the same relationship thread as the seed; the page merge is
+forbidden from folding two per-person threads together — which `slug_kinship`
+nominates by construction (`esperienze_franz` / `esperienze_bob` share a
+token) and which would undo the deliberate per-served-user diary split.
+The note is empty for every other family, so an ordinary prompt is unchanged
+byte for byte — and the `rem_verdicts` memo keys stay valid.
+
+Within a line the passes stay god-mode as they always were —
 the family is the same subject's own tree; per-fragment ACL travels
 untouched with every move (`move_to_wiki` keeps owner/allow/sender).
 Pinned by `family_scopes_partition_by_directory_nesting_not_id`.
@@ -256,6 +273,17 @@ For each **family line** ([family scope](#family-scope--the-consolidation-passes
    establishes, and without the page the confirmer cannot tell whether
    two subject-elided claims share their subject (it would fail-safe to
    "not the same" and the duplicate would survive every night).
+   On an **agent's own** family — the scope root carries `is_agent`, resolved
+   once by `family_scopes` rather than per pair — the `{subject_note}`
+   placeholder adds a rubric line: that wiki is the agent's autobiography, so
+   *who* an episode was lived with is part of the fact and two near-identical
+   sentences about two different people are two memories, not a duplicate.
+   A failed confirm **skips its pair** (soft error in the report) instead of
+   aborting: `dream::run_full` propagates a cycle error, so one malformed
+   response used to cost the promote, the reorg and every queued page compile
+   (live 2026-07-29, a Gemini candidate with no `text` part). Past
+   `REVISOR_LLM_FAILURE_ABORT` **consecutive** failures the cycle does abort —
+   that is an outage, and nothing downstream would work either.
 5. On confirm, merge **act-first** via
    [`dedup::apply_dedup_merge_direct`](../../crates/mwe-core/src/dedup.rs):
    the loser is superseded by the winner in-cycle (inside a

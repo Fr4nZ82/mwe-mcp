@@ -3045,3 +3045,49 @@ async fn facts_index_deep_link_points_at_edit_form() {
         "no row should still link at the removed per-fact open-in-chat page: {html}"
     );
 }
+
+/// An agent's own wiki is a `wiki-user` like a human's — the agent is an
+/// enrolled user — so the type column alone shows Hermes and Alice as the same
+/// kind of thing. The badge is what tells the operator whose memory a row is.
+#[tokio::test]
+async fn wiki_list_badges_an_agent_wiki() {
+    let (app, _pool, tree, _dir) = make_app_with_memory().await;
+    let cookie = login_as_admin(&app).await;
+    let dir = tree.wikis_dir().join("hermes1");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("_meta.md"),
+        "---\n\
+         wiki_id: hermes1\n\
+         wiki_type: wiki-user\n\
+         parent_wiki_id: null\n\
+         slug: hermes1\n\
+         title: Hermes\n\
+         acl_default: 'user:hermes1'\n\
+         is_agent: true\n\
+         ---\n",
+    )
+    .unwrap();
+
+    let response = send(
+        &app,
+        Request::builder()
+            .uri("/wiki?reveal=1")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_string(response).await;
+    assert!(
+        html.contains("wiki-user <span class=\"badge\">agent</span>"),
+        "the agent's row is badged: {html}"
+    );
+    // Exactly one badge: the admin's own identity wiki is a person's.
+    assert_eq!(
+        html.matches("class=\"badge\">agent<").count(),
+        1,
+        "only the agent's wiki is badged: {html}"
+    );
+}

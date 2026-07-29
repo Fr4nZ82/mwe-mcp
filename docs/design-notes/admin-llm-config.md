@@ -157,6 +157,23 @@ operator fine-tunes.
 - **base_url** — optional endpoint override; matters mostly for a remote /
   custom-port Ollama.
 
+### What the boot health-check actually proves
+
+The Anthropic probe sends `temperature: 0.1` — the value the
+determinism-sensitive callers pin (`recall_nav`, the REM revisor, the ingest
+classifier) — precisely so that boot exercises the request shape the engine
+sends rather than a simpler one. For a model on the
+`anthropic_rejects_sampling_params` list the parameter is stripped before the
+probe goes out, exactly as on a real call, so those slots still pass; an
+**unlisted** family that has quietly dropped sampling params fails here instead.
+
+The rule this encodes, learned on 2026-07-29 when Sonnet 5 was absent from that
+list: a probe that is gentler than production is not a check. Every navigator
+call returned HTTP 400 while the boot line read *all configured slots
+reachable*, and `recall_nav` logged each failure as a partial recall — an
+answer built from an incomplete walk, indistinguishable at the caller from a
+complete one. A slot's health is whether **its own** calls work.
+
 ## models.dev catalog
 
 The model combobox is backed by

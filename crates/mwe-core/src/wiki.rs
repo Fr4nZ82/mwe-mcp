@@ -153,12 +153,39 @@ pub const PROJECTS_FILENAME: &str = "projects.md";
 /// `wiki_type` of a smart consumer's **operational wiki**.
 ///
 /// That wiki is the consumer's own working memory, one per connection,
-/// and never a project. Written by the OAuth consent flow and read
-/// wherever "is this a project?" must be answered from the wiki alone —
-/// the signpost nudge is the first such place. Every other smart
-/// `wiki_type` is a free-form label chosen by the consumer, so this one
-/// is only trustworthy because the *server* writes it.
+/// and never a project. Written by the OAuth consent flow, which also
+/// stamps [`WikiMeta::is_agent`] on it — **that** marker, not this label,
+/// is what downstream code keys on ("is this an agent's wiki?"), because
+/// `wiki_type` is a free-form string any consumer may pass to
+/// `wiki_admin_push` and can therefore be claimed by anything. This
+/// constant survives as the human-readable label the dashboard shows and
+/// as the compatibility fallback for an operational wiki forged before
+/// the marker existed.
 pub const AGENT_WIKI_TYPE: &str = "agent";
+
+/// The `{subject}` line for an agent's wiki; empty for every other wiki.
+///
+/// Read by the prompts that WRITE a wiki's index — the hub writer and the
+/// compiler's hub pass. Those passes narrate a wiki from the outside by
+/// default, which is the voice a human's memory wants. An agent's wiki is its
+/// **autobiography**: left on the default voice the same pass files the
+/// agent's own memories as a third-party dossier ("l'agente ha aiutato
+/// l'utente…") — the agent reads back a report about itself instead of
+/// remembering. This lives next to the [`WikiMeta::is_agent`] marker it reads
+/// so the two cannot drift apart, and is injected whole so a prompt that does
+/// not want it simply omits the placeholder.
+#[must_use]
+pub const fn subject_directive(meta: &WikiMeta) -> &'static str {
+    if meta.is_agent {
+        "SUBJECT: this wiki is an AI AGENT's own memory — what you write is a page of ITS \
+         autobiography, not a profile someone else keeps on it. Write in the FIRST PERSON \
+         (\"sono…\", \"lavoro con…\", in the language named below): who I am, what I do, who I \
+         work with and what I have learned. Never a third-person description of the agent, \
+         never a log of services rendered."
+    } else {
+        ""
+    }
+}
 
 /// True when `source_path` is a wiki's reserved signposts page
 /// [`PROJECTS_FILENAME`]. Keyed on the file name, like [`is_rules_page`],
@@ -1833,7 +1860,8 @@ pub fn append_engine_rule(handle: &WikiHandle, rule: &str) -> Result<()> {
 /// - `title`: human-readable display title (free unicode). Defaults
 ///   from the caller — for the setup wizard, pass the `user_id`; once
 ///   the CRUD has a `display_name` field, pass that.
-/// - `kind`: [`IdentityKind::User`] or [`IdentityKind::Group`].
+/// - `kind`: [`IdentityKind::User`], [`IdentityKind::Group`], or
+///   [`IdentityKind::Agent`] (a `wiki-user` stamped `is_agent: true`).
 ///
 /// # Errors
 ///
@@ -1916,20 +1944,48 @@ pub fn create_identity_wiki(
     })
 }
 
-/// Stamp the `is_agent` marker (roadmap 27d / 4i) on an existing identity wiki.
+/// Stamp the `is_agent` marker (roadmap 27d / 4i) on an **identity** wiki.
 ///
-/// The **backfill** for an agent wiki created before the marker existed (a fresh
-/// agent wiki is stamped at creation via [`IdentityKind::Agent`]). Idempotent:
-/// reads the `_meta.md`, sets `is_agent: true` if not already set, and rewrites
-/// it preserving the body. Returns `Ok(true)` when it
-/// changed the file, `Ok(false)` when the wiki is absent or already marked.
-/// Best-effort by contract: the caller logs and continues on error.
+/// The self-describing mirror of the authoritative binding, written by the
+/// server where an agent identity comes into being or reconnects: at creation
+/// via [`IdentityKind::Agent`], on bot-token mint, and from the MCP auth
+/// middleware on every standard connect — the path that heals an agent
+/// enrolled through the ordinary user CRUD, whose wiki was created as a plain
+/// `wiki-user`, without an operator step.
+///
+/// **Roots only, deliberately.** An identity wiki is always `wikis/<id>/`
+/// ([`create_identity_wiki`]), so the id maps straight onto its `_meta.md` and
+/// the connect path pays one `stat` — never a tree walk, which it would
+/// otherwise pay on *every request* of a deployment whose bot wiki is missing.
+/// A nested wiki (a smart consumer's operational wiki) is resolved by its
+/// caller, which then calls [`ensure_is_agent_marker_in`]; that caller is a
+/// sign-in, not a hot path, so the walk is affordable there and visible here.
+///
+/// Idempotent, and best-effort by contract: `Ok(false)` when the wiki is absent
+/// or already marked, and the caller logs and continues on error.
 ///
 /// # Errors
 ///
 /// [`WikiError`] on a filesystem or frontmatter (re)serialization failure.
 pub fn ensure_is_agent_marker(tree: &WikiTree, id: &WikiId) -> Result<bool> {
-    let meta_path = tree.wikis_dir().join(id.as_str()).join(META_FILENAME);
+    ensure_is_agent_marker_in(&tree.wikis_dir().join(id.as_str()))
+}
+
+/// [`ensure_is_agent_marker`] for a wiki whose directory the caller already
+/// resolved — the shape that is **not** a root.
+///
+/// The OAuth consent flow uses it for a smart consumer's operational wiki
+/// (`franz-ubestia-cc` lives at `wikis/franz/ubestia-cc/`, so its id is not a
+/// path). That wiki also carries `wiki_type: agent`, but the label is a
+/// free-form string the consumer passes to `wiki_admin_push` and anything may
+/// claim it; this marker is written by the server alone, which is why the
+/// signpost gate and the dashboard badge key on it.
+///
+/// # Errors
+///
+/// [`WikiError`] on a filesystem or frontmatter (re)serialization failure.
+pub fn ensure_is_agent_marker_in(wiki_dir: &Path) -> Result<bool> {
+    let meta_path = wiki_dir.join(META_FILENAME);
     if !meta_path.exists() {
         return Ok(false);
     }
@@ -1947,8 +2003,8 @@ pub fn ensure_is_agent_marker(tree: &WikiTree, id: &WikiId) -> Result<bool> {
         })?;
     atomic_write(&meta_path, meta_doc.as_bytes())?;
     tracing::info!(
-        wiki_id = id.as_str(),
-        "is_agent marker stamped on existing agent wiki (roadmap 27d / 4i backfill)"
+        wiki_id = meta.wiki_id.as_str(),
+        "is_agent marker stamped on agent wiki (roadmap 27d / 4i)"
     );
     Ok(true)
 }
@@ -2511,6 +2567,70 @@ mod tests {
         // An absent wiki → no-op, no error.
         let missing = WikiId::parse("ghost").unwrap();
         assert!(!ensure_is_agent_marker(&tree, &missing).unwrap());
+    }
+
+    /// The other shape of agent wiki: a smart consumer's operational wiki,
+    /// which is a CHILD (`wikis/franz/ubestia-cc/`), so the id does not map
+    /// onto a directory under `wikis/` and the root fast-path misses it. The
+    /// OAuth sign-in flow stamps exactly this shape.
+    #[test]
+    fn ensure_is_agent_marker_reaches_a_nested_operational_wiki() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("wikis")).unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        let parent = WikiId::parse("franz").unwrap();
+        create_identity_wiki(&tree, &parent, "Franz", IdentityKind::User).unwrap();
+        let child_dir = tree.wikis_dir().join("franz").join("ubestiacc");
+        fs::create_dir_all(&child_dir).unwrap();
+        atomic_write(
+            &child_dir.join(META_FILENAME),
+            b"---\nwiki_id: franz-ubestiacc\nwiki_type: agent\nparent_wiki_id: franz\n\
+              slug: ubestiacc\ntitle: Claude Code\nsmart: true\n---\n",
+        )
+        .unwrap();
+
+        let child = WikiId::parse("franz-ubestiacc").unwrap();
+        // The id is not a path, so the root-keyed entry point cannot reach it —
+        // and must not go hunting for it either, since it runs per request on
+        // the connect path.
+        assert!(
+            !ensure_is_agent_marker(&tree, &child).unwrap(),
+            "the root entry point stays on the root path and finds nothing"
+        );
+        let dir = tree
+            .locate(&child)
+            .expect("locate child")
+            .abs_dir()
+            .to_owned();
+        assert!(
+            ensure_is_agent_marker_in(&dir).unwrap(),
+            "the caller resolves the child, then stamps it"
+        );
+        let raw = fs::read_to_string(child_dir.join(META_FILENAME)).unwrap();
+        assert!(raw.contains("is_agent: true"), "{raw}");
+        // The parent is untouched — the marker is per-wiki, and the human who
+        // owns the operational wiki is not an agent.
+        let parent_raw =
+            fs::read_to_string(tree.wikis_dir().join("franz").join(META_FILENAME)).unwrap();
+        assert!(!parent_raw.contains("is_agent"), "{parent_raw}");
+    }
+
+    /// The `{subject}` directive the index-writing prompts substitute: present
+    /// only for an agent's wiki, so a human's index keeps the voice it has.
+    #[test]
+    fn subject_directive_speaks_only_for_an_agent_wiki() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("wikis")).unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        let human = WikiId::parse("franz").unwrap();
+        let agent = WikiId::parse("hermesbot").unwrap();
+        create_identity_wiki(&tree, &human, "Franz", IdentityKind::User).unwrap();
+        create_identity_wiki(&tree, &agent, "Hermes", IdentityKind::Agent).unwrap();
+
+        assert!(subject_directive(&wiki_get_meta(&tree, &human).unwrap()).is_empty());
+        let directive = subject_directive(&wiki_get_meta(&tree, &agent).unwrap());
+        assert!(directive.contains("FIRST PERSON"), "{directive}");
+        assert!(directive.contains("autobiography"), "{directive}");
     }
 
     #[test]

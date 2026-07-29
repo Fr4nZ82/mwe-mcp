@@ -926,17 +926,44 @@ the subject and the ACL, the wiki is conceptual organisation — so a
 `group:`-owned fact may legitimately live in a user's wiki and a
 `user:`-owned one in a group wiki (the classifier prompt says so
 explicitly, with worked examples), and the engine does not couple them.
-The one placement that is never legitimate is a `user:`/`group:`-owned
-fact filed in an **agent's** wiki: that wiki is the agent's
-autobiography, reached only through the `owner_id: "self"` and
-behaviour-rule paths, both of which pin the wiki in code and never pass
-through here. So when the resolved target carries `is_agent` (the flag
-rides `AvailableWiki` from the wiki's `_meta`) and the owner is a user
-or a group, `validate_capture_plan` **redirects** the write to the
-owner's own wiki when it is in the turn's window, and **drops** the
-extraction when it is not (`TargetIsAgentWiki` → skip + warn, rather
-than misfile). The guard fires on that one shape only; every other
-owner⊥wiki placement the classifier proposes is honoured.
+The one placement that is never legitimate is **somebody else's** fact
+filed in an **agent's** wiki: that wiki holds one subject, the agent. So
+when the resolved target carries `is_agent` (the flag rides
+`AvailableWiki` from the wiki's `_meta`), `validate_capture_plan`
+**redirects** the write to the owner's own wiki when it is in the turn's
+window, and **drops** the extraction when it is not
+(`TargetIsAgentWiki` → skip + warn, rather than misfile).
+
+Two things the guard deliberately does *not* do, both of which would
+destroy facts rather than place them:
+
+- **The owner being the agent itself is exempt.** An identity wiki's id
+  *is* its principal's id, so `home == target` means the agent's wiki is
+  the owner's own home — the one place the fact belongs. This is the
+  ordinary case of a **user** stating something about the assistant
+  ("sei bravo con le pratiche INPS"): the `owner_id: "self"` sentinel
+  upstream only fires on an *assistant* turn, so on a user turn the fact
+  arrives here owned by the agent's own principal. Without the exemption
+  the guard would hunt for a non-agent wiki named after the agent, find
+  none, and drop every user-stated fact about the assistant.
+- **The redirect looks for the owner's home and nothing else** — not for
+  "a home that is not an agent's". With two bots enrolled, a fact about
+  bot B aimed at bot A's wiki has a perfectly good home in B's own wiki.
+
+Behaviour-rule and `self` facts never reach this function at all (both
+pin their wiki in code, upstream). Every other owner⊥wiki placement the
+classifier proposes is honoured.
+
+The guard is the net, not the routing. Upstream of it the **routing window
+itself says so**: an agent's entry in `available_wikis` carries `is_agent:
+true` (emitted only when set — a human's entry stays lean), and the prompt
+rules an agent's wiki out as a destination for anyone else's fact. Without
+that line the classifier saw `type: wiki-user, title: Hermes` and had only
+the title to guess from, so the guard was doing the routing. Note this
+depends on the marker being **on disk**: it rides `AvailableWiki` from the
+wiki's `_meta.md`, so an agent marked only in the DB left the whole
+mechanism inert — which is why the marker is now stamped on every standard
+connect ([identity-and-acl.md](../concepts/identity-and-acl.md) §1.5).
 
 The subject-owner axiom has a **delivery half**: a fact that files
 owned by an enrolled user who is not the human of the conversation is
@@ -1360,14 +1387,18 @@ of the user. The **soul emerges from use** — the agent's wiki starts empty and
 fills as it works; there is no seed file. The whole mechanism mirrors the
 behaviour-rule read/write paths, attributed to the agent instead of the user.
 
-The agent wiki already self-describes via the `is_agent` `_meta` marker (a
-mirror of the authoritative `consumers.system_user_id` binding — see
+The agent wiki self-describes via the `is_agent` `_meta` marker (a mirror of
+the authoritative `consumers.system_user_id` binding — see
 [memory-model.md](../concepts/memory-model.md)), so it is recognisable as an
-agent's without a DB lookup. The remaining arc (**27d-rem**) deepens the self:
-tune the REM to consolidate the agent's self-facts into a richer identity index
-(the REM already runs on the agent wiki — it is a normal `wiki-user`) and add
-organic forgetting (item 11), so the agent's self decays like a human's rather
-than only accreting — a first-class member with its own autobiography, not a
+agent's without a DB lookup, and the consolidation passes read it: the wiki's
+pages are compiled in the **first person** (`compiler::resolve_tone` →
+`agent-autobiography-first-person`, and `wiki::subject_directive` on the index
+writer) instead of as a third-party dossier about the agent, and the dedup
+confirmer is told that *who* an episode was lived with is part of the fact, so
+two near-identical episodes with two different people stay two memories
+([rem-cycle.md](rem-cycle.md)). What remains of **27d-rem** is organic
+forgetting (item 11), so the agent's self decays like a human's rather than
+only accreting — a first-class member with its own autobiography, not a
 routing sink.
 
 ## Cross-user attribution — `known_users` in the prompt
@@ -1386,7 +1417,22 @@ enrolled and by what names. `build_prompt` therefore injects a
 known_users:
   - id: bob
     aliases: Bob, Bobby, Roberto
+  - id: hermes1
+    aliases: Gandalf
+    is_agent: true
 ```
+
+The assistant is in the roster too — under the diagonal identity model it is
+an enrolled user like any other — and `is_agent` (the `enrollment_users`
+column, migration 0050) says which entry it is. Without it the "you" of every
+turn reads as one more stranger in the list, and a sentence addressed **to**
+the assistant is indistinguishable from a sentence **about** a third party;
+with it the prompt can state the asymmetry outright: the agent is a real
+principal (a fact whose subject is the agent is owned by it, Part 12's
+`owner_id: "self"`), but a human name in the message never resolves onto that
+entry, and a name addressed to it is address, not attribution — the same
+discrimination the naming-deixis rule makes. Emitted only when true, so a
+roster of humans carries no extra weight.
 
 The prompt's `owner_id` rule tells the model to resolve the named person
 to a canonical `user_id` through this roster (matching id or any alias)

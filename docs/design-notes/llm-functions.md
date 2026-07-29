@@ -57,16 +57,28 @@ not the 9B workhorse. The slot resolves the usual way through
 [`LlmConfig::cronista`](../../crates/mwe-core/src/config.rs) and is surfaced in
 the dashboard admin UI like the other slots.
 
-It is also the one caller that sets
-[`CompletionRequest::cache_system`](../../crates/mwe-core/src/llm.rs) (via
-`with_cached_system`): its system prompt is the standing brief plus the page
-index, **byte-identical for every page of one compile run**, so a backend that
-prices repeated prefixes can bill it once. The flag is a *claim about the
+It sets [`CompletionRequest::cache_system`](../../crates/mwe-core/src/llm.rs)
+(via `with_cached_system`): its system prompt is the standing brief plus the
+page index, **byte-identical for every page of one compile run**, so a backend
+that prices repeated prefixes can bill it once. The flag is a *claim about the
 caller's own prompt*, not a knob to sprinkle: on a system prompt that varies
 per call it buys a cache write per call and never a read. Honoured today only
 by the Anthropic backend (`cache_control` on the last system block); every
 other backend ignores it. See
 [narrative-compiler §the cacheable split](narrative-compiler.md#the-cacheable-split--why-the-page-comes-last).
+
+**The ingest classifier sets it too, and matters more.** Its system half is
+`ingest.md` with only `{locale}` substituted — identical call-to-call for a
+deployment — while the roster, the sender's rules, the recall block and the
+message itself ride in the user half. That split makes almost the whole request
+cacheable: `ingest.md` is ~30k tokens against a measured 27.8k average per call
+over the 174-call corpus rebuild of 2026-07-29, which is also the run that
+exposed the omission by reporting `cached_prompt_tokens: 0` on every one of
+them. Ingest is the engine's heaviest repeated caller by a wide margin (4.84M
+prompt tokens against 56k of output on that run), so it is the flag's largest
+single effect anywhere in the system. The 1 h window means the discount lands
+on bursts — a conversation, a replay, a REM night — while an isolated turn
+arriving after it expires pays the write surcharge instead.
 
 ### Reading the prefix cache — `cached_prompt_tokens`
 

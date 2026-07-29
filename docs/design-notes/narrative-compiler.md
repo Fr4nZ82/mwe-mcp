@@ -647,8 +647,26 @@ leaf, fed:
   [the cacheable split](#the-cacheable-split--why-the-page-comes-last)); the
   prompt carries the rule that pays for it: never link a page to itself;
 - the recommended outgoing `[[wikilinks]]` from the plan's link graph;
-- the wiki's prose tone (resolved by matching the wiki's actor kind — the
-  bare `wiki_type` string — in `resolve_tone`, cached per wiki within a run).
+- the wiki's prose tone (`resolve_tone`, cached per wiki within a run): the
+  `is_agent` marker first — an agent's own wiki is its **autobiography**, so
+  its pages are written in the first person
+  (`agent-autobiography-first-person`) instead of as a dossier kept on it,
+  and the marker has to be read before the type because that wiki is a
+  `wiki-user` like a human's — then the bare `wiki_type` string for everyone
+  else. The hub pass carries the same distinction through the index writer's
+  `{subject}` line (`wiki::subject_directive`).
+
+  **The first person is then narrowed per page** (`tone_for_page`), because a
+  wiki is one container but not one subject: an agent's wiki accumulates pages
+  whose subject is somebody else — misrouted before the agent-wiki guard went
+  live ([ingest-pipeline.md](ingest-pipeline.md), and ~30% of the live
+  assistant's wiki is such residue), and the residue does not vanish the day
+  the guard starts working. A leaf gets the autobiography voice only when most
+  of its facts are owned by the agent itself; otherwise it keeps the ordinary
+  identity voice. Narrating a user's pregnancy as the assistant's own life is a
+  far worse failure than the third-person log the voice exists to fix. The
+  **index / hub** pass stays wiki-level on purpose: an identity wiki's index is
+  its subject's own page by definition, whatever sits on the leaves below it.
 
 Every link the compiler feeds a prose-writing prompt is rendered by
 [`plan_page_wikilink`](../../crates/mwe-core/src/compiler.rs) in the

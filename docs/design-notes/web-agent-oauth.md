@@ -73,7 +73,12 @@ only ever follows the `webagentoauth` flow.
   and forged at consent (e.g. claude.ai → `<user>-<connection>`, a second agent →
   its own), a child of the user's identity wiki. On first connection it is forged
   via `wiki_admin::push mode=create` (smart, owned by the user); the call is
-  idempotent, so re-auth reuses it.
+  idempotent, so re-auth reuses it. Either way the flow stamps the wiki's
+  **`is_agent`** marker (`wiki::ensure_is_agent_marker`, on the forge *and* on
+  the reuse path, so a wiki forged before the marker existed heals at the next
+  sign-in): the `wiki_type: agent` label the create passes is a free-form
+  string any consumer may send, so the marker — server-written, absent from the
+  tool surface — is what the signpost nudge and the dashboard badge trust.
 - **Mirror-less, stateless per session.** Claude Code holds a local working copy
   (`.mwe/wiki/` + `.mwe/state.json`, checksums, op-log reconciliation); a web client
   has no filesystem, so none of that persists. The web agent operates **stateless

@@ -65,7 +65,7 @@ use sqlx::SqlitePool;
 use crate::acl::FactAclMap;
 use crate::enrollment;
 use crate::fact_index;
-use crate::llm::{CompletionRequest, LlmBackend};
+use crate::llm::{CompletionRequest, LlmBackend, LlmError};
 use crate::meta_annotate;
 use crate::prompts;
 use crate::recall::{MULTI_HOP_HARD_LIMIT, RecallHit, SenderContext, extract_wikilinks};
@@ -1157,21 +1157,51 @@ fn reader_wiki_card(
     (summary, reader_card.wiki_topics(wiki_id).to_vec())
 }
 
-/// One navigator completion + parse. `None` on transport failure or an
-/// unparseable decision — the funnel's degradation contract (log, keep the
-/// partial recall, never kill the turn).
+/// One navigator completion + parse, with a single retry on the failures
+/// that are worth retrying. `None` on a hard failure or an unparseable
+/// decision — the funnel's degradation contract (log, keep the partial
+/// recall, never kill the turn).
+///
+/// The retry exists because the degradation is invisible where it lands:
+/// a caller gets an answer built from a partial walk and cannot tell it
+/// apart from a complete one. In the 2026-07-29 corpus rebuild 2 of 276
+/// calls came back with no `text` block at all — the model spent its
+/// budget on a thinking block — and each silently cost that turn its
+/// navigation. One more attempt is cheap next to an answer that is
+/// quietly worse.
+///
+/// Only [`LlmError::Protocol`], [`LlmError::Transport`] and
+/// [`LlmError::Backend`] are retried. An `Invalid` (a 400: bad params,
+/// unknown model, prompt too long) reproduces exactly on a second
+/// identical request, and `Auth` / `RateLimit` want the operator or a
+/// back-off window rather than an immediate retry.
 async fn request_decision(
     llm: &dyn LlmBackend,
     system: &str,
     user: String,
     policy: &NavigatorPolicy,
 ) -> Option<NavDecision> {
-    let request = CompletionRequest::new(user)
-        .with_system(system.to_owned())
-        .with_temperature(0.1)
-        .with_max_tokens(policy.decision_max_tokens);
-    let resp = match llm.complete(request).await {
+    let build = || {
+        CompletionRequest::new(user.clone())
+            .with_system(system.to_owned())
+            .with_temperature(0.1)
+            .with_max_tokens(policy.decision_max_tokens)
+    };
+    let resp = match llm.complete(build()).await {
         Ok(resp) => resp,
+        Err(err) if navigator_retriable(&err) => {
+            tracing::warn!(error = %err, "recall_nav: navigator LLM failed, retrying once");
+            match llm.complete(build()).await {
+                Ok(resp) => resp,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "recall_nav: navigator LLM failed after retry, partial recall"
+                    );
+                    return None;
+                },
+            }
+        },
         Err(err) => {
             tracing::warn!(error = %err, "recall_nav: navigator LLM failed, partial recall");
             return None;
@@ -1185,6 +1215,15 @@ async fn request_decision(
         );
     }
     decision
+}
+
+/// Whether a navigator failure is worth one more identical attempt.
+/// See [`request_decision`] for why the other variants are not.
+const fn navigator_retriable(err: &LlmError) -> bool {
+    matches!(
+        err,
+        LlmError::Protocol(_) | LlmError::Transport(_) | LlmError::Backend(_)
+    )
 }
 
 /// The wiki's one-line abstract from `_meta.extra["summary"]` (the same key
@@ -1612,6 +1651,7 @@ mod tests {
         let users = vec![enrollment::EnrolledUserLite {
             user_id: "morgana".to_owned(),
             aliases: vec!["Xheni".to_owned()],
+            is_agent: false,
         }];
         let groups = vec![enrollment::EnrolledGroupLite {
             group_id: "famiglia".to_owned(),

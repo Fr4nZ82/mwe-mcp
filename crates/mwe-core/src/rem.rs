@@ -1165,6 +1165,15 @@ struct FamilyScope {
     root_id: String,
     /// Every member wiki id, root first (walk order).
     wiki_ids: Vec<String>,
+    /// The root carries the `is_agent` marker: this family is an AGENT's own
+    /// memory, its autobiography rather than a person's. Read off the root
+    /// alone — a family line inherits its subject from the root, and the other
+    /// shape of agent wiki (a smart consumer's operational wiki, a child of a
+    /// human's root) never reaches here because smart wikis are excluded.
+    /// Resolved during the walk that builds the scopes so the consolidation
+    /// passes get it for free, instead of re-locating a wiki per candidate
+    /// pair.
+    is_agent: bool,
 }
 
 /// Partition the non-smart wikis into family lines.
@@ -1191,11 +1200,28 @@ fn family_scopes(tree: &WikiTree, smart_wiki_index: &SmartWikiIndex) -> Result<V
             let scope = FamilyScope {
                 root_id: id.clone(),
                 wiki_ids: vec![id],
+                is_agent: d.meta.is_agent,
             };
             scopes.push((d.abs_dir.clone(), scope));
         }
     }
     Ok(scopes.into_iter().map(|(_, s)| s).collect())
+}
+
+/// `wiki_id` → whether its family root carries the `is_agent` marker.
+///
+/// The confirmer sweeps pool their candidates per family and then judge
+/// one case at a time, so they need the rubric switch keyed by the wiki a
+/// case came from rather than by scope. Derived from [`family_scopes`] so
+/// every pass reads agent-ness identically.
+fn agent_families(scopes: &[FamilyScope]) -> BTreeMap<String, bool> {
+    let mut map = BTreeMap::new();
+    for s in scopes {
+        for w in &s.wiki_ids {
+            map.insert(w.clone(), s.is_agent);
+        }
+    }
+    map
 }
 
 /// `wiki_id → family root id`, for pair gating where only a relation
@@ -1272,6 +1298,12 @@ async fn run_auto_finalize_sweep(
 
 // ---------- Revisor jaccard semantic sub-job ----------
 
+/// Consecutive dedup-confirm failures that mean the backend is down rather
+/// than one response being malformed. Below it the pair is skipped and the
+/// cycle carries on; at it the cycle aborts, because nothing downstream
+/// (promotions, page merge, the compile) would work either.
+const REVISOR_LLM_FAILURE_ABORT: usize = 5;
+
 #[allow(
     clippy::too_many_lines,
     reason = "pairwise pre-pass + LLM confirm + proposal emit live as one loop on purpose"
@@ -1289,6 +1321,9 @@ async fn run_revisor_jaccard(
     // Resource guard on the LLM confirms (both nomination channels);
     // logged when it trips — never a silent truncation.
     let mut examined_capped = false;
+    // Consecutive confirm failures — the outage detector behind the
+    // per-pair skip below.
+    let mut llm_failures: usize = 0;
     // Family scope (leva-2): a wiki + its own sub-wiki descendants pool
     // their facts, so the duplicated identity facts of a subject split
     // across the line (parent wiki ↔ emergent sub-wiki) finally meet.
@@ -1388,7 +1423,8 @@ async fn run_revisor_jaccard(
                 if !surface && semantic.is_none() {
                     continue;
                 }
-                let prompt = revisor_prompt(tree, &facts[new_idx], &facts[old_idx])?;
+                let prompt =
+                    revisor_prompt(tree, &facts[new_idx], &facts[old_idx], scope.is_agent)?;
                 // The memo check sits BEFORE the examined cap on purpose:
                 // a pair whose "not the same" verdict is already on record
                 // must not consume tonight's confirm budget. That budget
@@ -1406,20 +1442,46 @@ async fn run_revisor_jaccard(
                     break;
                 }
                 report.pairs_examined += 1;
-                let resp = llm
+                // A single bad response must not cost the whole night. The
+                // dedup revisor used to propagate the first LLM error, and
+                // `dream::run_full` aborts the cycle on it — so one flaky
+                // candidate ("gemini response has no `text` part", live
+                // 2026-07-29) skipped the promote, the reorg and every page
+                // compile queued behind it, and the retry was a day away.
+                // Skip the pair (it stays nominable next cycle, unrecorded)
+                // and keep going, exactly as the completion / contradiction
+                // confirmers already do. A real backend outage still aborts:
+                // past `REVISOR_LLM_FAILURE_ABORT` consecutive failures
+                // nothing downstream would work either.
+                let resp = match llm
                     .complete(
                         CompletionRequest::new(prompt)
                             .with_temperature(0.1)
                             .with_max_tokens(60),
                     )
                     .await
-                    .map_err(|e| {
-                        RemError::Llm(format!(
+                {
+                    Ok(r) => {
+                        llm_failures = 0;
+                        r
+                    },
+                    Err(e) => {
+                        let note = format!(
                             "revisor failed on pair ({}, {}): {e}",
                             facts[new_idx].fact_id.as_str(),
                             facts[old_idx].fact_id.as_str()
-                        ))
-                    })?;
+                        );
+                        llm_failures += 1;
+                        if llm_failures >= REVISOR_LLM_FAILURE_ABORT {
+                            return Err(RemError::Llm(format!(
+                                "{note} ({llm_failures} consecutive revisor failures — backend down)"
+                            )));
+                        }
+                        tracing::warn!(error = %e, "rem revisor: pair skipped, cycle continues");
+                        report.errors.push(note);
+                        continue;
+                    },
+                };
                 if !parse_llm_yes(&resp.text) {
                     rem_verdicts::record_negative(
                         pool,
@@ -1523,7 +1585,69 @@ async fn run_revisor_jaccard(
 /// under the workdir.
 pub const BUNDLED_REM_DEDUP_MD: &str = include_str!("../prompts/rem-dedup.md");
 
-fn revisor_prompt(tree: &WikiTree, new: &FactIndexRow, old: &FactIndexRow) -> Result<String> {
+/// The extra rubric line handed to the dedup confirmer when the pair lives in
+/// an **agent's own** wiki.
+///
+/// The default rubric resolves subject elisions against each fact's page and
+/// then judges the claims — right for a person's memory, wrong for an agent's
+/// autobiography, where the *person the episode was lived with* is part of the
+/// fact. Two near-identical sentences about two different users are two
+/// memories of two relationships, and folding them would leave the agent
+/// remembering one of them as if it had happened with the other (the founder's
+/// 2026-07-28 ruling: dedup weighs audience and provenance, never wording
+/// alone). Empty for every other family, so the ordinary rubric is unchanged.
+const AGENT_DEDUP_NOTE: &str = "AGENT AUTOBIOGRAPHY — these facts live in an AI agent's OWN wiki: \
+its memory of what it did, learned and became, one thread per person it works with. Here WHO the \
+episode was lived with is part of the fact. Two statements that are worded almost identically but \
+concern DIFFERENT people, or reached the agent through different exchanges, are DIFFERENT \
+memories — answer {\"same\": false}. Answer {\"same\": true} only for a genuine restatement of the \
+SAME episode or trait with the same person.";
+
+/// The same rubric switch for the **completion** confirmer.
+///
+/// An agent's wiki is a log of service: "I advised", "I explained", "I sent
+/// the label to print". Read as a person's memory those sentences look like
+/// evidence that the person's intention was spent — the sweep would close
+/// "she must buy the peri bottle" on "the agent recommended the peri bottle".
+/// The generic rubric already says advising never completes; here it is the
+/// dominant shape of the corpus, so it is spelled out for the subject.
+const AGENT_COMPLETION_NOTE: &str = "AGENT AUTOBIOGRAPHY — these facts are an AI agent's OWN \
+memory, so most of them narrate what the AGENT did for someone: advised, explained, compared, \
+looked up, printed. Helping with an item NEVER completes it — only the person actually doing, \
+buying or receiving the thing does. An open item of the agent's own (something it undertook to \
+do) closes only on evidence the agent DELIVERED it, never on evidence it discussed it again.";
+
+/// The same rubric switch for the **page-merge** confirmer.
+///
+/// The agent's diary is one page per served person (`esperienze_<user>`,
+/// the founder's 47-x3 choice), and `slug_kinship` nominates exactly that
+/// shape as a merge pair — two slugs sharing the `esperienze` token. Merging
+/// them would collapse the threads the split exists to keep apart, so the
+/// confirmer is told the per-person page IS the organising principle here.
+const AGENT_MERGE_NOTE: &str = "AGENT AUTOBIOGRAPHY — these pages belong to an AI agent's OWN \
+wiki, where the organising principle is one thread PER PERSON the agent works with. Two pages \
+that differ by the person they are about (a diary of what was lived with A vs with B) must NEVER \
+merge, however similar their prose — answer {\"merge\": false}. Only two pages about the same \
+person, or about the agent itself, are candidates.";
+
+/// The same rubric switch for the **contradiction** confirmer.
+///
+/// The satellites of an agent's fact are its relationship threads: what it
+/// learned with one person does not stop being true because a fact about
+/// another person changed. Without this, one revised preference can fell
+/// neighbours from every other thread it happens to resemble.
+const AGENT_CONTRADICTION_NOTE: &str = "AGENT AUTOBIOGRAPHY — these facts are an AI agent's OWN \
+memory, one thread per person it works with. A fact that changed in ONE relationship never \
+falsifies a similar-sounding fact from ANOTHER: only a satellite about the SAME subject with the \
+SAME person can be superseded by this contradiction. What the agent is (its name, its voice, its \
+role) changes only when the new fact states that change outright.";
+
+fn revisor_prompt(
+    tree: &WikiTree,
+    new: &FactIndexRow,
+    old: &FactIndexRow,
+    agent_family: bool,
+) -> Result<String> {
     // The page each region lives on frames its subject: compiled prose
     // routinely elides a subject the page itself establishes ("È nato il
     // 23 maggio 1984" on Franz's page). Without this context the model
@@ -1541,6 +1665,10 @@ fn revisor_prompt(tree: &WikiTree, new: &FactIndexRow, old: &FactIndexRow) -> Re
             ("old", old.text.as_str()),
             ("new_page", new_page.as_str()),
             ("old_page", old_page.as_str()),
+            (
+                "subject_note",
+                if agent_family { AGENT_DEDUP_NOTE } else { "" },
+            ),
         ],
     )
     .map_err(RemError::from)
@@ -2774,7 +2902,13 @@ fn describe_merge_page(p: &PagePlan) -> String {
     )
 }
 
-fn merge_prompt(tree: &WikiTree, a: &PagePlan, b: &PagePlan, signal: &str) -> Result<String> {
+fn merge_prompt(
+    tree: &WikiTree,
+    a: &PagePlan,
+    b: &PagePlan,
+    signal: &str,
+    agent_family: bool,
+) -> Result<String> {
     // On a family-scope pair the label names both wikis of the line.
     let scope_label = if a.wiki_id == b.wiki_id {
         a.wiki_id.clone()
@@ -2790,6 +2924,10 @@ fn merge_prompt(tree: &WikiTree, a: &PagePlan, b: &PagePlan, signal: &str) -> Re
             ("signal", signal),
             ("page_a", describe_merge_page(a).as_str()),
             ("page_b", describe_merge_page(b).as_str()),
+            (
+                "subject_note",
+                if agent_family { AGENT_MERGE_NOTE } else { "" },
+            ),
         ],
     )?)
 }
@@ -2852,7 +2990,9 @@ async fn run_page_merge(
             Vec::new()
         },
     };
-    let family = family_roots(&family_scopes(tree, smart_wiki_index)?);
+    let scopes = family_scopes(tree, smart_wiki_index)?;
+    let agent_family = agent_families(&scopes);
+    let family = family_roots(&scopes);
     for (slug_a, slug_b, signal) in
         merge_candidates(&plan, &duplicate_prose, policy.page_merge_cap, &family)
     {
@@ -2864,7 +3004,11 @@ async fn run_page_merge(
             report.skipped_judged += 1;
             continue;
         }
-        let prompt = merge_prompt(tree, pa, pb, &signal)?;
+        let agent = agent_family
+            .get(pa.wiki_id.as_str())
+            .copied()
+            .unwrap_or(false);
+        let prompt = merge_prompt(tree, pa, pb, &signal, agent)?;
         let memo_key = rem_verdicts::key(llm.model_id(), &prompt);
         if rem_verdicts::is_settled(pool, rem_verdicts::kind::PAGE_MERGE, &memo_key).await? {
             continue;
@@ -3135,9 +3279,11 @@ async fn run_completion_sweep(
     // Family scope (leva-2): the bucket is the family line, so evidence
     // in the parent wiki can complete an open item in the sub-wiki and
     // vice versa — the pairing logic below is untouched.
+    let scopes = family_scopes(tree, smart_wiki_index)?;
+    let agent_family = agent_families(&scopes);
     let mut by_family: BTreeMap<String, Vec<FactIndexRow>> = BTreeMap::new();
-    for scope in family_scopes(tree, smart_wiki_index)? {
-        let rows = find_active_in_family(pool, &scope).await?;
+    for scope in &scopes {
+        let rows = find_active_in_family(pool, scope).await?;
         if !rows.is_empty() {
             by_family.insert(scope.root_id.clone(), rows);
         }
@@ -3166,7 +3312,11 @@ async fn run_completion_sweep(
         };
         report.evidence_examined += 1;
         report.candidates_judged += case.candidates.len();
-        match judge_completion_case(pool, tree, llm, cycle_id, &case).await {
+        let agent = agent_family
+            .get(case.evidence.wiki_id.as_str())
+            .copied()
+            .unwrap_or(false);
+        match judge_completion_case(pool, tree, llm, cycle_id, &case, agent).await {
             Ok(Some((receipt_id, closed))) => {
                 closed_this_cycle.extend(closed.iter().cloned());
                 report.receipts.push(receipt_id);
@@ -3195,6 +3345,7 @@ async fn judge_completion_case(
     llm: &dyn LlmBackend,
     cycle_id: &str,
     case: &CompletionCase<'_>,
+    agent_family: bool,
 ) -> Result<Option<(String, Vec<String>)>> {
     let candidates_text = case
         .candidates
@@ -3219,6 +3370,14 @@ async fn judge_completion_case(
             ("evidence_text", case.evidence.text.as_str()),
             ("evidence_date", case.evidence.created_at.as_str()),
             ("candidates", candidates_text.as_str()),
+            (
+                "subject_note",
+                if agent_family {
+                    AGENT_COMPLETION_NOTE
+                } else {
+                    ""
+                },
+            ),
         ],
     )?;
     // Evidence stays inside the 48 h window for two cycles, so without a
@@ -3903,7 +4062,9 @@ async fn run_contradiction_sweep(
     // Family scope (leva-2): seeds and open neighbours pool over the
     // family line, so a contradiction landing in the parent wiki can
     // fell its satellites in the sub-wiki and vice versa.
-    for scope in family_scopes(tree, smart_wiki_index)? {
+    let scopes = family_scopes(tree, smart_wiki_index)?;
+    let agent_family = agent_families(&scopes);
+    for scope in &scopes {
         let mut seeds = Vec::new();
         for wiki in &scope.wiki_ids {
             seeds.extend(fact_index::find_recently_contradicted(pool, wiki, &since).await?);
@@ -3911,7 +4072,7 @@ async fn run_contradiction_sweep(
         if seeds.is_empty() {
             continue;
         }
-        let open_rows: Vec<FactIndexRow> = find_active_in_family(pool, &scope)
+        let open_rows: Vec<FactIndexRow> = find_active_in_family(pool, scope)
             .await?
             .into_iter()
             .filter(|r| r.valid_to.is_none())
@@ -3966,7 +4127,11 @@ async fn run_contradiction_sweep(
     for (seed, candidates) in cases {
         report.seeds_examined += 1;
         report.candidates_judged += candidates.len();
-        match judge_contradiction_case(pool, tree, llm, cycle_id, &seed, &candidates).await {
+        let agent = agent_family
+            .get(seed.wiki_id.as_str())
+            .copied()
+            .unwrap_or(false);
+        match judge_contradiction_case(pool, tree, llm, cycle_id, &seed, &candidates, agent).await {
             Ok(Some((receipt_id, closed))) => {
                 report.receipts.push(receipt_id);
                 report.closed.extend(closed);
@@ -4014,6 +4179,7 @@ async fn judge_contradiction_case(
     cycle_id: &str,
     seed: &FactIndexRow,
     candidates: &[FactIndexRow],
+    agent_family: bool,
 ) -> Result<Option<(String, Vec<String>)>> {
     let successor_text = match &seed.superseded_by {
         Some(succ) => fact_index::find_by_id(pool, succ)
@@ -4043,6 +4209,14 @@ async fn judge_contradiction_case(
             ("contradicted_text", seed.text.as_str()),
             ("successor_text", successor_text.as_str()),
             ("candidates", candidates_text.as_str()),
+            (
+                "subject_note",
+                if agent_family {
+                    AGENT_CONTRADICTION_NOTE
+                } else {
+                    ""
+                },
+            ),
         ],
     )?;
     // Same 48 h window as the completion sweep: a seed is re-judged
@@ -5580,6 +5754,7 @@ fn regenerate_index_prompt(
     title: &str,
     wiki_type: &str,
     wiki_id: &str,
+    subject: &str,
     children: &str,
     snippet: &str,
     language_directive: &str,
@@ -5593,6 +5768,7 @@ fn regenerate_index_prompt(
             ("title", title),
             ("wiki_type", wiki_type),
             ("wiki_id", wiki_id),
+            ("subject", subject),
             ("children", children),
             ("snippet", snippet),
         ],
@@ -5636,6 +5812,7 @@ async fn regenerate_index(
         &d.meta.title,
         &d.meta.wiki_type,
         d.meta.wiki_id.as_str(),
+        wiki::subject_directive(&d.meta),
         &children,
         &snippet,
         &language_directive,
@@ -10557,6 +10734,247 @@ mod tests {
                 ),
             ],
             "nesting groups, hyphens don't, smart wikis are out"
+        );
+        drop(dir);
+    }
+
+    /// The confirmer sweeps look the rubric up by the wiki a case came from,
+    /// so every member of an agent's family — the root and its sub-wikis —
+    /// must answer "yes", and no member of anyone else's may.
+    #[tokio::test]
+    async fn agent_families_flags_every_member_of_the_agents_line() {
+        let (dir, mut tree, _pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        write_sub_wiki(&tree, "alice", "lavoro", "alice-lavoro", "alice");
+        write_wiki(&tree, "hermes1", "Hermes", "wiki-user");
+        write_sub_wiki(&tree, "hermes1", "diari", "hermes1-diari", "hermes1");
+        let meta_path = tree.wikis_dir().join("hermes1").join("_meta.md");
+        let raw = std::fs::read_to_string(&meta_path).unwrap();
+        std::fs::write(
+            &meta_path,
+            raw.replace("---\nwiki_id:", "---\nis_agent: true\nwiki_id:"),
+        )
+        .unwrap();
+        tree = WikiTree::open(dir.path()).unwrap();
+
+        let index = load_smart_wiki_index(&tree).expect("index");
+        let map = agent_families(&family_scopes(&tree, &index).expect("scopes"));
+        assert_eq!(map.get("hermes1"), Some(&true));
+        assert_eq!(
+            map.get("hermes1-diari"),
+            Some(&true),
+            "a sub-wiki inherits its root's subject"
+        );
+        assert_eq!(map.get("alice"), Some(&false));
+        assert_eq!(map.get("alice-lavoro"), Some(&false));
+    }
+
+    /// The dedup rubric changes inside an agent's own family: there, WHO an
+    /// episode was lived with is part of the fact, so two near-identical
+    /// sentences about two different people are two memories. The scope
+    /// resolves the marker once, off the family root, instead of re-locating a
+    /// wiki per candidate pair.
+    #[tokio::test]
+    async fn agent_family_carries_the_autobiography_dedup_rubric() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        write_wiki(&tree, "hermes1", "Hermes", "wiki-user");
+        // Stamp the agent marker on the bot's wiki only.
+        let meta_path = tree.wikis_dir().join("hermes1").join("_meta.md");
+        let raw = std::fs::read_to_string(&meta_path).unwrap();
+        std::fs::write(
+            &meta_path,
+            raw.replace("---\nwiki_id:", "---\nis_agent: true\nwiki_id:"),
+        )
+        .unwrap();
+        tree = WikiTree::open(dir.path()).unwrap();
+
+        let index = load_smart_wiki_index(&tree).expect("index");
+        let scopes = family_scopes(&tree, &index).expect("scopes");
+        for s in &scopes {
+            assert_eq!(
+                s.is_agent,
+                s.root_id == "hermes1",
+                "only the agent's family is flagged; got {:?}",
+                s.root_id
+            );
+        }
+
+        // Two episodes of the same shape lived with two different people.
+        plant_fact_on_page(
+            &tree,
+            &pool,
+            "hermes1",
+            "index.md",
+            "Ho aiutato Alice con la pratica INPS.",
+            "hermes1",
+        )
+        .await;
+        plant_fact_on_page(
+            &tree,
+            &pool,
+            "hermes1",
+            "index.md",
+            "Ho aiutato Bob con la pratica INPS.",
+            "hermes1",
+        )
+        .await;
+        let rows = fact_index::find_active_in_wiki(&pool, "hermes1")
+            .await
+            .expect("rows");
+        let (new, old) = (&rows[1], &rows[0]);
+        let with = revisor_prompt(&tree, new, old, true).expect("agent prompt");
+        assert!(
+            with.contains("AGENT AUTOBIOGRAPHY"),
+            "the agent rubric must reach the confirmer:\n{with}"
+        );
+        let without = revisor_prompt(&tree, new, old, false).expect("plain prompt");
+        assert!(
+            !without.contains("AGENT AUTOBIOGRAPHY"),
+            "a human's family keeps the ordinary rubric:\n{without}"
+        );
+        drop(dir);
+    }
+
+    /// A backend that fails the first `fail_first` calls and then answers.
+    /// The shape of the live 2026-07-29 incident: one malformed Gemini
+    /// candidate in the middle of an otherwise healthy night.
+    struct FlakyRevisor {
+        fail_first: std::sync::atomic::AtomicUsize,
+        answer: String,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmBackend for FlakyRevisor {
+        fn model_id(&self) -> &'static str {
+            "flaky-revisor"
+        }
+
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> crate::llm::Result<crate::llm::CompletionResponse> {
+            if self
+                .fail_first
+                .fetch_update(
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                    |n| (n > 0).then_some(n - 1),
+                )
+                .is_ok()
+            {
+                return Err(crate::llm::LlmError::Protocol(
+                    "gemini response has no `text` part in the first candidate".to_owned(),
+                ));
+            }
+            Ok(crate::llm::CompletionResponse {
+                text: self.answer.clone(),
+                finish_reason: crate::llm::FinishReason::EndOfTurn,
+                usage: crate::llm::CompletionUsage::default(),
+            })
+        }
+    }
+
+    /// One bad response must cost one pair, not the night. Before the fix
+    /// the revisor propagated the first LLM error and `dream::run_full`
+    /// aborted the whole cycle on it — the promote, the reorg and every
+    /// queued page compile died with it, retry a day away.
+    #[tokio::test]
+    async fn revisor_skips_a_pair_the_backend_fumbled_and_keeps_going() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        let older = plant_fact_on_page(
+            &tree,
+            &pool,
+            "alice",
+            "index.md",
+            "Bruno Battaglia è il padre di Franz e vive a Ferrara",
+            "alice",
+        )
+        .await;
+        let _newer = plant_fact_on_page(
+            &tree,
+            &pool,
+            "alice",
+            "index.md",
+            "Bruno Battaglia è il padre di Franz e vive a Ferrara in centro",
+            "alice",
+        )
+        .await;
+
+        let llm = FlakyRevisor {
+            fail_first: std::sync::atomic::AtomicUsize::new(1),
+            answer: "{\"same\": true}".to_owned(),
+        };
+        let report = run_revisor_jaccard(
+            &pool,
+            &tree,
+            &fake_embedder(),
+            &llm,
+            "cycle-flaky",
+            &RemPolicy::default(),
+            &load_smart_wiki_index(&tree).expect("index"),
+        )
+        .await
+        .expect("a fumbled pair is a soft error, never a cycle abort");
+        assert_eq!(report.errors.len(), 1, "the skip is recorded: {report:?}");
+        assert!(report.applied.is_empty(), "nothing merged: {report:?}");
+        // The pair stays nominable: no negative verdict was memoised for it.
+        let survivor = fact_index::find_by_id(&pool, &older)
+            .await
+            .unwrap()
+            .expect("older row still there");
+        assert!(survivor.superseded_at.is_none());
+        drop(dir);
+    }
+
+    /// …but a backend that is simply down still stops the cycle: nothing
+    /// downstream would work either, and pretending otherwise would bury
+    /// the outage in a soft-error list nobody reads.
+    #[tokio::test]
+    async fn revisor_aborts_when_the_backend_keeps_failing() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        // Five near-variants of one claim: every pair lands inside the
+        // jaccard nomination band, so the sweep has more than
+        // `REVISOR_LLM_FAILURE_ABORT` confirms to attempt.
+        for tail in [
+            "in centro",
+            "da molti anni",
+            "con la moglie",
+            "vicino al parco",
+            "dal 1990",
+        ] {
+            plant_fact_on_page(
+                &tree,
+                &pool,
+                "alice",
+                "index.md",
+                &format!("Bruno Battaglia è il padre di Franz e vive a Ferrara {tail}"),
+                "alice",
+            )
+            .await;
+        }
+        let llm = FlakyRevisor {
+            fail_first: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            answer: String::new(),
+        };
+        let err = run_revisor_jaccard(
+            &pool,
+            &tree,
+            &fake_embedder(),
+            &llm,
+            "cycle-down",
+            &RemPolicy::default(),
+            &load_smart_wiki_index(&tree).expect("index"),
+        )
+        .await
+        .expect_err("a dead backend must surface");
+        assert!(
+            format!("{err}").contains("consecutive revisor failures"),
+            "the diagnostic must name the outage: {err}"
         );
         drop(dir);
     }

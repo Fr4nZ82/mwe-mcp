@@ -61,6 +61,17 @@ struct SmartWikiRow {
     wiki_id: String,
     title: String,
     wiki_type: String,
+    /// The wiki is a consumer agent's own operational memory: the `_meta.md`
+    /// `is_agent` marker the sign-in flow stamps, **or** the `agent`
+    /// `wiki_type` label that flow also writes.
+    ///
+    /// The union, unlike the signpost gate, which trusts the marker alone. The
+    /// label is a free-form string the consumer passes to `wiki_admin_push`, so
+    /// it can be claimed — but here the only thing at stake is a word next to
+    /// your own wiki's type, while trusting the marker alone would leave every
+    /// operational wiki forged before the marker existed unbadged until its
+    /// next sign-in, which reads as the feature being broken.
+    is_agent: bool,
     last_push: Option<String>,
     unread_briefing: i64,
 }
@@ -111,6 +122,7 @@ async fn list_smart_wikis(
             wiki_id,
             title: d.meta.title.clone(),
             wiki_type: d.meta.wiki_type.clone(),
+            is_agent: d.meta.is_agent || d.meta.wiki_type == mwe_core::wiki::AGENT_WIKI_TYPE,
             last_push,
             unread_briefing: unread,
         });
@@ -154,7 +166,10 @@ async fn list_smart_wikis(
                                 }
                             }
                             td { (r.title) }
-                            td.muted { (r.wiki_type) }
+                            td.muted {
+                                (r.wiki_type)
+                                @if r.is_agent { " " span.badge { "agent" } }
+                            }
                             td.muted { (r.last_push.clone().unwrap_or_else(|| "—".to_owned())) }
                             td {
                                 @if r.unread_briefing > 0 {

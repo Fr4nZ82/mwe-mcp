@@ -103,15 +103,43 @@ pub async fn jwt_auth_middleware(
     // must never break authentication.
     if profile.consumer_class.is_standard()
         && let Some(consumer_id) = profile.consumer_id.as_deref()
-        && let Err(e) =
+    {
+        if let Err(e) =
             mwe_core::consumers::ensure_agent_identity(&state.pool, consumer_id, &profile.sender_id)
                 .await
-    {
-        warn!(
-            error = %e,
-            consumer = %consumer_id,
-            "mcp auth: agent-identity establish failed (non-fatal)"
-        );
+        {
+            warn!(
+                error = %e,
+                consumer = %consumer_id,
+                "mcp auth: agent-identity establish failed (non-fatal)"
+            );
+        }
+        // The wiki-side mirror of the same wiring. The DB binding is the source
+        // of truth, but the pipelines that must know "this wiki is an agent's"
+        // read the `_meta.md` and never the DB — the ingest agent-wiki guard,
+        // the REM voice, the dashboard badge. Stamping only where the operator
+        // creates a bot left the marker missing on every agent enrolled through
+        // the plain user CRUD (prod's `hermes1`: `is_agent=1` in the DB, no
+        // marker on disk, guard silently inert), so it is stamped here — at the
+        // one event every agent goes through. Root-keyed and idempotent: once
+        // the marker is there the steady state is one `stat` + one small cached
+        // read, and never a tree walk.
+        //
+        // Not on a frozen deployment: `instance.read_only` promises a stranger
+        // that nothing they do reaches the memory on disk, and `_meta.md` is
+        // memory. Nothing is lost by waiting — every pipeline the marker feeds
+        // is a write path the freeze already refuses, and the stamp lands on
+        // the first connect after the instance is opened again.
+        if !state.read_only
+            && let Ok(wiki_id) = mwe_core::types::WikiId::parse(&profile.sender_id)
+            && let Err(e) = mwe_core::wiki::ensure_is_agent_marker(&state.tree, &wiki_id)
+        {
+            warn!(
+                error = %e,
+                sender = %profile.sender_id,
+                "mcp auth: is_agent marker stamp failed (non-fatal)"
+            );
+        }
     }
 
     match resolve_act_as(&req) {
@@ -674,6 +702,59 @@ mod tests {
                 .await
                 .unwrap(),
             "the bot identity is stamped is_agent on connect"
+        );
+    }
+
+    /// The wiki-side mirror of the same wiring, and the reason it lives on the
+    /// connect path rather than only where the operator mints a bot token:
+    /// prod's Hermes was `is_agent = 1` in the DB with **no** marker on disk,
+    /// because its identity wiki had been created through the plain user CRUD.
+    /// Every pipeline that asks "is this an agent's wiki?" — the ingest guard,
+    /// the REM voice, the dashboard badge — reads the `_meta.md`, so a marker
+    /// the DB alone carries is a marker nobody sees.
+    #[tokio::test]
+    async fn middleware_stamps_the_agent_marker_on_the_wiki() {
+        let (state, secret, pool, dir) = build_state().await;
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('samvisebot', '[]', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // The wiki exactly as the user CRUD leaves it: a plain `wiki-user`.
+        let wiki_id = mwe_core::types::WikiId::parse("samvisebot").unwrap();
+        mwe_core::wiki::create_identity_wiki(
+            &state.tree,
+            &wiki_id,
+            "Samvise",
+            mwe_core::wiki::IdentityKind::User,
+        )
+        .unwrap();
+        let meta_path = dir.path().join("wikis/samvisebot/_meta.md");
+        assert!(
+            !std::fs::read_to_string(&meta_path)
+                .unwrap()
+                .contains("is_agent"),
+            "precondition: the wiki starts indistinguishable from a human's"
+        );
+
+        let token = consumer_token(&secret, "samvisebot", "samvise-prod");
+        let resp = echo_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/echo")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let raw = std::fs::read_to_string(&meta_path).unwrap();
+        assert!(
+            raw.contains("is_agent: true"),
+            "connecting heals the marker; meta was:\n{raw}"
         );
     }
 

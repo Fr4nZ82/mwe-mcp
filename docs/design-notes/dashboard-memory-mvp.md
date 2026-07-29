@@ -217,7 +217,14 @@ is the only coherent setting today.
    [`wiki_get_meta`](../../crates/mwe-core/src/wiki.rs) (returns 404
    on `WikiNotFound`).
 3. Renders meta (id, title, type, slug, active-fact count,
-   `scope`).
+   `scope`). A wiki carrying the `_meta.md` `is_agent` marker gets an
+   **`agent` badge** next to its type here and in both list tabs (Standard
+   and Smart), because the type alone hides the distinction: an agent's own
+   wiki is a `wiki-user` exactly like a person's. The user list makes the
+   same call on the identity side — an `is_agent` row reads role `agent`
+   with the status "consumer agent (no login by design)", instead of a
+   `user` whose status ("no credentials, no invitation") is equally true of
+   a human waiting to accept an invite.
 4. Reads `index.md` if present, **strips the testata**
    (`MarkdownDoc::parse(raw).map_or(raw, |d| d.body)` — so the frontmatter
    card's owner-tier `keywords`/`description` never leak, exactly as
