@@ -45,10 +45,11 @@ steps, in a load-bearing order:
    overrides), `mwe-mcp.env` (API keys + token secret — the snapshot is
    as sensitive as the workdir itself), `mwe-mcp.config.yaml`,
    `tokens/`. Excluded: the live `engine.db*` trio (replaced by step
-   1), the `.mwe-mcp.lock` single-writer lockfile, `logs/`, a pending
-   `recovery-pending.json` staged-recovery marker (a snapshot that
-   embedded one would re-trigger the recovery every time it was
-   restored), and in-flight `*.mwe-write-in-progress` markers. The copy
+   1), the `.mwe-mcp.lock` single-writer lockfile, `logs/`,
+   `training-spool/`, a pending `recovery-pending.json` staged-recovery
+   marker (a snapshot that embedded one would re-trigger the recovery
+   every time it was restored), and in-flight
+   `*.mwe-write-in-progress` markers. The copy
    is exclude-based, so new workdir directories ride along
    automatically. Media extends the DB-before-files invariant for free:
    uploads write the blob **before** the catalog row and blobs are
@@ -58,6 +59,66 @@ steps, in a load-bearing order:
 
 The destination must be empty and disjoint from the workdir (checked
 both directions).
+
+### A snapshot either exists or it does not
+
+Two failure properties follow from step 1 writing the DB *first*, and
+both are enforced in `snapshot_workdir` rather than left to callers.
+
+**An aborted snapshot is discarded.** `is_snapshot_dir` — and through it
+the console list, `mwe-mcp` and the retention prune — recognises a
+snapshot by the presence of `engine.db`, the very first thing written. A
+run that died after step 1 would therefore leave a directory holding a
+valid database and *no prose pages, no media, no config*, indistinguishable
+from a good backup and unrestorable in the only way that matters (media
+bytes are the one half the DB cannot regenerate — it stores the `sha256`,
+not the blob). So any failure after writing begins removes what was
+written: the whole destination when the run created it, otherwise just
+the `engine.db` copy, since a directory the operator prepared is not the
+engine's to delete.
+
+**An unreadable stray costs its own bytes, not the snapshot.** A workdir
+accumulates leftovers from hand-run maintenance, and one of them being
+unreadable by the service user (a root-owned archive from a `sudo`
+backup is the canonical case) must not be able to fail every snapshot
+from then on. Such an entry is skipped, named in
+`BackupReport::skipped`, logged at `WARN`, and surfaced on the console —
+a snapshot that completed *minus something* is a different event from a
+clean one and the operator is told which. **Every other I/O error still
+aborts**: a full disk or a vanished tree must not yield a quietly
+truncated backup, which is the failure this whole area exists to prevent.
+
+The console's snapshot list carries a **file count** per row beside the
+size, flagging `DB only — no tree` at one file. Size alone cannot make
+that distinction, because the database is written first and is most of
+the weight: a run that captured nothing else still looks the right size.
+
+### What a snapshot declines to carry, a restore never destroys
+
+`training-spool/` is excluded on the same principle as `logs/`: the
+snapshot is the unit of **restore**, and an append-only observation log
+is not state a restore should roll back. It is also the largest growing
+thing in a workdir — 92 MB against a 65 MB database on the production
+host when this was decided, 47 % of every snapshot — so retention would
+otherwise hold N rolling copies of one ever-lengthening file. If the
+spool needs protecting (it is the distillation dataset for
+local-slot work) it needs its own archive and its own retention, not a
+seat inside the recovery unit.
+
+That exclusion only holds because the **restore** preserves the same
+names. `clear_workdir` empties the workdir before moving the snapshot
+in, so a name the snapshot leaves behind and the clear step removes is
+destroyed with no copy anywhere. Both sides therefore read one
+predicate — `backup::preserved_outside_snapshots` (`logs/`,
+`training-spool/`, the lockfile, the recovery marker) — because a drift
+between two hand-maintained lists is silent data loss. Names the
+snapshot skips for the *opposite* reason (`engine.db*`, in-flight write
+markers: it carries something better) are deliberately absent from it,
+and a restore is right to clear them.
+
+**Memory reset is not a restore** and keeps removing the spool
+explicitly: wiping the memory means wiping the recorded conversations
+too.
 
 ### Why DB-before-files is the right skew
 
@@ -128,8 +189,9 @@ Common properties of both actions:
 - **Reported.** The outcome is persisted in `engine_meta`
   (`recovery.last`) and shown on the console after the restart.
 
-**Restore** replaces every workdir entry except `logs/` and the live
-lockfile with the snapshot's content — post-snapshot additions are
+**Restore** replaces every workdir entry except the ones a snapshot
+never carries (`logs/`, `training-spool/`, the live lockfile — see
+above) with the snapshot's content — other post-snapshot additions are
 removed, so the workdir matches the snapshot exactly (any
 snapshot-internal skew heals as described above). **Memory reset**
 wipes the memory while keeping the installation: the memory tables

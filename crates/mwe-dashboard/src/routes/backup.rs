@@ -662,6 +662,16 @@ fn render(
                     tr { td { "engine.db copy" } td { (human_bytes(report.db_bytes)) } }
                     tr { td { "Files copied" } td { (report.files_copied) } }
                     tr { td { "Bytes copied" } td { (human_bytes(report.bytes_copied)) } }
+                    @if !report.skipped.is_empty() {
+                        tr {
+                            td { "Left out (unreadable)" }
+                            td.flash-error {
+                                @for p in &report.skipped {
+                                    code { (p.display().to_string()) } " "
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -693,6 +703,7 @@ fn render(
                     th { "Kind" }
                     th { "Taken" }
                     th { "Size" }
+                    th { "Files" }
                     th { "Actions" }
                 } }
                 tbody {
@@ -702,6 +713,17 @@ fn render(
                             td { (s.kind.label()) }
                             td { (s.taken_at.map(fmt_time).unwrap_or_default()) }
                             td { (human_bytes(s.bytes)) }
+                            // Size cannot tell a snapshot from a husk —
+                            // the DB is written first and is most of the
+                            // weight, so a run that captured nothing but
+                            // the database still looks the right size.
+                            // The count is what shows it.
+                            td {
+                                (s.files)
+                                @if s.files <= 1 {
+                                    " " span.flash-error { "DB only — no tree" }
+                                }
+                            }
                             td {
                                 form action="/dashboard/admin/backup/restore" method="post" class="inline-form"
                                     onsubmit="return confirm('Stage a restore from this snapshot? It replaces the whole workdir at the next server start.')" {

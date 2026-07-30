@@ -492,14 +492,22 @@ async fn rescaffold_identity_wikis(
 }
 
 /// Remove every top-level workdir entry except operational state that
-/// never travels with a snapshot: `logs/`, the live single-writer
-/// lockfile, and (belt-and-suspenders — already consumed) the marker.
+/// never travels with a snapshot — `logs/`, `training-spool/`, the live
+/// single-writer lockfile, and (belt-and-suspenders — already consumed)
+/// the marker.
+///
+/// The preserved set is [`crate::backup::preserved_outside_snapshots`],
+/// deliberately the *same* predicate the snapshot excludes by: a name a
+/// snapshot leaves behind and this step removes is destroyed with no copy
+/// anywhere, so the two must be one rule. Entries the snapshot skips
+/// because it carries something better (`engine.db*`, in-flight write
+/// markers) are correctly *not* in it and are cleared here.
 fn clear_workdir(workdir: &Path) -> std::io::Result<()> {
     for entry in std::fs::read_dir(workdir)? {
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name == "logs" || name == crate::lockfile::LOCKFILE_NAME || name == RECOVERY_FILENAME {
+        if crate::backup::preserved_outside_snapshots(&name) {
             continue;
         }
         let path = entry.path();
@@ -636,6 +644,11 @@ mod tests {
         std::fs::write(work.path().join("mwe-mcp.env"), "SECRET=1\n").unwrap();
         std::fs::create_dir_all(work.path().join("logs")).unwrap();
         std::fs::write(work.path().join("logs/server.log"), "keep me\n").unwrap();
+        // The spool is excluded from snapshots, so the clear step must
+        // preserve it or a restore would destroy the only copy.
+        let spool = work.path().join(crate::training_spool::TRAINING_SPOOL_DIR);
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("2026-07-30.jsonl"), "{\"call\":1}\n").unwrap();
 
         // Snapshot, then diverge: mutate the DB, a page, add a file.
         let snap = snaps.path().join("manual-1");
@@ -671,8 +684,17 @@ mod tests {
         assert_eq!(prose, "old prose\n");
         assert!(!work.path().join("wikis/alice/stray.md").exists());
         assert!(work.path().join("mwe-mcp.env").is_file());
-        // Operational state survived the swap.
+        // Operational state survived the swap. The spool especially: it
+        // is excluded from snapshots, so if the clear step removed it the
+        // restore would be destroying the only copy in existence.
         assert!(work.path().join("logs/server.log").is_file());
+        assert!(
+            work.path()
+                .join(crate::training_spool::TRAINING_SPOOL_DIR)
+                .join("2026-07-30.jsonl")
+                .is_file(),
+            "a restore never destroys what a snapshot declines to carry"
+        );
 
         // DB back to snapshot state (modulo the recorded outcome).
         let pool = crate::db::open_or_init(work.path()).await.unwrap();

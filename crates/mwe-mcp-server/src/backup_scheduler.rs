@@ -134,13 +134,39 @@ async fn check_and_run(
                 dest = %dest.display(),
                 db_bytes = r.db_bytes,
                 files_copied = r.files_copied,
+                skipped = r.skipped.len(),
                 "backup scheduler: automatic snapshot complete"
             );
+            // A snapshot that completed *minus something* is not the
+            // same event as a clean one, and the operator learns it here
+            // or nowhere: say it in the log and carry it into the report
+            // the console renders.
+            let skipped = if r.skipped.is_empty() {
+                String::new()
+            } else {
+                let names: Vec<String> =
+                    r.skipped.iter().map(|p| p.display().to_string()).collect();
+                warn!(
+                    dest = %dest.display(),
+                    skipped = %names.join(", "),
+                    "backup scheduler: snapshot complete but entries were UNREADABLE and left out"
+                );
+                format!(
+                    " — {} entr{} left out (unreadable): {}",
+                    names.len(),
+                    if names.len() == 1 { "y" } else { "ies" },
+                    names.join(", ")
+                )
+            };
             AutoSnapshotReport {
                 ok: true,
                 at: chrono::Utc::now().to_rfc3339(),
                 dest: dest.display().to_string(),
-                detail: format!("{} files, {} DB bytes", r.files_copied + 1, r.db_bytes),
+                detail: format!(
+                    "{} files, {} DB bytes{skipped}",
+                    r.files_copied + 1,
+                    r.db_bytes
+                ),
             }
         },
         Err(e) => {
