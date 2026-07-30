@@ -519,8 +519,8 @@ pub async fn mark_skipped_dup(
 /// stamp `valid_to` + `decay_reason` on the buffer row.
 ///
 /// The buffered half of the closure verb — a closure gesture whose target
-/// has not been promoted yet (the same-day flow: "compra il latte" →
-/// "ho comprato il latte" within one buffer window). Promotion then
+/// has not been promoted yet (the same-day flow: "buy the milk" →
+/// "I bought the milk" within one buffer window). Promotion then
 /// carries both onto the fact. Rows already `promoted`/`skipped_dup` are
 /// left alone (their fact row is the closure target — the id is stable
 /// across promotion, so the fact-side verb hits first).

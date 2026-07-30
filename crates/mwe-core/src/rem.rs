@@ -1384,7 +1384,7 @@ async fn run_revisor_jaccard(
                 // relationship / bio, `salience=high`). The loser is
                 // `facts[old_idx]` (the pair sorts newest-first, older side
                 // retired); if that is an identity-core fact, skip the pair so
-                // a relationship like "Frodo è il compagno di Galadriel" is
+                // a relationship like "Frodo is Galadriel's partner" is
                 // changed only by an explicit correction, never silently
                 // consolidated away. A structural channel invariant, same
                 // shape as the rules-page guard above — the LLM never sees it.

@@ -1,6 +1,6 @@
 ---
 name: standard-conversational
-version: 1.2.0
+version: 1.3.0
 description: "Default conversational pattern for standard consumers (openclaw, hermes, nanoclaw): wiki_ingest_message passthrough, recent_messages window, disambiguation, locale plumbing, pending_attention nudges, events_poll cadence, structural notices + undo routing, on-the-fly date corrections + sharing changes on the owner's own facts, no wiki_admin_* writes."
 depends_on: ["core"]
 applies_to:
@@ -36,8 +36,8 @@ for the dispatcher.
 - Recall (vector + full-text + multi-hop) with ACL filtering.
 - Capture / supersede / forget routing.
 - **Operation-path edits on the owner's own stored facts** — a date
-  correction ("il latte scade il 20, non il 25") and a sharing change
-  ("esponi questa cosa a tutti", "condividila col gruppo famiglia") are
+  correction ("the milk expires on the 20th, not the 25th") and a sharing change
+  ("make this one visible to everyone", "share it with the family group") are
   recognized in the same `wiki_ingest_message` turn and applied act-first,
   revertible from the dashboard (the owner gate is enforced server-side;
   standard memory wikis only). You still just pass the raw message through.
@@ -50,23 +50,23 @@ message in, receive a context snippet + a reply seed back, weave them
 into your natural-language reply. You do **not** classify intent
 client-side. You do **not** decide "this is structural, I'll route
 differently". The server does all of that, including for greetings
-("ciao come va") and acks ("yes, that's right"), which it classifies
+("hi, how are you") and acks ("yes, that's right"), which it classifies
 as `skip` with a canned reply seed.
 
 ```
-User: "ho perso 1 kg da giovedì?"
-Agent → wiki_ingest_message(text="ho perso 1 kg da giovedì?",
+User: "have I lost 1 kg since Thursday?"
+Agent → wiki_ingest_message(text="have I lost 1 kg since Thursday?",
                             recent_messages=[<last ~6-10 turns>])
 Server → { intent_classified: "recall",
-           context_snippet: "Frodo pesava 72 kg il 10 maggio.
-                             Oggi è 18 maggio, Frodo ha registrato
-                             71 kg ieri 17 maggio.",
-           suggested_seed:  "Hai registrato 71 kg ieri, partendo
-                             da 72 kg 8 giorni fa.",
+           context_snippet: "Frodo weighed 72 kg on 10 May.
+                             Today is 18 May, Frodo recorded
+                             71 kg yesterday, 17 May.",
+           suggested_seed:  "You recorded 71 kg yesterday, down
+                             from 72 kg 8 days ago.",
            pending_attention: null, ... }
 Agent → injects context_snippet into its own system prompt for this
         turn, rephrases suggested_seed in product voice
-Agent → "Sì, sei a 71 kg, persi un chilo da giovedì come ricordavi."
+Agent → "Yes, you are at 71 kg — a kilo down since Thursday, just as you remembered."
 ```
 
 The only call you make **outside** `wiki_ingest_message` during a
@@ -80,7 +80,7 @@ For each user message:
 
 1. **Maintain a rolling window** of the last ~6–10 conversation turns
    in `recent_messages`. The server caps it at 6 internally and uses
-   it for **coreference** ("il dentista di ieri" → which dentist?),
+   it for **coreference** ("the dentist from yesterday" → which dentist?),
    not for recall. The window is *not* persisted server-side — your
    buffer, your responsibility.
 2. **Call `wiki_ingest_message`** with the raw text + the window. You
@@ -184,10 +184,7 @@ the user object). Otherwise the mirror fallback handles it.
 When `wiki_ingest_message` returns a `pending_attention` block,
 **surface a short reminder to the user in your reply** before or
 after the main answer — your call where it fits, but don't drop it
-silently. Example wording in the user's locale:
-
-> *"Ho due cose in attesa di conferma nel cruscotto — ci guardi?
-> [link al cruscotto]"*
+silently. Example wording, phrased in the user's own language:
 
 > *"You've got 1 structural proposal pending and 2 changes I made
 > automatically waiting for your confirmation — check them when you
@@ -232,8 +229,8 @@ fetchable via `wiki_read`) and can **notify** their `_briefing.md`
 via `wiki_admin_notify`. They cannot **write** — `wiki_admin_push` /
 `wiki_admin_pull` return `403 requires_consumer_class_smart`.
 
-Concrete scenario: Frodo says in Telegram "appunta: documentare i
-recovery codes nel flow MFA". openclaw (standard consumer) routes
+Concrete scenario: Frodo says in Telegram "note this down: document the
+recovery codes in the MFA flow". openclaw (standard consumer) routes
 that through `wiki_ingest_message` first. Ingest never targets a
 smart wiki: smart wikis are filtered out of the classifier's
 `available_wikis` window, so the capture lands in Frodo's standard

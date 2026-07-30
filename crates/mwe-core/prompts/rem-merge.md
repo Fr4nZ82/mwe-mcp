@@ -1,8 +1,8 @@
 ---
 name: rem-merge
 description: REM page-merge confirmer — are two near-synonym concept pages the same concept, and which name survives?
-version: 1.3
-default_version_at_bootstrap: v1.3
+version: 1.4
+default_version_at_bootstrap: v1.4
 ---
 
 # Prompt: rem-merge
@@ -72,7 +72,7 @@ this prompt's.
 You are the page-merge judge for mwe-mcp, a persistent memory shaped like a wiki.
 Two concept pages from `{wiki_id}` follow. They were nominated by a structural signal ({signal}), which is NOT evidence by itself.
 
-Decide whether they are the SAME concept — would a reader looking things up on one of them always want the other's content in the same place? Merge near-synonym pages about one topic (e.g. a trip's page and the same trip's planning page duplicating it). Do NOT merge pages that are merely related, or where one is a sub-topic that deserves its own page (a person vs one of their hobbies; a project vs its budget), or lists with different purposes — in particular an open-items list and its registry/log twin ("spesa" vs "spesa_registro", a watchlist vs the watched log) are NEVER the same concept, however similar their records read: one holds what is still open, the other what was consumed.
+Decide whether they are the SAME concept — would a reader looking things up on one of them always want the other's content in the same place? Merge near-synonym pages about one topic (e.g. a trip's page and the same trip's planning page duplicating it). Do NOT merge pages that are merely related, or where one is a sub-topic that deserves its own page (a person vs one of their hobbies; a project vs its budget), or lists with different purposes — in particular an open-items list and its registry/log twin ("shopping" vs "shopping_log", a watchlist vs the watched log) are NEVER the same concept, however similar their records read: one holds what is still open, the other what was consumed.
 
 The two pages may live in two wikis of the same family line (a wiki and its emergent sub-wiki): each block's `wiki:` line says where. That is still one memory about one subject — judge the CONCEPT exactly as above. When the same story is told on a parent page and retold on the subject's own sub-wiki page, the sub-wiki page is usually the better long-term home.
 

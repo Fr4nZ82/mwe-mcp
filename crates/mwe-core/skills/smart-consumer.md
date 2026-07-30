@@ -1,6 +1,6 @@
 ---
 name: smart-consumer
-version: 1.16.0
+version: 1.17.0
 description: "Project-bound mode for smart consumers: authoritative management of a project's smart wiki via wiki_admin_push/pull (whole, narrowed by paths, or shape-only) + project signposts (wiki_admin_signpost, so the user's standard memory knows the project exists) + _briefing.md lifecycle + cooperative lease + graceful degradation on token revoke. First connect is NOT here — it lives in smart-onboarding, fetched when the server volunteers first_connect.hint. Smart wikis are markerless and content-indexed — the consumer writes plain markdown freely (create / edit / move / rename / delete pages), exactly the way this repo's engineering wiki is maintained; the ACL is wiki-level in _meta (no per-fragment markers or ACL — those are the pillar of standard memory wikis only). Superset (group 17): the user↔agent conversation ALSO runs the standard personal-memory pipeline via wiki_ingest_message, joined to the project wiki by provenance links (authored_refs), with a per-message router (drop / personal-fact→standard / document-import / project-wiki / your-operational-wiki). Auto recall+capture, never dump everything into the user's standard memory."
 depends_on: ["core"]
 applies_to:
@@ -206,7 +206,7 @@ stored.
 - **Recall indexes the content by section.** On each push the touched
   pages are re-chunked into **heading-delimited sections**, embedded,
   and the wiki's rows are dropped-and-reinserted. So the only
-  guard-rails ("paletti") you must respect are: **keep pages
+  guard-rails you must respect are: **keep pages
   reasonably structured with markdown headings** (each
   heading-delimited section becomes a recallable unit), and **leave
   `_meta` and `_captures` as-is** (the server owns them — a malformed
@@ -444,8 +444,8 @@ calling this after a push is free.
 ```
 wiki_admin_signpost(
     wiki_id = state.wiki_id,
-    description = "Sistema che gestisce i cartelli digitali nei negozi: decide cosa mostrare su ogni schermo e quando aggiornarlo.",
-    activity = {"day": "2026-07-26", "text": "Sistemata la pagina che elenca gli schermi e corretto un errore che bloccava l'aggiornamento dei contenuti."},
+    description = "The system that runs the digital signs in the shops: it decides what to show on each screen and when to refresh it.",
+    activity = {"day": "2026-07-26", "text": "Tidied up the page that lists the screens, and fixed a fault that stopped the content from refreshing."},
 )
 ```
 
@@ -457,10 +457,10 @@ user's non-technical partner. Write in the user's own language.
 
 | | |
 |---|---|
-| ✅ good description | «Sistema che gestisce i cartelli digitali nei negozi: decide cosa mostrare su ogni schermo e quando aggiornarlo.» |
-| ❌ bad description | «Monorepo Angular/NestJS con worker di rendering headless, player Tizen e pipeline di sync via Socket.IO.» |
-| ✅ good activity | «Corretto un errore per cui i contenuti restavano fermi sugli schermi anche dopo un aggiornamento.» |
-| ❌ bad activity | «Fix del retry exponential-backoff nel job dispatcher (PR #214), refactor del reducer di stato.» |
+| ✅ good description | «The system that runs the digital signs in the shops: it decides what to show on each screen and when to refresh it.» |
+| ❌ bad description | «Angular/NestJS monorepo with headless rendering workers, Tizen players and a Socket.IO sync pipeline.» |
+| ✅ good activity | «Fixed a fault that left old content sitting on the screens even after an update.» |
+| ❌ bad activity | «Fixed retry exponential-backoff in the job dispatcher (PR #214), refactored the state reducer.» |
 
 The bad ones are not wrong — they are unusable. A signpost written in
 jargon signposts nothing, because the agent reading it cannot tell
@@ -498,20 +498,19 @@ the bundled `wiki-companion` uses headings of the form
 `## From <source> @ <ts>` with items marked `unread:`). Surface the
 unread items to the user **before** discussing any other topic:
 
-> *"3 nuovi appunti sul briefing dall'ultima sessione:*
+> *"3 new briefing notes since the last session:*
 >
-> *1. (REM, ieri 23:14) Il modulo `modules/auth.md` ha un wikilink a*
->    *`runbooks/mfa-onboarding.md` ma quel runbook non rilinka indietro.*
->    *Vuoi propagare il backlink?*
+> *1. (REM, yesterday 23:14) `modules/auth.md` links to*
+>    *`runbooks/mfa-onboarding.md`, but that runbook does not link back.*
+>    *Shall I propagate the backlink?*
 >
-> *2. (openclaw, 2026-05-24 18:02) Frodo via Telegram: "appunta:*
->    *documentare i recovery codes nel flow MFA."*
+> *2. (openclaw, 2026-05-24 18:02) Frodo via Telegram: "note this down:*
+>    *document the recovery codes in the MFA flow."*
 >
-> *3. (bob @lnprint-devs, 2026-05-25 09:30) "il flow MFA che ho*
->    *aggiornato in `src/auth/mfa.rs` non è ancora riflesso in*
->    *`modules/auth.md`."*
+> *3. (bob @lnprint-devs, 2026-05-25 09:30) "the MFA flow I updated in*
+>    *`src/auth/mfa.rs` is not reflected in `modules/auth.md` yet."*
 >
-> *Vuoi che ci occupiamo di qualcuno di questi ora?"*
+> *Do you want to take any of these on now?"*
 
 ### Archive on action
 

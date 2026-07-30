@@ -1006,13 +1006,16 @@ async fn projects_signposted_in(
 /// the real `AcmeSigns` corpus (2 112 sections at the current chunk
 /// policy), best cosine per turn:
 ///
+/// The turns below are translated; they were measured as the operator typed
+/// them, in the deployment's own language, and the scores are from those runs.
+///
 /// | turn | best section |
 /// |---|---|
-/// | «stasera ceniamo alle otto da mia sorella» | 0.427 |
-/// | «cosa ho fatto di lavoro questa settimana?» | 0.494 |
-/// | «domani alle 17:00 devo andare da questo cliente che ha il display che non funziona» | 0.608 |
-/// | «mi ha chiamato un cliente che dice che i contenuti sono fermi da 10 giorni» | 0.602 |
-/// | «come fa acmesigns a inviare i contenuti ai display?» | 0.651 |
+/// | «we are eating at eight at my sister's tonight» | 0.427 |
+/// | «what did I do for work this week?» | 0.494 |
+/// | «tomorrow at 17:00 I have to go to this customer whose display is not working» | 0.608 |
+/// | «a customer called to say the content has been stuck for 10 days» | 0.602 |
+/// | «how does acmesigns send the content to the displays?» | 0.651 |
 ///
 /// So the floor sits in the empty band between a turn that has nothing to
 /// do with the project and a turn in its semantic neighbourhood. That is

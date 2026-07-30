@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Chat onnipresente — unico punto di ingresso per le chiamate LLM dal
-//! cruscotto (agentic chat).
+//! The omnipresent chat — the single entry point for LLM calls from the
+//! dashboard (agentic chat).
 //!
 //! - `GET /dashboard/chat`: stand-alone chat page (header + main + the
 //!   right-side panel rendered by the layout). The page itself only

@@ -1,8 +1,8 @@
 ---
 name: document-extract
 description: document-ingest map phase — extracts atomic facts from one segment, each with its subject (owner_id) and audience (allow_ids) decided under the ingest rules; the {selectivity} placeholder switches the dossier posture (only what transcends the document) vs the dissolve posture (everything worth remembering)
-version: 1.4
-default_version_at_bootstrap: v1.4
+version: 1.5
+default_version_at_bootstrap: v1.5
 ---
 
 # Prompt: document-extract
@@ -56,9 +56,9 @@ SELECTIVITY FOR THIS DOCUMENT:
 EACH FACT:
 - "body": ONE atomic, self-contained prose claim, in the language named under LANGUAGE below. A reader with no access to the document must understand it: resolve pronouns, name people, resolve relative dates against current_time into explicit dates.
 - "target_wiki_id": the wiki from available_wikis where this fact belongs.
-- "target_page": a lowercase_underscore page name for the subject this fact belongs to (e.g. "viaggio_norvegia.md"). Group related facts on the same page.
-- "owner_id": WHO the fact is ABOUT — the subject, NOT who may read it. "user:<sender>" is the DEFAULT (a fact about the uploader). Use "user:<X>" ONLY for a person listed in known_users (resolve names and aliases to that roster) — NEVER mint a "user:<id>" for someone not in known_users (a relative who does not use the system, a pet, a third party): the system has no principal for them. For such a NON-ENROLLED individual, set owner_id to the group whose scope the fact falls inside (the same scope read you do for allow_ids) — the collective responsible for that subject — or "user:<sender>" when no group scope applies; keep the person's name in the body prose, never as a principal. A clinical or care fact about a non-enrolled family member → owner_id "group:famiglia". Use "group:<id>" when the subject is the collective itself (a list the whole group keeps), and "global" for a world fact belonging to no one. The subject stays the owner even when the fact is public — that is the allow_ids axis.
-- "allow_ids": WHO may read it — independent of owner_id. The fact is ALWAYS readable by its owner and the uploader, so [] (the DEFAULT) means exactly "only them". Widen it from three signals, the more specific overriding the more general: (1) the destination's GROUP scope — when a fact falls inside a group's domain in sender_groups, add that "group:<id>"; (2) the destination WIKI's scope prose in available_wikis (the same audience reading applied to the wiki's category); (3) an explicit cue in the document — public ("pubblico", "visibile a tutti", "public") → add "global"; private ("solo noi", "riservato", "private") → [] even when a group scope matches. allow_ids only ever WIDENS reading; owner_id stays the subject.
+- "target_page": a lowercase_underscore page name for the subject this fact belongs to (e.g. "norway_trip.md"). Group related facts on the same page.
+- "owner_id": WHO the fact is ABOUT — the subject, NOT who may read it. "user:<sender>" is the DEFAULT (a fact about the uploader). Use "user:<X>" ONLY for a person listed in known_users (resolve names and aliases to that roster) — NEVER mint a "user:<id>" for someone not in known_users (a relative who does not use the system, a pet, a third party): the system has no principal for them. For such a NON-ENROLLED individual, set owner_id to the group whose scope the fact falls inside (the same scope read you do for allow_ids) — the collective responsible for that subject — or "user:<sender>" when no group scope applies; keep the person's name in the body prose, never as a principal. A clinical or care fact about a non-enrolled family member → owner_id "group:family". Use "group:<id>" when the subject is the collective itself (a list the whole group keeps), and "global" for a world fact belonging to no one. The subject stays the owner even when the fact is public — that is the allow_ids axis.
+- "allow_ids": WHO may read it — independent of owner_id. The fact is ALWAYS readable by its owner and the uploader, so [] (the DEFAULT) means exactly "only them". Widen it from three signals, the more specific overriding the more general: (1) the destination's GROUP scope — when a fact falls inside a group's domain in sender_groups, add that "group:<id>"; (2) the destination WIKI's scope prose in available_wikis (the same audience reading applied to the wiki's category); (3) an explicit cue in the document, in whatever language it is written — public ("public", "visible to everyone", "not confidential") → add "global"; private ("just us", "confidential", "private") → [] even when a group scope matches. allow_ids only ever WIDENS reading; owner_id stays the subject.
 - "fact_type": bio | preference | episode | commitment | decision | other.
 - "topics": up to 3 short tags.
 - "valid_from"/"valid_to": ISO-8601 validity interval when the fact is time-bound (a commitment's window, a stay, an appointment); omit both for open-ended knowledge.
@@ -70,7 +70,7 @@ RULES:
 - One claim per fact. A sentence with two facts becomes two array entries.
 - A claim NEVER carries a source citation or a [[wikilink]]: no "(from the meeting)", no "([[wiki/page]])" suffix. The engine records provenance separately — your body is pure prose about the world.
 - Do not extract the same claim twice; near-duplicates within the segment collapse into the best phrasing.
-- People mentioned in the document are knowledge: write facts ABOUT them, attributed naturally in prose ("Gimli si offre di prenotare il viaggio").
+- People mentioned in the document are knowledge: write facts ABOUT them, attributed naturally in prose ("Gimli offers to book the trip").
 - An empty array is a valid answer.
 
 Reply with ONE JSON object only:

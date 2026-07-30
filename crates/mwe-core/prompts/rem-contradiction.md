@@ -1,8 +1,8 @@
 ---
 name: rem-contradiction
 description: REM contradiction sweep — given one freshly contradicted/superseded fact (and its successor, when any) plus a numbered list of OPEN candidate facts from this wiki family (the top-level wiki and every wiki nested under it), decide which candidates fall with it (the satellites of a cancelled event); strict JSON out; the cluster half of the temporal-validity model
-version: 1.2
-default_version_at_bootstrap: v1.2
+version: 1.3
+default_version_at_bootstrap: v1.3
 ---
 
 # Prompt: rem-contradiction
@@ -40,7 +40,7 @@ You receive ONE fact that was just CONTRADICTED (and, when it exists, the succes
 Decide which candidates (zero, one, or several) are INVALIDATED by the same contradiction — they only made sense while the contradicted fact held.
 
 Rules:
-- Be CONSERVATIVE. A candidate falls ONLY when its reason to exist was the contradicted fact: "Itinerario giorno 1: Louvre" falls with the cancelled Paris trip; "Galadriel è celiaca" does not fall with anything. Mere topic overlap is NOT invalidation.
+- Be CONSERVATIVE. A candidate falls ONLY when its reason to exist was the contradicted fact: "Itinerary day 1: Louvre" falls with the cancelled Paris trip; "Galadriel is coeliac" does not fall with anything. Mere topic overlap is NOT invalidation.
 - A candidate that survives the contradiction on its own merits (a durable preference, an independent plan) stays open — omit it.
 - `valid_to` = when the invalidation happened, when you can say (usually the contradiction's own moment); otherwise null — the engine uses the seed's closure instant.
 - `target` must be a fact_id copied EXACTLY from the candidate list. Never invent one.

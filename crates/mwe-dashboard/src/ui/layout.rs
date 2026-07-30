@@ -643,15 +643,15 @@ pub fn help_body() -> Markup {
             "tools and always asks you to confirm before it writes anything."
         }
         ul style="margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:.55rem" {
-            (help_row("\u{201C}sposta la lista nel gruppo famiglia\u{201D} / \u{201C}move X under Y\u{201D}",
+            (help_row("\u{201C}move the list into the family group\u{201D}",
                 "Move a wiki to another scope (e.g. into a group)."))
-            (help_row("\u{201C}tieni gli elementi 2 giorni\u{201D} / \u{201C}keep items two days\u{201D}",
+            (help_row("\u{201C}keep items two days\u{201D}",
                 "Retune an item\u{2019}s permanence / time-to-live."))
-            (help_row("\u{201C}aggiungi il campo \u{00AB}chi-ha-ordinato\u{00BB} agli elementi\u{201D} / \u{201C}add a field to the items\u{201D}",
+            (help_row("\u{201C}add a \u{00AB}who-ordered\u{00BB} field to the items\u{201D}",
                 "Change the item schema."))
-            (help_row("\u{201C}annulla la lista\u{201D} / \u{201C}undo that\u{201D}",
+            (help_row("\u{201C}undo that list\u{201D}",
                 "Undo a just-created structured wiki (within its revert window)."))
-            (help_row("\u{201C}cosa ho in sospeso?\u{201D} / \u{201C}what\u{2019}s pending?\u{201D}",
+            (help_row("\u{201C}what have I got pending?\u{201D}",
                 "Review pending proposals, applications awaiting confirmation, and still-revertable emergences."))
         }
         p style="margin:.9rem 0 0;font-size:.78rem;color:var(--text-dim);line-height:1.45" {

@@ -481,8 +481,8 @@ pub mod decay {
     /// watched. Stamped by the ingest/REM completion triggers.
     pub const COMPLETED: &str = "completed";
     /// The user took the fact back — a relayed forget/abandon gesture
-    /// ("dimentica quello che ti ho detto su…", "ho abbandonato il
-    /// progetto"). Stamped by the ingest closure path.
+    /// ("forget what I told you about…", "I have given up on the
+    /// project"). Stamped by the ingest closure path.
     pub const RETRACTED: &str = "retracted";
     /// A later fact superseded this one ([`super::mark_superseded`] stamps
     /// it on the predecessor as part of the supersede chokepoint).

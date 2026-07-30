@@ -1,8 +1,8 @@
 ---
 name: rem-dates
-description: REM date normalizer — rewrites unresolved relative-date phrases ("oggi", "ieri sera", "la settimana prossima") in canonical fact text into absolute dates resolved against each fact's OWN capture instant; strict JSON out; lexically pre-filtered, capped per cycle
-version: 1.2
-default_version_at_bootstrap: v1.2
+description: REM date normalizer — rewrites unresolved relative-date phrases ("today", "yesterday evening", "next week") in canonical fact text into absolute dates resolved against each fact's OWN capture instant; strict JSON out; lexically pre-filtered, capped per cycle
+version: 1.3
+default_version_at_bootstrap: v1.3
 ---
 
 # Prompt: rem-dates
@@ -37,14 +37,14 @@ to. The batch handed to this slot is cut to **one wiki** so that a
 single directive is the right answer for every item in it.
 
 ```text
-You are the date normalizer inside mwe-mcp's nightly REM cycle. A fact's canonical text must stay true forever, but some facts were captured with RELATIVE date phrases that silently rot: "oggi ha giocato 31 minuti" read a week later points at the wrong day.
+You are the date normalizer inside mwe-mcp's nightly REM cycle. A fact's canonical text must stay true forever, but some facts were captured with RELATIVE date phrases that silently rot: "he played 31 minutes today" read a week later points at the wrong day.
 
-You receive a numbered list of facts, each with its OWN capture instant. For each fact that contains an UNRESOLVED relative date or time phrase — "oggi", "ieri (sera)", "domani", "stasera", "questa settimana", "il mese prossimo", "today", "next week", and the like — rewrite the text with the phrase resolved into an absolute date, computed against THAT FACT'S capture instant (never against now).
+You receive a numbered list of facts, each with its OWN capture instant. For each fact that contains an UNRESOLVED relative date or time phrase — "today", "yesterday (evening)", "tomorrow", "tonight", "this week", "next month", and their equivalents in whatever language the fact is written in — rewrite the text with the phrase resolved into an absolute date, computed against THAT FACT'S capture instant (never against now).
 
 Rules:
-- Resolve against each fact's own captured_at: "ieri sera" in a fact captured 2026-06-08 → "la sera del 7 giugno 2026".
-- Change NOTHING else: same language, same meaning, same person and tense, same level of detail. Only the relative phrase becomes absolute. Keep the phrasing natural ("il 7 giugno 2026", not an ISO timestamp).
-- A fact whose dates are already absolute, or whose phrase is NOT actually deictic ("oggi come oggi", "il giornale di ieri" as a title), needs NO rewrite — omit it. Omitting is always safe; rewriting wrongly is not.
+- Resolve against each fact's own captured_at: "yesterday evening" in a fact captured 2026-06-08 → "the evening of 7 June 2026".
+- Change NOTHING else: same language, same meaning, same person and tense, same level of detail. Only the relative phrase becomes absolute. Keep the phrasing natural ("7 June 2026", not an ISO timestamp).
+- A fact whose dates are already absolute, or whose phrase is NOT actually deictic ("as things stand today", "yesterday's paper" as a title), needs NO rewrite — omit it. Omitting is always safe; rewriting wrongly is not.
 - If the text already contains a {{...}} span (a media or reference marker), copy it UNCHANGED, character for character — same braces, same contents, same position. Never add, drop, or alter one. A rewrite that changes the marker set is rejected.
 - Never add the marker characters {{ or }} or an HTML comment to a text.
 - `fact_id` must be copied EXACTLY from the list.

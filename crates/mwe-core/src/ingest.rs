@@ -698,9 +698,9 @@ struct LlmIngestPlan {
     #[serde(default)]
     extractions: Vec<LlmExtraction>,
     /// The closure half of the turn — existing facts whose validity this
-    /// message CLOSES: a completion ("ho comprato il latte" closes the open
-    /// shopping item) or a relayed forget/abandon gesture ("dimentica quello
-    /// che ti ho detto sulla serra"). Independent from `extractions` — a pure
+    /// message CLOSES: a completion ("I bought the milk" closes the open
+    /// shopping item) or a relayed forget/abandon gesture ("forget what I
+    /// told you about the greenhouse"). Independent from `extractions` — a pure
     /// gesture closes facts and captures nothing; the Jumanji case does both.
     /// Targets must come from this turn's `recalled_memory` (the same
     /// anti-hallucination rule as `supersede_target`).
@@ -715,16 +715,16 @@ struct LlmIngestPlan {
     #[serde(default)]
     closure_topics: Vec<String>,
     /// The validity-edit half of the turn — existing facts whose dates this
-    /// message CORRECTS ("il latte scade il 20, non il 25", "il progetto è
-    /// iniziato a marzo"). Distinct from `closures`: a correction fixes the
+    /// message CORRECTS ("the milk expires on the 20th, not the 25th", "the
+    /// project started in March"). Distinct from `closures`: a correction fixes the
     /// interval, it is not a completion/retraction (and never touches
     /// `decay_reason`). Targets must come from this turn's `recalled_memory`,
     /// and only the fact's OWNER may edit it from chat.
     #[serde(default)]
     validity_edits: Vec<LlmValidityEdit>,
     /// The acl-change half of the turn — existing facts whose SHARING this
-    /// message changes ("esponi questa memoria a tutti", "condividila col
-    /// gruppo famiglia"). Targets must come from this turn's
+    /// message changes ("make this memory visible to everyone", "share it with
+    /// the family group"). Targets must come from this turn's
     /// `recalled_memory`, and only the fact's OWNER may change it from chat.
     #[serde(default)]
     acl_changes: Vec<LlmAclChange>,
@@ -830,9 +830,9 @@ struct LlmExtraction {
     behaviour_rule: bool,
     /// Behaviour-rule scope (only read when `behaviour_rule` is `true`),
     /// read from the grammatical addressee (roadmap 29b + 42).
-    /// `"per-user"` (or absent) = addressed to the speaker ("-mi / con me / le
-    /// mie", or a bare imperative) — open to any user, filed per-user.
-    /// `"agent-wide"` = impersonal / universal ("con tutti", or a how-the-agent-
+    /// `"per-user"` (or absent) = addressed to the speaker ("with me / my
+    /// things", or a bare imperative) — open to any user, filed per-user.
+    /// `"agent-wide"` = impersonal / universal ("with everyone", or a how-the-agent-
     /// works directive with no per-speaker scope) — admin-only, filed
     /// owner = agent. `"user-global"` = explicitly every-assistant ("tutti gli
     /// assistenti") — open to any user, filed in THEIR identity wiki. Default
@@ -1773,9 +1773,9 @@ async fn recall_topic_candidates(
 /// The closure-aware second recall pass — aim correction for a
 /// recall-starved gesture.
 ///
-/// The dogfood re-run (2026-06-11) showed the failure: for *"dimentica
-/// quello che ti ho detto sulla serra: ho abbandonato il progetto"* the
-/// whole-message embedding ranked a dozen shopping items above the serra
+/// The dogfood re-run (2026-06-11) showed the failure: for *"forget what I
+/// told you about the greenhouse: I have given up on the project"* the
+/// whole-message embedding ranked a dozen shopping items above the greenhouse
 /// facts, so the classifier saw none of its targets and spent the closure
 /// on a wrong recalled fact. When the classifier instead names the
 /// gesture's TOPICS (`closure_topics` — targets it could not see), this
@@ -1874,7 +1874,7 @@ async fn confirm_topic_closures(
 /// Shared by the two fronts the maintainer decided (2026-06-11): the
 /// **completion trigger** (the message states an open item is spent —
 /// Jumanji watched, the milk bought) and the **relayed forget/abandon
-/// gesture** ("dimentica quello che ti ho detto sulla serra"). The LLM
+/// gesture** ("forget what I told you about the greenhouse"). The LLM
 /// decides the blast radius — which recalled facts close — and the code
 /// executes act-first: stamp the validity (fact row first, then the
 /// still-buffered capture — the id is stable across promotion), emit ONE
@@ -3223,7 +3223,7 @@ const BEHAVIOUR_RULES_PAGE: &str = crate::wiki::RULES_FILENAME;
 /// longer routes anything; this scope axis does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum BehaviourScope {
-    /// Addressed to the speaker ("-mi / con me / le mie", or a bare imperative
+    /// Addressed to the speaker ("with me / my things", or a bare imperative
     /// with no audience): shapes how the agent behaves WITH THIS USER. Open to
     /// **anyone** — it only touches them; filed `owner = the user` in the
     /// calling agent's wiki, recalled only for that user on that agent. The
@@ -4479,8 +4479,8 @@ pub async fn wiki_ingest_message(
 
     // Project-docs slot, first half. The turn's recall above is
     // facts-only — a conversation must not be buried under project
-    // documentation. A message that NAMES a project ("come funziona
-    // questa cosa di AcmeSigns?") has declared its own scope, so its
+    // documentation. A message that NAMES a project ("how does this
+    // AcmeSigns thing work?") has declared its own scope, so its
     // docs are pulled here, BEFORE the classifier, and are in front of it
     // when it decides the intent. The second half — a project the turn
     // never named, reached through a signpost — needs a judgement the

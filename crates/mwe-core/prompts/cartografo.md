@@ -1,8 +1,8 @@
 ---
 name: cartografo
 description: planner stage 1 — assigns each fact to exactly one page and proposes emergent concept pages (one-fact-one-page; identity pages carry one subject; grown pages split by content)
-version: 1.4
-default_version_at_bootstrap: v1.4
+version: 1.5
+default_version_at_bootstrap: v1.5
 ---
 
 # Prompt: cartografo
@@ -82,7 +82,7 @@ CONTAINER PAGES — a page with children functions as a hub:
 HARD RULES:
 - Do NOT create a slug that already exists in EXISTING FOUNDATION PAGES or EXISTING CONCEPT PAGES — REUSE it.
 - Do NOT create a new concept_leaf when an existing one is semantically equivalent — assign the fact there.
-- New slugs are descriptive snake_case (e.g. "salute_routine_alice", not a bare generic "salute" when specifics already exist).
+- New slugs are descriptive snake_case (e.g. "health_routine_alice", not a bare generic "health" when specifics already exist).
 - A concept_leaf's parent_hub MUST be an existing foundation/concept hub slug OR a concept_hub you propose in this same response.
 
 OUTPUT — one strict JSON object, no prose around it:

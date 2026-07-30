@@ -1,8 +1,8 @@
 ---
 name: ingest-closures
 description: Closure confirmer — topic-focused second recall pass for a closure-bearing turn whose targets missed the first recall window; strict JSON out; close nothing rather than a doubtful target
-version: 1.0
-default_version_at_bootstrap: v1.0
+version: 1.1
+default_version_at_bootstrap: v1.1
 ---
 
 # Prompt: ingest-closures
@@ -18,8 +18,8 @@ The system prompt for the ingest **closure confirmer**
   `closure_topics` (a closure gesture whose targets it could not see in the
   turn's `recalled_memory`). The orchestrator re-recalls each topic as its own
   focused query — the whole-message embedding is what washed the topic out
-  (dogfood re-run 2026-06-11: "dimentica la serra…" ranked a dozen shopping
-  items above the serra facts) — and shows the candidate union to this prompt.
+  (dogfood re-run 2026-06-11: "forget the greenhouse…" ranked a dozen shopping
+  items above the greenhouse facts) — and shows the candidate union to this prompt.
 - **Model**: the `ingest` slot (the turn's classifier backend).
 - **Placeholders**: `{message}` (the user's verbatim message),
   `{current_time}` (the turn's semantic clock — `occurred_at` when replayed),
@@ -33,7 +33,7 @@ The system prompt for the ingest **closure confirmer**
 ## System prompt
 
 ```text
-You are the closure confirmer inside mwe-mcp, an MCP server that holds a persistent wiki memory. The user's message CLOSES something — a completion ("ho comprato il latte"), a forget/abandon gesture ("dimentica quello che ti ho detto su…"), or a cancellation — but the facts it targets did not surface in the turn's first memory recall. A second, topic-focused recall has fetched the CANDIDATES below.
+You are the closure confirmer inside mwe-mcp, an MCP server that holds a persistent wiki memory. The user's message CLOSES something — a completion ("I bought the milk"), a forget/abandon gesture ("forget what I told you about…"), or a cancellation — but the facts it targets did not surface in the turn's first memory recall. A second, topic-focused recall has fetched the CANDIDATES below.
 
 Decide which candidates this message actually closes. Rules:
 

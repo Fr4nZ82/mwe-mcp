@@ -1,8 +1,8 @@
 ---
 name: rem-completion
 description: REM completion sweep — given one freshly captured EVIDENCE fact and a numbered list of OPEN candidate items from this wiki family (the top-level wiki and every wiki nested under it), decide which candidates the evidence completes (the consumable intention was spent); strict JSON out; the safety net behind the ingest closure verb
-version: 1.2
-default_version_at_bootstrap: v1.2
+version: 1.3
+default_version_at_bootstrap: v1.3
 ---
 
 # Prompt: rem-completion
@@ -39,10 +39,10 @@ You receive ONE freshly captured EVIDENCE fact and a numbered list of CANDIDATE 
 Decide which candidates (zero, one, or several) this evidence COMPLETES — i.e. the evidence states the intention was spent: the item was bought, the film was watched, the errand was done, the appointment happened.
 
 Rules:
-- Be CONSERVATIVE. Completion requires POSITIVE evidence that the action actually TOOK PLACE — it was done, bought, watched, attended, happened. A related, similar, or restated fact is NEVER enough. Topical similarity is not completion, and neither is DISCUSSING, ADVISING ON, or HELPING PLAN the item: "abbiamo parlato di Jumanji" and giving tips on how to organise the Jumanji evening do not complete "vuole vedere Jumanji"; only "abbiamo visto Jumanji" does. Advising on a plan leaves the plan OPEN.
-- RESTATEMENT is not completion. If the evidence merely says the SAME thing as the candidate — the same claim, the same need, a paraphrase or near-duplicate ("Bruno necessita di drenaggio" vs "Bruno ha l'indicazione per il drenaggio") — that is a DUPLICATE, not a completion; leave the candidate open (the dedup pass merges duplicates).
-- A STANDING condition, decision, medical indication, or diagnosis is not a consumable intention. "Ha l'indicazione per un intervento", "deve sottoporsi a un esame", "soffre di X" close ONLY on evidence the procedure or event actually took place ("è stato operato", "l'esame è stato eseguito") — never on evidence that restates the same condition or need.
-- A FUTURE plan is not completed before its time. If the candidate is about something still ahead of the evidence's date — a plan "for September", "next month", "quando nasce il bimbo" — it cannot have happened yet; leave it open no matter how much the evidence discusses or prepares for it.
+- Be CONSERVATIVE. Completion requires POSITIVE evidence that the action actually TOOK PLACE — it was done, bought, watched, attended, happened. A related, similar, or restated fact is NEVER enough. Topical similarity is not completion, and neither is DISCUSSING, ADVISING ON, or HELPING PLAN the item: "we talked about Jumanji" and giving tips on how to organise the Jumanji evening do not complete "wants to watch Jumanji"; only "we watched Jumanji" does. Advising on a plan leaves the plan OPEN.
+- RESTATEMENT is not completion. If the evidence merely says the SAME thing as the candidate — the same claim, the same need, a paraphrase or near-duplicate ("Bruno needs drainage" vs "Bruno has been indicated for drainage") — that is a DUPLICATE, not a completion; leave the candidate open (the dedup pass merges duplicates).
+- A STANDING condition, decision, medical indication, or diagnosis is not a consumable intention. "has been indicated for surgery", "must undergo a test", "suffers from X" close ONLY on evidence the procedure or event actually took place ("has had the operation", "the test was carried out") — never on evidence that restates the same condition or need.
+- A FUTURE plan is not completed before its time. If the candidate is about something still ahead of the evidence's date — a plan "for September", "next month", "when the baby is born" — it cannot have happened yet; leave it open no matter how much the evidence discusses or prepares for it.
 - An EPISODE does not complete. A candidate that is a record of something that ALREADY happened (a past event, an observation, a logged note) is not a consumable intention — only open intentions close (a shopping-list entry, a watchlist entry, a todo, a plan). If a candidate reads as history rather than a pending intention, leave it open.
 - A recurring item is completed for THIS cycle, not retired forever — closing it is still correct (it reopens when restated). Never refuse a completion because the item might recur.
 - `valid_to` = WHEN it happened, when the evidence says so (resolve relative phrases against the evidence's capture date, shown below); otherwise null — the engine then uses the evidence's own date.

@@ -1,6 +1,6 @@
 ---
 name: smart-onboarding
-version: 1.0.0
+version: 1.1.0
 description: "First connect, once per project: the interactive intro (three questions — scope, name, is-the-existing-text-still-true — and the many questions you must NOT ask), the four situations (text already exists / code but no docs / brand-new project / the wiki is already on mwe), the faithful bulk copy that never passes through your context, the exact wiki_admin_push create wire shape, the post-import shape report (measured and reported, never asked), and the page-repair proposal that previews as a page list and only ever CUTS, never rewrites — proven by hash. Fetched when smart_bootstrap volunteers first_connect.hint, or when the user asks to bring a project into mwe. Propose once, record a decline, never open it mid-task."
 depends_on: ["core", "smart-consumer"]
 applies_to:
@@ -286,10 +286,10 @@ Per page you get: `sections`, `sections_sharing_a_heading`,
 
 Report it as a sentence, not a table:
 
-> *"Copiate 45 pagine. Tre di queste si recupereranno male: hanno blocchi
-> di testo troppo lunghi perché l'indice li tenga interi, quindi li taglia
-> a metà frase. Se vuoi te lo sistemo — nella maggior parte dei casi basta
-> una riga vuota tra le voci lunghe."*
+> *"45 pages copied. Three of them will retrieve badly: they hold blocks of
+> text too long for the index to keep whole, so it cuts them mid-sentence.
+> I can fix that if you like — in most cases a blank line between the long
+> entries is all it takes."*
 
 What the numbers mean, so you can explain rather than recite:
 

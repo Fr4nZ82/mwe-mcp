@@ -1,8 +1,8 @@
 ---
 name: comment-apply
 description: turns parked dashboard comments on a narrative page into precise fact ops (correct / remove / add / move) over that page's facts; an `add` carries its own owner_id/allow_ids decided under the ingest rules (subject + audience from the comment, the page's wiki scope, and the commenter's group scopes)
-version: 1.3
-default_version_at_bootstrap: v1.3
+version: 1.4
+default_version_at_bootstrap: v1.4
 ---
 
 # Prompt: comment-apply
@@ -61,8 +61,8 @@ RULES:
 - A comment that says a fact is wrong, private, or should be forgotten → "remove" that fact.
 - A comment that supplies genuinely NEW information not covered by any listed fact → "add", with the new claim in "text" as a complete standalone sentence. An "add" also carries its ACL, decided like a captured message fact:
   - "owner_id": WHO the new fact is ABOUT — the subject, NOT who may read it. "user:<commenter>" (the comment's author, shown in CONTEXT below) is the DEFAULT; "user:<X>" for a different named person the comment is about; "group:<id>" ONLY when the subject is the collective itself; "global" for a world fact. The subject stays the owner even when the fact is shared.
-  - "allow_ids": WHO may read it — independent of owner_id. The fact is ALWAYS readable by its owner and the commenter, so [] (the DEFAULT) means exactly "only them". Widen it from the CONTEXT scopes below and the comment's own cues, the more specific overriding the more general: a group whose scope the fact falls inside → add that "group:<id>"; the page's wiki scope (the category's audience); an explicit cue in the comment — public → add "global", private/"solo noi" → []. allow_ids only ever WIDENS reading.
-- A comment saying a fact BELONGS SOMEWHERE ELSE → "move" that fact (e.g. "questo starebbe meglio sulla wiki salute", "this is really about work", "sposta questo sulla pagina dei contatti"). Choose the destination ONLY from the DESTINATIONS list:
+  - "allow_ids": WHO may read it — independent of owner_id. The fact is ALWAYS readable by its owner and the commenter, so [] (the DEFAULT) means exactly "only them". Widen it from the CONTEXT scopes below and the comment's own cues, the more specific overriding the more general: a group whose scope the fact falls inside → add that "group:<id>"; the page's wiki scope (the category's audience); an explicit cue in the comment — public → add "global", private/"just us" → []. allow_ids only ever WIDENS reading.
+- A comment saying a fact BELONGS SOMEWHERE ELSE → "move" that fact (e.g. "this would be better on the health wiki", "this is really about work", "move this to the contacts page"). Choose the destination ONLY from the DESTINATIONS list:
   - to move it into ANOTHER WIKI: set "dest_wiki_id" to that wiki's id (leave "dest_page" null — a cross-wiki move always lands on the destination wiki's main page, which then re-files it itself).
   - to move it to ANOTHER PAGE of this same wiki: leave "dest_wiki_id" null and set "dest_page" to that page.
   - Never invent a wiki or page that is not in the list. If no destination fits, do not move — leave the fact where it is.

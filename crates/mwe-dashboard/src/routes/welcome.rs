@@ -28,8 +28,8 @@
 //! The wizard only organises the collection and adds reinforcing section
 //! markers to the composed message — it is *just the collection UI*. The
 //! mechanism is unchanged from the old single-step wizard: one composed
-//! first-person Italian message (e.g. `favorite_color=rosso` becomes
-//! "il mio colore preferito è il rosso"), one ingest call through the
+//! first-person message (e.g. `favorite_color=red` becomes
+//! "my favourite colour is red"), one ingest call through the
 //! chat chokepoint (`chat::process_submission`). The LLM `ingest`
 //! slot classifies the message and emits N `wiki_capture` / engine-rule
 //! routings so each piece lands at its destination, indistinguishable
@@ -379,9 +379,9 @@ async fn fetch_email_for(state: &DashboardState, sender_id: &str) -> Result<Opti
 /// next to the "prefer the sender's own wiki" rule, is enough.
 ///
 /// [`AGENT_INSTRUCTIONS.md`]: ../../../AGENT_INSTRUCTIONS.md
-const PUBLIC_PROFILE_PRIMER_PREFIX: &str = "Tutto quello che scrivo qui sotto — dati biografici, \
-contatti e anche le informazioni di salute o sicurezza — è informazione PUBBLICA del mio profilo: \
-può essere vista da chiunque, non è riservata a me, e va trattata come pubblica senza eccezioni.";
+const PUBLIC_PROFILE_PRIMER_PREFIX: &str = "Everything I write below — biographical details, \
+contacts, and health or safety information too — is PUBLIC information on my profile: \
+anyone may see it, it is not private to me, and it is to be treated as public without exception.";
 
 /// Tiny vanilla script attached to the welcome form. While the POST is
 /// in flight (~15 s for Ollama on the workhorse model) we keep the
@@ -443,14 +443,14 @@ show(0);\
 /// `fact_index`. Reinforcement, not routing: the universal routing
 /// already lives in the ingest prompt; the marker just nudges the
 /// classification.
-const ENGINE_RULES_SECTION_MARKER: &str = "Le indicazioni che seguono NON sono fatti su di me, \
-ma le mie REGOLE su come gestire la mia memoria — privacy, condivisione, e cosa non salvare:";
+const ENGINE_RULES_SECTION_MARKER: &str = "What follows are NOT facts about me, \
+but my RULES for handling my memory — privacy, sharing, and what not to store:";
 
 /// Step-3 section marker. Low-weight personal preferences with no special
 /// routing: the ingest LLM files them on whatever page it sees fit
 /// (`salience` stays normal/low → never the always-on `index.md`).
 const PREFERENCES_SECTION_MARKER: &str =
-    "Infine, qualche preferenza e interesse personale, niente di importante:";
+    "Finally, a few personal preferences and interests, nothing important:";
 
 /// Compose the whole ingest message from the three wizard steps. Each
 /// step contributes one section, in order, joined by a blank line; empty
@@ -485,24 +485,24 @@ fn compose_identity_section(email: Option<&str>, form: &ProfileSubmission) -> St
     if let Some(e) = email {
         let e = e.trim();
         if !e.is_empty() {
-            clauses.push(format!("la mia email è {e}"));
+            clauses.push(format!("my email is {e}"));
         }
     }
     let displayed = form.display_name.trim();
     if !displayed.is_empty() {
-        clauses.push(format!("mi chiamo {displayed}"));
+        clauses.push(format!("my name is {displayed}"));
     }
     let nick = form.nickname.trim();
     if !nick.is_empty() {
-        clauses.push(format!("mi chiamano anche {nick}"));
+        clauses.push(format!("people also call me {nick}"));
     }
     let birthday = form.birthday.trim();
     if !birthday.is_empty() {
-        clauses.push(format!("sono nato il {birthday}"));
+        clauses.push(format!("I was born on {birthday}"));
     }
     let address = form.address.trim();
     if !address.is_empty() {
-        clauses.push(format!("vivo a {address}"));
+        clauses.push(format!("I live at {address}"));
     }
     // `language` is deliberately NOT a clause. It is the one primer answer
     // that is plumbing rather than biography: it lands in
@@ -512,19 +512,19 @@ fn compose_identity_section(email: Option<&str>, form: &ProfileSubmission) -> St
     // and the fact is the one nothing reads.
     let timezone = form.timezone.trim();
     if !timezone.is_empty() {
-        clauses.push(format!("il mio fuso orario è {timezone}"));
+        clauses.push(format!("my timezone is {timezone}"));
     }
     let pronouns = form.pronouns.trim();
     if !pronouns.is_empty() {
-        clauses.push(format!("i miei pronomi sono {pronouns}"));
+        clauses.push(format!("my pronouns are {pronouns}"));
     }
     let phone = form.phone.trim();
     if !phone.is_empty() {
-        clauses.push(format!("il mio numero di telefono è {phone}"));
+        clauses.push(format!("my phone number is {phone}"));
     }
     let occupation = form.occupation.trim();
     if !occupation.is_empty() {
-        clauses.push(format!("lavoro come {occupation}"));
+        clauses.push(format!("I work as {occupation}"));
     }
 
     // The public block: identity clauses + the free-form `presentati` + the
@@ -577,33 +577,33 @@ fn compose_engine_rules_section(form: &ProfileSubmission) -> String {
     let mut rules: Vec<String> = Vec::new();
     match form.sharing_default.trim() {
         "private" => rules.push(
-            "Di default tieni privati i miei fatti, visibili solo a me, a meno che \
-             non sia chiaramente qualcosa pensato per essere condiviso."
+            "By default keep my facts private, visible only to me, unless something is \
+             clearly meant to be shared."
                 .to_owned(),
         ),
         "group" => rules.push(
-            "Di default puoi condividere i miei fatti con il gruppo pertinente quando \
-             ha senso: decidi tu come assistente."
+            "By default you may share my facts with the relevant group when it makes \
+             sense: use your judgement as my assistant."
                 .to_owned(),
         ),
-        "always_private" => rules.push(
-            "Tieni sempre privati i miei fatti: non condividerli con nessun gruppo.".to_owned(),
-        ),
+        "always_private" => {
+            rules.push("Always keep my facts private: never share them with a group.".to_owned());
+        },
         _ => {},
     }
     let excl = form.sharing_exclusions.trim();
     if !excl.is_empty() {
-        rules.push(format!("Non condividere mai i miei fatti con: {excl}."));
+        rules.push(format!("Never share my facts with: {excl}."));
     }
     let topics = form.private_topics.trim();
     if !topics.is_empty() {
         rules.push(format!(
-            "Tieni sempre privati i temi che riguardano: {topics}."
+            "Always keep anything about these subjects private: {topics}."
         ));
     }
     let dns = form.do_not_store.trim();
     if !dns.is_empty() {
-        rules.push(format!("Non memorizzare mai: {dns}."));
+        rules.push(format!("Never store: {dns}."));
     }
     if rules.is_empty() {
         return String::new();
@@ -623,15 +623,15 @@ fn compose_preferences_section(form: &ProfileSubmission) -> String {
     let mut clauses: Vec<String> = Vec::new();
     let color = form.favorite_color.trim();
     if !color.is_empty() {
-        clauses.push(format!("il mio colore preferito è il {color}"));
+        clauses.push(format!("my favourite colour is {color}"));
     }
     let hobbies = form.hobbies.trim();
     if !hobbies.is_empty() {
-        clauses.push(format!("i miei hobby e interessi sono {hobbies}"));
+        clauses.push(format!("my hobbies and interests are {hobbies}"));
     }
     let food = form.food_preferences.trim();
     if !food.is_empty() {
-        clauses.push(format!("per quanto riguarda il cibo: {food}"));
+        clauses.push(format!("as for food: {food}"));
     }
     if clauses.is_empty() {
         return String::new();
@@ -849,14 +849,14 @@ mod tests {
     fn compose_emits_only_filled_clauses_in_first_person() {
         let form = ProfileSubmission {
             display_name: "Francesco".into(),
-            favorite_color: "rosso".into(),
+            favorite_color: "red".into(),
             ..ProfileSubmission::default()
         };
         let msg = compose_ingest_message(Some("franz@example.com"), &form);
         assert!(msg.starts_with(PUBLIC_PROFILE_PRIMER_PREFIX), "{msg}");
-        assert!(msg.contains("la mia email è franz@example.com"));
-        assert!(msg.contains("mi chiamo Francesco"));
-        assert!(msg.contains("il mio colore preferito è il rosso"));
+        assert!(msg.contains("my email is franz@example.com"));
+        assert!(msg.contains("my name is Francesco"));
+        assert!(msg.contains("my favourite colour is red"));
         assert!(!msg.contains("nickname"));
         assert!(!msg.contains("birthday"));
     }
@@ -871,7 +871,7 @@ mod tests {
         let msg = compose_ingest_message(None, &form);
         assert!(msg.starts_with(PUBLIC_PROFILE_PRIMER_PREFIX), "{msg}");
         assert!(
-            msg.contains("mi chiamo Alice. lavoro come developer."),
+            msg.contains("my name is Alice. I work as developer."),
             "{msg}"
         );
     }
@@ -885,7 +885,7 @@ mod tests {
         };
         let msg = compose_ingest_message(None, &form);
         assert!(msg.starts_with(PUBLIC_PROFILE_PRIMER_PREFIX), "{msg}");
-        assert!(msg.contains("mi chiamo Alice."), "{msg}");
+        assert!(msg.contains("my name is Alice."), "{msg}");
         assert!(msg.contains("\n\nLavoro nel mondo della pasta"), "{msg}");
     }
 
@@ -966,18 +966,18 @@ mod tests {
             !msg.contains("target_wiki_id"),
             "primer must not leak JSON field names: {msg}"
         );
-        // The prefix carries the consent cue in plain italian.
+        // The prefix carries the consent cue in plain words, not in jargon.
         assert!(
-            msg.contains("PUBBLICA") && msg.contains("chiunque"),
-            "primer must signal public consent in plain italian: {msg}"
+            msg.contains("PUBLIC") && msg.contains("anyone may see it"),
+            "primer must signal public consent in plain words: {msg}"
         );
         let prefix_end = msg
             .find(PUBLIC_PROFILE_PRIMER_PREFIX)
             .map(|i| i + PUBLIC_PROFILE_PRIMER_PREFIX.len())
             .unwrap();
         let after_prefix = &msg[prefix_end..];
-        let email_idx = msg.find("la mia email è").expect("email clause present");
-        let name_idx = msg.find("mi chiamo").expect("name clause present");
+        let email_idx = msg.find("my email is").expect("email clause present");
+        let name_idx = msg.find("my name is").expect("name clause present");
         assert!(
             email_idx > prefix_end,
             "email must follow the primer prefix: {msg}"
@@ -1008,16 +1008,13 @@ mod tests {
         // facts → the ingest LLM sets engine_rule:true → rules.md.
         assert!(msg.contains(ENGINE_RULES_SECTION_MARKER), "{msg}");
         // Each preset turns into a bulleted imperative directive.
+        assert!(msg.contains("\n- Always keep my facts private"), "{msg}");
         assert!(
-            msg.contains("\n- Tieni sempre privati i miei fatti"),
+            msg.contains("\n- Always keep anything about these subjects private: salute, soldi."),
             "{msg}"
         );
         assert!(
-            msg.contains("\n- Tieni sempre privati i temi che riguardano: salute, soldi."),
-            "{msg}"
-        );
-        assert!(
-            msg.contains("\n- Non memorizzare mai: il mio indirizzo di casa."),
+            msg.contains("\n- Never store: il mio indirizzo di casa."),
             "{msg}"
         );
         // No identity → no public-consent prefix leaks in.
@@ -1030,14 +1027,17 @@ mod tests {
             sharing_default: "group".into(),
             ..ProfileSubmission::default()
         });
-        assert!(group.contains("decidi tu come assistente"), "{group}");
+        assert!(
+            group.contains("use your judgement as my assistant"),
+            "{group}"
+        );
 
         let private = compose_engine_rules_section(&ProfileSubmission {
             sharing_default: "private".into(),
             ..ProfileSubmission::default()
         });
         assert!(
-            private.contains("Di default tieni privati i miei fatti"),
+            private.contains("By default keep my facts private"),
             "{private}"
         );
 
@@ -1047,7 +1047,7 @@ mod tests {
             ..ProfileSubmission::default()
         });
         assert!(
-            excl.contains("Non condividere mai i miei fatti con: il gruppo lavoro."),
+            excl.contains("Never share my facts with: il gruppo lavoro."),
             "{excl}"
         );
     }
@@ -1074,7 +1074,7 @@ mod tests {
         // Identity card stays public (under the prefix); health comes
         // after it as its own re-framed paragraph.
         assert!(msg.starts_with(PUBLIC_PROFILE_PRIMER_PREFIX), "{msg}");
-        let name_idx = msg.find("mi chiamo Frodo").expect("name present");
+        let name_idx = msg.find("my name is Frodo").expect("name present");
         let health_idx = msg.find("allergia alle arachidi").expect("health present");
         assert!(health_idx > name_idx, "health must follow identity: {msg}");
     }
@@ -1185,14 +1185,14 @@ mod primer_language_tests {
             ..Default::default()
         };
         let msg = compose_ingest_message(Some("alice@example.com"), &form);
-        assert!(msg.contains("mi chiamo Alice"), "{msg}");
+        assert!(msg.contains("my name is Alice"), "{msg}");
         assert!(
             !msg.contains("lingua"),
             "language must not be a primer fact: {msg}"
         );
         assert!(
-            !msg.contains(" it"),
-            "the tag must not leak into the prose: {msg}"
+            !msg.to_lowercase().contains("language") && !msg.to_lowercase().contains("locale"),
+            "the language answer must not become a primer clause: {msg}"
         );
     }
 }
