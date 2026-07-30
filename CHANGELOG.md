@@ -9,6 +9,68 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## 1.8.2 — 2026-07-30
+
+### Fixed
+
+- **A failed snapshot could sit on disk looking like a good backup.** The
+  snapshot writes the database first and the rest of the workdir second,
+  in that order deliberately. But a snapshot is recognised — by the
+  Backup console's list, by the CLI, and by the retention prune — as *a
+  directory containing an `engine.db`*, which is the file written first.
+  A run that aborted during the file copy therefore left behind a
+  directory holding a complete, valid database and **no prose pages, no
+  media, no configuration**: indistinguishable from a real backup, and
+  unrestorable in the way that matters, because the media blobs are the
+  one half the database cannot regenerate (it stores each file's hash,
+  not its bytes).
+
+  Any failure after writing begins now discards what was written — the
+  whole destination when the run created it, otherwise just the database
+  copy, since a directory the operator prepared is not the engine's to
+  delete. A directory with an `engine.db` in it once again means a
+  snapshot that finished.
+
+- **One unreadable leftover in the workdir could fail every snapshot
+  from then on.** A workdir accumulates files from hand-run maintenance,
+  and any of them owned by another user with restrictive permissions —
+  an archive written by a `sudo` pre-deploy backup is the ordinary case
+  — made the file copy return "permission denied" and took the entire
+  snapshot down with it. Automatic and manual runs alike, indefinitely,
+  for one file the backup did not need.
+
+  Such an entry is now skipped, named in the report, logged, and shown
+  on the console: a snapshot that completed *minus something* is a
+  different event from a clean one, and the operator is told which.
+  Every other I/O failure — a full disk, a tree that vanished mid-copy —
+  still aborts, because a backup that quietly stops early is the failure
+  this whole area exists to prevent.
+
+- **The Backup console's snapshot list now shows a file count**, flagging
+  `DB only — no tree` at one file. Size alone could not tell a real
+  snapshot from a husk: the database is written first and is most of the
+  weight, so a run that captured nothing else still looked the right
+  size.
+
+### Changed
+
+- **The recorded model-call log (`training-spool/`) no longer travels
+  inside a snapshot.** A snapshot is the unit of *restore*, and an
+  append-only observation log is not state a restore should roll back;
+  it was also the largest growing thing in a workdir — 47 % of every
+  snapshot on the maintainer's deployment, larger than the database
+  itself — so retention held N rolling copies of one ever-lengthening
+  file. It is excluded on the same principle as `logs/`. If the spool
+  needs protecting it needs its own archive and its own retention, not a
+  seat inside the recovery unit.
+
+  A **restore** consequently no longer deletes it. The restore clears the
+  workdir before moving a snapshot in, so both halves now read one
+  shared list of what a snapshot never carries — otherwise excluding
+  something from a backup would destroy it on the next recovery. A
+  *memory reset* still removes the spool: wiping the memory means wiping
+  the recorded conversations too.
+
 ## 1.8.1 — 2026-07-30
 
 ### Fixed
