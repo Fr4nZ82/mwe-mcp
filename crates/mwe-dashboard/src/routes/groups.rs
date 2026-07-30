@@ -570,8 +570,11 @@ mod tests {
 
     /// A pool with two humans and one agent identity (a bound consumer
     /// system-user), to exercise the group-roster agent filter.
-    async fn seeded_pool() -> SqlitePool {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
+    async fn seeded_pool() -> (SqlitePool, tempfile::TempDir) {
+        // The guard goes back to the caller: a leaked temporary
+        // directory is never removed by anything (see the leak that
+        // filled tmpfs on the production host).
+        let dir = tempfile::tempdir().expect("tempdir");
         let pool = db::open_or_init(dir.path()).await.expect("db open");
         for u in ["franz", "morgana", "hermesbot"] {
             sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES (?, 0)")
@@ -595,12 +598,12 @@ mod tests {
         )
         .await
         .expect("register agent consumer");
-        pool
+        (pool, dir)
     }
 
     #[tokio::test]
     async fn group_roster_excludes_agent_identities() {
-        let pool = seeded_pool().await;
+        let (pool, _workdir) = seeded_pool().await;
         let roster = fetch_user_ids(&pool).await.expect("roster");
 
         assert!(

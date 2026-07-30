@@ -2267,23 +2267,17 @@ pub async fn expire_overdue_proposals_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db;
     use serde_json::json;
 
-    async fn fresh_pool() -> SqlitePool {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
-        db::open_or_init(dir.path()).await.expect("db open")
+    async fn fresh_pool() -> (crate::test_db::TestWorkdir, SqlitePool) {
+        crate::test_db::TestWorkdir::with_db().await
     }
 
     /// As [`fresh_pool`], but also returns a [`WikiTree`] rooted at the
     /// same tempdir. The tree's `wikis/` directory is pre-created so
     /// [`WikiTree::open`] can canonicalise it.
-    async fn fresh_pool_and_tree() -> (SqlitePool, WikiTree) {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
-        std::fs::create_dir_all(dir.path().join("wikis")).expect("wikis dir");
-        let pool = db::open_or_init(dir.path()).await.expect("db open");
-        let tree = WikiTree::open(dir.path()).expect("wiki tree");
-        (pool, tree)
+    async fn fresh_pool_and_tree() -> (crate::test_db::TestWorkdir, SqlitePool, WikiTree) {
+        crate::test_db::TestWorkdir::with_db_and_tree().await
     }
 
     /// Seed helper. `timeout_offset_secs` is added to `proposed_at` to
@@ -2442,7 +2436,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_defaults_to_pending() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::DEDUP_MERGE, "pending", 86_400).await;
         seed(&pool, "p-2", kind::WIKI_PROMOTE, "applied", 86_400).await;
         let rows = list(
@@ -2461,7 +2455,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_filters_by_kind() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::DEDUP_MERGE, "pending", 86_400).await;
         seed(&pool, "p-2", kind::WIKI_PROMOTE, "pending", 86_400).await;
         let rows = list(
@@ -2479,7 +2473,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_no_status_returns_every_row() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::DEDUP_MERGE, "pending", 86_400).await;
         seed(&pool, "p-2", kind::DEDUP_MERGE, "applied", 86_400).await;
         seed(&pool, "p-3", kind::DEDUP_MERGE, "expired", 86_400).await;
@@ -2491,7 +2485,7 @@ mod tests {
 
     #[tokio::test]
     async fn count_in_flight_zero_on_fresh_db() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let counts = count_in_flight(&pool, None, chrono::Utc::now())
             .await
             .unwrap();
@@ -2501,7 +2495,7 @@ mod tests {
 
     #[tokio::test]
     async fn count_in_flight_sums_pending_applied_pending_confirm_and_revertable_applied() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::DEDUP_MERGE, "pending", 86_400).await;
         seed(&pool, "p-2", kind::DEDUP_MERGE, "pending", 86_400).await;
         seed(
@@ -2528,7 +2522,7 @@ mod tests {
 
     #[tokio::test]
     async fn count_in_flight_counts_open_revert_window_excludes_closed_and_reverted() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         // An `applied` row with an OPEN revert window (deadline in the
         // future) — a born-applied emergence the user can still undo.
         seed_applied_with_deadline(&pool, "open", Some(86_400)).await;
@@ -2569,7 +2563,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_proposal_not_found() {
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         let err = apply_proposal(&pool, &tree, "p-missing", &json!({}), Some("frodo"), true)
             .await
             .unwrap_err();
@@ -2578,7 +2572,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_proposal_rejects_non_pending() {
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "applied", 86_400).await;
         let err = apply_proposal(&pool, &tree, "p-1", &json!({}), Some("frodo"), true)
             .await
@@ -2597,7 +2591,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_proposal_rejects_unknown_kind() {
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", "forge_type", "pending", 86_400).await;
         let err = apply_proposal(&pool, &tree, "p-1", &json!({}), Some("frodo"), true)
             .await
@@ -2622,7 +2616,7 @@ mod tests {
         // three canonical kinds still surface KindNotYetImplemented at the
         // chassis boundary. Driving an end-to-end happy path through the
         // chassis is the promote module's job.
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         let unshipped = [kind::BUNDLE];
         for (i, k) in unshipped.iter().enumerate() {
             let id = format!("p-{i}");
@@ -2652,7 +2646,7 @@ mod tests {
         // the handler cannot deserialise the required fields. Confirms
         // the chassis is reaching the handler and the handler is gating
         // on its own input contract.
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         let err = apply_proposal(&pool, &tree, "p-1", &json!({}), Some("frodo"), true)
             .await
@@ -2672,7 +2666,7 @@ mod tests {
 
     #[tokio::test]
     async fn mark_applied_flips_pending_and_stamps_token() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         let out = mark_applied(&pool, "p-1", Some("frodo"), &json!({"q1":"yes"}), None)
             .await
@@ -2712,7 +2706,7 @@ mod tests {
 
     #[tokio::test]
     async fn mark_applied_is_no_op_on_non_pending() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "reverted", 86_400).await;
         let err = mark_applied(&pool, "p-1", Some("frodo"), &json!({}), None)
             .await
@@ -2731,7 +2725,7 @@ mod tests {
 
     #[tokio::test]
     async fn mark_applied_stores_spec_when_provided() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         let spec = json!({"target_wiki_id":"alice/lavoro","facts_moved":3});
         mark_applied(&pool, "p-1", None, &json!({}), Some(&spec))
@@ -2751,7 +2745,7 @@ mod tests {
 
     #[tokio::test]
     async fn revert_proposal_not_found() {
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         let err = revert_proposal(&pool, &tree, "p-missing", RevertAuth::Token("any"))
             .await
             .unwrap_err();
@@ -2760,7 +2754,7 @@ mod tests {
 
     #[tokio::test]
     async fn revert_proposal_rejects_non_revertable_status() {
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         let err = revert_proposal(&pool, &tree, "p-1", RevertAuth::Token("any"))
             .await
@@ -2782,7 +2776,7 @@ mod tests {
 
     #[tokio::test]
     async fn revert_proposal_rejects_bad_token() {
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         // Build an applied row directly so the token mismatch is the
         // first thing the chassis hits.
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
@@ -2797,7 +2791,7 @@ mod tests {
 
     #[tokio::test]
     async fn revert_proposal_rejects_closed_window() {
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         let out = mark_applied(&pool, "p-1", Some("frodo"), &json!({}), None)
             .await
@@ -2832,7 +2826,7 @@ mod tests {
         // direct DB poke or via the unimplemented kinds before they
         // ship), the chassis surfaces InvalidPayload and leaves the row
         // applied so an operator can inspect.
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         let out = mark_applied(&pool, "p-1", Some("frodo"), &json!({}), None)
             .await
@@ -2856,7 +2850,7 @@ mod tests {
         // BUNDLE row reverts for real — but a spec that is not a `BundleSpec`
         // (here: no `ops`) surfaces InvalidPayload and leaves the row applied
         // so an operator can inspect, never a silent half-revert.
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", kind::BUNDLE, "pending", 86_400).await;
         let out = mark_applied(
             &pool,
@@ -2887,7 +2881,7 @@ mod tests {
         // RevertAuth::Token to it must surface InvalidRevertToken (the
         // chassis would otherwise have to silently fall through to the
         // caller path, which would defeat the caller's intent).
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         mark_auto_applied(&pool, "p-1", &json!({}), Some(&json!({"x": 1})))
             .await
@@ -2900,7 +2894,7 @@ mod tests {
 
     #[tokio::test]
     async fn revert_proposal_caller_path_rejects_empty_caller() {
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         mark_auto_applied(&pool, "p-1", &json!({}), Some(&json!({"x": 1})))
             .await
@@ -2924,7 +2918,7 @@ mod tests {
 
     #[tokio::test]
     async fn revert_proposal_caller_path_rejects_expired_confirm_window() {
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         mark_auto_applied(&pool, "p-1", &json!({}), Some(&json!({"x": 1})))
             .await
@@ -2963,7 +2957,7 @@ mod tests {
 
     #[tokio::test]
     async fn mark_reverted_flips_and_stamps_reverted_at() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         let out = mark_applied(&pool, "p-1", Some("frodo"), &json!({}), None)
             .await
@@ -2997,7 +2991,7 @@ mod tests {
 
     #[tokio::test]
     async fn mark_reverted_is_no_op_on_wrong_token() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         mark_applied(&pool, "p-1", None, &json!({}), None)
             .await
@@ -3024,7 +3018,7 @@ mod tests {
 
     #[tokio::test]
     async fn mark_reverted_is_idempotent_safe() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         let out = mark_applied(&pool, "p-1", None, &json!({}), None)
             .await
@@ -3053,7 +3047,7 @@ mod tests {
 
     #[tokio::test]
     async fn mark_reverted_caller_path_flips_applied_pending_confirm() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         mark_auto_applied(&pool, "p-1", &json!({}), Some(&json!({"x": 1})))
             .await
@@ -3093,7 +3087,7 @@ mod tests {
 
     #[tokio::test]
     async fn mark_auto_applied_flips_to_pending_confirm_and_sets_deadline() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         let out = mark_auto_applied(&pool, "p-1", &json!({"q1": "rec"}), Some(&json!({"x": 1})))
             .await
@@ -3124,7 +3118,7 @@ mod tests {
 
     #[tokio::test]
     async fn mark_auto_applied_does_not_mint_revert_token() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         mark_auto_applied(&pool, "p-1", &json!({}), None)
             .await
@@ -3145,7 +3139,7 @@ mod tests {
 
     #[tokio::test]
     async fn mark_auto_applied_is_no_op_on_non_pending() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "applied", 86_400).await;
         let err = mark_auto_applied(&pool, "p-1", &json!({}), None)
             .await
@@ -3166,7 +3160,7 @@ mod tests {
 
     #[tokio::test]
     async fn confirm_proposal_promotes_pending_confirm_to_applied() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         mark_auto_applied(&pool, "p-1", &json!({}), Some(&json!({"x": 1})))
             .await
@@ -3206,7 +3200,7 @@ mod tests {
 
     #[tokio::test]
     async fn confirm_proposal_rejects_non_pending_confirm_row() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "applied", 86_400).await;
         let err = confirm_proposal(&pool, "p-1", "frodo", true)
             .await
@@ -3225,7 +3219,7 @@ mod tests {
 
     #[tokio::test]
     async fn confirm_proposal_rejects_expired_confirm_window() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         mark_auto_applied(&pool, "p-1", &json!({}), Some(&json!({"x": 1})))
             .await
@@ -3254,7 +3248,7 @@ mod tests {
 
     #[tokio::test]
     async fn confirm_proposal_not_found() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let err = confirm_proposal(&pool, "p-missing", "frodo", true)
             .await
             .unwrap_err();
@@ -3267,7 +3261,7 @@ mod tests {
         // still succeed (the token comes from confirm, not from a manual
         // apply). Uses kind WIKI_PROMOTE with a real spec so the inverse
         // dispatcher doesn't reject on NULL spec.
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         // Inject a placeholder spec via mark_auto_applied so the revert
         // dispatcher has something to deserialise. The promote inverse
@@ -3347,7 +3341,7 @@ mod tests {
 
     #[tokio::test]
     async fn auto_apply_sweep_skips_pending_within_timeout() {
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed_with_recommended(&pool, "p-future", 86_400).await;
         let now = chrono::Utc::now();
         let report = auto_apply_overdue_proposals(&pool, &tree, now)
@@ -3363,7 +3357,7 @@ mod tests {
         // The promote handler rejects the test seed context with
         // InvalidPayload; the sweep collects it per-row and the row
         // stays pending so the next sweep can retry.
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed_with_recommended(&pool, "p-past", -3600).await;
         let now = chrono::Utc::now();
         let report = auto_apply_overdue_proposals(&pool, &tree, now)
@@ -3384,7 +3378,7 @@ mod tests {
 
     #[tokio::test]
     async fn auto_apply_sweep_records_missing_recommended_as_soft_error() {
-        let (pool, tree) = fresh_pool_and_tree().await;
+        let (_workdir, pool, tree) = fresh_pool_and_tree().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", -3600).await;
         // Default seed questions has empty options — no recommended.
         let report = auto_apply_overdue_proposals(&pool, &tree, chrono::Utc::now())
@@ -3404,7 +3398,7 @@ mod tests {
     async fn expire_grace_period_only_flips_past_grace_window() {
         // EXPIRE_GRACE_PERIOD is 24h. A row 1h past timeout_at must not
         // flip; a row 48h past timeout_at must.
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-recent", kind::WIKI_PROMOTE, "pending", -3600).await;
         seed(
             &pool,
@@ -3436,7 +3430,7 @@ mod tests {
 
     #[tokio::test]
     async fn auto_finalize_sweep_skips_pending_confirm_within_window() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         mark_auto_applied(&pool, "p-1", &json!({}), Some(&json!({"x": 1})))
             .await
@@ -3463,7 +3457,7 @@ mod tests {
         // (locked, no revert_token minted, no event emitted). Kind
         // inverse handler is NOT invoked (the modifications stay on
         // disk).
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         mark_auto_applied(
             &pool,
@@ -3527,7 +3521,7 @@ mod tests {
     #[tokio::test]
     async fn auto_finalize_sweep_is_idempotent() {
         // A second run finds nothing more to finalize.
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", 86_400).await;
         mark_auto_applied(&pool, "p-1", &json!({}), Some(&json!({"x": 1})))
             .await
@@ -3556,7 +3550,7 @@ mod tests {
         // Expire requires timeout_at + EXPIRE_GRACE_PERIOD
         // (24h) before the row is given up. A row 1 min past timeout
         // does NOT expire — the auto-apply sweep still owns it.
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(
             &pool,
             "p-past-but-in-grace",
@@ -3605,7 +3599,7 @@ mod tests {
 
     #[tokio::test]
     async fn expire_sweep_is_idempotent() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         seed(&pool, "p-1", kind::WIKI_PROMOTE, "pending", -(48 * 3600)).await;
         let first = expire_overdue_proposals(&pool).await.unwrap();
         let second = expire_overdue_proposals(&pool).await.unwrap();

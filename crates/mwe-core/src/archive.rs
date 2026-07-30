@@ -99,16 +99,14 @@ pub async fn already_proposed(pool: &SqlitePool, wiki_id: &str, path: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db;
 
-    async fn fresh_pool() -> SqlitePool {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
-        db::open_or_init(dir.path()).await.expect("db open")
+    async fn fresh_pool() -> (crate::test_db::TestWorkdir, SqlitePool) {
+        crate::test_db::TestWorkdir::with_db().await
     }
 
     #[tokio::test]
     async fn emit_writes_pending_row() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let pid = emit_archive_proposal(&pool, "alice", "alice/old.md", reason::NO_RECALL_HIT_365D)
             .await
             .unwrap();
@@ -128,7 +126,7 @@ mod tests {
 
     #[tokio::test]
     async fn already_proposed_finds_pending_and_approved() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let pid = emit_archive_proposal(&pool, "alice", "alice/old.md", reason::NO_RECALL_HIT_365D)
             .await
             .unwrap();

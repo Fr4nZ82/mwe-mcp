@@ -269,22 +269,28 @@ mod tests {
     use mwe_core::jwt::{BlacklistCache, TokenSecret};
     use std::sync::Arc;
 
-    async fn make_state() -> DashboardState {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
+    async fn make_state() -> (DashboardState, tempfile::TempDir) {
+        // The guard goes back to the caller: a leaked temporary
+        // directory is never removed by anything (see the leak that
+        // filled tmpfs on the production host).
+        let dir = tempfile::tempdir().expect("tempdir");
         let pool = mwe_core::db::open_or_init(dir.path())
             .await
             .expect("open db");
         let secret = TokenSecret::new(vec![0xCDu8; 32]).expect("secret");
         let blacklist = Arc::new(BlacklistCache::new());
         let delegations = Arc::new(DelegationCache::new());
-        DashboardState::new(pool, secret, blacklist, delegations)
+        (
+            DashboardState::new(pool, secret, blacklist, delegations),
+            dir,
+        )
     }
 
     /// Issuing then verifying a session cookie roundtrips the
     /// `sender_id` and the admin flag.
     #[tokio::test]
     async fn issue_then_verify_roundtrips_claims() {
-        let state = make_state().await;
+        let (state, _workdir) = make_state().await;
         let cookie = issue_session_cookie(&state, "frodo", true).expect("issue");
 
         let jar = CookieJar::new().add(cookie);
@@ -301,7 +307,7 @@ mod tests {
     /// rides on the same blacklist as MCP tokens.
     #[tokio::test]
     async fn revoked_session_fails_verify() {
-        let state = make_state().await;
+        let (state, _workdir) = make_state().await;
         let cookie = issue_session_cookie(&state, "frodo", true).expect("issue");
         let jar = CookieJar::new().add(cookie.clone());
 

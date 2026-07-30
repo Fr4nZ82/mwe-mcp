@@ -157,15 +157,21 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    async fn make_state() -> DashboardState {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
+    async fn make_state() -> (DashboardState, tempfile::TempDir) {
+        // The guard goes back to the caller: a leaked temporary
+        // directory is never removed by anything (see the leak that
+        // filled tmpfs on the production host).
+        let dir = tempfile::tempdir().expect("tempdir");
         let pool = mwe_core::db::open_or_init(dir.path())
             .await
             .expect("open db");
         let secret = TokenSecret::new(vec![0xCDu8; 32]).expect("secret");
         let blacklist = Arc::new(BlacklistCache::new());
         let delegations = Arc::new(DelegationCache::new());
-        DashboardState::new(pool, secret, blacklist, delegations)
+        (
+            DashboardState::new(pool, secret, blacklist, delegations),
+            dir,
+        )
     }
 
     /// Mint a dashboard-session-shaped link token for `sender`.
@@ -193,7 +199,7 @@ mod tests {
 
     #[tokio::test]
     async fn fresh_token_redeems_sets_cookie_and_redirects_to_next() {
-        let state = make_state().await;
+        let (state, _workdir) = make_state().await;
         let (token, _) = link_token(&state, "frodo", Duration::from_secs(600));
         let resp = redeem(
             State(state.clone()),
@@ -212,7 +218,7 @@ mod tests {
 
     #[tokio::test]
     async fn replay_of_same_link_is_dead() {
-        let state = make_state().await;
+        let (state, _workdir) = make_state().await;
         let (token, _) = link_token(&state, "frodo", Duration::from_secs(600));
         // First redemption wins.
         let first = redeem(
@@ -243,7 +249,7 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_bearer_label_is_rejected() {
-        let state = make_state().await;
+        let (state, _workdir) = make_state().await;
         let claims = TokenClaims::new("frodo", "mcp", "mcp", Duration::from_secs(600));
         let token = jwt::issue(&state.secret, &claims).expect("issue");
         let resp = redeem(
@@ -262,7 +268,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_outside_dashboard_falls_back_home() {
-        let state = make_state().await;
+        let (state, _workdir) = make_state().await;
         let (token, _) = link_token(&state, "frodo", Duration::from_secs(600));
         let resp = redeem(
             State(state.clone()),

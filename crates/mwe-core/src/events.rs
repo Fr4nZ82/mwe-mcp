@@ -507,11 +507,9 @@ type EventTuple = (
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db;
 
-    async fn fresh_pool() -> SqlitePool {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
-        db::open_or_init(dir.path()).await.expect("db open")
+    async fn fresh_pool() -> (crate::test_db::TestWorkdir, SqlitePool) {
+        crate::test_db::TestWorkdir::with_db().await
     }
 
     #[test]
@@ -528,7 +526,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_event_persists_kind_and_payload() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let payload = serde_json::json!({"due_at": "2026-05-19T09:00:00Z"});
         let id = insert_event(
             &pool,
@@ -564,7 +562,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_event_stores_null_for_null_payload() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let id = insert_event(
             &pool,
             EventKind::StructureApplied,
@@ -585,7 +583,7 @@ mod tests {
 
     #[tokio::test]
     async fn find_recent_event_detects_existing_pair_within_window() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let fact_id = "018f1234-5678-7abc-9def-0123456789ac";
         insert_event(
             &pool,
@@ -609,7 +607,7 @@ mod tests {
 
     #[tokio::test]
     async fn find_recent_event_misses_outside_window() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let fact_id = "018f1234-5678-7abc-9def-0123456789ad";
         insert_event(
             &pool,
@@ -656,7 +654,7 @@ mod tests {
 
     #[tokio::test]
     async fn poll_events_returns_pending_in_chronological_order() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         register_dummy_consumer(&pool, "samvise").await;
         insert_event(
             &pool,
@@ -688,7 +686,7 @@ mod tests {
 
     #[tokio::test]
     async fn poll_events_filters_by_since_and_kinds() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         register_dummy_consumer(&pool, "samvise").await;
         insert_event(
             &pool,
@@ -742,7 +740,7 @@ mod tests {
 
     #[tokio::test]
     async fn poll_events_skips_already_acked_per_consumer() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         register_dummy_consumer(&pool, "samvise").await;
         register_dummy_consumer(&pool, "telegram-bot").await;
         let id = insert_event(
@@ -776,7 +774,7 @@ mod tests {
 
     #[tokio::test]
     async fn poll_events_has_more_when_results_exceed_top_k() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         register_dummy_consumer(&pool, "samvise").await;
         for _ in 0..3 {
             insert_event(
@@ -796,7 +794,7 @@ mod tests {
 
     #[tokio::test]
     async fn ack_events_returns_unknown_ids_for_missing_rows() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         register_dummy_consumer(&pool, "samvise").await;
         let id = insert_event(
             &pool,
@@ -816,7 +814,7 @@ mod tests {
 
     #[tokio::test]
     async fn ack_events_is_idempotent_at_the_consumer_level() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         register_dummy_consumer(&pool, "samvise").await;
         let id = insert_event(
             &pool,
@@ -857,7 +855,7 @@ mod tests {
     /// connections concurrently.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn ack_events_survives_write_committed_after_it_started() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         register_dummy_consumer(&pool, "samvise").await;
         register_dummy_consumer(&pool, "poller").await;
         let id = insert_event(
@@ -916,7 +914,7 @@ mod tests {
 
     #[tokio::test]
     async fn find_recent_event_distinguishes_kinds() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let fact_id = "018f1234-5678-7abc-9def-0123456789ae";
         insert_event(
             &pool,

@@ -365,18 +365,14 @@ async fn prune(pool: &SqlitePool, table: &str, retention_days: i64) -> sqlx::Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db;
 
-    async fn pool() -> SqlitePool {
-        let dir = tempfile::tempdir().unwrap();
-        let pool = db::open_or_init(dir.path()).await.expect("db open");
-        std::mem::forget(dir); // keep the tempdir alive for the pool's life
-        pool
+    async fn pool() -> (crate::test_db::TestWorkdir, SqlitePool) {
+        crate::test_db::TestWorkdir::with_db().await
     }
 
     #[tokio::test]
     async fn record_and_lookup_roundtrip_with_surfaced_membership() {
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         let log_id = record_turn(
             &pool,
             "franz",
@@ -401,7 +397,7 @@ mod tests {
 
     #[tokio::test]
     async fn misses_record_and_read_newest_first() {
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         for (i, fid) in ["f-1", "f-2"].iter().enumerate() {
             record_miss(
                 &pool,
@@ -429,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn writes_prune_rows_past_retention() {
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         // Plant an over-aged log row and miss row directly.
         sqlx::query(
             "INSERT INTO recall_log (created_at, sender_id, fact_ids, page_paths) \

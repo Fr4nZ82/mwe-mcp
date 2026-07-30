@@ -80,6 +80,8 @@ pub mod signposts;
 pub mod skills;
 pub mod slug;
 pub mod smart;
+#[cfg(test)]
+mod test_db;
 pub mod training_spool;
 pub mod types;
 pub mod usage;

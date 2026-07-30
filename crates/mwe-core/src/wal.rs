@@ -580,9 +580,8 @@ pub async fn rollback_stale_rems(
 mod tests {
     use super::*;
 
-    async fn fresh_pool() -> SqlitePool {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
-        crate::db::open_or_init(dir.path()).await.expect("open db")
+    async fn fresh_pool() -> (crate::test_db::TestWorkdir, SqlitePool) {
+        crate::test_db::TestWorkdir::with_db().await
     }
 
     #[test]
@@ -605,7 +604,7 @@ mod tests {
     /// Verifies the row is left in `Done` with a `completed_at`.
     #[tokio::test]
     async fn proposal_op_happy_path() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let op_id = begin_proposal_op(&pool, "prop-1", 0, "file_write", Some(r#"{"path":"x"}"#))
             .await
             .expect("begin");
@@ -630,7 +629,7 @@ mod tests {
     /// real-world cutoff is 5 minutes and we do not want to sleep.
     #[tokio::test]
     async fn scan_picks_up_only_stale_rows() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let stale = begin_proposal_op(&pool, "p-stale", 0, "file_write", None)
             .await
             .unwrap();
@@ -660,7 +659,7 @@ mod tests {
     /// and the row stops being visible to the recovery scan afterwards.
     #[tokio::test]
     async fn fail_records_reason_and_clears_from_scan() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let op_id = begin_proposal_op(&pool, "p", 0, "file_write", None)
             .await
             .unwrap();
@@ -696,7 +695,7 @@ mod tests {
     /// share the same protocol and we want a regression net for both.
     #[tokio::test]
     async fn rem_op_happy_path() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let op_id = begin_rem_op(&pool, "cycle-1", "promotion", Some("alice"), None)
             .await
             .expect("begin");
@@ -713,7 +712,7 @@ mod tests {
     /// flipped to `Failed` with the canned reason.
     #[tokio::test]
     async fn rollback_stale_proposals_with_noop_flips_to_failed() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let stale = begin_proposal_op(&pool, "p-stale", 0, "file_write", None)
             .await
             .unwrap();
@@ -757,7 +756,7 @@ mod tests {
             }
         }
 
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let stale = begin_proposal_op(&pool, "p-stale", 0, "file_write", None)
             .await
             .unwrap();
@@ -791,7 +790,7 @@ mod tests {
     /// Same coverage for the REM side.
     #[tokio::test]
     async fn rollback_stale_rems_with_noop_flips_to_failed() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let stale = begin_rem_op(&pool, "c1", "promotion", Some("alice"), None)
             .await
             .unwrap();
@@ -819,7 +818,7 @@ mod tests {
 
     #[tokio::test]
     async fn rem_scan_returns_target_wiki_and_snapshot_path() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let op_id = begin_rem_op(
             &pool,
             "cycle-2",

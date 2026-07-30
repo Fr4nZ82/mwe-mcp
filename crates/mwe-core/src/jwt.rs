@@ -681,8 +681,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_inserts_into_blacklist() {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
-        let pool = crate::db::open_or_init(dir.path()).await.expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 
         revoke(
             &pool,
@@ -707,8 +706,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_once_is_a_compare_and_set() {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
-        let pool = crate::db::open_or_init(dir.path()).await.expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         let exp = chrono::Utc::now().timestamp() + 3600;
 
         // First burn wins.
@@ -736,8 +734,7 @@ mod tests {
 
     #[tokio::test]
     async fn blacklist_cache_refreshes_on_first_call() {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
-        let pool = crate::db::open_or_init(dir.path()).await.expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         let cache = BlacklistCache::new();
 
         revoke(
@@ -763,8 +760,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_rejects_revoked_token_via_cache() {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
-        let pool = crate::db::open_or_init(dir.path()).await.expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         let secret = fixed_secret();
         let cache = BlacklistCache::new();
 
@@ -794,8 +790,7 @@ mod tests {
         // Revocation propagates within 60s. The cache TTL handles
         // the *upper bound*; this test asserts the explicit `refresh`
         // is available for callers that want immediate propagation.
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
-        let pool = crate::db::open_or_init(dir.path()).await.expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         let cache = BlacklistCache::new();
 
         // Populate cache with empty state.

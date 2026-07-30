@@ -355,13 +355,19 @@ mod tests {
     use mwe_core::jwt::{BlacklistCache, TokenSecret};
     use std::sync::Arc;
 
-    async fn make_state() -> DashboardState {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
+    async fn make_state() -> (DashboardState, tempfile::TempDir) {
+        // The guard goes back to the caller: a leaked temporary
+        // directory is never removed by anything (see the leak that
+        // filled tmpfs on the production host).
+        let dir = tempfile::tempdir().expect("tempdir");
         let pool = mwe_core::db::open_or_init(dir.path()).await.expect("db");
         let secret = TokenSecret::new(vec![0xCDu8; 32]).expect("secret");
         let blacklist = Arc::new(BlacklistCache::new());
         let delegations = Arc::new(DelegationCache::new());
-        DashboardState::new(pool, secret, blacklist, delegations)
+        (
+            DashboardState::new(pool, secret, blacklist, delegations),
+            dir,
+        )
     }
 
     async fn seed_user(state: &DashboardState, user: &str, email: &str, password: &str) {
@@ -410,7 +416,7 @@ mod tests {
 
     #[tokio::test]
     async fn reset_sets_new_password_and_burns_token() {
-        let state = make_state().await;
+        let (state, _workdir) = make_state().await;
         seed_user(&state, "frodo", "frodo@example.com", "old-password-1").await;
         let before = current_hash(&state, "frodo").await;
         let token = mint_reset(&state, "frodo").await;
@@ -453,7 +459,7 @@ mod tests {
 
     #[tokio::test]
     async fn short_password_does_not_burn_token() {
-        let state = make_state().await;
+        let (state, _workdir) = make_state().await;
         seed_user(&state, "sam", "sam@example.com", "old-password-1").await;
         let token = mint_reset(&state, "sam").await;
         let _ = reset_submit(
@@ -472,7 +478,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_is_constant_response_regardless_of_existence() {
-        let state = make_state().await;
+        let (state, _workdir) = make_state().await;
         seed_user(&state, "frodo", "frodo@example.com", "old-password-1").await;
         let known = request_submit(
             State(state.clone()),

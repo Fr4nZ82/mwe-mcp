@@ -272,16 +272,14 @@ pub async fn search(pool: &SqlitePool, filters: &SearchFilters) -> Result<Vec<To
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db;
 
-    async fn fresh_pool() -> SqlitePool {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
-        db::open_or_init(dir.path()).await.expect("db open")
+    async fn fresh_pool() -> (crate::test_db::TestWorkdir, SqlitePool) {
+        crate::test_db::TestWorkdir::with_db().await
     }
 
     #[tokio::test]
     async fn record_then_search_roundtrips() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         record(
             &pool,
             &ToolExecutionInput {
@@ -308,7 +306,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_filters_by_sender_and_tool() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         for (sender, tool, err) in [
             ("frodo", "wiki_ingest_message", None),
             ("frodo", "wiki_search", None),
@@ -370,7 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_top_k_caps_at_max() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         for i in 0..5 {
             record(
                 &pool,

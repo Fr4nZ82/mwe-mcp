@@ -108,6 +108,35 @@ Six jobs:
 
 CI must be green on `main` before any release tag.
 
+### A test that needs a database
+
+Use `mwe_core::test_db::TestWorkdir` (test-only), which hands the
+temporary directory's **guard back to the caller** so the test's own
+scope owns it:
+
+```rust
+let (_workdir, pool) = TestWorkdir::with_db().await;              // db only
+let (_workdir, pool, tree) = TestWorkdir::with_db_and_tree().await; // + a WikiTree
+```
+
+The `_workdir` binding is the mechanism, not decoration: while it lives
+the directory exists, and when the test ends the directory is removed.
+
+**Never leak the guard.** `Box::leak(Box::new(tempfile::tempdir()))` and
+`std::mem::forget(dir)` both make the directory outlive the helper — and
+outlive *everything else*, because nothing will ever remove it. That
+idiom had spread to 46 sites and left **145 orphaned directories per
+`cargo test --workspace`**, each holding a migrated database; on a host
+where `/tmp` is `tmpfs` those are RAM, and they had reached ~20 000
+directories / 12 GB before anyone noticed (the symptom was every shell
+on the machine failing in ways that looked like anything but a full
+disk). A test in `test_db.rs` scans the sources and fails if the idiom
+returns. Helpers in `crates/mwe-dashboard` follow the same rule by
+returning `tempfile::TempDir` alongside their state.
+
+In-memory pools (`sqlite::memory:`) need none of this — they touch no
+filesystem, and several test modules use them deliberately.
+
 ## Documentation rules
 
 - **Code** and **comments** are in English.

@@ -1305,11 +1305,7 @@ mod tests {
 
     #[tokio::test]
     async fn mirror_to_db_round_trips_users_and_groups() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 
         let file = canonical_file();
         validate(&file).expect("validate");
@@ -1350,11 +1346,7 @@ mod tests {
         // `consumers.system_user_id` FK (dashboard 500, 2026-07-11): an
         // enrolled identity bound as the system user of a registered
         // consumer, with a delegation grant and a live OAuth refresh row.
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('voicebox', 0)")
             .execute(&pool)
             .await
@@ -1417,11 +1409,7 @@ mod tests {
         // A human user with web-agent OAuth rows (their claude.ai
         // connection): deleting the user revokes those rows, but a
         // consumer the user does NOT system-own stays registered.
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('alice', 0)")
             .execute(&pool)
             .await
@@ -1477,11 +1465,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_user_missing_returns_none() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         assert!(
             remove_user(&pool, "nobody")
                 .await
@@ -1495,11 +1479,7 @@ mod tests {
         // The builtin guest pseudo-identity never holds a token — not as
         // a standard bot sender, not as a smart human owner. It is only
         // ever reached via X-MWE-Act-As under a delegation grant.
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 
         let err =
             validate_token_identity(&pool, "guest", crate::jwt::ConsumerClass::Standard, true)
@@ -1519,11 +1499,7 @@ mod tests {
         // by `idx_single_admin` from migration 0015. The mirror writer
         // does not check this in application code on purpose — we want
         // the DB to be the last line of defense.
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 
         let first = EnrollmentFile {
             version: 1,
@@ -1568,11 +1544,7 @@ mod tests {
     async fn is_admin_reads_the_marker() {
         // The ingest behaviour-rule gate authorises an operational directive on
         // this alone, so true/false/absent must all be correct.
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('boss', 1)")
             .execute(&pool)
             .await
@@ -1600,11 +1572,7 @@ mod tests {
         // Apply once with two users, then apply again with one user.
         // The DB should reflect only the latter — proves the DELETE
         // happened inside the same transaction as the INSERTs.
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 
         let file_v1 = canonical_file();
         mirror_to_db(&pool, &file_v1).await.expect("mirror v1");
@@ -1638,11 +1606,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_global_group_is_idempotent_and_preserves_edited_scope() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 
         // open_or_init already seeded global; an admin edits its scope.
         sqlx::query("UPDATE enrollment_groups SET scope = ? WHERE group_id = ?")
@@ -1677,11 +1641,7 @@ mod tests {
 
     #[tokio::test]
     async fn groups_for_returns_member_groups_sorted() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 
         let file = EnrollmentFile {
             version: 1,
@@ -1715,11 +1675,7 @@ mod tests {
 
     #[tokio::test]
     async fn members_for_returns_group_roster_sorted() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 
         let file = EnrollmentFile {
             version: 1,
@@ -1754,11 +1710,7 @@ mod tests {
 
     #[tokio::test]
     async fn groups_with_scope_for_returns_scope_pairs_sorted() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 
         let file = EnrollmentFile {
             version: 1,
@@ -1835,11 +1787,7 @@ mod tests {
     /// through `mirror_to_db` → lookup.
     #[tokio::test]
     async fn locale_for_returns_configured_locale() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 
         let file = canonical_file();
         validate(&file).expect("validate");
@@ -1857,11 +1805,7 @@ mod tests {
     /// clause.
     #[tokio::test]
     async fn locale_for_unknown_or_empty_user_returns_none() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 
         let ghost = locale_for(&pool, "ghost-user").await.expect("lookup ghost");
         assert!(ghost.is_none());
@@ -1874,11 +1818,7 @@ mod tests {
     /// `"User locale:  . Respond in …"` malformed directive.
     #[tokio::test]
     async fn locale_for_treats_whitespace_only_as_none() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 
         sqlx::query(
             "INSERT INTO enrollment_users (user_id, aliases, is_admin, locale)
@@ -1895,11 +1835,7 @@ mod tests {
     /// `locale_for_principal` on a user principal is just `locale_for`.
     #[tokio::test]
     async fn locale_for_principal_user_reads_that_user() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         let file = canonical_file();
         validate(&file).expect("validate");
         mirror_to_db(&pool, &file).await.expect("mirror");
@@ -1921,11 +1857,7 @@ mod tests {
     /// pass the first case and fail the other two.
     #[tokio::test]
     async fn locale_for_principal_group_requires_unanimity() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         for (user, locale) in [
             ("ita_one", Some("it-IT")),
             ("ita_two", Some("it-IT")),
@@ -1980,11 +1912,7 @@ mod tests {
     /// no roster to be unanimous about — `None` without a query.
     #[tokio::test]
     async fn locale_for_principal_global_group_has_no_language() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         let v = locale_for_principal(&pool, &Principal::global())
             .await
             .expect("global");
@@ -1997,11 +1925,7 @@ mod tests {
     /// deployment-wide `recall.ingest_timezone`).
     #[tokio::test]
     async fn timezone_for_round_trips_and_collapses_blank_to_none() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 
         let mut file = canonical_file();
         file.users[0].timezone = Some("Australia/Sydney".to_owned());
@@ -2030,11 +1954,7 @@ mod tests {
     /// letting plain / unknown identities through.
     #[tokio::test]
     async fn is_agent_marker_round_trips_and_gate_blocks_agents() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         sqlx::query(
             "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('bot', '[]', 0)",
         )
@@ -2063,11 +1983,7 @@ mod tests {
     /// column) must NOT silently demote an agent identity to a plain user.
     #[tokio::test]
     async fn mirror_to_db_preserves_is_agent_marker() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         let file = EnrollmentFile {
             version: 1,
             users: vec![user("hermesbot"), user("alice")],

@@ -643,15 +643,10 @@ mod tests {
 
     /// Open a (pool, tree) with famiglia = {franz, morgana, bilbo} enrolled and a
     /// `famiglia` group wiki on disk (so a group-owned fact resolves).
-    async fn seed_famiglia() -> (SqlitePool, WikiTree) {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
-        let tree =
-            WikiTree::open(Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path())
-                .expect("tree");
+    async fn seed_famiglia() -> (crate::test_db::TestWorkdir, SqlitePool, WikiTree) {
+        // The tree deliberately lives in a workdir of its own here, apart
+        // from the database; the returned guard owns both.
+        let (workdir, pool, tree) = crate::test_db::TestWorkdir::with_db_and_detached_tree().await;
         let dir = tree.wikis_dir().join("famiglia");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -676,7 +671,7 @@ mod tests {
         )
         .await
         .expect("mirror enrollment");
-        (pool, tree)
+        (workdir, pool, tree)
     }
 
     /// Insert one fact on `famiglia/vacanze.md` with explicit owner/allow/sender.
@@ -751,7 +746,7 @@ mod tests {
 
     #[tokio::test]
     async fn owner_opens_request_audience_all_yes_applies() {
-        let (pool, tree) = seed_famiglia().await;
+        let (_workdir, pool, tree) = seed_famiglia().await;
         // owner=franz, allow=famiglia, sender=morgana → franz is owner not sender.
         let fact = insert_fact(
             &pool,
@@ -799,7 +794,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_majority_blocks_request_fact_stays() {
-        let (pool, tree) = seed_famiglia().await;
+        let (_workdir, pool, tree) = seed_famiglia().await;
         let fact = insert_fact(
             &pool,
             "user:franz",
@@ -848,7 +843,7 @@ mod tests {
 
     #[tokio::test]
     async fn single_reader_request_applies_immediately() {
-        let (pool, tree) = seed_famiglia().await;
+        let (_workdir, pool, tree) = seed_famiglia().await;
         // owner=franz, no allow, no sender → franz is the only reader.
         let fact = insert_fact(&pool, "user:franz", &[], None).await;
         let req = open_forget_request(&pool, &tree, &embedder(), &fact, "franz", false)
@@ -863,7 +858,7 @@ mod tests {
 
     #[tokio::test]
     async fn sender_cannot_open_a_request() {
-        let (pool, tree) = seed_famiglia().await;
+        let (_workdir, pool, tree) = seed_famiglia().await;
         // morgana is the sender — they delete directly, not via a vote.
         let fact = insert_fact(
             &pool,
@@ -881,7 +876,7 @@ mod tests {
 
     #[tokio::test]
     async fn unauthorized_requester_is_refused() {
-        let (pool, tree) = seed_famiglia().await;
+        let (_workdir, pool, tree) = seed_famiglia().await;
         // owner=franz (a user), sender=morgana. bilbo is neither owner nor sender
         // and not an admin → refused (he is in the audience but cannot *request*).
         let fact = insert_fact(
@@ -899,7 +894,7 @@ mod tests {
 
     #[tokio::test]
     async fn group_owner_member_may_request() {
-        let (pool, tree) = seed_famiglia().await;
+        let (_workdir, pool, tree) = seed_famiglia().await;
         // owner=group:famiglia, sender=morgana. bilbo (a famiglia member, not the
         // sender) may open the request; audience minus bilbo = {franz, morgana}.
         let fact = insert_fact(&pool, "group:famiglia", &[], Some("user:morgana")).await;
@@ -912,7 +907,7 @@ mod tests {
 
     #[tokio::test]
     async fn admin_may_request_even_when_not_owner() {
-        let (pool, tree) = seed_famiglia().await;
+        let (_workdir, pool, tree) = seed_famiglia().await;
         // owner=franz, sender=morgana. nina is neither, but as admin may request.
         // Audience = {franz, morgana}; minus requester nina (not in it) = both.
         let fact = insert_fact(&pool, "user:franz", &[], Some("user:morgana")).await;
@@ -925,7 +920,7 @@ mod tests {
 
     #[tokio::test]
     async fn silence_past_deadline_applies_via_sweep() {
-        let (pool, tree) = seed_famiglia().await;
+        let (_workdir, pool, tree) = seed_famiglia().await;
         let fact = insert_fact(
             &pool,
             "user:franz",
@@ -975,7 +970,7 @@ mod tests {
         // A NO arriving after the deadline (but before the overdue sweep flips
         // the status off `pending`) must be refused as closed — silence =
         // consent has already carried, so a late NO cannot retro-block.
-        let (pool, tree) = seed_famiglia().await;
+        let (_workdir, pool, tree) = seed_famiglia().await;
         let fact = insert_fact(
             &pool,
             "user:franz",
@@ -1013,7 +1008,7 @@ mod tests {
         // A single NO on a 2-voter electorate is not a NO-majority, so the
         // request stays pending; but if it somehow reaches the deadline with a
         // recorded NO-majority the sweep must expire it, never apply it.
-        let (pool, tree) = seed_famiglia().await;
+        let (_workdir, pool, tree) = seed_famiglia().await;
         let fact = insert_fact(
             &pool,
             "user:franz",
@@ -1061,7 +1056,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_votes_surface_to_eligible_unvoted_not_requester() {
-        let (pool, tree) = seed_famiglia().await;
+        let (_workdir, pool, tree) = seed_famiglia().await;
         let fact = insert_fact(
             &pool,
             "user:franz",
@@ -1108,7 +1103,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_ineligible_repeat_and_non_fact_forget_votes() {
-        let (pool, tree) = seed_famiglia().await;
+        let (_workdir, pool, tree) = seed_famiglia().await;
         let fact = insert_fact(
             &pool,
             "user:franz",
@@ -1174,7 +1169,7 @@ mod tests {
 
     #[tokio::test]
     async fn open_request_refuses_missing_and_tombstoned_facts() {
-        let (pool, tree) = seed_famiglia().await;
+        let (_workdir, pool, tree) = seed_famiglia().await;
         // Missing fact.
         let missing = FactId::parse("0190a0c8-0000-7000-8000-0000000000ff").unwrap();
         let err = open_forget_request(&pool, &tree, &embedder(), &missing, "franz", true)

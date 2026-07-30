@@ -890,13 +890,9 @@ pub async fn find_smart_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db;
 
-    async fn pool() -> SqlitePool {
-        let dir = tempfile::tempdir().unwrap();
-        let pool = db::open_or_init(dir.path()).await.expect("db open");
-        std::mem::forget(dir); // keep the tempdir alive for the pool's life
-        pool
+    async fn pool() -> (crate::test_db::TestWorkdir, SqlitePool) {
+        crate::test_db::TestWorkdir::with_db().await
     }
 
     fn section(path: &str, ord: i64, text: &str) -> NewSection {
@@ -912,7 +908,7 @@ mod tests {
 
     #[tokio::test]
     async fn replace_page_sections_inserts_and_reads_back_in_order() {
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         let page = "wikis/alice/proj/index.md";
         let (upserted, dropped) = replace_page_sections(
             &pool,
@@ -935,7 +931,7 @@ mod tests {
 
     #[tokio::test]
     async fn unchanged_section_keeps_created_at_and_recall_history() {
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         let page = "wikis/alice/proj/index.md";
         replace_page_sections(
             &pool,
@@ -979,7 +975,7 @@ mod tests {
 
     #[tokio::test]
     async fn shrinking_a_page_drops_the_tail_positions() {
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         let page = "wikis/alice/proj/index.md";
         replace_page_sections(
             &pool,
@@ -1002,7 +998,7 @@ mod tests {
 
     #[tokio::test]
     async fn replace_is_idempotent_on_an_unchanged_page() {
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         let page = "wikis/alice/proj/index.md";
         let desired = [section(page, 0, "a"), section(page, 1, "b")];
         replace_page_sections(&pool, page, &desired).await.unwrap();
@@ -1019,7 +1015,7 @@ mod tests {
 
     #[tokio::test]
     async fn candidates_are_scoped_to_the_readable_wikis() {
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         let mine = "wikis/alice/proj/index.md";
         let theirs = "wikis/bob/proj/index.md";
         replace_page_sections(&pool, mine, &[section(mine, 0, "mine")])
@@ -1043,7 +1039,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_a_page_and_a_wiki_removes_their_sections() {
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         let one = "wikis/alice/proj/one.md";
         let two = "wikis/alice/proj/two.md";
         replace_page_sections(&pool, one, &[section(one, 0, "a")])
@@ -1062,7 +1058,7 @@ mod tests {
 
     #[tokio::test]
     async fn browse_filters_compose_and_skip_the_embedding() {
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         let a = "wikis/alice/proj/auth.md";
         let b = "wikis/alice/proj/billing.md";
         replace_page_sections(
@@ -1134,7 +1130,7 @@ mod tests {
 
     #[tokio::test]
     async fn browse_treats_like_wildcards_as_literals() {
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         let page = "wikis/alice/proj/index.md";
         replace_page_sections(
             &pool,
@@ -1161,7 +1157,7 @@ mod tests {
 
     #[tokio::test]
     async fn smart_wiki_registry_upserts_and_reads_back() {
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         let row = SmartWikiRow {
             wiki_id: "alice-proj".to_owned(),
             slug: "proj".to_owned(),
@@ -1252,7 +1248,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_lexical_finds_the_identifier_and_respects_the_wiki_acl() {
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         let page = "wikis/alice/proj/decisions.md";
         let other = "wikis/bob/proj/adr.md";
         replace_page_sections(
@@ -1329,7 +1325,7 @@ mod tests {
         // corpus that lost 3 of 7 decision identifiers. Indexing the
         // heading chain as its own weighted column is what separates
         // "this section is D-006" from "this section refers to D-006".
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         let page = "wikis/alice/proj/decisions.md";
         let cites = "Decision log > D-001 — queue. Superseded in part by D-006.";
         let titled = format!(
@@ -1369,7 +1365,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_lexical_index_tracks_edits_and_deletions() {
-        let pool = pool().await;
+        let (_workdir, pool) = pool().await;
         let page = "wikis/alice/proj/notes.md";
         let readable = vec!["alice-proj".to_owned()];
         replace_page_sections(&pool, page, &[section(page, 0, "the pineapple protocol")])

@@ -451,13 +451,19 @@ mod tests {
     use mwe_core::jwt::{BlacklistCache, TokenSecret};
     use std::sync::Arc;
 
-    async fn make_state() -> DashboardState {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
+    async fn make_state() -> (DashboardState, tempfile::TempDir) {
+        // The guard goes back to the caller: a leaked temporary
+        // directory is never removed by anything (see the leak that
+        // filled tmpfs on the production host).
+        let dir = tempfile::tempdir().expect("tempdir");
         let pool = mwe_core::db::open_or_init(dir.path()).await.expect("db");
         let secret = TokenSecret::new(vec![0xCDu8; 32]).expect("secret");
         let blacklist = Arc::new(BlacklistCache::new());
         let delegations = Arc::new(DelegationCache::new());
-        DashboardState::new(pool, secret, blacklist, delegations)
+        (
+            DashboardState::new(pool, secret, blacklist, delegations),
+            dir,
+        )
     }
 
     async fn enrolled_user(state: &DashboardState, user: &str) -> Vec<String> {
@@ -487,7 +493,7 @@ mod tests {
 
     #[tokio::test]
     async fn challenge_passes_with_recovery_code_and_mints_session() {
-        let state = make_state().await;
+        let (state, _workdir) = make_state().await;
         let codes = enrolled_user(&state, "frodo").await;
         let id = twofa::create_pending(&state.pool, "frodo", false, None, 5)
             .await
@@ -523,7 +529,7 @@ mod tests {
 
     #[tokio::test]
     async fn wrong_code_mints_no_session_and_keeps_challenge() {
-        let state = make_state().await;
+        let (state, _workdir) = make_state().await;
         let _ = enrolled_user(&state, "frodo").await;
         let id = twofa::create_pending(&state.pool, "frodo", false, None, 5)
             .await
@@ -553,7 +559,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_cookie_redirects_to_login() {
-        let state = make_state().await;
+        let (state, _workdir) = make_state().await;
         let resp = challenge_page(State(state), CookieJar::new())
             .await
             .expect("handler");

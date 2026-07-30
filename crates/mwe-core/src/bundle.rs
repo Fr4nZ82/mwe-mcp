@@ -157,14 +157,7 @@ mod tests {
 
     #[tokio::test]
     async fn revert_bundle_rejects_a_non_bundle_spec() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
-        let tree =
-            WikiTree::open(Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path())
-                .expect("tree");
+        let (_workdir, pool, tree) = crate::test_db::TestWorkdir::with_db_and_detached_tree().await;
         let err = revert_bundle(&pool, &tree, &serde_json::json!({ "not": "a bundle" }))
             .await
             .expect_err("must reject");

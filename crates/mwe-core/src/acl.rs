@@ -549,11 +549,7 @@ mod tests {
 
     #[tokio::test]
     async fn audience_expands_groups_drops_global_includes_sender() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         // famiglia = {franz, morgana, bilbo}.
         crate::enrollment::mirror_to_db(
             &pool,
@@ -595,11 +591,7 @@ mod tests {
 
     #[tokio::test]
     async fn audience_global_owner_is_empty_electorate() {
-        let pool = crate::db::open_or_init(
-            Box::leak(Box::new(tempfile::tempdir().expect("tempdir"))).path(),
-        )
-        .await
-        .expect("open db");
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         // A purely public fact (owner=global, no allow, no sender) has nobody
         // finite to poll.
         let aud = audience(&pool, &Principal::global(), &[], None)

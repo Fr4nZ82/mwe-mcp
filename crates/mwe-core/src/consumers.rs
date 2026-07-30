@@ -255,16 +255,14 @@ pub async fn ensure_agent_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db;
 
-    async fn fresh_pool() -> SqlitePool {
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
-        db::open_or_init(dir.path()).await.expect("db open")
+    async fn fresh_pool() -> (crate::test_db::TestWorkdir, SqlitePool) {
+        crate::test_db::TestWorkdir::with_db().await
     }
 
     #[tokio::test]
     async fn register_fresh_returns_secret_and_marks_registered() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let out = register(
             &pool,
             &RegisterRequest {
@@ -286,7 +284,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_refresh_preserves_secret_and_first_registered_at() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         let first = register(
             &pool,
             &RegisterRequest {
@@ -335,7 +333,7 @@ mod tests {
 
     #[tokio::test]
     async fn is_registered_distinguishes_known_and_unknown() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         assert!(!is_registered(&pool, "anyone").await.unwrap());
         register(
             &pool,
@@ -356,7 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_records_and_preserves_system_user_binding() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         // The bound system user must exist first (FK:
         // consumers.system_user_id → enrollment_users.user_id).
         sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('samvise-bot', 0)")
@@ -416,7 +414,7 @@ mod tests {
 
     #[tokio::test]
     async fn system_user_for_resolves_binding_and_handles_absence() {
-        let pool = fresh_pool().await;
+        let (_workdir, pool) = fresh_pool().await;
         sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('samvise-bot', 0)")
             .execute(&pool)
             .await
