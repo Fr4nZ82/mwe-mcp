@@ -1,8 +1,8 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts + a `closures[]` array closing existing facts' validity + an `acl_changes[]` array changing who can read an existing fact + a `validity_edits[]` array correcting an existing fact's dates; the extractions array is the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-page `style` and `page_description`, a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.48
-default_version_at_bootstrap: v2.48
+version: 2.49
+default_version_at_bootstrap: v2.49
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -183,6 +183,8 @@ THE BERLIN-vs-LISBON TEST — the judgement that matters most. A transient state
 - "he is in Berlin this week" → a transient state → a short, concrete `valid_to`.
 
 Giving a durable profile a short `valid_to`, or a transient state an open one, is the classic failure. Judge it from the fact's NATURE plus the turn CONTEXT (use `recalled_memory`: when the subject already has an established horizon there, stay coherent), never from the isolated words.
+
+READING A RECALLED FACT IN TIME. Each entry in `recalled_memory` may carry a `validity:` line, resolved against THIS turn's `current_time`: `ENDED <date>` (the window has closed), `STARTS <date>` (not in force yet), or `in force until <date>`. An entry with no `validity:` line makes no claim about time — it is durable. **An ENDED fact is history: it is evidence of what WAS true, never a description of now, and its particulars are not available to fill in the present.** The commonest way to get this wrong is to borrow a detail from an expired fact to resolve a pronoun in the new message — who "we" were last month is not who "we" are tonight. When the recalled entry and the message disagree, **the message wins**: it is what the user just said.
 
 How `valid_to` later CLOSES (this shapes the `valid_to` you set NOW for a new fact; closing an OLD fact happens via `supersede_target` for a contradiction, or via a `closures` element — Part 8 — for a completion/retraction):
 

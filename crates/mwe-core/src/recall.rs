@@ -335,8 +335,15 @@ pub struct RecallHit {
     pub fact_type: Option<String>,
     /// Wall-clock of creation.
     pub created_at: String,
+    /// Start of the validity interval (ISO 8601) when known; `None` =
+    /// unknown / open-start. Carried for the same reason as `valid_to`: a
+    /// caller that shows a recalled fact to a model must be able to say
+    /// whether it is history, in force, or still to come.
+    pub valid_from: Option<String>,
     /// End of the validity interval (ISO 8601) when known; `None` = OPEN.
-    /// Carried so the due-soon slot can render *when* the fact fires.
+    /// Carried so the due-soon slot can render *when* the fact fires, and so
+    /// the ingest prompt can mark a closed window as history rather than
+    /// letting the model read a spent fact as the present.
     pub valid_to: Option<String>,
     /// Score the recall mechanism assigned this row (cosine for
     /// vector ranking, 1.0 for pure SQL queries).
@@ -362,6 +369,7 @@ impl RecallHit {
             sender_id: row.sender_id,
             fact_type: row.fact_type,
             created_at: row.created_at,
+            valid_from: row.valid_from,
             valid_to: row.valid_to,
             score,
             fresh: false,
@@ -385,6 +393,7 @@ impl RecallHit {
             sender_id: cap.sender,
             fact_type: cap.fact_type,
             created_at: cap.captured_at,
+            valid_from: cap.valid_from,
             valid_to: cap.valid_to,
             score,
             fresh: true,

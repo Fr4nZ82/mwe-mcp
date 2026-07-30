@@ -2793,6 +2793,53 @@ fn push_reference_time(
     }
 }
 
+/// How a recalled fact stands in time, relative to THIS turn's reference
+/// instant — the line the classifier was missing.
+///
+/// The engine has always known this: `fact_index` stores both bounds, recall
+/// carries them onto every [`crate::recall::RecallHit`], and the ranker
+/// already down-ranks a closed window
+/// ([`crate::recall::CLOSED_WINDOW_DOWNRANK`]). It just never told the model,
+/// so a spent fact arrived in `recalled_memory` looking exactly like a durable
+/// one and read as the present.
+///
+/// The failure that produced this (demo corpus, 2026-03-26): *"Zoe is away
+/// until Wednesday 26 March. Alice and Bob are dining together during this
+/// period"* — `valid_to` 26 March 00:00 — was recalled for a turn at 21:30 on
+/// the 26th, twenty-one hours after it stopped holding. The classifier reused
+/// its "Alice and Bob" for a message that said *"we ate without him"* and
+/// wrote **"Alice and Bob ate dinner without waiting for Bob"**. The detail
+/// was not invented; it was imported from a fact that had expired.
+///
+/// Returns `None` for a fact that makes no time claim (no bounds, or an
+/// in-force window with no end), so the prompt stays byte-identical for the
+/// durable majority.
+fn validity_status(
+    valid_from: Option<&str>,
+    valid_to: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
+    let parse = |s: &str| chrono::DateTime::parse_from_rfc3339(s).ok();
+    let from = valid_from.and_then(parse);
+    let to = valid_to.and_then(parse);
+    if let Some(end) = to
+        && end <= now
+    {
+        return Some(format!("ENDED {} — history, not the present", day_of(end)));
+    }
+    if let Some(start) = from
+        && start > now
+    {
+        return Some(format!("STARTS {} — not in force yet", day_of(start)));
+    }
+    to.map(|end| format!("in force until {}", day_of(end)))
+}
+
+/// `YYYY-MM-DD` of an instant — the granularity a classifier reasons in.
+fn day_of(t: chrono::DateTime<chrono::FixedOffset>) -> String {
+    t.format("%Y-%m-%d").to_string()
+}
+
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // a sequential context-bundle builder; one block per section reads top-to-bottom, splitting hides the layout — and each per-sender input is one section, so the argument list IS the section list
 fn build_prompt(
     request: &IngestRequest,
@@ -2991,6 +3038,15 @@ fn build_prompt(
                     .collect::<Vec<_>>()
                     .join(", ");
                 out.push_str(&joined);
+            }
+            // validity: where this fact stands in time against THIS turn's
+            // reference instant. Omitted for a fact that makes no time claim,
+            // so the durable majority renders exactly as before.
+            if let Some(status) =
+                validity_status(h.valid_from.as_deref(), h.valid_to.as_deref(), now)
+            {
+                out.push_str("\n    validity: ");
+                out.push_str(&status);
             }
             out.push_str("\n    score: ");
             let _ = write!(out, "{:.3}", h.score);
@@ -6499,6 +6555,7 @@ mod tests {
             sender_id: None,
             fact_type: Some("preference".into()),
             created_at: "2026-05-21".into(),
+            valid_from: None,
             valid_to: None,
             score: 0.91,
             fresh: false,
@@ -6666,6 +6723,56 @@ mod tests {
     /// The orchestrator must surface every recall hit's `fact_id` in
     /// the prompt — otherwise the LLM cannot fill the `supersede_target`
     /// field in its plan with a value tied to something it actually saw.
+    /// A recalled fact whose window has CLOSED must reach the classifier
+    /// marked as history. The engine has always known — `fact_index` stores
+    /// both bounds and the ranker already down-ranks a closed window — but the
+    /// prompt dropped the datum at the last step, so a spent fact arrived
+    /// looking durable. That is how "Zoe is away until 26 March; Alice and Bob
+    /// are dining together during this period" (`valid_to` 26 March 00:00)
+    /// came back for a turn at 21:30 on the 26th and lent its "Alice and Bob"
+    /// to a message that said "we ate without him".
+    #[test]
+    fn build_prompt_marks_an_expired_recalled_fact_as_history() {
+        let request = req("we ate without him", "alice");
+        let policy = IngestPolicy::default();
+        let mut hit = sample_recall_hit("018f1234-5678-7abc-9def-0123456789ab");
+        hit.valid_from = Some("2026-03-22T08:15:00Z".to_owned());
+        hit.valid_to = Some("2026-03-26T00:00:00Z".to_owned());
+        let now = chrono::DateTime::parse_from_rfc3339("2026-03-26T21:30:00Z")
+            .expect("fixed now")
+            .with_timezone(&chrono::Utc);
+        let prompt = build_prompt(&request, &[hit], &[], &[], &[], None, None, now, &policy);
+        assert!(
+            prompt.contains("validity: ENDED 2026-03-26 \u{2014} history, not the present"),
+            "an expired recalled fact must be marked as history; prompt was:\n{prompt}"
+        );
+    }
+
+    /// The mirror case, and the one that keeps the prompt cheap: a fact with
+    /// no bounds makes no claim about time and renders exactly as before, so
+    /// the durable majority of hits costs no extra tokens.
+    #[test]
+    fn build_prompt_says_nothing_about_time_for_a_durable_recalled_fact() {
+        let request = req("alice now prefers tea", "alice");
+        let policy = IngestPolicy::default();
+        let hit = sample_recall_hit("018f1234-5678-7abc-9def-0123456789ab");
+        let prompt = build_prompt(
+            &request,
+            &[hit],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            now_fixture(),
+            &policy,
+        );
+        assert!(
+            !prompt.contains("validity:"),
+            "a fact with no window must not grow a validity line; prompt was:\n{prompt}"
+        );
+    }
+
     #[test]
     fn build_prompt_emits_fact_id_for_recall_hits() {
         let request = req("alice now prefers tea", "alice");
@@ -7446,6 +7553,7 @@ mod tests {
             sender_id: None,
             fact_type: None,
             created_at: "2026-05-18".into(),
+            valid_from: None,
             valid_to: None,
             score: 0.9,
             fresh: false,
@@ -7509,6 +7617,7 @@ mod tests {
                 sender_id: None,
                 fact_type: None,
                 created_at: "2026-05-18".into(),
+                valid_from: None,
                 valid_to: None,
                 score: 0.91,
                 fresh: false,
@@ -7525,6 +7634,7 @@ mod tests {
                 sender_id: None,
                 fact_type: None,
                 created_at: "2026-05-18".into(),
+                valid_from: None,
                 valid_to: None,
                 score: 0.84,
                 fresh: false,
@@ -7541,6 +7651,7 @@ mod tests {
                 sender_id: None,
                 fact_type: None,
                 created_at: "2026-06-02".into(),
+                valid_from: None,
                 valid_to: None,
                 score: 0.88,
                 fresh: true,
