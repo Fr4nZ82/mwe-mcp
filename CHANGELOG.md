@@ -9,6 +9,65 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## 1.8.3 — 2026-07-30
+
+### Fixed
+
+- **The memory learned Italian from the prompts' own examples.** The
+  language directive every memory-writing slot carries resolves
+  correctly — *"User locale: en-GB. Respond in English"*, with no
+  fallback warning anywhere in a full corpus build. The memory still came
+  out Italian, because immediately below that instruction the model reads
+  worked examples, and 68 of them were written in Italian. It followed
+  the examples.
+
+  Two symptoms, both from a corpus where every user is `en-GB` and every
+  input turn is English: a standing behaviour rule stated in English was
+  stored as *"Dammi risposte brevi, con ogni assistente"* — and, driven
+  again from scratch, as a different Italian sentence, two attempts out
+  of two; and one compiled page in twenty-two came out entirely in
+  Italian, its description, its prose and both of its fact bodies
+  rewritten from English rows.
+
+  The failure rate tracked each prompt's own dose of Italian: 62 examples
+  in the prompt that runs on every turn and owns the rule path, 2 in the
+  one that writes the pages. This is the "English by default" path a
+  deployment whose users all speak Italian never exercises.
+
+  The remaining examples are now English, which **finishes** a pass that
+  was 229 of 297 done and had been stalled at that ratio since the first
+  public commit. Three places are adapted rather than translated, because
+  translating them literally would have removed something the engine
+  needs: the addressee test taught an Italian grammatical suffix and now
+  names the English pronoun instead; the tone directive that demonstrated
+  *revising* a standing rule relied on Italian's formal/informal pair and
+  is now a formality pair that still revises; and the two lists of cue
+  phrases — the sharing cues, and the relative-date phrases — existed to
+  understand what an Italian-speaking user actually says, so they are now
+  **language-neutral** ("in whatever language the user speaks", with
+  English examples), which covers the languages the hard-coded pair never
+  did.
+
+  Every prompt and skill touched carries a version bump, so an install
+  with a local override sees the drift banner instead of silently keeping
+  the old body.
+
+- **The first-login primer wrote the user's first memory in Italian.**
+  The wizard is in English and composed its output — the identity
+  clauses, the privacy and do-not-store rules, the preferences, and all
+  three section headers it stamps — in hard-coded Italian, for every
+  deployment. Now English, which is what the locale directive then
+  renders into the user's own language.
+
+- **The dashboard's chat help listed its examples in Italian**, and
+  Italian examples sat in doc comments across ingest, recall, REM, the
+  capture buffer, the fact index and the chat route.
+
+- **A full test run no longer leaves its temporary directories behind.**
+  46 sites deliberately leaked a `tempfile::tempdir()` so it would
+  outlive the helper that made it; on a host where `/tmp` is RAM they had
+  accumulated to roughly 20 000 directories and 12 GB.
+
 ## 1.8.2 — 2026-07-30
 
 ### Fixed
