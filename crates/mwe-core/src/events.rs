@@ -128,6 +128,16 @@ pub enum EventKind {
     /// Only real humans are addressed: group-owned facts are communal
     /// and agent principals (`is_agent`) have no inbox.
     FactMintedForYou,
+    /// A dated commitment this memory holds has come **due**
+    /// ([`crate::reminders`]) — the one alarm the engine rings, and only
+    /// for a fact it already stores. Payload mirrors
+    /// [`Self::FactMintedForYou`] on purpose (`recipient_id`, a `facts`
+    /// array carrying the body, `dashboard_path`, plus `due_at` /
+    /// `fires_at`), so a consumer that delivers one delivers the other
+    /// with the same parsing. The kind name was reserved in the
+    /// `wiki_events.kind` schema comment from the table's first
+    /// migration and sat unemitted until 2026-07-30.
+    ReminderDue,
 }
 
 impl EventKind {
@@ -143,6 +153,7 @@ impl EventKind {
             Self::CompileFailureStreak => "compile_failure_streak",
             Self::RecallTuningProposed => "recall_tuning_proposed",
             Self::FactMintedForYou => "fact_minted_for_you",
+            Self::ReminderDue => "reminder_due",
         }
     }
 }
@@ -180,11 +191,74 @@ pub struct WikiEvent {
     pub created_at: String,
 }
 
+/// The delivery rule as a SQL predicate over a `wiki_events` row. Binds, in
+/// order: the **caller's own** user id, then `consumer_id` **twice**. A row
+/// passes when the addressee is nobody in particular, is not a `user:`
+/// principal, is the caller themselves, or is somebody this consumer serves.
+///
+/// "The caller themselves" grants nothing new — a person can already read
+/// their own facts through recall, so being *told* about one is strictly
+/// less. It is what makes a smart consumer (no system user, no delegation —
+/// it authenticates *as* its human owner) receive its owner's notices with
+/// zero configuration.
+///
+/// Kept as one constant so the poll filter reads as the rule instead of
+/// restating it. The configured half read in the other direction —
+/// recipient → the consumers that serve them — is [`consumers_serving`].
+const RECIPIENT_SERVED_BY_CONSUMER: &str = "\
+       json_extract(payload, '$.recipient_id') IS NULL \
+    OR json_extract(payload, '$.recipient_id') NOT LIKE 'user:%' \
+    OR substr(json_extract(payload, '$.recipient_id'), 6) = ? \
+    OR substr(json_extract(payload, '$.recipient_id'), 6) IN ( \
+         SELECT system_user_id FROM consumers WHERE consumer_id = ? \
+          UNION \
+         SELECT j.value FROM consumer_delegations d, json_each(d.allowed_sender_ids) j \
+          WHERE d.consumer_id = ? \
+       )";
+
+/// The consumers **configured** to receive an event addressed to
+/// `recipient_id` (a `user:`-prefixed principal, or a bare user id — both
+/// accepted).
+///
+/// The declared half of the poll's recipient scope, in the other direction:
+/// a consumer serves a person when that person is its own `system_user_id`
+/// or sits in its delegation list. It deliberately does **not** model the
+/// caller-is-the-addressee case, which is a property of a token rather than
+/// of the database — so an empty result means *nobody is configured to
+/// deliver this*, not *nobody can ever see it*: the addressee still receives
+/// it whenever they poll under their own identity.
+///
+/// # Errors
+///
+/// [`EventsError::Db`] for any SQL failure.
+pub async fn consumers_serving(pool: &SqlitePool, recipient_id: &str) -> Result<Vec<String>> {
+    let bare = recipient_id.strip_prefix("user:").unwrap_or(recipient_id);
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT consumer_id FROM consumers WHERE system_user_id = ?
+          UNION
+         SELECT d.consumer_id
+           FROM consumer_delegations d, json_each(d.allowed_sender_ids) j
+          WHERE j.value = ?",
+    )
+    .bind(bare)
+    .bind(bare)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
 /// Insert a new event row.
 ///
 /// `payload` is serialised to JSON; passing `&serde_json::Value::Null`
 /// stores SQL `NULL` so polling consumers can omit it from their
 /// payload shape.
+///
+/// When the payload addresses a person (`recipient_id: "user:<id>"`) and no
+/// consumer serves them, the row is still written — the dashboard and the
+/// audit trail keep it — but a **warning** names the recipient. Without it
+/// an undeliverable notice is indistinguishable from a delivered one: the
+/// row exists, nothing acks it, and nobody is told. The fix is operator-side
+/// (delegate a consumer for that user), so the log has to say so.
 ///
 /// # Errors
 ///
@@ -222,6 +296,20 @@ pub async fn insert_event(
         event_id = row.0,
         "events: inserted"
     );
+    if let Some(recipient) = payload
+        .get("recipient_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|r| r.starts_with("user:"))
+        && consumers_serving(pool, recipient).await?.is_empty()
+    {
+        tracing::warn!(
+            kind = kind.as_str(),
+            event_id = row.0,
+            recipient,
+            "events: no consumer is delegated for this addressee — the notice \
+             waits until they poll under their own identity"
+        );
+    }
     Ok(row.0)
 }
 
@@ -318,10 +406,31 @@ pub const MAX_POLL_TOP_K: i64 = 50;
 ///
 /// Selection semantics (intersected, all optional except consumer):
 /// - The consumer's `acks` slot is empty (`json_extract(acks, '$.<id>') IS NULL`).
+/// - **The consumer serves the addressee** — see below.
 /// - `created_at > since` when `since` is provided.
 /// - `kind IN (...)` when `kinds` is non-empty.
 /// - Ordered `created_at ASC`, `id ASC` for a stable tiebreaker.
 /// - Returns at most `top_k.clamp(1, MAX_POLL_TOP_K)` rows.
+///
+/// ## Recipient scope — why the filter is in the SQL
+///
+/// An addressed event carries the fact bodies inline (that is the point:
+/// the consumer's agent delivers without a recall round-trip), so the queue
+/// is **not** a broadcast bus. A consumer receives an event addressed to
+/// `user:<id>` only when it serves that person — `<id>` is its own
+/// `consumers.system_user_id` (an agent's notices about its own wiki) or one
+/// of its `consumer_delegations.allowed_sender_ids`, the same table that
+/// decides `X-MWE-Act-As` on every tool call. Unaddressed events
+/// (`recipient_id` absent) and non-`user:` principals (`group:` / `global`)
+/// stay broadcast: withholding those would silently lose operator notices.
+///
+/// The predicate lives in the query, not in the caller, so a row we may not
+/// deliver is never read into the process — and no future caller can forget
+/// it. [`consumers_serving`] is the same rule read in the other direction,
+/// and a test pins the two to agree.
+///
+/// A recipient nobody serves is a notice that cannot be delivered;
+/// [`insert_event`] warns at emit time rather than letting it sit unread.
 ///
 /// `has_more` is `true` iff the underlying query returned `top_k + 1`
 /// matches — the extra row is discarded.
@@ -334,6 +443,7 @@ pub const MAX_POLL_TOP_K: i64 = 50;
 pub async fn poll_events(
     pool: &SqlitePool,
     consumer_id: &str,
+    caller_id: &str,
     since: Option<&str>,
     kinds: &[String],
     top_k: i64,
@@ -360,12 +470,17 @@ pub async fn poll_events(
     let sql = format!(
         "SELECT id, kind, wiki_id, fact_id, payload, created_at
            FROM wiki_events
-          WHERE json_extract(acks, '$.' || ?) IS NULL{since_clause}{kinds_placeholder}
+          WHERE json_extract(acks, '$.' || ?) IS NULL
+            AND ({RECIPIENT_SERVED_BY_CONSUMER}){since_clause}{kinds_placeholder}
           ORDER BY created_at ASC, id ASC
           LIMIT ?"
     );
 
-    let mut query = sqlx::query_as::<_, EventTuple>(&sql).bind(consumer_id);
+    let mut query = sqlx::query_as::<_, EventTuple>(&sql)
+        .bind(consumer_id)
+        .bind(caller_id)
+        .bind(consumer_id)
+        .bind(consumer_id);
     if let Some(s) = since {
         query = query.bind(s);
     }
@@ -510,6 +625,61 @@ mod tests {
 
     async fn fresh_pool() -> (crate::test_db::TestWorkdir, SqlitePool) {
         crate::test_db::TestWorkdir::with_db().await
+    }
+
+    /// The polling caller in tests that do not exercise recipient scope.
+    /// Deliberately somebody who is nobody's addressee, so a test that
+    /// expects a row to arrive is proving the *unaddressed* path rather
+    /// than accidentally passing through "you always get your own mail".
+    const CALLER: &str = "polling-agent";
+
+    /// Register a consumer, optionally bound to a system user, optionally
+    /// delegated for a set of humans — the two halves of "this consumer
+    /// serves these people".
+    async fn consumer(
+        pool: &SqlitePool,
+        consumer_id: &str,
+        system_user_id: Option<&str>,
+        delegated_for: &[&str],
+    ) {
+        // `consumers.system_user_id` references `enrollment_users`: an agent
+        // principal has to exist as a user before a consumer can *be* it.
+        if let Some(u) = system_user_id {
+            sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES (?, 0)")
+                .bind(u)
+                .execute(pool)
+                .await
+                .expect("enrol the system user");
+        }
+        crate::consumers::register(
+            pool,
+            &crate::consumers::RegisterRequest {
+                consumer_id,
+                display_name: None,
+                callback_url: None,
+                kinds_subscribed: None,
+                metadata: None,
+                system_user_id,
+            },
+        )
+        .await
+        .expect("register consumer");
+        if !delegated_for.is_empty() {
+            let allowed: Vec<String> = delegated_for.iter().map(|s| (*s).to_owned()).collect();
+            crate::delegations::upsert(pool, consumer_id, &allowed, "admin")
+                .await
+                .expect("delegate");
+        }
+    }
+
+    /// A `fact_minted_for_you`-shaped payload: addressed, and carrying the
+    /// fact body inline — which is exactly why the queue is not a broadcast.
+    fn addressed_to(user: &str) -> serde_json::Value {
+        serde_json::json!({
+            "recipient_id": format!("user:{user}"),
+            "from_user_id": "carol",
+            "facts": [{ "fact_id": "f1", "wiki_id": "w", "body": "a private thing" }],
+        })
     }
 
     #[test]
@@ -675,7 +845,7 @@ mod tests {
         .await
         .unwrap();
 
-        let out = poll_events(&pool, "samvise", None, &[], DEFAULT_POLL_TOP_K)
+        let out = poll_events(&pool, "samvise", CALLER, None, &[], DEFAULT_POLL_TOP_K)
             .await
             .expect("poll");
         assert_eq!(out.events.len(), 2);
@@ -715,9 +885,16 @@ mod tests {
         .unwrap();
 
         let since = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
-        let out = poll_events(&pool, "samvise", Some(&since), &[], DEFAULT_POLL_TOP_K)
-            .await
-            .unwrap();
+        let out = poll_events(
+            &pool,
+            "samvise",
+            CALLER,
+            Some(&since),
+            &[],
+            DEFAULT_POLL_TOP_K,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             out.events.len(),
             1,
@@ -728,6 +905,7 @@ mod tests {
         let out_filtered = poll_events(
             &pool,
             "samvise",
+            CALLER,
             None,
             &["dedup_proposed".to_owned()],
             DEFAULT_POLL_TOP_K,
@@ -755,16 +933,17 @@ mod tests {
 
         let _ = ack_events(&pool, "samvise", &[id]).await.unwrap();
 
-        let out_samvise = poll_events(&pool, "samvise", None, &[], DEFAULT_POLL_TOP_K)
+        let out_samvise = poll_events(&pool, "samvise", CALLER, None, &[], DEFAULT_POLL_TOP_K)
             .await
             .unwrap();
         assert!(
             out_samvise.events.is_empty(),
             "acked event invisible to samvise"
         );
-        let out_telegram = poll_events(&pool, "telegram-bot", None, &[], DEFAULT_POLL_TOP_K)
-            .await
-            .unwrap();
+        let out_telegram =
+            poll_events(&pool, "telegram-bot", CALLER, None, &[], DEFAULT_POLL_TOP_K)
+                .await
+                .unwrap();
         assert_eq!(
             out_telegram.events.len(),
             1,
@@ -787,7 +966,9 @@ mod tests {
             .await
             .unwrap();
         }
-        let out = poll_events(&pool, "samvise", None, &[], 2).await.unwrap();
+        let out = poll_events(&pool, "samvise", CALLER, None, &[], 2)
+            .await
+            .unwrap();
         assert_eq!(out.events.len(), 2);
         assert!(out.has_more);
     }
@@ -830,7 +1011,7 @@ mod tests {
         assert_eq!(first.acked, 1);
         assert_eq!(second.acked, 1);
         assert!(second.unknown.is_empty());
-        let out = poll_events(&pool, "samvise", None, &[], DEFAULT_POLL_TOP_K)
+        let out = poll_events(&pool, "samvise", CALLER, None, &[], DEFAULT_POLL_TOP_K)
             .await
             .unwrap();
         assert!(out.events.is_empty());
@@ -906,7 +1087,7 @@ mod tests {
         assert!(out.unknown.is_empty());
 
         // And the stamp actually landed: nothing pending for the consumer.
-        let pending = poll_events(&pool, "samvise", None, &[], DEFAULT_POLL_TOP_K)
+        let pending = poll_events(&pool, "samvise", CALLER, None, &[], DEFAULT_POLL_TOP_K)
             .await
             .unwrap();
         assert!(pending.events.is_empty());
@@ -935,5 +1116,190 @@ mod tests {
         .await
         .expect("probe");
         assert!(!seen);
+    }
+
+    // -- recipient scope: an addressed notice carries fact bodies inline,
+    //    so the queue must not hand it to a consumer that serves someone else.
+
+    #[tokio::test]
+    async fn an_addressed_notice_reaches_only_a_consumer_that_serves_the_person() {
+        let (_workdir, pool) = fresh_pool().await;
+        consumer(&pool, "alice-bridge", None, &["alice"]).await;
+        consumer(&pool, "bob-bridge", None, &["bob"]).await;
+        insert_event(
+            &pool,
+            EventKind::FactMintedForYou,
+            Some("alice"),
+            None,
+            &addressed_to("alice"),
+        )
+        .await
+        .expect("insert");
+
+        let mine = poll_events(&pool, "alice-bridge", CALLER, None, &[], DEFAULT_POLL_TOP_K)
+            .await
+            .expect("poll");
+        assert_eq!(mine.events.len(), 1, "the delegated consumer receives it");
+
+        let theirs = poll_events(&pool, "bob-bridge", CALLER, None, &[], DEFAULT_POLL_TOP_K)
+            .await
+            .expect("poll");
+        assert!(
+            theirs.events.is_empty(),
+            "a consumer delegated for somebody else must not see the body"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_consumer_receives_the_notices_of_its_own_system_user() {
+        let (_workdir, pool) = fresh_pool().await;
+        // An agent principal: no delegation at all, but the notice is about
+        // its own wiki — 287 of the events on prod are exactly this shape.
+        consumer(&pool, "hermes", Some("hermes"), &[]).await;
+        insert_event(
+            &pool,
+            EventKind::StructureApplied,
+            Some("hermes"),
+            None,
+            &serde_json::json!({ "recipient_id": "user:hermes", "variant": "split" }),
+        )
+        .await
+        .expect("insert");
+        let out = poll_events(&pool, "hermes", CALLER, None, &[], DEFAULT_POLL_TOP_K)
+            .await
+            .expect("poll");
+        assert_eq!(out.events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn you_always_receive_your_own_notices_without_being_delegated() {
+        let (_workdir, pool) = fresh_pool().await;
+        // A smart consumer: no system user, no delegation — it authenticates
+        // *as* its human owner, and being told about your own fact is less
+        // than what recall already hands you.
+        consumer(&pool, "claude-code", None, &[]).await;
+        insert_event(
+            &pool,
+            EventKind::FactMintedForYou,
+            Some("alice"),
+            None,
+            &addressed_to("alice"),
+        )
+        .await
+        .expect("insert");
+        let as_alice = poll_events(&pool, "claude-code", "alice", None, &[], DEFAULT_POLL_TOP_K)
+            .await
+            .expect("poll");
+        assert_eq!(as_alice.events.len(), 1, "your own mail arrives");
+        let as_bob = poll_events(&pool, "claude-code", "bob", None, &[], DEFAULT_POLL_TOP_K)
+            .await
+            .expect("poll");
+        assert!(
+            as_bob.events.is_empty(),
+            "the same consumer, a different caller: not their mail"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unaddressed_or_group_notice_stays_broadcast() {
+        let (_workdir, pool) = fresh_pool().await;
+        consumer(&pool, "any-bridge", None, &[]).await;
+        // An operator notice with no addressee.
+        insert_event(
+            &pool,
+            EventKind::CompileFailureStreak,
+            Some("alice"),
+            None,
+            &serde_json::json!({ "slug": "p", "consecutive": 2 }),
+        )
+        .await
+        .expect("insert");
+        // A communal principal: not a `user:`, so withholding it would
+        // silently lose it.
+        insert_event(
+            &pool,
+            EventKind::StructureApplied,
+            Some("famiglia"),
+            None,
+            &serde_json::json!({ "recipient_id": "group:famiglia" }),
+        )
+        .await
+        .expect("insert");
+        let out = poll_events(&pool, "any-bridge", CALLER, None, &[], DEFAULT_POLL_TOP_K)
+            .await
+            .expect("poll");
+        assert_eq!(out.events.len(), 2, "both stay broadcast");
+    }
+
+    #[tokio::test]
+    async fn the_poll_scope_and_the_configured_half_agree() {
+        // Anti-drift: the rule is written twice — once as the poll's SQL
+        // predicate, once as `consumers_serving` — so pin them to the same
+        // answer. `CALLER` is nobody's addressee, which keeps this comparing
+        // the configured half on both sides.
+        let (_workdir, pool) = fresh_pool().await;
+        consumer(&pool, "by-delegation", None, &["alice", "bob"]).await;
+        consumer(&pool, "by-system-user", Some("alice"), &[]).await;
+        consumer(&pool, "serves-nobody", None, &["carol"]).await;
+        insert_event(
+            &pool,
+            EventKind::FactMintedForYou,
+            Some("alice"),
+            None,
+            &addressed_to("alice"),
+        )
+        .await
+        .expect("insert");
+
+        let mut configured = consumers_serving(&pool, "user:alice")
+            .await
+            .expect("configured");
+        configured.sort();
+        assert_eq!(configured, vec!["by-delegation", "by-system-user"]);
+
+        let mut delivered = Vec::new();
+        for c in ["by-delegation", "by-system-user", "serves-nobody"] {
+            let out = poll_events(&pool, c, CALLER, None, &[], DEFAULT_POLL_TOP_K)
+                .await
+                .expect("poll");
+            if !out.events.is_empty() {
+                delivered.push(c.to_owned());
+            }
+        }
+        delivered.sort();
+        assert_eq!(
+            delivered, configured,
+            "the poll filter and the emit-time check must not drift apart"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_addressee_nobody_serves_is_reported_as_such() {
+        let (_workdir, pool) = fresh_pool().await;
+        consumer(&pool, "alice-bridge", None, &["alice"]).await;
+        // The prod case: one notice for a person no consumer is delegated
+        // for. It is still stored — the dashboard and the audit keep it.
+        let id = insert_event(
+            &pool,
+            EventKind::FactMintedForYou,
+            Some("dave"),
+            None,
+            &addressed_to("dave"),
+        )
+        .await
+        .expect("insert");
+        assert!(id > 0);
+        assert!(
+            consumers_serving(&pool, "user:dave")
+                .await
+                .expect("check")
+                .is_empty(),
+            "nobody is configured to deliver to dave"
+        );
+        // And it does not fall out of the queue for the wrong consumer.
+        let out = poll_events(&pool, "alice-bridge", CALLER, None, &[], DEFAULT_POLL_TOP_K)
+            .await
+            .expect("poll");
+        assert!(out.events.is_empty());
     }
 }

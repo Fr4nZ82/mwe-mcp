@@ -219,9 +219,15 @@ stdlib-only, no upstream patch:
   `INTEGRATING.md` step 8; roadmap 3j). The hook rides hermes's
   documented `gateway:startup` hooks seam (`$HERMES_HOME/hooks/`,
   auto-discovered — no allow-list): one daemon thread polls
-  `events_poll` every ~30 s, kind-filtered to `fact_minted_for_you`,
-  with the bridge token (consumer id decoded from the token payload —
-  the claim the server validates anyway). Routing is `senderMap` read
+  `events_poll` every ~30 s with the bridge token (consumer id decoded
+  from the token payload — the claim the server validates anyway),
+  kind-filtered to the two **person-addressed** kinds:
+  `fact_minted_for_you` and `reminder_due` (a dated commitment already in
+  memory coming round — [reminders.md](../design-notes/reminders.md)).
+  Each gets its own delivery wording, and both offer the
+  `dashboard_path` the payload carries, resolved against `dashboardUrl`
+  (the same base the digest uses; absent → no link rather than a broken
+  one). Routing is `senderMap` read
   in reverse, explicit `telegram:<id>` entries only — the
   `primaryUser` fallback deliberately never applies to a personal
   notice. Delivery is **agent-mediated by design** (the founder's

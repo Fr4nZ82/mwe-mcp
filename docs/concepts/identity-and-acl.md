@@ -234,6 +234,14 @@ class closes that footgun by construction. Three places enforce it:
 2. **The act-as gate.** The MCP middleware permits `X-MWE-Act-As` only
    for `standard` tokens (`403 act_as_requires_standard` otherwise) —
    see [`jwt-and-session-model.md`](../design-notes/jwt-and-session-model.md).
+   The same roster governs **what a consumer may be told**, not only whom it
+   may speak for: the reverse channel hands an addressed notice — payload
+   including the fact bodies — to a consumer only when the addressee is the
+   caller's own identity, the consumer's system user, or one of its delegated
+   senders ([tool-reference §events_poll](../protocol/tool-reference.md#events_poll-read-only)).
+   One table for both directions is the point: being trusted to act for Bob
+   and being trusted to hear about Bob are the same grant, so there is no
+   second place to forget.
 3. **The binding.** A standard consumer's identity (`sender_id`, a
    system user), its deployment (`consumer_id`, a row in the `consumers`
    registry), and its delegations (`consumer_delegations`) are tied

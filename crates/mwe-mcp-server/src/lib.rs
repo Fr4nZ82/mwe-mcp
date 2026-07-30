@@ -16,4 +16,5 @@ pub mod http_media;
 pub mod http_skills;
 pub mod mcp;
 pub mod rem_scheduler;
+pub mod reminder_scheduler;
 pub mod tracing_setup;

@@ -361,7 +361,13 @@ plus `job_id`/`title` on the document path), `facts` (array of
 consumer's agent can deliver it without a recall round-trip), and
 `dashboard_path`; batched per (beneficiary, turn), so one turn emits at
 most one event per recipient; group-owned facts and agent principals
-never emit it).
+never emit it), and `reminder_due` (a dated commitment already in memory
+has come round — payload: `recipient_id`, `due_at` (the stored
+`valid_to`), `fires_at` (what the policy resolved), a `facts` array of one
+carrying the body, and `dashboard_path`; same shape as
+`fact_minted_for_you` so one parser serves both. Fires for a `plan` with a
+concrete `valid_to`, once, addressed to its owner — see
+[reminders.md](../design-notes/reminders.md)).
 The `kind` column is `TEXT`, so new kinds are additive —
 a consumer that does not recognise a kind just receives the JSON payload
 and decides what to do. `structure_applied` is the **notice** for a
@@ -394,6 +400,22 @@ token with no `consumer_id` tried to poll).
   the operator/admin. For `structure_applied` this is the heart of the
   apply-and-notice contract: the notice **names the affected user** so
   the agent knows whom to forward it to.
+- **The queue is scoped to the addressee, not broadcast.** An addressed
+  payload carries the fact bodies inline, so the drain is filtered
+  server-side: a consumer receives an event addressed to `user:<id>`
+  only when `<id>` is **the calling token's own `sender_id`** (you always
+  receive your own notices — a smart consumer authenticates as its human
+  owner and needs no configuration), **the consumer's `system_user_id`**
+  (an agent's notices about its own wiki), or one of the consumer's
+  **delegated senders** (`consumer_delegations.allowed_sender_ids`, the
+  same table that authorises `X-MWE-Act-As`). Unaddressed events and
+  non-`user:` principals (`group:` / `global`) stay broadcast — withholding
+  an operator notice would silently lose it. Consequence for an
+  integrator: if a bot is to deliver on behalf of other humans, it needs a
+  delegation, exactly as it does to *act* for them; without one it drains
+  only its own mail and the unaddressed traffic. When an addressed event
+  has no consumer configured to receive it, the server logs a warning
+  naming the recipient at emit time.
 - **Retention & multi-consumer GC:** events are retained 30 days
   after *every* registered consumer has acked. The ack state is a
   **per-consumer JSON map** in the `wiki_events.acks` column (read via

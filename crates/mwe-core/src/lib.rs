@@ -72,6 +72,7 @@ pub mod recovery;
 pub mod reindex;
 pub mod rem;
 pub mod rem_verdicts;
+pub mod reminders;
 pub mod render;
 pub mod reviewer;
 pub mod scope;

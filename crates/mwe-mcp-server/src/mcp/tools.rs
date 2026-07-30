@@ -707,9 +707,13 @@ pub(super) async fn call_events_poll(
     enforce_consumer_match(identity, &args.consumer_id)?;
     require_consumer_registered(state, &args.consumer_id).await?;
 
+    // `sender_id` is the caller's verified identity: it widens the recipient
+    // scope to their own notices, which is what lets a smart consumer (no
+    // system user, no delegation) receive its owner's mail unconfigured.
     let outcome = events::poll_events(
         &state.pool,
         &args.consumer_id,
+        &identity.sender_id,
         args.since.as_deref(),
         &args.kinds,
         args.top_k.unwrap_or(events::DEFAULT_POLL_TOP_K),

@@ -9,6 +9,83 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## Unreleased
+
+### Security
+
+- **A notice meant for one person was handed to every connected agent.**
+  The reverse channel — the queue an agent drains between turns to be
+  told "memory was stored for you" — filtered only on what each consumer
+  had already acknowledged. Everything else it returned in full,
+  including notices addressed to a specific human and carrying the
+  remembered text itself, which they carry on purpose so the agent can
+  deliver the content without a second lookup. The addressee's name was
+  in the payload as advice, and nothing enforced it.
+
+  It is enforced now, inside the query, so a notice an agent may not
+  receive is never even read: an addressed notice reaches an agent when
+  the addressee is the caller's own identity (you always get your own
+  mail — the memory already hands you your own facts on recall, so being
+  told about one is strictly less), or the agent's own memory identity,
+  or one of the people that agent is **delegated** to serve. That is the
+  same roster that already decides whom an agent may speak for: being
+  trusted to act for someone and being trusted to hear about them are one
+  grant, so there is no second place to forget. Notices with no addressee,
+  and those addressed to a group, stay broadcast — withholding an
+  operator warning would lose it silently.
+
+  On this deployment the hole had been crossed exactly once in 532
+  notices, and no human saw the content: the bridge refuses to deliver a
+  personal notice to a recipient it has no private channel for, and
+  logged the refusal twenty times instead. The last line of defence was
+  sitting in the consumer, which is the wrong place for it.
+
+### Added
+
+- **A dated commitment now announces itself.** Until now the memory
+  remembered *"Thursday at 5pm at the dentist"*, showed it to whichever
+  assistant happened to be talking near the time, and never spoke first.
+  It does now: when the commitment comes round, the memory emits a notice
+  to the person whose commitment it is, delivered between turns on the
+  channel that already carries "memory was stored for you".
+
+  Deliberately narrow — **this is not a scheduler**. What a user asks their
+  assistant to do at a time ("wake me at seven") stays with that assistant.
+  This fires only for a fact the memory already holds, and the reason that
+  one case cannot stay with the assistant is the one that matters: an alarm
+  written when the user first asked freezes both the time and the wording,
+  so when a later conversation says *"it slipped to Friday"* the memory
+  learns and the alarm does not. Firing from the fact means the correction
+  is what rings.
+
+  The hour is worked out rather than stored, because the data said so:
+  **87 % of dated commitments carry a date with no time of day in it**, so
+  firing at the stored moment would ring at midnight for almost all of them
+  — and a dedicated "remind me at" field would have stayed empty for
+  exactly those. A date announces itself at a configured morning hour; a
+  time somebody actually said announces itself then, optionally early. What
+  gets *said* is the remembered text itself, so a time written into the
+  sentence rather than the date field still reaches the person.
+
+  New `reminders:` config section (`enabled`, `day_hour_utc`, `lead_secs`,
+  `grace_secs`, `cap`). The grace window is what stops the first run after
+  an upgrade announcing every appointment already in the past.
+
+- **A personal notice now carries the link to what it is about.** The
+  notice always knew the exact page; the delivery instructions never
+  mentioned it, so the message arrived without a way to open it. The
+  morning digest had a link and personal notices did not — now both do,
+  from the same setting, and an unconfigured public address means no link
+  rather than a broken one.
+
+- **An undeliverable notice now says so when it is written.** If a notice
+  is addressed to somebody no agent is delegated to serve, the server
+  warns at that moment and names them, rather than leaving a row that
+  looks delivered because nothing ever acknowledges it. The notice is
+  still kept, and the person still receives it if they ever connect under
+  their own identity; what is new is that the operator learns a
+  delegation is missing.
+
 ## 1.8.3 — 2026-07-30
 
 ### Fixed

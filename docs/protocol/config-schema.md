@@ -776,6 +776,40 @@ likewise **recorded fields, not enforced limits** — they support after-
 the-fact analysis, not a runtime limiter. Budget enforcement is future
 work; today this section is purely advisory documentation.
 
+### `reminders`
+
+```yaml
+reminders:
+  enabled: true          # bool;  default true
+  day_hour_utc: 7        # 0–23;  default 7
+  lead_secs: 0           # u64;   default 0
+  grace_secs: 21600      # u64;   default 21600 (6 h)
+  cap: 50                # usize; default 50
+```
+
+When a dated commitment **already in memory** announces itself to the
+person whose commitment it is, on the reverse channel (`reminder_due`).
+Deliberately narrow: this is not a scheduler for what a user asks their
+assistant to do at a time — see
+[reminders.md](../design-notes/reminders.md) for what fires and why the
+firing instant is derived rather than stored.
+
+- **`enabled`** — `false` spawns no task at all.
+- **`day_hour_utc`** — the hour at which a commitment whose date carries
+  **no stated time** announces itself (87 % of them, measured). **UTC,
+  not local:** the engine does no timezone arithmetic, so set it to the
+  morning hour of the zone your people actually live in.
+- **`lead_secs`** — how far *before* a stated time to announce it. `0`
+  means at the time itself.
+- **`grace_secs`** — how late a firing instant may be and still
+  announce. This is what stops a first run announcing every past
+  commitment in the corpus; the cost is that a window missed entirely
+  (server down) loses that reminder rather than delivering it late.
+- **`cap`** — most notices one sweep may emit. A runaway guard.
+
+Changes take effect on **restart**: unlike `backup:` there is no console
+editing this section, so nothing hot-swaps it.
+
 ### Other passthrough sections
 
 The keys below all land in `Config::extra` — `config.rs` does not type

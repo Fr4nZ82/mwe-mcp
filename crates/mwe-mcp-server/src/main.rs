@@ -12,6 +12,7 @@ use mwe_mcp_server::backup_scheduler;
 use mwe_mcp_server::env_loader::{self, WriteOutcome};
 use mwe_mcp_server::mcp;
 use mwe_mcp_server::rem_scheduler;
+use mwe_mcp_server::reminder_scheduler;
 
 use std::io::{IsTerminal, Write};
 use std::net::{IpAddr, SocketAddr};
@@ -1737,6 +1738,19 @@ async fn cmd_serve_http(
         ))
     };
 
+    // Reminder scheduler: announces a dated commitment the memory already
+    // holds, once, when it comes round (`reminders:` config section). Not
+    // a scheduler for what a user asks their assistant to do at a time —
+    // that stays the assistant's.
+    let mut reminder_shutdown_rx = shutdown_tx.subscribe();
+    let reminder_handle = if frozen {
+        None
+    } else {
+        reminder_scheduler::spawn(config.reminders.policy(), state.pool.clone(), async move {
+            let _ = reminder_shutdown_rx.recv().await;
+        })
+    };
+
     // Document worker: drives queued `wiki_ingest_external` jobs
     // (classify → segment → anchor → extract → reduce → file). Runs on
     // the `ingest` slot, built per tick; without the slot the loop idles
@@ -1881,6 +1895,13 @@ async fn cmd_serve_http(
             Ok(Ok(())) => info!("backup scheduler: joined cleanly"),
             Ok(Err(e)) => warn!(error = %e, "backup scheduler: task panicked on shutdown"),
             Err(_) => warn!("backup scheduler: did not exit within 5s timeout"),
+        }
+    }
+    if let Some(handle) = reminder_handle {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
+            Ok(Ok(())) => info!("reminder scheduler: joined cleanly"),
+            Ok(Err(e)) => warn!(error = %e, "reminder scheduler: task panicked on shutdown"),
+            Err(_) => warn!("reminder scheduler: did not exit within 5s timeout"),
         }
     }
 

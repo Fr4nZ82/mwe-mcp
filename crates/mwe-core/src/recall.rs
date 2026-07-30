@@ -1561,9 +1561,13 @@ pub async fn recall_fresh_captures(
 ///
 /// `now` is supplied by the caller (testability + one clock per turn); the
 /// look-ahead `horizon` is an operator setting surfaced with the recall
-/// settings panel. The window reads `valid_to` — when a distinct
-/// `remind_at` firing timestamp lands (cross-consumer reminder delivery),
-/// the slot widens to it.
+/// settings panel. The window reads `valid_to`, and that stays the only
+/// stored firing time: a distinct `remind_at` column was considered for
+/// cross-consumer reminder delivery and **declined**, because 87 % of dated
+/// facts store a `valid_to` on a day boundary (a date, no hour), so a second
+/// column would have been empty for exactly the commitments that need to
+/// fire. An hour, when nobody stated one, is a delivery-side policy — not a
+/// datum to store per fact.
 ///
 /// Does NOT bump recall counters: the pull is mechanical (every turn inside
 /// the horizon would re-surface the same rows), so counting it would

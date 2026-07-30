@@ -148,6 +148,10 @@ If you are new, read in this order:
 - [recall-pipeline.md](design-notes/recall-pipeline.md) — read-side
   orchestrators: `wiki_search`, `wiki_facts_for`, `wiki_recall`,
   `wiki_navigate`, plus `wiki_multi_hop_facts` (`mwe-core::recall`).
+- [reminders.md](design-notes/reminders.md) — a dated commitment
+  announcing itself between turns: what fires (`plan` + a `valid_to`),
+  when (derived from the stored date, no `remind_at` column), and why the
+  engine is not a scheduler.
 - [media-pipeline.md](design-notes/media-pipeline.md) — photos, video,
   audio and documents as memory: the `media_catalog` twin of
   `fact_index`, the content-addressed store, the `/media` byte pair,

@@ -2183,6 +2183,85 @@ const fn default_backup_retention_auto() -> u32 {
     7
 }
 
+const fn default_reminders_enabled() -> bool {
+    true
+}
+
+const fn default_reminder_day_hour_utc() -> u32 {
+    7
+}
+
+const fn default_reminder_grace_secs() -> u64 {
+    6 * 60 * 60
+}
+
+const fn default_reminder_cap() -> usize {
+    50
+}
+
+/// `reminders:` — when a dated commitment the memory already holds
+/// announces itself to the person whose commitment it is.
+///
+/// Deliberately narrow: this is **not** a scheduler. What a user asks
+/// their assistant to do at a time belongs to that assistant; the engine
+/// only notices that a fact it stores has come round. See
+/// [`crate::reminders`] for the firing rule and why it is derived from
+/// `valid_to` rather than stored in a column of its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemindersConfig {
+    /// Master switch. Default: `true`.
+    #[serde(default = "default_reminders_enabled")]
+    pub enabled: bool,
+    /// UTC hour (0–23) at which a commitment whose date carries **no
+    /// stated time** announces itself. Default: `7`.
+    ///
+    /// UTC, not local: the engine does no timezone arithmetic — set it to
+    /// the morning hour of the zone your people actually live in (a
+    /// household or a team shares one).
+    #[serde(default = "default_reminder_day_hour_utc")]
+    pub day_hour_utc: u32,
+    /// Seconds **before** a stated time to announce it. Default: `0` — at
+    /// the time itself.
+    #[serde(default)]
+    pub lead_secs: u64,
+    /// How late a firing instant may be and still announce itself.
+    /// Bounds the catch-up after downtime, and is what stops the first
+    /// run announcing every past commitment in the corpus. Default:
+    /// `21_600` (6 hours).
+    #[serde(default = "default_reminder_grace_secs")]
+    pub grace_secs: u64,
+    /// Most notices one sweep may emit — a runaway guard. Default: `50`.
+    #[serde(default = "default_reminder_cap")]
+    pub cap: usize,
+}
+
+impl Default for RemindersConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            day_hour_utc: default_reminder_day_hour_utc(),
+            lead_secs: 0,
+            grace_secs: default_reminder_grace_secs(),
+            cap: default_reminder_cap(),
+        }
+    }
+}
+
+impl RemindersConfig {
+    /// The runtime policy this section describes.
+    #[must_use]
+    pub fn policy(&self) -> crate::reminders::ReminderPolicy {
+        crate::reminders::ReminderPolicy {
+            enabled: self.enabled,
+            day_hour_utc: self.day_hour_utc.min(23),
+            lead: chrono::Duration::seconds(i64::try_from(self.lead_secs).unwrap_or(i64::MAX)),
+            grace: chrono::Duration::seconds(i64::try_from(self.grace_secs).unwrap_or(i64::MAX)),
+            cap: self.cap,
+        }
+    }
+}
+
 // ---------- Instance posture ----------
 
 /// `instance:` section — the switches that belong to whoever runs the
@@ -2343,6 +2422,10 @@ pub struct Config {
     /// dashboard editor by design. See [`InstanceConfig`].
     #[serde(default)]
     pub instance: InstanceConfig,
+    /// `reminders:` section — when a dated commitment already in memory
+    /// announces itself. See [`RemindersConfig`].
+    #[serde(default)]
+    pub reminders: RemindersConfig,
     /// Every other key in the YAML, preserved verbatim so we never
     /// strip an operator's settings during a round-trip.
     #[serde(flatten)]

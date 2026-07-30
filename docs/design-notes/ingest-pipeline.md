@@ -984,6 +984,16 @@ mirrors this per job ([document-ingest.md](document-ingest.md));
 draining and out-of-turn delivery are the bridge's job
 (`INTEGRATING.md` step 8 — the hermes poll/ack daemon is roadmap 3j).
 
+Because that payload carries the bodies, **the drain is scoped to the
+addressee**: a consumer receives an addressed event only when it serves that
+person — the caller's own token identity, the consumer's `system_user_id`, or
+one of its `consumer_delegations.allowed_sender_ids` (the predicate lives in
+the `events_poll` query, so a row we may not deliver is never read). Delivery
+authority and act-as authority are deliberately the **same** table: a bot
+allowed to speak *for* Bob is exactly the bot allowed to be told things *about*
+Bob. Unaddressed and `group:` / `global` notices stay broadcast. See
+[tool-reference §events_poll](../protocol/tool-reference.md#events_poll-read-only).
+
 A pathological LLM that asks to capture into `user:bob`'s wiki when
 `sender=alice` is **not rejected** at this layer — the
 cross-user-attribution invariant lives in
