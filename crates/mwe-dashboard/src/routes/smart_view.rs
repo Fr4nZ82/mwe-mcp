@@ -99,6 +99,7 @@ async fn unread_briefing_for(state: &DashboardState, wiki_id: &str) -> Result<i6
 async fn list_smart_wikis(
     State(state): State<DashboardState>,
     user: SessionUser,
+    jar: axum_extra::extract::cookie::CookieJar,
 ) -> Result<Html<String>> {
     let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
@@ -110,9 +111,20 @@ async fn list_smart_wikis(
 
     // Smart family = the per-wiki `_meta.md` smart flag
     // (replaces the `wiki_types_registry` lookup).
+    // The list is a read surface like any other: a smart wiki appears only to
+    // someone who may read it (its owner, a member of the owning group, or a
+    // `shared_with` entry). Until 2026-07-30 it listed every smart wiki to
+    // every signed-in user — and the page behind it opened for them too.
+    let reveal_all = crate::reveal::active(&state, &user, &jar);
     let mut rows = Vec::new();
     for d in discovered {
         if !d.meta.smart {
+            continue;
+        }
+        if !reveal_all
+            && !super::wiki_view::wiki_readable(&state, memory, &d.meta.wiki_id, &user.sender_id)
+                .await?
+        {
             continue;
         }
         let wiki_id = d.meta.wiki_id.as_str().to_owned();

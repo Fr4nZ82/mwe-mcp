@@ -661,21 +661,8 @@ async fn view(
     // Derived wiki visibility (non-reveal): the wiki surfaces only to a reader
     // who can read ≥1 fact in it; otherwise 404 — never a wiki-level render of
     // its prose / page list / structure. An admin with reveal on sees all.
-    if !reveal {
-        let sender_groups = enrollment::groups_for(&state.pool, &user.sender_id)
-            .await
-            .map_err(|e| DashboardError::Internal(format!("groups_for: {e}")))?;
-        if !fact_index::wiki_visible_to(
-            &state.pool,
-            wiki_id.as_str(),
-            &user.sender_id,
-            &sender_groups,
-        )
-        .await
-        .map_err(|e| DashboardError::Internal(format!("wiki_visible_to: {e}")))?
-        {
-            return Err(DashboardError::NotFound);
-        }
+    if !reveal && !wiki_readable(&state, memory, &wiki_id, &user.sender_id).await? {
+        return Err(DashboardError::NotFound);
     }
     let pages = wiki_list_pages(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
     let fact_count = fact_index::count_active_in_wiki(&state.pool, wiki_id.as_str())
@@ -955,21 +942,8 @@ async fn view_page(
     // Derived wiki visibility (non-reveal): a reader who can read ≥1 fact in
     // the wiki sees the page (fragments still redacted per-fragment below); one
     // who can read nothing gets 404. Admin reveal sees all.
-    if !reveal {
-        let sender_groups = enrollment::groups_for(&state.pool, &user.sender_id)
-            .await
-            .map_err(|e| DashboardError::Internal(format!("groups_for: {e}")))?;
-        if !fact_index::wiki_visible_to(
-            &state.pool,
-            wiki_id.as_str(),
-            &user.sender_id,
-            &sender_groups,
-        )
-        .await
-        .map_err(|e| DashboardError::Internal(format!("wiki_visible_to: {e}")))?
-        {
-            return Err(DashboardError::NotFound);
-        }
+    if !reveal && !wiki_readable(&state, memory, &wiki_id, &user.sender_id).await? {
+        return Err(DashboardError::NotFound);
     }
     // ACL-aware view: by default we declassify exactly the way the
     // consumer agents do via `wiki_read`, so the operator sees `[redacted]`
@@ -2159,6 +2133,37 @@ async fn can_comment_on(
     // Anyone who can read may comment — owner, owning-group member, shared
     // user/group, or global. A non-member of a group-owned wiki is Denied.
     Ok(outcome.is_granted())
+}
+
+/// The wiki-level read gate, for either family.
+///
+/// A **standard** wiki hides per fragment, so visibility is derived: you see it
+/// if you can read at least one fact in it. A **smart** wiki holds no facts at
+/// all, so that question cannot speak for it and its own ACL answers instead
+/// (owner, owning-group member, `shared_with`). Routing both through
+/// [`mwe_core::wiki_admin::wiki_readable_by`] keeps the two read surfaces and
+/// the Smart tab on one rule.
+pub(super) async fn wiki_readable(
+    state: &DashboardState,
+    memory: &crate::state::MemoryHandles,
+    wiki_id: &WikiId,
+    sender_id: &str,
+) -> Result<bool> {
+    let Ok(handle) = memory.tree.locate(wiki_id) else {
+        return Ok(false);
+    };
+    let sender_groups = enrollment::groups_for(&state.pool, sender_id)
+        .await
+        .map_err(|e| DashboardError::Internal(format!("groups_for: {e}")))?;
+    mwe_core::wiki_admin::wiki_readable_by(
+        &state.pool,
+        &memory.tree,
+        &handle,
+        sender_id,
+        &sender_groups,
+    )
+    .await
+    .map_err(|e| DashboardError::Internal(format!("wiki_readable_by: {e}")))
 }
 
 /// Read-access check for the comment write path. Anyone who can read

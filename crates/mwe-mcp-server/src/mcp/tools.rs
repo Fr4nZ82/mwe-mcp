@@ -869,9 +869,13 @@ pub(super) async fn call_wiki_read(
     // `not_found`, never a wiki-level render of connective prose / page structure
     // they were never granted. Per-region redaction (`render_for_sender`) still
     // gates every fact on the page below.
-    if !mwe_core::fact_index::wiki_visible_to(
+    // A smart wiki holds no rows in `fact_index`, so the derived question
+    // ("can you read ≥1 fact here?") always fell into the empty-wiki branch and
+    // answered *visible*. `wiki_readable_by` routes it to the wiki-level gate.
+    if !mwe_core::wiki_admin::wiki_readable_by(
         &state.pool,
-        meta.wiki_id.as_str(),
+        &state.tree,
+        &handle,
         &identity.sender_id,
         &sender_groups,
     )
@@ -2788,7 +2792,9 @@ fn admin_error_to_tool_error(err: &mwe_core::wiki_admin::AdminError) -> ToolErro
         // `expected_op_log_head` is stale. Wire code `conflicting_op_log_head`
         // — the smart-consumer skill instructs a pull → re-diff → re-push.
         E::ConflictingOpLogHead { .. } => (ToolErrorClass::ConflictingOpLogHead, err.to_string()),
-        E::Wiki(_) | E::Db(_) | E::Io(_) => (ToolErrorClass::InternalError, err.to_string()),
+        E::Wiki(_) | E::Db(_) | E::Io(_) | E::FactIndex(_) => {
+            (ToolErrorClass::InternalError, err.to_string())
+        },
     };
     ToolError::new(class, msg)
 }

@@ -254,6 +254,9 @@ pub enum AdminError {
     /// Bubbling from `WikiSlug` parser.
     #[error("slug: {0}")]
     SlugParse(#[from] WikiSlugParseError),
+    /// The fact index could not answer the derived-visibility question.
+    #[error("fact index: {0}")]
+    FactIndex(#[from] crate::fact_index::FactIndexError),
     /// Database failure (`op_log` insert or registry lookup).
     #[error("db: {0}")]
     Db(#[from] sqlx::Error),
@@ -1577,6 +1580,52 @@ fn resolve_owner_user(tree: &WikiTree, handle: &WikiHandle) -> Result<String, Ad
 }
 
 // ---------- shared_with read+notify resolution ----------
+
+/// Can this reader see this wiki **at all** — the one gate every read path
+/// asks, for either family.
+///
+/// Two families, two different questions, and asking the wrong one was a
+/// **read leak** (found 2026-07-30):
+///
+/// * a **standard** wiki hides per fragment, so "can you see this wiki" is
+///   derived — you see it if you can read at least one fact in it
+///   ([`crate::fact_index::wiki_visible_to`]);
+/// * a **smart** wiki is markerless and holds **no rows in `fact_index` at
+///   all** — its content is indexed elsewhere. The derived question therefore
+///   hit `wiki_visible_to`'s empty-wiki branch (*"nothing to hide → visible"*,
+///   written for a fresh standard wiki whose first fact is not promoted yet)
+///   and answered **visible to everyone**, for every project and agent wiki,
+///   on every deployment with more than one enrolled user. The wiki-level gate
+///   that governs a smart wiki — owner, owning-group member, or a
+///   `shared_with` entry — existed and was already used for commenting; the
+///   read paths simply never asked it.
+///
+/// So: smart → [`resolve_read_access`]; standard → the derived fact check.
+///
+/// # Errors
+///
+/// Propagates the scope-principal resolution and the group / fact lookups.
+pub async fn wiki_readable_by(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    handle: &WikiHandle,
+    sender_id: &str,
+    sender_groups: &[String],
+) -> Result<bool, AdminError> {
+    if handle.meta().smart {
+        return Ok(resolve_read_access(pool, tree, handle, sender_id)
+            .await?
+            .is_granted());
+    }
+    crate::fact_index::wiki_visible_to(
+        pool,
+        handle.meta().wiki_id.as_str(),
+        sender_id,
+        sender_groups,
+    )
+    .await
+    .map_err(AdminError::from)
+}
 
 /// Outcome of [`resolve_read_access`].
 ///
@@ -2914,6 +2963,45 @@ mod tests {
             }
         }
         std::fs::write(&abs, out).expect("write meta");
+    }
+
+    /// The read leak, pinned. A smart wiki holds **no rows in `fact_index`**,
+    /// so the derived-visibility question every read path used to ask
+    /// (`wiki_visible_to`) fell into its empty-wiki branch — *"nothing to hide
+    /// → visible"* — and answered **yes to everybody**: every project and
+    /// agent wiki was readable by any enrolled user, over MCP and in the
+    /// dashboard, whatever `_meta.md` said. `wiki_readable_by` must route a
+    /// smart wiki to its own gate and leave a stranger out.
+    #[tokio::test]
+    async fn a_smart_wiki_is_not_readable_by_a_stranger() {
+        let (_dir, tree, pool) = seeded_tree().await;
+        let create = push(
+            &pool,
+            &tree,
+            &alice_smart(),
+            ActorKind::SmartConsumer,
+            create_smart_wiki_request("lnprint"),
+        )
+        .await
+        .expect("create");
+        let tree = WikiTree::open(tree.workdir()).unwrap();
+        let handle = tree.locate(&create.wiki_id).unwrap();
+        assert!(
+            handle.meta().smart,
+            "fixture must be a smart wiki for this test to mean anything"
+        );
+        assert!(
+            wiki_readable_by(&pool, &tree, &handle, "alice", &[])
+                .await
+                .expect("owner"),
+            "the owner must still read their own project wiki"
+        );
+        assert!(
+            !wiki_readable_by(&pool, &tree, &handle, "mallory", &[])
+                .await
+                .expect("stranger"),
+            "a smart wiki with no sharing must not be readable by anyone else"
+        );
     }
 
     #[tokio::test]
