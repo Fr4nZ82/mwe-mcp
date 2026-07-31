@@ -86,6 +86,73 @@ semver-governed surface — breaking changes are called out explicitly.
   their own identity; what is new is that the operator learns a
   delegation is missing.
 
+## 1.8.4 — 2026-07-31
+
+Two things that governed who may read what were not governing it. Both are
+fixed here, and both were found by looking rather than by a report.
+
+### Fixed
+
+- **Every project and agent wiki was readable by every enrolled user.** The
+  check each read path made is a derived one — *can this reader read at
+  least one fact in this wiki?* — and it returns "visible" for a wiki that
+  holds no facts, which is correct for a standard wiki whose first fact has
+  not been promoted yet. A **smart** wiki holds no facts by construction:
+  it is markerless, and its content is indexed elsewhere. So it took that
+  branch every time, and its `owner_user` / `shared_with` decided nothing.
+  Affected the page read over MCP, the two dashboard read surfaces, and the
+  dashboard's Smart tab, which had no check at all and listed every smart
+  wiki to everyone.
+
+  The gate that governs a smart wiki already existed and was already right —
+  the comment path had been using it. The read paths now ask it too, by
+  family, in one place. Search and recall were never affected: the section
+  index filters correctly, verified against a real dataset.
+
+  A single-user deployment was never exposed, which is why this survived.
+
+- **An addressed notice was handed to every connected consumer.** The
+  reverse-channel queue filtered on the polling consumer's acknowledgement
+  slot and nothing else, so every registered consumer received every event —
+  including the one that carries fact bodies inline. The recipient field was
+  advice that nothing enforced. Scope now lives in the query, so a row that
+  may not be delivered is never read into the process at all. On the first
+  production deployment the hole had been crossed once in 532 notices, and
+  no content reached a person: the bridge refused to route a personal notice
+  to a recipient it had no private channel for, and logged the refusal
+  instead. That last line of defence was in the wrong place.
+
+- **A recalled memory that had expired was being read as the present.** Every
+  fact stores when it starts and stops holding, recall carries those bounds,
+  and the ranker already pushes a spent fact down the list because it knows.
+  The one place that never said so was the instruction handed to the model,
+  which listed each recalled fact with its id, owner, audience and text and
+  no dates at all — so a fact that had stopped being true looked exactly like
+  a permanent one.
+
+  It produced a sentence that contradicted itself: an assistant asked to
+  resolve "we ate without him" borrowed the pair of names from a fact whose
+  window had closed twenty-one hours earlier, and wrote that two people had
+  eaten dinner without waiting for one of the two. Nothing was invented; a
+  detail was imported from a memory that had expired.
+
+  Each recalled fact now arrives marked *ended*, *not in force yet*, or *in
+  force until*, resolved against the clock of that message. A fact that makes
+  no claim about time carries no marking and costs nothing. The instruction
+  gained one general paragraph rather than a rule about this case: an ended
+  fact is evidence of what was true, its particulars are not available to
+  fill in the present, and when a memory and the person disagree, the person
+  wins.
+
+### Added
+
+- **A dated commitment announces itself.** The memory held "Thursday at five
+  at the dentist", surfaced it to whoever happened to be talking near the
+  time, and never spoke first. A sweep now emits a reminder when the
+  commitment comes round. It is not a scheduler: it fires only for a fact the
+  memory already holds, so a later turn that moves the appointment moves the
+  reminder with it, which a job frozen at the moment of asking cannot do.
+
 ## 1.8.3 — 2026-07-30
 
 ### Fixed
