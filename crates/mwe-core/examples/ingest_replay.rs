@@ -39,16 +39,44 @@
 //! | `--out <file>` | required for a replay | where results are written (JSONL) |
 //! | `--variant <spec>` | `baseline` | `baseline`, `gated`, or `drop:<heading>;<heading>` |
 //! | `--limit <n>` | all | replay only the newest `n` records |
+//! | `--backend <b>` | `gemini` | `gemini` or `anthropic` — **replay the backend production runs** |
 //! | `--model <id>` | `gemini-3-flash-preview` | model to replay against |
+//! | `--prompt-file <f>` | the bundled `ingest.md` | replay an arbitrary prompt file — how a *previous* version becomes the baseline |
 //! | `--reasoning-effort <e>` | slot default (`minimal`) | `low`/`medium`/`high` — how long the model deliberates |
 //! | `--concurrency <n>` | `4` | requests in flight |
 //! | `--dry-run` | off | build the prompts, print the cost projection, call nothing |
 //! | `--compare <a> <b>` | — | diff two result files instead of replaying |
 //!
-//! The API key is read from `GEMINI_API_KEY`. **This tool spends money** —
-//! one replay of the full spool is a few thousand cents of Flash tokens, so
-//! it is a manual example, never part of `cargo test`. `--dry-run` costs
-//! nothing and reports exactly what a real run would send.
+//! The key is read from `GEMINI_API_KEY`, or `ANTHROPIC_API_KEY` under
+//! `--backend anthropic`. **This tool spends** — money on Gemini or a Console
+//! key, plan quota on a subscription token — so it is a manual example, never
+//! part of `cargo test`. `--dry-run` costs nothing and reports exactly what a
+//! real run would send.
+//!
+//! ## Replay the backend production actually runs
+//!
+//! A measurement is only transferable if it drives the slot the deployment
+//! drives. Read `llm.<slot>.backend` / `.model` out of the deployment's
+//! `mwe-mcp.config.yaml` and pass them. As of 2026-07-29 this deployment's
+//! `ingest` slot is `anthropic` / `claude-haiku-4-5-20251001`, so:
+//!
+//! ```text
+//! # baseline = the PREVIOUS prompt version, pulled out of git
+//! git show <rev>:crates/mwe-core/prompts/ingest.md > /tmp/ingest-prev.md
+//! ANTHROPIC_API_KEY=<setup-token> cargo run -p mwe-core --example ingest_replay --release -- \
+//!     --spool ./work/training-spool --backend anthropic --model claude-haiku-4-5-20251001 \
+//!     --prompt-file /tmp/ingest-prev.md --out base-a.jsonl
+//! # variant = today's bundled prompt (no --prompt-file)
+//! ANTHROPIC_API_KEY=<setup-token> cargo run -p mwe-core --example ingest_replay --release -- \
+//!     --spool ./work/training-spool --backend anthropic --model claude-haiku-4-5-20251001 \
+//!     --out variant.jsonl
+//! ```
+//!
+//! **Use a `claude setup-token`, never a running server's login store.** The
+//! store at `<workdir>/anthropic_oauth.json` refreshes and rewrites itself on
+//! expiry; a second process refreshing the same rotating refresh token can
+//! invalidate the credential the live server depends on. A setup token has no
+//! refresh cycle and cannot do that.
 //!
 //! ## Fidelity caveats, stated up front
 //!
@@ -74,7 +102,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use mwe_core::llm::{CompletionRequest, GeminiApiKey, GeminiBackend, LlmBackend, LlmError};
+use mwe_core::llm::{
+    AnthropicApiKey, AnthropicBackend, CompletionRequest, GeminiApiKey, GeminiBackend, LlmBackend,
+    LlmError,
+};
 use mwe_core::prompts;
 use serde_json::{Value, json};
 
@@ -100,6 +131,31 @@ const REPLAY_MAX_TOKENS: u32 = 4096;
 
 /// Env var carrying the Gemini key, same name the server config uses.
 const API_KEY_ENV: &str = "GEMINI_API_KEY";
+
+/// Credential for `--backend anthropic`. The backend classifies it **by
+/// value**: `sk-ant-oat-…` / `cc-…` / `eyJ…` are Claude Code subscription
+/// tokens (Bearer auth, no per-token invoice), `sk-ant-api…` is a Console
+/// key and bills per token.
+///
+/// A **setup token** (`claude setup-token`) is the credential to use here:
+/// it is long-lived and carries no refresh cycle, so this harness can never
+/// rotate — and thereby invalidate — the token in a *server's* login store
+/// (`<workdir>/anthropic_oauth.json`). That is why the harness deliberately
+/// does NOT offer [`AnthropicBackend::with_login_store`]: pointing a second
+/// process at a live deployment's store means two refreshers racing over one
+/// rotating refresh token.
+const ANTHROPIC_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+
+/// `true` when the credential is a subscription token rather than a Console
+/// API key. Mirrors `llm::is_anthropic_oauth_token`, which is private — used
+/// only to tell the operator which meter their run is about to spin.
+fn looks_like_subscription_token(token: &str) -> bool {
+    let token = token.trim();
+    if token.is_empty() || token.starts_with("sk-ant-api") {
+        return false;
+    }
+    token.starts_with("sk-ant-") || token.starts_with("eyJ") || token.starts_with("cc-")
+}
 
 /// Attempts per record before it is written off as failed. A replay of a
 /// few hundred records at any useful concurrency *will* meet the
@@ -338,7 +394,7 @@ fn first_json_object(raw: &str) -> Option<Value> {
 /// concurrency; `Invalid` and `Auth` are the operator's problem and fail
 /// immediately rather than burning four more attempts.
 async fn complete_with_retry(
-    backend: &GeminiBackend,
+    backend: &dyn LlmBackend,
     request: CompletionRequest,
 ) -> Result<mwe_core::llm::CompletionResponse, LlmError> {
     let mut attempt = 1;
@@ -372,30 +428,81 @@ fn already_done(out: &Path) -> BTreeSet<String> {
     seen
 }
 
+/// Build the backend named by `--backend`, and say out loud which meter the
+/// run is about to spin.
+fn build_backend(
+    backend_kind: &str,
+    model: &str,
+    reasoning_effort: Option<&str>,
+) -> Result<Arc<dyn LlmBackend>, String> {
+    let backend: Arc<dyn LlmBackend> = match backend_kind {
+        "gemini" => {
+            let key = std::env::var(API_KEY_ENV)
+                .map_err(|_| format!("{API_KEY_ENV} is not set — a replay needs a live key"))?;
+            Arc::new(
+                GeminiBackend::new(
+                    GeminiApiKey::new(key).map_err(|e| format!("bad {API_KEY_ENV}: {e}"))?,
+                    model,
+                    API_KEY_ENV,
+                )
+                .map_err(|e| format!("cannot build the Gemini backend: {e}"))?
+                // `thinkingLevel`. Production leaves the ingest slot at the
+                // default `minimal`; raising it here is how we ask whether more
+                // deliberation buys back the reproducibility the mandated
+                // temperature costs us.
+                .with_reasoning_effort(reasoning_effort),
+            )
+        },
+        "anthropic" => {
+            if reasoning_effort.is_some() {
+                return Err(
+                    "`--reasoning-effort` is a Gemini `thinkingLevel` knob; it has no \
+                     effect on `--backend anthropic`"
+                        .to_owned(),
+                );
+            }
+            let key = std::env::var(ANTHROPIC_KEY_ENV).map_err(|_| {
+                format!("{ANTHROPIC_KEY_ENV} is not set — a replay needs a live key")
+            })?;
+            eprintln!(
+                "  credential: {}",
+                if looks_like_subscription_token(&key) {
+                    "subscription token (Bearer / Claude Code identity) — consumes plan quota"
+                } else {
+                    "Console API key — THIS RUN BILLS PER TOKEN"
+                }
+            );
+            Arc::new(
+                AnthropicBackend::new(
+                    AnthropicApiKey::new(key)
+                        .map_err(|e| format!("bad {ANTHROPIC_KEY_ENV}: {e}"))?,
+                    model,
+                    ANTHROPIC_KEY_ENV,
+                )
+                .map_err(|e| format!("cannot build the Anthropic backend: {e}"))?,
+            )
+        },
+        other => {
+            return Err(format!(
+                "unknown `--backend {other}` — expected `gemini` or `anthropic`"
+            ));
+        },
+    };
+    Ok(backend)
+}
+
 /// Replay `records` under `variant` and stream the results into `out`.
 async fn replay(
     records: &[Record],
     base: &str,
     variant: &Variant,
+    backend_kind: &str,
     model: &str,
     reasoning_effort: Option<&str>,
     concurrency: usize,
     out: &Path,
 ) -> Result<(), String> {
-    let key = std::env::var(API_KEY_ENV)
-        .map_err(|_| format!("{API_KEY_ENV} is not set — a replay needs a live key"))?;
-    let backend = Arc::new(
-        GeminiBackend::new(
-            GeminiApiKey::new(key).map_err(|e| format!("bad {API_KEY_ENV}: {e}"))?,
-            model,
-            API_KEY_ENV,
-        )
-        .map_err(|e| format!("cannot build the Gemini backend: {e}"))?
-        // `thinkingLevel`. Production leaves the ingest slot at the default
-        // `minimal`; raising it here is how we ask whether more deliberation
-        // buys back the reproducibility the mandated temperature costs us.
-        .with_reasoning_effort(reasoning_effort),
-    );
+    let backend = build_backend(backend_kind, model, reasoning_effort)?;
 
     // Resume: a record already answered in `out` is not bought twice. A
     // rate-limited run is re-runnable for the cost of what it missed.
@@ -445,7 +552,7 @@ async fn replay(
                     .with_system(system.clone())
                     .with_temperature(REPLAY_TEMPERATURE)
                     .with_max_tokens(REPLAY_MAX_TOKENS);
-                let outcome = complete_with_retry(&backend, request).await;
+                let outcome = complete_with_retry(backend.as_ref(), request).await;
                 (idx, system.len(), outcome)
             });
         }
@@ -862,7 +969,12 @@ struct Args {
     out: Option<PathBuf>,
     variant: String,
     limit: Option<usize>,
+    backend: String,
     model: String,
+    /// Replay against a prompt file on disk instead of the bundled
+    /// `ingest.md` — the only way to make the *previous* prompt version the
+    /// baseline once the bundled one already carries the change under test.
+    prompt_file: Option<PathBuf>,
     reasoning_effort: Option<String>,
     concurrency: usize,
     dry_run: bool,
@@ -876,7 +988,9 @@ impl Default for Args {
             out: None,
             variant: "baseline".to_owned(),
             limit: None,
+            backend: "gemini".to_owned(),
             model: "gemini-3-flash-preview".to_owned(),
+            prompt_file: None,
             reasoning_effort: None,
             concurrency: 4,
             dry_run: false,
@@ -895,7 +1009,9 @@ fn parse_args() -> Result<Args, String> {
             "--spool" => args.spool = PathBuf::from(value()?),
             "--out" => args.out = Some(PathBuf::from(value()?)),
             "--variant" => args.variant = value()?,
+            "--backend" => args.backend = value()?,
             "--model" => args.model = value()?,
+            "--prompt-file" => args.prompt_file = Some(PathBuf::from(value()?)),
             "--reasoning-effort" => args.reasoning_effort = Some(value()?),
             "--limit" => {
                 args.limit = Some(value()?.parse().map_err(|_| "`--limit` wants a number")?);
@@ -971,8 +1087,26 @@ async fn main() -> ExitCode {
     }
 
     let result = async {
-        let base = prompts::extract_fenced_text(BUNDLED_INGEST_PROMPT_MD, "ingest", "<bundled>")
-            .map_err(|e| format!("bundled ingest.md is malformed: {e}"))?;
+        // The system prompt under test: the bundled `ingest.md` by default,
+        // or any prompt file on disk. The override is what makes a
+        // *previous* version usable as the baseline — `git show <rev>:…` it
+        // to a file and point here — once the bundled copy already carries
+        // the edit being measured.
+        let (source, base) = match &args.prompt_file {
+            None => (
+                "<bundled>".to_owned(),
+                prompts::extract_fenced_text(BUNDLED_INGEST_PROMPT_MD, "ingest", "<bundled>")
+                    .map_err(|e| format!("bundled ingest.md is malformed: {e}"))?,
+            ),
+            Some(path) => {
+                let label = path.display().to_string();
+                let raw =
+                    fs::read_to_string(path).map_err(|e| format!("cannot read {label}: {e}"))?;
+                let text = prompts::extract_fenced_text(&raw, "ingest", &label)
+                    .map_err(|e| format!("{label} is malformed: {e}"))?;
+                (label, text)
+            },
+        };
         let variant = Variant::parse(&args.variant)?;
         let mut records = load_records(&args.spool)?;
         if records.is_empty() {
@@ -986,9 +1120,11 @@ async fn main() -> ExitCode {
             records.drain(..from);
         }
         eprintln!(
-            "{} records, variant `{}`, model `{}`, thinking `{}`",
+            "{} records, prompt `{}`, variant `{}`, backend `{}`, model `{}`, thinking `{}`",
             records.len(),
+            source,
             args.variant,
+            args.backend,
             args.model,
             args.reasoning_effort
                 .as_deref()
@@ -1005,6 +1141,7 @@ async fn main() -> ExitCode {
             &records,
             &base,
             &variant,
+            &args.backend,
             &args.model,
             args.reasoning_effort.as_deref(),
             args.concurrency,

@@ -84,3 +84,6 @@ __pycache__/
 
 # mwe-mcp smart-consumer state (per-machine: wiki_id, op-log head, checksums)
 /.mwe/
+
+# local credential for the ingest_replay harness — never commit
+.ct
