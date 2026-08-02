@@ -1685,6 +1685,27 @@ recent window** below: a capped, TTL'd serving buffer, not an archive.
 
 ## The cross-consumer recent window (group 43)
 
+> **The contract this restates** *(founder-confirmed 2026-07-15)*. The rule
+> used to read "the window stays local — the server keeps no transcript".
+> The intent survives, the wording does not:
+>
+> > The server keeps no **unbounded** transcript. It retains, per user, the
+> > same bounded, short-lived recent window a consumer itself would keep —
+> > because serving it back is what makes memory multi-surface.
+>
+> The TTL semantics are the load-bearing half. Serving yesterday's last
+> exchange as if just said makes the agent resume a dead thread, which is
+> why every rendered entry carries its relative age. And the window is
+> served to **every** consumer, smart ones included, with no per-consumer
+> switch: the section is cheap, a capable model distinguishes reference
+> context on its own, and the isolation that matters is the per-USER key
+> (windows never cross users — enforced in the fetch, pinned by test), not
+> a per-consumer gate. `recent_window_entries: 0` is the deployment-wide
+> off switch. On GDPR: bounded retention plus the user-deletion cascade
+> plus never being indexed makes this defensible as transient processing,
+> and the buffer is included in the user export for completeness.
+
+
 The recall block carries facts; the live **thread of discourse** used to
 live only in each consumer's local window — say a thing to the voice
 assistant, continue on Telegram, and the conversation didn't follow. Since
