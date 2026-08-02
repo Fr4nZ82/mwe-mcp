@@ -405,6 +405,20 @@ pub struct IngestPolicy {
     /// apply when the message names the project outright. See
     /// [`recall::DEFAULT_SIGNPOST_FLOOR`].
     pub project_docs_signpost_floor: f32,
+    /// Similarity a project's signpost description must reach before the
+    /// merged whole-corpus view ([`crate::recall::search_all`]) may read
+    /// that project's sections at all — the smart-corpus funnel. See
+    /// [`crate::recall::DEFAULT_SMART_CORPUS_FLOOR`] for the measurement
+    /// behind the default; naming the project bypasses it.
+    pub smart_corpus_floor: f32,
+    /// Similarity the turn's **best promoted flat hit** must clear before
+    /// [`format_snippet`] renders any promoted hit in the `RELEVANT
+    /// MEMORY` slot — a turn-level relevance floor, not a per-hit trim.
+    /// See [`crate::recall::DEFAULT_RELEVANCE_FLOOR`] for the measurement
+    /// and the reasoning behind the default and its turn-level shape.
+    /// `0` disables it (same off-switch idiom as
+    /// [`crate::recall::admitted_smart_wikis`]).
+    pub relevance_floor: f32,
     /// Jaccard threshold passed through to [`capture::wiki_capture`]
     /// when routing intent `capture`.
     pub dedup_threshold: f32,
@@ -507,6 +521,8 @@ impl Default for IngestPolicy {
             project_docs_top_k: 3,
             project_docs_char_budget: 3_000,
             project_docs_signpost_floor: recall::DEFAULT_SIGNPOST_FLOOR,
+            smart_corpus_floor: recall::DEFAULT_SMART_CORPUS_FLOOR,
+            relevance_floor: recall::DEFAULT_RELEVANCE_FLOOR,
             dedup_threshold: DEFAULT_DEDUP_THRESHOLD,
             max_recent_messages: 16,
             max_recent_message_chars: 280,
@@ -3973,11 +3989,50 @@ const HDR_RELEVANT_MEMORY: &str =
 /// - rules-page hits are skipped — standing directives reach the consumer
 ///   through the dedicated `rules` field only, never as recalled memory.
 ///
+/// ## The turn-level relevance floor (card 61, §37-39)
+///
+/// `relevance_floor` gates the **promoted** hits as a group, not one at a
+/// time: it is compared against the MAXIMUM score among the turn's
+/// promoted (non-fresh) hits — every `RecallHit` in `hits` with
+/// `fresh == false`, before the two filters above ever run, so the gate's
+/// outcome depends only on the turn's own recall scores, never on which
+/// pages the navigator happened to open this same turn or on whether a
+/// hit happens to be a rules-page hit. A per-hit threshold cannot do this
+/// job — measured (§37): on `musica redacted playlist` the right answer
+/// scored `0.4813` / `0.4811`, while on `il volume` the noise it recited
+/// ran to `0.4306` — the bands overlap, so any per-hit cut that removes
+/// one removes the other. Below the floor, the turn's flat recall has
+/// nothing to say and the promoted section is not opened at all (not "the
+/// weak hits are trimmed" — no promoted hit renders, however strong).
+/// At or above it, every promoted hit renders, including ones
+/// individually below the floor — the guarantee `musica redacted playlist`
+/// needs, since its `0.4813` hit clears only because the turn's best was
+/// `0.5474`. See [`recall::DEFAULT_RELEVANCE_FLOOR`] for the measurement.
+///
+/// Deliberately **NOT** gated by `relevance_floor` (§39):
+/// - the **fresh** (un-promoted) captures below — a different signal
+///   (things said a few turns ago, not durable memory) that keeps
+///   rendering even when every promoted hit is dropped;
+/// - the caller's `UPCOMING` (due-soon) slot — time-driven by design,
+///   deliberately never similarity-gated;
+/// - the project-docs slot (`project_docs`) — it already has its own
+///   floor ([`recall::DEFAULT_SIGNPOST_FLOOR`] /
+///   [`recall::DEFAULT_SMART_CORPUS_FLOOR`]);
+/// - the flat hits' other two uses (the classifier's input, the
+///   navigator's RAG seeds) — both happen upstream of this function and
+///   read `hits` unfiltered; this floor decides only whether *this
+///   render* shows a promoted hit, never whether recall found one.
+///
+/// `relevance_floor <= 0.0` is the off switch — same idiom as
+/// [`recall::admitted_smart_wikis`] — and renders every promoted hit
+/// exactly as before the floor existed.
+///
 /// `None` when nothing survives — the section is omitted entirely.
 fn format_snippet(
     hits: &[RecallHit],
     navigated_paths: &[String],
     project_docs: &[recall::SectionHit],
+    relevance_floor: f32,
 ) -> Option<String> {
     let keep = |h: &&RecallHit| -> bool {
         if crate::wiki::is_rules_page(&h.source_path) {
@@ -3985,14 +4040,27 @@ fn format_snippet(
         }
         h.fresh || !navigated_paths.iter().any(|p| p == &h.source_path)
     };
+    // Turn-level gate: the MAXIMUM score among ALL promoted hits (not the
+    // subset that survives `keep`) decides whether the promoted section
+    // opens at all. See "The turn-level relevance floor" above.
+    let promoted_gate_open = relevance_floor <= 0.0
+        || hits
+            .iter()
+            .filter(|h| !h.fresh)
+            .map(|h| h.score)
+            .fold(f32::NEG_INFINITY, f32::max)
+            >= relevance_floor;
     let mut out = String::new();
-    // Promoted (durable) facts first.
-    for h in hits.iter().filter(|h| !h.fresh).filter(keep) {
-        out.push_str("\n- (");
-        out.push_str(&h.wiki_id);
-        out.push_str(") ");
-        out.push_str(&h.text);
-        push_trust_tag(&mut out, h);
+    // Promoted (durable) facts first — withheld as a group when the gate
+    // above is shut; never trimmed hit by hit.
+    if promoted_gate_open {
+        for h in hits.iter().filter(|h| !h.fresh).filter(keep) {
+            out.push_str("\n- (");
+            out.push_str(&h.wiki_id);
+            out.push_str(") ");
+            out.push_str(&h.text);
+            push_trust_tag(&mut out, h);
+        }
     }
     // Mid-range bridge: un-promoted buffered captures in a labelled slot, so the
     // agent reads them as recent and provisional (may be superseded soon).
@@ -4397,7 +4465,7 @@ fn fallback_response(
     took: std::time::Duration,
     llm_used: bool,
 ) -> IngestResponse {
-    let context_snippet = format_snippet(recall_hits, &[], &[]);
+    let context_snippet = format_snippet(recall_hits, &[], &[], policy.relevance_floor);
     let suggested_seed = match request.context_hint {
         ContextHint::DashboardCommand => Some(policy.structural_suggested_seed.clone()),
         _ => Some(policy.fallback_suggested_seed.clone()),
@@ -4578,7 +4646,8 @@ pub async fn wiki_ingest_message(
             recall_hits = recall_hits.len(),
             "ingest: guest turn — ephemeral, classifier skipped, nothing filed"
         );
-        let context_snippet = format_snippet(&recall_hits, &[], &project_docs);
+        let context_snippet =
+            format_snippet(&recall_hits, &[], &project_docs, policy.relevance_floor);
         record_ingest_trace(
             pool,
             &request,
@@ -5587,7 +5656,12 @@ pub async fn wiki_ingest_message(
     // instead of arriving twice ([`format_snippet`] dedup).
     let relevant = if include_flat {
         let nav_paths = nav_tail.as_ref().map_or(&[][..], |t| &t.page_paths);
-        format_snippet(&recall_hits, nav_paths, &project_docs)
+        format_snippet(
+            &recall_hits,
+            nav_paths,
+            &project_docs,
+            policy.relevance_floor,
+        )
     } else {
         None
     };
@@ -7567,7 +7641,8 @@ mod tests {
             score: 0.88,
         };
 
-        let snippet = format_snippet(std::slice::from_ref(&fact), &[], &[doc]).expect("renders");
+        let snippet =
+            format_snippet(std::slice::from_ref(&fact), &[], &[doc], 0.0).expect("renders");
         assert!(snippet.contains("franz lives in Bologna"), "{snippet}");
         assert!(
             snippet.contains("Project documentation (reference — never file this as a fact):"),
@@ -7587,7 +7662,7 @@ mod tests {
         );
 
         // No docs → no slot at all, so an ordinary turn's block is unchanged.
-        let plain = format_snippet(&[fact], &[], &[]).expect("renders");
+        let plain = format_snippet(&[fact], &[], &[], 0.0).expect("renders");
         assert!(!plain.contains("Project documentation"), "{plain}");
     }
 
@@ -7657,7 +7732,7 @@ mod tests {
                 fresh: true,
             },
         ];
-        let snippet = format_snippet(&hits, &[], &[]).expect("non-empty hits render");
+        let snippet = format_snippet(&hits, &[], &[], 0.0).expect("non-empty hits render");
         // The flat slot is a labelled role section now (roadmap 41f).
         assert!(snippet.starts_with(HDR_RELEVANT_MEMORY), "{snippet}");
         assert!(snippet.contains("(alice) alice likes coffee"));
@@ -7688,8 +7763,13 @@ mod tests {
         kept.source_path = "wikis/matteo/index.md".into();
 
         let nav_paths = vec!["wikis/franz/index.md".to_owned()];
-        let snippet = format_snippet(&[navigated_home, rules_hit, kept.clone()], &nav_paths, &[])
-            .expect("one hit survives");
+        let snippet = format_snippet(
+            &[navigated_home, rules_hit, kept.clone()],
+            &nav_paths,
+            &[],
+            0.0,
+        )
+        .expect("one hit survives");
         // A hit homed on a navigated page is dropped (its prose rides the
         // navigated section); a rules-page hit is channel-only.
         assert!(!snippet.contains("franz likes indigo"), "{snippet}");
@@ -7697,7 +7777,7 @@ mod tests {
         assert!(snippet.contains("matteo's pronouns are he/him"));
         // All hits filtered → the whole section is omitted.
         assert_eq!(
-            format_snippet(&[kept], &["wikis/matteo/index.md".into()], &[]),
+            format_snippet(&[kept], &["wikis/matteo/index.md".into()], &[], 0.0),
             None
         );
     }
@@ -7707,13 +7787,109 @@ mod tests {
         let mut hit = sample_recall_hit("018f1234-5678-7abc-9def-0123456789ab");
         hit.created_at = "2026-05-18T09:30:00Z".into();
         hit.valid_to = Some("2026-06-01T00:00:00Z".into());
-        let snippet = format_snippet(&[hit], &[], &[]).expect("one hit renders");
+        let snippet = format_snippet(&[hit], &[], &[], 0.0).expect("one hit renders");
         // Dates only, raw window — no expired/stale verdict in Rust: the
         // consumer model judges staleness against its own clock.
         assert!(
             snippet.ends_with("[noted 2026-05-18 · valid to 2026-06-01]"),
             "{snippet}"
         );
+    }
+
+    // ---------- turn-level relevance floor (card 61, §37-39) ----------
+
+    /// Card 61 §37: on `il volume` the turn's best promoted hit — a
+    /// pushchair offer — scored `0.4306`, below the default floor; the
+    /// weaker noise under it (a savings passbook, rank 5 near `0.41`)
+    /// scored even lower. Below the floor NONE of the promoted hits
+    /// render — not a trim of the weak ones, the section is not opened.
+    #[test]
+    fn format_snippet_renders_no_promoted_hits_when_the_turns_best_score_is_below_the_floor() {
+        let mut pushchair = sample_recall_hit("018f1234-5678-7abc-9def-0000000000f1");
+        pushchair.text = "a pushchair offer".into();
+        pushchair.score = 0.4306;
+        let mut passbook = sample_recall_hit("018f1234-5678-7abc-9def-0000000000f2");
+        passbook.text = "a savings passbook".into();
+        passbook.score = 0.41;
+
+        assert_eq!(
+            format_snippet(&[pushchair, passbook], &[], &[], TEST_FLOOR),
+            None,
+            "the turn's best promoted hit is below the floor, so it has nothing to say"
+        );
+    }
+
+    /// Same shut gate as above, but the fresh (un-promoted) slot is a
+    /// different signal (§39: things said a few turns ago, not durable
+    /// memory) and must keep rendering even when every promoted hit is
+    /// dropped.
+    #[test]
+    fn format_snippet_still_renders_fresh_captures_when_the_floor_shuts_the_promoted_section() {
+        let mut pushchair = sample_recall_hit("018f1234-5678-7abc-9def-0000000000f3");
+        pushchair.text = "a pushchair offer".into();
+        pushchair.score = 0.4306;
+        let mut fresh = sample_recall_hit("018f1234-5678-7abc-9def-0000000000f4");
+        fresh.text = "alice just joined a gym".into();
+        fresh.score = 0.9; // strong, but irrelevant — fresh hits never feed the gate
+        fresh.fresh = true;
+
+        let snippet = format_snippet(&[pushchair.clone(), fresh.clone()], &[], &[], TEST_FLOOR)
+            .expect("the fresh capture still renders");
+        assert!(!snippet.contains(&pushchair.text), "{snippet}");
+        assert!(
+            snippet.contains("Recent (not yet consolidated):"),
+            "{snippet}"
+        );
+        assert!(snippet.contains(&fresh.text), "{snippet}");
+    }
+
+    /// Card 61 §37, the guarantee the gate exists to preserve: on `musica
+    /// redacted playlist` the two facts that ARE the answer scored `0.4813` /
+    /// `0.4811`, ranked below the turn's best hit (`0.5474`, an unrelated
+    /// candidate). The gate reads only the turn's best score, so once it
+    /// clears the floor every hit renders — including one that, on its
+    /// own, sits under the floor (a per-hit trim would have discarded it
+    /// alongside the noise `il volume` needed gone).
+    #[test]
+    fn format_snippet_renders_every_hit_once_the_turns_best_clears_the_floor_the_elio_case() {
+        let mut best = sample_recall_hit("018f1234-5678-7abc-9def-0000000000e1");
+        best.text = "the turn's top-ranked hit, unrelated to the question".into();
+        best.score = 0.5474;
+        let mut elio = sample_recall_hit("018f1234-5678-7abc-9def-0000000000e2");
+        elio.text = "Elio's playlist for redacted".into();
+        elio.score = 0.4813;
+        let mut weak = sample_recall_hit("018f1234-5678-7abc-9def-0000000000e3");
+        weak.text = "a much weaker hit, individually under the floor".into();
+        weak.score = 0.20;
+
+        let hits = vec![best.clone(), elio.clone(), weak.clone()];
+        let snippet = format_snippet(&hits, &[], &[], TEST_FLOOR)
+            .expect("the turn's best hit clears the floor");
+        assert!(snippet.contains(&best.text), "{snippet}");
+        assert!(snippet.contains(&elio.text), "{snippet}");
+        assert!(
+            snippet.contains(&weak.text),
+            "a hit scored under the floor still renders once the turn's best clears it: {snippet}"
+        );
+    }
+
+    /// The floor these unit tests pin the mechanism at. Deliberately a local
+    /// constant and not [`recall::DEFAULT_RELEVANCE_FLOOR`]: the shipped
+    /// default is a policy choice (today `0.0` — off, pending evidence), while
+    /// what these tests guarantee is how the gate behaves *when set*.
+    const TEST_FLOOR: f32 = 0.45;
+
+    /// `relevance_floor <= 0.0` is the off switch (same idiom as
+    /// [`recall::admitted_smart_wikis`]): every promoted hit renders
+    /// exactly as it did before the floor existed, however weak.
+    #[test]
+    fn format_snippet_a_floor_of_zero_renders_every_hit_as_before_the_gate_existed() {
+        let mut weak = sample_recall_hit("018f1234-5678-7abc-9def-0000000000f5");
+        weak.text = "an extremely weak hit".into();
+        weak.score = 0.01;
+
+        let snippet = format_snippet(&[weak.clone()], &[], &[], 0.0).expect("renders");
+        assert!(snippet.contains(&weak.text), "{snippet}");
     }
 
     // ---------- end-to-end orchestrator ----------
@@ -12259,6 +12435,79 @@ mod tests {
         .await
         .expect("ingest");
         assert_eq!(resp.context_snippet, None);
+        drop(dir);
+    }
+
+    /// Card 61 §39: the due-soon `UPCOMING` slot is time-driven
+    /// (`recall::recall_due_soon` ranks by `valid_to` imminence, never by
+    /// cosine) and the relevance floor never touches it — only the
+    /// promoted half of `RELEVANT MEMORY` is gated. Same fact seeds both
+    /// slots here: its stored embedding is nearly orthogonal to the fixed
+    /// query embedding the fake embedder returns (cosine ≈ 0.09, well
+    /// under the default 0.45 floor), so the flat recall pass surfaces it
+    /// as a promoted hit too weak to open `RELEVANT MEMORY` — yet its
+    /// `valid_to` sits inside the due-soon horizon, so `UPCOMING` still
+    /// renders it.
+    #[tokio::test]
+    async fn ingest_upcoming_slot_still_renders_when_the_relevance_floor_shuts_the_promoted_section()
+     {
+        let (dir, tree, pool) = setup_workdir().await;
+        let due = (chrono::Utc::now() + chrono::Duration::hours(24))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let fact = fact_index::NewFact {
+            authored_refs: Vec::new(),
+            fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000d002").unwrap(),
+            wiki_id: "alice".to_owned(),
+            source_path: "wikis/alice/index.md".to_owned(),
+            region_start: None,
+            region_end: None,
+            text: "dentist appointment".to_owned(),
+            // cosine ≈ 0.09 against the fixed query embedding [0.1, 0.2, 0.3, 0.4]
+            embedding: vec![0.9, -0.3, 0.2, -0.1],
+            owner_id: Principal::User("alice".into()),
+            allow_ids: Vec::new(),
+            sender_id: None,
+            fact_type: Some("commitment".to_owned()),
+            topics: Vec::new(),
+            valid_from: None,
+            valid_to: Some(due.clone()),
+            salience: None,
+            target_page: None,
+            style: None,
+            page_description: None,
+            source_ref: None,
+        };
+        fact_index::insert(&pool, &fact).await.expect("insert fact");
+
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"recall\"}");
+        // The gate ships OFF (`DEFAULT_RELEVANCE_FLOOR = 0.0`), so a test of
+        // the mechanism must turn it on explicitly rather than inherit the
+        // deployment default — which is a policy choice, not a guarantee.
+        let policy = IngestPolicy {
+            relevance_floor: 0.45,
+            ..IngestPolicy::default()
+        };
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("ciao", "alice"),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+        assert_eq!(resp.intent, IntentKind::Recall);
+        let snippet = resp.context_snippet.expect("due-soon block present");
+        assert!(
+            snippet.contains(HDR_UPCOMING) && snippet.contains("dentist appointment"),
+            "the due-soon slot is time-driven and ignores the relevance floor: {snippet}"
+        );
+        assert!(
+            !snippet.contains(HDR_RELEVANT_MEMORY),
+            "the turn's only flat hit is below the floor, so RELEVANT MEMORY must not open: {snippet}"
+        );
         drop(dir);
     }
 

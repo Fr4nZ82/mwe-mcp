@@ -463,9 +463,20 @@ mod tests {
             "fake-bge",
             vec![0.1, 0.2, 0.3, 0.4],
         ));
+        // The scripted decision must name the page verbatim. Alice's own
+        // `index.md` is reached two ways here: her principal seed
+        // (`page: None`) and the coffee rag hit (`page: Some("index.md")`,
+        // cosine 1.0) — the same physical file under two `EntryPoint`
+        // shapes. `prune_pool` collapses them to one door
+        // (`Candidate::resolved_page`), keeping whichever arrived first in
+        // the gatherer's weight-sorted order; since the rag hit now outranks
+        // `WEIGHT_PRINCIPAL` (0.6), the survivor carries the
+        // `page: Some("index.md")` shape, not the page-less root — and the
+        // anti-hallucination vetting in `open_target` is a verbatim match,
+        // not resolved-page equality, so the request has to say `index.md`.
         let nav = FakeLlmBackend::new(
             "fake-nav",
-            "{\"open\":[{\"wiki_id\":\"alice\"}],\"done\":true}",
+            "{\"open\":[{\"wiki_id\":\"alice\",\"page\":\"index.md\"}],\"done\":true}",
         );
         let policy = IngestPolicy::default();
 

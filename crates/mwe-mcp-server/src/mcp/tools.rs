@@ -1045,7 +1045,26 @@ pub(super) async fn call_wiki_search(
             .await
             .map(|v| v.into_iter().map(recall::SearchHit::Section).collect()),
         None => {
-            recall::search_all(&state.pool, embedder, &args.query, top_k, filters, &sender).await
+            // Whole-corpus search: the fact corpus always, a project's
+            // sections only when the turn names it or its signpost
+            // description clears the funnel floor (operator knob, hot
+            // reloaded from the recall-settings panel).
+            let smart_floor = state
+                .recall
+                .read()
+                .expect("recall settings rwlock poisoned")
+                .resolved_ingest_policy()
+                .smart_corpus_floor;
+            recall::search_all(
+                &state.pool,
+                embedder,
+                &args.query,
+                top_k,
+                filters,
+                smart_floor,
+                &sender,
+            )
+            .await
         },
     }
     .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
@@ -1177,7 +1196,9 @@ async fn navigate_seeds(
 
 /// `wiki_navigate` — deep recall via the funnel navigator (the consumer
 /// counterpart of the ingest-side navigation). Whole visible corpus,
-/// ACL-filtered; the caller's principal seeds lead the fan. Returns the
+/// ACL-filtered; the caller's principal seeds anchor the fan without
+/// leading it by construction (`WEIGHT_PRINCIPAL` sits on the topic-wiki
+/// rung, so a stronger RAG hit goes first). Returns the
 /// navigated prose fragments **with their `(wiki, page)`** (the path that
 /// built the context) **and** the flat hits, so depth is a superset of the
 /// breadth `wiki_search` would have returned. Smart wikis are funnel-skipped

@@ -40,8 +40,11 @@
 //! already does.
 //!
 //! Duplicates collapse on `(wiki, page)` keeping the heaviest seed; on equal
-//! weight the earlier family in the list above wins, and principal seeds
-//! carry the maximum weight — so a principal seed always survives dedup.
+//! weight the earlier family in the list above wins. Principal now shares
+//! its weight with topic-wiki ([`WEIGHT_PRINCIPAL`]), so a same-wiki
+//! collision between the two is always this tie, settled by family order —
+//! but against a RAG seed it is an ordinary weight comparison, which a
+//! strong-enough hit now wins.
 //!
 //! The gatherer's fan feeds the **navigator funnel** ([`navigate`]): a
 //! Rust-owned loop where the `navigator` LLM slot reads the root index, the
@@ -75,9 +78,40 @@ use crate::wiki::{
     self, DiscoveredWiki, MarkdownDoc, WikiTree, render_root_index, wiki_catalog_list_for,
 };
 
-/// Weight of a principal seed — the maximum, so identity anchors always
-/// survive dedup and lead the fan.
-pub const WEIGHT_PRINCIPAL: f32 = 1.0;
+/// Weight of a principal seed — a **wiki-level** seed (`page: None`) that
+/// sits at the same rung as a topic-wiki seed.
+///
+/// The ladder is `principal · topic-page 0.8 · topic-wiki 0.6 ·
+/// situational-page 0.5 · situational-wiki 0.4`, with a RAG seed carrying
+/// the hit's own cosine. A principal seed asserts exactly what a topic-wiki
+/// seed asserts — *this wiki matches the turn* — here because the subject
+/// is in the turn rather than because a card word matched. Same class, same
+/// weight: `0.6` is not a new number, it is the existing
+/// [`WEIGHT_TOPIC_WIKI`] rung.
+///
+/// It was `1.0` (the maximum) until 2026-08-01. At that weight a principal
+/// seed beat every RAG-derived door on every turn (measured max RAG cosine
+/// 0.66), so the navigator never got to *choose* whether to read the
+/// identity prose — a choice the ingest recall block treats as its own
+/// ("the full index prose only ever arrives via navigation"; the block's
+/// `WHO YOU ARE` / `WHO IS SPEAKING` sections already carry a one-line
+/// identity abstract unconditionally, independent of this seed). Dropping
+/// the weight does not remove identity from recall — it removes the
+/// guarantee that identity's *page* is the first door.
+///
+/// Measured effect: the top RAG hit scores a median 0.60-0.62 across 60 real
+/// turns (max observed 0.66), so on roughly half of turns a content page now
+/// leads the fan instead of an identity hub, and on the rest identity still
+/// leads. It never drops out of the fan either way — `0.6` keeps it above
+/// both situational tiers.
+///
+/// This also retires privileging a wiki *root* merely for being a root:
+/// [`crate::planner::PageType`] already distinguishes `Person` ("holds the
+/// user's identity/bio facts" — a content page like any other) from
+/// `GroupTheme` ("holds NO own facts; links its child leaves") — the two
+/// kinds a principal seed's `index.md` can turn out to be. Planning card 63
+/// §2b, §5 step 2.
+pub const WEIGHT_PRINCIPAL: f32 = 0.6;
 /// Weight of a topic seed that pinned down a **page** card.
 pub const WEIGHT_TOPIC_PAGE: f32 = 0.8;
 /// Weight of a topic seed that matched a **wiki** card.
@@ -647,6 +681,20 @@ impl Candidate {
         self.page
             .clone()
             .unwrap_or_else(|| PathBuf::from(OVERVIEW_PAGE))
+    }
+
+    /// Ranking tier for [`prune_pool`] — lower sorts first. A wikilink rail
+    /// beats the entry-point fan (`principal` | `rag` | `topic` |
+    /// `situational`), which beats a directory-listing sibling. Anything
+    /// not recognised above falls into the same tier as `page`, so a future
+    /// origin added elsewhere without updating this match fails safe into
+    /// the demoted tail rather than silently jumping the fan.
+    fn prune_tier(&self) -> u8 {
+        match self.origin {
+            "link" => 0,
+            "principal" | "rag" | "topic" | "situational" => 1,
+            _ => 2,
+        }
     }
 }
 
@@ -1232,13 +1280,38 @@ fn wiki_summary(d: &DiscoveredWiki) -> Option<String> {
     wiki::meta_summary(&d.meta)
 }
 
-/// Drop visited / duplicate candidates and cap the pool for the next prompt.
+/// Drop visited / duplicate candidates, stably rank the survivors by tier,
+/// then cap the pool for the next prompt.
+///
+/// The pool mixes two producers of very different value. `linked_wiki_candidates`
+/// offers wikilink destinations found in the prose just read — an authored
+/// assertion that two pages belong together, the design's only expansion
+/// mechanism. `sibling_page_candidates` offers **every page of a wiki's
+/// directory**, filesystem order, the moment the funnel first enters it —
+/// a crutch for an unevenly linked corpus, not a rail. Truncating this pool
+/// positionally lets whichever producer happened to run last, or a big
+/// alphabetically-sorted directory, crowd out the other: measured on the
+/// live corpus, one turn offered all 16 candidates from a single wiki's
+/// listing while another entered wiki's 20 pages were never offered, and
+/// `famiglia` (22 pages, cap 16) always lost the same three content pages.
+///
+/// So before truncating, [`Candidate::prune_tier`] partitions the pool
+/// stably into: wikilink rails first; the entry-point fan (`principal` |
+/// `rag` | `topic` | `situational`) next, **in the order the gatherer
+/// already weighed them** — untouched here, because from hop 1 on these are
+/// seeds the navigator was already offered and did not choose, whereas a
+/// freshly discovered link is a rail straight out of the page it just read;
+/// siblings last, a demoted tail kept only because a page nobody links
+/// would otherwise be reachable solely by direct RAG seeding — it must
+/// never displace a rail or a seed. At hop 0 there are no links yet, so
+/// this ordering only bites from hop 1 on.
 fn prune_pool(pool: &mut Vec<Candidate>, visited: &BTreeSet<(String, PathBuf)>, cap: usize) {
     let mut seen: BTreeSet<(String, PathBuf)> = BTreeSet::new();
     pool.retain(|c| {
         let key = (c.wiki_id.clone(), c.resolved_page());
         !visited.contains(&key) && seen.insert(key)
     });
+    pool.sort_by_key(Candidate::prune_tier);
     pool.truncate(cap);
 }
 
@@ -2060,10 +2133,14 @@ mod tests {
         let page_seed = find(&fan, "alice", Some("recipes.md")).expect("rag page seed");
         assert_eq!(page_seed.origin, EntryOrigin::Rag);
         assert!((page_seed.weight - 0.42).abs() < f32::EPSILON);
-        // The fresh hit lands on the wiki root — which the principal seed
-        // (sender = alice, weight 1.0) already occupies and wins.
+        // The fresh hit lands on the wiki root, the same `(wiki, page)` key
+        // alice's own principal seed occupies. This is no longer a tie: 0.9
+        // beats `WEIGHT_PRINCIPAL` (0.6) outright, so the rag seed wins the
+        // slot and the principal seed is fully superseded here (contrast
+        // `a_strong_rag_hit_leads_the_fan_ahead_of_the_principal_seed_which_survives_demoted`,
+        // where the two land on different pages and both survive).
         let root_seed = find(&fan, "alice", None).expect("root seed");
-        assert_eq!(root_seed.origin, EntryOrigin::Principal);
+        assert_eq!(root_seed.origin, EntryOrigin::Rag);
         assert!(find(&fan, "nowhere", None).is_none());
         assert_eq!(fan.len(), 2);
     }
@@ -2131,7 +2208,9 @@ mod tests {
         .await
         .unwrap();
 
-        // alice root: principal (1.0) beat the topic seed (0.6) on dedup.
+        // alice root: principal and the wiki-level topic seed now tie at the
+        // same weight (0.6) — principal wins because it is the earlier
+        // family (lower `EntryOrigin::rank`), not because it is heavier.
         let alice_root = find(&fan, "alice", None).unwrap();
         assert_eq!(alice_root.origin, EntryOrigin::Principal);
         // bob page: the heavier rag duplicate survived.
@@ -2141,6 +2220,69 @@ mod tests {
         for pair in fan.windows(2) {
             assert!(pair[0].weight >= pair[1].weight);
         }
+    }
+
+    /// The guarantee `WEIGHT_PRINCIPAL`'s 2026-08-01 drop exists to buy: the
+    /// navigator gets to *choose* between an identity hub and a strong
+    /// content match instead of the identity hub winning by construction —
+    /// but the choice is never a coin flip against nothing, because the
+    /// principal seed keeps being offered, just no longer first.
+    #[tokio::test]
+    async fn a_strong_rag_hit_leads_the_fan_ahead_of_the_principal_seed_which_survives_demoted() {
+        let (_dir, tree) = open_tree();
+        forge_user(&tree, "alice");
+        write_page(
+            &tree,
+            "alice",
+            "notes.md",
+            "# Notes\n\nAlice's own notes.\n",
+        );
+        let pool = make_pool().await;
+        // Derived visibility: a readable, topic-less fact anchors alice's
+        // principal seed at the root without adding a competing topic seed.
+        seed_fact(
+            &pool,
+            &fid(1),
+            "alice",
+            "wikis/alice/index.md",
+            Principal::User("alice".to_owned()),
+            &[],
+        )
+        .await;
+
+        // A rag hit on a DIFFERENT page of alice's own wiki, scored above
+        // `WEIGHT_PRINCIPAL` (0.6) — e.g. the turn is about something her own
+        // notes page answers well. Different `(wiki, page)` key than the
+        // principal seed's root, so this is an ordinary sort, not a dedup
+        // collision: both entries survive.
+        let fan = gather_entry_points(
+            &pool,
+            &tree,
+            &sender("alice", &[]),
+            &[],
+            &[],
+            &[rag_hit("alice", "wikis/alice/notes.md", 0.75, false)],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            fan.len(),
+            2,
+            "the rag hit and the principal anchor are different doors, both offered"
+        );
+        assert_eq!(
+            fan[0].origin,
+            EntryOrigin::Rag,
+            "the stronger content match leads the fan"
+        );
+        assert_eq!(fan[0].page.as_deref(), Some(Path::new("notes.md")));
+        let root_seed = find(&fan, "alice", None)
+            .expect("the principal seed is demoted, not evicted from the fan");
+        assert_eq!(root_seed.origin, EntryOrigin::Principal);
+        assert!((root_seed.weight - WEIGHT_PRINCIPAL).abs() < f32::EPSILON);
+        assert_eq!(fan[1].origin, EntryOrigin::Principal, "and it sorts second");
     }
 
     #[test]
@@ -2160,6 +2302,117 @@ mod tests {
             None
         );
         assert_eq!(page_within(Path::new("wikis/alice"), "wikis/alice/"), None);
+    }
+
+    // ---------- prune_pool ----------
+
+    /// Minimal `Candidate` fixture for `prune_pool` tests: only `wiki_id`,
+    /// `page` and `origin` are load-bearing for pruning, so the card fields
+    /// are left empty.
+    fn cand(wiki: &str, page: Option<&str>, origin: &'static str) -> Candidate {
+        Candidate {
+            wiki_id: wiki.to_owned(),
+            page: page.map(PathBuf::from),
+            origin,
+            summary: None,
+            keywords: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn prune_pool_ranks_a_link_above_a_sibling_page_of_the_same_wiki() {
+        let visited = BTreeSet::new();
+        // Built in the order the real producers emit them: `open_target`
+        // extends `discoveries` with siblings first, links second — the
+        // exact positional bias that used to let the directory dump bury
+        // the rail.
+        let mut pool = vec![
+            cand("alice", Some("b.md"), "page"),
+            cand("alice", Some("a.md"), "link"),
+        ];
+        prune_pool(&mut pool, &visited, 16);
+        assert_eq!(
+            pool.iter().map(|c| c.origin).collect::<Vec<_>>(),
+            vec!["link", "page"],
+            "a wikilink rail must be offered ahead of a directory sibling of the same wiki"
+        );
+    }
+
+    #[test]
+    fn prune_pool_never_lets_a_sibling_page_displace_a_rag_seed() {
+        let visited = BTreeSet::new();
+        let mut pool = vec![
+            cand("alice", Some("sib.md"), "page"),
+            cand("bob", None, "rag"),
+        ];
+        // Cap forces a choice between the two.
+        prune_pool(&mut pool, &visited, 1);
+        assert_eq!(
+            pool.iter().map(|c| c.origin).collect::<Vec<_>>(),
+            vec!["rag"],
+            "a RAG-seeded page must survive the cap over a sibling, whatever their pool position"
+        );
+    }
+
+    #[test]
+    fn prune_pool_keeps_the_highest_tier_entries_not_the_alphabetically_first_ones() {
+        let visited = BTreeSet::new();
+        // `wiki_id` is alphabetical in insertion order — mirroring
+        // `wiki::list_wiki_pages`'s sort — but the alphabetically-first
+        // entries are the lowest tier (`page`) and the alphabetically-last
+        // are the highest (`rag`, `link`). A positional `truncate` would
+        // keep exactly the wrong four; tier order must win instead.
+        let mut pool = vec![
+            cand("a-sib", Some("index.md"), "page"),
+            cand("b-sib", Some("index.md"), "page"),
+            cand("c-sib", Some("index.md"), "page"),
+            cand("d-sib", Some("index.md"), "page"),
+            cand("e-rag", None, "rag"),
+            cand("f-link", None, "link"),
+        ];
+        prune_pool(&mut pool, &visited, 2);
+        assert_eq!(
+            pool.iter().map(|c| c.wiki_id.as_str()).collect::<Vec<_>>(),
+            vec!["f-link", "e-rag"],
+            "the cap must keep the rail and the fan seed, not the alphabetically-first siblings"
+        );
+    }
+
+    #[test]
+    fn prune_pool_still_offers_a_sibling_only_page_when_the_cap_allows() {
+        let visited = BTreeSet::new();
+        let mut pool = vec![
+            cand("alice", None, "rag"),
+            // Linked from nowhere yet — reachable only as a directory sibling.
+            cand("alice", Some("orphan.md"), "page"),
+        ];
+        prune_pool(&mut pool, &visited, 16);
+        assert!(
+            pool.iter()
+                .any(|c| c.wiki_id == "alice" && c.page.as_deref() == Some(Path::new("orphan.md"))),
+            "a page reachable only as a sibling must still surface when the cap has room — \
+             demoted, not removed"
+        );
+    }
+
+    #[test]
+    fn prune_pool_preserves_the_gatherers_relative_order_inside_the_fan_tier() {
+        let visited = BTreeSet::new();
+        // principal / rag / topic / situational, in this order, is the
+        // gatherer's own weight order (`dedup_and_sort`) — pruning must
+        // carry it through unchanged, never re-sort or re-weight it.
+        let mut pool = vec![
+            cand("p", None, "principal"),
+            cand("r", None, "rag"),
+            cand("t", None, "topic"),
+            cand("s", None, "situational"),
+        ];
+        prune_pool(&mut pool, &visited, 16);
+        assert_eq!(
+            pool.iter().map(|c| c.origin).collect::<Vec<_>>(),
+            vec!["principal", "rag", "topic", "situational"],
+            "prune_pool must not disturb the entry-point fan's relative order"
+        );
     }
 
     // ---------- the navigator funnel ----------
@@ -2358,7 +2611,7 @@ mod tests {
             &llm,
             &sender("alice", &[]),
             "turn",
-            &[entry("alice", None, EntryOrigin::Principal, 1.0)],
+            &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(),
         )
         .await
@@ -2407,7 +2660,7 @@ mod tests {
             &llm,
             &sender("alice", &[]),
             "turn",
-            &[entry("alice", None, EntryOrigin::Principal, 1.0)],
+            &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(), // max_hops = 2
         )
         .await
@@ -2460,7 +2713,7 @@ mod tests {
             &llm,
             &sender("alice", &[]),
             "turn",
-            &[entry("alice", None, EntryOrigin::Principal, 1.0)],
+            &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(), // max_hops = 2
         )
         .await
@@ -2513,7 +2766,7 @@ mod tests {
             &llm,
             &sender("alice", &[]),
             "turn",
-            &[entry("alice", None, EntryOrigin::Principal, 1.0)],
+            &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(), // max_hops = 2
         )
         .await
@@ -2571,7 +2824,7 @@ mod tests {
             &llm,
             &sender("alice", &[]),
             "turn",
-            &[entry("alice", None, EntryOrigin::Principal, 1.0)],
+            &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(), // max_hops = 2
         )
         .await
@@ -2626,7 +2879,7 @@ mod tests {
             &llm,
             &sender("alice", &[]),
             "turn",
-            &[entry("alice", None, EntryOrigin::Principal, 1.0)],
+            &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(),
         )
         .await
@@ -2697,7 +2950,7 @@ mod tests {
             &llm,
             &sender("alice", &[]),
             "what do we know?",
-            &[entry("alice", None, EntryOrigin::Principal, 1.0)],
+            &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(),
         )
         .await
@@ -2738,7 +2991,7 @@ mod tests {
             &llm,
             &sender("alice", &[]),
             "turn",
-            &[entry("alice", None, EntryOrigin::Principal, 1.0)],
+            &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(),
         )
         .await
@@ -2767,7 +3020,7 @@ mod tests {
             &llm,
             &sender("alice", &[]),
             "turn",
-            &[entry("alice", None, EntryOrigin::Principal, 1.0)],
+            &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(),
         )
         .await

@@ -149,7 +149,7 @@ fn sample_trace() -> RecallTrace {
                 wiki_id: "franz".to_owned(),
                 page: None,
                 origin: "principal".to_owned(),
-                weight: 1.0,
+                weight: 0.6,
             },
             TraceEntryPoint {
                 wiki_id: "galadriel".to_owned(),

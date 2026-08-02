@@ -88,3 +88,20 @@ harness = false
 [[example]]
 name = "embedder_spike"
 required-features = ["local-embedder"]
+
+# Read-side diagnostic for planning card 61 (throwaway measurement tool).
+[[example]]
+name = "recall_probe"
+required-features = ["local-embedder"]
+
+[[example]]
+name = "nav_replay"
+required-features = ["local-embedder"]
+
+[[example]]
+name = "signpost_gate"
+required-features = ["local-embedder"]
+
+[[example]]
+name = "topk_curve"
+required-features = ["local-embedder"]

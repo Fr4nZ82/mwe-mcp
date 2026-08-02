@@ -59,6 +59,10 @@ struct Knob {
 
 /// The knob roster, derived from the live Rust defaults so the panel
 /// never hardcodes a stale number.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one flat literal per knob — splitting it would scatter the panel's roster across helpers for no gain"
+)]
 fn knobs() -> Vec<Knob> {
     let def = IngestPolicy::default();
     vec![
@@ -74,6 +78,25 @@ fn knobs() -> Vec<Knob> {
             label: "Fresh slot — top-K captures",
             default: def.recall_fresh_top_k.to_string(),
             help: "Un-promoted buffered captures surfaced per turn. 0 disables the slot."
+                .to_owned(),
+        },
+        Knob {
+            field: "smart_corpus_floor",
+            label: "Project docs — funnel floor",
+            default: def.smart_corpus_floor.to_string(),
+            help: "How close a project's signpost description must be to the turn before the \
+                   whole-corpus search may read that project's documentation at all. Naming the \
+                   project bypasses it. Raise to keep projects out of ordinary conversation; \
+                   lower once each description names what its project is about."
+                .to_owned(),
+        },
+        Knob {
+            field: "relevance_floor",
+            label: "Flat slot — relevance floor",
+            default: def.relevance_floor.to_string(),
+            help: "Similarity the turn's best promoted hit must clear before RELEVANT MEMORY \
+                   renders any promoted hit at all — a turn-level gate, not a per-hit trim. \
+                   Fresh captures, UPCOMING and project docs are unaffected. 0 disables it."
                 .to_owned(),
         },
         Knob {
@@ -171,6 +194,8 @@ fn override_value(cfg: &RecallConfig, field: &str) -> String {
     match field {
         "recall_top_k" => s(cfg.recall_top_k),
         "recall_fresh_top_k" => s(cfg.recall_fresh_top_k),
+        "smart_corpus_floor" => s(cfg.smart_corpus_floor),
+        "relevance_floor" => s(cfg.relevance_floor),
         "max_hops" => s(cfg.max_hops),
         "pages_per_hop" => s(cfg.pages_per_hop),
         "char_budget" => s(cfg.char_budget),
@@ -362,6 +387,8 @@ fn parse_form(form: &HashMap<String, String>) -> Result<RecallConfig> {
     Ok(RecallConfig {
         recall_top_k: parse_usize(form, "recall_top_k")?,
         recall_fresh_top_k: parse_usize(form, "recall_fresh_top_k")?,
+        smart_corpus_floor: parse_f32(form, "smart_corpus_floor")?,
+        relevance_floor: parse_f32(form, "relevance_floor")?,
         max_hops: parse_usize(form, "max_hops")?,
         pages_per_hop: parse_usize(form, "pages_per_hop")?,
         char_budget: parse_usize(form, "char_budget")?,
@@ -386,6 +413,21 @@ fn parse_usize(form: &HashMap<String, String>, field: &'static str) -> Result<Op
 
 fn parse_u32(form: &HashMap<String, String>, field: &'static str) -> Result<Option<u32>> {
     parse_num(form, field)
+}
+
+/// A similarity threshold, so `parse_num`'s integer wording would mislead.
+fn parse_f32(form: &HashMap<String, String>, field: &'static str) -> Result<Option<f32>> {
+    let raw = form.get(field).map(|s| s.trim()).unwrap_or_default();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    raw.parse::<f32>()
+        .ok()
+        .filter(|v| (0.0..=1.0).contains(v))
+        .map(Some)
+        .ok_or_else(|| {
+            DashboardError::Validation(format!("`{field}` must be a number between 0 and 1"))
+        })
 }
 
 fn parse_num<T: std::str::FromStr>(

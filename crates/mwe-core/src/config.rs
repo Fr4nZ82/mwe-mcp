@@ -1512,7 +1512,10 @@ const fn default_rem_initial_delay_secs() -> u64 {
 /// [`crate::recall_nav::NavigatorPolicy`]. Only resources are
 /// configured here — semantic judgment (link choice, stopping) lives in
 /// the `navigator` prompt, never in a knob.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+// `smart_corpus_floor` and `relevance_floor` are `f32`, so this section is
+// `PartialEq` only — a similarity threshold has no meaningful total
+// equality anyway.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RecallConfig {
     /// Override `IngestPolicy::recall_top_k` (flat-slot size, default 5).
     #[serde(default)]
@@ -1521,6 +1524,22 @@ pub struct RecallConfig {
     /// default 3; `0` disables the slot).
     #[serde(default)]
     pub recall_fresh_top_k: Option<usize>,
+    /// Override `IngestPolicy::smart_corpus_floor` — how close a project's
+    /// signpost description must be to the query before the merged
+    /// whole-corpus search may read that project's documentation at all
+    /// (default 0.45; naming the project bypasses it). Raise it to keep
+    /// projects out of ordinary conversation, lower it once the
+    /// descriptions name what each project is about.
+    #[serde(default)]
+    pub smart_corpus_floor: Option<f32>,
+    /// Override `IngestPolicy::relevance_floor` — similarity the turn's
+    /// best **promoted** flat hit must clear before `RELEVANT MEMORY`
+    /// renders any promoted hit at all (default 0.45; a turn-level gate,
+    /// not a per-hit trim — see `recall::DEFAULT_RELEVANCE_FLOOR` for the
+    /// measurement). Fresh captures, `UPCOMING`, and the project-docs slot
+    /// are unaffected. `0` disables it.
+    #[serde(default)]
+    pub relevance_floor: Option<f32>,
     /// Override `NavigatorPolicy::max_hops` — the depth dial (default 2;
     /// the funnel clamps it to its hard hop cap).
     #[serde(default)]
@@ -1595,6 +1614,12 @@ impl RecallConfig {
         }
         if let Some(v) = self.recall_fresh_top_k {
             p.recall_fresh_top_k = v;
+        }
+        if let Some(v) = self.smart_corpus_floor {
+            p.smart_corpus_floor = v;
+        }
+        if let Some(v) = self.relevance_floor {
+            p.relevance_floor = v;
         }
         if let Some(v) = self.max_hops {
             p.nav.max_hops = v;

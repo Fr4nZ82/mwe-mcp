@@ -77,7 +77,11 @@ pub const SIGNPOST_FACT_TYPE: &str = "signpost";
 pub const TOPIC_SIGNPOST: &str = "project-signpost";
 
 /// Topic marking the description signpost of a project.
-const TOPIC_DESCRIPTION: &str = "signpost-description";
+///
+/// Public because the smart-corpus funnel
+/// ([`crate::recall::admitted_smart_wikis`]) selects on it: the description
+/// is what decides whether a project's sections may be read at all.
+pub const TOPIC_DESCRIPTION: &str = "signpost-description";
 
 /// Topic prefix carrying the project wiki id a signpost points at.
 const TOPIC_WIKI_PREFIX: &str = "signpost-wiki:";

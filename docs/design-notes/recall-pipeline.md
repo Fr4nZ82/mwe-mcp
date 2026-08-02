@@ -2,7 +2,7 @@
 title: Recall pipeline — the read-side orchestrators and the entry-point gatherer
 area: design-notes
 status: implemented
-last_review: "2026-07-26"
+last_review: "2026-08-01"
 ---
 
 # Recall pipeline
@@ -11,6 +11,85 @@ last_review: "2026-07-26"
 read-side orchestrators that complement [capture](capture-and-dedup.md).
 The module is layered: pure helpers at the top (n-gram + jaccard +
 cosine) and the async orchestrators at the bottom.
+
+## The shape of a turn — where each knob acts
+
+Two diagrams, because the single most common misreading is that the recalled
+facts decide the navigator's doors. They do — **on the first hop only**.
+
+```mermaid
+flowchart TB
+    T["the user's turn"] --> RAG
+
+    subgraph P1["1 · flat recall — always on the FACT corpus"]
+        RAG["wiki_search over fact_index<br/>cosine over every candidate vector"]
+        RAG --> TOPK["take top_k<br/><b>recall_top_k</b>"]
+    end
+
+    TOPK --> CLS["2 · classifier<br/>intent + topics + owners"]
+    CLS -->|"capture / recall / disambig"| FAN
+    CLS -->|"skip / structural"| BLOCK
+
+    subgraph P3["3 · entry fan — deterministic, no LLM"]
+        FAN["gather_entry_points"]
+        S1["principal — sender wiki + groups<br/>weight 0.6, always present"] --> FAN
+        S2["<b>rag</b> — each recalled fact mapped<br/>to its HOME PAGE via source_path<br/>weight = the hit's score"] --> FAN
+        S3["topic — classified topics vs page cards<br/>0.6 wiki / 0.8 page"] --> FAN
+        S4["situational — host strings<br/>0.4 / 0.5"] --> FAN
+    end
+
+    FAN --> NAV["4 · navigator funnel<br/>see below"]
+    NAV --> BLOCK["5 · injected block<br/>WHO YOU ARE · WHO IS SPEAKING · HISTORY<br/>RELEVANT MEMORY · NAVIGATED PAGES · UPCOMING"]
+```
+
+The section corpus is **not** in this picture: a conversational turn never
+scans it. Documentation reaches the turn only through the bounded project-docs
+slot, and the whole-corpus `wiki_search` reaches it only behind
+[the signpost funnel](#the-smart-corpus-funnel--a-project-opens-on-its-own-description).
+
+### Inside the funnel — where the doors come from, hop by hop
+
+```mermaid
+flowchart TB
+    FAN["entry fan<br/>(principal + rag + topic + situational)"] --> POOL0
+
+    subgraph H0["hop 0"]
+        POOL0["candidate pool = the fan<br/>typically 6-8 entries"]
+        POOL0 --> PRUNE0["prune_pool → truncate to<br/><b>max_candidates</b>"]
+        PRUNE0 --> LLM0["navigator LLM reads each card<br/>(keywords + one-line summary)<br/>answers open[] / done"]
+        LLM0 --> OPEN0["Rust vets every pick against<br/>what was offered, reads the pages,<br/>projects them per-sender<br/>≤ <b>pages_per_hop</b>"]
+    end
+
+    OPEN0 --> GROW
+
+    subgraph GROW["the pool GROWS — this is the part that surprises"]
+        G1["entering a wiki adds<br/><b>ALL its pages</b> as candidates<br/>(famiglia = 22, redacted = 44)"]
+        G2["links found in the opened prose<br/>add their destinations"]
+    end
+
+    GROW --> POOL1
+
+    subgraph H1["hop 1 … up to max_hops"]
+        POOL1["candidate pool = siblings + link targets<br/>often 40+ entries"]
+        POOL1 --> PRUNE1["prune_pool → rank by tier<br/>(link > entry fan > sibling page),<br/>THEN truncate to <b>max_candidates</b>"]
+        PRUNE1 --> LLM1["navigator LLM decides again"]
+        LLM1 --> OPEN1["open, collect, grow the pool"]
+    end
+
+    OPEN1 --> STOP{"stop?"}
+    STOP -->|"done — it judged it has enough"| OUT["collected prose"]
+    STOP -->|"<b>max_hops</b> spent"| OUT
+    STOP -->|"char_budget spent"| OUT
+    STOP -->|"otherwise"| POOL1
+```
+
+**So the two knobs size different hops.** `recall_top_k` sizes the *fan*, i.e.
+hop 0: more recalled facts means more distinct home pages to start from. From
+hop 1 onward the doors are no longer the facts' pages at all — they are every
+page of the wikis already entered, plus whatever the prose links to. That pool
+is set by the corpus's own shape, not by `top_k`, which is why
+`max_candidates` has to be sized against **how many pages a wiki has**, not
+against how many facts were recalled.
 
 ## The two corpora
 
@@ -22,7 +101,7 @@ be forgotten:
 |---|---|---|---|
 | **Facts** | `fact_index` | Standard-wiki memory: governed claims with per-fragment ACL, supersedence, validity, attribution | `wiki_search` (and everything built on it) |
 | **Sections** | `wiki_sections` | Smart-wiki documentation: heading-delimited chunks of pages a smart consumer authored, ACL held per wiki in `smart_wikis` | `search_sections` |
-| Both | — | merged into one ranking, `top_k` applied after the merge | `search_all` |
+| Both | — | facts always; a project's sections only behind the [signpost funnel](#the-smart-corpus-funnel--a-project-opens-on-its-own-description) | `search_all` |
 
 `wiki_search` returns [`RecallHit`]s and **cannot** return
 documentation — the two live in different tables, and `SectionHit` is a
@@ -31,7 +110,73 @@ the recall gate and the eval harness all take the fact corpus, so
 project documentation can no longer crowd out personal memory in a
 conversational turn. Only the two consumer surfaces whose contract is
 "search everything I can see" — `wiki_search` (MCP) and `wiki_navigate` —
-reach for the merged view.
+reach for the merged view, and on `search_all` that view is itself gated:
+see [the smart-corpus funnel](#the-smart-corpus-funnel--a-project-opens-on-its-own-description).
+
+**Size is why the gating matters.** On the reference deployment the two
+corpora are not comparable: 1 086 facts / 185 KB of text / 4.4 MB of
+vectors against 4 907 sections / 4 713 KB / 20.1 MB. Documentation is
+**96 % of the indexed characters**, so an ungated merged ranking spends
+its budget — and its scan — there on every turn, whatever the turn is
+about.
+
+## The smart-corpus funnel — a project opens on its own description
+
+[`recall::admitted_smart_wikis`](../../crates/mwe-core/src/recall.rs)
+decides, **before any section vector is loaded**, which projects a
+whole-corpus query may read. The contract is the founder's: *the project
+corpus stays out of recall unless the turn is explicitly about a
+project.* Two ways in, and nothing else:
+
+1. **The turn names the project** — the same contiguous-token slug rule
+   `recall_named_project_docs` uses, no floor. The turn declared its scope.
+2. **The project's signpost description clears the floor** — one cosine
+   against the one short authored line per project that
+   [`signposts`](../../crates/mwe-core/src/signposts.rs) keeps on the
+   owner's reserved `projects.md`.
+
+So the decision costs a handful of dot products against authored lines,
+not a scan of thousands of sections — and a turn that opens nothing never
+touches the 20 MB of section vectors at all.
+
+**It fails closed.** A project with no description, or whose description
+the reader cannot see, is **not** admitted; naming it is the only way in.
+That is what makes the description load-bearing rather than decorative.
+The description is an ordinary `fact_index` row, so its **stored**
+embedding is reused (no per-turn re-embed) and its per-fragment ACL is the
+gate: a reader who cannot see a project's signpost cannot open its docs,
+and cannot learn the project exists. A floor of **0** is the explicit
+"funnel off" switch — it admits every readable smart wiki, including the
+undescribed ones.
+
+**Where the default comes from.** Measured on the production corpus over
+24 probes — 16 ordinary personal turns that must open nothing, 8 project
+turns that must open something:
+
+| rule | personal turns wrongly opened | project turns caught |
+|---|---|---|
+| name only | 0 / 16 | 2 / 8 |
+| description ≥ 0.35 | **7** / 16 | 7 / 8 |
+| description ≥ 0.40 | 3 / 16 | 4 / 8 |
+| **description ≥ 0.45** (`DEFAULT_SMART_CORPUS_FLOOR`) | **0** / 16 | 3 / 8 |
+| description ≥ 0.50 | 0 / 16 | 3 / 8 |
+
+No threshold separates the two groups cleanly — the same shape the
+project-docs bench found for `DEFAULT_SIGNPOST_FLOOR`. The default is
+therefore set where the *contract* points: precision first, at the
+highest-recall value that opens nothing on an ordinary personal turn.
+
+The project turns it misses are the ones phrased in a project's **internal
+vocabulary** («il player Tizen non parte», «i contenuti sono fermi da 10
+giorni») while the description is written in end-user language. That is a
+property of the description, not of the threshold: a description that
+names what its project is about lifts those turns over the floor. The
+funnel is only as wide as the line somebody wrote. Tunable per deployment
+as `recall.smart_corpus_floor` (operator panel, hot-reloaded).
+
+End-to-end on the live corpus, 18 probes: **14 of 14 personal turns return
+zero documentation** (they returned 95 of 140 slots' worth before), and 3
+of 4 project turns open the right project.
 
 ### The project-docs slot — two entry points, at two different stages
 
@@ -201,6 +346,22 @@ string* rather than on the invisible intent
 drop the hit silently whenever it answered wrongly. The ranking decides
 instead of a switch.
 
+**Only the definition tier crosses the corpus boundary.** Inside the
+section corpus both signals rank: the `OR`-joined ranking list and the
+`AND`-on-heading definition set. On the **merged** list of `search_all`
+only the definition set is applied, because a fact's handle is a
+`fact_id` and can never key into a list of `source_path#ord` — so the
+ranking bonus there is reachable by one corpus only. Its magnitude
+settles the matter: `1/(60 + lexical_rank)` is larger than the entire
+span of the vector-rank term `1/(60 + r)` over a list of at most
+`2 · top_k`, so a section sharing **any** token with the query outranked
+**every** fact whatever the cosines were. Measured on the production
+corpus, that inverted 11 of 14 probe queries, once placing a section at
+cosine 0.25 above a fact at 0.63. `search_lexical_headings` is the signal
+that actually means *"the query names this section"* — the guarantee the
+tier was built for — and it is empty on prose (13 of those same 14
+probes), so it cannot re-open the same hole.
+
 **Fusion changes the order and nothing else.** The two rankings are not
 commensurable — a cosine is a distance in `[-1, 1]`, `bm25` an unbounded
 corpus-relative weight — so reciprocal rank fusion (`Σ 1/(60 + rank)`)
@@ -250,12 +411,36 @@ it. A turn that *names* its project comes through
 |---|---|---|---|---|
 | `wiki_search` | cosine over embedding | post-fetch via [`acl::can_read`] | ✓ on returned ids (`wiki_search_unrecorded` is the bump-free sibling for measurement paths — the eval harness) | top-K vector search over the **fact** corpus |
 | `search_sections` | cosine **fused with `bm25`** by rank; `score` stays the cosine | **pre-fetch**, per wiki, from the `smart_wikis` registry | ✓ on returned `(source_path, section_ord)` positions | top-K over the **section** corpus |
-| `search_all` | inherited from both, then re-fused on the merged list | inherited from both | ✓ inherited | the merged view for `wiki_search` (MCP) + `wiki_navigate` |
+| `search_all` | inherited from both, then the **definition tier only** on the merged list | inherited from both, **plus** the signpost funnel on the section half | ✓ inherited | the merged view for `wiki_search` (MCP) |
 | `wiki_facts_for` | constant `1.0` | post-fetch | ✗ (audit/list view) | structured SQL query |
 | `wiki_recall` | delegates to `wiki_search` today | inherited | ✓ inherited | semantic recall the LLM ingest uses (stable call site) |
 | `wiki_multi_hop_facts` | seed-fact + per-hop `wiki_search` | inherited | ✓ inherited | early multi-hop link resolution; lives in [`recall.rs`](../../crates/mwe-core/src/recall.rs) and returns a `MultiHopOutcome`. Exported and tested, but the agentic chat and `wiki_ingest_message` do not call it yet, pending the cap-10-hop traversal protection that gates the consumer hookup (see [What is intentionally out of scope](#what-is-intentionally-out-of-scope)). |
 | `recall_fresh_captures` | cosine over **re-embedded** buffered captures | post-fetch via `buffered_visible_to` → [`acl::can_read`] | ✗ (not `fact_index` rows yet) | mid-range "fresh" slot — un-promoted captures; **ingest path only** (see [The mid-range bridge](#the-mid-range-bridge--the-fresh-slot)) |
 | `recall_due_soon` | constant `1.0`, ordered by `valid_to` imminence | post-fetch | ✗ (mechanical time-driven pull — counting it would inflate recency without semantic re-use) | the **due-soon slot**: facts whose validity window closes/fires inside `[now, now + horizon]`, most imminent first — a dated commitment surfaces even when nothing in the turn resembles it. Backed by `fact_index::find_due_between`; `now` is caller-supplied (one clock per turn), the horizon is an operator setting (recall-settings panel); the window reads `valid_to`, which stays the only stored firing time — a separate `remind_at` column was considered for reminder delivery and declined, because a `valid_to` on a day boundary means "a date, no hour stated" and the hour is then a delivery-side policy, not a per-fact datum. Wired into the ingest turn as the recall block's `UPCOMING` slot — pulled on **every** LLM-routed turn (time-driven, no LLM cost), see [ingest-pipeline.md](ingest-pipeline.md#the-recall-block--recalled-memory-the-rules-field-is-separate). |
+
+### The relevance floor — a fourth gate, but on rendering, not on recall
+
+None of the rows above are the last word on what the ingest turn's
+`RELEVANT MEMORY` slot shows. `wiki_recall`'s hits still feed that slot,
+still seed the navigator's entry fan, and still reach the classifier as
+context, **unfiltered** — the floor below touches none of that. It only
+decides whether [`ingest::format_snippet`](../../crates/mwe-core/src/ingest.rs)
+is allowed to *render* the promoted hits it was handed.
+
+[`DEFAULT_RELEVANCE_FLOOR`](../../crates/mwe-core/src/recall.rs) (default
+`0.45`, `recall.relevance_floor`) is **turn-level, not per-hit**: measured
+over 60 real user turns, a real answer's score band and injected noise's
+score band overlap too much for any per-hit cut to separate them, but the
+**best promoted (non-fresh) hit of the turn** does — `0.5474` on the turn
+that held the answer against `0.4306` on the turn whose recall block
+recited unrelated noise back to the user. So the gate reads that one
+number per turn: below it, none of the turn's promoted hits render (the
+slot is not opened, not "trimmed"); at or above it, every promoted hit
+renders, including ones individually weaker than the floor. Fresh
+(un-promoted) captures, the `UPCOMING` slot, and the project-docs slot are
+all unaffected by design — `0` disables the gate, same idiom as the
+smart-corpus funnel above. Full writeup, including the measurement table:
+[ingest-pipeline.md](ingest-pipeline.md#the-recall-block--recalled-memory-the-rules-field-is-separate).
 
 ## `wiki_search` step-by-step
 
@@ -350,7 +535,7 @@ counters touched — and draws on four seed families:
 
 | Family | Source | Weight |
 |---|---|---|
-| **Principal** | sender identity wiki + sender's groups + classified owners (each owner expanded to their groups via `enrollment::groups_for` — an owner may *be* a group or *belong* to one) | `1.0` (maximum — identity anchors always survive dedup) |
+| **Principal** | sender identity wiki + sender's groups + classified owners (each owner expanded to their groups via `enrollment::groups_for` — an owner may *be* a group or *belong* to one) | `0.6` — a wiki-level seed (`page: None`), same rung as topic-wiki: it asserts "this wiki matches the turn" on the strength of the subject being in the turn rather than a card word matching |
 | **Rag** | the turn's flat-recall hits mapped back to `(wiki, page)` via `source_path`; a `fresh` hit (no published page yet) seeds the wiki root | the hit's score, clamped to `[0, 1]` |
 | **Topic** | classified topics matched (case-insensitive substring) against the **reader-relative cards**: the per-wiki topic union, then — inside a matched wiki — the per-page topic union, both recomputed for the sender (see *Reader-relative cards* below) | `0.6` wiki / `0.8` page |
 | **Situational** | free host-supplied strings (location, occasion), matched like topics; empty until a host sends them | `0.4` wiki / `0.5` page |
@@ -425,6 +610,19 @@ candidates: the entered wiki's sibling pages and the destinations reachable
 via `[[wikilinks]]` from the collected prose (`Visible`-only) — a wiki hop
 offers the linked wiki, a page hop offers the linked **page directly**, each
 with the same reader-relative card (see the link grammar below).
+
+Before the next prompt is built, `prune_pool` drops already-visited /
+duplicate candidates, then **stably ranks the survivors by tier** before
+truncating to `max_candidates`: wikilink destinations first (an authored
+rail out of the page just read), then the still-unpicked entry-point fan in
+the gatherer's own weight order (seeds already offered on an earlier hop
+that the navigator did not choose), then sibling pages last. A wiki's
+siblings are still offered wholesale — breadth stays structural, not a
+leak, and a page nobody links to needs some way to be reachable — but as
+the demoted tail: they fill the pool first (`sibling_page_candidates` fires
+on every wiki entry, `[[wikilink]]` targets are comparatively rare), so
+without this ranking a positional truncate lets the directory dump crowd
+out both the rails and the fan.
 
 Degradation contract: an LLM failure or an unparseable decision stops the
 funnel and returns the partial collection — recall degrades, the turn
@@ -752,9 +950,18 @@ table is the larger and the more regenerable of the two.
   short-circuits / a section *titled* with an identifier beats a shorter
   one *citing* it, which fails without the heading column / the index
   tracks in-place edits and page deletions through its triggers).
-- `search_all`: 3 (both corpora merge into one ranking while
-  `wiki_search` stays facts-only / `top_k` honoured across the merge /
-  the fused order survives the merge with a perfect-cosine fact present).
+- `search_all`: 4 (both corpora merge into one ranking while
+  `wiki_search` stays facts-only / `top_k` honoured across the merge / a
+  section the query **names** outranks a perfect-cosine fact, and does so
+  through the definition tier rather than its score / a section that merely
+  **mentions** a query token does *not* evict a better-scoring fact — the
+  regression guard for the cross-corpus ranking bonus).
+- `admitted_smart_wikis` (the funnel): 3 — a project whose description does
+  not match stays shut and its perfect-cosine section never surfaces / the
+  description *or* the project's name opens it, the name regardless of the
+  floor / it fails closed with no description, a floor of 0 is the explicit
+  off switch, and another user's unshared description neither admits the
+  project nor reveals it.
 - `recall_named_project_docs` + `rank_project_sections`, fusion: 2 (naming
   the project puts its identifier in the single slot / a lexical match
   does **not** lift a section over the signpost floor).

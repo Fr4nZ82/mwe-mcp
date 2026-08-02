@@ -826,15 +826,38 @@ pub async fn search_sections(
     top_k: usize,
     sender: &SenderContext,
 ) -> RecallResult<Vec<SectionHit>> {
+    let readable = readable_smart_wikis(pool, sender).await?;
+    search_sections_in(pool, embedder, query, top_k, sender, &readable).await
+}
+
+/// [`search_sections`] restricted to an explicit set of smart wikis.
+///
+/// Split out so a caller that has already decided *which* projects this turn
+/// may read — [`search_all`] behind the signpost funnel — pays for those
+/// wikis' vectors only. `wikis` is trusted to be ACL-filtered by the caller
+/// (both entry points derive it from [`readable_smart_wikis`]); an empty
+/// slice short-circuits without touching the store.
+///
+/// # Errors
+///
+/// As [`search_sections`].
+pub async fn search_sections_in(
+    pool: &SqlitePool,
+    embedder: Arc<dyn Embedder>,
+    query: &str,
+    top_k: usize,
+    sender: &SenderContext,
+    wikis: &[String],
+) -> RecallResult<Vec<SectionHit>> {
     if top_k == 0 {
         return Ok(Vec::new());
     }
-    let readable = readable_smart_wikis(pool, sender).await?;
+    let readable = wikis;
     if readable.is_empty() {
         return Ok(Vec::new());
     }
     let q_emb = embedder.embed(query).await?;
-    let candidates = sections::find_candidates_in_wikis(pool, &readable).await?;
+    let candidates = sections::find_candidates_in_wikis(pool, readable).await?;
     let mut scored: Vec<SectionHit> = candidates
         .into_iter()
         .map(|row| SectionHit {
@@ -851,7 +874,7 @@ pub async fn search_sections(
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Less)
     });
-    let (lexical, defining) = lexical_signals(pool, &readable, query).await?;
+    let (lexical, defining) = lexical_signals(pool, readable, query).await?;
     fuse_by_lexical_rank(&mut scored, &lexical, &defining, SectionHit::handle);
     scored.truncate(top_k);
 
@@ -1051,6 +1074,87 @@ async fn projects_signposted_in(
 /// a different embedder or a very different corpus. Overridable per
 /// deployment through [`crate::ingest::IngestPolicy`].
 pub const DEFAULT_SIGNPOST_FLOOR: f32 = 0.55;
+
+/// Similarity a project's **signpost description** must reach before the
+/// merged view ([`search_all`]) is allowed to read that project's sections
+/// at all.
+///
+/// ## Why the funnel is the description, and not the sections
+///
+/// The section corpus is the largest thing in the store — on the reference
+/// deployment 4 907 rows and 4.7 MB of text against 1 086 facts and 185 KB,
+/// so **96 % of the indexed characters are project documentation**. A
+/// merged ranking that reads all of it on every turn spends its budget
+/// there, and the founder's contract is the opposite one: *the project
+/// corpus stays out of recall unless the turn is explicitly about a
+/// project*, with the per-project description ([`crate::signposts`]) as the
+/// funnel that says a project exists and what it is about.
+///
+/// So the decision is taken **against one short authored line per project**
+/// — a handful of dot products — instead of against thousands of sections.
+/// A project whose description the reader cannot see, or that has none, is
+/// not admitted: the only other way in is naming it
+/// ([`smart_wikis_named_in`], floor 0), which is an instruction rather than
+/// a guess.
+///
+/// ## Where the number comes from
+///
+/// Measured on the production corpus (2026-08-01) over 24 probes — 16
+/// ordinary personal turns that must open nothing, 8 project turns that
+/// must open something:
+///
+/// | rule | personal turns wrongly opened | project turns caught |
+/// |---|---|---|
+/// | name only | 0 / 16 | 2 / 8 |
+/// | description ≥ 0.35 | **7** / 16 | 7 / 8 |
+/// | description ≥ 0.40 | 3 / 16 | 4 / 8 |
+/// | **description ≥ 0.45** | **0** / 16 | 3 / 8 |
+/// | description ≥ 0.50 | 0 / 16 | 3 / 8 |
+///
+/// No threshold separates the two groups cleanly — the same shape the
+/// project-docs bench found for [`DEFAULT_SIGNPOST_FLOOR`]. Given that,
+/// the default is set where the **contract** points: precision first, at
+/// `0.45`, the highest-recall value that opens nothing on an ordinary
+/// personal turn.
+///
+/// The project turns it misses are exactly those phrased in a project's
+/// *internal* vocabulary (`il player Tizen non parte`, `il testo non
+/// scorre da una cornice all'altra`) while the description is written in
+/// end-user language. That is a property of the description, not of the
+/// threshold: a description that names what the project is about raises
+/// those turns above the floor. The funnel is only as wide as the line
+/// somebody wrote.
+///
+/// Corpus- and model-specific; re-measure on a different embedder.
+/// Overridable per deployment through
+/// [`crate::ingest::IngestPolicy::smart_corpus_floor`].
+pub const DEFAULT_SMART_CORPUS_FLOOR: f32 = 0.45;
+
+/// Similarity the turn's **best promoted hit** must clear before the recall
+/// block's `RELEVANT MEMORY` slot renders any promoted hit at all.
+///
+/// Turn-level, never per-hit: measured on the live corpus, the right answer
+/// on one turn (0.4813) and the noise on another (0.4306) sit in the same
+/// band, so no per-hit threshold separates them, while their *best* hits
+/// (0.5474 vs 0.4306) do.
+///
+/// ## Ships OFF — `0.0` — and why
+///
+/// The mechanism is built and tested; the **number is not earned**. Its only
+/// labelled failure was a turn (`«il volume»`) that was an incomplete
+/// utterance and should never have reached recall at all — the founder's
+/// point, 2026-08-01: *«l'esempio dove io dico soltanto "il volume" è proprio
+/// quello che non deve essere cercato perché non ha senso»*. Calibrating a
+/// downstream relevance gate on damage caused by an upstream one that let an
+/// unsearchable turn through is the wrong instrument on the wrong evidence.
+///
+/// So this defaults to **disabled**. The upstream fix is the classifier's
+/// `skip` rule (planning card 61 §16); once that lands, a floor gets a number
+/// only if a *complete* turn is measured doing harm — from the gold set
+/// growing on confirmed misses, not from a sweep of unlabelled turns.
+/// `recall.relevance_floor` on the operator panel turns it on; the value the
+/// distribution suggested, if one is ever wanted, was `0.45`.
+pub const DEFAULT_RELEVANCE_FLOOR: f32 = 0.0;
 
 /// How much of the project-docs slot one pass may spend.
 ///
@@ -1258,25 +1362,108 @@ pub async fn recall_signposted_project_docs(
     Ok(kept)
 }
 
+/// The smart wikis this query is allowed to reach, behind the signpost
+/// funnel — the whole-corpus counterpart of the ingest turn's project-docs
+/// slot.
+///
+/// Two ways in, and nothing else:
+///
+/// 1. **The turn names the project** — same contiguous-token slug rule as
+///    [`smart_wikis_named_in`], no floor. The turn declared its own scope.
+/// 2. **The project's signpost description clears `floor`** — one cosine
+///    against one short authored line per project (see
+///    [`DEFAULT_SMART_CORPUS_FLOOR`] for the measurement behind the number).
+///
+/// A project with **no description the reader can see is not admitted**, so
+/// this fails closed: an unwritten signpost keeps its project out of the
+/// merged view rather than letting it in unexamined. That is deliberate —
+/// it is what makes the description load-bearing rather than decorative —
+/// and naming the project still reaches it.
+///
+/// The description is an ordinary `fact_index` row on the owner's reserved
+/// `projects.md`, so its **stored** embedding is reused (no per-turn
+/// re-embed of the funnel) and its visibility is the ordinary per-fragment
+/// ACL: a reader who cannot see a project's signpost cannot open its docs,
+/// and cannot learn the project exists.
+///
+/// # Errors
+///
+/// Surfaces registry, `fact_index` and embedder failures.
+pub async fn admitted_smart_wikis(
+    pool: &SqlitePool,
+    embedder: Arc<dyn Embedder>,
+    query: &str,
+    floor: f32,
+    sender: &SenderContext,
+) -> RecallResult<Vec<String>> {
+    let readable = readable_smart_wikis(pool, sender).await?;
+    if readable.is_empty() {
+        return Ok(Vec::new());
+    }
+    // `floor <= 0` means the funnel is OFF, not "a threshold nothing can
+    // fail": an operator who zeroes it is asking for the pre-funnel
+    // behaviour, and a project with no description would otherwise stay shut
+    // at any floor — a surprising way for a disable switch to behave.
+    if floor <= 0.0 {
+        return Ok(readable);
+    }
+    let named = smart_wikis_named_in(pool, query, sender).await?;
+
+    // One query for every description signpost, then the per-fragment ACL.
+    let signposts = fact_index::find_by_filters(
+        pool,
+        &fact_index::FactFilters {
+            topics_any: vec![crate::signposts::TOPIC_DESCRIPTION.to_owned()],
+            ..Default::default()
+        },
+    )
+    .await?;
+    let visible: Vec<&fact_index::FactIndexRow> = signposts
+        .iter()
+        .filter(|row| row_visible_to(row, sender))
+        .collect();
+
+    let mut admitted = named;
+    if !visible.is_empty() {
+        let q_emb = embedder.embed(query).await?;
+        for row in visible {
+            let Some(project) = crate::signposts::project_of(row) else {
+                continue;
+            };
+            if admitted.contains(&project) || !readable.contains(&project) {
+                continue;
+            }
+            if cosine_similarity(&q_emb, &row.embedding) >= floor {
+                admitted.push(project);
+            }
+        }
+    }
+    admitted.retain(|w| readable.contains(w));
+    tracing::info!(
+        sender_id = sender.sender_id,
+        readable = readable.len(),
+        admitted = admitted.len(),
+        floor,
+        "recall: smart-corpus funnel"
+    );
+    Ok(admitted)
+}
+
 /// Top-K over **both** corpora, merged into one ranking.
 ///
 /// For the consumer surfaces whose contract is "search everything I can
-/// see". Each corpus is over-fetched to `top_k` and the union is
-/// re-ranked, so the merge cannot lose a hit that would have made the
-/// combined top-K.
+/// see". The fact corpus is always read; the section corpus is read only
+/// for the projects [`admitted_smart_wikis`] lets through, so an ordinary
+/// personal turn merges one corpus and pays for one.
 ///
-/// The merge sorts by cosine, which would undo the order
-/// [`search_sections`] fused — so the fusion is re-applied to the *merged*
-/// list, where a fact simply never carries a lexical rank. It has to be
-/// this way round rather than merging two already-fused lists: fusing
-/// per-corpus and then interleaving would pit rank 1 of the facts against
-/// rank 1 of the sections with nothing to separate them, and this surface
-/// is precisely where a user types an identifier and expects the page
-/// that defines it.
-///
-/// Only sections have a lexical index. Facts are short authored claims
-/// with per-fragment ACLs, so the same treatment there is a different
-/// piece of work, not a wider `IN` clause.
+/// Both halves are over-fetched to `top_k` and the union re-ranked by
+/// cosine, so the merge cannot lose a hit that would have made the combined
+/// top-K. On top of that order only the **definition tier** is applied —
+/// the sections whose *heading chain* carries every term of the query, so
+/// that a user typing an identifier still gets the page that defines it
+/// rather than one that quotes it. The ranking half of the lexical signal
+/// stays inside [`search_sections_in`], where both candidates can be in it;
+/// see the comment at the call site for what happens when it does not.
 ///
 /// # Errors
 ///
@@ -1287,10 +1474,16 @@ pub async fn search_all(
     query: &str,
     top_k: usize,
     filters: fact_index::FactFilters,
+    smart_floor: f32,
     sender: &SenderContext,
 ) -> RecallResult<Vec<SearchHit>> {
     let facts = wiki_search(pool, Arc::clone(&embedder), query, top_k, filters, sender).await?;
-    let secs = search_sections(pool, embedder, query, top_k, sender).await?;
+    // The funnel decides which projects this turn may read *before* their
+    // vectors are loaded, so an ordinary personal turn never scans the
+    // documentation corpus at all.
+    let admitted =
+        admitted_smart_wikis(pool, Arc::clone(&embedder), query, smart_floor, sender).await?;
+    let secs = search_sections_in(pool, embedder, query, top_k, sender, &admitted).await?;
 
     let mut merged: Vec<SearchHit> = facts
         .into_iter()
@@ -1302,9 +1495,24 @@ pub async fn search_all(
             .partial_cmp(&a.score())
             .unwrap_or(std::cmp::Ordering::Less)
     });
-    let readable = readable_smart_wikis(pool, sender).await?;
-    let (lexical, defining) = lexical_signals(pool, &readable, query).await?;
-    fuse_by_lexical_rank(&mut merged, &lexical, &defining, SearchHit::handle);
+    // ONLY the definition tier crosses the corpus boundary. The ranking
+    // half of the lexical signal (`search_lexical`, OR over every term) is
+    // deliberately withheld here, because a fact's handle is a `fact_id`
+    // and can never appear in a list keyed by `source_path#ord` — so on the
+    // merged list that bonus is reachable by one corpus only. Its magnitude
+    // is larger than the entire span of the vector-rank term (`1/(60+r)`
+    // over a list of at most `2·top_k`), so for every realistic `top_k` a
+    // section sharing *any* token with the query outranked **every** fact
+    // whatever the cosines were: measured on the production corpus, 11 of
+    // 14 probe queries returned sections at ranks the score order put last,
+    // one of them at cosine 0.25 above a fact at 0.63.
+    //
+    // `defining` (`search_lexical_headings`, AND over the heading chain) is
+    // the signal that actually means "the query NAMES this section", which
+    // is the guarantee the tier was built for; it is empty on prose (13 of
+    // those same 14 probes) so it cannot re-open the same hole.
+    let (_, defining) = lexical_signals(pool, &admitted, query).await?;
+    fuse_by_lexical_rank(&mut merged, &[], &defining, SearchHit::handle);
     merged.truncate(top_k);
     Ok(merged)
 }
@@ -2614,12 +2822,244 @@ mod tests {
         assert!(kept[0].text.starts_with("the retry policy"));
     }
 
+    /// Seed a project's **description signpost** — the funnel's own input:
+    /// an ordinary fact on the owner's reserved `projects.md`, carrying the
+    /// topics [`crate::signposts`] writes.
+    fn insert_signpost(
+        pool_setup: &mut Vec<NewFact>,
+        id_str: &str,
+        owner_wiki: &str,
+        owner: &str,
+        project_wiki_id: &str,
+        text: &str,
+        embedding: Vec<f32>,
+    ) {
+        pool_setup.push(NewFact {
+            authored_refs: Vec::new(),
+            fact_id: FactId::parse(id_str).unwrap(),
+            wiki_id: owner_wiki.to_owned(),
+            source_path: format!("wikis/{owner_wiki}/projects.md"),
+            region_start: Some(0),
+            region_end: Some(32),
+            text: text.to_owned(),
+            embedding,
+            owner_id: owner.parse().unwrap(),
+            allow_ids: vec![],
+            sender_id: None,
+            fact_type: Some(crate::signposts::SIGNPOST_FACT_TYPE.to_owned()),
+            topics: vec![
+                crate::signposts::TOPIC_SIGNPOST.to_owned(),
+                format!("signpost-wiki:{project_wiki_id}"),
+                crate::signposts::TOPIC_DESCRIPTION.to_owned(),
+            ],
+            valid_from: None,
+            valid_to: None,
+            target_page: None,
+            style: None,
+            page_description: None,
+            salience: None,
+            source_ref: None,
+        });
+    }
+
+    /// The funnel's default: an ordinary personal turn never reaches a
+    /// project's documentation, however large that documentation is.
     #[tokio::test]
-    async fn search_all_keeps_the_fused_order_across_both_corpora() {
+    async fn the_funnel_keeps_a_project_shut_when_its_description_does_not_match() {
         let pool = make_pool().await;
-        seed_disagreeing_corpus(&pool).await;
-        // A fact that is a perfect cosine match — without re-fusing after
-        // the merge it would sit on top of the section the query names.
+        seed_smart_wiki(&pool, "alice-proj", "user:alice", Vec::new()).await;
+        seed_section(
+            &pool,
+            "alice-proj",
+            0,
+            "a doc section",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        let mut rows = Vec::new();
+        // The description points somewhere else entirely (orthogonal).
+        insert_signpost(
+            &mut rows,
+            "019f0000-0000-7000-8000-00000000000a",
+            "alice",
+            "user:alice",
+            "alice-proj",
+            "A project about industrial label printing.",
+            vec![0.0, 1.0, 0.0, 0.0],
+        );
+        populate(&pool, rows).await;
+        let sender = SenderContext::user("alice");
+
+        let admitted = admitted_smart_wikis(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "cosa mangiamo stasera",
+            DEFAULT_SMART_CORPUS_FLOOR,
+            &sender,
+        )
+        .await
+        .expect("funnel");
+        assert!(admitted.is_empty(), "got {admitted:?}");
+
+        let hits = search_all(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "cosa mangiamo stasera",
+            10,
+            fact_index::FactFilters::default(),
+            DEFAULT_SMART_CORPUS_FLOOR,
+            &sender,
+        )
+        .await
+        .expect("search all");
+        assert!(
+            !hits.iter().any(|h| matches!(h, SearchHit::Section(_))),
+            "a perfect-cosine section still must not surface: {hits:?}"
+        );
+    }
+
+    /// …and opens it when the description does match, or when the turn
+    /// names the project outright.
+    #[tokio::test]
+    async fn the_funnel_opens_a_project_on_its_description_or_its_name() {
+        let pool = make_pool().await;
+        seed_smart_wiki(&pool, "alice-signage", "user:alice", Vec::new()).await;
+        seed_section(
+            &pool,
+            "alice-signage",
+            0,
+            "a doc section",
+            vec![0.0, 0.0, 1.0, 0.0],
+        )
+        .await;
+        let mut rows = Vec::new();
+        insert_signpost(
+            &mut rows,
+            "019f0000-0000-7000-8000-00000000000b",
+            "alice",
+            "user:alice",
+            "alice-signage",
+            "Screens in shops that show adverts.",
+            vec![1.0, 0.0, 0.0, 0.0],
+        );
+        populate(&pool, rows).await;
+        let sender = SenderContext::user("alice");
+
+        // (a) the description is the query's own direction → admitted
+        let by_desc = admitted_smart_wikis(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "how do the shop screens get their adverts",
+            DEFAULT_SMART_CORPUS_FLOOR,
+            &sender,
+        )
+        .await
+        .expect("funnel");
+        assert_eq!(by_desc, vec!["alice-signage".to_owned()]);
+
+        // (b) orthogonal query, but the turn NAMES the project → admitted
+        //     regardless of the floor: naming is an instruction.
+        let by_name = admitted_smart_wikis(
+            &pool,
+            embedder_fixed(vec![0.0, 1.0, 0.0, 0.0]),
+            "come funziona signage per i clienti",
+            DEFAULT_SMART_CORPUS_FLOOR,
+            &sender,
+        )
+        .await
+        .expect("funnel");
+        assert_eq!(by_name, vec!["alice-signage".to_owned()]);
+    }
+
+    /// A project with no description stays shut — the funnel fails closed,
+    /// which is what makes the description load-bearing — and a reader who
+    /// cannot see another user's signpost cannot open their project either.
+    #[tokio::test]
+    async fn the_funnel_fails_closed_without_a_readable_description() {
+        let pool = make_pool().await;
+        seed_smart_wiki(&pool, "alice-proj", "user:alice", Vec::new()).await;
+        seed_section(
+            &pool,
+            "alice-proj",
+            0,
+            "a doc section",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        let sender = SenderContext::user("alice");
+
+        // No signpost at all.
+        let none = admitted_smart_wikis(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "anything at all",
+            DEFAULT_SMART_CORPUS_FLOOR,
+            &sender,
+        )
+        .await
+        .expect("funnel");
+        assert!(none.is_empty(), "no description ⇒ no admission: {none:?}");
+
+        // …but a floor of 0 is an explicit "funnel off" switch.
+        let off = admitted_smart_wikis(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "anything at all",
+            0.0,
+            &sender,
+        )
+        .await
+        .expect("funnel");
+        assert_eq!(off, vec!["alice-proj".to_owned()]);
+
+        // A description owned by someone else, shared with nobody, is
+        // invisible — so it can neither admit the project nor reveal it.
+        let mut rows = Vec::new();
+        insert_signpost(
+            &mut rows,
+            "019f0000-0000-7000-8000-00000000000c",
+            "bob",
+            "user:bob",
+            "alice-proj",
+            "anything at all",
+            vec![1.0, 0.0, 0.0, 0.0],
+        );
+        populate(&pool, rows).await;
+        let still_shut = admitted_smart_wikis(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "anything at all",
+            DEFAULT_SMART_CORPUS_FLOOR,
+            &sender,
+        )
+        .await
+        .expect("funnel");
+        assert!(still_shut.is_empty(), "got {still_shut:?}");
+    }
+
+    /// A section the query **names** still beats a perfect-cosine fact.
+    ///
+    /// The guarantee the definition tier exists for, expressed through the
+    /// signal that actually means "names": every query term present in the
+    /// section's `heading_path`, which is how the indexer writes a real row
+    /// (`wiki_sections."text"` opens with the heading chain). Its sibling
+    /// below pins the other half — that merely *containing* a token is not
+    /// enough.
+    #[tokio::test]
+    async fn a_section_the_query_names_outranks_a_perfect_cosine_fact() {
+        let pool = make_pool().await;
+        seed_smart_wiki(&pool, "alice-proj", "user:alice", Vec::new()).await;
+        seed_section_with_heading(
+            &pool,
+            "alice-proj",
+            0,
+            "Decision log > D-006 - the retry policy",
+            "Retry with backoff, then dead-letter.",
+            vec![0.0, 1.0, 0.0, 0.0],
+        )
+        .await;
+        // A fact that is a perfect cosine match — without the definition
+        // tier it would sit on top of the section the query names.
         let mut rows = Vec::new();
         insert_row(
             &mut rows,
@@ -2638,17 +3078,96 @@ mod tests {
             "D-006",
             10,
             fact_index::FactFilters::default(),
+            0.0, // funnel off: this test is about the cross-corpus ranking
             &sender,
         )
         .await
         .expect("search all");
 
+        assert_eq!(hits.len(), 2);
         assert!(
-            hits[0].text().starts_with("D-006"),
-            "got {:?}",
+            matches!(hits[0], SearchHit::Section(_)),
+            "the NAMED section must lead; got {:?}",
             hits[0].text()
         );
-        assert!(matches!(hits[0], SearchHit::Section(_)));
+        assert!(
+            matches!(hits[1], SearchHit::Fact(_)),
+            "got {:?}",
+            hits[1].text()
+        );
+        // …and it led *despite* the fact scoring higher: the definition
+        // tier, not the cosine, is what put it there.
+        assert!(
+            hits[1].score() > hits[0].score(),
+            "{} vs {}",
+            hits[1].score(),
+            hits[0].score()
+        );
+    }
+
+    /// The regression this fix exists for: a section that merely **mentions**
+    /// a query token must not evict a better-scoring personal fact.
+    ///
+    /// Before the fix, `search_all` re-applied the *ranking* half of the
+    /// lexical signal (`search_lexical`, OR over every term) to the merged
+    /// list. A fact's handle is a `fact_id` and can never key into a list of
+    /// `source_path#ord`, so only sections could collect that bonus — and
+    /// `1/(60 + lexical_rank)` is larger than the whole span of `1/(60 +
+    /// vector_rank)` across a list of `2·top_k`. Any section sharing any
+    /// token therefore outranked every fact, whatever the cosines were. On
+    /// the production corpus that inverted 11 of 14 probe queries.
+    #[tokio::test]
+    async fn a_section_that_merely_mentions_a_term_does_not_evict_a_better_fact() {
+        let pool = make_pool().await;
+        seed_smart_wiki(&pool, "alice-proj", "user:alice", Vec::new()).await;
+        // Shares the word, is nowhere near the query by cosine, and its
+        // heading does not name it — the shape of a documentation page that
+        // happens to contain an ordinary word.
+        seed_section_with_heading(
+            &pool,
+            "alice-proj",
+            0,
+            "Player runtime > update channel",
+            "The playlist is fetched by the player on every sync.",
+            vec![0.0, 0.0, 1.0, 0.0],
+        )
+        .await;
+        let mut rows = Vec::new();
+        insert_row(
+            &mut rows,
+            "019f0000-0000-7000-8000-000000000002",
+            "alice",
+            "user:alice",
+            "Alice likes the playlist she made with her son.",
+            vec![1.0, 0.0, 0.0, 0.0],
+        );
+        populate(&pool, rows).await;
+        let sender = SenderContext::user("alice");
+
+        let hits = search_all(
+            &pool,
+            embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
+            "playlist",
+            10,
+            fact_index::FactFilters::default(),
+            0.0, // funnel off, so the ranking alone is under test
+            &sender,
+        )
+        .await
+        .expect("search all");
+
+        assert_eq!(hits.len(), 2, "both corpora are in the merge");
+        assert!(
+            matches!(hits[0], SearchHit::Fact(_)),
+            "the better-scoring fact must lead; got {:?}",
+            hits[0].text()
+        );
+        assert!(
+            hits[0].score() > hits[1].score(),
+            "the merged list is in score order when nothing is NAMED: {} vs {}",
+            hits[0].score(),
+            hits[1].score()
+        );
     }
 
     /// The shape that beat rank fusion on the production corpus after
@@ -3267,6 +3786,7 @@ mod tests {
             "q",
             10,
             fact_index::FactFilters::default(),
+            0.0, // funnel off: this test is about the merge, not the gate
             &sender,
         )
         .await
@@ -3308,6 +3828,7 @@ mod tests {
             "q",
             1,
             fact_index::FactFilters::default(),
+            0.0, // funnel off: this test is about top_k across the merge
             &sender,
         )
         .await

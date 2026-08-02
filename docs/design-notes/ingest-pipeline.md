@@ -763,6 +763,28 @@ places adjacent to this block (the hermes bridge leads with it).
    the page's workdir-relative source path; fresh hits have no page and
    are never deduped), and a hit homed on a `rules.md` page is skipped —
    directives are channel-only.
+
+   A third gate sits above those two per-hit filters, and unlike them it
+   is **turn-level, not per-hit**: `relevance_floor` (default `0.45`,
+   [`recall::DEFAULT_RELEVANCE_FLOOR`], operator-overridable as
+   `recall.relevance_floor`) is compared against the **maximum** score
+   among the turn's promoted (non-fresh) hits — computed over every
+   promoted hit, before the two filters above ever run, so the outcome
+   never depends on which pages the navigator happened to open this same
+   turn. Below the floor, **none** of the promoted hits render — the
+   promoted half of the slot is not opened at all, not "the weak hits are
+   trimmed". At or above it, **every** promoted hit renders, including
+   ones individually weaker than the floor. A per-hit threshold cannot do
+   this job: measured on 60 real user turns pulled from the training
+   spool, a real answer's score band and injected noise's score band
+   overlap — on one turn the answer scored `0.4813`/`0.4811` while on
+   another the noise it replaced ran to `0.4306` — so any per-hit cut
+   that removes one removes the other too (card 61, §37-39, where the
+   full distribution and the 0.45-vs-0.48 reasoning live). The **fresh**
+   sub-slot above is never gated by it — a different signal, kept even
+   when the promoted half renders nothing — and neither is `UPCOMING`
+   (6, below) or the project-docs slot (both already have their own
+   floor). `0` disables the gate, same idiom as the smart-corpus funnel.
 5. **`NAVIGATED PAGES`** — the prose the navigator funnel collected,
    one `(wiki/page)`-headed, sender-projected fragment per opened page.
    The header also carries the page's **freshness** —
