@@ -1,0 +1,28 @@
+-- The smart-wiki registry learns each project's `description`.
+--
+-- WHY. A standard consumer's per-turn recall is facts-only, so the memory
+-- needs *something* in the fact corpus saying a project exists before it
+-- can decide whether reading that project's documentation would help. That
+-- something has been a **signpost fact**, written by the smart agent
+-- through a dedicated tool — and the counting says the tool is simply not
+-- called: across the whole training window exactly four projects have ever
+-- had a row written, and the largest undescribed corpus on this deployment
+-- is 1 477 sections with zero. Nothing was lost to concurrency; nobody
+-- ever wrote anything. A nudge already fires on every push and is advice,
+-- which a model is free to ignore, and does.
+--
+-- So the description stops being an ACT somebody must remember and becomes
+-- a PROPERTY of the wiki: authored in the project's own `_meta.md` (a file
+-- the agent rewrites whenever it works) and mirrored here. A project with
+-- no description then has an empty column — countable, displayable,
+-- askable — where a missing act left no trace at all.
+--
+-- Nullable on purpose: absence is a legitimate state, not a defect, and
+-- back-filling it is a separate act on a live memory.
+--
+-- The column is populated for **project** wikis only. An agent's
+-- operational notebook is a smart wiki too and is not a door into
+-- anything; `signposts::status` already draws that line and the projection
+-- draws the same one.
+
+ALTER TABLE smart_wikis ADD COLUMN description TEXT;

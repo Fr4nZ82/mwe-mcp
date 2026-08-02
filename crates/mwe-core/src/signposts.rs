@@ -8,13 +8,33 @@
 //! cannot connect a dot it cannot see.
 //!
 //! A signpost is the dot. It is a short fact, in the owner's own standard
-//! wiki, on the reserved page [`crate::wiki::PROJECTS_FILENAME`], written
-//! by the smart consumer that maintains the project:
+//! wiki, on the reserved page [`crate::wiki::PROJECTS_FILENAME`]:
 //!
 //! - **one description per project** — what it is and what it is for, in
 //!   plain language, [`MAX_DESCRIPTION_CHARS`] at most;
 //! - **one activity line per project per day** — what happened that day,
 //!   [`MAX_ACTIVITY_CHARS`] at most, kept for [`ACTIVITY_WINDOW_DAYS`].
+//!
+//! ## The description is a projection; only the activity line is written
+//!
+//! The two halves reach this page by different routes, and the difference
+//! is the whole point.
+//!
+//! A **description** is a *property* of the project — it changes when the
+//! project changes, not when something happens. So it is authored once in
+//! the project's own `_meta.md`, mirrored into `smart_wikis.description`,
+//! and written here by [`project_descriptions`] on every sweep. Nobody
+//! calls anything. It used to be written by the smart consumer through
+//! [`write`], and the counting is why that stopped: across the whole
+//! recorded window, four projects on this deployment ever had a row
+//! written, and the largest undescribed corpus was 1 477 sections with
+//! none. Nothing was lost to concurrency — **nobody ever wrote anything**.
+//! A nudge fired on every push and was ignored, because a nudge is advice,
+//! and an act nobody performs leaves no trace to notice. A property does:
+//! an undescribed project is an empty column.
+//!
+//! An **activity line** is an *event*, so it stays a write — there is
+//! nothing to derive it from. [`write`] remains its path.
 //!
 //! ## A signpost is not a record
 //!
@@ -107,6 +127,11 @@ pub enum SignpostError {
     /// Underlying `SQLite` error.
     #[error("signpost db: {0}")]
     Db(#[from] sqlx::Error),
+
+    /// The smart-wiki registry could not be read — the projection sweep's
+    /// only hard dependency, since it is what says which projects exist.
+    #[error("signpost registry: {0}")]
+    Registry(#[from] crate::sections::SectionError),
 
     /// The target wiki is not a smart wiki. Signposts point at project
     /// wikis; a standard wiki needs no pointer, its facts are recalled.
@@ -388,6 +413,140 @@ pub struct SignpostStatus {
     pub last_activity_day: Option<String>,
 }
 
+/// What one sweep of [`project_descriptions`] changed.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ProjectionReport {
+    /// Description facts newly written.
+    pub created: usize,
+    /// Description facts whose text moved and were superseded.
+    pub updated: usize,
+    /// Projects whose description was already identical — no write.
+    pub unchanged: usize,
+    /// Description facts retired because the project no longer declares
+    /// one (the line was removed from `_meta.md`).
+    pub retired: usize,
+    /// Registry rows that could not be projected — the wiki is gone from
+    /// the tree, or is group-owned. Logged, never fatal.
+    pub skipped: usize,
+}
+
+/// Project every project's `smart_wikis.description` into a signpost fact
+/// on its owner's `projects.md`, so ordinary flat recall can find it.
+///
+/// **Why a projection and not the thing itself.** A standard consumer's
+/// per-turn recall reads the fact corpus only, so a description that lives
+/// solely in a registry column is invisible to it: the door has to *be a
+/// fact*, found by the same ranking as every other door, or it needs a
+/// special case in the prompt that grows with the project count. So the
+/// description is authored once as a property (the wiki's own `_meta`) and
+/// mirrored here as data. Two places, one direction, and they cannot
+/// diverge because only one of them is ever written by hand.
+///
+/// This **replaces** the description half of [`write`] as the way the fact
+/// comes to exist. That path required a smart agent to remember a separate
+/// tool call, and the counting says it did not: across the whole recorded
+/// window, four projects on this deployment ever had a row written and the
+/// largest undescribed corpus was 1 477 sections with none. A nudge fired
+/// on every push and was ignored, because a nudge is advice.
+///
+/// Idempotent, and cheap when nothing moved: one scan of each owner's
+/// signpost page, then a write only where the text actually differs.
+/// Removing the line from `_meta.md` retires the fact — otherwise a door
+/// would stay open onto a project that had stopped describing itself.
+///
+/// # Errors
+///
+/// Storage failures. A single unprojectable wiki is counted in
+/// [`ProjectionReport::skipped`] and does not fail the sweep.
+pub async fn project_descriptions(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: Arc<dyn Embedder>,
+) -> Result<ProjectionReport> {
+    let mut report = ProjectionReport::default();
+    let page = PathBuf::from(crate::wiki::PROJECTS_FILENAME);
+
+    for row in crate::sections::list_smart_wikis(pool).await? {
+        let Ok(project_wiki_id) = WikiId::parse(&row.wiki_id) else {
+            report.skipped += 1;
+            continue;
+        };
+        let target = match target_owner(tree, &project_wiki_id)
+            .and_then(|owner| target_for(tree, &project_wiki_id, owner))
+        {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::debug!(
+                    wiki_id = %row.wiki_id,
+                    error = %e,
+                    "signpost projection: wiki not projectable, skipped"
+                );
+                report.skipped += 1;
+                continue;
+            },
+        };
+
+        let existing: Vec<FactIndexRow> =
+            fact_index::find_active_by_source_path(pool, &target.source_path)
+                .await?
+                .into_iter()
+                .filter(|r| is_signpost_for(r, &row.wiki_id))
+                .collect();
+        let previous = existing.iter().find(|r| has_topic(r, TOPIC_DESCRIPTION));
+
+        let Some(text) = row.description.as_deref() else {
+            // The wiki stopped declaring a description: close the door
+            // rather than leave it open onto nothing.
+            if let Some(prev) = previous {
+                capture::wiki_forget(
+                    tree,
+                    pool,
+                    Arc::clone(&embedder),
+                    &prev.fact_id,
+                    "signpost_description_withdrawn",
+                )
+                .await?;
+                report.retired += 1;
+            }
+            continue;
+        };
+
+        let body = description_body(&target.title, text);
+        match put(
+            pool,
+            tree,
+            Arc::clone(&embedder),
+            PutRequest {
+                wiki_id: target.owner_wiki_id.as_str(),
+                page: &page,
+                body,
+                owner: &target.owner_principal,
+                allow: &target.allow,
+                topics: description_topics(&row.wiki_id),
+                previous,
+            },
+        )
+        .await?
+        {
+            SignpostOutcome::Created(_) => report.created += 1,
+            SignpostOutcome::Updated(_) => report.updated += 1,
+            SignpostOutcome::Unchanged(_) => report.unchanged += 1,
+        }
+    }
+
+    if report.created + report.updated + report.retired > 0 {
+        tracing::info!(
+            created = report.created,
+            updated = report.updated,
+            retired = report.retired,
+            unchanged = report.unchanged,
+            skipped = report.skipped,
+            "signpost projection: descriptions synced from the registry"
+        );
+    }
+    Ok(report)
+}
+
 /// Read a project's signpost state, for the staleness nudge
 /// `wiki_admin_push` returns.
 ///
@@ -503,17 +662,7 @@ struct Target {
 /// owner's own standard wiki — the signpost is a fact about the owner's
 /// world, so it lives where their facts live, not in the project.
 fn resolve_target(tree: &WikiTree, caller: &str, project_wiki_id: &WikiId) -> Result<Target> {
-    let project = tree.locate(project_wiki_id)?;
-    if !project.meta().smart {
-        return Err(SignpostError::NotSmart {
-            wiki_id: project_wiki_id.as_str().to_owned(),
-        });
-    }
-    let Principal::User(owner) = tree.resolve_scope_principal(project.meta())? else {
-        return Err(SignpostError::GroupOwned {
-            wiki_id: project_wiki_id.as_str().to_owned(),
-        });
-    };
+    let owner = target_owner(tree, project_wiki_id)?;
     if owner != caller {
         return Err(SignpostError::NotOwner {
             wiki_id: project_wiki_id.as_str().to_owned(),
@@ -521,6 +670,32 @@ fn resolve_target(tree: &WikiTree, caller: &str, project_wiki_id: &WikiId) -> Re
             caller: caller.to_owned(),
         });
     }
+    target_for(tree, project_wiki_id, owner)
+}
+
+/// The user a project's signposts belong to — the same check
+/// [`resolve_target`] makes, minus the caller comparison.
+fn target_owner(tree: &WikiTree, project_wiki_id: &WikiId) -> Result<String> {
+    let project = tree.locate(project_wiki_id)?;
+    if !project.meta().smart {
+        return Err(SignpostError::NotSmart {
+            wiki_id: project_wiki_id.as_str().to_owned(),
+        });
+    }
+    match tree.resolve_scope_principal(project.meta())? {
+        Principal::User(owner) => Ok(owner),
+        Principal::Group(_) => Err(SignpostError::GroupOwned {
+            wiki_id: project_wiki_id.as_str().to_owned(),
+        }),
+    }
+}
+
+/// Where a project's signposts live, and under whose name. Split out of
+/// [`resolve_target`] so the **server** can write a projection for a wiki
+/// nobody is currently calling on behalf of — the ownership check is a
+/// property of a *caller*, and there is no caller here.
+fn target_for(tree: &WikiTree, project_wiki_id: &WikiId, owner: String) -> Result<Target> {
+    let project = tree.locate(project_wiki_id)?;
     // The scope principal of a root identity wiki IS its wiki id, so the
     // owner's standard wiki is reachable by that name.
     let owner_wiki_id = owner_wiki_id(&owner)?;
@@ -1197,5 +1372,147 @@ mod tests {
             description_body("AcmeSigns", "un sistema"),
             "AcmeSigns — un sistema"
         );
+    }
+    /// Seed the registry the way `project_smart_wiki_registry` would, so the
+    /// projection has something to mirror without dragging in a tree sweep.
+    async fn register(pool: &SqlitePool, wiki_id: &str, description: Option<&str>) {
+        crate::sections::upsert_smart_wiki(
+            pool,
+            &crate::sections::SmartWikiRow {
+                wiki_id: wiki_id.to_owned(),
+                slug: "acmesigns".to_owned(),
+                owner_id: Principal::User("alice".to_owned()),
+                shared_with: Vec::new(),
+                project_id: None,
+                wiki_type: "project".to_owned(),
+                description: description.map(str::to_owned),
+            },
+        )
+        .await
+        .expect("register");
+    }
+
+    async fn description_of(pool: &SqlitePool) -> Option<String> {
+        fact_index::find_active_by_source_path(pool, "wikis/alice/projects.md")
+            .await
+            .expect("scan")
+            .into_iter()
+            .find(|r| has_topic(r, TOPIC_DESCRIPTION))
+            .map(|r| r.text)
+    }
+
+    /// The whole point: a description authored as a PROPERTY becomes a fact
+    /// the ordinary flat recall can rank, without anyone calling a tool.
+    #[tokio::test]
+    async fn projection_writes_the_registry_description_as_a_fact() {
+        let dir = tempdir().unwrap();
+        let tree = seed_tree(dir.path(), "");
+        let pool = make_pool().await;
+        register(&pool, "alice-acmesigns", Some("Signage for shop windows.")).await;
+
+        let r = project_descriptions(&pool, &tree, embedder())
+            .await
+            .expect("project");
+        assert_eq!((r.created, r.updated, r.retired), (1, 0, 0));
+        let body = description_of(&pool).await.expect("a description fact");
+        assert!(body.contains("Signage for shop windows."));
+        assert!(
+            body.contains("AcmeSigns"),
+            "the project's title leads the line"
+        );
+    }
+
+    /// Re-running must not churn the page, the embeddings or the recall
+    /// counters — the sweep runs on every safety-net tick.
+    #[tokio::test]
+    async fn projection_is_a_no_op_when_nothing_moved() {
+        let dir = tempdir().unwrap();
+        let tree = seed_tree(dir.path(), "");
+        let pool = make_pool().await;
+        register(&pool, "alice-acmesigns", Some("Signage for shop windows.")).await;
+
+        project_descriptions(&pool, &tree, embedder())
+            .await
+            .unwrap();
+        let second = project_descriptions(&pool, &tree, embedder())
+            .await
+            .expect("project");
+        assert_eq!(
+            (second.created, second.updated, second.unchanged),
+            (0, 0, 1)
+        );
+    }
+
+    /// Editing `_meta.md` moves the door sign, and the old one does not
+    /// survive alongside it.
+    #[tokio::test]
+    async fn projection_supersedes_a_changed_description() {
+        let dir = tempdir().unwrap();
+        let tree = seed_tree(dir.path(), "");
+        let pool = make_pool().await;
+        register(&pool, "alice-acmesigns", Some("Signage for shop windows.")).await;
+        project_descriptions(&pool, &tree, embedder())
+            .await
+            .unwrap();
+
+        register(
+            &pool,
+            "alice-acmesigns",
+            Some("Queue displays for pharmacies."),
+        )
+        .await;
+        let r = project_descriptions(&pool, &tree, embedder())
+            .await
+            .expect("project");
+        assert_eq!((r.created, r.updated), (0, 1));
+
+        let live: Vec<String> =
+            fact_index::find_active_by_source_path(&pool, "wikis/alice/projects.md")
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|r| has_topic(r, TOPIC_DESCRIPTION))
+                .map(|r| r.text)
+                .collect();
+        assert_eq!(live.len(), 1, "exactly one description stays active");
+        assert!(live[0].contains("Queue displays"));
+    }
+
+    /// Withdrawing the line closes the door. Leaving the fact behind would
+    /// keep pointing at a project that had stopped describing itself.
+    #[tokio::test]
+    async fn projection_retires_a_withdrawn_description() {
+        let dir = tempdir().unwrap();
+        let tree = seed_tree(dir.path(), "");
+        let pool = make_pool().await;
+        register(&pool, "alice-acmesigns", Some("Signage for shop windows.")).await;
+        project_descriptions(&pool, &tree, embedder())
+            .await
+            .unwrap();
+        assert!(description_of(&pool).await.is_some());
+
+        register(&pool, "alice-acmesigns", None).await;
+        let r = project_descriptions(&pool, &tree, embedder())
+            .await
+            .expect("project");
+        assert_eq!(r.retired, 1);
+        assert!(description_of(&pool).await.is_none());
+    }
+
+    /// A registry row whose wiki has left the tree must not fail the sweep
+    /// for everyone else.
+    #[tokio::test]
+    async fn projection_skips_a_wiki_that_is_gone_and_keeps_going() {
+        let dir = tempdir().unwrap();
+        let tree = seed_tree(dir.path(), "");
+        let pool = make_pool().await;
+        register(&pool, "alice-ghost", Some("A wiki that is not on disk.")).await;
+        register(&pool, "alice-acmesigns", Some("Signage for shop windows.")).await;
+
+        let r = project_descriptions(&pool, &tree, embedder())
+            .await
+            .expect("the sweep survives");
+        assert_eq!(r.skipped, 1);
+        assert_eq!(r.created, 1, "the healthy project still got its door");
     }
 }

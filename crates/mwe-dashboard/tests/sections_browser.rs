@@ -91,6 +91,7 @@ async fn seed_sections(pool: &SqlitePool, wiki_id: &str, owner: &str, shared_wit
             shared_with,
             project_id: Some("abc123".to_owned()),
             wiki_type: "project".to_owned(),
+            description: None,
         },
     )
     .await
@@ -220,6 +221,7 @@ async fn a_shared_wiki_becomes_visible_through_the_registry_row_alone() {
             shared_with: vec![Principal::User("alice".to_owned())],
             project_id: Some("abc123".to_owned()),
             wiki_type: "project".to_owned(),
+            description: None,
         },
     )
     .await

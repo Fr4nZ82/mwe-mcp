@@ -604,6 +604,10 @@ struct SharingState {
     project_id: Option<String>,
     wiki_type: String,
     slug: String,
+    /// Carried for the same reason as `project_id`: a roster edit rewrites
+    /// the whole registry row, and dropping this would blank the project's
+    /// door sign until the next reindex sweep noticed.
+    description: Option<String>,
 }
 
 fn load_sharing(state: &DashboardState, user: &SessionUser, id: &str) -> Result<SharingState> {
@@ -644,11 +648,13 @@ fn load_sharing(state: &DashboardState, user: &SessionUser, id: &str) -> Result<
         .get(serde_yaml::Value::from("project_id"))
         .and_then(|v| v.as_str())
         .map(str::to_owned);
+    let description = meta.door_description();
     Ok(SharingState {
         wiki_id: wiki_id.as_str().to_owned(),
         title: meta.title,
         owner_user,
         shared_with,
+        description,
         project_id,
         wiki_type: meta.wiki_type,
         slug: meta.slug.as_str().to_owned(),
@@ -720,6 +726,7 @@ async fn submit_sharing(
             shared_with: new_roster,
             project_id: sharing.project_id.clone(),
             wiki_type: sharing.wiki_type.clone(),
+            description: sharing.description.clone(),
         },
     )
     .await

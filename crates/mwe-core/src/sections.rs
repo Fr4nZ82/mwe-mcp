@@ -760,6 +760,20 @@ pub struct SmartWikiRow {
     pub project_id: Option<String>,
     /// Free-form tone/label. Does **not** decide smart-ness.
     pub wiki_type: String,
+    /// One authored line saying what this project is about — mirrored from
+    /// the wiki's own `_meta.scope`, and the **only** thing that makes the
+    /// project reachable from a turn that does not name it.
+    ///
+    /// `None` is a legitimate state, not a defect: a project nobody has
+    /// described is simply not offered as a door. It is nullable precisely
+    /// so that gap is *visible* — the mechanism it replaces (a signpost
+    /// fact somebody had to remember to write) left no trace when it was
+    /// skipped, which is how half this deployment's projects went a week
+    /// without one.
+    ///
+    /// Populated for **project** wikis only. An agent's operational
+    /// notebook is a smart wiki too and is nobody's door.
+    pub description: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -790,6 +804,7 @@ struct RawSmartWikiRow {
     shared_with: String,
     project_id: Option<String>,
     wiki_type: String,
+    description: Option<String>,
 }
 
 fn decode_smart_wiki(raw: RawSmartWikiRow) -> Result<SmartWikiRow> {
@@ -803,6 +818,7 @@ fn decode_smart_wiki(raw: RawSmartWikiRow) -> Result<SmartWikiRow> {
         shared_with: principals_from_json(&raw.shared_with)?,
         project_id: raw.project_id,
         wiki_type: raw.wiki_type,
+        description: raw.description,
     })
 }
 
@@ -821,14 +837,16 @@ pub async fn upsert_smart_wiki(pool: &SqlitePool, wiki: &SmartWikiRow) -> Result
     let shared = principals_to_json(&wiki.shared_with)?;
     sqlx::query(
         "INSERT INTO smart_wikis
-             (wiki_id, slug, owner_id, shared_with, project_id, wiki_type, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             (wiki_id, slug, owner_id, shared_with, project_id, wiki_type, description,
+              created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(wiki_id) DO UPDATE SET
              slug        = excluded.slug,
              owner_id    = excluded.owner_id,
              shared_with = excluded.shared_with,
              project_id  = excluded.project_id,
              wiki_type   = excluded.wiki_type,
+             description = excluded.description,
              updated_at  = excluded.updated_at",
     )
     .bind(&wiki.wiki_id)
@@ -837,6 +855,7 @@ pub async fn upsert_smart_wiki(pool: &SqlitePool, wiki: &SmartWikiRow) -> Result
     .bind(&shared)
     .bind(wiki.project_id.as_deref())
     .bind(&wiki.wiki_type)
+    .bind(wiki.description.as_deref())
     .bind(&now)
     .bind(&now)
     .execute(pool)
@@ -864,7 +883,8 @@ pub async fn remove_smart_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<u64> 
 /// `sqlx::Error` + principal decode failures.
 pub async fn list_smart_wikis(pool: &SqlitePool) -> Result<Vec<SmartWikiRow>> {
     let raw = sqlx::query_as::<_, RawSmartWikiRow>(
-        "SELECT wiki_id, slug, owner_id, shared_with, project_id, wiki_type FROM smart_wikis",
+        "SELECT wiki_id, slug, owner_id, shared_with, project_id, wiki_type, description \
+         FROM smart_wikis",
     )
     .fetch_all(pool)
     .await?;
@@ -878,8 +898,8 @@ pub async fn list_smart_wikis(pool: &SqlitePool) -> Result<Vec<SmartWikiRow>> {
 /// `sqlx::Error` + principal decode failures.
 pub async fn find_smart_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<Option<SmartWikiRow>> {
     let raw = sqlx::query_as::<_, RawSmartWikiRow>(
-        "SELECT wiki_id, slug, owner_id, shared_with, project_id, wiki_type FROM smart_wikis \
-         WHERE wiki_id = ?",
+        "SELECT wiki_id, slug, owner_id, shared_with, project_id, wiki_type, description \
+         FROM smart_wikis WHERE wiki_id = ?",
     )
     .bind(wiki_id)
     .fetch_optional(pool)
@@ -1168,10 +1188,16 @@ mod tests {
             ],
             project_id: Some("abc123".to_owned()),
             wiki_type: "project".to_owned(),
+            description: Some("The print-shop ordering system.".to_owned()),
         };
         upsert_smart_wiki(&pool, &row).await.unwrap();
         let read = find_smart_wiki(&pool, "alice-proj").await.unwrap().unwrap();
         assert_eq!(read, row);
+        assert_eq!(
+            read.description.as_deref(),
+            Some("The print-shop ordering system."),
+            "the door sign round-trips through the registry"
+        );
 
         // A sharing edit is one row, not one row per section.
         let revoked = SmartWikiRow {

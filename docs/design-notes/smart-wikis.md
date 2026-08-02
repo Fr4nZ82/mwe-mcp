@@ -119,9 +119,49 @@ live in `fact_index` — it has its own pair of tables
   a document, not a governed claim, and it exists exactly as long as its
   page does.
 - **`smart_wikis`** — a queryable projection of each smart wiki's
-  `_meta.md`: resolved owner, `shared_with`, `project_id`, `wiki_type`.
-  The file stays the source of truth; the table exists so the engine can
-  ask *in SQL* which wikis are smart and who may read them.
+  `_meta.md`: resolved owner, `shared_with`, `project_id`, `wiki_type`,
+  and `description` (migration `0067`). The file stays the source of
+  truth; the table exists so the engine can ask *in SQL* which wikis are
+  smart, who may read them, and what each project is about.
+
+  **`description` is the project's door sign**, and it is read from the
+  wiki's own `_meta.scope` via
+  [`WikiMeta::door_description`](../../crates/mwe-core/src/wiki.rs) —
+  no second field. `scope` already means *"prose description of this
+  container — what goes in here"*; on a standard wiki that prose is the
+  classifier's placement signal, and a smart wiki is never a placement
+  target (it is filtered out of the router window), so the field is free
+  here and the two readings cannot collide.
+
+  It is populated for **project** wikis only. An agent's operational
+  notebook is a smart wiki too and is nobody's door — it holds one
+  agent's working notes rather than a subject anyone would ask about —
+  so `door_description` declines on **either** marker, `is_agent` or
+  `wiki_type: agent`, because production carries a wiki with the type
+  and no on-disk flag. `NULL` is a legitimate state, not a defect: an
+  undescribed project is simply not offered as a door, and the column
+  makes that gap *visible* where the mechanism it replaces (a signpost
+  fact somebody had to remember to write) left no trace at all when it
+  was skipped.
+
+  Any path that rewrites a registry row must carry the description
+  through — the dashboard's sharing editor rebuilds the whole row, and
+  dropping it would blank a project's door until the next reindex sweep.
+
+  **The column is not where recall reads it from.** A standard consumer's
+  per-turn recall reads the *fact* corpus only, so a door that lived just
+  in a column would be invisible to the ranking that fills the block.
+  [`signposts::project_descriptions`](../../crates/mwe-core/src/signposts.rs)
+  therefore mirrors each description onto the owner's `projects.md` as an
+  ordinary signpost fact, on every full sweep, right after the registry
+  refresh. Idempotent: a write happens only where the text actually
+  moved, an unchanged description is a no-op, and withdrawing the line
+  from `_meta.md` **retires** the fact rather than leaving a door open
+  onto a project that stopped describing itself.
+
+  So the description exists in two places and cannot diverge, because only
+  one of them is ever written by hand: `_meta.md` is authored, the column
+  and the fact are both derived from it.
 - **`wiki_sections_fts`** (migration `0065`) — an FTS5 index over the
   section text and its heading chain, maintained by triggers and
   regenerable at any time. It is what lets a project wiki be searched by

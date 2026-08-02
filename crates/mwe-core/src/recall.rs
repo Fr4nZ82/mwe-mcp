@@ -2584,6 +2584,7 @@ mod tests {
                 shared_with,
                 project_id: None,
                 wiki_type: "project".to_owned(),
+                description: None,
             },
         )
         .await

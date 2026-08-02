@@ -742,6 +742,48 @@ fn plan_page_source_paths(tree: &WikiTree) -> anyhow::Result<HashSet<String>> {
 
 // ---------- smart_wikis registry projection ----------
 
+/// Bring both derivations of `_meta.md` back in step, in order, before a
+/// full sweep walks the tree.
+///
+/// Both are best-effort: neither is required to answer a request
+/// correctly, and a hard failure here would cost the whole sweep.
+///
+/// 1. **The registry.** A hand edit to a wiki's `smart:` flag or
+///    `shared_with:` roster lands here — including a revoke, which must
+///    close the recall window on this tick even if nobody touched the
+///    dashboard sharing route.
+/// 2. **The descriptions.** Each project's door sign is mirrored out of
+///    the registry and into the owner's signpost page **as a fact**,
+///    because a standard consumer's per-turn recall reads the fact corpus
+///    only: a door that lives just in a column cannot be found by the
+///    ranking that fills the block. Second, and unconditional, since step
+///    1 may have just changed or withdrawn one.
+async fn refresh_smart_projections(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: &Arc<dyn Embedder>,
+) {
+    match project_smart_wiki_registry(pool, tree).await {
+        Ok(r) if r.projected > 0 || r.removed > 0 => tracing::debug!(
+            projected = r.projected,
+            removed = r.removed,
+            "reindex_full: smart registry refreshed"
+        ),
+        Ok(_) => {},
+        Err(e) => tracing::warn!(error = %e, "reindex_full: smart registry projection failed"),
+    }
+    match crate::signposts::project_descriptions(pool, tree, Arc::clone(embedder)).await {
+        Ok(r) if r.created + r.updated + r.retired > 0 => tracing::debug!(
+            created = r.created,
+            updated = r.updated,
+            retired = r.retired,
+            "reindex_full: project descriptions projected"
+        ),
+        Ok(_) => {},
+        Err(e) => tracing::warn!(error = %e, "reindex_full: description projection failed"),
+    }
+}
+
 /// Outcome of one [`project_smart_wiki_registry`] pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SmartRegistryReport {
@@ -809,6 +851,7 @@ pub async fn project_smart_wiki_registry(
                 shared_with: d.meta.shared_with.clone(),
                 project_id,
                 wiki_type: d.meta.wiki_type.clone(),
+                description: d.meta.door_description(),
             },
         )
         .await?;
@@ -1047,20 +1090,7 @@ pub async fn reindex_full(
     embedder: Arc<dyn Embedder>,
 ) -> Result<ReindexFullReport> {
     let mut report = ReindexFullReport::default();
-    // Refresh the `smart_wikis` registry first: it is a projection of the
-    // `_meta.md` files this sweep is about to walk, so a hand edit to a
-    // wiki's `smart:` flag or `shared_with:` roster lands here — including
-    // a revoke, which must close the recall window on the next tick even
-    // if nobody hit the dashboard sharing route.
-    match project_smart_wiki_registry(pool, tree).await {
-        Ok(r) if r.projected > 0 || r.removed > 0 => tracing::debug!(
-            projected = r.projected,
-            removed = r.removed,
-            "reindex_full: smart registry refreshed"
-        ),
-        Ok(_) => {},
-        Err(e) => tracing::warn!(error = %e, "reindex_full: smart registry projection failed"),
-    }
+    refresh_smart_projections(pool, tree, &embedder).await;
     // Standard wikis are compiler OUTPUT — their fact_index is owned by
     // the buffer→promote→compile chain. `reindex_file` is standard-wiki-safe
     // per event (offset-and-existence repair only), but the periodic tick

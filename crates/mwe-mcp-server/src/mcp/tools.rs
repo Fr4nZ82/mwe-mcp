@@ -2664,7 +2664,7 @@ fn signpost_error_to_tool_error(err: &mwe_core::signposts::SignpostError) -> Too
             (ToolErrorClass::InvalidInput, err.to_string())
         },
         E::Wiki(_) => (ToolErrorClass::NotFound, err.to_string()),
-        E::Capture(_) | E::FactIndex(_) | E::Db(_) => {
+        E::Capture(_) | E::FactIndex(_) | E::Db(_) | E::Registry(_) => {
             (ToolErrorClass::InternalError, err.to_string())
         },
     };

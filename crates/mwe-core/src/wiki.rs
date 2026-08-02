@@ -444,6 +444,43 @@ pub struct WikiMeta {
 }
 
 impl WikiMeta {
+    /// The one authored line that makes this wiki reachable from a turn
+    /// that does not name it — its **door sign**, mirrored into
+    /// `smart_wikis.description` and from there into the owner's signpost
+    /// page.
+    ///
+    /// Read from [`Self::scope`], which already means *"prose description
+    /// of this container — what goes in here"*. On a standard wiki that
+    /// prose is a placement signal for the classifier; a smart wiki is
+    /// never a placement target (it is filtered out of the router window),
+    /// so the field is free here and the two readings cannot collide.
+    /// Reusing it is deliberate: a near-synonym field would be one more
+    /// thing to keep in step for no gain in meaning.
+    ///
+    /// `None` — the honest answer for an undescribed wiki — in three
+    /// cases, and the last two are the point:
+    ///
+    /// 1. no `scope`, or only whitespace;
+    /// 2. **an agent's operational wiki.** It is a smart wiki too, but it
+    ///    holds one agent's working notes rather than a subject anyone
+    ///    would ask about, so it is nobody's door.
+    ///    [`crate::signposts::status`] already declines to nudge these; the
+    ///    same two markers are checked here, so a stray `scope` on an agent
+    ///    wiki cannot quietly become one.
+    /// 3. a **standard** wiki — its `scope` is the classifier's placement
+    ///    signal and nothing to do with doors.
+    #[must_use]
+    pub fn door_description(&self) -> Option<String> {
+        if !self.smart || self.is_agent || self.wiki_type == AGENT_WIKI_TYPE {
+            return None;
+        }
+        self.scope
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    }
+
     /// Parse a `_meta.md` body (frontmatter + optional prose body).
     ///
     /// `path` is informational — surfaced inside errors so the caller can
@@ -2771,6 +2808,64 @@ mod tests {
             updated: None,
             extra: serde_yaml::Mapping::new(),
         }
+    }
+
+    /// A project wiki's `scope` IS its door sign — the one line that makes
+    /// it reachable from a turn that never names it.
+    #[test]
+    fn door_description_reads_a_project_wikis_scope() {
+        let id = WikiId::parse("alice-proj").unwrap();
+        let mut meta = typed_meta(&id, None, "proj", "project");
+        meta.smart = true;
+        meta.scope = Some("  The print-shop ordering system.  ".to_owned());
+        assert_eq!(
+            meta.door_description().as_deref(),
+            Some("The print-shop ordering system."),
+            "trimmed, and taken verbatim otherwise"
+        );
+
+        meta.scope = Some("   ".to_owned());
+        assert_eq!(
+            meta.door_description(),
+            None,
+            "whitespace is not a description — an empty column is the honest answer"
+        );
+    }
+
+    /// An agent's operational notebook is a smart wiki too, and is nobody's
+    /// door: it holds one agent's working notes, not a subject anyone asks
+    /// about. Pinned on BOTH markers, because production carries a wiki with
+    /// `wiki_type: agent` and no `is_agent` flag on disk.
+    #[test]
+    fn door_description_declines_an_agent_wiki_on_either_marker() {
+        let id = WikiId::parse("alice-cc").unwrap();
+
+        let mut flagged = typed_meta(&id, None, "cc", "project");
+        flagged.smart = true;
+        flagged.is_agent = true;
+        flagged.scope = Some("my working notes".to_owned());
+        assert_eq!(flagged.door_description(), None, "is_agent alone is enough");
+
+        let mut typed = typed_meta(&id, None, "cc", AGENT_WIKI_TYPE);
+        typed.smart = true;
+        typed.scope = Some("my working notes".to_owned());
+        assert_eq!(
+            typed.door_description(),
+            None,
+            "wiki_type alone is enough — the on-disk marker may be missing"
+        );
+    }
+
+    /// A standard wiki's `scope` is the classifier's placement signal and
+    /// has nothing to do with doors; reading it as one would turn every
+    /// notebook into a project.
+    #[test]
+    fn door_description_declines_a_standard_wiki() {
+        let id = WikiId::parse("alice").unwrap();
+        let mut meta = typed_meta(&id, None, "alice", "wiki-user");
+        meta.scope = Some("everything about Alice".to_owned());
+        assert!(!meta.smart);
+        assert_eq!(meta.door_description(), None);
     }
 
     #[test]
