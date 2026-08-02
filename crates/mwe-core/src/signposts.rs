@@ -451,6 +451,9 @@ pub struct ProjectionReport {
     /// Registry rows that could not be projected — the wiki is gone from
     /// the tree, or is group-owned. Logged, never fatal.
     pub skipped: usize,
+    /// Door-sign pages rewritten into readable shape. Zero when every
+    /// page's bytes already matched what the renderer would produce.
+    pub rendered: usize,
 }
 
 /// Project every project's `smart_wikis.description` into a signpost fact
@@ -488,6 +491,7 @@ pub async fn project_descriptions(
 ) -> Result<ProjectionReport> {
     let mut report = ProjectionReport::default();
     let page = PathBuf::from(crate::wiki::PROJECTS_FILENAME);
+    let mut pages_touched: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     for row in crate::sections::list_smart_wikis(pool).await? {
         let Ok(project_wiki_id) = WikiId::parse(&row.wiki_id) else {
@@ -509,6 +513,7 @@ pub async fn project_descriptions(
             },
         };
 
+        pages_touched.insert(target.source_path.clone());
         let existing: Vec<FactIndexRow> =
             fact_index::find_active_by_source_path(pool, &target.source_path)
                 .await?
@@ -557,17 +562,105 @@ pub async fn project_descriptions(
         }
     }
 
-    if report.created + report.updated + report.retired > 0 {
+    // Recompose every page the sweep touched. Cheap when nothing moved —
+    // an unchanged page is compared and left alone — and only correct
+    // because this sweep is the page's single writer.
+    for path in pages_touched {
+        match render_page(pool, tree, &path).await {
+            Ok(true) => report.rendered += 1,
+            Ok(false) => {},
+            Err(e) => tracing::warn!(
+                source_path = %path,
+                error = %e,
+                "signpost projection: page render failed, markers left as they were"
+            ),
+        }
+    }
+
+    if report.created + report.updated + report.retired + report.rendered > 0 {
         tracing::info!(
             created = report.created,
             updated = report.updated,
             retired = report.retired,
             unchanged = report.unchanged,
             skipped = report.skipped,
+            rendered = report.rendered,
             "signpost projection: descriptions synced from the registry"
         );
     }
     Ok(report)
+}
+
+/// Rewrite the owner's door-sign page as a page a human can read.
+///
+/// The page is a run of `{{f=…}}` fact regions appended in write order —
+/// no title, projects interleaved, and a blank-line scar wherever a
+/// retired region was cut out. Nothing composes it, because the narrative
+/// compiler is deliberately fenced off this page (it would dissolve the
+/// markers the recall path matches on) and nothing was ever put in its
+/// place.
+///
+/// This is that something. It is **only possible now**: since the
+/// descriptions became a projection, the server is the page's single
+/// writer and every byte on it is derived, so the file can simply be
+/// rebuilt rather than patched around. The markers are re-emitted
+/// verbatim — they are the recall anchors — and each fact's byte offsets
+/// are re-stamped to where they actually landed.
+///
+/// Deterministic and idempotent: same facts in, same bytes out, and an
+/// unchanged page is not rewritten at all.
+///
+/// # Errors
+///
+/// Filesystem and storage failures.
+async fn render_page(pool: &SqlitePool, tree: &WikiTree, source_path: &str) -> Result<bool> {
+    let rows = fact_index::find_active_by_source_path(pool, source_path).await?;
+    if rows.is_empty() {
+        return Ok(false);
+    }
+
+    // One section per project, ordered by title so the page does not
+    // reshuffle when an unrelated project is touched.
+    let mut by_project: std::collections::BTreeMap<String, Vec<&FactIndexRow>> =
+        std::collections::BTreeMap::new();
+    for row in &rows {
+        let Some(project) = project_of(row) else {
+            continue;
+        };
+        by_project.entry(project).or_default().push(row);
+    }
+
+    let mut out = String::from(
+        "# Projects\n\nWhat each of these is, in one line. The work itself lives in the \nproject's own wiki — this page only says the projects exist.\n",
+    );
+    let mut spans: Vec<(FactId, usize, usize)> = Vec::new();
+    for rows in by_project.values() {
+        for row in rows {
+            let marker = capture::render_marker(&row.fact_id, &row.text);
+            out.push('\n');
+            let start = out.len();
+            out.push_str(&marker);
+            spans.push((row.fact_id.clone(), start, out.len()));
+            out.push('\n');
+        }
+    }
+
+    let abs = tree.workdir().join(source_path);
+    if std::fs::read_to_string(&abs).is_ok_and(|existing| existing == out) {
+        return Ok(false);
+    }
+    crate::wiki::atomic_write(&abs, out.as_bytes())?;
+    for (fact_id, start, end) in spans {
+        fact_index::move_region(
+            pool,
+            &fact_id,
+            source_path,
+            Some(i64::try_from(start).unwrap_or(0)),
+            Some(i64::try_from(end).unwrap_or(0)),
+        )
+        .await?;
+    }
+    Ok(true)
 }
 
 /// Read a project's signpost state, for the staleness nudge
@@ -1619,5 +1712,42 @@ mod tests {
         assert!(!crate::wiki::is_signpost_page(
             "wikis/alice/my_projects_notes.md"
         ));
+    }
+    /// The page a human opens: a title, one region per project, no scars.
+    /// Possible only because the server is now its single writer.
+    #[tokio::test]
+    async fn the_door_sign_page_is_composed_not_appended() {
+        let dir = tempdir().unwrap();
+        let tree = seed_tree(dir.path(), "");
+        let pool = make_pool().await;
+        register(&pool, "alice-acmesigns", Some("Signage for shop windows.")).await;
+
+        let r = project_descriptions(&pool, &tree, embedder())
+            .await
+            .unwrap();
+        assert_eq!(r.rendered, 1);
+
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/projects.md")).unwrap();
+        assert!(page.starts_with("# Projects"), "got: {page:?}");
+        assert!(page.contains("Signage for shop windows."));
+        assert!(!page.contains("\n\n\n"), "no blank-line scars: {page:?}");
+
+        // The offsets are re-stamped to where the marker actually landed,
+        // so the region the DB points at is the region on disk.
+        let row = &fact_index::find_active_by_source_path(&pool, "wikis/alice/projects.md")
+            .await
+            .unwrap()[0];
+        let (start, end) = (
+            usize::try_from(row.region_start.unwrap()).unwrap(),
+            usize::try_from(row.region_end.unwrap()).unwrap(),
+        );
+        assert!(page[start..end].starts_with("{{f="));
+        assert!(page[start..end].contains("Signage for shop windows."));
+
+        // Idempotent: a second sweep finds the bytes already right.
+        let again = project_descriptions(&pool, &tree, embedder())
+            .await
+            .unwrap();
+        assert_eq!(again.rendered, 0, "an unchanged page is not rewritten");
     }
 }

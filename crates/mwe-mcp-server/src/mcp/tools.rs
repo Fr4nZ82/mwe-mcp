@@ -2269,6 +2269,21 @@ struct WikiAdminPushArgs {
     /// for last-writer-wins.
     #[serde(default)]
     expected_op_log_head: Option<i64>,
+    /// One plain-language line saying what this push was about, recorded
+    /// as today's entry in the owner's project diary.
+    ///
+    /// A **field on the call that already carries the work**, rather than
+    /// a second call afterwards: the diary is the one half of the signpost
+    /// channel that cannot be derived from anything — nobody can
+    /// reconstruct *what happened on Tuesday* from a file — so it has to
+    /// be told at the moment it happens or it is lost. Asking for it here
+    /// removes the round trip and the "remember to", which is what the
+    /// separate tool depended on and did not get.
+    ///
+    /// Optional. Omitted, or empty, means no diary line for this push;
+    /// over the cap the push is refused, never truncated.
+    #[serde(default)]
+    activity: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2381,6 +2396,12 @@ pub(super) async fn call_wiki_admin_push(
             }
         }
     }
+    // The diary line rides the push that carried the work. Written by the
+    // server, so the diary page keeps exactly one writer and no consumer
+    // can damage it; refused rather than truncated when over the cap, like
+    // every other signpost field.
+    let diary =
+        record_push_activity(state, identity, &resp.wiki_id, args.activity.as_deref()).await?;
     Ok(json!({
         "wiki_id": resp.wiki_id.as_str(),
         "ops_applied": {
@@ -2401,7 +2422,58 @@ pub(super) async fn call_wiki_admin_push(
         // here — a nudge attached to an action it already performs beats
         // "remember at the end of the session", because sessions end
         // abruptly. `null` when the signposts are current.
+        // What the `activity` field on THIS call recorded: `"written"`,
+        // `"unchanged"` when today's line already said the same thing, or
+        // `null` when the field was omitted.
+        "diary": diary,
         "signpost_hint": signpost_hint(state, &resp.wiki_id).await,
+    }))
+}
+
+/// Record this push's `activity` line in the owner's project diary.
+///
+/// Returns what happened, for the ack, or `None` when the caller said
+/// nothing. Errors are **surfaced**, not swallowed: an over-long line is
+/// the caller's to fix, and silently dropping it would leave an agent
+/// believing it had written a diary entry it had not.
+///
+/// The day is **UTC**, matching `signpost_hint`'s own idea of "today" so
+/// the two cannot disagree about whether this project has been diarised.
+/// A per-user timezone is stored (`enrollment_users.timezone`) and is not
+/// yet read by anything, so consuming it here would be the first — and a
+/// push near local midnight would then be dated a day off from the hint
+/// that asked for it. Worth fixing, but as one change across both, not as
+/// a silent divergence introduced here.
+async fn record_push_activity(
+    state: &McpState,
+    identity: &IdentityProfile,
+    wiki_id: &WikiId,
+    activity: Option<&str>,
+) -> Result<Option<&'static str>, ToolError> {
+    let text = activity.map(str::trim).filter(|t| !t.is_empty());
+    let Some(text) = text else {
+        return Ok(None);
+    };
+    let day = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let report = mwe_core::signposts::write(
+        &state.pool,
+        &state.tree,
+        Arc::clone(&state.embedder),
+        &identity.sender_id,
+        mwe_core::signposts::SignpostRequest {
+            project_wiki_id: wiki_id.clone(),
+            description: None,
+            activity: Some(mwe_core::signposts::ActivityLine {
+                day,
+                text: text.to_owned(),
+            }),
+        },
+    )
+    .await
+    .map_err(|e| signpost_error_to_tool_error(&e))?;
+    Ok(Some(match report.activity {
+        Some(mwe_core::signposts::SignpostOutcome::Unchanged(_)) => "unchanged",
+        _ => "written",
     }))
 }
 
@@ -2419,14 +2491,21 @@ async fn signpost_hint(state: &McpState, wiki_id: &WikiId) -> Option<String> {
     };
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     if !status.has_description {
+        // Points at the FILE, not at a tool. The description is a property
+        // of the wiki now: written once in `_meta.md`, mirrored into the
+        // registry and projected into the owner's memory by the server. A
+        // hint asking for one more call is exactly what this deployment
+        // ignored on every push for weeks.
         return Some(format!(
-            "This project has no signpost yet, so the owner's standard memory does not know it exists. Call `wiki_admin_signpost` with a short non-technical `description` (max {} chars).",
+            "This project has no description, so the owner's standard memory does not know it exists. Add a `scope:` line to this wiki's `_meta.md` — one short non-technical sentence, max {} chars — and push it. The server does the rest; there is nothing else to call.",
             mwe_core::signposts::MAX_DESCRIPTION_CHARS
         ));
     }
     if status.last_activity_day.as_deref() != Some(today.as_str()) {
+        // Points at the FIELD on the call that just arrived, not at a
+        // second call after it.
         return Some(format!(
-            "No activity signpost for {today} yet. If this push carried real work, call `wiki_admin_signpost` with an `activity` line for today (max {} chars, plain language).",
+            "No diary line for {today} yet. If this push carried real work, pass `activity` on the push itself — one plain-language sentence, max {} chars. No separate call.",
             mwe_core::signposts::MAX_ACTIVITY_CHARS
         ));
     }

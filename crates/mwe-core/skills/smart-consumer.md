@@ -1,7 +1,7 @@
 ---
 name: smart-consumer
-version: 1.17.0
-description: "Project-bound mode for smart consumers: authoritative management of a project's smart wiki via wiki_admin_push/pull (whole, narrowed by paths, or shape-only) + project signposts (wiki_admin_signpost, so the user's standard memory knows the project exists) + _briefing.md lifecycle + cooperative lease + graceful degradation on token revoke. First connect is NOT here — it lives in smart-onboarding, fetched when the server volunteers first_connect.hint. Smart wikis are markerless and content-indexed — the consumer writes plain markdown freely (create / edit / move / rename / delete pages), exactly the way this repo's engineering wiki is maintained; the ACL is wiki-level in _meta (no per-fragment markers or ACL — those are the pillar of standard memory wikis only). Superset (group 17): the user↔agent conversation ALSO runs the standard personal-memory pipeline via wiki_ingest_message, joined to the project wiki by provenance links (authored_refs), with a per-message router (drop / personal-fact→standard / document-import / project-wiki / your-operational-wiki). Auto recall+capture, never dump everything into the user's standard memory."
+version: 1.18.0
+description: "Project-bound mode for smart consumers: authoritative management of a project's smart wiki via wiki_admin_push/pull (whole, narrowed by paths, or shape-only) + project signposts (the description is `_meta.scope`, the diary is `wiki_admin_push`'s `activity` field — the server writes both, so the user's standard memory knows the project exists) + _briefing.md lifecycle + cooperative lease + graceful degradation on token revoke. First connect is NOT here — it lives in smart-onboarding, fetched when the server volunteers first_connect.hint. Smart wikis are markerless and content-indexed — the consumer writes plain markdown freely (create / edit / move / rename / delete pages), exactly the way this repo's engineering wiki is maintained; the ACL is wiki-level in _meta (no per-fragment markers or ACL — those are the pillar of standard memory wikis only). Superset (group 17): the user↔agent conversation ALSO runs the standard personal-memory pipeline via wiki_ingest_message, joined to the project wiki by provenance links (authored_refs), with a per-message router (drop / personal-fact→standard / document-import / project-wiki / your-operational-wiki). Auto recall+capture, never dump everything into the user's standard memory."
 depends_on: ["core"]
 applies_to:
   consumer_class: smart
@@ -429,25 +429,47 @@ unnamed question reach your wiki at all.
 > job is to make the memory realise there is something here worth
 > looking at.
 
-### When to write one
+### How the two halves get written — neither is a call you make
 
-On `wiki_admin_push`. The push response carries **`signpost_hint`**: it
-is `null` when the signposts are current, and otherwise a one-line
-reminder telling you exactly what is missing (a description that was
-never written, or an activity line for today). Act on it in the same
-turn — sessions end abruptly, and the moment you just pushed real work
-is the moment there is something to signpost.
+**The description is a property of your wiki, not an act.** Put it in
+`_meta.md` as `scope:` — one short non-technical sentence — and push. The
+server mirrors it into its registry and writes it into the user's memory
+itself, on every sweep. Edit the line and it follows; delete it and the
+signpost is retired. There is nothing to call, and nothing to remember:
+a project with no `scope:` is simply a project with no door, visibly.
 
-Re-writing an unchanged signpost is a **no-op** on the server, so
-calling this after a push is free.
+```yaml
+# _meta.md
+scope: "The system that runs the digital signs in the shops: it decides what to show on each screen and when to refresh it."
+```
+
+**The diary line rides the push that carried the work.** Pass `activity`
+on `wiki_admin_push` itself — one sentence about what this push was
+about — and the server writes today's diary entry. No second call. The
+ack tells you what it did under `diary` (`"written"`, `"unchanged"`, or
+`null` when you passed nothing).
 
 ```
-wiki_admin_signpost(
+wiki_admin_push(
+    mode = "upsert",
     wiki_id = state.wiki_id,
-    description = "The system that runs the digital signs in the shops: it decides what to show on each screen and when to refresh it.",
-    activity = {"day": "2026-07-26", "text": "Tidied up the page that lists the screens, and fixed a fault that stopped the content from refreshing."},
+    pages = [...],
+    activity = "Fixed a fault that left old content sitting on the screens even after an update.",
 )
 ```
+
+Omit `activity` for a push that carried no real work — a typo fix, a
+reformat. Silence is a legitimate answer; a diary of nothing is worse
+than a short diary.
+
+> **Why it changed.** Both halves used to be a separate
+> `wiki_admin_signpost` call, prompted by a hint on every push. Counted
+> across the whole recorded window, four projects on the maintainer's own
+> deployment ever got a description written — the largest undescribed
+> wiki had 1 477 pages of documentation and no way for its owner's agent
+> to know it existed. Nothing was lost to conflicts; the call simply was
+> not made. So the description became a property, and the diary became a
+> field on a call you are already sending.
 
 ### Tone — this is where it goes wrong
 
@@ -468,13 +490,17 @@ whether the user's question has anything to do with it.
 
 ### The rules the server enforces
 
-- **description** — max 400 characters, one per project. Writing a new
-  one replaces the old.
-- **activity** — max 250 characters, one per day. Writing the same day
-  twice replaces that day's line. The server prefixes the date and the
-  project name; your text carries only what happened.
-- Over the cap ⇒ the call is **refused** with the measured length, never
+- **description** (`_meta.scope`) — max 400 characters, one per project.
+  Editing it replaces the old one; removing it retires the signpost.
+- **activity** (`wiki_admin_push`'s `activity`) — max 250 characters, one
+  per day. Pushing twice in a day replaces that day's line. The server
+  prefixes the date and the project name; your text carries only what
+  happened.
+- Over the cap ⇒ the **push is refused** with the measured length, never
   silently truncated. Rewrite shorter; do not retry the same text.
+- The two live on **two pages** in the user's memory — the door signs and
+  the diary — because one is rebuilt from your `_meta.md` on every sweep
+  and the other accumulates. You write to neither: the server does.
 - Only days inside a rolling **5-day window** are kept — older lines drop
   off on their own. Do not try to keep a history here.
 - Only the **owner** of the project wiki can signpost it, and only for a
@@ -647,7 +673,7 @@ single-laptop single-token rotation case that motivated it.
 | F | `wiki_ingest_external` | document-import: a long body the user asks to keep whole becomes its own page + pointer |
 | H | `wiki_admin_push` | create + upsert pages (modes `create` / `upsert`; deletes ride the `upsert` push); response carries `authored_refs` |
 | H | `wiki_admin_pull` | whole wiki, narrowed by `paths`, or `shape: true` for per-page retrieval quality without the bytes |
-| H | `wiki_admin_signpost` | tell the user's standard memory this project exists: a short non-technical `description` + one `activity` line per day. Prompted by `signpost_hint` in the push response |
+| H | `wiki_admin_signpost` | **superseded — do not call.** The description is `_meta.scope` and the diary is `wiki_admin_push`'s `activity` field; the server writes both. Kept only so an older consumer does not break |
 | H | `wiki_admin_notify` | append an item to **someone else's** `_briefing.md`; your own inbox you write with `wiki_admin_push` |
 | K | `smart_bootstrap` | the session-start landscape + `first_connect`: does this project already have memory? |
 | H | `wiki_admin_lease_acquire` / `_release` | cooperative lease for bulk edits |

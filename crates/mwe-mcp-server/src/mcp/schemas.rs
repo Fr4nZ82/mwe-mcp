@@ -468,6 +468,10 @@ fn wiki_admin_push() -> Tool {
                 "expected_op_log_head": {
                     "type": "integer",
                     "description": "Optimistic concurrency (upsert only): the `op_log_head` the caller last synced to (from a prior push's `op_log_id` or a pull's `op_log_head`). The push is rejected with `409 conflicting_op_log_head` if a newer write op landed since — pull, re-diff, re-push. Pulls/notifies do not bump it. Omit for last-writer-wins."
+                },
+                "activity": {
+                    "type": "string",
+                    "description": "One plain-language sentence saying what this push was about, recorded as today's line in the OWNER's project diary — the thing that lets their everyday agent notice this project without being told its name. Write it for someone who has never seen the code: «Fixed a fault that left old content on the screens after an update», not «fixed retry backoff in the job dispatcher (PR #214)». Optional; omit it for a push that carried no real work. Max 250 characters — over the cap the push is REFUSED with the measured length, never truncated. Writing twice in one day replaces that day's line. There is no separate call to make: the server writes the diary itself, and the ack reports what it did under `diary`."
                 }
             }
         }),

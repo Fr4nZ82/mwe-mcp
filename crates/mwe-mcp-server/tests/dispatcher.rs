@@ -1164,6 +1164,84 @@ async fn wiki_admin_push_accepts_mark_processed_field_and_surfaces_marked_in_out
 }
 
 #[tokio::test]
+async fn wiki_admin_push_records_the_activity_line_in_the_owners_diary() {
+    let (state, identity, _dir, wiki_id) = smart_fixture_with_smart_wiki().await;
+
+    let out = call(
+        &state,
+        &identity,
+        "wiki_admin_push",
+        json!({
+            "mode": "upsert",
+            "wiki_id": wiki_id.as_str(),
+            "pages": [{"path": "index.md", "content": "# lnprint v2\n"}],
+            "activity": "  Fixed the fault that left old content on the screens.  ",
+        }),
+    )
+    .await
+    .expect("push carrying an activity line must succeed");
+
+    assert_eq!(
+        out["diary"],
+        json!("written"),
+        "the ack reports what it did"
+    );
+
+    // The line lands on the DIARY page, written by the server — never on
+    // the door-sign page, and with no second call from the consumer.
+    let day = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let diary: Vec<String> = sqlx::query_scalar(
+        "SELECT text FROM fact_index WHERE source_path = 'wikis/alice/project_diary.md' \
+         AND valid_to IS NULL",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(diary.len(), 1);
+    assert!(diary[0].contains("Fixed the fault"), "got {:?}", diary[0]);
+    assert!(diary[0].contains(&day), "the server stamps the day");
+
+    let signs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM fact_index WHERE source_path = 'wikis/alice/projects.md' \
+         AND valid_to IS NULL",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        signs, 0,
+        "the door-sign page stays server-derived and untouched"
+    );
+}
+
+#[tokio::test]
+async fn wiki_admin_push_without_an_activity_line_writes_no_diary_entry() {
+    let (state, identity, _dir, wiki_id) = smart_fixture_with_smart_wiki().await;
+
+    let out = call(
+        &state,
+        &identity,
+        "wiki_admin_push",
+        json!({
+            "mode": "upsert",
+            "wiki_id": wiki_id.as_str(),
+            "pages": [{"path": "index.md", "content": "# lnprint v3\n"}],
+        }),
+    )
+    .await
+    .expect("push without an activity line must succeed");
+
+    assert_eq!(out["diary"], json!(null), "silence is a legitimate answer");
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM fact_index WHERE source_path = 'wikis/alice/project_diary.md'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, 0);
+}
+
+#[tokio::test]
 async fn wiki_admin_push_queues_section_indexing_when_reindex_channel_is_wired() {
     let (state, identity, _dir, wiki_id) = smart_fixture_with_smart_wiki().await;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
