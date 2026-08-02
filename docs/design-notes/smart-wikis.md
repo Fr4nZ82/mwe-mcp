@@ -162,6 +162,18 @@ live in `fact_index` — it has its own pair of tables
   So the description exists in two places and cannot diverge, because only
   one of them is ever written by hand: `_meta.md` is authored, the column
   and the fact are both derived from it.
+
+  **The diary lives on its own page.** A project's day-by-day activity
+  lines go to `project_diary.md`, never to `projects.md`, because the two
+  have opposite lifecycles: the door signs are *derived* and rebuilt by
+  every sweep, the diary is *accumulated*, windowed, and irreplaceable if
+  lost. Keeping them apart is what lets `projects.md` be regenerable in
+  full — there is nothing on it a faulty writer could destroy that the
+  next sweep would not restore — and it means no consumer writes that page
+  at all. For **delivery** the two are equivalent: a fact surfacing from
+  either page says the project is in play and offers to open its
+  documentation (`wiki::is_signpost_page`), since «what did I do on X?»
+  surfaces the diary and the details it wants are in the project wiki.
 - **`wiki_sections_fts`** (migration `0065`) — an FTS5 index over the
   section text and its heading chain, maintained by triggers and
   regenerable at any time. It is what lets a project wiki be searched by

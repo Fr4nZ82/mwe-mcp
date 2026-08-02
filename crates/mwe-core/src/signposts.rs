@@ -7,13 +7,28 @@
 //! user never *names* is invisible to their standard agent — the memory
 //! cannot connect a dot it cannot see.
 //!
-//! A signpost is the dot. It is a short fact, in the owner's own standard
-//! wiki, on the reserved page [`crate::wiki::PROJECTS_FILENAME`]:
+//! A signpost is the dot. It is a short fact in the owner's own standard
+//! wiki, and there are two kinds, on **two reserved pages**:
 //!
-//! - **one description per project** — what it is and what it is for, in
-//!   plain language, [`MAX_DESCRIPTION_CHARS`] at most;
-//! - **one activity line per project per day** — what happened that day,
+//! - **one description per project**, on [`crate::wiki::PROJECTS_FILENAME`]
+//!   — what it is and what it is for, in plain language,
+//!   [`MAX_DESCRIPTION_CHARS`] at most;
+//! - **one activity line per project per day**, on
+//!   [`crate::wiki::PROJECT_DIARY_FILENAME`] — what happened that day,
 //!   [`MAX_ACTIVITY_CHARS`] at most, kept for [`ACTIVITY_WINDOW_DAYS`].
+//!
+//! Two pages because the halves have **opposite lifecycles** — one is
+//! derived and rebuildable, the other accumulated and irreplaceable — and
+//! sharing a page would cost the stronger guarantee: `projects.md` is
+//! regenerable from the registry in full, and only stays that way while
+//! nothing on it had to be kept. The table in
+//! [`crate::wiki::PROJECT_DIARY_FILENAME`] is the whole argument.
+//!
+//! For **delivery** they are equivalent: a fact surfacing from either page
+//! says *this project is in play*, which is what offers to open its
+//! documentation ([`crate::wiki::is_signpost_page`]). A diary line is at
+//! least as good a signal as a description — «what did I do on X?»
+//! surfaces the diary, and the details it wants are in the project wiki.
 //!
 //! ## The description is a projection; only the activity line is written
 //!
@@ -293,15 +308,23 @@ pub async fn write(
     let (description, activity) = validate(&req)?;
     let target = resolve_target(tree, caller, &req.project_wiki_id)?;
     let page = PathBuf::from(crate::wiki::PROJECTS_FILENAME);
+    let diary_page = PathBuf::from(crate::wiki::PROJECT_DIARY_FILENAME);
 
-    // A project's signposts share the wiki-id topic; the page is small
-    // (a handful of facts), so one scan serves every lookup below.
-    let existing: Vec<FactIndexRow> =
-        fact_index::find_active_by_source_path(pool, &target.source_path)
-            .await?
-            .into_iter()
+    // The two halves live on two pages, because they have opposite
+    // lifecycles: the door signs are derived and rebuildable, the diary is
+    // accumulated and windowed (see `wiki::PROJECT_DIARY_FILENAME`). Each
+    // page is small — a handful of facts — so one scan apiece serves every
+    // lookup below.
+    let for_this_project = |rows: Vec<FactIndexRow>| -> Vec<FactIndexRow> {
+        rows.into_iter()
             .filter(|row| is_signpost_for(row, req.project_wiki_id.as_str()))
-            .collect();
+            .collect()
+    };
+    let existing =
+        for_this_project(fact_index::find_active_by_source_path(pool, &target.source_path).await?);
+    let existing_diary = for_this_project(
+        fact_index::find_active_by_source_path(pool, &target.diary_source_path).await?,
+    );
 
     let mut report = SignpostReport {
         owner_wiki_id: target.owner_wiki_id.as_str().to_owned(),
@@ -339,7 +362,7 @@ pub async fn write(
     if let Some(line) = &activity {
         let body = activity_body(&line.day, &target.title, &line.text);
         let day_topic = format!("{TOPIC_DAY_PREFIX}{}", line.day);
-        let previous = existing.iter().find(|row| has_topic(row, &day_topic));
+        let previous = existing_diary.iter().find(|row| has_topic(row, &day_topic));
         report.activity = Some(
             put(
                 pool,
@@ -347,7 +370,7 @@ pub async fn write(
                 Arc::clone(&embedder),
                 PutRequest {
                     wiki_id: target.owner_wiki_id.as_str(),
-                    page: &page,
+                    page: &diary_page,
                     body,
                     owner: &target.owner_principal,
                     allow: &target.allow,
@@ -364,7 +387,7 @@ pub async fn write(
         pool,
         tree,
         embedder,
-        &target.source_path,
+        &target.diary_source_path,
         req.project_wiki_id.as_str(),
     )
     .await?;
@@ -590,17 +613,21 @@ pub async fn status(
     let Principal::User(owner) = tree.resolve_scope_principal(project.meta())? else {
         return Ok(None);
     };
-    let Ok(page) = page_path(tree, &owner) else {
+    let (Ok(page), Ok(diary)) = (page_path(tree, &owner), diary_page_path(tree, &owner)) else {
         return Ok(None);
     };
-    let rows: Vec<FactIndexRow> = fact_index::find_active_by_source_path(pool, &page)
-        .await?
-        .into_iter()
-        .filter(|row| is_signpost_for(row, project_wiki_id.as_str()))
-        .collect();
+    // Two pages now, one question each: the door sign is on `projects.md`
+    // and the days are in the diary.
+    let mine = |rows: Vec<FactIndexRow>| -> Vec<FactIndexRow> {
+        rows.into_iter()
+            .filter(|row| is_signpost_for(row, project_wiki_id.as_str()))
+            .collect()
+    };
+    let signs = mine(fact_index::find_active_by_source_path(pool, &page).await?);
+    let days = mine(fact_index::find_active_by_source_path(pool, &diary).await?);
     Ok(Some(SignpostStatus {
-        has_description: rows.iter().any(|row| has_topic(row, TOPIC_DESCRIPTION)),
-        last_activity_day: rows.iter().filter_map(day_of).max(),
+        has_description: signs.iter().any(|row| has_topic(row, TOPIC_DESCRIPTION)),
+        last_activity_day: days.iter().filter_map(day_of).max(),
         page,
     }))
 }
@@ -615,6 +642,19 @@ pub fn page_path(tree: &WikiTree, owner_user: &str) -> Result<String> {
     Ok(crate::wiki::workdir_relative_source_path(
         tree.workdir(),
         &handle.abs_dir().join(crate::wiki::PROJECTS_FILENAME),
+    ))
+}
+
+/// Workdir-relative path of `owner_user`'s project **diary**.
+///
+/// # Errors
+///
+/// The user id is not a usable wiki id, or has no wiki on disk.
+pub fn diary_page_path(tree: &WikiTree, owner_user: &str) -> Result<String> {
+    let handle = tree.locate(&owner_wiki_id(owner_user)?)?;
+    Ok(crate::wiki::workdir_relative_source_path(
+        tree.workdir(),
+        &handle.abs_dir().join(crate::wiki::PROJECT_DIARY_FILENAME),
     ))
 }
 
@@ -653,7 +693,10 @@ fn validate(req: &SignpostRequest) -> Result<(Option<String>, Option<ActivityLin
 struct Target {
     owner_wiki_id: WikiId,
     owner_principal: Principal,
+    /// Where the project's door sign lives — `projects.md`, derived.
     source_path: String,
+    /// Where its diary lines live — `project_diary.md`, accumulated.
+    diary_source_path: String,
     title: String,
     allow: Vec<Principal>,
 }
@@ -704,10 +747,17 @@ fn target_for(tree: &WikiTree, project_wiki_id: &WikiId, owner: String) -> Resul
         tree.workdir(),
         &owner_handle.abs_dir().join(crate::wiki::PROJECTS_FILENAME),
     );
+    let diary_source_path = crate::wiki::workdir_relative_source_path(
+        tree.workdir(),
+        &owner_handle
+            .abs_dir()
+            .join(crate::wiki::PROJECT_DIARY_FILENAME),
+    );
     Ok(Target {
         owner_wiki_id,
         owner_principal: Principal::User(owner),
         source_path,
+        diary_source_path,
         title: project_title(project.meta()),
         // Read access mirrors the project's: whoever may read the project
         // may know it exists. The docs the signpost points at are gated
@@ -973,8 +1023,17 @@ mod tests {
         }
     }
 
+    /// The door-sign page — derived, rebuildable.
     async fn page_facts(pool: &SqlitePool) -> Vec<FactIndexRow> {
         fact_index::find_active_by_source_path(pool, "wikis/alice/projects.md")
+            .await
+            .unwrap()
+    }
+
+    /// The diary page — accumulated, windowed. A separate page precisely so
+    /// the two cannot damage each other.
+    async fn diary_facts(pool: &SqlitePool) -> Vec<FactIndexRow> {
+        fact_index::find_active_by_source_path(pool, "wikis/alice/project_diary.md")
             .await
             .unwrap()
     }
@@ -1183,10 +1242,14 @@ mod tests {
 
         // Window is measured from the freshest day on record: 07-26 keeps
         // back to 07-22, so both older lines are gone.
-        let days: Vec<String> = page_facts(&pool).await.iter().filter_map(day_of).collect();
+        let days: Vec<String> = diary_facts(&pool).await.iter().filter_map(day_of).collect();
         assert_eq!(days, vec!["2026-07-26".to_owned()]);
+        assert!(
+            page_facts(&pool).await.is_empty(),
+            "an activity line never lands on the door-sign page"
+        );
         assert_eq!(
-            last_activity_day(&pool, "wikis/alice/projects.md", "alice-acmesigns")
+            last_activity_day(&pool, "wikis/alice/project_diary.md", "alice-acmesigns")
                 .await
                 .unwrap()
                 .as_deref(),
@@ -1226,7 +1289,7 @@ mod tests {
         .unwrap();
 
         assert!(matches!(second.activity, Some(SignpostOutcome::Updated(_))));
-        let facts = page_facts(&pool).await;
+        let facts = diary_facts(&pool).await;
         assert_eq!(facts.len(), 1);
         assert!(facts[0].text.starts_with("2026-07-26 — AcmeSigns: "));
         assert!(facts[0].text.contains("pagina di stato"));
@@ -1514,5 +1577,47 @@ mod tests {
             .expect("the sweep survives");
         assert_eq!(r.skipped, 1);
         assert_eq!(r.created, 1, "the healthy project still got its door");
+    }
+    /// The separation, stated once: a project's door sign and its diary go
+    /// to two different pages, so the derived one stays fully rebuildable
+    /// and the accumulated one cannot be clobbered by rebuilding it.
+    #[tokio::test]
+    async fn the_door_sign_and_the_diary_land_on_two_pages() {
+        let dir = tempdir().unwrap();
+        let tree = seed_tree(dir.path(), "");
+        let pool = make_pool().await;
+
+        write(
+            &pool,
+            &tree,
+            embedder(),
+            "alice",
+            req(
+                Some("Signage for shop windows."),
+                Some(("2026-07-26", "ha rifatto la pagina di stato")),
+            ),
+        )
+        .await
+        .unwrap();
+
+        let signs = page_facts(&pool).await;
+        assert_eq!(signs.len(), 1, "the door sign, alone on projects.md");
+        assert!(has_topic(&signs[0], TOPIC_DESCRIPTION));
+
+        let diary = diary_facts(&pool).await;
+        assert_eq!(diary.len(), 1, "the day, alone on the diary page");
+        assert_eq!(day_of(&diary[0]).as_deref(), Some("2026-07-26"));
+
+        // Both pages are signpost pages for delivery: a diary line
+        // surfacing means the project is in play just as a description does.
+        assert!(crate::wiki::is_signpost_page("wikis/alice/projects.md"));
+        assert!(crate::wiki::is_signpost_page(
+            "wikis/alice/project_diary.md"
+        ));
+        // …and both stay fenced out of the structural sweeps.
+        assert!(crate::wiki::is_channel_page("wikis/alice/project_diary.md"));
+        assert!(!crate::wiki::is_signpost_page(
+            "wikis/alice/my_projects_notes.md"
+        ));
     }
 }

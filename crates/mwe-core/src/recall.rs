@@ -983,7 +983,7 @@ async fn projects_signposted_in(
 ) -> RecallResult<Vec<String>> {
     let signpost_pages: std::collections::BTreeSet<&str> = surfaced
         .iter()
-        .filter(|h| crate::wiki::is_projects_page(&h.source_path))
+        .filter(|h| crate::wiki::is_signpost_page(&h.source_path))
         .map(|h| h.source_path.as_str())
         .collect();
     if signpost_pages.is_empty() {

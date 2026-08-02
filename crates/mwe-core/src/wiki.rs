@@ -150,6 +150,34 @@ pub fn is_rules_page(source_path: &str) -> bool {
 /// and navigable: delivery through ordinary recall is the entire point.
 pub const PROJECTS_FILENAME: &str = "projects.md";
 
+/// The owner's reserved **project diary** — one line per project per day,
+/// saying what happened.
+///
+/// Separate from [`PROJECTS_FILENAME`] because the two have opposite
+/// lifecycles, and mixing them costs the stronger of the two guarantees:
+///
+/// | | `projects.md` | this page |
+/// |---|---|---|
+/// | content | each project's **door sign** | what happened, by day |
+/// | origin | *derived* — projected from `smart_wikis.description` | *accumulated* — nothing to derive it from |
+/// | if lost | rebuilt by the next sweep | gone |
+/// | ages out | no | yes, on a rolling window |
+///
+/// Keeping them apart is what makes `projects.md` **fully regenerable**:
+/// everything on it comes from the registry, so there is nothing on it a
+/// buggy writer could destroy that a sweep would not restore. A page that
+/// also accumulated events could not make that promise, and its renderer
+/// would have to interleave two things that behave in opposite ways.
+///
+/// Still the *owner's* page, not the project's: a diary is the only
+/// cross-project view there is, and «what did I work on this week?» names
+/// no project, so an answer living inside each project wiki could not be
+/// found by a question that never says which one.
+///
+/// Written by [`crate::signposts`] alone, and fenced out of the structural
+/// sweeps exactly like its sibling ([`is_channel_page`]).
+pub const PROJECT_DIARY_FILENAME: &str = "project_diary.md";
+
 /// `wiki_type` of a smart consumer's **operational wiki**.
 ///
 /// That wiki is the consumer's own working memory, one per connection,
@@ -197,8 +225,33 @@ pub fn is_projects_page(source_path: &str) -> bool {
         .is_some_and(|n| n == std::ffi::OsStr::new(PROJECTS_FILENAME))
 }
 
+/// True when `source_path` is the owner's reserved project diary
+/// [`PROJECT_DIARY_FILENAME`]. Keyed on the file name, like its siblings.
+#[must_use]
+pub fn is_project_diary_page(source_path: &str) -> bool {
+    std::path::Path::new(source_path)
+        .file_name()
+        .is_some_and(|n| n == std::ffi::OsStr::new(PROJECT_DIARY_FILENAME))
+}
+
+/// True when `source_path` is either half of the signpost channel — the
+/// door signs ([`PROJECTS_FILENAME`]) or the diary
+/// ([`PROJECT_DIARY_FILENAME`]).
+///
+/// This is the **delivery-side** predicate: a fact surfacing from either
+/// page says *this project is in play*, which is what lets recall offer to
+/// open the project's documentation. A diary line is at least as good a
+/// signal as a description — «what did I do on X?» surfaces the diary, and
+/// the details it is asking for are in the project wiki — so the two pages
+/// are equivalent here even though they are written by different paths.
+#[must_use]
+pub fn is_signpost_page(source_path: &str) -> bool {
+    is_projects_page(source_path) || is_project_diary_page(source_path)
+}
+
 /// True when `source_path` is one of the reserved **channel pages** —
-/// [`RULES_FILENAME`] or [`PROJECTS_FILENAME`].
+/// [`RULES_FILENAME`], [`PROJECTS_FILENAME`] or
+/// [`PROJECT_DIARY_FILENAME`].
 ///
 /// A channel page's facts are written by a dedicated deterministic path
 /// and read back by a dedicated reader, so the engine's structural sweeps
@@ -215,7 +268,7 @@ pub fn is_projects_page(source_path: &str) -> bool {
 /// else — so delivery-side filters keep keying on [`is_rules_page`].
 #[must_use]
 pub fn is_channel_page(source_path: &str) -> bool {
-    is_rules_page(source_path) || is_projects_page(source_path)
+    is_rules_page(source_path) || is_signpost_page(source_path)
 }
 
 /// Errors raised by the wiki I/O layer.
