@@ -9,82 +9,77 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
-## Unreleased
+## 1.9.0 — 2026-08-02
 
-### Security
-
-- **A notice meant for one person was handed to every connected agent.**
-  The reverse channel — the queue an agent drains between turns to be
-  told "memory was stored for you" — filtered only on what each consumer
-  had already acknowledged. Everything else it returned in full,
-  including notices addressed to a specific human and carrying the
-  remembered text itself, which they carry on purpose so the agent can
-  deliver the content without a second lookup. The addressee's name was
-  in the payload as advice, and nothing enforced it.
-
-  It is enforced now, inside the query, so a notice an agent may not
-  receive is never even read: an addressed notice reaches an agent when
-  the addressee is the caller's own identity (you always get your own
-  mail — the memory already hands you your own facts on recall, so being
-  told about one is strictly less), or the agent's own memory identity,
-  or one of the people that agent is **delegated** to serve. That is the
-  same roster that already decides whom an agent may speak for: being
-  trusted to act for someone and being trusted to hear about them are one
-  grant, so there is no second place to forget. Notices with no addressee,
-  and those addressed to a group, stay broadcast — withholding an
-  operator warning would lose it silently.
-
-  On this deployment the hole had been crossed exactly once in 532
-  notices, and no human saw the content: the bridge refuses to deliver a
-  personal notice to a recipient it has no private channel for, and
-  logged the refusal twenty times instead. The last line of defence was
-  sitting in the consumer, which is the wrong place for it.
+Recall was handing the model the wrong material and reaching the right page by
+luck. Everything here sits on the path every single turn takes.
 
 ### Added
 
-- **A dated commitment now announces itself.** Until now the memory
-  remembered *"Thursday at 5pm at the dentist"*, showed it to whichever
-  assistant happened to be talking near the time, and never spoke first.
-  It does now: when the commitment comes round, the memory emits a notice
-  to the person whose commitment it is, delivered between turns on the
-  channel that already carries "memory was stored for you".
+- **A project's description is something the memory is now told, not
+  something somebody has to remember to write.** An assistant working inside
+  a codebase keeps its own project wiki, and for the rest of the memory to
+  know that wiki is worth opening, somebody had to go and describe it on a
+  shared overview page. That was a separate act, and it was simply skipped:
+  on the first deployment **one of four** project wikis had a description at
+  all, and the largest — 1 477 indexed sections — had never had one. So the
+  memory held the material and had no way to know it was worth consulting.
 
-  Deliberately narrow — **this is not a scheduler**. What a user asks their
-  assistant to do at a time ("wake me at seven") stays with that assistant.
-  This fires only for a fact the memory already holds, and the reason that
-  one case cannot stay with the assistant is the one that matters: an alarm
-  written when the user first asked freezes both the time and the wording,
-  so when a later conversation says *"it slipped to Friday"* the memory
-  learns and the alarm does not. Firing from the fact means the correction
-  is what rings.
+  The description now rides the same call that writes the pages
+  (`wiki_admin_push` gained `description`), which makes declaring it part of
+  working rather than an errand afterwards. The server stamps it on the
+  wiki's own metadata, keeps a queryable copy, and **composes** the overview
+  page itself from those copies — so several assistants pushing at once can
+  no longer overwrite each other's entries, which is what that page had been
+  quietly losing. Withdraw a description and its entry retires by itself.
 
-  The hour is worked out rather than stored, because the data said so:
-  **87 % of dated commitments carry a date with no time of day in it**, so
-  firing at the stored moment would ring at midnight for almost all of them
-  — and a dedicated "remind me at" field would have stayed empty for
-  exactly those. A date announces itself at a configured morning hour; a
-  time somebody actually said announces itself then, optionally early. What
-  gets *said* is the remembered text itself, so a time written into the
-  sentence rather than the date field still reaches the person.
+  The other half of that page — "what was done today" — moved onto the
+  project's own `project_diary.md` and rides the same call (`activity`). The
+  overview page is the server's to compose; the diary is the consumer's to
+  fill. Nobody writes both.
 
-  New `reminders:` config section (`enabled`, `day_hour_utc`, `lead_secs`,
-  `grace_secs`, `cap`). The grace window is what stops the first run after
-  an upgrade announcing every appointment already in the past.
+  Adds migration `0067`.
 
-- **A personal notice now carries the link to what it is about.** The
-  notice always knew the exact page; the delivery instructions never
-  mentioned it, so the message arrived without a way to open it. The
-  morning digest had a link and personal notices did not — now both do,
-  from the same setting, and an unconfigured public address means no link
-  rather than a broken one.
+### Changed
 
-- **An undeliverable notice now says so when it is written.** If a notice
-  is addressed to somebody no agent is delegated to serve, the server
-  warns at that moment and names them, rather than leaving a row that
-  looks delivered because nothing ever acknowledges it. The notice is
-  still kept, and the person still receives it if they ever connect under
-  their own identity; what is new is that the operator learns a
-  delegation is missing.
+- **Documentation stopped crowding out what people actually said.** Where a
+  deployment indexes a codebase's docs, those documents are around **96 % of
+  all indexed characters**, and the merged search let them compete directly
+  with personal facts on every turn. The document corpus now sits behind a
+  funnel: searched when the turn is about a project, out of the way
+  otherwise.
+
+- **The navigator's doors are ranked instead of alphabetical, and the
+  identity page is no longer the first door on every turn.** Two defects that
+  compounded into one. The list of pages the navigator may open was cut to
+  its cap by **file order**, so a wiki whose name sorts early filled the list
+  and another wiki's twenty pages were never offered at all. It is now
+  ordered by kind: pages linked from the prose just read, then pages the
+  search found, then folder neighbours — which are a crutch, and are now
+  labelled as one in the code.
+
+  And the seed standing for "the person speaking" carried maximum weight,
+  which made their own identity page the top door whatever the turn was
+  about: on one real trace **82 % of the characters collected** were two
+  identity pages. That seed now sits on the ordinary rung it belongs to
+  (`1.0 → 0.6`), so a content page leads on roughly half of turns and
+  identity leads on the rest. It never disappears — the one-line identity
+  card is served unconditionally and separately, exactly as before.
+
+- **A command that needs the memory in order to be carried out is no longer
+  filed as small talk.** The test deciding whether a turn needs memory read
+  *is this a question*, rather than *does answering it require something only
+  this memory holds* — so "put on some music we both like" was treated as
+  chatter and the deeper pass never ran. The test is now the unresolved
+  reference. Measured on 128 real turns before shipping: 9 of 13
+  reclassifications correct, and **no turn that had been storing something
+  stopped storing it**, which was the risk worth measuring.
+
+### Deprecated
+
+- `wiki_admin_signpost` — the separate call that used to write a project's
+  description and its activity line. Both now ride `wiki_admin_push`. The
+  tool still answers; the bundled skill no longer asks for it.
 
 ## 1.8.4 — 2026-07-31
 
@@ -152,6 +147,23 @@ fixed here, and both were found by looking rather than by a report.
   commitment comes round. It is not a scheduler: it fires only for a fact the
   memory already holds, so a later turn that moves the appointment moves the
   reminder with it, which a job frozen at the moment of asking cannot do.
+
+  New `reminders:` config section (`enabled`, `day_hour_utc`, `lead_secs`,
+  `grace_secs`, `cap`). The grace window is what stops the first run after an
+  upgrade announcing every appointment already in the past.
+
+- **A personal notice carries the link to what it is about.** The notice
+  always knew the exact page; the delivery instructions never mentioned it,
+  so the message arrived with no way to open it. The morning digest had a
+  link and personal notices did not — now both do, from the same setting, and
+  an unconfigured public address means no link rather than a broken one.
+
+- **An undeliverable notice says so when it is written.** If a notice is
+  addressed to somebody no agent is delegated to serve, the server warns at
+  that moment and names them, rather than leaving a row that looks delivered
+  because nothing ever acknowledges it. The notice is still kept, and the
+  person still receives it if they ever connect under their own identity;
+  what is new is that the operator learns a delegation is missing.
 
 ## 1.8.3 — 2026-07-30
 
