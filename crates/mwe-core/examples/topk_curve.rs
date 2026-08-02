@@ -109,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
     println!("turni misurati: {n}\n");
 
     // The curve, normalised to rank 1 — where does the signal actually stop?
-    println!("── curva dei punteggi, mediana su {n} turni ──");
+    println!("── score curve, median over {n} turns ──");
     println!(
         "{:<6}{:>10}{:>14}{:>16}",
         "rango", "punteggio", "% del 1°", "perso vs 1°"
@@ -149,19 +149,19 @@ async fn main() -> anyhow::Result<()> {
     tops.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     println!("\n── punteggio del PRIMO fatto, distribuzione sui turni reali ──");
     for (label, p) in [
-        ("minimo", 0.0),
+        ("min", 0.0),
         ("5%", 0.05),
         ("10%", 0.10),
         ("25%", 0.25),
-        ("mediana", 0.50),
+        ("median", 0.50),
     ] {
         let i = ((tops.len() - 1) as f32 * p) as usize;
         println!("  {label:<9} {:.4}", tops[i]);
     }
-    println!("  (il turno «il volume», che ha avvelenato la risposta, aveva 0.4306)");
+    println!("  (the measured turn whose noise poisoned the answer scored 0.4306)");
 
     // How many hits survive a floor — i.e. how much of `top_k` is real.
-    println!("\n── quanti fatti resterebbero con una soglia minima ──");
+    println!("\n── how many facts would survive a floor ──");
     println!(
         "{:<10}{:>12}{:>16}{:>22}",
         "soglia", "media", "mediana", "turni con 0 fatti"

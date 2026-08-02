@@ -3998,16 +3998,17 @@ const HDR_RELEVANT_MEMORY: &str =
 /// outcome depends only on the turn's own recall scores, never on which
 /// pages the navigator happened to open this same turn or on whether a
 /// hit happens to be a rules-page hit. A per-hit threshold cannot do this
-/// job — measured (§37): on `musica redacted playlist` the right answer
-/// scored `0.4813` / `0.4811`, while on `il volume` the noise it recited
-/// ran to `0.4306` — the bands overlap, so any per-hit cut that removes
-/// one removes the other. Below the floor, the turn's flat recall has
-/// nothing to say and the promoted section is not opened at all (not "the
-/// weak hits are trimmed" — no promoted hit renders, however strong).
-/// At or above it, every promoted hit renders, including ones
-/// individually below the floor — the guarantee `musica redacted playlist`
-/// needs, since its `0.4813` hit clears only because the turn's best was
-/// `0.5474`. See [`recall::DEFAULT_RELEVANCE_FLOOR`] for the measurement.
+/// job — measured (§37) on two real turns: on the one that NEEDED its
+/// recall the right answer scored `0.4813` / `0.4811`, while on the one
+/// that needed none the noise it recited ran to `0.4306` — the bands
+/// overlap, so any per-hit cut that removes one removes the other. Below
+/// the floor, the turn's flat recall has nothing to say and the promoted
+/// section is not opened at all (not "the weak hits are trimmed" — no
+/// promoted hit renders, however strong). At or above it, every promoted
+/// hit renders, including ones individually below the floor — the
+/// guarantee the first turn needs, since its `0.4813` hit clears only
+/// because the turn's best was `0.5474`. See
+/// [`recall::DEFAULT_RELEVANCE_FLOOR`] for the measurement.
 ///
 /// Deliberately **NOT** gated by `relevance_floor` (§39):
 /// - the **fresh** (un-promoted) captures below — a different signal
@@ -7843,30 +7844,30 @@ mod tests {
         assert!(snippet.contains(&fresh.text), "{snippet}");
     }
 
-    /// Card 61 §37, the guarantee the gate exists to preserve: on `musica
-    /// redacted playlist` the two facts that ARE the answer scored `0.4813` /
+    /// Card 61 §37, the guarantee the gate exists to preserve: on the
+    /// measured turn the two facts that ARE the answer scored `0.4813` /
     /// `0.4811`, ranked below the turn's best hit (`0.5474`, an unrelated
     /// candidate). The gate reads only the turn's best score, so once it
     /// clears the floor every hit renders — including one that, on its
     /// own, sits under the floor (a per-hit trim would have discarded it
-    /// alongside the noise `il volume` needed gone).
+    /// alongside the noise the other measured turn needed gone).
     #[test]
-    fn format_snippet_renders_every_hit_once_the_turns_best_clears_the_floor_the_elio_case() {
+    fn format_snippet_renders_every_hit_once_the_turns_best_clears_the_floor() {
         let mut best = sample_recall_hit("018f1234-5678-7abc-9def-0000000000e1");
         best.text = "the turn's top-ranked hit, unrelated to the question".into();
         best.score = 0.5474;
-        let mut elio = sample_recall_hit("018f1234-5678-7abc-9def-0000000000e2");
-        elio.text = "Elio's playlist for redacted".into();
-        elio.score = 0.4813;
+        let mut answer = sample_recall_hit("018f1234-5678-7abc-9def-0000000000e2");
+        answer.text = "the fact that actually answers the question".into();
+        answer.score = 0.4813;
         let mut weak = sample_recall_hit("018f1234-5678-7abc-9def-0000000000e3");
         weak.text = "a much weaker hit, individually under the floor".into();
         weak.score = 0.20;
 
-        let hits = vec![best.clone(), elio.clone(), weak.clone()];
+        let hits = vec![best.clone(), answer.clone(), weak.clone()];
         let snippet = format_snippet(&hits, &[], &[], TEST_FLOOR)
             .expect("the turn's best hit clears the floor");
         assert!(snippet.contains(&best.text), "{snippet}");
-        assert!(snippet.contains(&elio.text), "{snippet}");
+        assert!(snippet.contains(&answer.text), "{snippet}");
         assert!(
             snippet.contains(&weak.text),
             "a hit scored under the floor still renders once the turn's best clears it: {snippet}"

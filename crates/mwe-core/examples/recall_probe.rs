@@ -18,7 +18,7 @@
 //!
 //! ```text
 //! cargo run -p mwe-core --example recall_probe --features local-embedder --release -- \
-//!     --workdir <copy> --sender franz --needle "storie tese"
+//!     --workdir <copy> --sender <user-id> --probes <file> --needle "<a phrase>"
 //! ```
 
 #![allow(
@@ -43,76 +43,49 @@ use mwe_core::{db, enrollment, fact_index, sections};
 
 const ALL: usize = 100_000;
 
-/// One authored line per project wiki — what `_meta.md`'s `summary` field is
-/// for, and what no project wiki populates today. Present here to measure the
-/// ceiling of a wiki-level gate against the cards that actually exist.
-/// The REAL signpost descriptions, verbatim from `wikis/franz/projects.md`
-/// (roadmap 48b — `wiki_admin_signpost`, kind `description`). Only three of the
-/// seven project/agent wikis have one; the rest were never written.
-const WRITTEN_SUMMARY: &[(&str, &str)] = &[
-    (
-        "redacted",
-        "redacted - digital signage wiki — redacted è la piattaforma di digital signage e gestione code di Francesco: monitor che mostrano pubblicità e informazioni in negozi, farmacie e uffici, con un pannello web da cui si decide cosa appare su ogni schermo, più la chiamata dei numeri agli sportelli. C'è anche un modulo opzionale che conta le persone riprese dalle telecamere.",
-    ),
-    (
-        "telaiojs",
-        "TelaioJS — DTP engine wiki — Il programma con cui si impaginano i lavori di stampa: si disegnano riquadri, ci si mettono dentro immagini e testi, si sceglie il colore delle tinte e si prepara la pagina da mandare in stampa. Funziona dentro il browser e si comporta come QuarkXPress, il programma che Francesco ha sempre usato.",
-    ),
-    (
-        "ubestia-cc",
-        "Claude Code (mwe-mcp) (ubestia-cc) — Il quaderno di lavoro dell'assistente di programmazione che gira sul computer di casa: cosa ha fatto sessione per sessione, cosa ha imparato dagli errori e le regole che si è dato per lavorare meglio la volta dopo.",
-    ),
-    // NO SIGNPOST WRITTEN — these fall back to the bare wiki id.
-    ("mwe-mcp", "franz-mwe-mcp"),
-    ("lnprint", "franz-lnprint"),
-    ("cc-pc-lavoro", "franz-cc-pc-lavoro"),
-    ("claude2", "franz-claude2"),
-    ("claudecosta", "constantin-claudecosta"),
-];
-
-const PROBES: &[&str] = &[
-    // The live turn, verbatim.
-    "gandalf metti una playlist che ci piace a me a redacted",
-    // The consumer's own eight searches on that turn.
-    "musica redacted playlist",
-    "redacted playlist",
-    "musica preferita redacted",
-    "playlist",
-    "Spotify",
-    "redacted musica",
-    "redacted canzone",
-    "redacted il verde",
-    // The page's own words — can the prose retrieve the page?
-    "appuntamento condiviso atteso con piacere calendario estivo della famiglia",
-    // The lexical case the fact corpus cannot serve.
-    "Elio e le storie tese",
-    // Controls: ordinary personal turns with nothing to do with any project.
-    "cosa mangiamo stasera",
-    "quando ha l'appuntamento dal dentista",
-    "il volume",
-    // The other half of the contract: turns that MUST reach a project.
-    "come fa redacted a inviare i contenuti ai display?",
-    "i contenuti sono fermi da 10 giorni sul display del cliente",
-    "come si collegano le caselle di testo in TelaioJS?",
-    "cosa ha fatto claude code nell'ultima sessione di lavoro",
-];
+/// The probe queries, read from a file — one turn per line, `#` comments and
+/// blank lines ignored. They stay OUT of this repo on purpose: a useful probe
+/// set is verbatim traffic from the corpus under measurement, which is the
+/// operator's data and nobody else's.
+///
+/// A serviceable set mixes four kinds, and the report is only readable if all
+/// four are present: the failing turn verbatim · the searches the consumer
+/// itself made on that turn · controls that must NOT reach a project ·
+/// turns that must.
+fn load_probes(path: &Path) -> anyhow::Result<Vec<String>> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("--probes {}: {e}", path.display()))?;
+    let probes: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_owned)
+        .collect();
+    anyhow::ensure!(!probes.is_empty(), "--probes {}: empty", path.display());
+    Ok(probes)
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut workdir = PathBuf::from("./work");
-    let mut sender_id = "franz".to_string();
+    let mut sender_id = String::new();
     let mut needle: Option<String> = None;
     let mut top_k = 10usize;
+    let mut probes_path: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--workdir" => workdir = PathBuf::from(args.next().unwrap_or_default()),
             "--sender" => sender_id = args.next().unwrap_or_default(),
             "--needle" => needle = args.next(),
+            "--probes" => probes_path = args.next().map(PathBuf::from),
             "--top-k" => top_k = args.next().unwrap_or_default().parse().unwrap_or(10),
             other => anyhow::bail!("unknown flag {other}"),
         }
     }
+    anyhow::ensure!(!sender_id.is_empty(), "--sender <user-id> is required");
+    let probes_path = probes_path.ok_or_else(|| anyhow::anyhow!("--probes <file> is required"))?;
+    let probes = load_probes(&probes_path)?;
 
     let pool = db::open_or_init(&workdir).await?;
     let cache = mwe_core::local_embedder::default_cache_dir("bge-m3");
@@ -128,11 +101,8 @@ async fn main() -> anyhow::Result<()> {
         sender_id: sender_id.clone(),
         sender_groups,
     };
-    let all_wikis: Vec<String> = sections::list_smart_wikis(&pool)
-        .await?
-        .into_iter()
-        .map(|w| w.wiki_id)
-        .collect();
+    let registry = sections::list_smart_wikis(&pool).await?;
+    let all_wikis: Vec<String> = registry.iter().map(|w| w.wiki_id.clone()).collect();
 
     let pct = |v: &[f32], p: f32| -> f32 {
         if v.is_empty() {
@@ -189,13 +159,15 @@ async fn main() -> anyhow::Result<()> {
         if card.is_empty() {
             card = w.clone();
         }
-        // A written one-line abstract — the thing `_meta.md` supports via
-        // `summary` and no project wiki populates today. Hand-written here to
-        // measure the ceiling the mechanism could reach.
-        let written = WRITTEN_SUMMARY
+        // The authored one-line description, as the wiki itself declares it
+        // (`_meta.scope`, mirrored into the registry by the push). A wiki that
+        // has never declared one falls back to its bare id, which is what the
+        // funnel would actually have to work with.
+        let written = registry
             .iter()
-            .find(|(id, _)| w.ends_with(id))
-            .map_or(w.as_str(), |(_, s)| *s);
+            .find(|row| &row.wiki_id == w)
+            .and_then(|row| row.description.as_deref())
+            .unwrap_or(w.as_str());
         gate.push((
             w.clone(),
             embedder.embed(&card).await?,
@@ -209,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
         print!("{:>13}", w.rsplit('-').next().unwrap_or(w));
     }
     println!();
-    for probe in PROBES {
+    for probe in &probes {
         let q = embedder.embed(probe).await?;
         for (label, pick) in [("card", 1usize), ("cent", 2usize), ("SUMM", 3usize)] {
             print!(
@@ -232,7 +204,7 @@ async fn main() -> anyhow::Result<()> {
     }
     println!();
 
-    for probe in PROBES {
+    for probe in &probes {
         println!("════════════════════════════════════════════════════════════════");
         println!("QUERY  «{probe}»");
 

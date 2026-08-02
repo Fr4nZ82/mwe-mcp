@@ -11,7 +11,7 @@
 //!
 //! ```text
 //! cargo run -p mwe-core --example signpost_gate --features local-embedder --release -- \
-//!     --workdir <copy> --sender franz
+//!     --workdir <copy> --sender <user-id> --cases <file>
 //! ```
 
 #![allow(
@@ -26,81 +26,80 @@
 )]
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mwe_core::embedder::Embedder;
 use mwe_core::recall::{SenderContext, cosine_similarity, wiki_search};
 use mwe_core::{db, enrollment, fact_index, sections, signposts};
 
-/// Turns that must leave every project wiki shut.
-const PERSONAL: &[&str] = &[
-    "gandalf metti una playlist che ci piace a me a redacted",
-    "musica redacted playlist",
-    "redacted playlist",
-    "musica preferita redacted",
-    "playlist",
-    "Spotify",
-    "redacted musica",
-    "redacted canzone",
-    "redacted il verde",
-    "appuntamento condiviso atteso con piacere calendario estivo della famiglia",
-    "Elio e le storie tese",
-    "cosa mangiamo stasera",
-    "quando ha l'appuntamento dal dentista",
-    "il volume",
-    "a che ora devo prendere redacted al centro estivo",
-    "quanto abbiamo speso questo mese",
-];
-
-/// Turns that must open a project. `Some(slug)` = the one that should open.
-const PROJECT: &[(&str, &str)] = &[
-    (
-        "come fa redacted a inviare i contenuti ai display?",
-        "redacted",
-    ),
-    (
-        "i contenuti sono fermi da 10 giorni sul display del cliente",
-        "redacted",
-    ),
-    (
-        "come funziona l'eliminacode e la chiamata dei numeri?",
-        "redacted",
-    ),
-    (
-        "il player Tizen non parte piu dopo l'aggiornamento",
-        "redacted",
-    ),
-    (
-        "come si collegano le caselle di testo in TelaioJS?",
-        "telaiojs",
-    ),
-    (
-        "il testo non scorre da una cornice all'altra quando impagino",
-        "telaiojs",
-    ),
-    (
-        "come si sceglie il colore delle tinte per la stampa",
-        "telaiojs",
-    ),
-    (
-        "cosa ha fatto claude code nell'ultima sessione di lavoro",
-        "ubestia-cc",
-    ),
-];
+/// The labelled probe set, read from a file. It stays OUT of this repo on
+/// purpose: the only probe set worth measuring is verbatim traffic from the
+/// corpus under test, which is the operator's data and nobody else's.
+///
+/// One case per line, `#` comments and blank lines ignored:
+///
+/// ```text
+/// personal <TAB> the turn, verbatim          # must leave every project shut
+/// project  <TAB> <wiki-slug> <TAB> the turn  # must open exactly that project
+/// ```
+///
+/// **Both halves have to be present.** A set of only-personal turns scores a
+/// perfect 100 % for a gate that is welded shut, which is the wrong answer
+/// arrived at convincingly.
+fn load_cases(path: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("--cases {}: {e}", path.display()))?;
+    let mut cases: Vec<(String, Option<String>)> = Vec::new();
+    for (n, line) in raw.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut f = line.split('\t').map(str::trim);
+        match (f.next(), f.next(), f.next()) {
+            (Some("personal"), Some(turn), None) if !turn.is_empty() => {
+                cases.push((turn.to_owned(), None));
+            },
+            (Some("project"), Some(slug), Some(turn)) if !slug.is_empty() && !turn.is_empty() => {
+                cases.push((turn.to_owned(), Some(slug.to_owned())));
+            },
+            _ => anyhow::bail!(
+                "--cases {}:{}: expected `personal<TAB>turn` or `project<TAB>slug<TAB>turn`",
+                path.display(),
+                n + 1
+            ),
+        }
+    }
+    let projects = cases.iter().filter(|(_, w)| w.is_some()).count();
+    anyhow::ensure!(
+        projects > 0 && projects < cases.len(),
+        "--cases {}: needs both halves — {} personal, {projects} project",
+        path.display(),
+        cases.len() - projects
+    );
+    Ok(cases)
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut workdir = PathBuf::from("./work");
-    let mut sender_id = "franz".to_string();
+    let mut sender_id = String::new();
+    let mut cases_path: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--workdir" => workdir = PathBuf::from(args.next().unwrap_or_default()),
             "--sender" => sender_id = args.next().unwrap_or_default(),
+            "--cases" => cases_path = args.next().map(PathBuf::from),
             other => anyhow::bail!("unknown flag {other}"),
         }
     }
+    anyhow::ensure!(!sender_id.is_empty(), "--sender <user-id> is required");
+    let cases_path = cases_path.ok_or_else(|| anyhow::anyhow!("--cases <file> is required"))?;
+    let cases = load_cases(&cases_path)?;
+    let n_project = cases.iter().filter(|(_, w)| w.is_some()).count();
+    let n_personal = cases.len() - n_project;
 
     let pool = db::open_or_init(&workdir).await?;
     let embedder: Arc<dyn Embedder> = Arc::new(mwe_core::local_embedder::LocalEmbedder::load(
@@ -161,12 +160,6 @@ async fn main() -> anyhow::Result<()> {
     }
     run("NAME only".to_owned());
 
-    let cases: Vec<(&str, Option<&str>)> = PERSONAL
-        .iter()
-        .map(|q| (*q, None))
-        .chain(PROJECT.iter().map(|(q, w)| (*q, Some(*w))))
-        .collect();
-
     for (probe, want) in &cases {
         let q = embedder.embed(probe).await?;
         // The fact ranking this turn produces anyway — the signpost competes in it.
@@ -201,28 +194,31 @@ async fn main() -> anyhow::Result<()> {
             .map(|w| w.wiki_id.clone())
             .collect();
 
-        println!("── «{probe}»  (atteso: {})", want.unwrap_or("NESSUNO"));
+        println!(
+            "── «{probe}»  (expected: {})",
+            want.as_deref().unwrap_or("NONE")
+        );
         let mut sims: Vec<(String, f32)> = desc
             .iter()
             .map(|(w, (_, e))| (w.clone(), cosine_similarity(&q, e)))
             .collect();
         sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        print!("   somiglianze riepilogo:");
+        print!("   description similarity:");
         for (w, s) in sims.iter().take(3) {
             print!("  {}={s:.3}", w.rsplit('-').next().unwrap_or(w));
         }
-        print!("   | rank nei fatti:");
+        print!("   | rank among facts:");
         if sign_rank.is_empty() {
-            print!(" nessuno nei primi 50");
+            print!(" none in the top 50");
         }
         for (w, r) in &sign_rank {
             print!(" {}=#{r}", w.rsplit('-').next().unwrap_or(w));
         }
-        println!("   | nome: {named:?}");
+        println!("   | named: {named:?}");
 
         let mut tally = |label: String, admitted: Vec<String>| {
             let e = score.get_mut(&label).expect("rule");
-            match want {
+            match want.as_deref() {
                 None => e.0 += usize::from(!admitted.is_empty()),
                 Some(w) => {
                     if admitted.iter().any(|a| a.ends_with(w)) {
@@ -254,14 +250,10 @@ async fn main() -> anyhow::Result<()> {
         tally("NAME only".to_owned(), named.clone());
     }
 
+    println!("\n════ RULE OUTCOMES ({n_personal} personal / {n_project} project) ════");
     println!(
-        "\n════ ESITO DELLE REGOLE ({} personali / {} di progetto) ════",
-        PERSONAL.len(),
-        PROJECT.len()
-    );
-    println!(
-        "{:<12} {:>22} {:>18} {:>16}",
-        "regola", "falsi aperti (su personali)", "progetti presi", "progetti mancati"
+        "{:<12} {:>26} {:>16} {:>16}",
+        "rule", "false opens (on personal)", "projects hit", "projects missed"
     );
     for (label, (fp, tp, fnn)) in &score {
         println!("{label:<12} {fp:>22} {tp:>18} {fnn:>16}");

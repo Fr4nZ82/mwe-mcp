@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! cargo run -p mwe-core --example room_walk --features local-embedder --release -- \
-//!     --workdir <copy> --sender franz --query "che musica piace a me e redacted?" --top-k 5
+//!     --workdir <copy> --sender <user-id> --query "<the turn, verbatim>" --top-k 5
 //! ```
 
 #![allow(

@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! cargo run -p mwe-core --example nav_replay --features local-embedder --release -- \
-//!     --workdir <copy> --sender franz --turn "…"
+//!     --workdir <copy> --sender <user-id> --turn "…" --needle "<a phrase>"
 //! ```
 
 #![allow(
@@ -36,17 +36,24 @@ use mwe_core::{db, enrollment, fact_index, oauth, recall, recall_nav};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut workdir = PathBuf::from("./work");
-    let mut sender_id = "franz".to_string();
-    let mut turn = "gandalf metti una playlist che ci piace a me a redacted".to_string();
+    let mut sender_id = String::new();
+    let mut turn = String::new();
+    let mut needle: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--workdir" => workdir = PathBuf::from(args.next().unwrap_or_default()),
             "--sender" => sender_id = args.next().unwrap_or_default(),
             "--turn" => turn = args.next().unwrap_or_default(),
+            "--needle" => needle = args.next().map(|n| n.to_lowercase()),
             other => anyhow::bail!("unknown flag {other}"),
         }
     }
+    anyhow::ensure!(!sender_id.is_empty(), "--sender <user-id> is required");
+    anyhow::ensure!(
+        !turn.is_empty(),
+        "--turn \"<the turn, verbatim>\" is required"
+    );
 
     let pool = db::open_or_init(&workdir).await?;
     let tree = WikiTree::open(&workdir)?;
@@ -157,7 +164,9 @@ async fn main() -> anyhow::Result<()> {
     );
     let mut found = false;
     for f in &out.fragments {
-        let hit = f.text.to_lowercase().contains("storie tese");
+        let hit = needle
+            .as_deref()
+            .is_some_and(|n| f.text.to_lowercase().contains(n));
         if hit {
             found = true;
         }
@@ -166,20 +175,22 @@ async fn main() -> anyhow::Result<()> {
             f.wiki_id,
             f.page.to_string_lossy(),
             if hit {
-                "★ CONTIENE «storie tese» ★\n"
+                "★ CONTAINS THE NEEDLE ★\n"
             } else {
                 ""
             },
             f.text.chars().take(700).collect::<String>()
         );
     }
-    println!(
-        "\n════ VERDETTO: la risposta {} nel contesto navigato ════",
-        if found {
-            "È PRESENTE"
-        } else {
-            "NON è presente"
-        }
-    );
+    if let Some(n) = needle.as_deref() {
+        println!(
+            "\n════ VERDICT: «{n}» {} in the navigated context ════",
+            if found {
+                "IS PRESENT"
+            } else {
+                "is NOT present"
+            }
+        );
+    }
     Ok(())
 }

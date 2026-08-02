@@ -63,7 +63,7 @@ flowchart TB
     OPEN0 --> GROW
 
     subgraph GROW["the pool GROWS — this is the part that surprises"]
-        G1["entering a wiki adds<br/><b>ALL its pages</b> as candidates<br/>(famiglia = 22, redacted = 44)"]
+        G1["entering a wiki adds<br/><b>ALL its pages</b> as candidates<br/>(measured: 22 and 44 on two real wikis)"]
         G2["links found in the opened prose<br/>add their destinations"]
     end
 
