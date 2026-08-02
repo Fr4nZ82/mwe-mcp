@@ -195,17 +195,27 @@ fn window_closed_at(valid_to: Option<&str>, now: &chrono::DateTime<chrono::Utc>)
 /// **8th at 0.458**, below a birth date at 0.484. Nothing about the
 /// ranking knew that naming both was worth anything.
 ///
-/// **Fitted, not chosen.** At 0.10 the answer ranks first — and the block
-/// fills with bare kinship rows (*"X is the son of Y"*) that cover both
-/// subjects and answer nothing: coverage beats topic. 0.05 is the largest
-/// weight that still leaves the served block readable, and it moves the
-/// measured answer from 8th to 3rd. Full table in the card.
+/// **Fitted, not chosen**, and the fitting criterion is *does the answer
+/// lead*, not *how much of the block it leaves to other facts*. At this
+/// weight the measured answer moves from **8th to 1st**, and the turn that
+/// actually failed in production reaches 3rd from 17th.
+///
+/// The kinship rows that rise with it (*"X is the son of Y"*) are **not
+/// noise** — founder's ruling 2026-08-03: a fact relating the two people a
+/// turn is about is a valid door and useful material for composing the
+/// answer, so it earning a place is the signal working, not a cost. How
+/// many facts the block carries is a separate question, decided by
+/// `recall_top_k` and deliberately re-measured *after* the engine settles.
+///
+/// There is still a ceiling, higher up: at 0.15 every music fact leaves a
+/// block answering a question about music, i.e. coverage has beaten topic
+/// outright. Full table in the card.
 ///
 /// Additive and small on purpose. Like [`CLOSED_WINDOW_DOWNRANK`] beside
 /// it this is a **ranking signal, never a filter**: no fact becomes
 /// unreachable, no corpus is closed off, and every fact that surfaces
 /// today still surfaces.
-pub const SUBJECT_COVERAGE_BONUS: f32 = 0.05;
+pub const SUBJECT_COVERAGE_BONUS: f32 = 0.10;
 
 /// First-person forms that put the SPEAKER among the turn's subjects.
 ///

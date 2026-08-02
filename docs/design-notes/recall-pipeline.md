@@ -493,10 +493,19 @@ subject of the turn a fact covers **beyond the first**:
 
 A ranking **signal, never a filter**, exactly like the down-rank above — no
 fact becomes unreachable and every fact that surfaced before still surfaces.
-The weight was fitted rather than chosen: larger values rank the answer
-first and fill the block with bare kinship rows (*"X is the son of Y"*) that
-cover both subjects and answer nothing — coverage beating topic. The value
-in the code is the largest one that still leaves the served block readable.
+
+The weight was **fitted, and the criterion is whether the answer leads** —
+not how much of the block it leaves to other facts. At the shipped value the
+measured answer goes from 8th to **1st**. The kinship rows that rise with it
+(*"X is the son of Y"*) are not noise: a fact relating the two people a turn
+is about is a valid door and useful material for composing the answer, so
+earning a place is the signal working. **How many facts the block carries is
+a different question**, settled by `recall_top_k` and re-measured after the
+engine settles, not by making this weight timid.
+
+The ceiling is higher up and real: past roughly 1.5× the shipped value every
+*topical* fact leaves a block answering a topical question — coverage has
+beaten topic outright, which is the failure mode to watch when retuning.
 
 Order rationale:
 - *Filter → score → ACL → top-K* keeps the working set small first
