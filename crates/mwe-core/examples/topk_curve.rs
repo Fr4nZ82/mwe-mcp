@@ -19,7 +19,16 @@
 //!     --workdir <copy> --sender franz --turns turns.txt
 //! ```
 
-#![allow(clippy::cast_precision_loss)]
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    clippy::collapsible_if,
+    clippy::option_if_let_else,
+    reason = "throwaway measurement harness: the report code is written for a               human reading numbers once, not for reuse"
+)]
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -105,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
         "{:<6}{:>10}{:>14}{:>16}",
         "rango", "punteggio", "% del 1°", "perso vs 1°"
     );
-    let mut med_at = |rank: usize| -> f32 {
+    let med_at = |rank: usize| -> f32 {
         let mut v: Vec<f32> = curves.iter().filter_map(|c| c.get(rank).copied()).collect();
         if v.is_empty() {
             return f32::NAN;
