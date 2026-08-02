@@ -124,8 +124,15 @@ live in `fact_index` — it has its own pair of tables
   truth; the table exists so the engine can ask *in SQL* which wikis are
   smart, who may read them, and what each project is about.
 
-  **`description` is the project's door sign**, and it is read from the
-  wiki's own `_meta.scope` via
+  **`description` is the project's door sign.** The consumer sets it by
+  passing `description` on `wiki_admin_push`; the server stamps it into
+  that wiki's `_meta.scope`, because `_meta.md` is deliberately **not
+  writable** through the push surface — it carries the wiki's identity and
+  its ACL, and a consumer able to rewrite it could rewrite those. Passing
+  nothing leaves the current description alone (silence is not
+  withdrawal); an empty string withdraws it, which retires the door.
+
+  From `_meta.scope` the registry reads it via
   [`WikiMeta::door_description`](../../crates/mwe-core/src/wiki.rs) —
   no second field. `scope` already means *"prose description of this
   container — what goes in here"*; on a standard wiki that prose is the

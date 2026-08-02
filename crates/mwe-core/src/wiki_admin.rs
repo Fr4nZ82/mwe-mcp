@@ -353,6 +353,23 @@ pub struct PushRequest {
     /// `wiki_search` filtering (the filter lands later, when a real
     /// multi-project consumer needs it).
     pub project_id: Option<String>,
+    /// Optional. One plain-language sentence saying what this project is
+    /// about, stamped into `_meta.scope` and from there mirrored into the
+    /// smart-wiki registry and projected into the owner's memory as the
+    /// project's **door sign** ([`crate::signposts`]).
+    ///
+    /// It arrives here, on a call the consumer is already making, because
+    /// `_meta.md` is deliberately **not writable** through this surface —
+    /// it carries the wiki's identity and ACL, and a consumer that could
+    /// rewrite it could rewrite those. So the server stamps the one field
+    /// the consumer legitimately owns the content of, exactly as it
+    /// already does for `title` and `project_id`.
+    ///
+    /// Honoured on both modes: a project that has existed for months gets
+    /// its first description through an ordinary upsert. `None` leaves any
+    /// existing description untouched — passing nothing is not the same as
+    /// withdrawing it. To withdraw, pass an empty string.
+    pub description: Option<String>,
     /// Pages to write. On `Create`, any pages here land alongside the
     /// auto-generated `_meta.md`. On `Upsert`, each page is created
     /// or overwritten.
@@ -720,13 +737,19 @@ async fn push_create(
             serde_yaml::Value::String(pid.to_owned()),
         );
     }
+    let scope = req
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_owned);
     let meta = WikiMeta {
         wiki_id: new_wiki_id.clone(),
         wiki_type: wiki_type.to_owned(),
         parent_wiki_id: Some(parent_id.clone()),
         slug,
         title: title.to_owned(),
-        scope: None,
+        scope,
         shared_with: Vec::new(),
         style_overrides: serde_yaml::Mapping::new(),
         keywords: serde_yaml::Mapping::new(),
@@ -829,6 +852,38 @@ async fn push_create(
     })
 }
 
+/// Stamp the project's door sign into its `_meta.scope`.
+///
+/// The one `_meta` field whose *content* a consumer legitimately owns, so
+/// it is settable through the push even though `_meta.md` itself is not
+/// writable here — that file also carries the wiki's identity and its ACL,
+/// and a consumer able to rewrite it could rewrite those.
+///
+/// `None` leaves whatever is there alone: passing nothing is **not**
+/// withdrawal, or every ordinary push would silently retire the door. An
+/// empty string is the withdrawal.
+fn stamp_description(handle: &WikiHandle, requested: Option<&str>) -> Result<(), AdminError> {
+    let Some(requested) = requested else {
+        return Ok(());
+    };
+    let trimmed = requested.trim();
+    let wanted = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+    if handle.meta().scope == wanted {
+        return Ok(());
+    }
+    // Re-read rather than re-render from the handle: `_meta.md` may carry a
+    // prose body, and rendering from the parsed struct alone would drop it.
+    let meta_path = handle.abs_dir().join(META_FILENAME);
+    let raw = std::fs::read_to_string(&meta_path)?;
+    let (mut meta, body) = WikiMeta::parse(&meta_path, &raw)?;
+    meta.scope = wanted;
+    let doc = meta
+        .render(&body)
+        .map_err(|e| AdminError::InvalidInput(format!("re-render {META_FILENAME}: {e}")))?;
+    atomic_write(&meta_path, doc.as_bytes())?;
+    Ok(())
+}
+
 async fn push_upsert(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -854,6 +909,8 @@ async fn push_upsert(
     let handle = tree
         .locate(&wiki_id)
         .map_err(|_| AdminError::NotFound(wiki_id.clone()))?;
+
+    stamp_description(&handle, req.description.as_deref())?;
 
     enforce_admin_auth(pool, tree, &handle, caller, actor_kind).await?;
 
@@ -2176,6 +2233,7 @@ mod tests {
             wiki_type: Some("wiki-companion".into()),
             smart: true,
             project_id: Some("lnprint-abc123".into()),
+            description: None,
             pages: vec![
                 page("index.md", "# lnprint\n\nminimal landing\n"),
                 page("modules/auth.md", "# auth\n\nmfa flow\n"),
@@ -2366,6 +2424,7 @@ mod tests {
             wiki_type: None,
             smart: false,
             project_id: None,
+            description: None,
             pages,
             deletes: Vec::new(),
             mark_processed: Vec::new(),
@@ -2478,6 +2537,7 @@ mod tests {
             wiki_type: Some("wiki-companion".into()),
             smart: true,
             project_id: None,
+            description: None,
             pages: Vec::new(),
             deletes: Vec::new(),
             mark_processed: Vec::new(),
@@ -2519,6 +2579,7 @@ mod tests {
             wiki_type: Some("wiki-companion".into()),
             smart: true,
             project_id: None,
+            description: None,
             pages: vec![page("index.md", "# lnprint\n")],
             deletes: Vec::new(),
             mark_processed: Vec::new(),
@@ -2551,6 +2612,7 @@ mod tests {
             wiki_type: None,
             smart: false,
             project_id: None,
+            description: None,
             pages: vec![
                 page("index.md", "# lnprint v2\n"),          // overwrite
                 page("modules/payments.md", "# payments\n"), // new
@@ -2605,6 +2667,7 @@ mod tests {
             wiki_type: None,
             smart: false,
             project_id: None,
+            description: None,
             pages: vec![page("index.md", "# intrusion\n")],
             deletes: Vec::new(),
             mark_processed: Vec::new(),
@@ -2637,6 +2700,7 @@ mod tests {
             wiki_type: None,
             smart: false,
             project_id: None,
+            description: None,
             pages: vec![page("_meta.md", "fake meta\n")],
             deletes: Vec::new(),
             mark_processed: Vec::new(),
@@ -2662,6 +2726,7 @@ mod tests {
             wiki_type: None,
             smart: false,
             project_id: None,
+            description: None,
             pages: Vec::new(),
             deletes: vec!["_meta.md".into()],
             mark_processed: Vec::new(),
@@ -2780,6 +2845,7 @@ mod tests {
                 wiki_type: None,
                 smart: false,
                 project_id: None,
+                description: None,
                 pages: vec![page("decisions.md", &dense_page_body())],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
@@ -2850,6 +2916,7 @@ mod tests {
                 wiki_type: None,
                 smart: false,
                 project_id: None,
+                description: None,
                 pages: vec![page("decisions.md", &dense_page_body())],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
@@ -2877,6 +2944,7 @@ mod tests {
                 wiki_type: None,
                 smart: false,
                 project_id: None,
+                description: None,
                 pages: vec![page("decisions.md", &dense_page_body())],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
@@ -3242,6 +3310,7 @@ mod tests {
                 wiki_type: None,
                 smart: false,
                 project_id: None,
+                description: None,
                 pages: vec![page("notes.md", "# bob's edit\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
@@ -3305,6 +3374,7 @@ mod tests {
                 wiki_type: None,
                 smart: false,
                 project_id: None,
+                description: None,
                 pages: vec![page("notes.md", "# laptop edit\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
@@ -3342,6 +3412,7 @@ mod tests {
                 wiki_type: None,
                 smart: false,
                 project_id: None,
+                description: None,
                 pages: vec![page("notes.md", "# laptop edit\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
@@ -3383,6 +3454,7 @@ mod tests {
                 wiki_type: None,
                 smart: false,
                 project_id: None,
+                description: None,
                 pages: vec![page("notes.md", "# self edit\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
@@ -3436,6 +3508,7 @@ mod tests {
                 wiki_type: None,
                 smart: false,
                 project_id: None,
+                description: None,
                 pages: vec![page("notes.md", "# dashboard-typed note\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
@@ -3485,6 +3558,7 @@ mod tests {
                 wiki_type: None,
                 smart: false,
                 project_id: None,
+                description: None,
                 pages: vec![page("notes.md", "# smart attempt\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
@@ -3526,6 +3600,7 @@ mod tests {
             wiki_type: None,
             smart: false,
             project_id: None,
+            description: None,
             pages: vec![page("index.md", "# lnprint\n\nbumped\n")],
             deletes: Vec::new(),
             mark_processed: Vec::new(),
@@ -3630,6 +3705,7 @@ mod tests {
                 wiki_type: None,
                 smart: false,
                 project_id: None,
+                description: None,
                 pages: vec![
                     page("index.md", "# lnprint v2\n"),
                     page("modules/new.md", "# brand new\n"),
@@ -3719,6 +3795,7 @@ mod tests {
                 wiki_type: None,
                 smart: false,
                 project_id: None,
+                description: None,
                 pages: vec![
                     page("index.md", "# lnprint v2\n"), // overwrite of "# lnprint\n…"
                     page("modules/new.md", "# brand new\n"), // brand-new file
@@ -3795,6 +3872,7 @@ mod tests {
                 wiki_type: None,
                 smart: false,
                 project_id: None,
+                description: None,
                 pages: vec![page("modules/payments.md", "# payments\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
@@ -3838,6 +3916,7 @@ mod tests {
                 wiki_type: None,
                 smart: false,
                 project_id: None,
+                description: None,
                 pages: vec![page("index.md", "# lnprint v3 (independent edit)\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
@@ -4007,6 +4086,7 @@ mod tests {
                 wiki_type: None,
                 smart: false,
                 project_id: None,
+                description: None,
                 pages: vec![page("docs/unrelated.md", "# disjoint\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
@@ -4118,6 +4198,7 @@ mod tests {
             wiki_type: None,
             smart: false,
             project_id: None,
+            description: None,
             pages: vec![page("index.md", "# updated\n")],
             deletes: Vec::new(),
             mark_processed: marks,
@@ -4328,6 +4409,7 @@ mod tests {
             wiki_type: None,
             smart: false,
             project_id: None,
+            description: None,
             pages: vec![page("index.md", "# updated2\n")],
             deletes: Vec::new(),
             mark_processed: Vec::new(),

@@ -2300,6 +2300,7 @@ async fn submit_edit(
         wiki_type: None,
         smart: false,
         project_id: None,
+        description: None,
         pages: vec![PushPage {
             path: page_path.clone(),
             content: form.body.clone(),

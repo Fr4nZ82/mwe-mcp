@@ -1,7 +1,7 @@
 ---
 name: smart-consumer
-version: 1.18.0
-description: "Project-bound mode for smart consumers: authoritative management of a project's smart wiki via wiki_admin_push/pull (whole, narrowed by paths, or shape-only) + project signposts (the description is `_meta.scope`, the diary is `wiki_admin_push`'s `activity` field — the server writes both, so the user's standard memory knows the project exists) + _briefing.md lifecycle + cooperative lease + graceful degradation on token revoke. First connect is NOT here — it lives in smart-onboarding, fetched when the server volunteers first_connect.hint. Smart wikis are markerless and content-indexed — the consumer writes plain markdown freely (create / edit / move / rename / delete pages), exactly the way this repo's engineering wiki is maintained; the ACL is wiki-level in _meta (no per-fragment markers or ACL — those are the pillar of standard memory wikis only). Superset (group 17): the user↔agent conversation ALSO runs the standard personal-memory pipeline via wiki_ingest_message, joined to the project wiki by provenance links (authored_refs), with a per-message router (drop / personal-fact→standard / document-import / project-wiki / your-operational-wiki). Auto recall+capture, never dump everything into the user's standard memory."
+version: 1.19.0
+description: "Project-bound mode for smart consumers: authoritative management of a project's smart wiki via wiki_admin_push/pull (whole, narrowed by paths, or shape-only) + project signposts (the description and the diary are both fields on wiki_admin_push — the server writes both, so the user's standard memory knows the project exists) + _briefing.md lifecycle + cooperative lease + graceful degradation on token revoke. First connect is NOT here — it lives in smart-onboarding, fetched when the server volunteers first_connect.hint. Smart wikis are markerless and content-indexed — the consumer writes plain markdown freely (create / edit / move / rename / delete pages), exactly the way this repo's engineering wiki is maintained; the ACL is wiki-level in _meta (no per-fragment markers or ACL — those are the pillar of standard memory wikis only). Superset (group 17): the user↔agent conversation ALSO runs the standard personal-memory pipeline via wiki_ingest_message, joined to the project wiki by provenance links (authored_refs), with a per-message router (drop / personal-fact→standard / document-import / project-wiki / your-operational-wiki). Auto recall+capture, never dump everything into the user's standard memory."
 depends_on: ["core"]
 applies_to:
   consumer_class: smart
@@ -431,16 +431,25 @@ unnamed question reach your wiki at all.
 
 ### How the two halves get written — neither is a call you make
 
-**The description is a property of your wiki, not an act.** Put it in
-`_meta.md` as `scope:` — one short non-technical sentence — and push. The
-server mirrors it into its registry and writes it into the user's memory
-itself, on every sweep. Edit the line and it follows; delete it and the
-signpost is retired. There is nothing to call, and nothing to remember:
-a project with no `scope:` is simply a project with no door, visibly.
+**The description is a property of your wiki, not an act.** Pass
+`description` on `wiki_admin_push` — one short non-technical sentence —
+and the server stamps it into your wiki's `_meta.md`, mirrors it into its
+registry, and writes it into the user's memory itself on every sweep. Set
+it once and it stays. Pass it again to change it; pass an empty string to
+withdraw it and retire the signpost. Omitting it leaves the current one
+alone — silence is not withdrawal.
 
-```yaml
-# _meta.md
-scope: "The system that runs the digital signs in the shops: it decides what to show on each screen and when to refresh it."
+You cannot write `_meta.md` yourself: it carries the wiki's identity and
+its ACL, and is refused by `wiki_admin_push` on purpose. This field is how
+you set the one part of it whose content is yours.
+
+```
+wiki_admin_push(
+    mode = "upsert",
+    wiki_id = state.wiki_id,
+    pages = [...],
+    description = "The system that runs the digital signs in the shops: it decides what to show on each screen and when to refresh it.",
+)
 ```
 
 **The diary line rides the push that carried the work.** Pass `activity`
@@ -490,8 +499,9 @@ whether the user's question has anything to do with it.
 
 ### The rules the server enforces
 
-- **description** (`_meta.scope`) — max 400 characters, one per project.
-  Editing it replaces the old one; removing it retires the signpost.
+- **description** (`wiki_admin_push`'s `description`) — max 400 characters,
+  one per project. Passing a new one replaces the old; passing an empty
+  string retires the signpost. It is stored as this wiki's `_meta.scope`.
 - **activity** (`wiki_admin_push`'s `activity`) — max 250 characters, one
   per day. Pushing twice in a day replaces that day's line. The server
   prefixes the date and the project name; your text carries only what
@@ -673,7 +683,7 @@ single-laptop single-token rotation case that motivated it.
 | F | `wiki_ingest_external` | document-import: a long body the user asks to keep whole becomes its own page + pointer |
 | H | `wiki_admin_push` | create + upsert pages (modes `create` / `upsert`; deletes ride the `upsert` push); response carries `authored_refs` |
 | H | `wiki_admin_pull` | whole wiki, narrowed by `paths`, or `shape: true` for per-page retrieval quality without the bytes |
-| H | `wiki_admin_signpost` | **superseded — do not call.** The description is `_meta.scope` and the diary is `wiki_admin_push`'s `activity` field; the server writes both. Kept only so an older consumer does not break |
+| H | `wiki_admin_signpost` | **superseded — do not call.** The description and the diary are both fields on `wiki_admin_push`; the server writes both. Kept only so an older consumer does not break |
 | H | `wiki_admin_notify` | append an item to **someone else's** `_briefing.md`; your own inbox you write with `wiki_admin_push` |
 | K | `smart_bootstrap` | the session-start landscape + `first_connect`: does this project already have memory? |
 | H | `wiki_admin_lease_acquire` / `_release` | cooperative lease for bulk edits |

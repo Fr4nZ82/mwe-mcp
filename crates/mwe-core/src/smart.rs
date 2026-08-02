@@ -692,6 +692,7 @@ mod tests {
                 wiki_type: Some("wiki-companion".to_owned()),
                 smart: true,
                 project_id: project_id.map(str::to_owned),
+                description: None,
                 pages: vec![PushPage {
                     path: "index.md".to_owned(),
                     content: format!("# {title}\n"),
@@ -732,6 +733,7 @@ mod tests {
                 wiki_type: Some(crate::wiki::AGENT_WIKI_TYPE.to_owned()),
                 smart: true,
                 project_id: None,
+                description: None,
                 pages: vec![PushPage {
                     path: "index.md".to_owned(),
                     content: format!("# {title}\n"),

@@ -672,6 +672,7 @@ async fn ensure_dedicated_wiki(
         wiki_type: Some(mwe_core::wiki::AGENT_WIKI_TYPE.to_owned()),
         smart: true,
         project_id: None,
+        description: None,
         pages: vec![wiki_admin::PushPage {
             path: "index.md".to_owned(),
             content: format!(

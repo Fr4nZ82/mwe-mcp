@@ -998,6 +998,7 @@ async fn comment_round_trip_then_mark_processed_removes_it_from_inline_view() {
         wiki_type: None,
         smart: false,
         project_id: None,
+        description: None,
         pages: vec![PushPage {
             path: "modules/parser.md".into(),
             content: format!("{TWO_HEADING_BODY}\n\nUpdated by the custode.\n"),

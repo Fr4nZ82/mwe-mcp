@@ -2284,6 +2284,20 @@ struct WikiAdminPushArgs {
     /// over the cap the push is refused, never truncated.
     #[serde(default)]
     activity: Option<String>,
+    /// One plain-language sentence saying what this project is about —
+    /// its **door sign**, the thing that lets the owner's everyday agent
+    /// notice the project without being told its name.
+    ///
+    /// A field here, and not an edit to `_meta.md`, because that file is
+    /// deliberately not writable through this surface: it carries the
+    /// wiki's identity and ACL. The server stamps the one part of it whose
+    /// content the consumer legitimately owns, exactly as it already does
+    /// for `title` and `project_id`.
+    ///
+    /// Omitting it leaves any existing description alone — silence is not
+    /// withdrawal. An empty string withdraws it, which retires the door.
+    #[serde(default)]
+    description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2340,6 +2354,7 @@ pub(super) async fn call_wiki_admin_push(
         wiki_type: args.wiki_type,
         smart: args.smart,
         project_id: args.project_id,
+        description: args.description,
         pages,
         deletes: args.deletes,
         mark_processed: args.mark_processed,
@@ -2497,7 +2512,7 @@ async fn signpost_hint(state: &McpState, wiki_id: &WikiId) -> Option<String> {
         // hint asking for one more call is exactly what this deployment
         // ignored on every push for weeks.
         return Some(format!(
-            "This project has no description, so the owner's standard memory does not know it exists. Add a `scope:` line to this wiki's `_meta.md` — one short non-technical sentence, max {} chars — and push it. The server does the rest; there is nothing else to call.",
+            "This project has no description, so the owner's standard memory does not know it exists. Pass `description` on your next `wiki_admin_push` — one short non-technical sentence, max {} chars. The server does the rest; there is nothing else to call.",
             mwe_core::signposts::MAX_DESCRIPTION_CHARS
         ));
     }

@@ -1270,6 +1270,7 @@ mod tests {
             wiki_type: Some("wiki-companion".into()),
             smart: true,
             project_id: None,
+            description: None,
             pages: vec![PushPage {
                 path: "index.md".into(),
                 content: "# lnprint\n".into(),

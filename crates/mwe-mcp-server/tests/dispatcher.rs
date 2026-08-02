@@ -1090,6 +1090,7 @@ async fn smart_fixture_with_smart_wiki() -> (
         wiki_type: Some("wiki-companion".into()),
         smart: true,
         project_id: None,
+        description: None,
         pages: vec![PushPage {
             path: "index.md".into(),
             content: "# lnprint\n".into(),
@@ -1161,6 +1162,80 @@ async fn wiki_admin_push_accepts_mark_processed_field_and_surfaces_marked_in_out
         processed_at.is_some(),
         "row must be flipped to processed by the dispatcher path"
     );
+}
+
+#[tokio::test]
+async fn wiki_admin_push_sets_the_description_the_consumer_cannot_write_itself() {
+    let (state, identity, dir, wiki_id) = smart_fixture_with_smart_wiki().await;
+
+    // `_meta.md` is refused as a page — the consumer has no way to author
+    // its own scope, which is exactly why the field exists.
+    let refused = call(
+        &state,
+        &identity,
+        "wiki_admin_push",
+        json!({
+            "mode": "upsert",
+            "wiki_id": wiki_id.as_str(),
+            "pages": [{"path": "_meta.md", "content": "---\nscope: sneaky\n---\n"}],
+        }),
+    )
+    .await;
+    assert!(refused.is_err(), "_meta.md must stay unwritable");
+
+    let out = call(
+        &state,
+        &identity,
+        "wiki_admin_push",
+        json!({
+            "mode": "upsert",
+            "wiki_id": wiki_id.as_str(),
+            "pages": [{"path": "index.md", "content": "# lnprint v2\n"}],
+            "description": "  Print-shop ordering, end to end.  ",
+        }),
+    )
+    .await
+    .expect("push carrying a description must succeed");
+    assert_eq!(out["wiki_id"], json!(wiki_id.as_str()));
+
+    let meta = std::fs::read_to_string(dir.path().join("wikis/alice/lnprint/_meta.md")).unwrap();
+    assert!(
+        meta.contains("Print-shop ordering, end to end."),
+        "the server stamps it, trimmed: {meta}"
+    );
+
+    // Silence leaves it alone — passing nothing is not withdrawal.
+    call(
+        &state,
+        &identity,
+        "wiki_admin_push",
+        json!({
+            "mode": "upsert",
+            "wiki_id": wiki_id.as_str(),
+            "pages": [{"path": "index.md", "content": "# lnprint v3\n"}],
+        }),
+    )
+    .await
+    .expect("push without a description must succeed");
+    let meta = std::fs::read_to_string(dir.path().join("wikis/alice/lnprint/_meta.md")).unwrap();
+    assert!(meta.contains("Print-shop ordering, end to end."));
+
+    // An empty string withdraws it.
+    call(
+        &state,
+        &identity,
+        "wiki_admin_push",
+        json!({
+            "mode": "upsert",
+            "wiki_id": wiki_id.as_str(),
+            "pages": [{"path": "index.md", "content": "# lnprint v4\n"}],
+            "description": "",
+        }),
+    )
+    .await
+    .expect("withdrawal must succeed");
+    let meta = std::fs::read_to_string(dir.path().join("wikis/alice/lnprint/_meta.md")).unwrap();
+    assert!(!meta.contains("Print-shop ordering"), "withdrawn: {meta}");
 }
 
 #[tokio::test]
