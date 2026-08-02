@@ -51,6 +51,45 @@ the Rust struct only as a tolerant defensive fallback
 routing → seed) and stays inside the ~500 ms–2 s conversational budget
 (see [runtime-topology.md](../architecture/runtime-topology.md)).
 
+> **The intent field carries two decisions, and they are independent**
+> *(prompt v2.52)*. `intent` settles both whether the turn WRITES and
+> whether it READS, and the two do not follow from each other:
+>
+> - **`recall` is a test of an unresolved REFERENCE** — not of grammar,
+>   and not of how much work the turn asks for. Does the turn point at a
+>   person, thing, preference, plan or event *by description* rather than
+>   by value, so that only what this memory holds could say which one is
+>   meant? A command qualifies: mwe performs no actions — the consumer
+>   agent does — so what a command asks of memory is the reference inside
+>   it. *"Put on a playlist Galadriel and I both like"* is `recall` with
+>   an empty `extractions` array; *"put on Vivaldi's Four Seasons"*,
+>   *"turn the volume down in the living room"*, *"what time is it?"* and
+>   a tool instruction carrying its own `device_id` are not — **doing work
+>   is not remembering**.
+> - **`capture` always wins the tie.** The reference test never takes a
+>   turn away from `capture`: a turn that states something new *and* asks
+>   a question is a `capture`, because a `recall` writes nothing and the
+>   stated facts are lost forever, while filing it as `capture` costs
+>   nothing on the reading side — the recall block and the navigated pass
+>   are served on a `capture` turn exactly as on a `recall` one.
+> - **Store-nothing does not imply recall-nothing.** A one-shot command
+>   is *"just conversation, never a rule"* and stores nothing (prompt
+>   Part 7) — but that settles the write side only. Nearly all such
+>   commands are `skip` because their references are resolved; the rare
+>   one that carries a description only memory can resolve is `recall`.
+> - **`skip` covers the incomplete turn.** A bare fragment that would
+>   only mean something as the answer to a question nobody asked (*"the
+>   volume"*, *"Paris"*, *"this morning"*) names no subject to search and
+>   states nothing to store. Context can only **rescue** a fragment,
+>   never reject one: when `recent_messages` shows the preceding turn
+>   asked for exactly this, the fragment is complete and is classified on
+>   its resolved meaning; with the window empty or unrelated it stays
+>   `skip`. Length is not the test.
+>
+> This matters beyond the write path because **intent gates the
+> navigator** (below): a turn misfiled as `skip` loses the multi-hop pass
+> *and* has its flat recall slot discarded.
+
 > **Per-fact validity + per-page style/description.**
 > Each extraction carries a **validity interval** — `valid_from`/`valid_to` (RFC3339 UTC instants;
 > `valid_to = null` = an OPEN horizon, "true now, no known end"). The knowledge/state distinction
