@@ -457,10 +457,46 @@ smart-corpus funnel above. Full writeup, including the measurement table:
    so ordering *within* the closed set is preserved; a future `valid_to`
    (an appointment to come) is open and unaffected; the fresh-captures
    slot applies the same rule to buffered windows.
+   Then add the **subject-coverage bonus** — see below.
 4. **ACL filter** — drop rows the sender cannot read.
 5. **Sort** descending by score, take `top_k`.
 6. **Bump** `last_recall_at` + `recall_count_30d` on every returned id
    via [`fact_index::bump_recall_hits`] (one transaction).
+
+### Subject coverage — a question about two people wants a fact about both
+
+Cosine alone cannot tell that a turn naming *two* people should be answered
+by a fact about *both*. Measured on a real corpus: the fact naming both
+people, the right topic and the right occasion ranked **8th at 0.458**,
+below a birth date at 0.484. `owner_id`/`allow_ids` decided only *whether*
+a reader may see a fact, never *how much it was worth*.
+
+So the score gains
+[`SUBJECT_COVERAGE_BONUS`](../../crates/mwe-core/src/recall.rs) for every
+subject of the turn a fact covers **beyond the first**:
+
+- **The turn's subjects** come from [`turn_subjects`]: the speaker when the
+  first person puts them *in* the question, plus every enrolled person the
+  turn names. A match against the enrolled roster and its aliases — a set
+  lookup, **no model call** — on whole words, so `bobby` never answers for
+  `bob`. The first-person list deliberately excludes unstressed clitics:
+  in *"**mi** ricordi che macchina ha X?"* the speaker is the **addressee**,
+  not a subject, and admitting them would pull their unrelated facts into a
+  question about somebody else.
+- **A fact's people** come from governance *and* content together —
+  `owner`/`allow`/`sender` say who may read it, text and topics say who it
+  names. Neither alone is aboutness: the measured answer is owned by one
+  person and names the other only in its topics and prose.
+- **Free below two subjects.** The per-row scan is skipped entirely unless
+  the turn carries at least two, which is almost always: of 141 real turns,
+  **2** named two people.
+
+A ranking **signal, never a filter**, exactly like the down-rank above — no
+fact becomes unreachable and every fact that surfaced before still surfaces.
+The weight was fitted rather than chosen: larger values rank the answer
+first and fill the block with bare kinship rows (*"X is the son of Y"*) that
+cover both subjects and answer nothing — coverage beating topic. The value
+in the code is the largest one that still leaves the served block readable.
 
 Order rationale:
 - *Filter → score → ACL → top-K* keeps the working set small first

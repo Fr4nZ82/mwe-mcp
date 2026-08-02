@@ -40,6 +40,7 @@ use thiserror::Error;
 use crate::acl::can_read;
 use crate::capture_buffer::{self, BufferedCapture, CaptureBufferError};
 use crate::embedder::{Embedder, EmbedderError};
+use crate::enrollment::{self, EnrolledUserLite};
 use crate::fact_index::{self, FactIndexError, FactIndexRow};
 use crate::sections::{self, SectionError};
 use crate::types::{Acl, FactId, Principal};
@@ -181,6 +182,140 @@ fn window_closed_at(valid_to: Option<&str>, now: &chrono::DateTime<chrono::Utc>)
     valid_to
         .and_then(|vt| chrono::DateTime::parse_from_rfc3339(vt).ok())
         .is_some_and(|vt| vt <= *now)
+}
+
+// ---------- Subject coverage as a ranking signal ----------
+
+/// Added to a hit's score for **each** of the turn's subjects it covers
+/// beyond the first (planning card 65).
+///
+/// A question naming two people should be answered by a fact about both,
+/// and cosine alone cannot say so: measured on the live corpus, the fact
+/// that named both people, the right topic and the right occasion ranked
+/// **8th at 0.458**, below a birth date at 0.484. Nothing about the
+/// ranking knew that naming both was worth anything.
+///
+/// **Fitted, not chosen.** At 0.10 the answer ranks first — and the block
+/// fills with bare kinship rows (*"X is the son of Y"*) that cover both
+/// subjects and answer nothing: coverage beats topic. 0.05 is the largest
+/// weight that still leaves the served block readable, and it moves the
+/// measured answer from 8th to 3rd. Full table in the card.
+///
+/// Additive and small on purpose. Like [`CLOSED_WINDOW_DOWNRANK`] beside
+/// it this is a **ranking signal, never a filter**: no fact becomes
+/// unreachable, no corpus is closed off, and every fact that surfaces
+/// today still surfaces.
+pub const SUBJECT_COVERAGE_BONUS: f32 = 0.05;
+
+/// First-person forms that put the SPEAKER among the turn's subjects.
+///
+/// Deliberately narrow, and the exclusions are the point. «**mi** ricordi
+/// che macchina ha Bob?» uses `mi` as the *addressee* — the answer is
+/// about Bob alone — so the unstressed clitics are absent and only the
+/// forms that place the speaker IN the question are listed. Admitting them
+/// would invite the asker's unrelated facts into questions about somebody
+/// else, which is the failure this whole signal exists to avoid.
+const FIRST_PERSON: &[&str] = &[
+    // Italian: subject pronoun, tonic object, possessives.
+    "io", "me", "mio", "mia", "miei", "mie", // English.
+    "i", "my", "mine", "myself",
+];
+
+/// Lowercased word tokens — the unit every name match works on, so none
+/// ever fires on a substring (`bobby` must not answer for `bob`).
+fn word_set(s: &str) -> std::collections::BTreeSet<String> {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Every name a person answers to, lowercased.
+fn names_of(user: &EnrolledUserLite) -> Vec<String> {
+    let mut v = vec![user.user_id.to_lowercase()];
+    v.extend(user.aliases.iter().map(|a| a.to_lowercase()));
+    v
+}
+
+/// The people a turn is **about**: the speaker when the first person puts
+/// them in the question, plus every enrolled person the turn names.
+///
+/// A match against the roster, not a judgement — the enrolled identities
+/// are a short known list, so this costs a set lookup and **no model
+/// call**. The speaker's own identity is deterministic and free: the
+/// engine has it before it reads the turn.
+#[must_use]
+pub fn turn_subjects(
+    query: &str,
+    sender_id: &str,
+    roster: &[EnrolledUserLite],
+) -> std::collections::BTreeSet<String> {
+    let w = word_set(query);
+    let mut subjects = std::collections::BTreeSet::new();
+    if FIRST_PERSON.iter().any(|p| w.contains(*p)) {
+        subjects.insert(sender_id.to_lowercase());
+    }
+    for u in roster {
+        if names_of(u).iter().any(|n| w.contains(n)) {
+            subjects.insert(u.user_id.to_lowercase());
+        }
+    }
+    subjects
+}
+
+/// The people a fact is **about** — governance and content together,
+/// because neither alone is aboutness: `owner`/`allow` say who may READ
+/// it, the text and topics say who it NAMES. The measured example needs
+/// both at once — the answering fact is owned by one person and names the
+/// other only in its topics and its prose.
+fn fact_mentions(
+    row: &FactIndexRow,
+    roster: &[EnrolledUserLite],
+) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut push = |p: &Principal| {
+        if let Principal::User(u) = p {
+            out.insert(u.to_lowercase());
+        }
+    };
+    push(&row.owner_id);
+    for a in &row.allow_ids {
+        push(a);
+    }
+    if let Some(s) = row.sender_id.as_ref() {
+        push(s);
+    }
+    let mut hay = word_set(&row.text);
+    for t in &row.topics {
+        hay.extend(word_set(t));
+    }
+    for u in roster {
+        if names_of(u).iter().any(|n| hay.contains(n)) {
+            out.insert(u.user_id.to_lowercase());
+        }
+    }
+    out
+}
+
+/// The bonus a row earns against this turn's subjects.
+///
+/// Zero — and free, because the per-row scan never runs — unless the turn
+/// carries **at least two** subjects. That guard is what makes the signal
+/// cost nothing on ordinary traffic: measured on 141 real turns, 2 of them
+/// name two people, and the other 139 pay one comparison.
+fn coverage_bonus(
+    row: &FactIndexRow,
+    subjects: &std::collections::BTreeSet<String>,
+    roster: &[EnrolledUserLite],
+) -> f32 {
+    if subjects.len() < 2 {
+        return 0.0;
+    }
+    let covered = fact_mentions(row, roster).intersection(subjects).count();
+    // The count is bounded by the enrolled roster, so the cast is exact.
+    #[allow(clippy::cast_precision_loss, reason = "roster-bounded, far below 2^23")]
+    let extra = covered.saturating_sub(1) as f32;
+    SUBJECT_COVERAGE_BONUS * extra
 }
 
 // ---------- Cosine ----------
@@ -496,8 +631,18 @@ async fn search_inner(
         wiki_id = filters.wiki_id.as_deref(),
         "recall: wiki_search embedded query"
     );
+    // Who the turn is about. One read of a table that holds one row per
+    // enrolled person, and the scan it feeds is skipped entirely below
+    // unless the turn names two of them.
+    let roster: Vec<EnrolledUserLite> = enrollment::list_users(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|u| !u.is_agent)
+        .collect();
+    let subjects = turn_subjects(query, &sender.sender_id, &roster);
     let candidates = fact_index::find_by_filters(pool, &filters).await?;
-    let scored = score_and_filter(&q_emb, candidates, sender, top_k);
+    let scored = score_and_filter(&q_emb, candidates, sender, top_k, &subjects, &roster);
     if bump {
         bump_recall_hits_from(pool, &scored).await?;
     }
@@ -516,6 +661,8 @@ fn score_and_filter(
     candidates: Vec<FactIndexRow>,
     sender: &SenderContext,
     top_k: usize,
+    subjects: &std::collections::BTreeSet<String>,
+    roster: &[EnrolledUserLite],
 ) -> Vec<RecallHit> {
     // The down-rank anchors on the engine wall-clock. (A backlog replay
     // re-living turns via `occurred_at` ranks against the present —
@@ -532,6 +679,12 @@ fn score_and_filter(
             if window_closed_at(row.valid_to.as_deref(), &now) {
                 s *= CLOSED_WINDOW_DOWNRANK;
             }
+            // Subject coverage, the same family of signal: a fact about
+            // BOTH people a two-person question named is worth more than
+            // one about neither. Additive after the multiplicative
+            // down-rank, so a closed window still costs a fixed fraction
+            // of the similarity rather than of the bonus.
+            s += coverage_bonus(&row, subjects, roster);
             (s, row)
         })
         .collect();
@@ -1997,6 +2150,7 @@ pub fn extract_wikilink_wiki_ids(body: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     // ---------- normalise ----------
 
@@ -2462,12 +2616,156 @@ mod tests {
             vec![row3, row1.clone(), row2.clone()],
             &SenderContext::anonymous(),
             2,
+            &BTreeSet::new(),
+            &[],
         );
         assert_eq!(hits.len(), 2);
         // First must be the perfect match, then row2.
         assert_eq!(hits[0].fact_id, row1.fact_id);
         assert_eq!(hits[1].fact_id, row2.fact_id);
         assert!(hits[0].score >= hits[1].score);
+    }
+
+    // ---------- subject coverage (card 65) ----------
+
+    fn person(id: &str, aliases: &[&str]) -> EnrolledUserLite {
+        EnrolledUserLite {
+            user_id: id.to_owned(),
+            aliases: aliases.iter().map(|a| (*a).to_owned()).collect(),
+            is_agent: false,
+        }
+    }
+
+    fn roster() -> Vec<EnrolledUserLite> {
+        vec![person("alice", &[]), person("bob", &["bobby"])]
+    }
+
+    #[test]
+    fn turn_subjects_puts_the_speaker_in_when_the_first_person_does() {
+        let s = turn_subjects("what music do bob and I like?", "alice", &roster());
+        assert!(s.contains("alice"), "{s:?}");
+        assert!(s.contains("bob"), "{s:?}");
+    }
+
+    /// The exclusion that keeps this signal honest: an unstressed clitic
+    /// makes the speaker the ADDRESSEE, not a subject, so their unrelated
+    /// facts must not be invited into a question about somebody else.
+    #[test]
+    fn turn_subjects_leaves_the_speaker_out_when_they_are_only_addressed() {
+        let s = turn_subjects("mi ricordi che macchina ha bob?", "alice", &roster());
+        assert_eq!(s.iter().collect::<Vec<_>>(), vec!["bob"], "{s:?}");
+    }
+
+    #[test]
+    fn turn_subjects_matches_an_alias_but_never_a_substring() {
+        let by_alias = turn_subjects("is bobby coming?", "alice", &roster());
+        assert!(by_alias.contains("bob"), "{by_alias:?}");
+        let substring = turn_subjects("bobsleigh practice", "alice", &roster());
+        assert!(substring.is_empty(), "{substring:?}");
+    }
+
+    #[test]
+    fn coverage_bonus_is_free_below_two_subjects() {
+        let mut row = sample_row(
+            "018f1234-5678-7abc-9def-00000000c001",
+            "user:alice",
+            None,
+            "bob and alice went out",
+        );
+        row.topics = vec!["bob".to_owned()];
+        let one: BTreeSet<String> = std::iter::once("bob".to_owned()).collect();
+        assert!((coverage_bonus(&row, &one, &roster()) - 0.0).abs() < f32::EPSILON);
+        assert!((coverage_bonus(&row, &BTreeSet::new(), &roster()) - 0.0).abs() < f32::EPSILON);
+    }
+
+    /// The measured case in miniature: a fact naming BOTH people of a
+    /// two-person question overtakes a closer-scoring one naming a single
+    /// person. On the live corpus the gap to close was 0.484 → 0.458.
+    #[test]
+    fn a_fact_covering_both_subjects_overtakes_a_closer_one_covering_one() {
+        let query = vec![1.0, 0.0];
+        let mut single = sample_row(
+            "018f1234-5678-7abc-9def-00000000c002",
+            "global",
+            None,
+            "bob was born in October",
+        );
+        single.embedding = vec![0.99, 0.14]; // the better cosine
+        let mut both = sample_row(
+            "018f1234-5678-7abc-9def-00000000c003",
+            "global",
+            None,
+            "alice is going to the concert with bob",
+        );
+        both.embedding = vec![0.95, 0.31]; // the worse cosine
+        both.topics = vec!["bob".to_owned()];
+
+        let subjects: BTreeSet<String> =
+            ["alice".to_owned(), "bob".to_owned()].into_iter().collect();
+        let sender = SenderContext {
+            sender_id: "alice".to_owned(),
+            sender_groups: vec![],
+        };
+        // Both rows are globally readable, so the ACL decides nothing here
+        // and the ordering is the signal under test and nothing else.
+        let base = score_and_filter(
+            &query,
+            vec![single.clone(), both.clone()],
+            &sender,
+            2,
+            &BTreeSet::new(),
+            &roster(),
+        );
+        assert_eq!(
+            base[0].fact_id, single.fact_id,
+            "without subjects, cosine alone decides"
+        );
+
+        let with = score_and_filter(
+            &query,
+            vec![single.clone(), both.clone()],
+            &sender,
+            2,
+            &subjects,
+            &roster(),
+        );
+        assert_eq!(
+            with[0].fact_id, both.fact_id,
+            "the fact about both must lead"
+        );
+        assert_eq!(with[1].fact_id, single.fact_id);
+    }
+
+    /// §5's invariant: a ranking signal, never a gate. Covering nothing
+    /// costs a fact its position, never its presence.
+    #[test]
+    fn coverage_reorders_and_never_removes() {
+        let query = vec![1.0, 0.0];
+        let mut uncovered = sample_row(
+            "018f1234-5678-7abc-9def-00000000c004",
+            "global",
+            None,
+            "an unrelated note",
+        );
+        uncovered.embedding = vec![0.2, 0.98];
+        let mut covered = sample_row(
+            "018f1234-5678-7abc-9def-00000000c005",
+            "global",
+            None,
+            "alice and bob together",
+        );
+        covered.embedding = vec![0.9, 0.44];
+        let subjects: BTreeSet<String> =
+            ["alice".to_owned(), "bob".to_owned()].into_iter().collect();
+        let out = score_and_filter(
+            &query,
+            vec![uncovered, covered],
+            &SenderContext::anonymous(),
+            10,
+            &subjects,
+            &roster(),
+        );
+        assert_eq!(out.len(), 2, "both still served: {out:?}");
     }
 
     #[test]
@@ -2488,7 +2786,14 @@ mod tests {
         );
         row_private.embedding = vec![1.0, 0.0];
         let bob = SenderContext::user("bob");
-        let hits = score_and_filter(&query, vec![row_public.clone(), row_private], &bob, 10);
+        let hits = score_and_filter(
+            &query,
+            vec![row_public.clone(), row_private],
+            &bob,
+            10,
+            &BTreeSet::new(),
+            &[],
+        );
         assert_eq!(hits.len(), 1, "private row must drop out");
         assert_eq!(hits[0].fact_id, row_public.fact_id);
     }
@@ -2496,7 +2801,14 @@ mod tests {
     #[test]
     fn score_and_filter_empty_input_returns_empty() {
         let q = vec![1.0_f32, 0.0];
-        let out = score_and_filter(&q, Vec::new(), &SenderContext::anonymous(), 5);
+        let out = score_and_filter(
+            &q,
+            Vec::new(),
+            &SenderContext::anonymous(),
+            5,
+            &BTreeSet::new(),
+            &[],
+        );
         assert!(out.is_empty());
     }
 

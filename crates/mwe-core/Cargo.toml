@@ -109,3 +109,9 @@ required-features = ["local-embedder"]
 [[example]]
 name = "room_walk"
 required-features = ["local-embedder"]
+
+# Planning card 65 — the subject signal: is the asker in the query, and does
+# covering both subjects of a two-person question earn anything?
+[[example]]
+name = "subject_signal"
+required-features = ["local-embedder"]
