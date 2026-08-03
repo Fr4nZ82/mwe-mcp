@@ -1077,16 +1077,12 @@ async fn revert_fact_refile(
 
 // ---------- page merge variant ----------
 
-/// Plan slug of a wiki-relative concept page path (`viaggi.md` → `viaggi`,
-/// nested paths flatten like the ingest placement). `index.md` maps to the
-/// wiki's own foundation slug.
+/// Plan slug of a wiki-relative page path (`viaggi.md` → `viaggi`, nested
+/// paths flatten like the ingest placement); a wiki's reserved pages map to
+/// their per-wiki foundation keys. One mapping, shared with the plan-re-home
+/// seed — see [`crate::planner::plan_slug_for_page`].
 fn plan_slug_of_page(wiki_id: &str, page: &str) -> String {
-    let stem = page.strip_suffix(".md").unwrap_or(page);
-    if stem == "index" {
-        crate::planner::slugify(wiki_id)
-    } else {
-        crate::planner::slugify(stem)
-    }
+    crate::planner::plan_slug_for_page(wiki_id, page)
 }
 
 /// Best-effort plan-sync after a move/revert: re-home `moved` facts onto
@@ -2338,10 +2334,11 @@ async fn rehome_grouped_page(
 /// are one subject area becomes a dedicated sub-wiki, each page carried
 /// over under its own name.
 ///
-/// The new wiki's `index.md` is born as a bare title stub: an emerged
-/// wiki's front page is a plan-owned `emerged_index` node the narrative
-/// compiler authors on the next cycle, so the handler must not invent
-/// prose that the compiler would then fight over.
+/// The new wiki's `index.md` is born as a bare title stub, and stays the
+/// REM hub writer's to author — a wiki's map is not a plan node at all
+/// (see [`crate::wiki::INDEX_FILENAME`]). What the narrative compiler owns
+/// in the new wiki is its `notes.md` buffer node plus the carried pages, so
+/// this handler must not invent prose either would then fight over.
 ///
 /// The page-count floor is the **caller's** (the REM grouping pass owns
 /// `auto_promote_group_min_pages`); this handler enforces only the
@@ -4896,7 +4893,7 @@ mod tests {
         assert_eq!(emerged.primary_facts.len(), 2, "both facts re-homed");
         assert!(
             after.force_dirty.contains(&"alice_giardinaggio".to_owned()),
-            "the emerged index is parked for recompile"
+            "the emerged wiki's buffer is parked for recompile"
         );
 
         // The revert restores the original plan shape.
@@ -4906,7 +4903,7 @@ mod tests {
         let back = load_previous_plan(&tree).expect("load").expect("plan");
         assert!(
             !back.pages.contains_key("alice_giardinaggio"),
-            "the emerged index left the plan"
+            "the emerged wiki's buffer left the plan"
         );
         let restored = back
             .pages

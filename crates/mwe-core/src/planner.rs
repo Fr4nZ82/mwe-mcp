@@ -103,20 +103,29 @@ pub type Result<T> = std::result::Result<T, PlannerError>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PageType {
-    /// Canonical user leaf (a `wiki-user` identity wiki). Holds the user's
-    /// identity/bio facts. Foundation — never garbage-collected.
+    /// A person's **identity card** ([`crate::wiki::PROFILE_FILENAME`]) — the
+    /// `wiki-user` identity wiki's foundation page, holding the always-on
+    /// identity core. Foundation — never garbage-collected.
     Person,
-    /// Group hub (a `wiki-group` identity wiki). Holds NO own facts; links its
-    /// child leaves. Foundation — never garbage-collected.
+    /// A group's **identity card** ([`crate::wiki::PROFILE_FILENAME`]) — the
+    /// `wiki-group` foundation page. Holds a group-owned fact when one has no
+    /// better home; mostly it links its child leaves. Foundation — never
+    /// garbage-collected.
     GroupTheme,
-    /// The root `index.md` of an emerged (or any standard non-identity)
-    /// sub-wiki — a **topic container's** front page, carrying no identity
-    /// semantics (a non-enrolled subject is a topic, not a user; maintainer
-    /// 2026-07-05). Holds facts like a leaf while the topic is small and
-    /// reads as the overview once children grow. Foundation — never
-    /// garbage-collected, so the wiki root survives its facts moving to
-    /// sub-pages.
-    EmergedIndex,
+    /// A wiki's **buffer page** ([`crate::wiki::NOTES_FILENAME`]) — where a
+    /// fact lands when nothing more specific fits, on every standard wiki.
+    ///
+    /// For a topic wiki (an emerged dossier, a hand-forged topic container) it
+    /// is the *only* foundation page: a topic has no identity, so there is no
+    /// card. Foundation — never garbage-collected, so the landing page
+    /// survives its facts being drained onto real pages by REM's reorg sweep,
+    /// which is what is supposed to happen to everything that lands here.
+    ///
+    /// Serialises as `wiki_buffer`; the `emerged_index` alias keeps a plan or
+    /// registry written before 2026-08-03 loadable, when this node was the
+    /// wiki's `index.md` and held facts there.
+    #[serde(alias = "emerged_index")]
+    WikiBuffer,
     /// A thematic hub the Cartografo proposes to group ≥2 related leaves. Holds
     /// no facts. Garbage-collected when it has no children.
     ConceptHub,
@@ -127,21 +136,81 @@ pub enum PageType {
 
 impl PageType {
     /// Compilation-order rank: hubs (groups, concept hubs) before persons and
-    /// emerged indexes before concept leaves, so a hub is written after its
+    /// buffers before concept leaves, so a hub is written after its
     /// children are placed.
     const fn order_rank(self) -> u8 {
         match self {
             Self::GroupTheme => 0,
             Self::ConceptHub => 1,
-            Self::Person | Self::EmergedIndex => 2,
+            Self::Person | Self::WikiBuffer => 2,
             Self::ConceptLeaf => 3,
         }
     }
 
-    /// Foundation pages (person, `group_theme`, emerged index) are wiki roots
-    /// and are never garbage-collected.
+    /// Foundation pages (the identity cards and the buffer) are a wiki's own
+    /// pages rather than the topology's, and are never garbage-collected.
     const fn is_foundation(self) -> bool {
-        matches!(self, Self::Person | Self::GroupTheme | Self::EmergedIndex)
+        matches!(self, Self::Person | Self::GroupTheme | Self::WikiBuffer)
+    }
+
+    /// True when this node is a wiki's **identity card** — the page that
+    /// answers *who is this actor*, and the home of the always-on identity
+    /// core an ingest `salience: "high"` reserves.
+    const fn is_identity_card(self) -> bool {
+        matches!(self, Self::Person | Self::GroupTheme)
+    }
+
+    /// The reserved file a foundation node of this type owns.
+    ///
+    /// **Never [`crate::wiki::INDEX_FILENAME`]**: a wiki's map is not a plan
+    /// node at all, so nothing the compiler places can land there (founder's
+    /// ruling, 2026-08-03 — the root serves REM and the ingest classifier as a
+    /// map of where a fact belongs, and holds no facts of its own). With no
+    /// plan owning it, the REM hub writer is free to author it.
+    const fn foundation_page(self) -> Option<&'static str> {
+        match self {
+            Self::Person | Self::GroupTheme => Some(crate::wiki::PROFILE_FILENAME),
+            Self::WikiBuffer => Some(crate::wiki::NOTES_FILENAME),
+            Self::ConceptHub | Self::ConceptLeaf => None,
+        }
+    }
+}
+
+/// Plan key of a wiki's buffer node, derived from `slugify(wiki_id)`.
+///
+/// A wiki's card already owns `slugify(wiki_id)`, so the buffer needs a second
+/// key — and it takes this one on *every* wiki, carded or not, because the
+/// callers that map a page path back to a plan slug
+/// ([`plan_slug_for_page`]) have only the wiki id and the page name to go on.
+/// One rule, no lookup, no chance of the same file entering the plan under two
+/// keys.
+///
+/// The `__` separator is **unreachable by [`slugify`]** — which collapses runs
+/// of non-alphanumerics to a single `_` — so no classifier-proposed page name
+/// can ever collide with it.
+fn buffer_slug(wiki_slug: &str) -> String {
+    format!("{wiki_slug}__notes")
+}
+
+/// Plan key of a wiki-relative page path — the single mapping every caller
+/// that re-homes a fact in the persisted plan must agree on.
+///
+/// A wiki's **reserved** pages are foundation nodes keyed per wiki: the card
+/// ([`crate::wiki::PROFILE_FILENAME`]) takes `slugify(wiki_id)` and the buffer
+/// ([`crate::wiki::NOTES_FILENAME`]) takes [`buffer_slug`]. Everything else is
+/// a concept page keyed by its own flattened stem.
+///
+/// [`crate::wiki::INDEX_FILENAME`] maps to the card slug for the benefit of
+/// receipts written before 2026-08-03, when the root *was* the card; nothing
+/// places a fact there any more.
+#[must_use]
+pub fn plan_slug_for_page(wiki_id: &str, page: &str) -> String {
+    let stem = page.strip_suffix(".md").unwrap_or(page);
+    let wiki_slug = slugify(wiki_id);
+    match stem {
+        "index" | "profile" => wiki_slug,
+        "notes" => buffer_slug(&wiki_slug),
+        other => slugify(other),
     }
 }
 
@@ -206,8 +275,8 @@ pub struct FactForPage {
     /// Per-fact salience the producer deduced (`fact_index.salience`, closed
     /// palette `high` | `normal` | `low`). `high` = always-on material
     /// (identity, health/safety, hard standing constraints) whose home is the
-    /// actor-wiki's `index.md` base context — see [`ingest_placement_blueprint`],
-    /// which routes a `high` fact there by overriding its `target_page`. `None` =
+    /// actor's identity card — see [`ingest_placement_blueprint`], which
+    /// routes a `high` fact there by overriding its `target_page`. `None` =
     /// unspecified (older rows / a producer that did not classify it).
     #[serde(default)]
     pub salience: Option<String>,
@@ -286,7 +355,9 @@ pub struct PagePlan {
     pub incoming_links: Vec<String>,
     /// The standard wiki this page lives in (its tree home).
     pub wiki_id: String,
-    /// The `.md` path within `wiki_id` (foundation hubs use `index.md`).
+    /// The `.md` path within `wiki_id`. A foundation node uses its type's
+    /// reserved page ([`PageType::foundation_page`]); **never
+    /// [`crate::wiki::INDEX_FILENAME`]**, which no plan node may claim.
     pub page_path: String,
 }
 
@@ -543,7 +614,7 @@ pub async fn build_foundation_pages(
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),
                 wiki_id: g.group_id.clone(),
-                page_path: "index.md".to_owned(),
+                page_path: crate::wiki::PROFILE_FILENAME.to_owned(),
                 slug,
             },
         );
@@ -595,75 +666,77 @@ pub async fn build_foundation_pages(
                 outgoing_links,
                 incoming_links: Vec::new(),
                 wiki_id: u.user_id.clone(),
-                page_path: "index.md".to_owned(),
+                page_path: crate::wiki::PROFILE_FILENAME.to_owned(),
                 slug,
             },
         );
     }
 
-    let emerged = seed_topic_wiki_indexes(tree, &mut pages)?;
+    let buffers = seed_wiki_buffers(tree, &mut pages)?;
 
     tracing::info!(
         groups = groups.len(),
         users = users.len(),
-        emerged,
+        buffers,
         pages = pages.len(),
         "planner: foundation pages built"
     );
     Ok((pages, group_scopes))
 }
 
-/// The Fonditore's third source — EMERGED / TOPIC-WIKI INDEX PAGES.
+/// The Fonditore's third source — THE PER-WIKI BUFFER PAGE.
 ///
-/// Every standard (non-smart) wiki that is not an identity wiki — the
-/// emerged sub-wikis `file_to_subwiki` mints, and any hand-forged topic
-/// wiki — gets its `index.md` as an [`PageType::EmergedIndex`] foundation
-/// node, so the wiki root is plan-owned: compiled from the DB like every
-/// other page, never garbage-collected, and the stable landing slug for
-/// its facts. A topic container carries NO identity semantics (its subject
-/// is a topic, not a user). The slug is `slugify(wiki_id)` — when a
-/// registry concept page holds the same slug (the pre-4j shape: the
-/// emerged content living on a sibling leaf named after the old plan
-/// slug), the foundation node takes it over and the carried facts
-/// re-attach to the index (the registry staleness GC drops the shadowed
-/// entry). Returns how many nodes it seeded.
-fn seed_topic_wiki_indexes(
-    tree: &WikiTree,
-    pages: &mut BTreeMap<String, PagePlan>,
-) -> Result<usize> {
-    let mut emerged = 0usize;
+/// Every standard (non-smart) wiki gets a [`PageType::WikiBuffer`] foundation
+/// node on its [`crate::wiki::NOTES_FILENAME`]: the landing page for a fact
+/// with no better home. It is plan-owned — compiled from the DB like every
+/// other page and never garbage-collected — so a wiki always has somewhere to
+/// put a fact, and REM's reorg sweep always has somewhere to drain from.
+///
+/// The key is [`buffer_slug`] on **every** wiki, carded or not — see there for
+/// why it cannot depend on whether the wiki has a card.
+///
+/// **No node points at [`crate::wiki::INDEX_FILENAME`]** — see
+/// [`PageType::foundation_page`]. Returns how many nodes it seeded.
+fn seed_wiki_buffers(tree: &WikiTree, pages: &mut BTreeMap<String, PagePlan>) -> Result<usize> {
+    let mut seeded = 0usize;
     for d in tree.walk()? {
-        if d.meta.smart
-            || d.meta.wiki_type == crate::wiki::IDENTITY_WIKI_TYPE
-            || d.meta.wiki_type == crate::wiki::GROUP_IDENTITY_WIKI_TYPE
-        {
+        if d.meta.smart {
             continue;
         }
-        let slug = slugify(d.meta.wiki_id.as_str());
-        if slug.is_empty() {
+        let wiki_slug = slugify(d.meta.wiki_id.as_str());
+        if wiki_slug.is_empty() {
             continue;
         }
+        let slug = buffer_slug(&wiki_slug);
         if pages.contains_key(&slug) {
             tracing::warn!(
                 slug,
                 wiki_id = d.meta.wiki_id.as_str(),
-                "planner: topic-wiki index slug collides with an enrollment foundation page, skipping"
+                "planner: wiki buffer slug collides with an enrollment foundation page, skipping"
             );
             continue;
         }
-        let parent_hub = d
-            .meta
-            .parent_wiki_id
-            .as_ref()
-            .map(|p| slugify(p.as_str()))
-            .filter(|p| pages.contains_key(p));
+        // Hang the buffer under its own wiki's card when there is one, else
+        // under the parent wiki's foundation node.
+        let has_card = pages
+            .get(&wiki_slug)
+            .is_some_and(|p| p.page_type.is_identity_card());
+        let parent_hub = if has_card {
+            Some(wiki_slug.clone())
+        } else {
+            d.meta
+                .parent_wiki_id
+                .as_ref()
+                .map(|p| slugify(p.as_str()))
+                .filter(|p| pages.contains_key(p))
+        };
         pages.insert(
             slug.clone(),
             PagePlan {
                 title: d.meta.title.clone(),
                 description: d.meta.scope.clone().unwrap_or_default(),
                 style: None,
-                page_type: PageType::EmergedIndex,
+                page_type: PageType::WikiBuffer,
                 owner_scope: None,
                 parent_hub,
                 child_leaves: Vec::new(),
@@ -671,13 +744,13 @@ fn seed_topic_wiki_indexes(
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),
                 wiki_id: d.meta.wiki_id.as_str().to_owned(),
-                page_path: "index.md".to_owned(),
+                page_path: crate::wiki::NOTES_FILENAME.to_owned(),
                 slug,
             },
         );
-        emerged += 1;
+        seeded += 1;
     }
-    Ok(emerged)
+    Ok(seeded)
 }
 
 // ---------- Stadio 2 — L'Architetto ----------
@@ -820,7 +893,16 @@ pub fn build_compilation_plan(
         let Some(fact) = fact_map.get(a.fact_id.as_str()) else {
             continue; // superseded/removed since classification — skip.
         };
-        let mut slug = slugify(&a.page_slug);
+        // Canonicalise an LLM-proposed slug, but never a key the plan
+        // already holds: a foundation node's key may legitimately be one
+        // `slugify` would rewrite (a buffer's `__` separator collapses to a
+        // single `_`), and rewriting it mints a phantom leaf beside the real
+        // page and splits the fact off from it.
+        let mut slug = if pages.contains_key(&a.page_slug) {
+            a.page_slug.clone()
+        } else {
+            slugify(&a.page_slug)
+        };
         if let Some(redir) = conciliation.redirects.get(&slug) {
             slug = slugify(redir);
         }
@@ -913,11 +995,27 @@ pub fn build_compilation_plan(
     // the shape an absorbed/GC'd hub leaves behind. Re-point to the page's
     // own wiki foundation page when the plan has one, else clear. The
     // registry entry heals too, or the same pointer resurrects every build.
-    let foundation_by_wiki: BTreeMap<String, String> = pages
-        .iter()
-        .filter(|(_, p)| p.page_type.is_foundation() && p.page_path == "index.md")
-        .map(|(slug, p)| (p.wiki_id.clone(), slug.clone()))
-        .collect();
+    // Prefer the wiki's card; a topic wiki has only its buffer. (`BTreeMap`
+    // iterates by slug, and a carded wiki's buffer sorts after its card under
+    // the `__notes` suffix, so the card is inserted first and kept.)
+    let mut foundation_by_wiki: BTreeMap<String, String> = BTreeMap::new();
+    for (slug, p) in &pages {
+        if !p.page_type.is_foundation() {
+            continue;
+        }
+        let entry = foundation_by_wiki.entry(p.wiki_id.clone());
+        match entry {
+            std::collections::btree_map::Entry::Vacant(v) => {
+                v.insert(slug.clone());
+            },
+            std::collections::btree_map::Entry::Occupied(mut o)
+                if p.page_type.is_identity_card() =>
+            {
+                o.insert(slug.clone());
+            },
+            std::collections::btree_map::Entry::Occupied(_) => {},
+        }
+    }
     let known_slugs: BTreeSet<String> = pages.keys().cloned().collect();
     for (slug, page) in &mut pages {
         if let Some(h) = &page.parent_hub
@@ -1048,6 +1146,36 @@ pub fn build_compilation_plan(
         page.incoming_links = page.outgoing_links.clone(); // symmetric ⇒ equal
     }
 
+    // 9.bis the map invariant, checked where the plan is sealed rather than
+    // trusted at each of the places that mint a page. Nothing the compiler
+    // places may land on a wiki's map: that page answers *where does a fact
+    // belong*, it holds no facts, and the read path never opens it — so a
+    // fact placed there is one no navigation route can reach and no sweep
+    // will drain (founder's ruling, 2026-08-03). Loud rather than fatal: a
+    // mis-keyed page is a bug to fix, not a reason to abandon the night's
+    // compile.
+    for (slug, p) in &pages {
+        if p.page_path == crate::wiki::INDEX_FILENAME {
+            tracing::error!(
+                slug = %slug,
+                wiki_id = %p.wiki_id,
+                page_type = page_type_tag(p.page_type),
+                "planner: a plan page points at the wiki's MAP — facts placed there are unreachable"
+            );
+        } else if let Some(expected) = p.page_type.foundation_page()
+            && p.page_path != expected
+        {
+            tracing::error!(
+                slug = %slug,
+                wiki_id = %p.wiki_id,
+                page_type = page_type_tag(p.page_type),
+                page_path = %p.page_path,
+                expected,
+                "planner: foundation node is not on its reserved page"
+            );
+        }
+    }
+
     // 10. compilation order: hubs → persons → leaves, then slug for stability.
     let mut order: Vec<String> = pages.keys().cloned().collect();
     order.sort_by(|a, b| {
@@ -1073,9 +1201,10 @@ pub fn build_compilation_plan(
 }
 
 fn registry_to_page(e: &ConceptRegistryEntry) -> PagePlan {
-    // Concept pages (hub OR leaf) are `<slug>.md` pages WITHIN their wiki — the
-    // wiki's own `index.md` is the foundation (person/group_theme) hub, never a
-    // concept page.
+    // Concept pages (hub OR leaf) are `<slug>.md` pages WITHIN their wiki — a
+    // wiki's reserved pages (its card, its buffer, its map) are foundation
+    // nodes or nobody's, never concept pages, and `placement_slug` refuses
+    // their names so one can never be minted here.
     let page_path = format!("{}.md", e.slug);
     PagePlan {
         slug: e.slug.clone(),
@@ -1165,22 +1294,67 @@ fn resolve_page_wiki(
     candidate.filter(|w| w != crate::types::WikiId::ROOT)
 }
 
-/// Deterministic orphan home: the owner's person/group page if it exists, else
-/// the fact's source wiki's foundation page if present, else `None`.
+/// Deterministic orphan home — the owner's wiki first, then the fact's source
+/// wiki; `None` when neither has a foundation node.
+///
+/// **Which page of that wiki depends on the fact, not only on the wiki.** Two
+/// different things arrive here and they do not belong together:
+///
+/// - a `salience: "high"` fact is always-on material the classifier
+///   *reserved* — identity, health/safety, a hard standing constraint — and
+///   its home is the wiki's **identity card**
+///   ([`crate::wiki::PROFILE_FILENAME`]). This is the whole reason
+///   [`ingest_placement_blueprint`] leaves it unassigned rather than honouring
+///   its proposed page.
+/// - anything else that reached the fallback simply has no page yet, and its
+///   home is the wiki's **buffer** ([`crate::wiki::NOTES_FILENAME`]), from
+///   which REM's reorg sweep lifts it onto a real page.
+///
+/// Sending both to one page is not a smaller version of this: it either buries
+/// the card under unsorted facts or promotes every unplaced fact to identity.
+/// A wiki with no card (a topic wiki) takes the buffer for both — a topic has
+/// no identity to reserve.
 fn orphan_target(f: &FactForPage, pages: &BTreeMap<String, PagePlan>) -> Option<String> {
+    let identity = f.salience.as_deref() == Some("high");
     let owner_slug = match &f.owner {
         // The builtin global group has no owner page to home an orphan on.
         p if p.is_global() => String::new(),
         Principal::User(id) | Principal::Group(id) => slugify(id),
     };
-    if !owner_slug.is_empty() && pages.contains_key(&owner_slug) {
-        return Some(owner_slug);
-    }
-    let src = slugify(&f.source_wiki_id);
-    if pages.contains_key(&src) {
-        return Some(src);
+    let src_slug = slugify(&f.source_wiki_id);
+    for wiki_slug in [owner_slug, src_slug] {
+        if wiki_slug.is_empty() {
+            continue;
+        }
+        if let Some(slug) = foundation_slug_for(&wiki_slug, identity, pages) {
+            return Some(slug);
+        }
     }
     None
+}
+
+/// The foundation slug a fact should land on within the wiki keyed
+/// `wiki_slug` — its card when `identity`, else its buffer. Falls back to
+/// whichever of the two the wiki actually has (a topic wiki has no card).
+fn foundation_slug_for(
+    wiki_slug: &str,
+    identity: bool,
+    pages: &BTreeMap<String, PagePlan>,
+) -> Option<String> {
+    let card = pages
+        .get(wiki_slug)
+        .filter(|p| p.page_type.is_identity_card())
+        .map(|_| wiki_slug.to_owned());
+    let buf = buffer_slug(wiki_slug);
+    let buffer = pages
+        .get(&buf)
+        .filter(|p| p.page_type == PageType::WikiBuffer)
+        .map(|_| buf);
+    if identity {
+        card.or(buffer)
+    } else {
+        buffer.or(card)
+    }
 }
 
 // ---------- fingerprint + dirty set ----------
@@ -1377,7 +1551,8 @@ pub struct RehomePageSeed {
     /// The standard wiki the page lives in.
     pub wiki_id: String,
     /// Wiki-relative page path override; `None` = `<slug>.md` (the
-    /// concept-leaf shape). The emergence seed sets `index.md`.
+    /// concept-leaf shape). A reserved page (card / buffer) sets it
+    /// explicitly.
     pub page_path: Option<String>,
 }
 
@@ -1398,20 +1573,21 @@ impl RehomePageSeed {
     }
 
     /// A seed for an **arbitrary wiki-relative page in a named wiki** —
-    /// the `fact_refile` cross-wiki plan re-home. The plan key (slug) is
-    /// derived from the page the same way [`crate::promote`] flattens a
-    /// page path to a plan slug (`index.md` → `slugify(wiki_id)`, else
-    /// `slugify(<stem>)`), with `page_path` pinned to the given page and
-    /// `wiki_id` to the destination wiki — so a fact lands on the right
-    /// page of the right wiki when it crosses the boundary.
+    /// the `fact_refile` cross-wiki plan re-home. `page_path` is pinned to
+    /// the given page and `wiki_id` to the destination wiki, so a fact lands
+    /// on the right page of the right wiki when it crosses the boundary.
+    ///
+    /// The plan key (slug) is derived from the page the same way
+    /// [`crate::promote`] flattens a page path — `slugify(<stem>)` — **except
+    /// for a wiki's reserved pages, which are foundation nodes keyed per
+    /// wiki**: `profile.md` is the card (`slugify(wiki_id)`) and `notes.md`
+    /// the buffer ([`buffer_slug`], or the plain wiki slug on a topic wiki
+    /// that has no card). Deriving `notes` from the stem instead would give
+    /// every wiki's buffer the same forest-wide plan key, which is exactly
+    /// the collision the cross-wiki lander exists to avoid.
     #[must_use]
     pub fn page_in_wiki(page: &str, wiki_id: &str) -> Self {
-        let stem = page.strip_suffix(".md").unwrap_or(page);
-        let slug = if stem == "index" {
-            slugify(wiki_id)
-        } else {
-            slugify(stem)
-        };
+        let slug = plan_slug_for_page(wiki_id, page);
         Self {
             title: capitalize(&slug.replace('_', " ")),
             slug,
@@ -1422,15 +1598,18 @@ impl RehomePageSeed {
         }
     }
 
-    /// The seed for an **emerged sub-wiki's `index.md`** — the
-    /// `file_to_subwiki` plan re-home: slug = the plan key of a wiki's
-    /// index page (`slugify(wiki_id)`), path pinned to `index.md`.
+    /// The seed for an **emerged sub-wiki's `index.md`** — the plan re-home
+    /// of the legacy, revert-only `file_to_subwiki` variant.
     ///
-    /// The page enters the plan as a fact-bearing `ConceptLeaf` whose
-    /// path happens to be the wiki's index — enough to make the
-    /// emergence plan-aware (no zombie re-render of the old page, the
-    /// emerged index recompiles into real prose). A dedicated
-    /// foundation type for emerged wikis is the tracked follow-up.
+    /// ⚠️ **Predates the map rule and is kept only so a receipt written
+    /// before 2026-08-03 stays revertible.** It enters the plan as a
+    /// fact-bearing `ConceptLeaf` on the wiki's `index.md`, which is exactly
+    /// the shape the rule retires — a page the read path never opens and the
+    /// reorg sweep never drains. Nothing emits `file_to_subwiki` any more
+    /// (live emergence is `pages_to_subwiki`, which carries pages over under
+    /// their own names), so this mints nothing on its own; do not reach for
+    /// it in new code. The follow-up it once pointed at is now
+    /// [`PageType::WikiBuffer`].
     #[must_use]
     pub fn wiki_index(wiki_id: &str, title: &str, description: &str) -> Self {
         Self {
@@ -1481,7 +1660,14 @@ pub fn rehome_facts_in_persisted_plan(
     let mut touched: BTreeSet<String> = BTreeSet::new();
     let mut rehomed = 0usize;
     for (row, seed) in moves {
-        let dest = slugify(&seed.slug);
+        // As in `build_compilation_plan` step 4: canonicalise a proposed slug,
+        // but leave a key the plan already holds alone — a buffer's `__`
+        // separator does not survive `slugify`.
+        let dest = if plan.pages.contains_key(&seed.slug) {
+            seed.slug.clone()
+        } else {
+            slugify(&seed.slug)
+        };
         if dest.is_empty() {
             continue;
         }
@@ -2021,7 +2207,8 @@ pub enum NewFactPlacement<'a> {
     /// LIGHT cadence: settle each new fact onto the page the ingest classifier
     /// already proposed (`fact_index.target_page`), deterministically and with
     /// NO LLM call — the strong-model Cartografo is REM-only. A fact with
-    /// no concrete proposed page (`index.md` / empty / `None`) orphan-falls-back.
+    /// no concrete proposed page (a reserved name / empty / `None`)
+    /// orphan-falls-back.
     Ingest,
     /// FULL / REM cadence: classify new facts with the strong-model Cartografo.
     Cartografo(&'a dyn LlmBackend),
@@ -2037,19 +2224,27 @@ pub enum NewFactPlacement<'a> {
 /// The ingest classifier "catalogues and lays down, it does NOT do emergence"
 /// → folders / nesting are REM's job, so a path like `recipes/dinner.md`
 /// flattens to a single leaf `recipes_dinner` (slugify maps the separator to
-/// `_`). `index.md` / empty resolve to `None`: the fact belongs on its wiki's
-/// foundation page, which the deterministic orphan-fallback already homes — never
-/// a concept page named "index". The reserved channel pages resolve to `None`
-/// too — `rules.md` ([`crate::wiki::RULES_FILENAME`]) and `projects.md`
-/// ([`crate::wiki::PROJECTS_FILENAME`]): neither is a fact-bearing concept
-/// page, and both are written by a deterministic channel, so a fact
-/// mis-targeted there orphan-falls-back instead of landing among the policy
-/// or the signposts. The `.md` suffix is stripped first so slugify does not
-/// fold it into a trailing `_md`.
+/// `_`). Empty resolves to `None`, and so does **every reserved page name**,
+/// because none of them is a concept page a classifier may mint:
+///
+/// - `index.md` — the wiki's map, which holds no facts at all;
+/// - `profile.md` and `notes.md` — the wiki's card and buffer, which are
+///   per-wiki **foundation nodes**; minting a concept page here would put the
+///   same file in the plan under a second, forest-wide key;
+/// - `rules.md` ([`crate::wiki::RULES_FILENAME`]) and `projects.md`
+///   ([`crate::wiki::PROJECTS_FILENAME`]) — written by a deterministic
+///   channel, so a fact mis-targeted there must not land among the policy or
+///   the signposts.
+///
+/// In every case the fact falls through to [`orphan_target`], which homes it
+/// on its wiki's card or buffer according to what the fact is. The `.md`
+/// suffix is stripped first so slugify does not fold it into a trailing
+/// `_md`.
 fn placement_slug(target_page: &str) -> Option<String> {
+    const RESERVED: [&str; 5] = ["index", "rules", "projects", "profile", "notes"];
     let stripped = target_page.strip_suffix(".md").unwrap_or(target_page);
     let slug = slugify(stripped);
-    if slug.is_empty() || slug == "index" || slug == "rules" || slug == "projects" {
+    if slug.is_empty() || RESERVED.contains(&slug.as_str()) {
         None
     } else {
         Some(slug)
@@ -2077,12 +2272,14 @@ fn ingest_placement_blueprint(facts: &[FactForPage]) -> Blueprint {
     for f in facts {
         // The routing IS the reservation. A `high`-salience
         // fact is always-on material (identity, health/safety, hard standing
-        // constraints) whose home is the actor-wiki's `index.md` base context,
+        // constraints) whose home is the actor's identity CARD,
         // *overriding* any concrete ingest `target_page`. We achieve that by
         // leaving it UNASSIGNED here: the deterministic orphan-fallback in
-        // `build_compilation_plan` then homes it on the owner's foundation page,
-        // whose `page_path` is `index.md`. No new branch, no LLM — the same path a
-        // fact with no proposed page already takes ("una pipeline sola").
+        // `build_compilation_plan` then homes it on the owner's card node
+        // (`profile.md`) — see `orphan_target`, which reads the same salience
+        // to tell a reserved fact from one that merely has no page yet. No new
+        // branch, no LLM — the same path a fact with no proposed page already
+        // takes ("una pipeline sola").
         if f.salience.as_deref() == Some("high") {
             continue;
         }
@@ -2596,7 +2793,7 @@ async fn gather_standard_facts(pool: &SqlitePool, tree: &WikiTree) -> Result<Vec
             // own pipelines' perimeter, not the compiler's: their facts are
             // written directly and read back keyed on that path. The compiler
             // must NOT gather them — absent from the persisted plan they would
-            // look "new", orphan-fall-back onto `index.md`, and their channel
+            // look "new", orphan-fall-back onto the wiki's buffer, and their channel
             // (which filters on the page) would stop seeing them.
             // (engine_rule governance is raw `rules.md` prose, not a
             // `fact_index` row, so only behaviour-rule rows are spared here.)
@@ -2633,7 +2830,7 @@ pub const fn page_type_tag(pt: PageType) -> &'static str {
     match pt {
         PageType::Person => "person",
         PageType::GroupTheme => "group_theme",
-        PageType::EmergedIndex => "emerged_index",
+        PageType::WikiBuffer => "wiki_buffer",
         PageType::ConceptHub => "concept_hub",
         PageType::ConceptLeaf => "concept_leaf",
     }
@@ -2665,7 +2862,7 @@ fn describe_foundation(
                 p.owner_scope.as_deref().unwrap_or("—"),
                 mass_of(mass, &p.slug),
             ),
-            PageType::EmergedIndex => format!(
+            PageType::WikiBuffer => format!(
                 "- [{}] {} — {} (parent_hub: {}) | {} | facts: {}",
                 page_type_tag(p.page_type),
                 p.slug,
@@ -3173,7 +3370,7 @@ mod tests {
         for pt in [
             PageType::Person,
             PageType::GroupTheme,
-            PageType::EmergedIndex,
+            PageType::WikiBuffer,
             PageType::ConceptHub,
             PageType::ConceptLeaf,
         ] {
@@ -3432,8 +3629,16 @@ mod tests {
         assert!(plan.pages.contains_key("alice"), "alice person page exists");
         let alice = &plan.pages["alice"];
         assert_eq!(alice.page_type, PageType::Person);
-        assert_eq!(alice.primary_facts.len(), 1, "fact homed on owner page");
-        assert_eq!(alice.primary_facts[0].fact_id, fid);
+        assert_eq!(alice.page_path, "profile.md", "the card, not the map");
+        assert!(
+            alice.primary_facts.is_empty(),
+            "a normal-salience orphan belongs on the buffer, not the identity card"
+        );
+        let buffer = &plan.pages["alice__notes"];
+        assert_eq!(buffer.page_type, PageType::WikiBuffer);
+        assert_eq!(buffer.page_path, "notes.md");
+        assert_eq!(buffer.primary_facts.len(), 1, "fact homed on the buffer");
+        assert_eq!(buffer.primary_facts[0].fact_id, fid);
         assert_eq!(
             plan.dirty_pages.len(),
             plan.pages.len(),
@@ -3456,14 +3661,14 @@ mod tests {
             plan2.dirty_pages.is_empty(),
             "unchanged corpus → 0 dirty pages"
         );
-        assert_eq!(plan2.pages["alice"].primary_facts.len(), 1);
+        assert_eq!(plan2.pages["alice__notes"].primary_facts.len(), 1);
         drop(dir);
     }
 
     /// A behaviour-rule fact lives on the reserved policy page `rules.md`
     /// (written by the rules pipeline's direct path, not the planner). The
     /// compiler must leave it there: gathering it would orphan-fall-back it
-    /// onto `index.md`, changing its `source_path` so `recall_behaviour_rules`
+    /// onto the wiki's buffer, changing its `source_path` so `recall_behaviour_rules`
     /// (which filters on `rules.md`) stops seeing it. Regression for the
     /// durability bug found 2026-06-30.
     #[tokio::test]
@@ -3587,7 +3792,7 @@ mod tests {
         )
         .await
         .expect("plan");
-        assert_eq!(plan.pages["alice"].primary_facts.len(), 1);
+        assert_eq!(plan.pages["alice__notes"].primary_facts.len(), 1);
 
         // An act-first move re-homes the fact onto a new `karate` page.
         let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
@@ -3606,12 +3811,12 @@ mod tests {
             "fact re-homed onto the destination page"
         );
         assert!(
-            edited.pages["alice"].primary_facts.is_empty(),
+            edited.pages["alice__notes"].primary_facts.is_empty(),
             "fact detached from the old page"
         );
         assert_eq!(
             edited.force_dirty,
-            vec!["alice".to_owned(), "karate".to_owned()],
+            vec!["alice__notes".to_owned(), "karate".to_owned()],
             "both touched pages parked for recompile"
         );
         assert!(
@@ -3643,7 +3848,7 @@ mod tests {
         );
         assert_eq!(
             plan2.dirty_pages,
-            vec!["alice".to_owned(), "karate".to_owned()],
+            vec!["alice__notes".to_owned(), "karate".to_owned()],
             "force-dirty pages become the recompile set"
         );
         assert!(plan2.force_dirty.is_empty(), "flag cleared after honoring");
@@ -3771,11 +3976,11 @@ mod tests {
             "the refile park is carried, not consumed"
         );
         assert!(
-            plan3.pages["alice"]
+            plan3.pages["alice__notes"]
                 .primary_facts
                 .iter()
                 .any(|f| f.fact_id == fid),
-            "the re-opened page's fact re-entered the pool and re-placed (fallback → foundation)"
+            "the re-opened page's fact re-entered the pool and re-placed (fallback → buffer)"
         );
 
         let taken = take_refile_candidates(&tree).expect("take");
@@ -3928,11 +4133,16 @@ mod tests {
         assert_eq!(spesa_page.description, "cosa comprare");
         assert_eq!(spesa_page.primary_facts.len(), 1);
         assert_eq!(spesa_page.primary_facts[0].fact_id, spesa);
-        // The `index.md` fact orphan-fell-back onto alice's foundation page.
+        // The reserved-name fact orphan-fell-back onto alice's BUFFER — the
+        // card is for the identity core a `high` salience reserves, and this
+        // fact is `normal`.
         let alice = &plan.pages["alice"];
         assert_eq!(alice.page_type, PageType::Person);
-        assert_eq!(alice.primary_facts.len(), 1);
-        assert_eq!(alice.primary_facts[0].fact_id, home);
+        assert!(alice.primary_facts.is_empty());
+        let buffer = &plan.pages["alice__notes"];
+        assert_eq!(buffer.page_type, PageType::WikiBuffer);
+        assert_eq!(buffer.primary_facts.len(), 1);
+        assert_eq!(buffer.primary_facts[0].fact_id, home);
 
         // Incremental idempotency: re-running with no change → 0 dirty pages.
         let plan2 = build_wiki_plan(
@@ -4077,11 +4287,11 @@ mod tests {
         .expect("plan3");
         assert_eq!(
             plan3.dirty_pages,
-            vec!["alice".to_owned()],
+            vec!["alice__notes".to_owned()],
             "corrected claim → ONLY its page dirty (contained, no whole-wiki rescan)"
         );
         assert_eq!(
-            plan3.pages["alice"].primary_facts[0].text,
+            plan3.pages["alice__notes"].primary_facts[0].text,
             "Alice was born in 1986"
         );
         drop(dir);
@@ -4639,7 +4849,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn standard_topic_wikis_get_an_emerged_index_foundation_node() {
+    async fn every_standard_wiki_gets_a_buffer_foundation_node() {
         // The Fonditore's third source: every standard non-identity wiki's
         // `index.md` becomes an EmergedIndex foundation node (plan-owned,
         // never GC'd); smart wikis and identity/group wikis never qualify.
@@ -4683,35 +4893,54 @@ mod tests {
             .await
             .expect("fonditore");
 
-        let node = &foundation["famiglia_bruno_battaglia"];
-        assert_eq!(node.page_type, PageType::EmergedIndex);
-        assert_eq!(node.page_path, "index.md");
+        let node = &foundation["famiglia_bruno_battaglia__notes"];
+        assert_eq!(node.page_type, PageType::WikiBuffer);
+        assert_eq!(node.page_path, "notes.md", "the buffer, never the map");
         assert_eq!(node.wiki_id, "famiglia-bruno-battaglia");
         assert_eq!(
             node.parent_hub.as_deref(),
             Some("famiglia"),
-            "the topic wiki hangs under its parent wiki's hub"
+            "a topic wiki's buffer hangs under its parent wiki's hub"
         );
         assert_eq!(node.description, "Tutto su Bruno Battaglia");
+        // The group's own card, and its buffer hanging under it.
+        assert_eq!(foundation["famiglia"].page_path, "profile.md");
+        assert_eq!(foundation["famiglia"].page_type, PageType::GroupTheme);
+        assert_eq!(
+            foundation["famiglia__notes"].parent_hub.as_deref(),
+            Some("famiglia"),
+            "a carded wiki's buffer hangs under its own card"
+        );
         assert!(
-            !foundation.contains_key("famiglia_notes_smart"),
+            !foundation.contains_key("famiglia_notes_smart__notes"),
             "smart wikis stay out of the compiler's perimeter"
         );
         assert!(
             !foundation.contains_key("alice"),
-            "identity wikis are enrollment's, never the topic pass's"
+            "an identity wiki with no enrollment row gets no card"
+        );
+        assert!(
+            foundation.contains_key("alice__notes"),
+            "…but it still gets a buffer: every standard wiki needs somewhere \
+             to put a fact"
+        );
+        // The invariant the whole change exists for.
+        assert!(
+            foundation.values().all(|p| p.page_path != "index.md"),
+            "no foundation node may claim the wiki's map"
         );
         drop(dir);
     }
 
     #[test]
-    fn emerged_index_absorbs_the_legacy_leaf_slug_and_survives_gc() {
+    fn a_buffer_absorbs_the_legacy_leaf_slug_and_survives_gc() {
         // The 4j absorption (maintainer option A): the foundation node takes
         // the slug the legacy content leaf held, the carried facts re-attach
-        // to the wiki's `index.md`, the shadowed registry entry drops — and
-        // an emptied emerged index is never GC'd (it is a foundation page).
+        // to the buffer, the shadowed registry entry drops — and an emptied
+        // buffer is never GC'd (it is a foundation page).
         let mut emerged = person("famiglia_bruno_battaglia");
-        emerged.page_type = PageType::EmergedIndex;
+        emerged.page_type = PageType::WikiBuffer;
+        emerged.page_path = "notes.md".to_owned();
         emerged.wiki_id = "famiglia-bruno-battaglia".to_owned();
         let mut foundation = BTreeMap::new();
         foundation.insert("famiglia_bruno_battaglia".to_owned(), emerged);
@@ -4742,10 +4971,10 @@ mod tests {
             "t2",
         );
         let page = &plan.pages["famiglia_bruno_battaglia"];
-        assert_eq!(page.page_type, PageType::EmergedIndex);
+        assert_eq!(page.page_type, PageType::WikiBuffer);
         assert_eq!(
-            page.page_path, "index.md",
-            "the slug now renders the wiki's index, not the legacy sibling file"
+            page.page_path, "notes.md",
+            "the slug now renders the wiki's buffer, not the legacy sibling file"
         );
         assert_eq!(page.primary_facts.len(), 1, "the carried fact re-attached");
         assert!(
@@ -4764,7 +4993,7 @@ mod tests {
         );
         assert!(
             plan_empty.pages.contains_key("famiglia_bruno_battaglia"),
-            "an emptied emerged index is never garbage-collected"
+            "an emptied buffer is never garbage-collected"
         );
         drop(plan_empty);
     }

@@ -425,7 +425,8 @@ field in `answers` (default `paragraph_to_file`):
   is derived via [`WikiId::child_of`] (parent + child slug joined with
   `-`); the new directory lives at `<parent_abs_dir>/<child_slug>/`, and
   its `index.md` is born as a bare title stub because the front page is
-  a plan-owned `emerged_index` node the compiler authors. Refuses the
+  a plan-owned `wiki_buffer` node on its `notes.md` that the compiler
+  authors; the new wiki's `index.md` is the REM hub writer's. Refuses the
   parent's own `index.md`, a page with no active fact, and a page whose
   markers on disk disagree with `fact_index`. The **page-count floor**
   lives in the REM caller (`auto_promote_group_min_pages`), not here.

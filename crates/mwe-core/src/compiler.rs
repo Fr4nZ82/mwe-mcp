@@ -400,8 +400,9 @@ async fn note_page_failure(pool: &SqlitePool, tree: &WikiTree, page: &PagePlan, 
 /// concept-page file only when ALL of:
 ///
 /// - its path is not in the plan's page set for that wiki,
-/// - it is not a reserved page (`index.md`, `rules.md`, any `_`-prefixed
-///   file),
+/// - it is not a reserved page (the wiki's map, `rules.md`, any `_`-prefixed
+///   file). The card and the buffer need no exemption: they are plan nodes,
+///   so they are always in the plan's page set for their wiki,
 /// - **no** non-tombstoned `fact_index` row points at it
 ///   ([`fact_index::count_rows_at_source_path`]) — the DB-first guard: a
 ///   pending render or a superseded row's audit marker keeps the file.
@@ -436,8 +437,8 @@ async fn sweep_orphan_page_files(
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("md"))
                 || name.starts_with('_')
-                || name == "index.md"
-                || name == "rules.md"
+                || name == crate::wiki::INDEX_FILENAME
+                || name == crate::wiki::RULES_FILENAME
                 || pages.contains(name)
                 || !entry.path().is_file()
             {
@@ -552,14 +553,15 @@ async fn compile_page(
     page_index: &str,
     now: &str,
 ) -> Result<PageOutcome> {
-    // An emerged/topic-wiki index rides the same dispatch: it renders as
-    // prose while it still carries facts and flips to the hub overview once
-    // its facts have moved down onto children.
+    // A wiki's buffer rides the same dispatch: it renders as prose while it
+    // still carries facts and flips to a bare overview once REM's reorg has
+    // drained them onto children — which is what is meant to happen to
+    // everything that lands there.
     let is_hub = page.primary_facts.is_empty()
         && !page.child_leaves.is_empty()
         && matches!(
             page.page_type,
-            PageType::ConceptHub | PageType::GroupTheme | PageType::EmergedIndex
+            PageType::ConceptHub | PageType::GroupTheme | PageType::WikiBuffer
         );
     if is_hub {
         let language = cached_language_directive(pool, tree, &page.wiki_id, locale_cache).await;

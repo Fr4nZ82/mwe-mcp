@@ -704,7 +704,7 @@ mod tests {
                     title: "Dossier".to_owned(),
                     description: String::new(),
                     style: None,
-                    page_type: crate::planner::PageType::EmergedIndex,
+                    page_type: crate::planner::PageType::WikiBuffer,
                     owner_scope: None,
                     parent_hub: None,
                     child_leaves: Vec::new(),

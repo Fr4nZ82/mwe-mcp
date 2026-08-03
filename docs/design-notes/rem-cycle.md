@@ -406,7 +406,7 @@ whole wiki (not one per page):
    own names, with every active fact on them; the born-applied receipt is
    recorded and one `structure_applied` notice emitted (`variant:
    pages_to_subwiki` / `pages_move_wiki`). A newborn wiki's `index.md` is
-   a bare title stub — its front page is a plan-owned `emerged_index`
+   a bare title stub — its `notes.md` is a plan-owned `wiki_buffer`
    node the [narrative compiler](narrative-compiler.md) authors, so the
    handler must not invent prose the compiler would then fight over. The
    `style` + `description` ride in the receipt **context** and are
@@ -952,7 +952,9 @@ The last sub-job in the cycle, and one of the simplest:
 - Trigger: wiki has children **and** at least one active fact **and**
   is not in the smart family **and** its `index.md` is not a page of the
   persisted compilation plan — the compiler is the writer of plan-owned
-  indexes (`person` / `group_theme` / `emerged_index` foundation nodes),
+  indexes — since the map rule (2026-08-03) no foundation node claims one,
+  so this set is empty on a current plan and the hub writer is the map's
+  only author,
   and a REM-side regeneration would fight it over the same file. With the
   Fonditore's topic-wiki pass this covers every standard wiki a plan has
   seen, so the sub-job serves only wikis outside a plan (or a workdir with

@@ -5681,18 +5681,21 @@ async fn run_hub_writer(
     smart_wiki_index: &SmartWikiIndex,
 ) -> Result<HubWriterReport> {
     let mut report = HubWriterReport::default();
-    // Every wiki whose `index.md` the compilation plan owns is off-limits:
-    // the compiler is its writer (person / group_theme / emerged_index
-    // foundation nodes), and a REM-side regeneration would fight it over
-    // the same file. With the emerged-index foundation pass this covers
-    // every standard wiki the plan has seen; the walk below only serves
-    // wikis a plan does not cover (no plan yet, or a wiki outside it).
+    // Any wiki whose `index.md` the compilation plan owns stays off-limits:
+    // two writers on one file is a fight, whoever is right. Since the map
+    // rule (founder, 2026-08-03) **no plan node points at a wiki's map** —
+    // foundation nodes sit on the card and the buffer — so this set is empty
+    // on a current plan and the hub writer is the map's only author, which is
+    // the point: authoring a map of what lives here is exactly its job. The
+    // guard stays because a plan persisted before the rule (or a revert of a
+    // legacy `file_to_subwiki` receipt) can still carry such a node, and
+    // fighting it would be worse than skipping the wiki for a night.
     let plan_owned_indexes: std::collections::BTreeSet<String> =
         match crate::planner::load_previous_plan(tree) {
             Ok(Some(plan)) => plan
                 .pages
                 .values()
-                .filter(|p| p.page_path == "index.md")
+                .filter(|p| p.page_path == wiki::INDEX_FILENAME)
                 .map(|p| p.wiki_id.clone())
                 .collect(),
             Ok(None) => std::collections::BTreeSet::new(),

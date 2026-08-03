@@ -70,34 +70,49 @@ roster and order; the sketch below mirrors it.
 [`build_foundation_pages`](../../crates/mwe-core/src/planner.rs) seeds the
 graph from three deterministic sources — no LLM, no facts. From
 [`enrollment`](enrollment-loader.md): for each enrolled group it mints one
-`group_theme` hub (slug = the group id, scope prose carried on
-`owner_scope`); for each enrolled user one `person` page (slug = the user
+`group_theme` card (slug = the group id, scope prose carried on
+`owner_scope`); for each enrolled user one `person` card (slug = the user
 id), wiring `parent_hub` to the user's **first** known group and
 `outgoing_links` to all of them. Groups are built first so a person can
-link to them. From the **tree** (`seed_topic_wiki_indexes`): every
-standard non-identity wiki — the sub-wikis `pages_to_subwiki` mints,
-any hand-forged topic wiki — gets its `index.md` as an
-`emerged_index` node (slug = `slugify(wiki_id)`, `parent_hub` = the parent
-wiki's foundation slug when the graph has it, description = the `_meta`
-`scope` prose). A topic container carries **no identity semantics**: its
-subject is a topic — a person, a pet, a project — never a user (maintainer
-2026-07-05); smart wikis and identity wikis never qualify.
+link to them. From the **tree** (`seed_wiki_buffers`): **every** standard
+wiki — identity wikis included — gets a `wiki_buffer` node on its
+`notes.md` (slug = `<wiki slug>__notes`, `parent_hub` = its own card when
+it has one else the parent wiki's foundation slug, description = the
+`_meta` `scope` prose). Smart wikis never qualify: their consumer is the
+sole writer.
 
-These foundation pages map directly onto mwe-mcp's **wiki roots**: a
-`person` page is the user's `wiki-user` wiki, a `group_theme` hub is the
-group's `wiki-group` wiki, an `emerged_index` is a topic wiki's front
-page. They are **never garbage-collected**
+**Two foundation pages per wiki, and neither is its `index.md`.** A wiki's
+map is not a plan node at all (founder's ruling, 2026-08-03: the root
+answers *where does a fact belong*, for REM and the ingest classifier, and
+the read path never opens it), which is also what frees the REM
+[hub writer](rem-cycle.md#hub-writer-sub-job) to author it. The two nodes
+are not interchangeable, because two different things arrive at the
+[orphan fallback](#orphan-fallback):
+
+| node | file | receives |
+|---|---|---|
+| `person` / `group_theme` — the **card** | `profile.md` | the always-on identity core an ingest `salience: "high"` reserves |
+| `wiki_buffer` — the **buffer** | `notes.md` | every other fact with no page yet; REM's reorg drains it onto real pages |
+
+A topic wiki gets only the buffer: its subject is a topic — a person, a
+pet, a project — never a user (maintainer 2026-07-05), so there is no
+identity to card. Sending both kinds to one page is not a smaller version
+of this design: it either buries the card under unsorted facts or promotes
+every unplaced fact to identity.
+
+Foundation pages are **never garbage-collected**
 ([`PageType::is_foundation`](../../crates/mwe-core/src/planner.rs)) — an
-enrolled user always has a page even with zero facts, and an emerged index
-survives its facts moving down onto sub-pages. A slug collision is skipped
-with a warning (enrollment wins over a topic wiki; the group wins over a
-person), so the graph never has two pages on one slug. Because the
-`emerged_index` slug is exactly the slug the pre-existing content leaf of
-an old emergence carried, the foundation node **takes the slug over** at
-the first build: the carried facts re-attach to the wiki's `index.md` and
-the shadowed registry entry is GC'd — the topic converges to one front
-page, and the oversized nomination later hands the pile to the Cartografo
-to split by content.
+enrolled user always has a card even with zero facts, and a buffer
+survives its facts being drained onto sub-pages, which is what is supposed
+to happen to everything that lands there. A slug collision is skipped with
+a warning (enrollment wins over a topic wiki; the group wins over a
+person), so the graph never has two pages on one slug — and the buffer's
+`__` separator is **unreachable by `slugify`**, so no classifier-proposed
+page name can ever claim a buffer's key. The same property is why the two
+places that canonicalise a proposed slug (`build_compilation_plan` step 4
+and `rehome_facts_in_persisted_plan`) leave a key the plan already holds
+alone: re-slugifying `alice__notes` would mint a phantom `alice_notes`
+leaf beside the real buffer and split the fact off from it.
 
 ### Stage 1 — the Cartografo (strong-model classification)
 
@@ -345,13 +360,13 @@ Two of these steps deserve calling out:
 All types live in [`planner.rs`](../../crates/mwe-core/src/planner.rs);
 the definitions there are the SSOT.
 
-- **[`PageType`]** — the kinds the topology distinguishes: `Person`,
-  `GroupTheme` and `EmergedIndex` (foundation, never GC'd — the third is a
-  topic wiki's front page, no identity semantics) and `ConceptHub` /
-  `ConceptLeaf` (emergent, GC-eligible). A hub holds no facts (links only);
-  a leaf holds facts and has a parent hub; an emerged index holds facts
-  like a leaf while the topic is small and renders as the hub overview
-  once its facts have moved onto children.
+- **[`PageType`]** — the kinds the topology distinguishes: `Person` and
+  `GroupTheme` (a wiki's identity **card**, `profile.md`) and `WikiBuffer`
+  (its **buffer**, `notes.md`) are foundation, never GC'd; `ConceptHub` /
+  `ConceptLeaf` are emergent and GC-eligible. A hub holds no facts (links
+  only); a leaf holds facts and has a parent hub; a buffer holds facts like
+  a leaf while it still has any and renders as a bare overview once REM's
+  reorg has drained them onto children.
 - **[`FactForPage`]** — a fact materialised onto a page. It carries the
   verbatim claim text, the classifier's `fact_type`, the full ACL triple
   (`owner` / `allow` / `sender`), the `source_wiki_id`, the optional
@@ -454,30 +469,30 @@ seam every act-first move calls after its apply: it detaches the moved facts
 from whatever plan page holds them, appends them to the destination page —
 seeding the page and a registry entry when the plan does not know it yet (a
 [`RehomePageSeed`](../../crates/mwe-core/src/planner.rs): the single-segment
-`<slug>.md` concept-leaf form for splits/merges, or the **`wiki_index` form**
-for the emergence, whose destination is the emerged wiki's `index.md` — slug =
-`slugify(wiki_id)`, path pinned to `index.md`) — and drops any husk page a
-merge or an emergence removed (plan + registry, audited in `merged_pages`).
+`<slug>.md` concept-leaf form for splits/merges, or the **`page_in_wiki`
+form** for a cross-wiki refile, which maps the destination page to its plan
+key through `plan_slug_for_page` — a wiki's reserved pages are foundation
+nodes keyed per wiki, so `profile.md` resolves to the card's slug and
+`notes.md` to the buffer's, never to a forest-wide `profile` / `notes` key)
+— and drops any husk page a merge removed (plan + registry, audited in
+`merged_pages`).
 Because after the edit
 the carried-over fingerprint *matches* the next build, the touched slugs are
 parked on the plan's **`force_dirty`** list: `build_wiki_plan` unions them into
 the dirty set (on the early-skip path they *are* the dirty set) and clears the
-flag, so the destination page gets woven by the Cronista exactly once — for an
-emergence that first weave is what turns the verbatim-copied index into real
-compiled prose. The
+flag, so the destination page gets woven by the Cronista exactly once. The
 shared row→plan projection ([`FactForPage::from_row`](../../crates/mwe-core/src/planner.rs))
 guarantees a re-homed fact fingerprints identically to a gathered one — no
 permanent dirty churn.
 
 The seam's seeded page is a **bridge only**: at the next plan build the
-Fonditore's topic-wiki pass owns the slug with an `emerged_index`
-foundation node (path pinned to `index.md`, never garbage-collected), the
-staleness GC drops the seam's transitional registry entry, and the carried
-facts follow the slug onto the foundation node — so a registry round-trip
-can never strand the emerged content on a `<slug>.md` sibling file again
-(the registry stores no `page_path`; before the foundation pass, one
-rebuild was enough to drift the index content onto a file named after the
-slug).
+Fonditore's buffer pass owns the slug with a `wiki_buffer` foundation node
+(path pinned to `notes.md`, never garbage-collected), the staleness GC
+drops the seam's transitional registry entry, and the carried facts follow
+the slug onto the foundation node — so a registry round-trip can never
+strand a topic wiki's content on a `<slug>.md` sibling file again (the
+registry stores no `page_path`; before the foundation pass, one rebuild
+was enough to drift it onto a file named after the slug).
 
 ## Persistence — a rebuildable cache at `wikis/_plan/`
 
@@ -601,8 +616,8 @@ that surfaces persistent failures to the operator.
 steps:
 
 1. A page is a **hub** when it has **zero facts**, **at least one child**, and a
-   `page_type` of `concept_hub`, `group_theme` or `emerged_index` → the
-   **Hub Writer** (the emerged index rides both arms: prose while it still
+   `page_type` of `concept_hub`, `group_theme` or `wiki_buffer` → the
+   **Hub Writer** (the buffer rides both arms: prose while it still
    carries facts, hub overview once they moved onto its children).
 2. Otherwise, a leaf whose ingest-decided `style` (`page.style`) is
    **`lista`** → the **Record Writer** (atomic records, no LLM); a leaf with
@@ -612,7 +627,7 @@ steps:
    description one-liner, **no LLM**: handed an empty fact list the Cronista
    invents colour prose from the wikilinks alone — the dogfood re-run compiled
    Tolkien lore onto a zero-fact identity index); everything else
-   — prose leaves, and a `person` / `emerged_index` page carrying facts —
+   — prose leaves, and a `person` / `wiki_buffer` page carrying facts —
    goes to **Il Cronista**.
 
 The three writers target different config slots (the Cronista on the strong
