@@ -71,7 +71,7 @@ flowchart TB
 
     subgraph H1["hop 1 … up to max_hops"]
         POOL1["candidate pool = siblings + link targets<br/>often 40+ entries"]
-        POOL1 --> PRUNE1["prune_pool → rank by tier<br/>(link > entry fan > sibling page),<br/>THEN truncate to <b>max_candidates</b>"]
+        POOL1 --> PRUNE1["prune_pool → rank by tier<br/>(link &gt; entry fan &gt; sibling page),<br/>THEN dedup — a page reached twice<br/>keeps its best tier —<br/>THEN truncate to <b>max_candidates</b>"]
         PRUNE1 --> LLM1["navigator LLM decides again"]
         LLM1 --> OPEN1["open, collect, grow the pool"]
     end
@@ -662,18 +662,33 @@ via `[[wikilinks]]` from the collected prose (`Visible`-only) — a wiki hop
 offers the linked wiki, a page hop offers the linked **page directly**, each
 with the same reader-relative card (see the link grammar below).
 
-Before the next prompt is built, `prune_pool` drops already-visited /
-duplicate candidates, then **stably ranks the survivors by tier** before
-truncating to `max_candidates`: wikilink destinations first (an authored
-rail out of the page just read), then the still-unpicked entry-point fan in
-the gatherer's own weight order (seeds already offered on an earlier hop
-that the navigator did not choose), then sibling pages last. A wiki's
-siblings are still offered wholesale — breadth stays structural, not a
-leak, and a page nobody links to needs some way to be reachable — but as
-the demoted tail: they fill the pool first (`sibling_page_candidates` fires
-on every wiki entry, `[[wikilink]]` targets are comparatively rare), so
-without this ranking a positional truncate lets the directory dump crowd
-out both the rails and the fan.
+Before the next prompt is built, `prune_pool` **stably ranks the pool by
+tier**, drops already-visited / duplicate candidates, and truncates to
+`max_candidates`. The tiers: wikilink destinations first (an authored rail
+out of the page just read), then the still-unpicked entry-point fan in the
+gatherer's own weight order (seeds already offered on an earlier hop that
+the navigator did not choose), then sibling pages last. A wiki's siblings
+are still offered wholesale — breadth stays structural, not a leak, and a
+page nobody links to needs some way to be reachable — but as the demoted
+tail: they fill the pool first (`sibling_page_candidates` fires on every
+wiki entry, `[[wikilink]]` targets are comparatively rare), so without this
+ranking a positional truncate lets the directory dump crowd out both the
+rails and the fan.
+
+**The ranking runs before the dedup, and that order is load-bearing.** One
+page routinely reaches the pool by two routes at once: a page linked from
+the prose just read is, whenever it lives in the wiki the funnel has
+entered, *also* one of that directory's siblings. The two copies are one
+destination at two very different tiers, so the dedup has to keep the
+**best** route, not the earliest — and the earliest is always the sibling,
+because `open_target` lists the directory before it reads the links. It is
+the same rule `dedup_and_sort` applies to the fan, where the heaviest seed
+wins a collision.
+
+Measured over 141 real turns on the live corpus: the cap bites on **49 % of
+hops**, and once the ranking precedes the dedup **1 628 of 10 955 offered
+candidates (14.9 %) change tier** — 1 442 of them from filesystem sibling to
+authored rail, leading the pool instead of being cut with the tail.
 
 Degradation contract: an LLM failure or an unparseable decision stops the
 funnel and returns the partial collection — recall degrades, the turn

@@ -1305,13 +1305,33 @@ fn wiki_summary(d: &DiscoveredWiki) -> Option<String> {
 /// would otherwise be reachable solely by direct RAG seeding — it must
 /// never displace a rail or a seed. At hop 0 there are no links yet, so
 /// this ordering only bites from hop 1 on.
+///
+/// **The ranking runs before the dedup, and that order is the point.** One
+/// page routinely reaches the pool by more than one route at once — a page
+/// linked from the prose just read is, whenever it lives in the wiki the
+/// funnel just entered, *also* one of that directory's siblings — and the two
+/// copies are the same destination at two very different tiers. Deduplicating
+/// first keeps whichever copy the producers happened to emit first, which is
+/// the sibling ([`open_target`] lists the directory before it reads the
+/// links), so the surviving copy carries the demoted tier and is cut with the
+/// filesystem tail. Ranking first makes the survivor the *best* route instead
+/// of the earliest one — the same rule [`dedup_and_sort`] already applies to
+/// the fan, where the heaviest seed wins a collision.
+///
+/// Measured on the live corpus over 141 real turns (card 66): the cap bites on
+/// **49 % of hops**, and ranking first moves **1 628 of 10 955 offered
+/// candidates (14.9 %) to a better tier** — 1 442 of them from sibling to rail.
+/// It is what lost the traced turn its answer page: `famiglia/concerti.md`,
+/// linked from the page just read, was offered at #18 of a 54-candidate pool as
+/// a filesystem sibling and cut; it now leads at #12 and survives.
 fn prune_pool(pool: &mut Vec<Candidate>, visited: &BTreeSet<(String, PathBuf)>, cap: usize) {
+    // Stable, so within a tier the producers' order still stands.
+    pool.sort_by_key(Candidate::prune_tier);
     let mut seen: BTreeSet<(String, PathBuf)> = BTreeSet::new();
     pool.retain(|c| {
         let key = (c.wiki_id.clone(), c.resolved_page());
         !visited.contains(&key) && seen.insert(key)
     });
-    pool.sort_by_key(Candidate::prune_tier);
     pool.truncate(cap);
 }
 
@@ -2335,6 +2355,70 @@ mod tests {
             pool.iter().map(|c| c.origin).collect::<Vec<_>>(),
             vec!["link", "page"],
             "a wikilink rail must be offered ahead of a directory sibling of the same wiki"
+        );
+    }
+
+    #[test]
+    fn one_page_reached_by_two_routes_keeps_the_better_route_not_the_first() {
+        let visited = BTreeSet::new();
+        // The commonest collision in the live corpus: the funnel enters
+        // `alice`, lists its directory, then reads a page whose prose links
+        // `alice/concerti`. The SAME destination is now in the pool twice —
+        // sibling first (that is the order `open_target` fills `discoveries`
+        // in), rail second. Deduplicating before ranking kept the sibling and
+        // filed an authored rail in the demoted tail.
+        let mut pool = vec![
+            cand("alice", Some("concerti.md"), "page"),
+            cand("alice", Some("concerti.md"), "link"),
+        ];
+        prune_pool(&mut pool, &visited, 16);
+        assert_eq!(pool.len(), 1, "the two copies are one destination");
+        assert_eq!(
+            pool[0].origin, "link",
+            "the surviving copy must carry the best route to the page, not the earliest one"
+        );
+    }
+
+    #[test]
+    fn a_linked_page_that_is_also_a_sibling_survives_a_cap_full_of_siblings() {
+        let visited = BTreeSet::new();
+        // The consequence of the rule above, at the size the live corpus
+        // actually offers: a directory listing far larger than the cap, with
+        // the one page the prose links to sitting late in it. Filed as a
+        // sibling it is cut with the tail; filed as the rail it is, it leads.
+        let mut pool: Vec<Candidate> = (0..30)
+            .map(|i| Candidate {
+                wiki_id: "alice".to_owned(),
+                page: Some(PathBuf::from(format!("p{i:02}.md"))),
+                origin: "page",
+                summary: None,
+                keywords: Vec::new(),
+            })
+            .collect();
+        pool.push(cand("alice", Some("p29.md"), "link"));
+        prune_pool(&mut pool, &visited, 16);
+        assert_eq!(
+            (pool[0].origin, pool[0].page.as_deref()),
+            ("link", Some(Path::new("p29.md"))),
+            "the linked page must lead the pool even when its directory buries it"
+        );
+    }
+
+    #[test]
+    fn a_fan_seed_that_is_also_a_sibling_is_not_demoted_to_the_tail() {
+        let visited = BTreeSet::new();
+        // Same rule, the other collision: the gatherer already weighed this
+        // page into the fan, and entering its wiki later re-offers it as one
+        // of the directory's siblings.
+        let mut pool = vec![
+            cand("alice", Some("hit.md"), "page"),
+            cand("alice", Some("hit.md"), "rag"),
+        ];
+        prune_pool(&mut pool, &visited, 16);
+        assert_eq!(
+            pool.iter().map(|c| c.origin).collect::<Vec<_>>(),
+            vec!["rag"],
+            "a page the fan already weighed must not lose that provenance to a directory listing"
         );
     }
 

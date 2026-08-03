@@ -115,3 +115,9 @@ required-features = ["local-embedder"]
 [[example]]
 name = "subject_signal"
 required-features = ["local-embedder"]
+
+# Planning card 66 — what shape is the navigator's candidate pool, and where
+# does `max_candidates` cut it?
+[[example]]
+name = "pool_shape"
+required-features = ["local-embedder"]
