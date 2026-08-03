@@ -4,13 +4,12 @@
 //! Recall-as-navigation opens with a fan of **entry-points**: the wikis (and,
 //! when a card pins one down, the pages) where a navigator should start
 //! reading for the current turn. This module computes that fan
-//! deterministically — no LLM call, no embedding — from four seed families:
+//! deterministically — no LLM call, no embedding — from three seed families.
+//! (There were four: a **Principal** family seeded the identity wikis of the
+//! people in the turn. It was deleted 2026-08-03 — a seed that can only name
+//! a wiki is not a door, and who the turn is about now reaches the block by
+//! being *served*.)
 //!
-//! - **Principal** — the identity wikis of the **people** in the turn: the
-//!   sender, and each classified fact owner that is a user. Groups seed
-//!   nothing (see [`WEIGHT_PRINCIPAL`]), and this family is **offered rather
-//!   than ranked**: it sorts after every content-derived door whatever its
-//!   weight.
 //! - **Rag** — the flat-recall hits of the turn, mapped back to the
 //!   `(wiki, page)` they live on. RAG opens the obvious doors; it is one of
 //!   the seeds, not the engine.
@@ -124,9 +123,8 @@ pub struct EntryPoint {
     /// Relative priority within the fan, `0.0..=1.0`. Ordering material for
     /// the funnel's budget — not a probability.
     ///
-    /// **Carries no meaning for [`EntryOrigin::Principal`]**, which is always
-    /// `0.0`: that family is offered at the tail rather than ranked, so there
-    /// is no score to report. See [`fan_order`].
+    /// See [`fan_order`]: the funnel sorts on the family first, so this only
+    /// ever breaks ties *within* one family.
     pub weight: f32,
 }
 
@@ -327,10 +325,6 @@ fn gather_card_seeds(
     }
 }
 
-/// Map a `fact_index.source_path` (workdir-relative, POSIX separators) to the
-/// page path relative to the wiki rooted at `rel_dir`. `None` — seed the wiki
-/// root — when the path does not sit under the wiki directory (a stale index
-/// row after a move; the root is always a safe landing).
 /// True when a wiki-relative page path is the reserved `rules.md` policy
 /// page ([`wiki::RULES_FILENAME`]) — channel-only, never navigable
 /// (roadmap 41e; the `&str` twin is [`wiki::is_rules_page`]).
@@ -339,6 +333,11 @@ fn is_rules_page_path(page: &Path) -> bool {
         .is_some_and(|n| n == std::ffi::OsStr::new(wiki::RULES_FILENAME))
 }
 
+/// Map a `fact_index.source_path` (workdir-relative, POSIX separators) to the
+/// page path relative to the wiki rooted at `rel_dir`. `None` when the path
+/// does not sit under the wiki directory (a stale index row after a move) —
+/// and `None` means **no candidate**, not "fall back to the wiki root": since
+/// the map rule the root is not a landing at all.
 fn page_within(rel_dir: &Path, source_path: &str) -> Option<PathBuf> {
     let prefix = format!("{}/", rel_dir.to_string_lossy().replace('\\', "/"));
     let rest = source_path.strip_prefix(&prefix)?;
@@ -1478,14 +1477,35 @@ fn sibling_page_candidates(
         .collect()
 }
 
+/// The page a bare `[[wiki_id]]` rail resolves to: the wiki's **foundation
+/// page**, never its map.
+///
+/// Two reserved names can hold one, and which of them a wiki has is a
+/// property of the wiki, not of the link — a person or a group has a card
+/// ([`wiki::PROFILE_FILENAME`]), a theme wiki has only its buffer
+/// ([`wiki::NOTES_FILENAME`]). Decided on disk rather than from the
+/// compilation plan because the funnel has no plan: the file is the fact.
+/// `None` when the wiki has neither, which is a wiki with nothing authored
+/// yet — the rail is then dropped.
+fn foundation_slug(d: &DiscoveredWiki) -> Option<String> {
+    for name in [wiki::PROFILE_FILENAME, wiki::NOTES_FILENAME] {
+        if d.abs_dir.join(name).is_file() {
+            return Some(name.trim_end_matches(".md").to_owned());
+        }
+    }
+    None
+}
+
 /// Destinations reachable via `[[wikilinks]]` from freshly collected prose,
 /// following the link grammar
-/// (recall-pipeline.md §Link grammar):
-/// a bare `[[wiki_id]]` offers the linked **wiki** with its `_meta` card, a
-/// `[[wiki_id/page-slug]]` page hop **also** offers the linked **page**
-/// directly (its testata card, reader-relative) so the navigator can open it
-/// in one hop instead of descending through the wiki root. A `|display`
-/// alias never reaches this point — [`extract_wikilinks`] strips it.
+/// (recall-pipeline.md §Link grammar).
+/// A `[[wiki_id/page-slug]]` page hop offers that **page** directly (its
+/// testata card, reader-relative), so the navigator opens it in one hop. A
+/// bare `[[wiki_id]]` offers that wiki's **foundation page** — never its map,
+/// which is written for filing and refused by every route of the read path —
+/// and nothing at all when the wiki has neither reserved page (see
+/// [`foundation_slug`]). A `|display` alias never reaches this point
+/// ([`extract_wikilinks`] strips it).
 ///
 /// **Legacy fallback** (emit canonical, resolve legacy — the marker
 /// grammar's stance): a bare target that names no wiki is retried as a
@@ -1499,29 +1519,7 @@ fn sibling_page_candidates(
 /// reader can read ≥ 1 fact in its wiki
 /// ([`reader_can_read_in`](meta_annotate::ReaderCard::reader_can_read_in),
 /// topic-less facts included). A page hop whose target file does not exist
-/// (a dead rail) is silently dropped, and a rail that names a **wiki** rather
-/// than a page resolves to that wiki's foundation page — never its map, and
-/// nothing at all when the wiki has no foundation page (see
-/// [`foundation_slug`]).
-/// The page a bare `[[wiki_id]]` rail resolves to: the wiki's **foundation
-/// page**, never its map.
-///
-/// Two reserved names can hold one, and which of them a wiki has is a
-/// property of the wiki, not of the link — a person or a group has a card
-/// ([`wiki::PROFILE_FILENAME`]), a theme wiki has only its buffer
-/// ([`wiki::NOTES_FILENAME`]). Decided on disk rather than from the
-/// compilation plan because the funnel has no plan: the file is the fact.
-/// `None` when the wiki has neither, which is a wiki with nothing authored
-/// yet — the rail is then dropped as before.
-fn foundation_slug(d: &DiscoveredWiki) -> Option<String> {
-    for name in [wiki::PROFILE_FILENAME, wiki::NOTES_FILENAME] {
-        if d.abs_dir.join(name).is_file() {
-            return Some(name.trim_end_matches(".md").to_owned());
-        }
-    }
-    None
-}
-
+/// (a dead rail) is silently dropped.
 fn linked_wiki_candidates(
     text: &str,
     origin: &DiscoveredWiki,

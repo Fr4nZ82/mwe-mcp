@@ -1196,11 +1196,10 @@ async fn navigate_seeds(
 
 /// `wiki_navigate` — deep recall via the funnel navigator (the consumer
 /// counterpart of the ingest-side navigation). Whole visible corpus,
-/// ACL-filtered; the caller's principal seeds anchor the fan without ever
-/// leading it (they are offered at the tail, unranked — see
-/// [`mwe_core::recall_nav::WEIGHT_PRINCIPAL`]), and a `group:` owner seeds no
-/// door at all: a group root is a directory, and its pages are reached by the
-/// query's own hits and its card. Returns the
+/// ACL-filtered. `owners` is resolved and journalled but seeds **no door**:
+/// a principal names a wiki, and recall opens content pages, never wikis
+/// (founder, 2026-08-03). Who the turn is about reaches the block by being
+/// served, not by being navigated to. Returns the
 /// navigated prose fragments **with their `(wiki, page)`** (the path that
 /// built the context) **and** the flat hits, so depth is a superset of the
 /// breadth `wiki_search` would have returned. Smart wikis are funnel-skipped

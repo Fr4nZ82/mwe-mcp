@@ -149,9 +149,8 @@ changed only with a new measurement (`mwe-core::recall`, `mwe-core::recall_nav`)
 |---|---:|---|
 | `CLOSED_WINDOW_DOWNRANK` | `0.8` | multiplies a fact whose validity window has closed |
 | `SUBJECT_COVERAGE_UPLIFT` | `0.15` | multiplies per turn-subject covered beyond the first |
-| `WEIGHT_PRINCIPAL` | `0.0` | identity seed — **not an ordering input**: the anchor is offered at the tail of the fan, never ranked |
-| `WEIGHT_TOPIC_WIKI` / `_PAGE` | `0.6` / `0.8` | classified-topic seeds |
-| `WEIGHT_SITUATIONAL_WIKI` / `_PAGE` | `0.4` / `0.5` | host-supplied situational seeds |
+| `WEIGHT_TOPIC_PAGE` | `0.8` | classified-topic seeds |
+| `WEIGHT_SITUATIONAL_PAGE` | `0.5` | host-supplied situational seeds |
 | `FRESH_CANDIDATE_CAP` | `32` | how many buffered captures are re-embedded per turn |
 
 ## The two corpora

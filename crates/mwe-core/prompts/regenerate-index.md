@@ -1,8 +1,8 @@
 ---
 name: regenerate-index
 description: Hub Writer prompt — the prose of a compilation plan's `ConceptHub` page, from its children list. The file name is historical: the REM index regenerator this was written for was retired on 2026-08-03 (a wiki's `index.md` is now assembled without a model), and renaming the file would orphan every operator override.
-version: 1.4
-default_version_at_bootstrap: v1.4
+version: 1.5
+default_version_at_bootstrap: v1.5
 source_of_truth: crates/mwe-core/src/compiler.rs (fn compile_hub_page)
 ---
 
@@ -80,10 +80,13 @@ function-calling.
 | `think:false` | implicit | Workhorse default for Qwen 3.x; see narrative compiler, runtime section. |
 
 **Upstream filter** (decides when the model sees the prompt at all):
-the trigger gate in `run_hub_writer` (children present, at least one
-active fact, not smart, cap not reached). The 20-fact bound on
-`{snippet}` is applied at render time so the prompt fits the
-workhorse's ~4k context budget on a co-resident embedder.
+the compiler's hub gate in `compiler::compile_page` — a plan node with
+**no facts of its own**, with child leaves, typed `ConceptHub` /
+`GroupTheme` / `WikiBuffer`. REM's map writer, which once shared this
+prompt, calls no model at all any more; the file keeps its historical name
+so operator overrides are not orphaned. The 20-fact bound on `{snippet}`
+is applied at render time so the prompt fits the workhorse's ~4k context
+budget on a co-resident embedder.
 
 ## Prompt
 

@@ -103,10 +103,11 @@ use crate::wiki::{WikiError, WikiTree, workdir_relative_source_path};
 /// Bundled default for the Cronista prompt (compiler prose stage).
 pub const BUNDLED_CRONISTA_MD: &str = include_str!("../prompts/cronista.md");
 
-/// A wiki's overview page path — its foundation (person / `group_theme`) page.
-/// Concept pages use `<slug>.md`, so this uniquely marks the page whose
-/// description becomes the wiki's `_meta` abstract.
-const INDEX_PAGE: &str = "index.md";
+// A wiki's **map** — the one page no plan node may claim and no rail may
+// name. Aliased rather than re-declared as a literal so the reserved name has
+// exactly one definition (63 §8c's stated rule, which this file was quietly
+// breaking).
+use crate::wiki::INDEX_FILENAME as INDEX_PAGE;
 
 /// Bundled default for the `regenerate-index` system prompt — the prose
 /// writer for a plan's `ConceptHub` pages.
@@ -1376,13 +1377,9 @@ async fn compile_list_page(
         return Ok(PageOutcome::Unchanged);
     }
 
-    // Recall navigation: if this list is a wiki's `index.md` overview,
-    // persist its plan description as the wiki's `_meta` abstract.
-    if page.page_path == INDEX_PAGE
-        && let Err(e) = meta_annotate::sync_wiki_summary(handle.abs_dir(), page.description.trim())
-    {
-        tracing::warn!(slug = %page.slug, error = %e, "compiler: _meta summary sync failed");
-    }
+    // Recall navigation: a record page that IS its wiki's foundation node
+    // (a `lista`-styled card or buffer) still owns the wiki's abstract.
+    sync_foundation_summary(page, handle.abs_dir(), &page.description);
 
     Ok(PageOutcome::List)
 }
@@ -1499,14 +1496,12 @@ async fn compile_hub_page(
     }
     handle.write_page(page_path, &contents)?;
 
-    // Recall navigation: for a hub wiki's `index.md`, the plan's
-    // one-line description is the best abstract available (the Hub Writer emits
-    // prose, not a one-liner). Persist it to the wiki's `_meta` summary.
-    if page.page_path == INDEX_PAGE
-        && let Err(e) = meta_annotate::sync_wiki_summary(handle.abs_dir(), page.description.trim())
-    {
-        tracing::warn!(slug = %page.slug, error = %e, "compiler: _meta summary sync failed");
-    }
+    // Recall navigation: the plan's one-line description is the best abstract
+    // available here (the Hub Writer emits prose, not a one-liner). A
+    // `GroupTheme` card or a drained `WikiBuffer` reaches THIS function once
+    // its facts have moved onto children, so the foundation nodes whose
+    // abstract nobody else refreshes are exactly the ones landing here.
+    sync_foundation_summary(page, handle.abs_dir(), &page.description);
 
     Ok(PageOutcome::Hub)
 }
@@ -1678,12 +1673,6 @@ fn is_future(from: &str, now: &str) -> bool {
 
 /// The canonical wikilink for one planned page, per the link grammar
 /// (recall-pipeline.md §Link grammar):
-/// `[[wiki_id/page-slug]]` for a page hop (the slug is the page file's
-/// stem — never the plan slug alone, which would read as a wiki hop to a
-/// wiki that does not exist), collapsing to the bare `[[wiki_id]]` wiki
-/// hop when the page is the wiki's own `index.md` overview. Every link
-/// the compiler feeds the Cronista / Hub Writer goes through here so the
-/// prose only ever sees resolvable rails.
 /// A planned page as the canonical rail that reaches it —
 /// `[[wiki_id/page-slug]]`, always a page. `None` when the node sits on the
 /// wiki's **map**, which is not a link target.
@@ -1695,9 +1684,14 @@ fn is_future(from: &str, now: &str) -> bool {
 /// **40 % of the links the live corpus carries on a content page** are that
 /// dead form. The planner mints no such node any more (`profile.md`,
 /// `notes.md` or a slug), but a **persisted** plan can still hold one from
-/// before 2026-08-03 (see `planner::PagePlanSeed::wiki_index`, kept so that
+/// before 2026-08-03 (see `planner::RehomePageSeed::wiki_index`, kept so that
 /// corpus stays revertible), so this refuses rather than asserts: a legacy
 /// map node is simply not offered as a rail, and every caller drops it.
+///
+/// The slug is the page **file's** stem, never the plan slug alone (which
+/// would read as a hop to a wiki that does not exist). Every link the
+/// compiler feeds the Cronista / Hub Writer goes through here, so the prose
+/// only ever sees resolvable rails.
 fn plan_page_wikilink(page: &PagePlan) -> Option<String> {
     if page.page_path == INDEX_PAGE {
         return None;

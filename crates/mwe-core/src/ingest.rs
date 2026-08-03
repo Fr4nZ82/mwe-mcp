@@ -8309,7 +8309,13 @@ mod tests {
         let (dir, _tree, pool) = setup_workdir().await;
         seed_alice_card(&dir, &pool).await;
         let wikis = dir.path().join("wikis");
-        let page = wikis.join("alice").join("index.md");
+        // On `profile.md` — the page `identity_card` actually opens. Writing
+        // this region to `index.md` (as this fixture did until 2026-08-04,
+        // from before the 63 §8 split) put it on a file the code never reads,
+        // so the negative assertion below passed without the ACL projection
+        // running at all: it would have stayed green with the projection
+        // replaced by a no-op.
+        let page = wikis.join("alice").join(crate::wiki::PROFILE_FILENAME);
         let existing = std::fs::read_to_string(&page).unwrap();
         std::fs::write(
             &page,
@@ -8320,7 +8326,7 @@ mod tests {
             &pool,
             CAROL_ONLY,
             "alice",
-            "wikis/alice/index.md",
+            "wikis/alice/profile.md",
             "Alice is planning a surprise.",
             Principal::User("carol".into()),
         )

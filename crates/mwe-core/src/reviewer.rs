@@ -24,7 +24,7 @@
 //!   page whose compiled body carries no `{{… f=<fact_id>}}` marker for it, or
 //!   whose marker is public. This is the ACL-leak guard the old engine lacked:
 //!   an owned claim rendered as unmarked prose would be readable by everyone.
-//! - **cross-subject bloat** — an identity index (a `wiki-user`'s `index.md`;
+//! - **cross-subject bloat** — an identity card (a `wiki-user`'s `profile.md`;
 //!   the agent wiki included) whose plan carries a **foreign-subject** fact:
 //!   owner is a different user, or a group the page's user is not a member of
 //!   (a group they belong to is their own shared context, never foreign).
@@ -53,7 +53,7 @@ pub const PROSE_DUP_THRESHOLD: f32 = 0.20;
 /// page's placements with the split-by-mass lever live), never a gate: the
 /// LLM alone decides whether the page still reads as one page. This is the
 /// missing redistribution leg of two shipped designs — the refile sweep
-/// deliberately lands cross-wiki moves on the destination `index.md`
+/// deliberately lands cross-wiki moves on the destination buffer `notes.md`
 /// expecting "that wiki's own dream re-files them", and a grown-but-clean
 /// page otherwise never re-enters the Cartografo at all.
 pub const OVERSIZED_PAGE_THRESHOLD: usize = 30;
@@ -74,7 +74,7 @@ pub type Result<T> = std::result::Result<T, ReviewerError>;
 
 /// Enrollment context for the cross-subject check.
 ///
-/// Carries which wikis are `wiki-user` **identity wikis** (their `index.md`
+/// Carries which wikis are `wiki-user` **identity wikis** (their `profile.md`
 /// is an identity index — the agent wiki included, it is a normal
 /// `wiki-user`) and which groups each of those users belongs to. Group
 /// wikis and emergent sub-wikis carry other `wiki_type`s and never qualify.
@@ -143,7 +143,7 @@ pub struct ReviewReport {
     /// compiled page.
     pub missing_acl_markers: Vec<(String, String)>,
     /// `(slug, fact_id, owner)` foreign-subject facts the plan places on an
-    /// identity index (a `wiki-user`'s `index.md`) — the identity-page
+    /// identity card (a `wiki-user`'s `profile.md`) — the identity-page
     /// discipline violated. Observability only, never a gate.
     pub cross_subject_bloat: Vec<(String, String, String)>,
     /// `(slug, children)` — `concept_leaf` pages other pages parent under.
@@ -206,13 +206,19 @@ pub fn review(
     for (slug, page) in &plan.pages {
         check_page_shape(slug, page, &mut report);
         // Cross-subject bloat: a foreign-subject fact planned onto an
-        // identity index. Detection is `_meta`-driven (the wiki is a
-        // `wiki-user` and the page is its `index.md`), so topic pages,
-        // group wikis, and emergent sub-wiki indexes never qualify.
-        let is_identity_index =
-            page.page_path == "index.md" && identity.user_wikis.contains(&page.wiki_id);
+        // identity **card**. Detection is `_meta`-driven (the wiki is a
+        // `wiki-user` and the page is its card), so topic pages, group wikis
+        // and buffers never qualify.
+        //
+        // ⚠️ This keyed on `index.md` until 2026-08-04, from before the 63 §8
+        // split moved the card to `profile.md`. No plan node may claim
+        // `index.md` any more — the planner refuses to mint one and the seal
+        // logs an error if one appears — so the check had gone permanently
+        // empty and this guard silently stopped reporting anything.
+        let is_identity_card = page.page_path == crate::wiki::PROFILE_FILENAME
+            && identity.user_wikis.contains(&page.wiki_id);
         for f in &page.primary_facts {
-            if is_identity_index && identity.is_foreign(&page.wiki_id, &f.owner) {
+            if is_identity_card && identity.is_foreign(&page.wiki_id, &f.owner) {
                 report.cross_subject_bloat.push((
                     slug.clone(),
                     f.fact_id.as_str().to_owned(),
@@ -609,7 +615,7 @@ mod tests {
         );
         page.page_type = PageType::Person;
         page.wiki_id = "franz".to_owned();
-        page.page_path = "index.md".to_owned();
+        page.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
         let plan = plan_with(vec![page], BTreeMap::new());
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
@@ -655,7 +661,7 @@ mod tests {
         let mut group_index = leaf("famiglia", vec![ffp(3, "user:bruno")]);
         group_index.page_type = PageType::GroupTheme;
         group_index.wiki_id = "famiglia".to_owned();
-        group_index.page_path = "index.md".to_owned();
+        group_index.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
 
         let plan = plan_with(vec![topic, group_index], BTreeMap::new());
         let dir = tempfile::tempdir().unwrap();
@@ -704,7 +710,7 @@ mod tests {
         let mut page = leaf("hermes1", vec![ffp(6, "user:franz")]);
         page.page_type = PageType::Person;
         page.wiki_id = "hermes1".to_owned();
-        page.page_path = "index.md".to_owned();
+        page.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
         let plan = plan_with(vec![page], BTreeMap::new());
         let r = review(&tree, &plan, &identity).unwrap();
         assert_eq!(

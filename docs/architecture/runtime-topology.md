@@ -308,7 +308,7 @@ frequency, so they are tuned separately:
 | Function | Fires when | Quality needed |
 |---|---|---|
 | `ingest` | per conversational turn (`wiki_ingest_message`) + the dashboard chat | low-medium |
-| `hub_writer` | nightly REM sub-job (regenerates `index.md` hubs), capped per night | low-medium |
+| `hub_writer` | the narrative compiler's `ConceptHub` prose (the REM map writer calls **no** model) | low-medium |
 | `rem_promotions` | nightly cron, capped per night | **high** |
 | `rem_dedup_semantic` | nightly cron, after jaccard pre-filter | low |
 | `cronista` | the narrative prose compiler, once per dirty standard-wiki leaf | **high** (strong) |

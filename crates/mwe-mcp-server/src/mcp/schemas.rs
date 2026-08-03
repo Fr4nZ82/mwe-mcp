@@ -304,7 +304,7 @@ fn wiki_navigate() -> Tool {
                 "sender_id": { "type": "string", "description": "Optional override of the token's sender_id (must match)." },
                 "top_k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Cap on the flat hits returned (and the RAG seeds that feed the funnel)." },
                 "topics": { "type": "array", "items": { "type": "string" }, "description": "Optional. Salient subjects to look up (free text). Supplying these (or `owners`) skips server-side extraction." },
-                "owners": { "type": "array", "items": { "type": "string" }, "description": "Optional. Principals the query is about — `user:<id>` / `group:<id>`. Anchors entry into those entities' wikis." }
+                "owners": { "type": "array", "items": { "type": "string" }, "description": "Optional. Principals the query is about — `user:<id>` / `group:<id>`. Supplying them skips server-side extraction and records them on the route journal; they do not themselves open a door — a principal names a wiki, and recall opens content pages." }
             }
         }),
     ))
