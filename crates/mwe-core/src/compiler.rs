@@ -1430,7 +1430,8 @@ async fn compile_hub_page(
         .filter_map(|s| {
             plan.pages
                 .get(s)
-                .map(|c| format!("- {}", plan_page_wikilink(c)))
+                .and_then(plan_page_wikilink)
+                .map(|l| format!("- {l}"))
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -1683,15 +1684,29 @@ fn is_future(from: &str, now: &str) -> bool {
 /// hop when the page is the wiki's own `index.md` overview. Every link
 /// the compiler feeds the Cronista / Hub Writer goes through here so the
 /// prose only ever sees resolvable rails.
-fn plan_page_wikilink(page: &PagePlan) -> String {
+/// A planned page as the canonical rail that reaches it —
+/// `[[wiki_id/page-slug]]`, always a page. `None` when the node sits on the
+/// wiki's **map**, which is not a link target.
+///
+/// The bare `[[wiki_id]]` form used to be minted for a node on `index.md`,
+/// back when that was a wiki's overview. Since 63 §8 `index.md` is the map —
+/// written for REM and the filing classifier, refused by `open_target` and by
+/// all three offer-side filters — so a rail pointing there leads nowhere, and
+/// **40 % of the links the live corpus carries on a content page** are that
+/// dead form. The planner mints no such node any more (`profile.md`,
+/// `notes.md` or a slug), but a **persisted** plan can still hold one from
+/// before 2026-08-03 (see `planner::PagePlanSeed::wiki_index`, kept so that
+/// corpus stays revertible), so this refuses rather than asserts: a legacy
+/// map node is simply not offered as a rail, and every caller drops it.
+fn plan_page_wikilink(page: &PagePlan) -> Option<String> {
     if page.page_path == INDEX_PAGE {
-        return format!("[[{}]]", page.wiki_id);
+        return None;
     }
     let stem = page
         .page_path
         .strip_suffix(".md")
         .unwrap_or(&page.page_path);
-    format!("[[{}/{stem}]]", page.wiki_id)
+    Some(format!("[[{}/{stem}]]", page.wiki_id))
 }
 
 /// Resolve a successor fact's home page to its canonical wikilink — the
@@ -1714,7 +1729,10 @@ fn successor_wikilink(
             .iter()
             .any(|f| f.fact_id.as_str() == successor.as_str())
     })?;
-    (slug != current_slug).then(|| plan_page_wikilink(home))
+    if slug == current_slug {
+        return None;
+    }
+    plan_page_wikilink(home)
 }
 
 /// The link rail every leaf is shown: one line per page in the plan,
@@ -1731,9 +1749,8 @@ fn page_index_block(plan: &CompilationPlan) -> String {
         .compilation_order
         .iter()
         .filter_map(|s| {
-            plan.pages
-                .get(s)
-                .map(|p| format!("- {}: {}", plan_page_wikilink(p), p.description))
+            let p = plan.pages.get(s)?;
+            Some(format!("- {}: {}", plan_page_wikilink(p)?, p.description))
         })
         .collect();
     if lines.is_empty() {
@@ -1750,7 +1767,7 @@ fn recommended_links(plan: &CompilationPlan, slug: &str) -> String {
             ls.iter()
                 // The graph stores plan slugs; a slug whose page vanished
                 // from the plan would be a dead rail — skip it.
-                .filter_map(|l| plan.pages.get(l).map(plan_page_wikilink))
+                .filter_map(|l| plan.pages.get(l).and_then(plan_page_wikilink))
                 .collect::<Vec<_>>()
                 .join(", ")
         })
@@ -3713,7 +3730,9 @@ mod tests {
                     outgoing_links: Vec::new(),
                     incoming_links: Vec::new(),
                     wiki_id: s.to_owned(),
-                    page_path: "index.md".to_owned(),
+                    // A person's node is their card, not the wiki map — the
+                    // map is not a link target at all (63 §8).
+                    page_path: crate::wiki::PROFILE_FILENAME.to_owned(),
                 },
             );
         }
@@ -3731,11 +3750,11 @@ mod tests {
         };
         let idx = page_index_block(&plan);
         assert!(
-            idx.contains("[[bob]]: bob desc"),
+            idx.contains("[[bob/profile]]: bob desc"),
             "shows other page description"
         );
         assert!(
-            idx.contains("[[alice]]: alice desc"),
+            idx.contains("[[alice/profile]]: alice desc"),
             "includes the page being written — the block is one per run"
         );
         assert!(
@@ -3768,7 +3787,7 @@ mod tests {
         // A leaf page links as `[[wiki_id/stem]]` …
         assert_eq!(
             plan_page_wikilink(&leaf("ricette_freezer", "morgana", "ricette_freezer.md")),
-            "[[morgana/ricette_freezer]]"
+            Some("[[morgana/ricette_freezer]]".to_owned())
         );
         // … even when the page lives in a sub-wiki whose id differs from
         // the plan slug (the underscored-mutant class this kills).
@@ -3778,12 +3797,17 @@ mod tests {
                 "famiglia-bruno-battaglia",
                 "referto_oculistica.md"
             )),
-            "[[famiglia-bruno-battaglia/referto_oculistica]]"
+            Some("[[famiglia-bruno-battaglia/referto_oculistica]]".to_owned())
         );
-        // A wiki's own index.md collapses to the bare wiki hop.
+        // A node on the wiki's map is NOT a link target: the map is written
+        // for filing and refused by every route of the read path, so a rail
+        // onto it is a dead rail. It used to collapse to the bare `[[famiglia]]`
+        // hop, which is what put 40 % of the live corpus's links on a page no
+        // reader may open (founder's rule, 2026-08-04: the map has outgoing
+        // links and no incoming ones).
         assert_eq!(
             plan_page_wikilink(&leaf("famiglia", "famiglia", "index.md")),
-            "[[famiglia]]"
+            None
         );
 
         // The starvation index and the recommended links both ride the

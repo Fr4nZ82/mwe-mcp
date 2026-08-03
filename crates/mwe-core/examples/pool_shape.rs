@@ -265,6 +265,11 @@ async fn main() -> anyhow::Result<()> {
         max_hops,
         pages_per_hop,
         max_candidates: UNCAPPED,
+        // Same reason as the line above: the point of this harness is to see
+        // the supply *before* any rationing, so what a rule would drop is
+        // visible by origin instead of invisible by construction. Leave the
+        // sibling floor off here and apply it in the report.
+        sibling_floor: UNCAPPED,
         ..NavigatorPolicy::default()
     };
 

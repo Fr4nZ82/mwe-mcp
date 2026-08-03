@@ -97,7 +97,7 @@ flowchart TB
 
     subgraph H1["hop 1 … up to max_hops"]
         POOL1["candidate pool = siblings + link targets<br/>often 40+ entries"]
-        POOL1 --> PRUNE1["prune_pool → rank by tier<br/>(link &gt; entry fan &gt; sibling page),<br/>THEN dedup — a page reached twice<br/>keeps its best tier —<br/>THEN truncate to <b>max_candidates</b>"]
+        POOL1 --> PRUNE1["prune_pool → rank by tier<br/>(link &gt; entry fan &gt; sibling page),<br/>THEN dedup — a page reached twice<br/>keeps its best tier —<br/>THEN ration siblings to <b>sibling_floor</b><br/>THEN truncate to <b>max_candidates</b>"]
         PRUNE1 --> LLM1["navigator LLM decides again"]
         LLM1 --> OPEN1["open, collect, grow the pool"]
     end
@@ -134,6 +134,7 @@ knob.** Defaults come from `IngestPolicy::default` / `NavigatorPolicy::default`.
 | `pages_per_hop` | `3` | how many candidates one hop may open |
 | `char_budget` | `8 000` | total projected prose one navigation may collect |
 | `max_candidates` | `16` | how many doors a hop is offered, after tier ranking and dedup |
+| `sibling_floor` | `3` | how far directory siblings may top a hop's offer up — they are a last resort, not an offer; `usize::MAX` observes the unrationed supply |
 | `decision_max_tokens` | `600` | cost guard on the per-hop decision JSON, not a quality dial |
 | `due_soon_top_k` | `3` | the `UPCOMING` slot; `0` disables it |
 | `due_soon_horizon_hours` | `168` (7 d) | how far ahead `UPCOMING` looks |
@@ -815,22 +816,33 @@ candidates (a hallucinated target is discarded, never opened), reads the page,
 drops the testata, and **projects it per-sender** (`render_for_sender`) — the
 navigator never sees a raw ACL marker. Opening a page grows the next hop's
 candidates: the entered wiki's sibling pages and the destinations reachable
-via `[[wikilinks]]` from the collected prose (`Visible`-only) — a wiki hop
-offers the linked wiki, a page hop offers the linked **page directly**, each
+via `[[wikilinks]]` from the collected prose (`Visible`-only) — a page hop
+offers the linked **page directly**, a bare wiki hop offers that wiki's
+**foundation page** (`profile.md`, else `notes.md`) and never its map, each
 with the same reader-relative card (see the link grammar below).
 
 Before the next prompt is built, `prune_pool` **stably ranks the pool by
-tier**, drops already-visited / duplicate candidates, and truncates to
-`max_candidates`. The tiers: wikilink destinations first (an authored rail
-out of the page just read), then the still-unpicked entry-point fan in the
-gatherer's own weight order (seeds already offered on an earlier hop that
-the navigator did not choose), then sibling pages last. A wiki's siblings
-are still offered wholesale — breadth stays structural, not a leak, and a
-page nobody links to needs some way to be reachable — but as the demoted
-tail: they fill the pool first (`sibling_page_candidates` fires on every
-wiki entry, `[[wikilink]]` targets are comparatively rare), so without this
-ranking a positional truncate lets the directory dump crowd out both the
-rails and the fan.
+tier**, drops already-visited / duplicate candidates, **rations the
+siblings**, and truncates to `max_candidates`. The tiers: wikilink
+destinations first (an authored rail out of the page just read), then the
+still-unpicked entry-point fan in the gatherer's own weight order (seeds
+already offered on an earlier hop that the navigator did not choose), then
+sibling pages last.
+
+**Siblings are a last resort, not an offer** (founder, 2026-08-04: *«le
+pagine vicine entrano solo se non c'è altro, come ultima risorsa… non è
+importante vedere le pagine vicine quanto seguire i links»*). Tiering alone
+did not deliver that. A demoted sibling still fills every slot the rails and
+the fan leave free, and the directory listing is by far the funnel's largest
+producer — `sibling_page_candidates` fires on every wiki entry and dumps the
+whole directory (`carol` alone contributes 47 candidates) while
+`[[wikilink]]` targets are comparatively rare, so **98.2 % of everything the
+cap cuts is siblings** (card 66 §7.2). They are therefore rationed rather
+than merely demoted: they enter only to bring the offer up to
+`sibling_floor` candidates, and not at all above it. That keeps the
+dead-end continuation alive — a page with no rails, in a wiki with no other
+route, still has somewhere to go — without letting the directory dump be
+the walk's default next step.
 
 **The ranking runs before the dedup, and that order is load-bearing.** One
 page routinely reaches the pool by two routes at once: a page linked from
@@ -874,16 +886,31 @@ Wikilinks are the **navigator's rails** — the memory wiki links pages so
 recall-by-navigation can walk them. Humans click the same links in the
 **dashboard memory explorer** ([dashboard-memory-mvp.md](dashboard-memory-mvp.md)
 §Wiki view); resolvability in any external markdown viewer is a non-goal.
-One canonical grammar, two forms plus a presentation alias:
+One canonical grammar — **a rail names a page** — plus a legacy form that is
+resolved but never minted, and a presentation alias:
 
 | Form | Meaning | Example |
 |---|---|---|
-| `[[wiki_id]]` | **wiki hop** — the linked wiki (its overview); person links like `[[franz]]` are this | `[[famiglia]]` |
 | `[[wiki_id/page-slug]]` | **page hop** — one page of that wiki; the slug is the page file's stem (no `.md`), and may itself contain `/` for a nested page | `[[famiglia-bruno-battaglia/referto_oculistica_bruno_2026_02_11]]` |
-| `[[target\|display]]` | either form with a **display alias** — presentation only, stripped before resolution; renders as the label | `[[famiglia/index\|famiglia]]` |
+| `[[wiki_id]]` | **legacy wiki hop** — resolved to that wiki's **foundation page** (`profile.md`, else `notes.md`), *never* its map; dropped when the wiki has neither. Not minted and not taught | `[[famiglia]]` → `famiglia/profile.md` |
+| `[[target\|display]]` | either form with a **display alias** — presentation only, stripped before resolution; renders as the label | `[[famiglia/profile\|famiglia]]` |
 
 Wiki ids are **flat** (`famiglia-bruno-battaglia`), never directory paths —
 the id is the address, the tree position is the tree's business.
+
+**Why the bare form is legacy.** It once meant "the wiki's overview", and the
+overview was `index.md`. Since [63 §8](../../planning/63_navigator-drift.md)
+`index.md` is the **map** — written for REM and the filing classifier, refused
+by `open_target` and by all three offer-side filters — so every bare rail in
+the corpus pointed at a page no reader may open. They are not rare: `[[franz]]`,
+`[[carol]]`, `[[bob]]` and their kind are **40 % of the links written on a
+content page** in the live corpus. What the prose means by `[[franz]]` is *the
+person*, and since the same split the person is `profile.md` — so the funnel
+resolves the bare form to the wiki's foundation page and the rails survive a
+rename we performed ourselves. The writer is taught the page form only
+(`cronista.md` v1.19), and `compiler::plan_page_wikilink` cannot mint the bare
+one; the founder's rule is that **the map has outgoing links and no incoming
+ones** (2026-08-04).
 
 **Legacy fallback — emit canonical, resolve legacy** (the same stance the
 [marker grammar](marker-grammar.md) takes on the full inline marker): a

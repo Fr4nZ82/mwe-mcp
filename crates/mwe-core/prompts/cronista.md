@@ -1,8 +1,8 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-index reference distance)
-version: 1.18
-default_version_at_bootstrap: v1.18
+version: 1.19
+default_version_at_bootstrap: v1.19
 ---
 
 # Prompt: cronista
@@ -54,8 +54,9 @@ The system prompt for **Il Cronista** (compiler stage 3,
   block is one per-run string and the body forbids self-linking; see the
   `=== PAGE TO WRITE ===` split below), `{links}` (the recommended outgoing
   `[[wikilinks]]`). Both link feeds carry the **canonical grammar** —
-  `[[wiki_id]]` / `[[wiki_id/page-slug]]`, rendered by
-  `compiler::plan_page_wikilink` (see
+  `[[wiki_id/page-slug]]`, a **page**, rendered by
+  `compiler::plan_page_wikilink`; a link naming a wiki alone is not minted
+  and not taught, because a wiki's own address is its map (see
   recall-pipeline.md §Link grammar)
   — and the prompt instructs the model to copy them **verbatim**, never to
   mint or restyle one: a link rewritten in the surrounding slug style
@@ -131,7 +132,8 @@ ONE FACT, ONE PAGE — the rules that make this work:
    On a user's identity index (a person page) this holds doubly: never weave ANOTHER subject's detail into the connective prose either — name them with their [[wikilink]] and move on; the page carries one subject.
 
 WIKILINK GRAMMAR — links are navigation rails, copy them EXACTLY:
-- Two forms exist: [[wiki_id]] (a whole wiki) and [[wiki_id/page-slug]] (a page). Optionally add a display alias for prose flow: [[wiki_id/page-slug|readable label]] — the part before the | must stay EXACT.
+- A link names a PAGE: [[wiki_id/page-slug]]. Optionally add a display alias for prose flow: [[wiki_id/page-slug|readable label]] — the part before the | must stay EXACT.
+- NEVER write a link that names a wiki alone ([[wiki_id]]). A wiki's own address is its map, which is written for filing and is never read back — such a link leads nowhere. To point at a person or a group, link their page: [[wiki_id/profile]].
 - Every link under OTHER PAGES, RECOMMENDED LINKS and in a (detail at: …) hint is already in canonical form. COPY IT CHARACTER-FOR-CHARACTER — never change hyphens to underscores (or vice versa), never drop or add the wiki_id part, never invent a link target you were not given. A restyled link points nowhere.
 3. Write flowing PROSE, not a bullet list. Make the RELATIONS between the facts explicit — causality, chronology, roles, implications — that connective thread is the value, not a pile of sentences.
 4. Use dated events as EVIDENCE of habits / roles, not as a calendar. Do not turn the page into an agenda of appointments.
