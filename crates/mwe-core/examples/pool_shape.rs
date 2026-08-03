@@ -310,7 +310,7 @@ async fn main() -> anyhow::Result<()> {
             &ctx,
         )
         .await?;
-        let fan = recall_nav::gather_entry_points(&pool, &tree, &ctx, &[], &[], &hits, &[]).await?;
+        let fan = recall_nav::gather_entry_points(&pool, &tree, &ctx, &[], &hits, &[]).await?;
         // What the ingest turn passes: the sender's identity card, already in
         // the block, so the funnel neither offers nor opens it.
         let served = [(turn.sender.clone(), PathBuf::from("index.md"))];

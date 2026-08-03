@@ -137,13 +137,32 @@ wikis as sub-directories, with no depth cap.**
 wikis/
   alice/                      (wiki-user)
     _meta.md
-    index.md
+    index.md                  (the wiki's MAP — where a fact belongs)
+    profile.md                (Alice's identity card)
+    notes.md                  (buffer — facts with no page yet)
     lavoro.md                 (leaf page)
     acmecorp/                 (sub-wiki, emerged from promotion)
       _meta.md
       widget-pro/             (sub-wiki)
         _meta.md
 ```
+
+Four of those names are **reserved**, and the reservation is what keeps
+each one honest:
+
+| page | answers | who reads it |
+|---|---|---|
+| `index.md` | *where does a fact belong here?* | the REM sweeps and the ingest classifier — **never the read path** |
+| `profile.md` | *who is this actor?* | recall **serves** it verbatim in its own block slot; the funnel never navigates to it |
+| `notes.md` | *nothing yet* | the buffer a fact lands on when no page fits; REM's reorg drains it onto real pages |
+| `rules.md` | *what has this actor asked for?* | the rules channel only — outside every structural sweep |
+
+The first one is the load-bearing separation. A map that also held facts
+would be both the answer to "where does this go" and a place things go,
+and every actor's map would slowly become the page nothing ever leaves.
+Keeping it fact-free is why **nothing may re-home a fact onto `index.md`**
+— a fact parked there is one the navigator can never open, because the
+read path filters the map out of every offer.
 
 There are **no slots and no compatibility checks**: a wiki can host any
 kind of sub-wiki. The system does not block placement — it suggests.
@@ -206,8 +225,8 @@ wiki" below), `wiki-group`, `wiki-companion`
 and has no behavioural type at all. Several attributes are decided at
 capture. **Per fact**: its temporal **validity** (`valid_from`/`valid_to`)
 and its **salience** (`high` / `normal` / `low` — a `high` fact joins the
-owner's always-on base context, routed to its `index.md` rather than a
-subject page, and is kept scarce). **Per placement**: which page the fact
+owner's always-on base context, routed to its `profile.md` card rather
+than a subject page, and is kept scarce). **Per placement**: which page the fact
 lands on (`target_page`) and the page's **physical form** (line → page →
 folder). **Per target page** (repeated across facts sharing a page): a
 **writing style** hint (prosa / prosa-tecnica / lista) and a one-line

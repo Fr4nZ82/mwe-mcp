@@ -343,15 +343,15 @@ async fn navigate_query(
     flat: &[RecallHit],
     policy: &IngestPolicy,
 ) -> anyhow::Result<recall_nav::NavigationOutcome> {
-    let owners: Vec<Principal> = q
-        .owners
-        .iter()
-        .map(|s| s.parse().with_context(|| format!("owner `{s}`")))
-        .collect::<anyhow::Result<_>>()?;
-    let entries =
-        recall_nav::gather_entry_points(pool, tree, sender, &q.topics, &owners, flat, &[])
-            .await
-            .context("entry-point gather")?;
+    // `q.owners` is still parsed for its side effect — a malformed principal in
+    // the gold file is a gold-file bug and must surface — but it seeds nothing:
+    // a principal names a wiki, and recall opens content pages, never wikis.
+    for s in &q.owners {
+        let _: Principal = s.parse().with_context(|| format!("owner `{s}`"))?;
+    }
+    let entries = recall_nav::gather_entry_points(pool, tree, sender, &q.topics, flat, &[])
+        .await
+        .context("entry-point gather")?;
     recall_nav::navigate(
         pool,
         tree,
@@ -405,9 +405,10 @@ mod tests {
              acl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        // The deviating fact lives in the prose, dissimilar to the query.
+        // The deviating fact lives in the prose, dissimilar to the query — on
+        // a content page, since the wiki root is a map recall never opens.
         std::fs::write(
-            wikis.join("index.md"),
+            wikis.join("profile.md"),
             "# Alice\n\nAlice is celiac and avoids gluten everywhere.\n",
         )
         .unwrap();
@@ -420,7 +421,7 @@ mod tests {
             authored_refs: Vec::new(),
             fact_id: FactId::parse(id).unwrap(),
             wiki_id: "alice".to_owned(),
-            source_path: "wikis/alice/index.md".to_owned(),
+            source_path: "wikis/alice/profile.md".to_owned(),
             region_start: None,
             region_end: None,
             text: text.to_owned(),
@@ -473,19 +474,12 @@ mod tests {
             vec![0.1, 0.2, 0.3, 0.4],
         ));
         // The scripted decision must name the page verbatim. Alice's own
-        // `index.md` is reached two ways here: her principal seed
-        // (`page: None`) and the coffee rag hit (`page: Some("index.md")`,
-        // cosine 1.0) — the same physical file under two `EntryPoint`
-        // shapes. `prune_pool` collapses them to one door
-        // (`Candidate::resolved_page`), keeping whichever arrived first in
-        // the gatherer's order; a ranked door always precedes the identity
-        // anchor (`fan_order`), so the survivor carries the
-        // `page: Some("index.md")` shape, not the page-less root — and the
-        // anti-hallucination vetting in `open_target` is a verbatim match,
-        // not resolved-page equality, so the request has to say `index.md`.
+        // The scripted decision names the page the coffee rag hit seeded.
+        // Every door is a page now — there is no page-less wiki shape to
+        // collide with — and `open_target` vets verbatim.
         let nav = FakeLlmBackend::new(
             "fake-nav",
-            "{\"open\":[{\"wiki_id\":\"alice\",\"page\":\"index.md\"}],\"done\":true}",
+            "{\"open\":[{\"wiki_id\":\"alice\",\"page\":\"profile.md\"}],\"done\":true}",
         );
         let policy = IngestPolicy::default();
 
@@ -498,7 +492,7 @@ mod tests {
         // the prose, invisible to flat similarity over fact_index.
         assert!(q.flat_hit_at_1 && q.flat_hit_at_3);
         assert_eq!(q.flat_covered, 1);
-        // The navigator opened alice's index.md, whose prose carries
+        // The navigator opened alice's profile page, whose prose carries
         // the deviating fact — the catch the harness exists to count.
         let nav_report = q.nav.as_ref().expect("navigation ran");
         assert_eq!(nav_report.deviating, 1);

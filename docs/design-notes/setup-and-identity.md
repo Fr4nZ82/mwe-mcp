@@ -211,7 +211,7 @@ reinforcing **section markers** to one composed message.
 
 | Step | Fields | Destination | How the engine routes it |
 |---|---|---|---|
-| **1 · Chi sei** | `email`, `display_name`, `nickname`, `presentati`, `birthday`, `address`, `language`, `timezone`, `pronouns`, `phone`, `occupation`, `health_safety` | the owner's `index.md` always-on base context | the ingest LLM marks the identity/always-on facts `salience: high`; the engine routes the high-salience core onto `index.md` |
+| **1 · Chi sei** | `email`, `display_name`, `nickname`, `presentati`, `birthday`, `address`, `language`, `timezone`, `pronouns`, `phone`, `occupation`, `health_safety` | the owner's `profile.md` identity card (their always-on base context) | the ingest LLM marks the identity/always-on facts `salience: high`; the engine routes the high-salience core onto `profile.md` |
 | **2 · Le tue regole** | `sharing_default` (radio: private / group / always-private), `sharing_exclusions`, `private_topics`, `do_not_store` | the sender's `rules.md` engine-policy page | the ingest LLM marks each directive `engine_rule: true`; the engine appends it as policy prose to `rules.md` — never a row in `fact_index` |
 | **3 · Il resto** | `favorite_color`, `hobbies`, `food_preferences` | the normal pipeline | no special tag — the LLM files them wherever it sees fit (`salience` stays normal/low) |
 
@@ -376,7 +376,7 @@ slot and retry.
   [JWT & session model §recovery and 2FA](jwt-and-session-model.md#password-recovery-and-two-factor-authentication).
 - **No profile-edit form post-wizard**. The wizard fires once;
   subsequent edits to the profile fact happen by editing
-  `wikis/<user_id>/index.md` directly (or via the `/dashboard/wiki/:id`
+  `wikis/<user_id>/profile.md` directly (or via the `/dashboard/wiki/:id`
   edit flow).
 - **No typed per-user profile schema** (display_name, avatar, …). The
   enrollment row carries no free-prose blurb: the wizard captures

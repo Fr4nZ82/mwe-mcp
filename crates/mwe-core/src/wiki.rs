@@ -77,6 +77,50 @@ pub const WIKIS_DIR: &str = "wikis";
 /// Filename of the per-wiki manifest.
 pub const META_FILENAME: &str = "_meta.md";
 
+/// Filename of a wiki's **map** (`<wiki_dir>/index.md`).
+///
+/// The map answers one question — *where does a fact belong on this wiki?* —
+/// and it is asked by exactly two callers: the REM sweeps deciding where to
+/// re-file, and the ingest classifier deciding where to place. The read path
+/// never opens it: recall reaches the content pages the turn's best facts
+/// live on, and a map of a wiki it is already standing in tells a reader
+/// nothing the pages do not. So the funnel filters it out of every offer and
+/// refuses it centrally ([`crate::recall_nav`]), the same treatment
+/// [`RULES_FILENAME`] gets for the same reason.
+///
+/// A corollary that has bitten once: **nothing may re-home a fact here**. A
+/// fact parked on the map is a fact no navigation route can reach.
+/// Cross-wiki moves land on [`NOTES_FILENAME`] instead.
+pub const INDEX_FILENAME: &str = "index.md";
+
+/// Filename of a person's or group's **identity card**
+/// (`<wiki_dir>/profile.md`).
+///
+/// Who this actor is, in prose: the page the ingest classifier keeps current
+/// and the one recall *serves* verbatim in its own slot (`WHO YOU ARE` /
+/// `WHO IS SPEAKING`) rather than navigating to. Because the card is already
+/// in the block by the time the funnel runs, the funnel treats it as visited
+/// — spending a navigation hop to re-read text the reader is looking at is
+/// the one door guaranteed to teach nothing.
+///
+/// Distinct from [`INDEX_FILENAME`] on purpose: *who someone is* and *where
+/// their facts go* are different questions, and one page answering both made
+/// every identity card a placement target and every placement map a
+/// biography.
+pub const PROFILE_FILENAME: &str = "profile.md";
+
+/// Filename of a wiki's **buffer page** (`<wiki_dir>/notes.md`).
+///
+/// Where a fact lands when it has a wiki but no page yet: the ingest
+/// classifier's fallback placement, and the destination of every cross-wiki
+/// re-file (REM's refile sweep and recall repair, the comment channel, the
+/// dashboard's move-fact action). It is an ordinary content page in every
+/// respect — recallable, navigable, and above all **drainable**: the REM
+/// reorg sweep reads it like any other page and lifts its facts onto the
+/// pages they belong on, emerging new ones where a theme has grown enough
+/// to deserve its own.
+pub const NOTES_FILENAME: &str = "notes.md";
+
 /// Filename of the per-wiki captures journal (`<wiki_dir>/_captures.md`).
 ///
 /// The durable on-disk SSOT of buffered captures for a *standard* wiki: the

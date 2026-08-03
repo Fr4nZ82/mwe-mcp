@@ -83,7 +83,7 @@ use crate::recall_nav;
 use crate::types::{
     CatalogId, FactId, FactIdParseError, Principal, PrincipalParseError, WikiId, WikiIdParseError,
 };
-use crate::wiki::{WikiError, WikiTree, is_safe_page_path};
+use crate::wiki::{self, WikiError, WikiTree, is_safe_page_path};
 
 // ---------- Public input types ----------
 
@@ -547,7 +547,10 @@ impl Default for IngestPolicy {
             // ceiling REM curates toward are the same number: a card
             // within its authored bound is never cut here.
             max_sender_identity_chars: 2_500,
-            default_page: PathBuf::from("index.md"),
+            // A fact with no better destination lands on a **content page**,
+            // never on the wiki's map: the root answers "where does a fact
+            // belong", it does not hold facts (founder, 2026-08-03).
+            default_page: PathBuf::from(wiki::NOTES_FILENAME),
             fallback_suggested_seed: "I've noted that.".to_owned(),
             structural_suggested_seed:
                 "This looks like a structural change — open the dashboard to continue.".to_owned(),
@@ -3917,10 +3920,19 @@ fn format_history_with_user(agent: &AgentSelf, policy: &IngestPolicy) -> Option<
     )
 }
 
-/// The identity page of a user's wiki. Not [`IngestPolicy::default_page`],
-/// which is the *capture* fallback: this is the page the classifier routes
-/// the identity core onto and the page this slot serves.
-const IDENTITY_PAGE: &str = "index.md";
+/// The identity card of a principal's wiki — **`profile.md`**, and not the
+/// wiki root.
+///
+/// Founder's ruling, 2026-08-03: *«la radice della wiki e la pagina
+/// identitaria non dovrebbe essere la stessa pagina»*. `index.md` is the
+/// wiki's **map** — REM's and the ingest classifier's answer to *where does a
+/// fact belong* — and recall never opens it. The card is a content page like
+/// any other, except that this slot serves it deterministically.
+///
+/// Not [`IngestPolicy::default_page`] either, which is the *capture* fallback
+/// ([`wiki::NOTES_FILENAME`]): this is the page the classifier routes the
+/// identity core onto and the page this slot reads.
+const IDENTITY_PAGE: &str = wiki::PROFILE_FILENAME;
 
 /// What the `WHO IS SPEAKING` slot produced.
 #[derive(Debug)]
@@ -4473,7 +4485,6 @@ async fn navigated_tail(
         tree,
         sender,
         &seeds.topics,
-        &seeds.owners,
         rag_hits,
         // Situational seeds arrive with the host adapter (context model).
         &[],
@@ -6602,7 +6613,7 @@ mod tests {
         let cap = validate_capture_plan(&first_unit(&plan), &request, &policy, &available, true)
             .expect("validated");
         assert_eq!(cap.wiki_id.as_str(), "alice");
-        assert_eq!(cap.page, PathBuf::from("index.md"));
+        assert_eq!(cap.page, PathBuf::from("notes.md"));
         assert!(matches!(cap.owner, Principal::User(ref id) if id == "alice"));
         assert!(matches!(cap.sender, Some(Principal::User(ref id)) if id == "alice"));
         assert_eq!(cap.fact_type.as_deref(), Some("preference"));
@@ -8142,7 +8153,7 @@ mod tests {
             "Profile of Alice, a bookbinder in Bologna.",
         );
         std::fs::write(
-            wikis.join("alice").join("index.md"),
+            wikis.join("alice").join("profile.md"),
             format!(
                 "---\ntitle: Alice\npage_type: person\nkeywords:\n  topics: bio, city, craft\n---\n\n\
                  {{{{f={ALICE_FACT_A}}}}}Alice lives in Bologna.{{{{/}}}}\n\n\
@@ -8155,7 +8166,7 @@ mod tests {
             pool,
             ALICE_FACT_A,
             "alice",
-            "wikis/alice/index.md",
+            "wikis/alice/profile.md",
             "Alice lives in Bologna.",
             Principal::User("alice".into()),
         )
@@ -8164,7 +8175,7 @@ mod tests {
             pool,
             ALICE_FACT_B,
             "alice",
-            "wikis/alice/index.md",
+            "wikis/alice/profile.md",
             "Alice is allergic to walnuts.",
             Principal::User("alice".into()),
         )
@@ -8216,7 +8227,7 @@ mod tests {
         );
         assert_eq!(
             card.page_path.as_deref(),
-            Some("wikis/alice/index.md"),
+            Some("wikis/alice/profile.md"),
             "the served page is reported so the flat and navigated slots can drop it"
         );
         drop(dir);
@@ -12523,7 +12534,7 @@ mod tests {
     fn ingest_policy_default_uses_recall_dedup_threshold() {
         let p = IngestPolicy::default();
         assert!((p.dedup_threshold - DEFAULT_DEDUP_THRESHOLD).abs() < 1e-6);
-        assert_eq!(p.default_page, PathBuf::from("index.md"));
+        assert_eq!(p.default_page, PathBuf::from("notes.md"));
     }
 
     // Re-test of WikiMeta to ensure setup_workdir's serialized YAML

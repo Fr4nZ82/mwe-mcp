@@ -64,11 +64,15 @@ pub const BUNDLED_COMMENT_APPLY_MD: &str = include_str!("../prompts/comment-appl
 const REASON_COMMENT_REMOVE: &str = "dashboard_comment";
 
 /// Landing page for a cross-wiki `move`: a fact refiled into another wiki
-/// always lands on that wiki's `index.md`. The compilation plan keys pages by
+/// always lands on that wiki's `notes.md`. The compilation plan keys pages by
 /// bare slug forest-wide, so a named cross-wiki page would collide; the
 /// destination wiki's own compile pass then re-homes the fact onto the right
 /// page. Same contract as the REM cross-wiki refile sweep.
-const CROSS_WIKI_DEST_PAGE: &str = "index.md";
+///
+/// **Not the wiki root.** `index.md` is the map — where a fact *belongs* —
+/// and it holds no facts of its own (founder, 2026-08-03); a fact landing
+/// there would also be invisible to the read path, which never opens it.
+const CROSS_WIKI_DEST_PAGE: &str = crate::wiki::NOTES_FILENAME;
 
 /// Cap on the comment excerpt woven into a move receipt's `reason` so the
 /// audit string stays a single readable line.
@@ -1637,7 +1641,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn move_relocates_fact_cross_wiki_onto_dest_index_and_mints_receipt() {
+    async fn move_relocates_fact_cross_wiki_onto_dest_notes_and_mints_receipt() {
         let (dir, tree, pool) = setup_with_dests().await;
         let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 2));
         let fid = capture_marker(
@@ -1682,7 +1686,7 @@ mod tests {
         // The fact moved cross-wiki onto salute's index.md.
         let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
         assert_eq!(row.wiki_id, "salute");
-        assert_eq!(row.source_path, "wikis/salute/index.md");
+        assert_eq!(row.source_path, "wikis/salute/notes.md");
 
         // A born-applied wiki_promote receipt (revertible) was minted.
         let receipts: i64 = sqlx::query_scalar(

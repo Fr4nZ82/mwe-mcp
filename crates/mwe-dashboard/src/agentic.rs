@@ -1801,10 +1801,11 @@ async fn dispatch_wiki_change_scope(
 // ---------------------------------------------------------------------------
 
 /// Landing page for a cross-wiki move — always the destination wiki's
-/// `index.md`, because the compilation plan keys pages by bare slug
+/// buffer page, because the compilation plan keys pages by bare slug
 /// forest-wide and a named cross-wiki page would collide; the dest wiki
-/// re-homes the fact on its next compile.
-const MOVE_FACT_CROSS_WIKI_DEST_PAGE: &str = "index.md";
+/// re-homes the fact on its next compile. Never its `index.md`: that page
+/// is the wiki's map, and a fact parked there is one no read path reaches.
+const MOVE_FACT_CROSS_WIKI_DEST_PAGE: &str = mwe_core::wiki::NOTES_FILENAME;
 
 #[derive(Debug, Deserialize)]
 struct WikiMoveFactArgs {
@@ -3491,7 +3492,10 @@ mod tests {
         let moved = &v["moved"];
         assert_eq!(moved["fact_id"], fid.as_str());
         assert_eq!(moved["dest_wiki_id"], "salute");
-        assert_eq!(moved["dest_page"], "index.md");
+        assert_eq!(
+            moved["dest_page"], "notes.md",
+            "a cross-wiki move lands on the destination's buffer page, never its map"
+        );
         assert_eq!(moved["cross_wiki"], true);
         assert!(
             moved["proposal_id"].as_str().is_some_and(|s| !s.is_empty()),
@@ -3504,7 +3508,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.wiki_id, "salute");
-        assert_eq!(row.source_path, "wikis/salute/index.md");
+        assert_eq!(row.source_path, "wikis/salute/notes.md");
         drop(dir);
     }
 

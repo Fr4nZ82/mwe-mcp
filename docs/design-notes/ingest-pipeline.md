@@ -52,7 +52,7 @@ routing → seed) and stays inside the ~500 ms–2 s conversational budget
 (see [runtime-topology.md](../architecture/runtime-topology.md)).
 
 > **The intent field carries two decisions, and they are independent**
-> *(prompt v2.52)*. `intent` settles both whether the turn WRITES and
+> *(prompt v2.53)*. `intent` settles both whether the turn WRITES and
 > whether it READS, and the two do not follow from each other:
 >
 > - **`recall` is a test of an unresolved REFERENCE** — not of grammar,
@@ -974,7 +974,7 @@ or single-fact:
   REM auto-promote target shares the same chokepoint
   ([rem-cycle.md](rem-cycle.md)) — and anything that still fails
   `is_safe_page_path` (a traversal-laden name, a segment that slugifies
-  to nothing) falls back to `policy.default_page` (`index.md`). One
+  to nothing) falls back to `policy.default_page` (`notes.md`, the buffer page). One
   topic therefore always lands on one page even when the model spells it
   differently across turns (`lista-spesa` / `Lista della Spesa` /
   `lista_spesa` → `lista_spesa.md`); extension-less page files (which
@@ -1679,7 +1679,7 @@ signature stays stable as the policy grows:
 | `max_groups_in_prompt` | 8 | Cap on the `sender_groups` entries injected for group-scope routing; a sender in more groups gets the first 8 (alphabetical). |
 | `max_group_scope_chars` | 1000 | Per-group `scope` truncation — large enough to keep the scope's exclusion clause, bounded so a pathological scope can't blow the prompt budget. |
 | `max_users_in_prompt` | 24 | Cap on the `known_users` roster injected for cross-user attribution; a deployment with more enrolled users gets the first 24 (alphabetical by id). |
-| `default_page` | `index.md` | Every bundled wiki type uses `index.md` as the catchall. |
+| `default_page` | `notes.md` | The **buffer page** — where a fact lands when no page fits. Never the wiki's `index.md`: that page is the wiki's map (*where does a fact belong*), it holds no facts, and the read path never opens it. REM's reorg sweep drains `notes.md` onto real pages. |
 | `fallback_suggested_seed` | `"I've noted that."` | English placeholder; operator-overridable per deployment. |
 | `structural_suggested_seed` | `"This looks like a structural change — open the dashboard to continue."` | Same. |
 | `nav` | `recall_nav::NavigatorPolicy::default()` | The navigator funnel's resource knobs (hops, pages/hop, char budget, candidate cap) — see [recall-pipeline.md](recall-pipeline.md). Inert when no navigator backend is wired. |

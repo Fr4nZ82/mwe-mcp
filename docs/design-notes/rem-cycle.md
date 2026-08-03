@@ -41,7 +41,7 @@ construction.
  5. page_merge                   plan/reviewer signals nominate → rem_dedup_semantic LLM confirms → direct apply + `structure_applied` notice (page_merge)
  6. completion_sweep             fresh evidence × similar open items → rem-completion LLM confirms → close_validity + `validity_close` receipt + notice *[skips smart]*
  7. contradiction_sweep          freshly contradicted seeds × similar open items → rem-contradiction LLM confirms → satellites close as contradicted, same paper trail *[skips smart]*
- 8. refile_sweep                 cosine pre-filter nominates misfiled facts → rem-refile LLM picks a dest wiki → cross-wiki move onto the dest wiki's `index.md` + `fact_refile` receipt + notice *[skips smart both ends]*
+ 8. refile_sweep                 cosine pre-filter nominates misfiled facts → rem-refile LLM picks a dest wiki → cross-wiki move onto the dest wiki's buffer page `notes.md` + `fact_refile` receipt + notice *[skips smart both ends]*
  8b. recall_repair               pending recall misses → rem-recall-repair LLM proposes a re-file → gold-set gate replays it on a scratch snapshot → commit only on proven flip (same mover/receipt as 8) else discard/queue operator notice *[skips smart + rules pages]*
  9. provenance_hygiene           deterministic trailing-`([[…]])` detector → pointer moved into `authored_refs`, suffix stripped, text re-embedded (no LLM) *[skips smart]*
 10. date_normalizer              deictic lexicon flags → rem-dates LLM rewrites relative→absolute on canonical text + re-embed *[skips smart]*
@@ -372,8 +372,10 @@ Per non-smart wiki, *before* the paragraph pass, **one** LLM call for the
 whole wiki (not one per page):
 
 1. Build the candidate list: every page carrying at least one active
-   fact, except the wiki's own **`index.md`** (moving a wiki's front page
-   out would decapitate it). Collect the wiki's existing **child
+   fact, except the wiki's own **`index.md`** — the map holds no facts by
+   rule, and this filter is the belt to that braces. `notes.md` is *not*
+   excluded and must not be: draining the buffer onto real pages, or
+   letting a new page emerge out of it, is exactly this pass's job. Collect the wiki's existing **child
    sub-wikis** too — smart children excluded, since REM never files into
    a wiki whose consumer is the sole writer.
 2. **Pre-filter** (pure resource guard): skip the wiki when it has fewer
@@ -726,10 +728,15 @@ the safety net).
    — the `fact_refile` `wiki_promote` variant repoints the row's
    `wiki_id` (`fact_index::move_to_wiki`, the only primitive that touches
    `wiki_id`), splices the marker off A's page and weaves it onto **B's
-   `index.md`** — always the foundation page, because the plan keys pages
-   by a bare slug across the whole forest, so landing on a *named* page
-   of a foreign wiki could collide with a same-slug page homed elsewhere
-   (a cross-wiki leak); the id-keyed index is collision-safe — and
+   buffer page `notes.md`** — always the buffer, because the plan keys
+   pages by a bare slug across the whole forest, so landing on a *named*
+   page of a foreign wiki could collide with a same-slug page homed
+   elsewhere (a cross-wiki leak); the buffer is the one destination every
+   wiki has and nothing else claims, so it is collision-safe. Never B's
+   `index.md`: that page is B's **map**, it holds no facts, and the read
+   path never opens it — so a fact parked there would be one navigation
+   could never reach and this sweep's own reorg pass would never drain
+   (it excludes the map by design). The buffer is drained — and
    re-homes the persisted plan onto the dest page (force-dirtying both
    source and dest) — wrapped in a `fact_refile_apply` WAL op, with one
    born-applied `wiki_promote` receipt + the `structure_applied` notice.
@@ -820,7 +827,7 @@ repair, and **nothing commits on an LLM's opinion alone**.
    the [`rem-recall-repair`](../../crates/mwe-core/prompts/rem-recall-repair.md)
    prompt sees the missed query, the fact, its home, and the non-smart
    wiki roster, and proposes a **re-file** (destination wiki only —
-   landing on its foundation `index.md`, the refile sweep's own
+   landing on its buffer page `notes.md`, the refile sweep's own
    discipline) or `stay`. Conservative by instruction; anti-hallucination
    vets the destination against the roster.
 3. **The gold-set gate** ([`recall_gate::gate_repair`](../../crates/mwe-core/src/recall_gate.rs)):
@@ -1076,7 +1083,7 @@ picks a destination from a bounded list of the wiki owner's other non-smart wiki
 + this wiki's other pages, and the fact moves act-first via the same engine the
 [cross-wiki refile sweep](#cross-wiki-refile-sweep-sub-job) uses
 (`promote::apply_paragraph_to_file_direct` same-wiki, `promote::apply_fact_refile_direct`
-cross-wiki onto the dest `index.md`) — born-applied + revertible, unlike the bare
+cross-wiki onto the dest wiki's buffer page `notes.md`) — born-applied + revertible, unlike the bare
 `correct` / `remove` / `add`. Containment + ACL invariants are described in
 [the compiler note](narrative-compiler.md#human-edits-on-compiled-pages). This
 is the batched dream applying the parked comments together — the maintainer's

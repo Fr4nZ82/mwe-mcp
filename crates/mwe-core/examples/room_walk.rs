@@ -88,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. The entry fan: which pages those hits (plus identity) make reachable.
     let owners = vec![];
-    let fan = recall_nav::gather_entry_points(&pool, &tree, &ctx, &[], &owners, &hits, &[]).await?;
+    let fan = recall_nav::gather_entry_points(&pool, &tree, &ctx, &[], &hits, &[]).await?;
     println!(
         "\n-- 2. ENTRY FAN — the addresses the walk starts from ({} )",
         fan.len()

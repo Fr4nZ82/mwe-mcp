@@ -2353,13 +2353,17 @@ async fn run_page_grouping_for_wiki(
         return Ok(moved);
     }
 
-    // Candidate pages: every page carrying mass except the wiki's own
-    // front page (moving index.md out would decapitate the wiki).
+    // Candidate pages: every page carrying mass except the wiki's own map
+    // ([`wiki::INDEX_FILENAME`] holds no facts by rule; this filter stays as
+    // the belt to that braces). [`wiki::NOTES_FILENAME`] is *not* excluded and
+    // must not be: it is the buffer a fact lands on when nothing better fits,
+    // and draining it onto real pages — or letting a new page emerge out of
+    // it — is exactly this sweep's job.
     let mut candidates: Vec<(String, &str, usize)> = page_mass
         .iter()
         .filter_map(|(&source_path, &mass)| {
             let rel = wiki_relative_page(d, source_path)?;
-            (rel != "index.md").then_some((rel, source_path, mass))
+            (rel != wiki::INDEX_FILENAME).then_some((rel, source_path, mass))
         })
         .collect();
     candidates.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -3604,9 +3608,10 @@ struct RefileDecision {
     #[serde(default)]
     dest_wiki_id: Option<String>,
     // The judge picks only the destination WIKI; the fact always lands on
-    // that wiki's foundation `index.md` (collision-safe — see the apply
-    // site), so no per-page field is read. A `dest_page` in the model's
-    // JSON is ignored by serde.
+    // that wiki's `notes.md` (collision-safe — see the apply site), so no
+    // per-page field is read. A `dest_page` in the model's JSON is ignored
+    // by serde. **Never the root**: `index.md` is the wiki's map, it holds
+    // no facts, and the read path never opens it (founder, 2026-08-03).
     #[serde(default)]
     reason: Option<String>,
 }
@@ -3920,17 +3925,18 @@ async fn judge_refile_case(
         );
         return Ok(None);
     };
-    // Destination page: ALWAYS the dest wiki's foundation `index.md`. The
-    // compilation plan keys pages by a bare slug across the whole forest,
-    // so landing a fact on a NAMED page of a foreign wiki can collide with
-    // a same-slug page already homed in another wiki — the rehome would
-    // attach the fact to the WRONG wiki's page and the next compile would
-    // strand `wiki_id != source_path` (a cross-wiki leak). `index.md` is
-    // keyed by the dest wiki's own id-slug, so it is collision-safe: the
-    // fact crosses into the right wiki and that wiki's own dream
-    // (auto_promote / page_merge) re-files it onto the right page. Finer
-    // cross-wiki page placement waits on a wiki-qualified plan keyspace.
-    let dest_page = "index.md";
+    // Destination page: ALWAYS the dest wiki's buffer page. The compilation
+    // plan keys pages by a bare slug across the whole forest, so landing a
+    // fact on a NAMED page of a foreign wiki can collide with a same-slug
+    // page already homed in another wiki — the rehome would attach the fact
+    // to the WRONG wiki's page and the next compile would strand
+    // `wiki_id != source_path` (a cross-wiki leak). The buffer page is the
+    // one destination every wiki has and nothing else claims, so it is
+    // collision-safe: the fact crosses into the right wiki and that wiki's
+    // own dream (auto_promote / page_merge) re-files it onto the right page.
+    // Finer cross-wiki page placement waits on a wiki-qualified plan
+    // keyspace. Never `index.md` — that is the map, and it holds no facts.
+    let dest_page = wiki::NOTES_FILENAME;
     // Source page wiki-relative (the apply joins it onto the source wiki's
     // abs_dir, so a workdir-relative path would double the prefix).
     let Some(source_page) = wiki_relative_page(case.home.d, &case.fact.source_path) else {
@@ -4614,7 +4620,7 @@ async fn repair_one_miss(
                 home_id,
                 &source_page,
                 dest_id,
-                "index.md",
+                wiki::NOTES_FILENAME,
                 scratch_reason.as_deref(),
                 scratch_recipient,
             )
@@ -4653,7 +4659,10 @@ async fn repair_one_miss(
     }
 
     // Proven — commit for real, act-first, same paper trail as the
-    // refile sweep (born-applied receipt + structure_applied notice).
+    // refile sweep (born-applied receipt + structure_applied notice), and
+    // onto the same buffer page: the gate proved the flip against THAT
+    // destination, so committing to any other page would ship a move the
+    // replay never judged.
     let op_id = wal::begin_rem_op(pool, cycle_id, "recall_repair_apply", Some(home_id), None)
         .await
         .map_err(|e| soft(&e))?;
@@ -4664,7 +4673,7 @@ async fn repair_one_miss(
         home_id,
         &source_page,
         dest_id,
-        "index.md",
+        wiki::NOTES_FILENAME,
         reason.as_deref(),
         recipient.clone(),
     )
@@ -4690,7 +4699,7 @@ async fn repair_one_miss(
             "fact_id": miss.fact_id,
             "source_wiki_id": home_id,
             "dest_wiki_id": dest_id,
-            "dest_page": "index.md",
+            "dest_page": wiki::NOTES_FILENAME,
             "missed_query": miss.restated_text,
             "recipient_id": recipient,
             "revert_deadline": applied.revert_deadline.to_rfc3339(),
@@ -9381,7 +9390,7 @@ mod tests {
             .unwrap()
             .expect("row");
         assert_eq!(row.wiki_id, "bob");
-        assert_eq!(row.source_path, "wikis/bob/index.md");
+        assert_eq!(row.source_path, "wikis/bob/notes.md");
         assert!(row.deleted_at.is_none(), "refile is never a tombstone");
 
         // Born-applied receipt + one notice.
@@ -10159,11 +10168,15 @@ mod tests {
         .await;
         // The destination wiki has a readable fact whose topic makes its
         // card match the turn's seed ("ricette") for the gather fan.
+        // On a content page, not the wiki root: the root is the map REM and
+        // the ingest classifier read, and recall never opens it. `notes.md`
+        // is also where a cross-wiki refile lands, so opening it is what lets
+        // the gate see the moved fact.
         plant_topic_fact(
             &tree,
             &pool,
             "ricette",
-            "index.md",
+            "notes.md",
             "Le ricette di famiglia sono raccolte qui",
             "alice",
             &["ricette"],
@@ -10193,7 +10206,7 @@ mod tests {
         );
         let navigator = FakeLlmBackend::new(
             "nav",
-            "{\"open\":[{\"wiki_id\":\"ricette\"},{\"wiki_id\":\"ricette\",\"page\":\"index.md\"}],\"done\":true}",
+            "{\"open\":[{\"wiki_id\":\"ricette\",\"page\":\"notes.md\"}],\"done\":true}",
         );
         // Flat replay blind (top_k 0) → the gate's verdict rides navigation.
         let policy = RemPolicy {
@@ -10230,8 +10243,9 @@ mod tests {
             .unwrap()
             .expect("moved fact");
         assert_eq!(
-            moved.source_path, "wikis/ricette/index.md",
-            "the fact landed on the destination's foundation page"
+            moved.source_path, "wikis/ricette/notes.md",
+            "the fact landed on the destination's buffer page — a page the \
+             read path can reach, unlike the wiki's map"
         );
         let misses = crate::recall_log::recent_misses(&pool, 10).await.unwrap();
         assert_eq!(misses[0].status, "repaired");

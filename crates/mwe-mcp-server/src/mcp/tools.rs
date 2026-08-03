@@ -1386,7 +1386,9 @@ async fn run_navigate_funnel(
         &state.tree,
         sender,
         &topics,
-        &owners,
+        // `owners` is resolved and journalled but no longer seeds: a principal
+        // names a wiki, and recall opens content pages, never wikis (founder,
+        // 2026-08-03). Who the turn is about reaches the block by being served.
         flat_hits,
         &[], // situational — host-supplied only
     )

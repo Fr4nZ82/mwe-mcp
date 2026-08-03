@@ -105,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Step 2 — the entry fan. Deterministic, no LLM.
-    let fan = recall_nav::gather_entry_points(&pool, &tree, &sender, &[], &[], &rag, &[]).await?;
+    let fan = recall_nav::gather_entry_points(&pool, &tree, &sender, &[], &rag, &[]).await?;
     println!("\n── entry fan ({} seeds) ──", fan.len());
     for e in &fan {
         println!(

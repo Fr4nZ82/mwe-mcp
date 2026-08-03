@@ -186,7 +186,7 @@ impl TraceEntryPoint {
     pub fn from_entry(e: &EntryPoint) -> Self {
         Self {
             wiki_id: e.wiki_id.clone(),
-            page: e.page.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            page: Some(e.page.to_string_lossy().into_owned()),
             origin: origin_label(e.origin).to_owned(),
             weight: e.weight,
         }
@@ -197,7 +197,6 @@ impl TraceEntryPoint {
 const fn origin_label(origin: crate::recall_nav::EntryOrigin) -> &'static str {
     use crate::recall_nav::EntryOrigin;
     match origin {
-        EntryOrigin::Principal => "principal",
         EntryOrigin::Rag => "rag",
         EntryOrigin::Topic => "topic",
         EntryOrigin::Situational => "situational",
