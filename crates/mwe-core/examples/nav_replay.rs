@@ -130,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         &turn,
         &fan,
         &policy.nav,
+        &[],
     )
     .await?;
 

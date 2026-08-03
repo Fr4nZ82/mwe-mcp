@@ -467,6 +467,16 @@ pub struct IngestPolicy {
     /// USER` section. Same whole-bullet fitting as
     /// [`Self::max_agent_identity_chars`].
     pub max_agent_history_chars: usize,
+    /// Character cap on the recall block's `WHO IS SPEAKING` section — the
+    /// sender's identity card, served deterministically from their
+    /// `index.md` (roadmap 69a).
+    ///
+    /// A **failsafe, not a curation knob**: what belongs on the card and how
+    /// dense it is are REM's judgement (69c, hard ceiling 2 500 characters),
+    /// and this bound only stops a runaway page from swallowing the block.
+    /// It fits **whole paragraphs** and warns when it fires, because a cut
+    /// card silently drops whatever the author put last.
+    pub max_sender_identity_chars: usize,
     /// Page within the target wiki used when the LLM plan does not
     /// supply one. `index.md` is the unanimous default across bundled
     /// wiki types.
@@ -533,6 +543,10 @@ impl Default for IngestPolicy {
             max_sender_rules_chars: 1_500,
             max_agent_identity_chars: 900,
             max_agent_history_chars: 1_400,
+            // 69c's hard ceiling, so the read path's failsafe and the
+            // ceiling REM curates toward are the same number: a card
+            // within its authored bound is never cut here.
+            max_sender_identity_chars: 2_500,
             default_page: PathBuf::from("index.md"),
             fallback_suggested_seed: "I've noted that.".to_owned(),
             structural_suggested_seed:
@@ -3903,23 +3917,260 @@ fn format_history_with_user(agent: &AgentSelf, policy: &IngestPolicy) -> Option<
     )
 }
 
+/// The identity page of a user's wiki. Not [`IngestPolicy::default_page`],
+/// which is the *capture* fallback: this is the page the classifier routes
+/// the identity core onto and the page this slot serves.
+const IDENTITY_PAGE: &str = "index.md";
+
+/// What the `WHO IS SPEAKING` slot produced.
+#[derive(Debug)]
+struct SpeakerCard {
+    /// The rendered section, ready to join the recall block.
+    section: String,
+    /// Workdir-relative path of the identity page whose prose the section
+    /// carries. Three consumers: the flat slot drops a hit homed there, the
+    /// funnel treats it as already visited (roadmap 69b — it is never
+    /// navigated), and the recall log counts it among the pages this turn
+    /// surfaced, so restating one of its facts is not scored as a miss.
+    /// `None` when only the one-line summary was served — that duplicates
+    /// nothing.
+    page_path: Option<String>,
+}
+
 /// Render the `WHO IS SPEAKING` section — the sender's identity card.
 ///
-/// Pinned rule (roadmap 41a): the section is always **at most the one-line
-/// `_meta.summary`** of the sender's identity wiki, labelled with their id;
-/// the full index prose only ever arrives through the navigated-pages
-/// section, so the same prose is never injected twice. `None` when the
-/// sender has no identity wiki or it carries no summary.
-fn who_is_speaking_section(tree: &WikiTree, sender_id: &str) -> Option<String> {
-    let summary = WikiId::parse(sender_id)
+/// Roadmap 69a. The slot serves the sender's **`index.md`**, not a one-line
+/// abstract of it: the card is the set of facts the classifier deterministically
+/// routed to the identity page (name, birthdate, contacts, family ties — but
+/// also the standing health constraints and the characterising preferences a
+/// `bio`-typed query would miss), and it is the one thing the turn needs whatever
+/// was asked. Serving it here means it **always** arrives, at no walk, no model
+/// decision and no page open — where before it arrived only if the navigator
+/// chose to spend a hop on it.
+///
+/// Three properties this must hold, whatever REM later writes on the page:
+///
+/// 1. **Projected per sender, always** ([`crate::render::render_for_sender_segments`])
+///    — never a raw marker, and never a precomputed blob: which fragments a reader
+///    may see depends on who is asking. Today the sender owns their own card and the
+///    projection is nearly a no-op; 69d serves a *subject's* card to a different
+///    reader, and the invariant has to already be there when it does.
+/// 2. **`[[wikilinks]]` rendered plainly** — at injection only. They are the
+///    navigator's rails and REM authors them deliberately, so they are never
+///    touched on disk ([`plain_wikilinks`]).
+/// 3. **Injected once, and never re-read.** The page's prose could also arrive
+///    as a flat hit; [`SpeakerCard::page_path`] is what drops it. It cannot
+///    arrive as a navigated fragment at all — the funnel is handed the page as
+///    already visited, so it is not a navigation destination for its own owner
+///    (69b).
+///
+/// Falls back to the wiki's one-line `_meta.summary` when there is no readable
+/// card — the pre-69a behaviour, which is still better than saying nothing.
+/// `None` when the sender has no identity wiki, or it yields neither.
+async fn who_is_speaking_section(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    sender: &SenderContext,
+    policy: &IngestPolicy,
+) -> Option<SpeakerCard> {
+    let sender_id = sender.sender_id.as_str();
+    let handle = WikiId::parse(sender_id)
         .ok()
-        .and_then(|id| tree.locate(&id).ok())
-        .and_then(|h| crate::wiki::meta_summary(h.meta()))?;
-    let summary = summary.trim();
-    if summary.is_empty() {
+        .and_then(|id| tree.locate(&id).ok())?;
+    let summary = crate::wiki::meta_summary(handle.meta())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    let card = identity_card(pool, tree, &handle, sender, policy).await;
+
+    // The label line is the only thing that names the sender's *id* — the
+    // card prose says who they are, never what they are called on the wire.
+    let mut section = String::from(HDR_WHO_IS_SPEAKING);
+    match &summary {
+        Some(s) => {
+            let _ = write!(section, "\n- {sender_id} — {s}");
+        },
+        None if card.is_some() => {
+            let _ = write!(section, "\n- {sender_id}");
+        },
+        None => return None,
+    }
+    let page_path = card.map(|(prose, path)| {
+        section.push_str("\n\n");
+        section.push_str(&prose);
+        path
+    });
+    Some(SpeakerCard { section, page_path })
+}
+
+/// Read, project and prepare the sender's identity page for injection.
+/// Returns the injectable prose and the page's workdir-relative source
+/// path. `None` — logged at debug, never fatal — when the page is absent,
+/// unreadable, or renders to nothing for this reader.
+async fn identity_card(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    handle: &crate::wiki::WikiHandle,
+    sender: &SenderContext,
+    policy: &IngestPolicy,
+) -> Option<(String, String)> {
+    if policy.max_sender_identity_chars == 0 {
         return None;
     }
-    Some(format!("{HDR_WHO_IS_SPEAKING}\n- {sender_id} — {summary}"))
+    let abs = handle.abs_dir().join(IDENTITY_PAGE);
+    let source_path = crate::wiki::workdir_relative_source_path(tree.workdir(), &abs);
+    let raw = match std::fs::read_to_string(&abs) {
+        Ok(raw) => raw,
+        Err(err) => {
+            tracing::debug!(
+                sender = %sender.sender_id,
+                error = %err,
+                "ingest: sender has no readable identity page, serving the summary line"
+            );
+            return None;
+        },
+    };
+    // Fail closed on the ACL, exactly like the navigator: a page whose map
+    // cannot load is skipped, never rendered on weaker gating. `_active`
+    // keeps superseded regions whose bytes still sit on the page out.
+    let db_acl = match fact_index::page_acl_map_active(pool, &source_path).await {
+        Ok(map) => map,
+        Err(err) => {
+            tracing::warn!(
+                sender = %sender.sender_id,
+                error = %err,
+                "ingest: identity-page ACL map unloadable, card not served"
+            );
+            return None;
+        },
+    };
+    let default = match tree.resolve_scope_principal(handle.meta()) {
+        Ok(p) => p,
+        Err(err) => {
+            tracing::warn!(
+                sender = %sender.sender_id,
+                error = %err,
+                "ingest: identity-page scope principal unresolvable, card not served"
+            );
+            return None;
+        },
+    };
+    // The testata is card metadata, not prose — and its `topics:` list alone
+    // runs to a hundred words, so dropping it is most of the injected size.
+    let body = crate::wiki::MarkdownDoc::parse(&raw).map_or(raw, |doc| doc.body);
+    let projected = crate::render::render_for_sender_segments(
+        &body,
+        &db_acl,
+        &default,
+        &sender.sender_id,
+        &sender.sender_groups,
+    );
+    // A page whose injected prose carries **no fact this reader may see** is
+    // scaffolding, not a card: a freshly seeded `index.md` is a heading and
+    // a sentence of connective tissue, and serving that on every turn
+    // forever is noise. What earns the slot is the identity core the
+    // classifier routed onto the page — so the test is on the *rendered*
+    // page, not on the DB: a fact the index homes here whose region is not
+    // on the page contributes nothing to read, and neither does one this
+    // reader is denied (which is what 69d makes reachable). No fact
+    // survived ⇒ fall back to the one-line summary.
+    if !projected.segments.iter().any(|s| s.fact_id.is_some()) {
+        tracing::debug!(
+            sender = %sender.sender_id,
+            "ingest: identity page carries no readable fact, serving the summary line"
+        );
+        return None;
+    }
+    let projected = projected.into_output().text;
+    let (prose, cut) = fit_paragraphs(
+        plain_wikilinks(projected.trim()).trim(),
+        policy.max_sender_identity_chars,
+    );
+    if cut {
+        // Firing means the card outgrew the ceiling REM curates it toward
+        // (69c). It is a real event, not routine trimming: something the
+        // author put last stopped reaching the turn.
+        tracing::warn!(
+            sender = %sender.sender_id,
+            budget = policy.max_sender_identity_chars,
+            "ingest: identity card exceeded its budget and was cut — it needs curating, not a bigger budget"
+        );
+    }
+    (!prose.is_empty()).then_some((prose, source_path))
+}
+
+/// Render `[[wikilinks]]` as plain text for an **injected** copy of a page.
+///
+/// The consumer's block has nothing to navigate from, so `[[franz/lnprint]]`
+/// in injected prose is a broken affordance — but deleting it outright leaves
+/// mutilated sentences ("*i dettagli dei miei lavori su e*"). So the link
+/// becomes the name it points at: the `|display` alias when the author wrote
+/// one, otherwise the last path segment — the page's own name, which is the
+/// noun the sentence is about. Unclosed `[[` is left verbatim.
+///
+/// Injection only. On disk the links stay: they are the navigator's rails, and
+/// the REM rewiring pass exists to *add* them, not to remove them.
+fn plain_wikilinks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find("[[") {
+        let (before, from_open) = rest.split_at(open);
+        out.push_str(before);
+        let Some(close) = from_open.find("]]") else {
+            out.push_str(from_open);
+            return out;
+        };
+        let inner = &from_open[2..close];
+        let label = match inner.split_once('|') {
+            // A `|display` alias is presentation — it is exactly what the
+            // author wanted a reader to see.
+            Some((_, alias)) if !alias.trim().is_empty() => alias.trim(),
+            _ => {
+                let head = inner.split('|').next().unwrap_or(inner).trim();
+                head.rsplit('/').next().unwrap_or(head).trim()
+            },
+        };
+        out.push_str(label);
+        rest = &from_open[close + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Fit `text` to `max_chars` on a **paragraph** boundary, never mid-sentence.
+///
+/// The prose sibling of [`fit_bullets`], with the same escape hatch: a first
+/// paragraph that alone exceeds the whole budget is char-truncated with an
+/// ellipsis, so a page with content is never rendered empty. Returns the kept
+/// text and whether anything was dropped — the caller warns on a cut, because
+/// here a cut means curation failed upstream.
+fn fit_paragraphs(text: &str, max_chars: usize) -> (String, bool) {
+    if text.chars().count() <= max_chars {
+        return (text.to_owned(), false);
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for para in text.split("\n\n") {
+        let para = para.trim();
+        if para.is_empty() {
+            continue;
+        }
+        let sep = usize::from(!out.is_empty()) * 2; // "\n\n"
+        let cost = para.chars().count() + sep;
+        if used + cost > max_chars {
+            if out.is_empty() {
+                let room = max_chars.saturating_sub(1).max(1);
+                out.extend(para.chars().take(room));
+                out.push('…');
+            }
+            return (out, true);
+        }
+        if sep > 0 {
+            out.push_str("\n\n");
+        }
+        out.push_str(para);
+        used += cost;
+    }
+    (out, true)
 }
 
 /// Inject the behaviour rules in force — WITH their `fact_id`s and scope
@@ -4193,6 +4444,19 @@ struct NavigatedTail {
 /// Run gather → navigate and format the `NAVIGATED PAGES` section.
 /// Everything here is soft: a gather or funnel failure logs a warning
 /// and returns `None` — the turn survives on the flat snippet.
+///
+/// `served_identity` is the sender's identity page, when `WHO IS SPEAKING`
+/// served it this turn (roadmap 69a). It is handed to the funnel as
+/// **already visited**, so the walk neither offers nor opens it by any route
+/// — fan seed, directory sibling or `[[wikilink]]`. Founder's ruling,
+/// 2026-08-03: *«la pagina di identità la escluderei dai risultati del rag,
+/// visto che già c'è nel recall… non ci frega dell'indice se col rag
+/// arriviamo già sulle pagine giuste»*. The page's prose is in the block
+/// whatever the navigator does, and the hub's routing is not needed when the
+/// recalled facts already name the pages that answer the turn.
+// One over the threshold, and every argument is a distinct borrow the funnel
+// needs; splitting them into a struct would hide which are per-turn inputs.
+#[allow(clippy::too_many_arguments)]
 async fn navigated_tail(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -4202,6 +4466,7 @@ async fn navigated_tail(
     seeds: &NavSeeds,
     rag_hits: &[RecallHit],
     nav_policy: &recall_nav::NavigatorPolicy,
+    served_identity: &[(String, PathBuf)],
 ) -> Option<NavigatedTail> {
     let entries = match recall_nav::gather_entry_points(
         pool,
@@ -4231,16 +4496,24 @@ async fn navigated_tail(
             outcome: recall_nav::NavigationOutcome::default(),
         });
     }
-    let outcome =
-        match recall_nav::navigate(pool, tree, nav_llm, sender, turn_text, &entries, nav_policy)
-            .await
-        {
-            Ok(outcome) => outcome,
-            Err(err) => {
-                tracing::warn!(error = %err, "ingest: navigation failed, continuing without it");
-                return None;
-            },
-        };
+    let outcome = match recall_nav::navigate(
+        pool,
+        tree,
+        nav_llm,
+        sender,
+        turn_text,
+        &entries,
+        nav_policy,
+        served_identity,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::warn!(error = %err, "ingest: navigation failed, continuing without it");
+            return None;
+        },
+    };
     if outcome.fragments.is_empty() {
         return Some(NavigatedTail {
             section: None,
@@ -4258,11 +4531,11 @@ async fn navigated_tail(
     let mut out = String::from(HDR_NAVIGATED_PAGES);
     let mut page_paths = Vec::new();
     for f in &outcome.fragments {
-        let _ = write!(out, "\n\n({}/{}", f.wiki_id, f.page.display());
         // The page's workdir-relative source path: the flat-slot dedup key,
         // and the freshness lookup key. Best-effort — a vanished wiki just
         // skips both.
         let source_path = fragment_source_path(tree, f);
+        let _ = write!(out, "\n\n({}/{}", f.wiki_id, f.page.display());
         if let Some(sp) = &source_path {
             page_paths.push(sp.clone());
             // In-band freshness: the page's most recent fact mutation. Soft
@@ -5600,6 +5873,22 @@ pub async fn wiki_ingest_message(
     // navigator backend. Every failure in the tail is soft: the turn
     // survives on whatever the flat path already produced.
     let seeds = nav_seeds(&plan);
+    // `WHO IS SPEAKING` — the sender's identity card, served from their
+    // `index.md` (roadmap 69a). It runs FIRST of the tail because it is the
+    // deterministic slot the other two defer to: it costs no completion, it
+    // arrives whatever the navigator decides, and the page it serves must
+    // then be injected nowhere else.
+    let speaker = who_is_speaking_section(pool, tree, &sender_ctx, policy).await;
+    let identity_path = speaker.as_ref().and_then(|c| c.page_path.as_deref());
+    // The same page in the funnel's own `(wiki, page)` terms, so the walk
+    // treats it as already visited (roadmap 69b). The wiki id *is* the sender
+    // id — `who_is_speaking_section` locates the wiki by parsing it — and the
+    // page is always `IDENTITY_PAGE`, which is also what the funnel resolves a
+    // page-less wiki-root candidate to, so this one key closes both shapes.
+    let served_identity: Vec<(String, PathBuf)> = identity_path
+        .map(|_| (sender_ctx.sender_id.clone(), PathBuf::from(IDENTITY_PAGE)))
+        .into_iter()
+        .collect();
     let nav_tail = match navigator {
         Some(nav_llm)
             if matches!(intent, IntentKind::Capture | IntentKind::Recall)
@@ -5614,6 +5903,7 @@ pub async fn wiki_ingest_message(
                 &seeds,
                 &recall_hits,
                 &policy.nav,
+                &served_identity,
             )
             .await
         },
@@ -5653,13 +5943,19 @@ pub async fn wiki_ingest_message(
     }
 
     // The flat `RELEVANT MEMORY` slot renders here, AFTER navigation, so a
-    // hit whose page prose the navigator already injected is dropped
-    // instead of arriving twice ([`format_snippet`] dedup).
+    // hit whose page prose already rides in the block is dropped instead of
+    // arriving twice ([`format_snippet`] dedup) — from the navigated
+    // section, or from the identity card the deterministic slot serves
+    // (69a: a `bio` fact on `index.md` is on both routes by construction).
     let relevant = if include_flat {
-        let nav_paths = nav_tail.as_ref().map_or(&[][..], |t| &t.page_paths);
+        let mut nav_paths: Vec<String> = nav_tail
+            .as_ref()
+            .map(|t| t.page_paths.clone())
+            .unwrap_or_default();
+        nav_paths.extend(identity_path.map(str::to_owned));
         format_snippet(
             &recall_hits,
-            nav_paths,
+            &nav_paths,
             &project_docs,
             policy.relevance_floor,
         )
@@ -5689,10 +5985,14 @@ pub async fn wiki_ingest_message(
     if let Some((_, hits)) = &due_soon_tail {
         surfaced_ids.extend(hits.iter().map(|h| h.fact_id.as_str().to_owned()));
     }
-    let nav_paths: Vec<String> = nav_tail
+    // The pages whose prose the turn actually injected. The identity card
+    // belongs here with the navigated ones (69a): its facts DID reach the
+    // turn, so a restatement of one is not a recall miss.
+    let mut nav_paths: Vec<String> = nav_tail
         .as_ref()
         .map(|t| t.page_paths.clone())
         .unwrap_or_default();
+    nav_paths.extend(identity_path.map(str::to_owned));
     let log_id = match recall_log::record_turn(
         pool,
         &request.sender_id,
@@ -5768,9 +6068,9 @@ pub async fn wiki_ingest_message(
     let agent_self = recall_agent_self(pool, tree, &request).await;
     let who_you_are = format_who_you_are(&agent_self, policy);
     let history = format_history_with_user(&agent_self, policy);
-    // `WHO IS SPEAKING` — the sender's identity card (their wiki's one-line
-    // abstract; the full index prose only ever arrives via navigation).
-    let who_is_speaking = who_is_speaking_section(tree, &request.sender_id);
+    // `WHO IS SPEAKING` — the sender's identity card, built at the top of
+    // the tail (69a) so the flat and navigated slots could defer to it.
+    let who_is_speaking = speaker.map(|c| c.section);
     // One-shot notice when a non-admin asked for an agent-wide change: the rule
     // was NOT filed; steer the agent to decline politely this turn (the
     // behaviour-rule governance — the ingest-pipeline design note). It
@@ -7781,6 +8081,394 @@ mod tests {
             format_snippet(&[kept], &["wikis/matteo/index.md".into()], &[], 0.0),
             None
         );
+    }
+
+    // ---------- WHO IS SPEAKING — the identity card (roadmap 69a) ----------
+
+    /// Add the one-line `summary` key to a wiki's `_meta.md`, so
+    /// [`crate::wiki::meta_summary`] has a line to fall back to.
+    fn set_wiki_summary(wikis_dir: &Path, slug: &str, summary: &str) {
+        let path = wikis_dir.join(slug).join("_meta.md");
+        let meta = std::fs::read_to_string(&path).unwrap();
+        let patched = meta.replace("\n---\n", &format!("\nsummary: '{summary}'\n---\n"));
+        std::fs::write(&path, patched).unwrap();
+    }
+
+    /// Insert one `fact_index` row homed on `source_path`, owned by
+    /// `owner` — the DB half of a `{{f=…}}` region on the page.
+    async fn insert_page_fact(
+        pool: &SqlitePool,
+        fact_id: &str,
+        wiki_id: &str,
+        source_path: &str,
+        text: &str,
+        owner: Principal,
+    ) {
+        let fact = fact_index::NewFact {
+            authored_refs: Vec::new(),
+            fact_id: FactId::parse(fact_id).unwrap(),
+            wiki_id: wiki_id.to_owned(),
+            source_path: source_path.to_owned(),
+            region_start: None,
+            region_end: None,
+            text: text.to_owned(),
+            embedding: vec![0.9, -0.3, 0.2, -0.1],
+            owner_id: owner,
+            allow_ids: Vec::new(),
+            sender_id: None,
+            fact_type: Some("bio".to_owned()),
+            topics: Vec::new(),
+            valid_from: None,
+            valid_to: None,
+            salience: Some("high".to_owned()),
+            target_page: None,
+            style: None,
+            page_description: None,
+            source_ref: None,
+        };
+        fact_index::insert(pool, &fact).await.expect("insert fact");
+    }
+
+    const ALICE_FACT_A: &str = "018f1234-5678-7abc-9def-00000000c001";
+    const ALICE_FACT_B: &str = "018f1234-5678-7abc-9def-00000000c002";
+
+    /// Write alice a real identity card: a testata, two fact regions, a
+    /// paragraph of connective prose, and an authored `[[wikilink]]`.
+    async fn seed_alice_card(dir: &TempDir, pool: &SqlitePool) {
+        let wikis = dir.path().join("wikis");
+        set_wiki_summary(
+            &wikis,
+            "alice",
+            "Profile of Alice, a bookbinder in Bologna.",
+        );
+        std::fs::write(
+            wikis.join("alice").join("index.md"),
+            format!(
+                "---\ntitle: Alice\npage_type: person\nkeywords:\n  topics: bio, city, craft\n---\n\n\
+                 {{{{f={ALICE_FACT_A}}}}}Alice lives in Bologna.{{{{/}}}}\n\n\
+                 She binds books by hand. {{{{f={ALICE_FACT_B}}}}}Alice is allergic to walnuts.{{{{/}}}}\n\n\
+                 Her workshop is written up on [[alice/hobbies]].\n"
+            ),
+        )
+        .unwrap();
+        insert_page_fact(
+            pool,
+            ALICE_FACT_A,
+            "alice",
+            "wikis/alice/index.md",
+            "Alice lives in Bologna.",
+            Principal::User("alice".into()),
+        )
+        .await;
+        insert_page_fact(
+            pool,
+            ALICE_FACT_B,
+            "alice",
+            "wikis/alice/index.md",
+            "Alice is allergic to walnuts.",
+            Principal::User("alice".into()),
+        )
+        .await;
+    }
+
+    /// 69a: the slot serves the identity **page**, not one line of
+    /// `_meta.summary`. The testata is dropped, the markers are gone, the
+    /// authored `[[wikilink]]` is rendered plainly for a consumer that has
+    /// nothing to navigate from — and the served page is reported back so
+    /// the other slots can defer to it.
+    #[tokio::test]
+    async fn who_is_speaking_serves_the_identity_page_projected_and_link_free() {
+        let (dir, _tree, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let card = who_is_speaking_section(
+            &pool,
+            &tree,
+            &SenderContext::user("alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("card served");
+
+        assert!(card.section.starts_with(HDR_WHO_IS_SPEAKING), "{card:?}");
+        // The label line still names the sender's wire id — the prose never
+        // says what they are called on the wire.
+        assert!(
+            card.section.contains("- alice — Profile of Alice"),
+            "{}",
+            card.section
+        );
+        // The page's own facts arrive, which is the whole point: a `bio`
+        // query would have caught the first, the allergy is the standing
+        // constraint that characterises her.
+        assert!(card.section.contains("Alice lives in Bologna."));
+        assert!(card.section.contains("Alice is allergic to walnuts."));
+        assert!(card.section.contains("She binds books by hand."));
+        // Testata, markers and link syntax all stay out of the block.
+        assert!(!card.section.contains("page_type"), "{}", card.section);
+        assert!(!card.section.contains("{{f="), "{}", card.section);
+        assert!(!card.section.contains("[["), "{}", card.section);
+        assert!(
+            card.section.contains("written up on hobbies."),
+            "the link becomes the name it points at: {}",
+            card.section
+        );
+        assert_eq!(
+            card.page_path.as_deref(),
+            Some("wikis/alice/index.md"),
+            "the served page is reported so the flat and navigated slots can drop it"
+        );
+        drop(dir);
+    }
+
+    /// A page carrying no readable fact is scaffolding, not a card — the
+    /// slot degrades to the pre-69a one-line summary rather than serving a
+    /// heading on every turn forever, and reports no page (it duplicates
+    /// nothing).
+    #[tokio::test]
+    async fn who_is_speaking_falls_back_to_the_summary_when_the_page_carries_no_fact() {
+        let (dir, _tree, pool) = setup_workdir().await;
+        set_wiki_summary(
+            &dir.path().join("wikis"),
+            "alice",
+            "Profile of Alice, a bookbinder in Bologna.",
+        );
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let card = who_is_speaking_section(
+            &pool,
+            &tree,
+            &SenderContext::user("alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("summary line served");
+        assert_eq!(
+            card.section,
+            format!("{HDR_WHO_IS_SPEAKING}\n- alice — Profile of Alice, a bookbinder in Bologna.")
+        );
+        assert_eq!(card.page_path, None);
+        drop(dir);
+    }
+
+    /// Neither a card nor a summary → no section at all (the empty-section
+    /// contract): a sender whose wiki says nothing must not cost the block
+    /// a header.
+    #[tokio::test]
+    async fn who_is_speaking_is_absent_when_there_is_neither_card_nor_summary() {
+        let (dir, tree, pool) = setup_workdir().await;
+        assert!(
+            who_is_speaking_section(
+                &pool,
+                &tree,
+                &SenderContext::user("alice"),
+                &IngestPolicy::default(),
+            )
+            .await
+            .is_none()
+        );
+        drop(dir);
+    }
+
+    /// The projection invariant, which must already hold before 69d serves a
+    /// *subject's* card to a different reader: a region on the page that the
+    /// reader may not see is redacted, never injected. Today the sender owns
+    /// their own card and this is nearly a no-op — that is exactly why it is
+    /// pinned by a test rather than left to be noticed later.
+    #[tokio::test]
+    async fn who_is_speaking_projects_the_card_per_sender() {
+        // A third fact filed on alice's page but readable only by carol —
+        // e.g. something carol told the assistant about alice privately.
+        const CAROL_ONLY: &str = "018f1234-5678-7abc-9def-00000000c003";
+
+        let (dir, _tree, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        let wikis = dir.path().join("wikis");
+        let page = wikis.join("alice").join("index.md");
+        let existing = std::fs::read_to_string(&page).unwrap();
+        std::fs::write(
+            &page,
+            format!("{existing}\n{{{{f={CAROL_ONLY}}}}}Alice is planning a surprise.{{{{/}}}}\n"),
+        )
+        .unwrap();
+        insert_page_fact(
+            &pool,
+            CAROL_ONLY,
+            "alice",
+            "wikis/alice/index.md",
+            "Alice is planning a surprise.",
+            Principal::User("carol".into()),
+        )
+        .await;
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let card = who_is_speaking_section(
+            &pool,
+            &tree,
+            &SenderContext::user("alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("card served");
+        assert!(card.section.contains("Alice lives in Bologna."));
+        assert!(
+            !card.section.contains("Alice is planning a surprise."),
+            "a region this reader may not see must never reach the card: {}",
+            card.section
+        );
+        drop(dir);
+    }
+
+    /// The budget is a failsafe, not a curation knob — and `0` turns the
+    /// card off without silencing the slot.
+    #[tokio::test]
+    async fn who_is_speaking_budget_zero_serves_the_summary_line_alone() {
+        let (dir, _tree, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let card = who_is_speaking_section(
+            &pool,
+            &tree,
+            &SenderContext::user("alice"),
+            &IngestPolicy {
+                max_sender_identity_chars: 0,
+                ..IngestPolicy::default()
+            },
+        )
+        .await
+        .expect("summary line served");
+        assert!(
+            !card.section.contains("Alice is allergic to walnuts."),
+            "{}",
+            card.section
+        );
+        assert_eq!(card.page_path, None);
+        drop(dir);
+    }
+
+    /// End to end: the card's prose reaches the turn exactly **once**. The
+    /// navigator may still open `index.md` (stopping that is 69b), but its
+    /// fragment is dropped, and the flat slot drops the facts the card
+    /// already carries.
+    #[tokio::test]
+    async fn ingest_never_injects_the_identity_page_twice() {
+        // A second page of alice's wiki, with a fact of its own so the flat
+        // recall seeds it as a door — otherwise the fan holds nothing but the
+        // identity anchor and there is no second choice to test against.
+        const ALICE_FACT_C: &str = "018f1234-5678-7abc-9def-00000000c003";
+
+        let (dir, _tree, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        std::fs::write(
+            dir.path().join("wikis").join("alice").join("hobbies.md"),
+            format!(
+                "---\ntitle: Hobbies\n---\n\n\
+                 {{{{f={ALICE_FACT_C}}}}}Alice restores marbled endpapers.{{{{/}}}}\n"
+            ),
+        )
+        .unwrap();
+        insert_page_fact(
+            &pool,
+            ALICE_FACT_C,
+            "alice",
+            "wikis/alice/hobbies.md",
+            "Alice restores marbled endpapers.",
+            Principal::User("alice".into()),
+        )
+        .await;
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"recall\"}");
+        // The navigator asks for both alice's wiki root — which resolves to
+        // the identity page `WHO IS SPEAKING` already served — and a real
+        // second page of the same wiki. Only the second may be opened
+        // (roadmap 69b): the served page is not a destination, and refusing
+        // it must not cost the walk its other choice.
+        let nav = FakeLlmBackend::new(
+            "fake-nav",
+            "{\"open\":[{\"wiki_id\":\"alice\"},\
+             {\"wiki_id\":\"alice\",\"page\":\"hobbies.md\"}],\"done\":true}",
+        );
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            Some(&nav),
+            req("what do you know about me?", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        let snippet = resp.context_snippet.expect("recall block present");
+
+        assert_eq!(
+            snippet.matches("Alice lives in Bologna.").count(),
+            1,
+            "the card's prose must reach the turn exactly once: {snippet}"
+        );
+        assert!(
+            snippet.contains(HDR_WHO_IS_SPEAKING),
+            "and it must be the deterministic slot that carries it: {snippet}"
+        );
+        // The walk still ran and still yielded — the exclusion is one page,
+        // not a mute funnel.
+        assert!(
+            snippet.contains(HDR_NAVIGATED_PAGES)
+                && snippet.contains("Alice restores marbled endpapers."),
+            "the sibling page must still be navigated and injected: {snippet}"
+        );
+        let navigated = snippet.split(HDR_NAVIGATED_PAGES).nth(1).unwrap_or("");
+        assert!(
+            !navigated.contains("alice/index.md"),
+            "the identity page is not a navigation destination for its own owner: {navigated}"
+        );
+        drop(dir);
+    }
+
+    #[test]
+    fn plain_wikilinks_renders_the_name_a_link_points_at() {
+        // Bare wiki hop → the wiki id; page hop → the page's own name, which
+        // is the noun the sentence is about.
+        assert_eq!(
+            plain_wikilinks("details on [[lavorofranz]] and [[franz/lnprint]]"),
+            "details on lavorofranz and lnprint"
+        );
+        // A `|display` alias is what the author wanted a reader to see.
+        assert_eq!(
+            plain_wikilinks("see [[franz/lnprint|the print shop]]"),
+            "see the print shop"
+        );
+        // A nested slug keeps only its leaf.
+        assert_eq!(
+            plain_wikilinks("[[franz/projects/telaiojs]] ships"),
+            "telaiojs ships"
+        );
+        // Unclosed syntax is left verbatim — never a truncated sentence.
+        assert_eq!(plain_wikilinks("a [[dangling link"), "a [[dangling link");
+        assert_eq!(plain_wikilinks("no links here"), "no links here");
+    }
+
+    #[test]
+    fn fit_paragraphs_keeps_whole_paragraphs_and_flags_the_cut() {
+        let text = "first para\n\nsecond para\n\nthird para";
+        assert_eq!(fit_paragraphs(text, 1_000), (text.to_owned(), false));
+        // "first para" (10) + "\n\n" + "second para" (11) = 23; the third
+        // does not fit and the cut is reported, never silent.
+        assert_eq!(
+            fit_paragraphs(text, 25),
+            ("first para\n\nsecond para".to_owned(), true)
+        );
+        // Never mid-sentence: a paragraph that does not fit is dropped whole.
+        assert_eq!(fit_paragraphs(text, 15), ("first para".to_owned(), true));
+        // The one exception, mirroring `fit_bullets`: a first paragraph
+        // longer than the whole budget is truncated rather than leaving a
+        // page with content rendered empty.
+        let (kept, cut) = fit_paragraphs("a single very long paragraph", 10);
+        assert!(cut);
+        assert_eq!(kept, "a single …");
     }
 
     #[test]
@@ -12276,13 +12964,22 @@ mod tests {
     )]
     async fn ingest_recall_turn_appends_navigated_memory_section() {
         let (dir, tree, pool) = setup_workdir().await;
+        // A page that is NOT the identity card: `index.md` is served whole by
+        // the deterministic `WHO IS SPEAKING` slot (69a) and is dropped from
+        // this section by construction, so navigation is exercised on a
+        // sibling page instead.
+        std::fs::write(
+            dir.path().join("wikis/alice/bologna.md"),
+            "# bologna\nalice's city page\n",
+        )
+        .unwrap();
         // One active fact on the opened page makes the fragment header
         // carry the in-band freshness annotation (`· updated <date>`).
         let fact = fact_index::NewFact {
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000f001").unwrap(),
             wiki_id: "alice".to_owned(),
-            source_path: "wikis/alice/index.md".to_owned(),
+            source_path: "wikis/alice/bologna.md".to_owned(),
             region_start: None,
             region_end: None,
             text: "alice lives in Bologna".to_owned(),
@@ -12305,11 +13002,11 @@ mod tests {
         // The classifier only routes intent; the flat recap is deterministic.
         // This turn's point is the navigated section below.
         let llm = FakeLlmBackend::new("fake", "{\"intent\":\"recall\"}");
-        // The funnel offers alice's identity wiki as a principal-seeded root
-        // candidate (`page: null`); the navigator opens it and stops.
+        // The fact's own page is a `rag`-seeded candidate; the navigator
+        // opens it and stops.
         let nav = FakeLlmBackend::new(
             "fake-nav",
-            "{\"open\":[{\"wiki_id\":\"alice\"}],\"done\":true}",
+            "{\"open\":[{\"wiki_id\":\"alice\",\"page\":\"bologna.md\"}],\"done\":true}",
         );
         let policy = IngestPolicy::default();
         let resp = wiki_ingest_message(
@@ -12330,10 +13027,10 @@ mod tests {
             "navigated section present: {snippet}"
         );
         assert!(
-            snippet.contains("(alice/index.md · updated 20"),
+            snippet.contains("(alice/bologna.md · updated 20"),
             "fragment is page-headed with the freshness annotation: {snippet}"
         );
-        assert!(snippet.contains("# index"), "projected prose: {snippet}");
+        assert!(snippet.contains("# bologna"), "projected prose: {snippet}");
         // The flat hit is homed on the page the navigator just injected —
         // the RELEVANT MEMORY slot drops it instead of repeating it (41f).
         assert!(

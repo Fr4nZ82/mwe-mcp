@@ -1196,9 +1196,11 @@ async fn navigate_seeds(
 
 /// `wiki_navigate` — deep recall via the funnel navigator (the consumer
 /// counterpart of the ingest-side navigation). Whole visible corpus,
-/// ACL-filtered; the caller's principal seeds anchor the fan without
-/// leading it by construction (`WEIGHT_PRINCIPAL` sits on the topic-wiki
-/// rung, so a stronger RAG hit goes first). Returns the
+/// ACL-filtered; the caller's principal seeds anchor the fan without ever
+/// leading it (they are offered at the tail, unranked — see
+/// [`mwe_core::recall_nav::WEIGHT_PRINCIPAL`]), and a `group:` owner seeds no
+/// door at all: a group root is a directory, and its pages are reached by the
+/// query's own hits and its card. Returns the
 /// navigated prose fragments **with their `(wiki, page)`** (the path that
 /// built the context) **and** the flat hits, so depth is a superset of the
 /// breadth `wiki_search` would have returned. Smart wikis are funnel-skipped
@@ -1398,6 +1400,10 @@ async fn run_navigate_funnel(
         &args.query,
         &entries,
         nav_policy,
+        // `wiki_navigate` builds no recall block, so it has delivered nothing
+        // the funnel would be re-reading — unlike the ingest turn, whose
+        // `WHO IS SPEAKING` slot already carries the sender's identity page.
+        &[],
     )
     .await
     .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;

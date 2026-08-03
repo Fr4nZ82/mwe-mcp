@@ -340,6 +340,8 @@ async fn target_surfaced(
         target.query,
         &entries,
         &policy.nav,
+        // The scratch replay has no recall block to dedup against.
+        &[],
     )
     .await
     .context("navigate replay")?;

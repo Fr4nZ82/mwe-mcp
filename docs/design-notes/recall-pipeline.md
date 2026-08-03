@@ -32,7 +32,7 @@ flowchart TB
 
     subgraph P3["3 · entry fan — deterministic, no LLM"]
         FAN["gather_entry_points"]
-        S1["principal — sender wiki + groups<br/>weight 0.6, always present"] --> FAN
+        S1["principal — the people of the turn<br/>offered at the tail, never ranked"] --> FAN
         S2["<b>rag</b> — each recalled fact mapped<br/>to its HOME PAGE via source_path<br/>weight = the hit's score"] --> FAN
         S3["topic — classified topics vs page cards<br/>0.6 wiki / 0.8 page"] --> FAN
         S4["situational — host strings<br/>0.4 / 0.5"] --> FAN
@@ -57,7 +57,7 @@ memory and instructions never share a field.
 | Slot | Filled by | Bounded by |
 |---|---|---|
 | `WHO YOU ARE` | the agent wiki's abstract + its identity self-facts | `max_agent_identity_chars` (`900`) |
-| `WHO IS SPEAKING` | the sender's one-line identity card | — |
+| `WHO IS SPEAKING` | the sender's identity card — their `index.md`, projected per sender, testata dropped and links plain. The one **deterministic** slot: no walk, no model decision, no page open | `max_sender_identity_chars` (`2 500`, a failsafe) |
 | `YOUR RECENT HISTORY WITH THIS USER` | the agent's own log of what it has done with this person | `max_agent_history_chars` (`1 400`) |
 | `RELEVANT MEMORY` | the flat hit-list — promoted facts, then `Recent (not yet consolidated):` for the fresh slot, then `Project documentation` for the docs slot; deduplicated against the navigated pages | `recall_top_k`, `recall_fresh_top_k`, the docs slot's own budget, and — for the **promoted half only** — `relevance_floor` |
 | `NAVIGATED PAGES` | sender-projected prose the funnel collected | `char_budget`, and the walk's own stop reason |
@@ -148,7 +148,7 @@ changed only with a new measurement (`mwe-core::recall`, `mwe-core::recall_nav`)
 |---|---:|---|
 | `CLOSED_WINDOW_DOWNRANK` | `0.8` | multiplies a fact whose validity window has closed |
 | `SUBJECT_COVERAGE_UPLIFT` | `0.15` | multiplies per turn-subject covered beyond the first |
-| `WEIGHT_PRINCIPAL` | `0.6` | identity seed — deliberately the same rung as a topic-wiki match |
+| `WEIGHT_PRINCIPAL` | `0.0` | identity seed — **not an ordering input**: the anchor is offered at the tail of the fan, never ranked |
 | `WEIGHT_TOPIC_WIKI` / `_PAGE` | `0.6` / `0.8` | classified-topic seeds |
 | `WEIGHT_SITUATIONAL_WIKI` / `_PAGE` | `0.4` / `0.5` | host-supplied situational seeds |
 | `FRESH_CANDIDATE_CAP` | `32` | how many buffered captures are re-embedded per turn |
@@ -679,17 +679,70 @@ the per-turn context model.
 ## Entry-point gathering — `recall_nav` (navigation, phase 1)
 
 [`mwe-core::recall_nav`](../../crates/mwe-core/src/recall_nav.rs) computes the
-**entry-point fan** for recall-as-navigation: the deduplicated, weight-sorted
-list of `(wiki, page?)` places a navigator should start reading for the turn.
+**entry-point fan** for recall-as-navigation: the deduplicated, ordered list
+of `(wiki, page?)` places a navigator should start reading for the turn.
 `gather_entry_points` is deterministic — no LLM call, no embedding, no recall
 counters touched — and draws on four seed families:
 
 | Family | Source | Weight |
 |---|---|---|
-| **Principal** | sender identity wiki + sender's groups + classified owners (each owner expanded to their groups via `enrollment::groups_for` — an owner may *be* a group or *belong* to one) | `0.6` — a wiki-level seed (`page: None`), same rung as topic-wiki: it asserts "this wiki matches the turn" on the strength of the subject being in the turn rather than a card word matching |
+| **Principal** | the identity wikis of the **people** in the turn: the sender, plus each classified owner that is a user. A wiki-level seed (`page: None`) | none — **offered, not ranked**; see *The identity anchor is not a score* below |
 | **Rag** | the turn's flat-recall hits mapped back to `(wiki, page)` via `source_path`; a `fresh` hit (no published page yet) seeds the wiki root | the hit's score, clamped to `[0, 1]` |
 | **Topic** | classified topics matched (case-insensitive substring) against the **reader-relative cards**: the per-wiki topic union, then — inside a matched wiki — the per-page topic union, both recomputed for the sender (see *Reader-relative cards* below) | `0.6` wiki / `0.8` page |
 | **Situational** | free host-supplied strings (location, occasion), matched like topics; empty until a host sends them | `0.4` wiki / `0.5` page |
+
+### The identity anchor is not a score
+
+Three of the four families carry a weight and compete on it; the principal
+family does not compete at all. `fan_order` sorts every ranked door first and
+appends the identity anchors after them, whatever the numbers say — so a
+content door leads the fan even at a cosine of `0.42`, and the anchor's
+`weight` field is `0.0` and means nothing.
+
+The reason is a category error, not a badly chosen constant: a **fixed**
+weight cannot be compared with a **measured** one. Over 141 real turns the
+corpus' single best fact for a turn scores below `0.6` on 87 of them, so at the
+old `WEIGHT_PRINCIPAL = 0.6` every identity door outranked every fact-derived
+door on nearly two turns in three — whatever was asked — and identity pages
+took **330 of the 419 opens at the first decision (79 %)**, 186 of them group
+directories, while the page holding the answer was offered and left unopened.
+Lowering the constant moves that number without changing its kind.
+
+Nothing is lost by demoting it. Recall's job is the question, and its
+distinctive power is opening the page a recalled fact lives on and reading the
+prose around it; the sender's identity now reaches the turn by a route that
+costs no navigation at all — `WHO IS SPEAKING` serves their `index.md`
+deterministically on every turn. The seed stays in the fan because the fan is
+computed without knowing what the caller's block already carries, but its job
+is *be available*, not *be the best guess*: when the pool cap bites it is the
+first candidate cut, and that is intended.
+
+For the **sender's own** card the ingest turn goes further and takes it out of
+the walk altogether — it is passed to the funnel as already delivered (the
+`already_served` argument, described under *Wired into the ingest turn*
+below), so neither the anchor nor a RAG hit on that page can spend a page open
+re-reading prose the block already holds. A *subject's* identity page is
+untouched: nothing has served it, and it stays an ordinary — unranked — door.
+
+**Groups seed no door.** `principal` used to mean "any wiki tied to a
+principal", which swept in the sender's own group memberships and each owner's
+groups. A group's `index.md` is not an identity card — it is a directory
+(`page_type: group_theme`, a members list, links to every child page), it holds
+one identity-core fact against a person's fifteen to twenty-two, and it
+contributed roughly 40 candidates every time it was opened against a pool cap
+of 16. On the measured corpus `famiglia/index.md` was opened at the first
+decision on 137 of 141 turns, effectively always, whatever was asked. Its real
+value is **routing** — deciding where a fact belongs — and routing already has
+two proper consumers: the ingest classifier (which reads `available_wikis` and
+the group scopes) and REM. A group wiki stays reachable as *content*: by a RAG
+hit on one of its pages, by a topic or situational card match, by a
+`[[wikilink]]` followed out of prose the funnel just read. It is only no longer
+a door somebody walks through for being a member.
+
+*Consequence for `wiki_navigate`:* a caller that names a group in `owners`
+(seed rung **C**) no longer gets that group's root as a door either — the same
+rule applies at both call sites. Its pages are still reached through the
+query's own flat hits and its card.
 
 Two invariants:
 
@@ -724,8 +777,12 @@ Two invariants:
   refile sweep, which likewise skips smart). This holds for both call sites —
   the ingest navigator and the `wiki_navigate` tool below.
 
-Duplicates collapse on `(wiki, page)` keeping the heaviest seed (ties → the
-earlier family above). Page-card descent happens only inside a wiki whose own
+Duplicates collapse on `(wiki, page)` keeping whichever copy would have sorted
+first — `fan_order` settles the collision and then sorts the survivors, so a
+door two families found is ranked by its **best** route. In particular a person
+whose own wiki root is also a topic or RAG hit keeps the content ranking: the
+identity anchor is the weakest claim on a door, never a demotion applied to
+one. Page-card descent happens only inside a wiki whose own
 card matched — sound because `build_reader_card` derives the wiki-level topic
 union and the per-page unions from the **same** reader-visible fact set, so a
 wiki card matches iff one of its page cards does.
@@ -782,8 +839,8 @@ entered, *also* one of that directory's siblings. The two copies are one
 destination at two very different tiers, so the dedup has to keep the
 **best** route, not the earliest — and the earliest is always the sibling,
 because `open_target` lists the directory before it reads the links. It is
-the same rule `dedup_and_sort` applies to the fan, where the heaviest seed
-wins a collision.
+the same rule `dedup_and_sort` applies to the fan, where the copy that
+sorts first wins a collision.
 
 Measured over 141 real turns on the live corpus: the cap bites on **49 % of
 hops**, and once the ranking precedes the dedup **1 628 of 10 955 offered
@@ -886,7 +943,20 @@ seed and classifier input — «RAG for the entrances»), only for intents that
 justify the LLM spend (capture / recall / disambiguation), and only when the
 call site wired the optional `navigator` backend. The reserved `rules.md`
 policy page is never a door (channel-only — the fan skips it, a RAG hit on
-it seeds the wiki root, and the open step discards it as a fail-safe). The
+it seeds the wiki root, and the open step discards it as a fail-safe).
+
+**The ingest turn also hands the funnel the pages it has already delivered**
+(`navigate`'s `already_served`), which today means exactly one: the sender's
+identity page, served in full by `WHO IS SPEAKING` on every turn. They enter
+the walk as if it had opened them, so they are never offered as a candidate,
+never opened, and never charged to the character budget — the guarantee holds
+on every route in, because it is the one `visited` set that `prune_pool`
+filters by and `open_target` refuses on. **So `index.md` is not a navigation
+destination for its own owner**: its prose is in the block whatever the
+navigator does, and the founder's ruling (2026-08-03) is that the hub's
+routing is not needed when the recalled facts already name the pages that
+answer the turn. A *subject's* identity page is untouched by this — nothing
+has served it. `wiki_navigate` passes nothing: it builds no block. The
 assembled role-labelled `context_snippet` (`WHO YOU ARE` → `WHO IS
 SPEAKING` → `YOUR RECENT HISTORY WITH THIS USER` → `RELEVANT MEMORY` →
 `NAVIGATED PAGES` → `UPCOMING`) is documented in
@@ -1167,9 +1237,10 @@ table is the larger and the more regenerable of the two.
 - `wiki_facts_for`: 2 (filtered without counter bump / ACL filter).
 - `wiki_recall`: 1 (delegates to search today).
 - `recall_fresh_captures`: 1 (un-promoted buffered capture surfaces, ACL-scoped, flagged `fresh`; another owner's capture is filtered out).
-- `recall_nav` (gatherer): per-family seed tests (principal expansion /
-  topic wiki→page descent / situational / rag path mapping), the
-  per-family ACL-cascade matrix, dedup/sort, `page_within`.
+- `recall_nav` (gatherer): per-family seed tests (people-only principals with
+  no group door / topic wiki→page descent / situational / rag path mapping),
+  the per-family ACL-cascade matrix, the anchor's tail placement against both
+  a `0.42` RAG hit and a `0.4` card match, dedup/sort, `page_within`.
 - `recall_nav` (funnel, scripted-LLM): vetted open + per-sender
   projection, hallucinated-target discard, wikilink follow-through
   (wiki hop, direct page hop with alias stripped, dead page hop never

@@ -467,6 +467,7 @@ row wins (see the table row above).
 | `recall.due_soon_horizon_hours` | int \| _unset_ | _unset_ → `168` (7 days) | Look-ahead window of the due-soon pull. |
 | `recall.max_agent_identity_chars` | int \| _unset_ | _unset_ → `900` | Budget of the recall block's `WHO YOU ARE` section (whole-bullet fitting). |
 | `recall.max_agent_history_chars` | int \| _unset_ | _unset_ → `1400` | Budget of the `YOUR RECENT HISTORY WITH THIS USER` section. |
+| `recall.max_sender_identity_chars` | int \| _unset_ | _unset_ → `2500` | Failsafe on the `WHO IS SPEAKING` identity card (whole-paragraph fitting). Curate the page, not this number; `0` serves the label line alone. |
 | `recall.ingest_timezone` | IANA name \| _unset_ | _unset_ | Deployment-wide **default** zone for reference-time stamping (a spoken "domani alle 9" resolves in this zone). The sender's own `enrollment_users.timezone` (users page / welcome wizard) wins over it; unset both → spoken times read as UTC. The `MWE_INGEST_TIMEZONE` env var is the fallback when the key is unset. |
 | `recall.recent_window_entries` | int \| _unset_ | _unset_ → `32` | Per-user cap of the cross-consumer recent window's buffer. `0` disables the window. |
 | `recall.recent_window_ttl_hours` | int \| _unset_ | _unset_ → `4` | How long an exchange stays servable (short by design — the window serves the thread of discourse, not history). |

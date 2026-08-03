@@ -760,11 +760,48 @@ places adjacent to this block (the hermes bridge leads with it).
    identity self-facts — `salience high` **or** `fact_type bio`, always
    user-agnostic (identity facts are never partner-tagged at capture).
    Budget: `max_agent_identity_chars` (default 900).
-2. **`WHO IS SPEAKING`** — the sender's identity card: one line,
-   `<sender_id> — <their wiki's _meta.summary>`. Always **at most the
-   summary line** (the pinned 41a rule): the full index prose only ever
-   arrives via `NAVIGATED PAGES`, so the same prose is never injected
-   twice. Omitted when the sender has no identity wiki or no summary.
+2. **`WHO IS SPEAKING`** — the sender's identity card, and the one
+   **deterministic** slot in the block: a label line
+   `<sender_id> — <their wiki's _meta.summary>`, then the sender's
+   **`index.md` itself**. Serving the page rather than an abstract of it
+   is what makes the identity core — name, birthdate, contacts, family
+   ties, but also the standing health constraints and the characterising
+   preferences a `bio`-typed query would miss — arrive on *every* turn, at
+   no walk, no model decision and no page open. It is the page because the
+   routing decision was already made once, at write time, by the component
+   that read the sentence: **the identity page is what the classifier
+   decided belongs on the identity page**, and re-deriving that at read
+   time from two columns is a second, worse copy of it.
+
+   Four properties hold whatever REM later writes there:
+
+   - **Projected per sender** (`render::render_for_sender_segments`), never
+     a raw marker and never a precomputed blob — which fragments a reader
+     may see depends on who is asking.
+   - **Testata dropped, `[[wikilinks]] rendered plainly`** — at injection
+     only. The links are the navigator's rails and are never touched on
+     disk; a link becomes its `|display` alias, or the last path segment.
+   - **Injected once, and never re-read.** The page's prose can also arrive
+     as a flat hit, which drops it by source path; the recall log counts the
+     card among the pages the turn surfaced, so restating a card fact is not
+     logged as a recall miss. It cannot arrive as a navigated fragment at
+     all: the funnel is handed the page as **already visited**, so it is
+     neither offered as a candidate nor opened by any route — fan seed,
+     directory sibling or `[[wikilink]]`. **The identity page is not a
+     navigation destination for its own owner** (founder's ruling,
+     2026-08-03: the recalled facts already land on the pages that answer
+     the turn, so the hub's routing buys nothing and a page open is the
+     scarcest thing the walk has). A *subject's* card is a different page
+     and stays navigable — nothing has served it.
+   - **A page with no readable fact is scaffolding, not a card** — a freshly
+     seeded `index.md` is a heading and some connective tissue. The slot
+     then degrades to the label line alone, and is omitted entirely when
+     there is neither card nor summary.
+
+   Budget: `max_sender_identity_chars` (default 2500) — a **failsafe**, not
+   a curation knob. It fits **whole paragraphs** and logs a warning when it
+   fires, because firing means the card outgrew the ceiling REM curates it
+   toward and something the author put last stopped reaching the turn.
 3. **`YOUR RECENT HISTORY WITH THIS USER`** — the agent's episodes
    **with the speaking user only**, newest first. Scoping is the
    **exclusive partner tag**: at capture
@@ -1650,9 +1687,11 @@ signature stays stable as the policy grows:
 | `due_soon_horizon_hours` | 168 (7 days) | Look-ahead window of the due-soon pull, hours from the turn's clock. |
 | `max_agent_identity_chars` | 900 | Budget of the `WHO YOU ARE` section (whole-bullet fitting; a resource cap, not a semantic gate). |
 | `max_agent_history_chars` | 1400 | Budget of the `YOUR RECENT HISTORY WITH THIS USER` section (same fitting, newest first). |
+| `max_sender_identity_chars` | 2500 | Failsafe on the `WHO IS SPEAKING` identity card (whole-**paragraph** fitting; warns when it fires). `0` serves the label line alone. |
 
 The recall-block rows (`recall_top_k`, `recall_fresh_top_k`, `nav`,
-`due_soon_*`, `max_agent_*_chars`) are operator-overridable per deployment through the
+`due_soon_*`, `max_agent_*_chars`, `max_sender_identity_chars`) are
+operator-overridable per deployment through the
 [`recall:` config section](../protocol/config-schema.md#recall) — both
 production call sites build the policy via
 `RecallConfig::resolved_ingest_policy()` from a shared hot-reloadable

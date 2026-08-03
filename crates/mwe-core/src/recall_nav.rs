@@ -6,11 +6,11 @@
 //! reading for the current turn. This module computes that fan
 //! deterministically — no LLM call, no embedding — from four seed families:
 //!
-//! - **Principal** — the sender's identity wiki, the wikis of the groups the
-//!   sender belongs to, and the wikis of the classified fact owners (each
-//!   owner expanded to their groups via [`crate::enrollment::groups_for`] —
-//!   an owner may *be* a group or *belong* to one, and the group wiki is
-//!   where the shared constraints live).
+//! - **Principal** — the identity wikis of the **people** in the turn: the
+//!   sender, and each classified fact owner that is a user. Groups seed
+//!   nothing (see [`WEIGHT_PRINCIPAL`]), and this family is **offered rather
+//!   than ranked**: it sorts after every content-derived door whatever its
+//!   weight.
 //! - **Rag** — the flat-recall hits of the turn, mapped back to the
 //!   `(wiki, page)` they live on. RAG opens the obvious doors; it is one of
 //!   the seeds, not the engine.
@@ -39,12 +39,12 @@
 //! by [`crate::meta_annotate`]), so a page can only match where its wiki
 //! already does.
 //!
-//! Duplicates collapse on `(wiki, page)` keeping the heaviest seed; on equal
-//! weight the earlier family in the list above wins. Principal now shares
-//! its weight with topic-wiki ([`WEIGHT_PRINCIPAL`]), so a same-wiki
-//! collision between the two is always this tie, settled by family order —
-//! but against a RAG seed it is an ordinary weight comparison, which a
-//! strong-enough hit now wins.
+//! Duplicates collapse on `(wiki, page)` keeping whichever copy would have
+//! sorted first — one comparator ([`fan_order`]) settles the collision and
+//! then sorts the survivors, so a door reached by two routes is ranked by its
+//! **best** route. A principal seed that lands on a page some content family
+//! also found therefore keeps the content ranking: the identity anchor is the
+//! weakest claim on a door, never a demotion applied to one.
 //!
 //! The gatherer's fan feeds the **navigator funnel** ([`navigate`]): a
 //! Rust-owned loop where the `navigator` LLM slot reads the root index, the
@@ -78,40 +78,51 @@ use crate::wiki::{
     self, DiscoveredWiki, MarkdownDoc, WikiTree, render_root_index, wiki_catalog_list_for,
 };
 
-/// Weight of a principal seed — a **wiki-level** seed (`page: None`) that
-/// sits at the same rung as a topic-wiki seed.
+/// Weight carried by a principal seed — **`0.0`, and not an ordering input**.
 ///
-/// The ladder is `principal · topic-page 0.8 · topic-wiki 0.6 ·
-/// situational-page 0.5 · situational-wiki 0.4`, with a RAG seed carrying
-/// the hit's own cosine. A principal seed asserts exactly what a topic-wiki
-/// seed asserts — *this wiki matches the turn* — here because the subject
-/// is in the turn rather than because a card word matched. Same class, same
-/// weight: `0.6` is not a new number, it is the existing
-/// [`WEIGHT_TOPIC_WIKI`] rung.
+/// The identity anchor is offered at the tail of the fan by [`fan_order`],
+/// after every content-derived door, whatever any number says.
 ///
-/// It was `1.0` (the maximum) until 2026-08-01. At that weight a principal
-/// seed beat every RAG-derived door on every turn (measured max RAG cosine
-/// 0.66), so the navigator never got to *choose* whether to read the
-/// identity prose — a choice the ingest recall block treats as its own
-/// ("the full index prose only ever arrives via navigation"; the block's
-/// `WHO YOU ARE` / `WHO IS SPEAKING` sections already carry a one-line
-/// identity abstract unconditionally, independent of this seed). Dropping
-/// the weight does not remove identity from recall — it removes the
-/// guarantee that identity's *page* is the first door.
+/// The other four rungs are a ladder of *scores* — `topic-page 0.8 ·
+/// topic-wiki 0.6 · situational-page 0.5 · situational-wiki 0.4`, with a RAG
+/// seed carrying the hit's own cosine. A principal seed never belonged on it:
+/// a **fixed** weight competing against a **measured** one is a category
+/// error, and no hand-chosen constant fixes that. Measured over 141 real
+/// turns, the corpus' single best fact for a turn scores below `0.6` on 87 of
+/// them (62 %) — so at the old `0.6` every identity door outranked every
+/// fact-derived door on nearly two turns in three, whatever was asked, and
+/// the first hop was spent touring identity pages (**330 of the 419 opens at
+/// the first decision, 79 %**, of which 186 were *group* directories) while
+/// the page holding the answer was offered and left unopened. Dropping the
+/// weight from `1.0` to `0.6` on 2026-08-01 moved that number and did not
+/// change its kind; leaving the ranking altogether does.
 ///
-/// Measured effect: the top RAG hit scores a median 0.60-0.62 across 60 real
-/// turns (max observed 0.66), so on roughly half of turns a content page now
-/// leads the fan instead of an identity hub, and on the rest identity still
-/// leads. It never drops out of the fan either way — `0.6` keeps it above
-/// both situational tiers.
+/// **What replaces it, and why nothing is lost.** The founder's ruling
+/// (2026-08-03): *structure serves REM and the ingest classifier; recall
+/// serves content* — recall starts from the facts the question found, and its
+/// power is reading the prose around them. The sender's identity is no longer
+/// delivered by winning a race for a page open: the `WHO IS SPEAKING` slot
+/// serves their `index.md` **deterministically**, every turn, projected per
+/// sender, at no navigation cost (roadmap 69a). The door stays in the fan
+/// because a page is also a set of rails — a card links the wikis its person
+/// is tied to — but its job is *be available*, not *be the best guess*.
 ///
-/// This also retires privileging a wiki *root* merely for being a root:
-/// [`crate::planner::PageType`] already distinguishes `Person` ("holds the
-/// user's identity/bio facts" — a content page like any other) from
-/// `GroupTheme` ("holds NO own facts; links its child leaves") — the two
-/// kinds a principal seed's `index.md` can turn out to be. Planning card 63
+/// **Groups seed nothing at all.** `principal` used to mean "any wiki tied to
+/// a principal", which swept in the sender's groups and each owner's groups.
+/// A group's `index.md` is not an identity card, it is a directory:
+/// `page_type: group_theme`, a `## Membri` list, 22 links, one identity-core
+/// fact against a person's 15–22 — and it contributed ~40 candidates every
+/// time it was opened, against a pool cap of 16. It was opened at the first
+/// decision on 137 of 141 turns. Its real value is **routing**, and routing
+/// has two proper consumers already: the ingest classifier (which reads
+/// `available_wikis` and the group scopes to decide where a fact goes) and
+/// REM. A group wiki stays reachable as *content* — by a RAG hit on one of
+/// its pages, by a topic/situational card match, by a `[[wikilink]]` — it is
+/// only no longer a door somebody walks through for being a member.
+///
+/// Planning card 69 §3, §6, §7, §9; the earlier `1.0` → `0.6` step is card 63
 /// §2b, §5 step 2.
-pub const WEIGHT_PRINCIPAL: f32 = 0.6;
+pub const WEIGHT_PRINCIPAL: f32 = 0.0;
 /// Weight of a topic seed that pinned down a **page** card.
 pub const WEIGHT_TOPIC_PAGE: f32 = 0.8;
 /// Weight of a topic seed that matched a **wiki** card.
@@ -124,8 +135,8 @@ pub const WEIGHT_SITUATIONAL_WIKI: f32 = 0.4;
 /// Which seed family produced an [`EntryPoint`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryOrigin {
-    /// Identity anchor: the sender, a group of the sender, or a classified
-    /// owner (expanded to their groups).
+    /// Identity anchor: the sender, or a classified owner who is a user.
+    /// **Offered, not ranked** — see [`EntryOrigin::unranked`].
     Principal,
     /// A flat-recall hit of the turn, mapped back to its `(wiki, page)`.
     Rag,
@@ -136,14 +147,28 @@ pub enum EntryOrigin {
 }
 
 impl EntryOrigin {
-    /// Dedup / sort priority — lower wins ties. Principal anchors beat
-    /// content hits beat card matches.
+    /// Whether this family is **offered rather than ranked**: true only for
+    /// [`Self::Principal`], which [`fan_order`] sorts after every other door
+    /// regardless of weight (roadmap 69b).
+    ///
+    /// It is the whole ordering rule for the identity anchor, in place of a
+    /// number — a door whose job is *be available* has no score to compare,
+    /// and the constant that used to stand in for one is the defect card 69
+    /// §6 names.
+    const fn unranked(self) -> bool {
+        matches!(self, Self::Principal)
+    }
+
+    /// Tiebreak **within one weight** — lower wins. A content hit beats a
+    /// topic-card match beats a situational one. Principal is last for
+    /// completeness only: [`Self::unranked`] has already sorted it out of
+    /// this comparison.
     const fn rank(self) -> u8 {
         match self {
-            Self::Principal => 0,
-            Self::Rag => 1,
-            Self::Topic => 2,
-            Self::Situational => 3,
+            Self::Rag => 0,
+            Self::Topic => 1,
+            Self::Situational => 2,
+            Self::Principal => 3,
         }
     }
 }
@@ -161,6 +186,10 @@ pub struct EntryPoint {
     pub origin: EntryOrigin,
     /// Relative priority within the fan, `0.0..=1.0`. Ordering material for
     /// the funnel's budget — not a probability.
+    ///
+    /// **Carries no meaning for [`EntryOrigin::Principal`]**, which is always
+    /// `0.0`: that family is offered at the tail rather than ranked, so there
+    /// is no score to report. See [`fan_order`].
     pub weight: f32,
 }
 
@@ -209,28 +238,22 @@ pub async fn gather_entry_points(
 
     let mut candidates: Vec<EntryPoint> = Vec::new();
 
-    // Principal seeds. BTreeSet: dedup (the sender may also be a classified
-    // owner) + deterministic order.
+    // Principal seeds — the identity wikis of the **people** in the turn, and
+    // nothing else. A group seeds no door at all (roadmap 69b, and see
+    // `WEIGHT_PRINCIPAL`): neither the sender's own memberships, nor the
+    // groups a classified owner belongs to, nor a group named as an owner
+    // outright. BTreeSet: dedup (the sender may also be a classified owner) +
+    // deterministic order.
     let mut principal_ids: BTreeSet<String> = BTreeSet::new();
     if !sender.sender_id.is_empty() {
         principal_ids.insert(sender.sender_id.clone());
     }
-    principal_ids.extend(sender.sender_groups.iter().cloned());
     for owner in owners {
         match owner {
             Principal::User(uid) => {
                 principal_ids.insert(uid.clone());
-                let groups = enrollment::groups_for(pool, uid)
-                    .await
-                    .with_context(|| format!("expand owner {uid} to groups"))?;
-                principal_ids.extend(groups);
             },
-            // The builtin global group has no identity wiki to expand to —
-            // a global owner is not an entry point.
-            Principal::Group(gid) if gid == "global" => {},
-            Principal::Group(gid) => {
-                principal_ids.insert(gid.clone());
-            },
+            Principal::Group(_) => {},
         }
     }
     for id in &principal_ids {
@@ -419,9 +442,33 @@ fn page_within(rel_dir: &Path, source_path: &str) -> Option<PathBuf> {
     }
 }
 
-/// Collapse duplicates on `(wiki, page)` — heaviest wins, ties go to the
-/// lower [`EntryOrigin::rank`] — then sort the fan by weight descending with
-/// a deterministic tiebreak.
+/// Total order over the fan — **the same comparator settles a `(wiki, page)`
+/// collision and sorts the survivors**, so a door two families found is
+/// ranked by its *best* route rather than by whichever seed was emitted
+/// first.
+///
+/// In precedence:
+///
+/// 1. **Ranked doors before offered ones.** [`EntryOrigin::unranked`] —
+///    i.e. the identity anchor — sorts last whatever its weight (roadmap
+///    69b). This is also what keeps the anchor from *demoting* a door: when
+///    the sender's own wiki root is also a RAG or topic seed, the content
+///    copy wins the collision and the door keeps its content ranking.
+/// 2. **Weight descending** — the ladder in [`WEIGHT_TOPIC_PAGE`] and
+///    friends, against a RAG seed's measured cosine.
+/// 3. **Family, wiki id, page** — determinism, nothing more.
+fn fan_order(a: &EntryPoint, b: &EntryPoint) -> std::cmp::Ordering {
+    a.origin
+        .unranked()
+        .cmp(&b.origin.unranked())
+        .then_with(|| b.weight.total_cmp(&a.weight))
+        .then_with(|| a.origin.rank().cmp(&b.origin.rank()))
+        .then_with(|| a.wiki_id.cmp(&b.wiki_id))
+        .then_with(|| a.page.cmp(&b.page))
+}
+
+/// Collapse duplicates on `(wiki, page)` keeping the copy that sorts first
+/// under [`fan_order`], then sort the survivors with it.
 fn dedup_and_sort(candidates: Vec<EntryPoint>) -> Vec<EntryPoint> {
     let mut best: BTreeMap<(String, Option<PathBuf>), EntryPoint> = BTreeMap::new();
     for ep in candidates {
@@ -430,25 +477,14 @@ fn dedup_and_sort(candidates: Vec<EntryPoint>) -> Vec<EntryPoint> {
                 slot.insert(ep);
             },
             Entry::Occupied(mut slot) => {
-                let replace = match ep.weight.total_cmp(&slot.get().weight) {
-                    std::cmp::Ordering::Greater => true,
-                    std::cmp::Ordering::Equal => ep.origin.rank() < slot.get().origin.rank(),
-                    std::cmp::Ordering::Less => false,
-                };
-                if replace {
+                if fan_order(&ep, slot.get()).is_lt() {
                     slot.insert(ep);
                 }
             },
         }
     }
     let mut out: Vec<EntryPoint> = best.into_values().collect();
-    out.sort_by(|a, b| {
-        b.weight
-            .total_cmp(&a.weight)
-            .then_with(|| a.origin.rank().cmp(&b.origin.rank()))
-            .then_with(|| a.wiki_id.cmp(&b.wiki_id))
-            .then_with(|| a.page.cmp(&b.page))
-    });
+    out.sort_by(fan_order);
     out
 }
 
@@ -741,6 +777,20 @@ struct NavOpen {
 /// from the collected prose (their `_meta` cards, `Visible`-only) are offered on
 /// the next hop.
 ///
+/// `already_served` names pages whose prose the **caller has already put in
+/// front of the consumer by another route**, as `(wiki_id, page)`. They enter
+/// the funnel as if it had opened them: never offered as a candidate, never
+/// opened, never charged to the budget. Re-reading them would spend the
+/// turn's scarcest resource — a page open — on text that is already there.
+///
+/// The ingest recall block passes the sender's identity card, which
+/// `WHO IS SPEAKING` serves deterministically every turn (roadmap 69a), so
+/// `index.md` is not a navigation destination for its own owner at all
+/// (69b; founder, 2026-08-03: *«non ci frega dell'indice se col rag arriviamo
+/// già sulle pagine giuste»* — the recalled facts land on the right pages
+/// directly, so the hub's routing is not needed to get there). `wiki_navigate`
+/// passes nothing: it builds no block, so it has delivered nothing.
+///
 /// Degradation contract: an LLM transport failure or an unparseable decision
 /// stops the funnel and returns what was collected so far (recall degrades,
 /// the turn survives). An empty fan returns an empty outcome without spending
@@ -760,6 +810,7 @@ pub async fn navigate(
     turn_text: &str,
     entry_points: &[EntryPoint],
     policy: &NavigatorPolicy,
+    already_served: &[(String, PathBuf)],
 ) -> Result<NavigationOutcome> {
     let mut outcome = NavigationOutcome::default();
     if entry_points.is_empty() {
@@ -800,7 +851,12 @@ pub async fn navigate(
     let max_hops = policy.max_hops.min(MULTI_HOP_HARD_LIMIT);
     let mut candidates = initial_pool(entry_points, &by_id, &reader_card);
     let mut state = FunnelState {
-        visited: BTreeSet::new(),
+        // Pages the caller already delivered start out **visited**: that one
+        // set is what `prune_pool` filters the offer by and what `open_target`
+        // refuses on, so a single line makes the guarantee hold on every route
+        // into the funnel — the fan, a directory sibling, a `[[wikilink]]` —
+        // instead of three filters that have to agree.
+        visited: already_served.iter().cloned().collect(),
         entered: BTreeSet::new(),
         acl_defaults: BTreeMap::new(),
         remaining: policy.char_budget,
@@ -1882,8 +1938,13 @@ mod tests {
             .find(|e| e.wiki_id == wiki && e.page.as_deref() == page.map(Path::new))
     }
 
+    /// Roadmap 69b — the principal family is **people only**. A group wiki is
+    /// a directory whose value is routing (ingest + REM), not a door somebody
+    /// walks through for being a member: neither the sender's own membership,
+    /// nor a group a classified owner belongs to, nor a group named as an
+    /// owner outright puts one in the fan.
     #[tokio::test]
-    async fn principal_seeds_cover_sender_groups_and_expanded_owners() {
+    async fn principal_seeds_cover_the_people_of_the_turn_and_never_a_group() {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
         forge_user(&tree, "bob");
@@ -1892,7 +1953,9 @@ mod tests {
         let pool = make_pool().await;
         // Visibility is derived: a principal anchors recall only when the reader
         // can read ≥ 1 fact in that wiki. Seed one public (global-owned, so
-        // alice-readable) topic-less fact per identity wiki so each is reachable.
+        // alice-readable) topic-less fact per identity wiki, group wikis
+        // included — so a group that stays out of the fan does so by the rule,
+        // not because it was unreadable.
         for (n, w) in [
             (1u8, "alice"),
             (2, "bob"),
@@ -1909,7 +1972,7 @@ mod tests {
             )
             .await;
         }
-        // bob belongs to vela-club → owner expansion must seed the group wiki.
+        // bob belongs to vela-club — the owner expansion that used to seed it.
         sqlx::query(
             "INSERT INTO enrollment_groups (group_id, members, scope)
              VALUES ('vela-club', '[\"bob\"]', NULL)",
@@ -1921,12 +1984,13 @@ mod tests {
         let fan = gather_entry_points(
             &pool,
             &tree,
-            &sender("alice", &["famiglia"]),
+            &sender("alice", &["famiglia"]), // ambient membership
             &[],
             &[
                 Principal::User("bob".to_owned()),
-                Principal::global(),                 // no wiki — skipped
-                Principal::User("ghost".to_owned()), // never enrolled — skipped
+                Principal::Group("famiglia".to_owned()), // named outright
+                Principal::global(),                     // no wiki
+                Principal::User("ghost".to_owned()),     // never enrolled
             ],
             &[],
             &[],
@@ -1934,12 +1998,20 @@ mod tests {
         .await
         .unwrap();
 
-        for id in ["alice", "famiglia", "bob", "vela-club"] {
+        for id in ["alice", "bob"] {
             let ep = find(&fan, id, None).unwrap_or_else(|| panic!("missing seed {id}"));
             assert_eq!(ep.origin, EntryOrigin::Principal);
             assert!((ep.weight - WEIGHT_PRINCIPAL).abs() < f32::EPSILON);
         }
-        assert_eq!(fan.len(), 4, "global + ghost must not seed");
+        assert!(
+            find(&fan, "famiglia", None).is_none(),
+            "the sender's own group must not seed a door"
+        );
+        assert!(
+            find(&fan, "vela-club", None).is_none(),
+            "an owner's group must not seed a door"
+        );
+        assert_eq!(fan.len(), 2, "two people, no groups, no global, no ghost");
     }
 
     #[tokio::test]
@@ -2154,10 +2226,10 @@ mod tests {
         assert_eq!(page_seed.origin, EntryOrigin::Rag);
         assert!((page_seed.weight - 0.42).abs() < f32::EPSILON);
         // The fresh hit lands on the wiki root, the same `(wiki, page)` key
-        // alice's own principal seed occupies. This is no longer a tie: 0.9
-        // beats `WEIGHT_PRINCIPAL` (0.6) outright, so the rag seed wins the
-        // slot and the principal seed is fully superseded here (contrast
-        // `a_strong_rag_hit_leads_the_fan_ahead_of_the_principal_seed_which_survives_demoted`,
+        // alice's own principal seed occupies. A ranked door always wins that
+        // collision, so the surviving copy is the rag seed and the door keeps
+        // its content ranking (contrast
+        // `a_rag_hit_leads_the_fan_ahead_of_the_principal_seed_which_survives_demoted`,
         // where the two land on different pages and both survive).
         let root_seed = find(&fan, "alice", None).expect("root seed");
         assert_eq!(root_seed.origin, EntryOrigin::Rag);
@@ -2196,13 +2268,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dedup_keeps_heaviest_and_sorts_descending() {
+    async fn dedup_keeps_the_best_route_to_a_door_and_sorts_ranked_before_offered() {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
         forge_user(&tree, "bob");
         let pool = make_pool().await;
-        // alice's own "food" fact → her topic seed (which loses to her
-        // principal seed on dedup). bob is reached by the rag hits below.
+        // alice's own "food" fact → a wiki-level topic seed on her root, the
+        // same `(wiki, page)` key her principal anchor occupies.
         seed_fact(
             &pool,
             &fid(1),
@@ -2228,27 +2300,39 @@ mod tests {
         .await
         .unwrap();
 
-        // alice root: principal and the wiki-level topic seed now tie at the
-        // same weight (0.6) — principal wins because it is the earlier
-        // family (lower `EntryOrigin::rank`), not because it is heavier.
+        // alice's root is reached twice — as her identity anchor and as a
+        // topic match. The **content** route survives, so a door the turn
+        // actually matched is not dragged to the tail by also being an
+        // identity page (roadmap 69b).
         let alice_root = find(&fan, "alice", None).unwrap();
-        assert_eq!(alice_root.origin, EntryOrigin::Principal);
+        assert_eq!(alice_root.origin, EntryOrigin::Topic);
+        assert!((alice_root.weight - WEIGHT_TOPIC_WIKI).abs() < f32::EPSILON);
         // bob page: the heavier rag duplicate survived.
         let bob_page = find(&fan, "bob", Some("index.md")).unwrap();
         assert!((bob_page.weight - 0.7).abs() < f32::EPSILON);
-        // Fan sorted by weight descending.
+        // alice's was the only anchor and it lost its collision, so nothing
+        // unranked survives — the fan is content only, weight descending.
+        assert!(
+            fan.iter().all(|e| e.origin != EntryOrigin::Principal),
+            "the anchor was superseded by the topic route, not kept beside it"
+        );
         for pair in fan.windows(2) {
             assert!(pair[0].weight >= pair[1].weight);
         }
     }
 
-    /// The guarantee `WEIGHT_PRINCIPAL`'s 2026-08-01 drop exists to buy: the
-    /// navigator gets to *choose* between an identity hub and a strong
-    /// content match instead of the identity hub winning by construction —
-    /// but the choice is never a coin flip against nothing, because the
-    /// principal seed keeps being offered, just no longer first.
+    /// Roadmap 69b — the identity door is **offered, never ranked**. It sorts
+    /// behind every content-derived door however weak that door is, because
+    /// its job is *be available*, not *be the best guess*: the sender's card
+    /// already reaches the turn deterministically through `WHO IS SPEAKING`
+    /// (69a), so nothing is lost by the navigator preferring content.
+    ///
+    /// `0.42` is the point of the number: it is below the old
+    /// `WEIGHT_PRINCIPAL` of `0.6`, i.e. exactly the band where an identity
+    /// hub used to win — the corpus' best fact for a turn scored under `0.6`
+    /// on 62 % of 141 measured turns.
     #[tokio::test]
-    async fn a_strong_rag_hit_leads_the_fan_ahead_of_the_principal_seed_which_survives_demoted() {
+    async fn a_rag_hit_leads_the_fan_ahead_of_the_principal_seed_which_survives_demoted() {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
         write_page(
@@ -2270,18 +2354,16 @@ mod tests {
         )
         .await;
 
-        // A rag hit on a DIFFERENT page of alice's own wiki, scored above
-        // `WEIGHT_PRINCIPAL` (0.6) — e.g. the turn is about something her own
-        // notes page answers well. Different `(wiki, page)` key than the
-        // principal seed's root, so this is an ordinary sort, not a dedup
-        // collision: both entries survive.
+        // A rag hit on a DIFFERENT page of alice's own wiki — different
+        // `(wiki, page)` key than the principal seed's root, so this is an
+        // ordinary sort, not a dedup collision: both entries survive.
         let fan = gather_entry_points(
             &pool,
             &tree,
             &sender("alice", &[]),
             &[],
             &[],
-            &[rag_hit("alice", "wikis/alice/notes.md", 0.75, false)],
+            &[rag_hit("alice", "wikis/alice/notes.md", 0.42, false)],
             &[],
         )
         .await
@@ -2295,14 +2377,73 @@ mod tests {
         assert_eq!(
             fan[0].origin,
             EntryOrigin::Rag,
-            "the stronger content match leads the fan"
+            "the content match leads the fan even at 0.42"
         );
         assert_eq!(fan[0].page.as_deref(), Some(Path::new("notes.md")));
         let root_seed = find(&fan, "alice", None)
             .expect("the principal seed is demoted, not evicted from the fan");
         assert_eq!(root_seed.origin, EntryOrigin::Principal);
         assert!((root_seed.weight - WEIGHT_PRINCIPAL).abs() < f32::EPSILON);
-        assert_eq!(fan[1].origin, EntryOrigin::Principal, "and it sorts second");
+        assert_eq!(fan[1].origin, EntryOrigin::Principal, "and it sorts last");
+    }
+
+    /// The tail rule holds against the **weakest** ranked family too: a
+    /// situational wiki card at `0.4` still outranks an identity anchor. The
+    /// anchor is not "a low score", it is out of the scoring.
+    #[tokio::test]
+    async fn even_the_weakest_card_match_outranks_the_identity_anchor() {
+        let (_dir, tree) = open_tree();
+        forge_user(&tree, "alice");
+        forge_user(&tree, "bob");
+        let pool = make_pool().await;
+        // alice: a readable topic-less fact — her anchor, and nothing else.
+        seed_fact(
+            &pool,
+            &fid(1),
+            "alice",
+            "wikis/alice/index.md",
+            Principal::User("alice".to_owned()),
+            &[],
+        )
+        .await;
+        // bob: a public fact whose topic the host's situational string hits.
+        seed_fact(
+            &pool,
+            &fid(2),
+            "bob",
+            "wikis/bob/index.md",
+            Principal::global(),
+            &["sailing"],
+        )
+        .await;
+
+        let fan = gather_entry_points(
+            &pool,
+            &tree,
+            &sender("alice", &[]),
+            &[],
+            &[],
+            &[],
+            &["sailing".to_owned()],
+        )
+        .await
+        .unwrap();
+
+        // bob's card matches at both granularities (wiki 0.4, page 0.5), and
+        // the anchor sits behind the weaker of the two.
+        assert_eq!(fan.len(), 3);
+        let weakest = find(&fan, "bob", None).expect("situational wiki seed");
+        assert!((weakest.weight - WEIGHT_SITUATIONAL_WIKI).abs() < f32::EPSILON);
+        assert_eq!(
+            fan[2].origin,
+            EntryOrigin::Principal,
+            "the anchor is behind even a 0.4 card match"
+        );
+        assert_eq!(fan[2].wiki_id, "alice");
+        assert!(
+            fan[2].weight < weakest.weight,
+            "and it reports no score of its own"
+        );
     }
 
     #[test]
@@ -2576,6 +2717,7 @@ mod tests {
             "what do we know?",
             &[entry("alice", Some("notes.md"), EntryOrigin::Topic, 0.8)],
             &NavigatorPolicy::default(),
+            &[],
         )
         .await
         .unwrap();
@@ -2668,6 +2810,7 @@ mod tests {
             "what do we know?",
             &[entry("alice", Some("notes.md"), EntryOrigin::Topic, 0.8)],
             &NavigatorPolicy::default(),
+            &[],
         )
         .await
         .unwrap();
@@ -2697,6 +2840,7 @@ mod tests {
             "turn",
             &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(),
+            &[],
         )
         .await
         .unwrap();
@@ -2746,6 +2890,7 @@ mod tests {
             "turn",
             &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(), // max_hops = 2
+            &[],
         )
         .await
         .unwrap();
@@ -2799,6 +2944,7 @@ mod tests {
             "turn",
             &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(), // max_hops = 2
+            &[],
         )
         .await
         .unwrap();
@@ -2852,6 +2998,7 @@ mod tests {
             "turn",
             &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(), // max_hops = 2
+            &[],
         )
         .await
         .unwrap();
@@ -2910,6 +3057,7 @@ mod tests {
             "turn",
             &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(), // max_hops = 2
+            &[],
         )
         .await
         .unwrap();
@@ -2965,6 +3113,7 @@ mod tests {
             "turn",
             &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(),
+            &[],
         )
         .await
         .unwrap();
@@ -3000,6 +3149,7 @@ mod tests {
             "turn",
             &[entry("alice", Some("notes.md"), EntryOrigin::Rag, 0.9)],
             &policy,
+            &[],
         )
         .await
         .unwrap();
@@ -3009,6 +3159,73 @@ mod tests {
         assert!(out.fragments[0].text.len() <= 10);
         assert_eq!(out.hops, 1, "an exhausted budget must not buy another hop");
         assert_eq!(out.stop, NavStop::Budget);
+    }
+
+    /// Roadmap 69b — a page the caller has **already delivered** is not a
+    /// navigation destination by any route. The ingest turn passes the
+    /// sender's identity page, which `WHO IS SPEAKING` serves in full every
+    /// turn (69a): re-reading it would spend a page open and a slice of the
+    /// character budget on prose already in the block.
+    ///
+    /// Founder, 2026-08-03: *«non ci frega dell'indice se col rag arriviamo
+    /// già sulle pagine giuste»*. The three routes are covered here — the
+    /// entry fan (the seed is offered but the pool drops it), a verbatim
+    /// navigator request for it, and the directory listing of the wiki once
+    /// the funnel is inside.
+    #[tokio::test]
+    async fn navigate_never_opens_a_page_the_caller_already_served() {
+        let (_dir, tree) = open_tree();
+        forge_user(&tree, "alice");
+        write_page(&tree, "alice", "index.md", "# Alice\n\nHer whole card.\n");
+        write_page(&tree, "alice", "notes.md", "Ordinary prose.\n");
+        // Hop 1 asks for the wiki root — which resolves to `index.md` — and
+        // for a real page beside it. Hop 2 asks for `index.md` by name, the
+        // shape a sibling listing would offer.
+        let llm = ScriptedLlm::new(&[
+            r#"{"open":[{"wiki_id":"alice"},{"wiki_id":"alice","page":"notes.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"alice","page":"index.md"}],"done":false}"#,
+        ]);
+
+        let out = navigate(
+            &make_pool().await,
+            &tree,
+            &llm,
+            &sender("alice", &[]),
+            "what do we know?",
+            &[
+                entry("alice", None, EntryOrigin::Principal, 0.0),
+                entry("alice", Some("notes.md"), EntryOrigin::Rag, 0.5),
+            ],
+            &NavigatorPolicy::default(),
+            &[("alice".to_owned(), PathBuf::from("index.md"))],
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !out.fragments
+                .iter()
+                .any(|f| f.page == Path::new("index.md")),
+            "the served page must never be opened: {:?}",
+            out.fragments
+        );
+        assert!(
+            out.fragments
+                .iter()
+                .any(|f| f.page == Path::new("notes.md")),
+            "and refusing it must not cost the walk its other choice"
+        );
+        assert!(
+            out.trace.iter().all(|hop| hop
+                .candidates
+                .iter()
+                .all(|c| c.page.as_deref() != Some("index.md"))),
+            "nor is it ever offered — not from the fan, not from the directory listing"
+        );
+        assert!(
+            !out.fragments.iter().any(|f| f.text.contains("whole card")),
+            "and none of its prose reaches the caller a second time"
+        );
     }
 
     /// Roadmap 41e — the reserved `rules.md` policy page is channel-only:
@@ -3036,6 +3253,7 @@ mod tests {
             "what do we know?",
             &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(),
+            &[],
         )
         .await
         .unwrap();
@@ -3077,6 +3295,7 @@ mod tests {
             "turn",
             &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(),
+            &[],
         )
         .await
         .unwrap();
@@ -3106,6 +3325,7 @@ mod tests {
             "turn",
             &[entry("alice", None, EntryOrigin::Principal, 0.6)],
             &NavigatorPolicy::default(),
+            &[],
         )
         .await
         .unwrap();
@@ -3126,6 +3346,7 @@ mod tests {
             "turn",
             &[],
             &NavigatorPolicy::default(),
+            &[],
         )
         .await
         .unwrap();

@@ -619,7 +619,7 @@ across pages; use `wiki_search` for a quick one-line lookup. See
 | `sender_id` | string | no | Validated against the token. |
 | `top_k` | integer 1–50 | no (default 20) | Cap on the flat hits (and the RAG seeds feeding the funnel). |
 | `topics` | `array<string>` | no | Seed family **C** — subjects to look up. Supplying `topics` or `owners` skips server-side extraction (B). |
-| `owners` | `array<principal>` | no | Seed family **C** — `user:<id>`/`group:<id>` the query is about. Unparseable entries dropped. |
+| `owners` | `array<principal>` | no | Seed family **C** — `user:<id>`/`group:<id>` the query is about. Unparseable entries dropped. A `group:` entry skips extraction like any other, but seeds **no door of its own**: a group wiki's root is a directory, not an identity card (see [recall-pipeline.md](../design-notes/recall-pipeline.md#the-identity-anchor-is-not-a-score)). Its pages are still reached by the query's own hits and its card. |
 
 **Output**
 

@@ -26,6 +26,14 @@
 //! — the fan, the link extraction, the sibling listing, the ACL projection, the
 //! dedup — is the production code path, called, not re-implemented.
 //!
+//! One thing the harness asserts rather than derives: the ingest turn serves
+//! the sender's `index.md` in `WHO IS SPEAKING` and hands it to the funnel as
+//! already delivered (roadmap 69a/69b), so the walk never opens it. This runs
+//! with that exclusion in place, because the ingest funnel is what is being
+//! measured. The engine additionally checks that the page carries a readable
+//! fact before serving it; here it is assumed to, which holds for every
+//! enrolled person in the live corpus.
+//!
 //! Read-only. Local embedder, **no API spend**.
 //!
 //! ```text
@@ -303,8 +311,12 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
         let fan = recall_nav::gather_entry_points(&pool, &tree, &ctx, &[], &[], &hits, &[]).await?;
+        // What the ingest turn passes: the sender's identity card, already in
+        // the block, so the funnel neither offers nor opens it.
+        let served = [(turn.sender.clone(), PathBuf::from("index.md"))];
         let outcome =
-            recall_nav::navigate(&pool, &tree, &llm, &ctx, &turn.text, &fan, &policy).await?;
+            recall_nav::navigate(&pool, &tree, &llm, &ctx, &turn.text, &fan, &policy, &served)
+                .await?;
 
         t.turns += 1;
         t.labelled += usize::from(answer_page.is_some());

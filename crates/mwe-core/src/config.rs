@@ -1576,6 +1576,11 @@ pub struct RecallConfig {
     /// (default 1400).
     #[serde(default)]
     pub max_agent_history_chars: Option<usize>,
+    /// Override `IngestPolicy::max_sender_identity_chars` — the budget of
+    /// the `WHO IS SPEAKING` identity card (default 2500). A failsafe, not
+    /// a curation knob; `0` serves the one-line summary alone.
+    #[serde(default)]
+    pub max_sender_identity_chars: Option<usize>,
     /// Deployment-wide IANA timezone of the users (e.g. `Europe/Rome`) →
     /// sets `IngestPolicy::ingest_timezone`. Also settable via the
     /// `MWE_INGEST_TIMEZONE` env var; this YAML field wins when both are set.
@@ -1649,6 +1654,9 @@ impl RecallConfig {
         }
         if let Some(v) = self.max_agent_history_chars {
             p.max_agent_history_chars = v;
+        }
+        if let Some(v) = self.max_sender_identity_chars {
+            p.max_sender_identity_chars = v;
         }
         if let Some(v) = self.recent_window_entries {
             p.recent_window_entries = v;

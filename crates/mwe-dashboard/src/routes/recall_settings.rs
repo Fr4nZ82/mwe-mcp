@@ -160,6 +160,14 @@ fn knobs() -> Vec<Knob> {
                     .to_owned(),
         },
         Knob {
+            field: "max_sender_identity_chars",
+            label: "WHO IS SPEAKING — budget (chars)",
+            default: def.max_sender_identity_chars.to_string(),
+            help: "Failsafe on the sender's identity card, fitted whole paragraphs. Curate the \
+                   page, not this number; 0 serves the one-line summary alone."
+                .to_owned(),
+        },
+        Knob {
             field: "recent_window_entries",
             label: "Recent window — entries per user",
             default: def.recent_window_entries.to_string(),
@@ -205,6 +213,7 @@ fn override_value(cfg: &RecallConfig, field: &str) -> String {
         "due_soon_horizon_hours" => s(cfg.due_soon_horizon_hours),
         "max_agent_identity_chars" => s(cfg.max_agent_identity_chars),
         "max_agent_history_chars" => s(cfg.max_agent_history_chars),
+        "max_sender_identity_chars" => s(cfg.max_sender_identity_chars),
         "recent_window_entries" => s(cfg.recent_window_entries),
         "recent_window_ttl_hours" => s(cfg.recent_window_ttl_hours),
         "recent_window_chars" => s(cfg.recent_window_chars),
@@ -398,6 +407,7 @@ fn parse_form(form: &HashMap<String, String>) -> Result<RecallConfig> {
         due_soon_horizon_hours: parse_u32(form, "due_soon_horizon_hours")?,
         max_agent_identity_chars: parse_usize(form, "max_agent_identity_chars")?,
         max_agent_history_chars: parse_usize(form, "max_agent_history_chars")?,
+        max_sender_identity_chars: parse_usize(form, "max_sender_identity_chars")?,
         // Not a recall knob and not on this panel — the caller carries the
         // live value forward so a save here never wipes a configured zone.
         ingest_timezone: None,

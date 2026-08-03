@@ -6,8 +6,8 @@
  *
  *   1. the turn text appears;
  *   2. similarity (RAG) lights the matched regions on their pages;
- *   3. the entry-point fan arranges by weight (principal / rag / topic /
- *      situational — the four seed families);
+ *   3. the entry-point fan arranges in gatherer order (rag / topic /
+ *      situational ranked by weight, then the unranked principal anchors);
  *   4. the navigator — a phosphor orb with an eye — reads the candidate
  *      cards hop by hop, opens pages (their prose streams in), and every
  *      opened page sprouts its discovered links as new faint cards;
@@ -478,7 +478,8 @@ import * as THREE from './three.module.min.js';
   }
 
   // Fan cards (phase 3): every entry point, reusing RAG cards where they
-  // coincide. Kept in fan order (already weight-sorted by the gatherer).
+  // coincide. Kept in fan order (the gatherer's `fan_order`: ranked doors by
+  // weight, identity anchors appended after them with no weight of their own).
   const fanCards = [];
   for (const ep of entryPoints) {
     const card = ensureCard(ep.wiki_id, ep.page, FAMILY[ep.origin] || PALETTE.dim, ep.weight);
