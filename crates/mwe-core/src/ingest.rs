@@ -521,6 +521,12 @@ pub struct IngestPolicy {
     /// entries win the budget; the section renders oldest-first. `0`
     /// disables serving (buffering still happens for other surfaces).
     pub recent_window_chars: usize,
+    /// Retention of the recall-trace journal, in days — how far back the
+    /// record of *how recall behaved* stays readable. `0` disables the
+    /// prune. See [`crate::recall_trace::DEFAULT_TRACE_RETENTION_DAYS`] for
+    /// why the journal is kept at all rather than capped at a handful of
+    /// rows.
+    pub trace_retention_days: i64,
 }
 
 impl Default for IngestPolicy {
@@ -561,6 +567,7 @@ impl Default for IngestPolicy {
             recent_window_entries: 32,
             recent_window_ttl_hours: 4,
             recent_window_chars: 1_200,
+            trace_retention_days: crate::recall_trace::DEFAULT_TRACE_RETENTION_DAYS,
         }
     }
 }
@@ -4734,8 +4741,14 @@ async fn record_ingest_trace(
         rules_block: rules_block.map(str::to_owned),
         took_ms: u64::try_from(took.as_millis()).unwrap_or(u64::MAX),
     };
-    if let Err(err) =
-        recall_trace::record_trace(pool, TraceSource::Ingest, &request.sender_id, &trace).await
+    if let Err(err) = recall_trace::record_trace(
+        pool,
+        TraceSource::Ingest,
+        &request.sender_id,
+        &trace,
+        policy.trace_retention_days,
+    )
+    .await
     {
         tracing::warn!(error = %err, "ingest: recall-trace journal write failed (ignored)");
     }

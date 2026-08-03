@@ -156,6 +156,40 @@ async fn save_persists_yaml_and_hot_swaps() {
     assert!(html.contains("value=\"4\""), "{html}");
 }
 
+/// `trace_retention_days` has no field on this panel — it is a
+/// telemetry-and-privacy window an operator sets in the file. A save from
+/// the panel must therefore leave it exactly as configured; the failure
+/// mode this pins is the silent one, where saving an unrelated knob
+/// resets the trace journal to its 90-day default.
+#[tokio::test]
+async fn a_save_leaves_the_config_only_trace_window_alone() {
+    let (app, workdir, _dir) = make_app().await;
+    let cookie = login_as_admin(&app).await;
+    std::fs::write(
+        workdir.join(CONFIG_FILENAME),
+        "recall:\n  trace_retention_days: 7\n",
+    )
+    .expect("seed config");
+
+    let response = send(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/admin/recall-settings")
+            .header(header::COOKIE, cookie)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from("max_hops=4"))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let cfg = Config::load(&workdir).expect("load saved config");
+    assert_eq!(cfg.recall.max_hops, Some(4));
+    assert_eq!(cfg.recall.trace_retention_days, Some(7));
+    assert_eq!(cfg.recall.resolved_ingest_policy().trace_retention_days, 7);
+}
+
 #[tokio::test]
 async fn save_rejects_a_malformed_number_naming_the_field() {
     let (app, workdir, _dir) = make_app().await;

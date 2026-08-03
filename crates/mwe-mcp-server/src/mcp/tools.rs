@@ -1256,12 +1256,17 @@ pub(super) async fn call_wiki_navigate(
     // Funnel (depth): only when a `navigator` LLM slot is wired — otherwise
     // degrade to flat-only (flat runs on the embedder alone).
     let start = std::time::Instant::now();
-    let nav_policy = state
-        .recall
-        .read()
-        .expect("recall settings rwlock poisoned")
-        .resolved_ingest_policy()
-        .nav;
+    // One read of the settings serves both the funnel and the journal: the
+    // navigator knobs, and the trace retention window the write below prunes
+    // against.
+    let (nav_policy, trace_retention_days) = {
+        let policy = state
+            .recall
+            .read()
+            .expect("recall settings rwlock poisoned")
+            .resolved_ingest_policy();
+        (policy.nav, policy.trace_retention_days)
+    };
     let funnel = run_navigate_funnel(state, &sender, &args, &flat_hits, &nav_policy).await?;
     let NavigateFunnel {
         entries,
@@ -1341,6 +1346,7 @@ pub(super) async fn call_wiki_navigate(
         navigated: &navigated,
         navigator_available,
         char_budget: nav_policy.char_budget,
+        trace_retention_days,
         result: &result,
         took: start.elapsed(),
     })
@@ -1433,6 +1439,7 @@ struct NavigateTraceParts<'a> {
     navigated: &'a mwe_core::recall_nav::NavigationOutcome,
     navigator_available: bool,
     char_budget: usize,
+    trace_retention_days: i64,
     result: &'a Value,
     took: std::time::Duration,
 }
@@ -1474,6 +1481,7 @@ async fn record_navigate_trace(parts: NavigateTraceParts<'_>) {
         TraceSource::Navigate,
         parts.sender_id,
         &trace,
+        parts.trace_retention_days,
     )
     .await
     {

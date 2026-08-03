@@ -77,9 +77,15 @@ async fn seed_bobs_trace(pool: &SqlitePool) -> i64 {
         hops: Vec::<HopTrace>::new(),
         ..RecallTrace::default()
     };
-    recall_trace::record_trace(pool, TraceSource::Ingest, "bob", &trace)
-        .await
-        .expect("record bob's trace");
+    recall_trace::record_trace(
+        pool,
+        TraceSource::Ingest,
+        "bob",
+        &trace,
+        recall_trace::DEFAULT_TRACE_RETENTION_DAYS,
+    )
+    .await
+    .expect("record bob's trace");
     sqlx::query_scalar("SELECT id FROM recall_traces WHERE sender_id = 'bob'")
         .fetch_one(pool)
         .await

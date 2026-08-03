@@ -472,12 +472,14 @@ row wins (see the table row above).
 | `recall.recent_window_entries` | int \| _unset_ | _unset_ → `32` | Per-user cap of the cross-consumer recent window's buffer. `0` disables the window. |
 | `recall.recent_window_ttl_hours` | int \| _unset_ | _unset_ → `4` | How long an exchange stays servable (short by design — the window serves the thread of discourse, not history). |
 | `recall.recent_window_chars` | int \| _unset_ | _unset_ → `1200` | Char budget of the rendered `recent_window` section. `0` stops serving while buffering continues. |
+| `recall.trace_retention_days` | int \| _unset_ | _unset_ → `90` | How long the [recall-trace journal](../design-notes/recall-pipeline.md#recall-traces--the-route-journal) keeps the route each recall took. Two things ride on it: the journal is the evidence a rewiring pass and a growing gold set read, **and** it holds the recall block verbatim — so it is also how long clear-text recalled memory sits in the engine DB. `0` disables the prune (keep everything); it never means "keep nothing". |
 
 ```yaml
 recall:                       # every key optional — omit to keep the Rust default
   # max_hops: 4               # deeper navigation on a strong navigator tier
   # char_budget: 12000
   # due_soon_horizon_hours: 72
+  # trace_retention_days: 30  # shorter clear-text window for the trace journal
 ```
 
 The related dials that do **not** live here: the navigator's *model

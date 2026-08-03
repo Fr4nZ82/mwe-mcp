@@ -1605,6 +1605,18 @@ pub struct RecallConfig {
     /// while buffering continues).
     #[serde(default)]
     pub recent_window_chars: Option<usize>,
+    /// Override `IngestPolicy::trace_retention_days` — how long the recall
+    /// **trace journal** keeps the route each recall took (default 90; `0`
+    /// disables the prune and keeps everything).
+    ///
+    /// Two things ride on this number, pulling opposite ways. A trace is the
+    /// only labelled record of how recall behaved — what it was offered, what
+    /// it chose, and why — so the rewiring pass and the gold set are only as
+    /// good as the window. And a trace holds the recall block verbatim, so
+    /// the window is also how long clear-text recalled memory sits in the
+    /// engine DB. Shorten it where the second concern wins.
+    #[serde(default)]
+    pub trace_retention_days: Option<i64>,
 }
 
 impl RecallConfig {
@@ -1666,6 +1678,9 @@ impl RecallConfig {
         }
         if let Some(v) = self.recent_window_chars {
             p.recent_window_chars = v;
+        }
+        if let Some(v) = self.trace_retention_days {
+            p.trace_retention_days = v;
         }
         // Timezone: YAML field wins; otherwise fall back to the
         // `MWE_INGEST_TIMEZONE` env var so a deployment can enable it with a

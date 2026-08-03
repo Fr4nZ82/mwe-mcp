@@ -70,6 +70,13 @@ pub fn router() -> Router<DashboardState> {
         .route("/recall-traces/:id/data", get(data))
 }
 
+/// How many traces the journal page lists. A **page size**, not a retention
+/// bound: the window that decides how long a trace exists at all is
+/// `recall.trace_retention_days`, and the journal holds months of it. Sized
+/// to stay a single readable page — this surface is "my recent recalls", and
+/// the analysis surface for anything longer is the table itself.
+const INDEX_PAGE_LIMIT: i64 = 50;
+
 /// May `user` open the trace `row` was recorded for?
 ///
 /// Own traces always; anyone else's only under the reveal switch (which is
@@ -92,16 +99,23 @@ async fn index(
 ) -> Result<Html<String>> {
     let chrome = layout::Chrome::of(&state);
     let reveal = crate::reveal::active(&state, &user, &jar);
-    let rows = recall_trace::recent_traces(&state.pool, recall_trace::TRACE_KEEP)
-        .await
-        .map_err(|e| DashboardError::Internal(format!("recall_trace::recent_traces: {e}")))?;
-    // The journal is capped at `TRACE_KEEP` rows deployment-wide, so the
-    // scoping filter is a cheap pass over a handful of rows and the policy
-    // stays here, next to the reveal decision, instead of in the query.
-    let rows: Vec<TraceRow> = rows
-        .into_iter()
-        .filter(|r| readable(r, &user, reveal))
-        .collect();
+    // Scope in the query, not after the fetch. The journal now holds months
+    // of traffic rather than ten rows, so filtering a deployment-wide page
+    // down to the reader's own would show them fewer and fewer of their own
+    // traces the busier the deployment got — the listing would silently
+    // become a function of everyone else's activity.
+    let rows: Vec<TraceRow> = if reveal {
+        recall_trace::recent_traces(&state.pool, INDEX_PAGE_LIMIT)
+            .await
+            .map_err(|e| DashboardError::Internal(format!("recall_trace::recent_traces: {e}")))?
+    } else {
+        recall_trace::recent_traces_for_sender(&state.pool, &user.sender_id, INDEX_PAGE_LIMIT)
+            .await
+            .map_err(|e| {
+                DashboardError::Internal(format!("recall_trace::recent_traces_for_sender: {e}"))
+            })?
+    };
+    debug_assert!(rows.iter().all(|r| readable(r, &user, reveal)));
     Ok(Html(layout::authenticated_page(
         chrome,
         "Recall traces",
@@ -187,9 +201,9 @@ fn render_index_body(rows: &[TraceRow], reveal: bool, is_admin: bool) -> Markup 
     html! {
         @if reveal { (crate::reveal::banner()) }
         p class="text-text-dim max-w-prose" {
-            "The last " (recall_trace::TRACE_KEEP) " recalls, newest first — what your "
-            "own turns pulled out of memory and what was injected back into the "
-            "consumer. Open a trace to replay the navigator's route."
+            "The most recent recalls, newest first — what your own turns pulled "
+            "out of memory and what was injected back into the consumer. Open a "
+            "trace to replay the navigator's route."
             @if reveal {
                 " Admin reveal is on, so this is every user's recall."
             } @else if is_admin {

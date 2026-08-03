@@ -245,9 +245,15 @@ async fn journal_lists_and_viewer_replays_a_recorded_trace() {
     // scoped to the reader, so a trace filed under any other sender would
     // not be listed here (that is
     // `journal_hides_another_users_trace_until_admin_reveal`).
-    recall_trace::record_trace(&pool, TraceSource::Ingest, "alice", &sample_trace())
-        .await
-        .expect("record");
+    recall_trace::record_trace(
+        &pool,
+        TraceSource::Ingest,
+        "alice",
+        &sample_trace(),
+        recall_trace::DEFAULT_TRACE_RETENTION_DAYS,
+    )
+    .await
+    .expect("record");
 
     // The journal row: stamp, source badge, sender, counts, view link.
     let response = send(
@@ -342,16 +348,28 @@ async fn journal_hides_another_users_trace_until_admin_reveal() {
     // the newest row and cannot be missing merely for being pruned.
     let mut mine = sample_trace();
     mine.turn_text = "che pasta compro?".to_owned();
-    recall_trace::record_trace(&pool, TraceSource::Ingest, "alice", &mine)
-        .await
-        .expect("record alice");
+    recall_trace::record_trace(
+        &pool,
+        TraceSource::Ingest,
+        "alice",
+        &mine,
+        recall_trace::DEFAULT_TRACE_RETENTION_DAYS,
+    )
+    .await
+    .expect("record alice");
 
     let mut theirs = sample_trace();
     theirs.turn_text = "quanto ha speso bob dal notaio?".to_owned();
     theirs.flat_hits[0].text = "Bob deve 4.000 euro al notaio.".to_owned();
-    recall_trace::record_trace(&pool, TraceSource::Navigate, "bob", &theirs)
-        .await
-        .expect("record bob");
+    recall_trace::record_trace(
+        &pool,
+        TraceSource::Navigate,
+        "bob",
+        &theirs,
+        recall_trace::DEFAULT_TRACE_RETENTION_DAYS,
+    )
+    .await
+    .expect("record bob");
 
     let bob_id: i64 = sqlx::query_scalar("SELECT id FROM recall_traces WHERE sender_id = 'bob'")
         .fetch_one(&pool)
@@ -457,15 +475,27 @@ async fn a_regular_user_reads_their_own_traces_and_cannot_reach_anybody_elses() 
 
     let mut his = sample_trace();
     his.turn_text = "che pasta compro?".to_owned();
-    recall_trace::record_trace(&pool, TraceSource::Ingest, "bob", &his)
-        .await
-        .expect("record bob");
+    recall_trace::record_trace(
+        &pool,
+        TraceSource::Ingest,
+        "bob",
+        &his,
+        recall_trace::DEFAULT_TRACE_RETENTION_DAYS,
+    )
+    .await
+    .expect("record bob");
 
     let mut hers = sample_trace();
     hers.turn_text = "quanto ha speso carol dal notaio?".to_owned();
-    recall_trace::record_trace(&pool, TraceSource::Navigate, "carol", &hers)
-        .await
-        .expect("record carol");
+    recall_trace::record_trace(
+        &pool,
+        TraceSource::Navigate,
+        "carol",
+        &hers,
+        recall_trace::DEFAULT_TRACE_RETENTION_DAYS,
+    )
+    .await
+    .expect("record carol");
 
     let ids: Vec<(i64, String)> = sqlx::query_as("SELECT id, sender_id FROM recall_traces")
         .fetch_all(&pool)

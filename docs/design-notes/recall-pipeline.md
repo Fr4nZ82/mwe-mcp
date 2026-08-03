@@ -988,7 +988,7 @@ entity names resolved against enrollment, unresolved names folded into topics)
 (**B**); else principal + RAG seeds only (**A**). Each step degrades to the
 next.
 
-## Recall traces — the last-10 journal
+## Recall traces — the route journal
 
 [`mwe-core::recall_trace`](../../crates/mwe-core/src/recall_trace.rs) journals
 the **whole route** a recall took, so the operator can finally see *why* a
@@ -1020,8 +1020,23 @@ The funnel's own half lives in [`NavigationOutcome::trace`](../../crates/mwe-cor
 (`Vec<HopTrace>` + `stop`), populated on every `navigate` run — string
 clones only, no extra I/O or LLM cost. Recording is **best-effort
 telemetry**: a journal failure logs a warning and never touches the turn.
-The journal prunes to the newest `TRACE_KEEP` (10) rows after each insert —
-a resource cap; `tool_executions` remains the audit surface. The dashboard
+The journal is **age-pruned** after each insert, on the same idiom as the
+`recall_log` / `recall_misses` siblings: rows past `recall.trace_retention_days`
+(default `DEFAULT_TRACE_RETENTION_DAYS` = 90; `0` disables the prune) are
+deleted. `tool_executions` remains the audit surface.
+
+**Why a window rather than a handful of rows.** The journal is the only
+labelled record the engine produces of *how recall behaved* — the candidates
+offered per hop, the navigator's own reason for each choice, and what it then
+opened. That is the evidence base a rewiring pass reads (a page repeatedly
+offered and declined has a card that misdescribes it) and the raw material a
+growing gold set is distilled from. Keeping ten rows discarded better than
+99 % of it within the hour on a deployment doing a few dozen turns a day.
+The counterweight is that a trace holds the recall block verbatim, so the
+window is also how long clear-text recalled memory sits in the engine DB —
+which is why it is an operator setting and not a constant.
+
+The dashboard
 surface (journal list + the animated 3D replay viewer) is open to
 [every signed-in user](dashboard.md) and **scoped to the reader's own
 recalls** — a trace belongs to the sender it was recorded for, so reading
@@ -1276,4 +1291,4 @@ roadmap):
 | **LLM rerank** | `wiki_recall` stays a stable call site so the ingest LLM can layer rerank on top without breaking signatures. |
 | **`recent_messages` weighting** | Accepted as parameter today, ignored; the weighting will use context-cache hooks the ingest LLM owns. |
 | **Multi-hop link resolution wired into consumer surfaces** | `wiki_multi_hop_facts` already lives in [`recall.rs`](../../crates/mwe-core/src/recall.rs) with tests, but it is not yet called by `wiki_ingest_message`, the agentic chat, or `wiki_navigate`. The cap-10-hop traversal protection plus the right rerank policy are needed before the consumer hookup. |
-| **Aggregate telemetry** (latency histograms, candidate-count distributions) | Only the per-run [recall trace](#recall-traces--the-last-10-journal) exists (the last 10 routes, replayable); aggregates and counters beyond `recall_count_30d` are not built. |
+| **Aggregate telemetry** (latency histograms, candidate-count distributions) | Only the per-run [recall trace](#recall-traces--the-route-journal) exists (every route inside the retention window, replayable); aggregates and counters beyond `recall_count_30d` are not built. |

@@ -931,10 +931,11 @@ entry-point fan, every navigator hop with its decision `note` and vetting
 outcome, the injected block verbatim) as a **versioned JSON payload**
 (`mwe_core::recall_trace::RecallTrace`, tolerant `serde(default)` decode).
 Written best-effort by the ingest per-turn injection and the `wiki_navigate`
-tool; pruned to the newest 10 rows after each insert (a resource cap —
-`tool_executions` remains the audit surface). Read by the admin Traces
-page and its 3D replay viewer. Design SSOT:
-[`recall-pipeline.md`](recall-pipeline.md#recall-traces--the-last-10-journal).
+tool; age-pruned after each insert at `recall.trace_retention_days`
+(default 90, `0` disables the prune — `tool_executions` remains the audit
+surface). Read by the Traces page and its 3D replay viewer, scoped to the
+reader's own recalls. Design SSOT:
+[`recall-pipeline.md`](recall-pipeline.md#recall-traces--the-route-journal).
 
 ```sql
 CREATE TABLE recall_traces (
@@ -1073,7 +1074,7 @@ directory. One annotated row per migration:
 | `0054_dream_runs` | The `dream_runs` journal — one durable row per finished dream run (`kind` light/compile/full, `trigger_source` manual/scheduled, `ok`, `summary`, full `log_text`), written by the dashboard Dream console and the scheduler alike; `crate::dream_journal` prunes to the newest 100 rows (resource cap), and a no-op scheduled light tick is not recorded. |
 | `0055_compiler_resilience` | Per-page compile-failure surfacing: adds `pages_failed` / `pages_degraded` to `dream_runs` (a completed run stops reading as plain ok when the compile was not clean) and creates the `compile_failures` ledger (`source_path` PK, `consecutive`, `last_error`, `updated_at`) behind the `compile_failure_streak` notice — see [rem-cycle.md](rem-cycle.md#per-page-compile-failure-surfacing). |
 | `0056_fact_successor` | Adds `successor_fact_id` to `fact_index` — the succession pointer on a **live** closed row (`close_validity` stamps it when the closer knows the replacement), projected by the compiler as the `(current: [[…]])` hint so a closed fact's prose points at today's truth. Distinct from `superseded_by` (welded to the tombstone). |
-| `0057_recall_traces` | The `recall_traces` journal — one row per recall run (`source` ingest/navigate, `sender_id`, versioned JSON `payload` = `mwe_core::recall_trace::RecallTrace`: hits, entry-point fan, per-hop funnel journal, injected block verbatim), written by the ingest turn and the `wiki_navigate` tool, pruned to the newest 10; behind the admin Traces page + 3D replay viewer — see [recall-pipeline.md](recall-pipeline.md#recall-traces--the-last-10-journal). |
+| `0057_recall_traces` | The `recall_traces` journal — one row per recall run (`source` ingest/navigate, `sender_id`, versioned JSON `payload` = `mwe_core::recall_trace::RecallTrace`: hits, entry-point fan, per-hop funnel journal, injected block verbatim), written by the ingest turn and the `wiki_navigate` tool, age-pruned at `recall.trace_retention_days` (default 90); behind the Traces page + 3D replay viewer, scoped to the reader's own recalls — see [recall-pipeline.md](recall-pipeline.md#recall-traces--the-route-journal). |
 | `0058_recall_log` | Self-correcting REM's detection floor — `recall_log` (one lean row per ingest turn: surfaced fact ids + navigated page paths, 30-day prune), `recall_misses` (one row per judge-free restated-known-fact miss, 90-day prune), and the `capture_buffer.recall_log_id` turn linkage the promotion-time detector reads — see [recall-pipeline.md](recall-pipeline.md#the-hindsight-log--the-judge-free-miss-signal). |
 | `0059_recall_repair` | The repair stages on top of 0058 — `recall_log.topics` (the turn's classifier seeds, the query side of a gate replay), `recall_misses.{status,resolution,seed_topics}` (the miss lifecycle `new → repaired \| queued \| discarded \| stale` + the receipt anchor), and the status index — consumed by the REM [recall-repair sub-job](rem-cycle.md#recall-repair-sub-job--self-correcting-rems-repair-stage). |
 | `0060_recent_exchanges` | The `recent_exchanges` buffer behind the cross-consumer recent window (group 43) — a bounded, TTL'd per-user serving buffer of the exchanges the per-turn ingest already receives (`user_id`, `consumer_id`, `channel`, `author`, `text`, `occurred_at` + the per-user index). **Not** a transcript store: never indexed, never embedded, never REM-processed; cap and TTL enforced in the write path (`mwe_core::recent_window`). |

@@ -92,8 +92,8 @@ net should still be honest.
 
 Two allow-listed tools do write a row:
 
-- **`wiki_navigate`** appends to the recall-trace journal, which is
-  capped at the last ten runs. It is also the tool that makes the
+- **`wiki_navigate`** appends to the recall-trace journal, which ages out
+  at `recall.trace_retention_days`. It is also the tool that makes the
   navigator demonstrable at all.
 - **`events_poll`** stamps `consumers.last_seen_at`, a heartbeat column.
 

@@ -168,10 +168,14 @@ operational chat + first-login welcome wizard**.
   same mechanics as the LLM editor) and **hot-swaps** the shared
   `Arc<RwLock<RecallConfig>>` that both transports (MCP dispatcher and
   dashboard chat) read per turn — no restart caveat. Semantics stay in
-  the `navigator` prompt; the panel only bounds resources.
+  the `navigator` prompt; the panel only bounds resources. Two keys of
+  the section are deliberately **not** fields here and are carried
+  through a save untouched: `ingest_timezone` (it belongs on the
+  Settings page) and `trace_retention_days` (a telemetry-and-privacy
+  window, config-file only, like `usage.retention_days`).
 - **Recall traces** — `/dashboard/recall-traces`, open to **every
   signed-in user** and scoped to their own recalls (the [`recall_trace`
-  journal](recall-pipeline.md#recall-traces--the-last-10-journal): what a
+  journal](recall-pipeline.md#recall-traces--the-route-journal): what a
   user action pulled out of memory and what was injected back). The list
   links each trace to a per-trace viewer that mounts the **animated 3D
   replay** of the route (WebGL, [`recall-trace.js`](dashboard-frontend.md#js-architecture))

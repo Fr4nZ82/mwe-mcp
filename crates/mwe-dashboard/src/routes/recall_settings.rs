@@ -328,6 +328,9 @@ async fn save(
     parsed
         .ingest_timezone
         .clone_from(&cfg.recall.ingest_timezone);
+    // Same reason, same rule: the trace-retention window has no field on this
+    // panel, so a save here must leave whatever the operator configured.
+    parsed.trace_retention_days = cfg.recall.trace_retention_days;
     cfg.recall = parsed.clone();
 
     // Backup `.bak` of the live YAML (if any) before overwriting.
@@ -414,6 +417,11 @@ fn parse_form(form: &HashMap<String, String>) -> Result<RecallConfig> {
         recent_window_entries: parse_usize(form, "recent_window_entries")?,
         recent_window_ttl_hours: parse_u32(form, "recent_window_ttl_hours")?,
         recent_window_chars: parse_usize(form, "recent_window_chars")?,
+        // Retention of the trace journal — a telemetry and privacy setting,
+        // not a recall-quality one, so it stays a config-file knob like
+        // `usage.retention_days` rather than a slider next to the hop count.
+        // Carried forward by the caller, same as the timezone above.
+        trace_retention_days: None,
     })
 }
 
