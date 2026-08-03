@@ -494,18 +494,24 @@ subject of the turn a fact covers **beyond the first**:
 A ranking **signal, never a filter**, exactly like the down-rank above — no
 fact becomes unreachable and every fact that surfaced before still surfaces.
 
-The weight was **fitted, and the criterion is whether the answer leads** —
-not how much of the block it leaves to other facts. At the shipped value the
-measured answer goes from 8th to **1st**. The kinship rows that rise with it
-(*"X is the son of Y"*) are not noise: a fact relating the two people a turn
-is about is a valid door and useful material for composing the answer, so
-earning a place is the signal working. **How many facts the block carries is
-a different question**, settled by `recall_top_k` and re-measured after the
-engine settles, not by making this weight timid.
+**Multiplicative, and that is the design, not a detail.** A flat bonus is
+not a weight: dense embeddings compress a corpus' similarities into a narrow
+band — on the measured corpus **~0.10 between the 1st and the 10th hit** —
+so a flat 0.10 was 97 % of the entire usable range and every covering fact
+overtook every non-covering one whatever the turn was about. That is an
+override. Scaling restores the trade the signal is supposed to make: a fact
+that covers both subjects **and** is on topic gains more than one that
+covers both and is off topic, and ordering *within* each coverage class is
+preserved — the same reason the validity down-rank above is multiplicative.
 
-The ceiling is higher up and real: past roughly 1.5× the shipped value every
-*topical* fact leaves a block answering a topical question — coverage has
-beaten topic outright, which is the failure mode to watch when retuning.
+Measured, the two forms rank the answer equally well and differ in what
+surrounds it: at the same "answer first" outcome the flat form pushed the
+*topical* facts out of the block, the proportional one keeps them. Which
+matters because the facts that rise alongside — *"X is the son of Y"* — are
+**not** noise: a fact relating the two people a turn is about is a valid
+door and useful material for composing the answer. **How many facts the
+block carries is a different question**, settled by `recall_top_k` and
+re-measured after the engine settles, not by making this signal timid.
 
 Order rationale:
 - *Filter → score → ACL → top-K* keeps the working set small first

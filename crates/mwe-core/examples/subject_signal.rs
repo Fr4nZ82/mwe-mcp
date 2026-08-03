@@ -54,7 +54,7 @@ use std::sync::Arc;
 
 use mwe_core::embedder::Embedder;
 use mwe_core::fact_index::FactIndexRow;
-use mwe_core::recall::{RecallHit, SenderContext, wiki_search_unrecorded};
+use mwe_core::recall::{RecallHit, SUBJECT_COVERAGE_UPLIFT, SenderContext, wiki_search_unrecorded};
 use mwe_core::types::Principal;
 use mwe_core::{db, enrollment, fact_index};
 
@@ -237,6 +237,7 @@ async fn main() -> anyhow::Result<()> {
     let mut turns_path: Option<PathBuf> = None;
     let mut top_k = 5usize;
     let mut weights: Vec<f32> = vec![0.02, 0.05, 0.10];
+    let mut mults: Vec<f32> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -245,6 +246,14 @@ async fn main() -> anyhow::Result<()> {
             "--top-k" => top_k = args.next().unwrap_or_default().parse().unwrap_or(5),
             "--weights" => {
                 weights = args
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|w| w.trim().parse::<f32>().ok())
+                    .collect();
+            },
+            "--mults" => {
+                mults = args
                     .next()
                     .unwrap_or_default()
                     .split(',')
@@ -285,6 +294,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut labels: Vec<String> = vec!["base".to_owned(), "rewrite".to_owned()];
     labels.extend(weights.iter().map(|w| format!("cover:{w:.2}")));
+    labels.extend(mults.iter().map(|m| format!("mult:{m:.2}")));
     let mut ranks: HashMap<String, Vec<Option<usize>>> = HashMap::new();
     let mut crowding: HashMap<String, usize> = HashMap::new();
     // How many of the base top-k each variant displaced, summed — the
@@ -340,14 +350,23 @@ async fn main() -> anyhow::Result<()> {
             let mut scored: Vec<(f32, &RecallHit)> = source
                 .iter()
                 .map(|h| {
-                    let bonus = label.strip_prefix("cover:").map_or(0.0, |w| {
-                        let w: f32 = w.parse().unwrap_or(0.0);
-                        let covered = mentions
-                            .get(&h.fact_id.to_string())
-                            .map_or(0, |m| m.intersection(&subjects).count());
-                        w * covered.saturating_sub(1) as f32
-                    });
-                    (h.score + bonus, h)
+                    // The engine already applied its own additive bonus, so
+                    // peel it off first: every variant must start from the
+                    // same raw cosine or the comparison is against a moving
+                    // baseline.
+                    let extra = mentions
+                        .get(&h.fact_id.to_string())
+                        .map_or(0, |m| m.intersection(&subjects).count())
+                        .saturating_sub(1) as f32;
+                    let raw = h.score / SUBJECT_COVERAGE_UPLIFT.mul_add(extra, 1.0);
+                    let s = if let Some(w) = label.strip_prefix("cover:") {
+                        raw + w.parse::<f32>().unwrap_or(0.0) * extra
+                    } else if let Some(m) = label.strip_prefix("mult:") {
+                        raw * m.parse::<f32>().unwrap_or(0.0).mul_add(extra, 1.0)
+                    } else {
+                        raw
+                    };
+                    (s, h)
                 })
                 .collect();
             scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Less));

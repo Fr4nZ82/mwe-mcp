@@ -186,36 +186,36 @@ fn window_closed_at(valid_to: Option<&str>, now: &chrono::DateTime<chrono::Utc>)
 
 // ---------- Subject coverage as a ranking signal ----------
 
-/// Added to a hit's score for **each** of the turn's subjects it covers
-/// beyond the first (planning card 65).
+/// Proportional uplift a hit earns for **each** of the turn's subjects it
+/// covers beyond the first (planning card 65).
 ///
 /// A question naming two people should be answered by a fact about both,
-/// and cosine alone cannot say so: measured on the live corpus, the fact
+/// and cosine alone cannot say so: measured on a live corpus, the fact
 /// that named both people, the right topic and the right occasion ranked
-/// **8th at 0.458**, below a birth date at 0.484. Nothing about the
-/// ranking knew that naming both was worth anything.
+/// **8th at 0.458**, below a birth date at 0.484. `owner_id`/`allow_ids`
+/// decided only *whether* a reader may see a fact, never what it was worth.
 ///
-/// **Fitted, not chosen**, and the fitting criterion is *does the answer
-/// lead*, not *how much of the block it leaves to other facts*. At this
-/// weight the measured answer moves from **8th to 1st**, and the turn that
-/// actually failed in production reaches 3rd from 17th.
+/// **Multiplicative, and that is the whole design.** The first version of
+/// this signal added a flat amount, and the founder's objection killed it:
+/// *«le cose vanno bilanciate — se cerco una cosa in comune tra 2 utenti,
+/// cercare fatti con entrambi gli utenti ha lo stesso peso dell'argomento
+/// di cui si parla»*. Measured, a flat bonus is not a weight at all: dense
+/// embeddings compress this corpus' similarities into ~0.10 between the
+/// 1st and 10th hit, so a flat 0.10 was **97 % of the entire usable range**
+/// — every covering fact overtook every non-covering one whatever the turn
+/// was about. That is a veto, not a balance.
 ///
-/// The kinship rows that rise with it (*"X is the son of Y"*) are **not
-/// noise** — founder's ruling 2026-08-03: a fact relating the two people a
-/// turn is about is a valid door and useful material for composing the
-/// answer, so it earning a place is the signal working, not a cost. How
-/// many facts the block carries is a separate question, decided by
-/// `recall_top_k` and deliberately re-measured *after* the engine settles.
+/// Scaling instead of adding restores the trade: a fact that covers both
+/// subjects **and** is on topic gains more than one that covers both and is
+/// off topic, and ordering *within* each coverage class is preserved. It is
+/// the same reason [`CLOSED_WINDOW_DOWNRANK`] beside it is multiplicative.
 ///
-/// There is still a ceiling, higher up: at 0.15 every music fact leaves a
-/// block answering a question about music, i.e. coverage has beaten topic
-/// outright. Full table in the card.
-///
-/// Additive and small on purpose. Like [`CLOSED_WINDOW_DOWNRANK`] beside
-/// it this is a **ranking signal, never a filter**: no fact becomes
-/// unreachable, no corpus is closed off, and every fact that surfaces
-/// today still surfaces.
-pub const SUBJECT_COVERAGE_BONUS: f32 = 0.10;
+/// Fitted on the measured turns: the answer leads (8th → **1st**, and the
+/// turn that failed in production 17th → 3rd) while the topical facts stay
+/// in the block — which the flat form pushed out. A ranking **signal, never
+/// a filter**: nothing becomes unreachable and everything that surfaced
+/// before still surfaces.
+pub const SUBJECT_COVERAGE_UPLIFT: f32 = 0.20;
 
 /// First-person forms that put the SPEAKER among the turn's subjects.
 ///
@@ -307,25 +307,26 @@ fn fact_mentions(
     out
 }
 
-/// The bonus a row earns against this turn's subjects.
+/// The multiplier a row earns against this turn's subjects — `1.0` when it
+/// earns nothing.
 ///
-/// Zero — and free, because the per-row scan never runs — unless the turn
+/// `1.0` — and free, because the per-row scan never runs — unless the turn
 /// carries **at least two** subjects. That guard is what makes the signal
 /// cost nothing on ordinary traffic: measured on 141 real turns, 2 of them
 /// name two people, and the other 139 pay one comparison.
-fn coverage_bonus(
+fn coverage_multiplier(
     row: &FactIndexRow,
     subjects: &std::collections::BTreeSet<String>,
     roster: &[EnrolledUserLite],
 ) -> f32 {
     if subjects.len() < 2 {
-        return 0.0;
+        return 1.0;
     }
     let covered = fact_mentions(row, roster).intersection(subjects).count();
     // The count is bounded by the enrolled roster, so the cast is exact.
     #[allow(clippy::cast_precision_loss, reason = "roster-bounded, far below 2^23")]
     let extra = covered.saturating_sub(1) as f32;
-    SUBJECT_COVERAGE_BONUS * extra
+    SUBJECT_COVERAGE_UPLIFT.mul_add(extra, 1.0)
 }
 
 // ---------- Cosine ----------
@@ -689,12 +690,12 @@ fn score_and_filter(
             if window_closed_at(row.valid_to.as_deref(), &now) {
                 s *= CLOSED_WINDOW_DOWNRANK;
             }
-            // Subject coverage, the same family of signal: a fact about
-            // BOTH people a two-person question named is worth more than
-            // one about neither. Additive after the multiplicative
-            // down-rank, so a closed window still costs a fixed fraction
-            // of the similarity rather than of the bonus.
-            s += coverage_bonus(&row, subjects, roster);
+            // Subject coverage, the same family of signal and the same
+            // shape: a fact about BOTH people a two-person question named
+            // is worth proportionally more than one about neither. Scaling
+            // rather than adding is what keeps it a weight instead of an
+            // override — see the constant.
+            s *= coverage_multiplier(&row, subjects, roster);
             (s, row)
         })
         .collect();
@@ -2675,7 +2676,7 @@ mod tests {
     }
 
     #[test]
-    fn coverage_bonus_is_free_below_two_subjects() {
+    fn coverage_is_free_below_two_subjects() {
         let mut row = sample_row(
             "018f1234-5678-7abc-9def-00000000c001",
             "user:alice",
@@ -2684,8 +2685,10 @@ mod tests {
         );
         row.topics = vec!["bob".to_owned()];
         let one: BTreeSet<String> = std::iter::once("bob".to_owned()).collect();
-        assert!((coverage_bonus(&row, &one, &roster()) - 0.0).abs() < f32::EPSILON);
-        assert!((coverage_bonus(&row, &BTreeSet::new(), &roster()) - 0.0).abs() < f32::EPSILON);
+        assert!((coverage_multiplier(&row, &one, &roster()) - 1.0).abs() < f32::EPSILON);
+        assert!(
+            (coverage_multiplier(&row, &BTreeSet::new(), &roster()) - 1.0).abs() < f32::EPSILON
+        );
     }
 
     /// The measured case in miniature: a fact naming BOTH people of a
