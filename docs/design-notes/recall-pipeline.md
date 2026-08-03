@@ -2,7 +2,7 @@
 title: Recall pipeline — the read-side orchestrators and the entry-point gatherer
 area: design-notes
 status: implemented
-last_review: "2026-08-01"
+last_review: "2026-08-03"
 ---
 
 # Recall pipeline
@@ -47,6 +47,32 @@ scans it. Documentation reaches the turn only through the bounded project-docs
 slot, and the whole-corpus `wiki_search` reaches it only behind
 [the signpost funnel](#the-smart-corpus-funnel--a-project-opens-on-its-own-description).
 
+### What actually reaches the agent — the block, slot by slot
+
+The pipeline's whole output is a handful of labelled sections. They are
+**role-labelled on purpose**: an agent that cannot tell a recalled fact from a
+standing directive will eventually recite the directive back to the user, so
+memory and instructions never share a field.
+
+| Slot | Filled by | Bounded by |
+|---|---|---|
+| `WHO YOU ARE` | the agent wiki's abstract + its identity self-facts | `max_agent_identity_chars` (`900`) |
+| `WHO IS SPEAKING` | the sender's one-line identity card | — |
+| `YOUR RECENT HISTORY WITH THIS USER` | the agent's own log of what it has done with this person | `max_agent_history_chars` (`1 400`) |
+| `RELEVANT MEMORY` | the flat hit-list — promoted facts, then `Recent (not yet consolidated):` for the fresh slot, then `Project documentation` for the docs slot; deduplicated against the navigated pages | `recall_top_k`, `recall_fresh_top_k`, the docs slot's own budget, and — for the **promoted half only** — `relevance_floor` |
+| `NAVIGATED PAGES` | sender-projected prose the funnel collected | `char_budget`, and the walk's own stop reason |
+| `UPCOMING` | facts whose validity window closes inside the horizon | `due_soon_top_k`, `due_soon_horizon_hours` |
+
+An empty section is omitted, and a turn where every section is empty carries no
+block at all rather than an empty scaffold.
+
+**Two things ride their own fields, deliberately outside the block.** Standing
+**behaviour directives** go in `rules` — a binding instruction must never be
+indistinguishable from a remembered fact. The **cross-consumer recent window**
+(`RECENT EXCHANGES ON YOUR OTHER CHANNELS WITH THIS USER`) goes in
+`recent_window`: it is the user's live thread from their *other* surfaces, not
+something memory recalled, and it expires in hours rather than being stored.
+
 ### Inside the funnel — where the doors come from, hop by hop
 
 ```mermaid
@@ -90,6 +116,42 @@ page of the wikis already entered, plus whatever the prose links to. That pool
 is set by the corpus's own shape, not by `top_k`, which is why
 `max_candidates` has to be sized against **how many pages a wiki has**, not
 against how many facts were recalled.
+
+### Every knob, and what it sizes
+
+Operator-settable, `recall:` in `mwe-mcp.config.yaml` and the
+`/dashboard/admin/recall-settings` panel (hot-reloaded). **Only resources are
+configurable — semantic judgment lives in the `navigator` prompt, never in a
+knob.** Defaults come from `IngestPolicy::default` / `NavigatorPolicy::default`.
+
+| Knob | Default | Sizes |
+|---|---:|---|
+| `recall_top_k` | `5` | the flat slot — how many promoted facts reach the block, **and** how many home pages seed the fan |
+| `recall_fresh_top_k` | `3` | the fresh slot (buffered, un-promoted captures); `0` disables it |
+| `smart_corpus_floor` | `0.45` | how close a project's signpost description must sit to the query before the merged search may read that project's documentation at all; naming the project bypasses it |
+| `relevance_floor` | `0.0` **(off)** | turn-level gate on *rendering* the promoted flat hits — see [the relevance floor](#the-relevance-floor--a-fourth-gate-but-on-rendering-not-on-recall) for why it ships disabled |
+| `max_hops` | `2` | navigator depth; clamped to `MULTI_HOP_HARD_LIMIT` (`10`) |
+| `pages_per_hop` | `3` | how many candidates one hop may open |
+| `char_budget` | `8 000` | total projected prose one navigation may collect |
+| `max_candidates` | `16` | how many doors a hop is offered, after tier ranking and dedup |
+| `decision_max_tokens` | `600` | cost guard on the per-hop decision JSON, not a quality dial |
+| `due_soon_top_k` | `3` | the `UPCOMING` slot; `0` disables it |
+| `due_soon_horizon_hours` | `168` (7 d) | how far ahead `UPCOMING` looks |
+| `project_docs_top_k` / `_char_budget` | `3` / `3 000` | the project-docs slot, shared by its two entry points and consumed in order |
+| `project_docs_signpost_floor` | `0.55` | the second, stricter gate on documentation the classifier explicitly asked for |
+| `recent_window_entries` / `_ttl_hours` / `_chars` | `32` / `4` / `1 200` | the cross-consumer recent window — the thread of discourse, deliberately short-lived |
+
+Not knobs, by design — these are **constants with a measurement behind them**,
+changed only with a new measurement (`mwe-core::recall`, `mwe-core::recall_nav`):
+
+| Constant | Value | Role |
+|---|---:|---|
+| `CLOSED_WINDOW_DOWNRANK` | `0.8` | multiplies a fact whose validity window has closed |
+| `SUBJECT_COVERAGE_UPLIFT` | `0.15` | multiplies per turn-subject covered beyond the first |
+| `WEIGHT_PRINCIPAL` | `0.6` | identity seed — deliberately the same rung as a topic-wiki match |
+| `WEIGHT_TOPIC_WIKI` / `_PAGE` | `0.6` / `0.8` | classified-topic seeds |
+| `WEIGHT_SITUATIONAL_WIKI` / `_PAGE` | `0.4` / `0.5` | host-supplied situational seeds |
+| `FRESH_CANDIDATE_CAP` | `32` | how many buffered captures are re-embedded per turn |
 
 ## The two corpora
 
@@ -427,19 +489,29 @@ context, **unfiltered** — the floor below touches none of that. It only
 decides whether [`ingest::format_snippet`](../../crates/mwe-core/src/ingest.rs)
 is allowed to *render* the promoted hits it was handed.
 
-[`DEFAULT_RELEVANCE_FLOOR`](../../crates/mwe-core/src/recall.rs) (default
-`0.45`, `recall.relevance_floor`) is **turn-level, not per-hit**: measured
-over 60 real user turns, a real answer's score band and injected noise's
-score band overlap too much for any per-hit cut to separate them, but the
-**best promoted (non-fresh) hit of the turn** does — `0.5474` on the turn
-that held the answer against `0.4306` on the turn whose recall block
-recited unrelated noise back to the user. So the gate reads that one
-number per turn: below it, none of the turn's promoted hits render (the
-slot is not opened, not "trimmed"); at or above it, every promoted hit
-renders, including ones individually weaker than the floor. Fresh
-(un-promoted) captures, the `UPCOMING` slot, and the project-docs slot are
-all unaffected by design — `0` disables the gate, same idiom as the
-smart-corpus funnel above. Full writeup, including the measurement table:
+[`DEFAULT_RELEVANCE_FLOOR`](../../crates/mwe-core/src/recall.rs)
+(`recall.relevance_floor`) is **turn-level, not per-hit**: measured over 60
+real user turns, a real answer's score band and injected noise's score band
+overlap too much for any per-hit cut to separate them, but the **best
+promoted (non-fresh) hit of the turn** does — `0.5474` on the turn that held
+the answer against `0.4306` on the turn whose recall block recited unrelated
+noise back to the user. So the gate reads that one number per turn: below
+it, none of the turn's promoted hits render (the slot is not opened, not
+"trimmed"); at or above it, every promoted hit renders, including ones
+individually weaker than the floor. Fresh (un-promoted) captures, the
+`UPCOMING` slot, and the project-docs slot are all unaffected by design.
+
+⚠️ **It ships OFF (`0.0`) — the mechanism is built, the number is not
+earned.** Its only labelled failure was a turn (`«il volume»`) that was an
+incomplete utterance and should never have reached recall at all, and
+calibrating a downstream relevance gate on damage caused by an upstream gate
+that let an unsearchable turn through is the wrong instrument on the wrong
+evidence. The upstream fix is the classifier's `skip` rule; a floor gets a
+number only once a *complete* turn is measured doing harm, from the gold set
+growing on confirmed misses rather than from a sweep of unlabelled turns.
+The operator panel turns it on; `0.45` is the value the distribution
+suggested, if one is ever wanted. Full writeup, including the measurement
+table:
 [ingest-pipeline.md](ingest-pipeline.md#the-recall-block--recalled-memory-the-rules-field-is-separate).
 
 ## `wiki_search` step-by-step
@@ -457,11 +529,37 @@ smart-corpus funnel above. Full writeup, including the measurement table:
    so ordering *within* the closed set is preserved; a future `valid_to`
    (an appointment to come) is open and unaffected; the fresh-captures
    slot applies the same rule to buffered windows.
-   Then add the **subject-coverage bonus** — see below.
+   Then apply the **subject-coverage uplift** — see below.
 4. **ACL filter** — drop rows the sender cannot read.
 5. **Sort** descending by score, take `top_k`.
 6. **Bump** `last_recall_at` + `recall_count_30d` on every returned id
    via [`fact_index::bump_recall_hits`] (one transaction).
+
+### Everything that touches a fact's rank, in the order it applies
+
+The whole ranking is four things, and only the first is learned. Read top to
+bottom — that is the order a score is built in:
+
+| # | What | Form | Value | Filter or signal? |
+|---|---|---|---|---|
+| 1 | cosine of the query embedding against the fact's | the base score | `[-1, 1]`, in practice a **narrow band** — this corpus' 1st and 10th hit of a turn are `0.1026` apart | the whole ranking |
+| 2 | validity down-rank (`CLOSED_WINDOW_DOWNRANK`) | ×`0.8` | applied when `valid_to` is in the past at query time | **signal** — the closed fact still surfaces, below the open ones |
+| 3 | subject coverage (`SUBJECT_COVERAGE_UPLIFT`) | ×`1 + 0.15 × (covered − 1)` | only when the turn names ≥ 2 subjects | **signal** — no fact becomes unreachable |
+| 4 | ACL (`acl::can_read`) | drop | per fragment, post-scoring | **filter**, and the only one — a row the sender may not read never leaves the process |
+
+**Why 2 and 3 multiply rather than add**, and why that is the design and not a
+detail: the base score lives in a band ~0.10 wide, so *any* flat term large
+enough to matter is large enough to override. A flat `+0.10` coverage bonus was
+measured at 97 % of the entire usable range — every covering fact overtook
+every non-covering one whatever the turn was about. Multiplying preserves the
+trade instead: a fact that covers both subjects **and** is on topic gains more
+than one that covers both and is off topic, and ordering *within* each class is
+untouched.
+
+**Why ACL is last and is a filter while everything else is a signal.** Rank is
+an opinion about usefulness; readability is not negotiable. Keeping them in
+different categories means no weight can ever be tuned into a leak, and a hit
+count that included unreadable rows would itself disclose their existence.
 
 ### Subject coverage — a question about two people wants a fact about both
 
@@ -471,9 +569,10 @@ people, the right topic and the right occasion ranked **8th at 0.458**,
 below a birth date at 0.484. `owner_id`/`allow_ids` decided only *whether*
 a reader may see a fact, never *how much it was worth*.
 
-So the score gains
-[`SUBJECT_COVERAGE_BONUS`](../../crates/mwe-core/src/recall.rs) for every
-subject of the turn a fact covers **beyond the first**:
+So the score is multiplied by
+[`SUBJECT_COVERAGE_UPLIFT`](../../crates/mwe-core/src/recall.rs) (`0.15`)
+for every subject of the turn a fact covers **beyond the first** — a fact
+covering two of a two-person question scores ×1.15, three ×1.30:
 
 - **The turn's subjects** come from [`turn_subjects`]: the speaker when the
   first person puts them *in* the question, plus every enrolled person the
@@ -487,9 +586,10 @@ subject of the turn a fact covers **beyond the first**:
   `owner`/`allow`/`sender` say who may read it, text and topics say who it
   names. Neither alone is aboutness: the measured answer is owned by one
   person and names the other only in its topics and prose.
-- **Free below two subjects.** The per-row scan is skipped entirely unless
-  the turn carries at least two, which is almost always: of 141 real turns,
-  **2** named two people.
+- **Free below two subjects.** The per-row scan runs only when the turn
+  carries at least two subjects, which is rare — of 141 real turns, **2**
+  did. Every other turn pays one comparison and nothing else, so a signal
+  built for an uncommon shape costs the common one nothing.
 
 A ranking **signal, never a filter**, exactly like the down-rank above — no
 fact becomes unreachable and every fact that surfaced before still surfaces.
@@ -689,6 +789,23 @@ Measured over 141 real turns on the live corpus: the cap bites on **49 % of
 hops**, and once the ranking precedes the dedup **1 628 of 10 955 offered
 candidates (14.9 %) change tier** — 1 442 of them from filesystem sibling to
 authored rail, leading the pool instead of being cut with the tail.
+
+### Why a walk stopped — the seven `NavStop` reasons
+
+Every navigation records exactly one, journaled in the recall trace and in the
+`recall_nav: navigation done` log line. Reading them is how a disappointing
+answer is diagnosed without re-running anything: they separate *the funnel
+chose to stop* from *the funnel ran out* from *the funnel broke*.
+
+| `stop` | Meaning | Reading |
+|---|---|---|
+| `done` | the navigator judged the collection sufficient | the intended exit |
+| `hop_cap` | `max_hops` spent | it still wanted to walk — the depth dial is the binding constraint |
+| `budget` | `char_budget` spent | the pages were long, not the walk deep |
+| `pool_exhausted` | every remaining candidate was already visited or vanished | the corpus ran out of doors, not the policy |
+| `empty_fan` | nothing seeded the walk | **no completion was spent** — recall never started |
+| `nothing_opened` | every pick of the hop was vetted away | the model named doors that were not offered; another hop would replay it |
+| `llm_degraded` | transport failure or an unparseable decision | partial recall, and invisible where it lands — see the single retry in `request_decision` |
 
 Degradation contract: an LLM failure or an unparseable decision stops the
 funnel and returns the partial collection — recall degrades, the turn
@@ -1058,6 +1175,22 @@ table is the larger and the more regenerable of the two.
   (wiki hop, direct page hop with alias stripped, dead page hop never
   offered), char-budget truncation, soft-fail on unparseable decisions,
   done / empty-fan short-circuits, fence-tolerant decision parse.
+- `prune_pool`: 8 — the tier order (a rail leads a sibling / a sibling
+  never displaces a fan seed / the cap keeps the highest tiers, not the
+  alphabetically-first entries / a sibling-only page still surfaces when
+  there is room / the fan's own order survives untouched), **plus the
+  collision the first five could not see**: one page reached by two routes
+  keeps the better route, a linked page buried in a 30-entry directory
+  listing still leads the pool, and a fan seed re-offered as a sibling of
+  its own wiki is not demoted. Every one of the original five used
+  *different* pages for the two routes, which is how a 14.9 % mis-tiering
+  survived a green suite.
+- Subject coverage, in [`recall`](../../crates/mwe-core/src/recall.rs): 6 —
+  `turn_subjects` admits the speaker when the first person puts them in the
+  question and leaves them out when they are only addressed; an alias
+  matches but a substring never does; coverage is free below two subjects;
+  a fact covering both subjects overtakes a closer one covering one; and
+  the signal reorders without ever removing.
 - Link grammar: `recall.rs` pins `extract_wikilinks` (page hops kept,
   aliases stripped, trailing-slash and whitespace degenerate forms).
 

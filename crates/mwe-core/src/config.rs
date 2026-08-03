@@ -1534,10 +1534,12 @@ pub struct RecallConfig {
     pub smart_corpus_floor: Option<f32>,
     /// Override `IngestPolicy::relevance_floor` — similarity the turn's
     /// best **promoted** flat hit must clear before `RELEVANT MEMORY`
-    /// renders any promoted hit at all (default 0.45; a turn-level gate,
-    /// not a per-hit trim — see `recall::DEFAULT_RELEVANCE_FLOOR` for the
-    /// measurement). Fresh captures, `UPCOMING`, and the project-docs slot
-    /// are unaffected. `0` disables it.
+    /// renders any promoted hit at all. A turn-level gate, not a per-hit
+    /// trim. **Ships disabled (`0.0`)**: the mechanism is built but the
+    /// number is not earned — see `recall::DEFAULT_RELEVANCE_FLOOR` for the
+    /// measurement and why. `0.45` is the value the distribution suggested,
+    /// for an operator who wants one. Fresh captures, `UPCOMING`, and the
+    /// project-docs slot are unaffected.
     #[serde(default)]
     pub relevance_floor: Option<f32>,
     /// Override `NavigatorPolicy::max_hops` — the depth dial (default 2;
