@@ -134,7 +134,7 @@ triggers it, which LLM (if any) runs, and who pays.
 | **`wiki_search` / `recall_core_global` / internal recall** | consumer agent (or `wiki_ingest_message` internally) | **embeddings only** | mwe-mcp owner (hardware) | **Zero $.** Embed query + cosine scan + ACL filter. No LLM. |
 | **Capture / dedup (`wiki_capture`, internal)** | the `ingest` LLM, dashboard, or REM | **embeddings only** | mwe-mcp owner (hardware) | **Zero $.** Embed body + deterministic jaccard 6-gram dedup + index insert. No LLM. |
 | **Ingest inside `wiki_ingest_message`** *(default conversational turn)* | mwe-mcp | internal LLM (`ingest` function) | mwe-mcp owner (local or API) | Zero if local; a fraction of a cent per call on a small API model. One LLM call per turn. |
-| **Hub Writer (`index.md` regeneration)** | mwe-mcp (nightly REM sub-job) | internal LLM (`hub_writer`) | mwe-mcp owner | Zero if local — short summaries, a 7-9B is plenty. Runs only inside the nightly cycle, capped by `RemPolicy::hub_writer_cap` (default 10 wikis/night). |
+| **Map writer (`index.md`)** | mwe-mcp (nightly REM sub-job) | **none** — assembled from the pages on disk | mwe-mcp owner | Zero, and not "zero if local": the sub-job calls no model at all. Capped by `RemPolicy::map_writer_cap` (default 200 wikis/night) as an I/O bound. |
 | **REM promotions (paragraph → file → wiki)** | mwe-mcp (nightly cron) | internal LLM (`rem_promotions`, **strong**) | mwe-mcp owner | The quality-critical spend. Local strong model → zero $; online (Sonnet/Opus) → cents per promotion. A cheap deterministic pre-filter (the `auto_promote_min_page_facts` page-mass floor) selects pages **before** the strong model runs, and the sub-job is hard-capped at `RemPolicy::auto_promote_cap` (default 5/night). |
 | **REM semantic dedup confirmation** | mwe-mcp (nightly cron) | internal LLM (`rem_dedup_semantic`, **small**) | mwe-mcp owner | Zero if local; ~a tenth of a cent online. |
 | **Smart-wiki authoritative write** | smart consumer via `wiki_admin_push` | **the consumer's** LLM (for the markdown) | consumer owner | **Zero $ on mwe-mcp side** — pure I/O + indexing. The markdown is a side effect of the consumer's normal generation. Resolves the "double bill" for smart consumers (see [§7](#7-the-smart-consumer-path--no-internal-llm)). |
@@ -389,10 +389,12 @@ spend lives. The cycle is a sequence of sub-jobs wired in
 - **Briefing processor (non-smart)** — drain `wiki_briefing_items`
   for non-smart wikis, applying each comment-style item as a fact
   correction. No LLM (deterministic apply).
-- **Hub Writer** — regenerate `index.md` summaries on the `hub_writer`
-  model. Runs last (so it sees a stable post-archive snapshot) and only
-  here — `run_hub_writer` has no call site outside `run_cycle`; bounded
-  by `RemPolicy::hub_writer_cap` (default 10 wikis/night).
+- **Map writer** — rewrite every standard wiki's `index.md` as its map:
+  the page listing that answers *where does a fact belong here*. **No
+  model** — it is assembled from the pages on disk. Runs last (so every map
+  lists the pages the night actually left behind) and only here —
+  `run_map_writer` has no call site outside `run_cycle`; bounded by
+  `RemPolicy::map_writer_cap` (default 200 wikis/night, an I/O cap).
 
 Two structural facts about the cycle, both verified in `run_cycle`:
 

@@ -15,7 +15,7 @@ fixed sequence of sub-jobs around a single orchestrator
 authoritative roster and order are the call sequence in `run_cycle`;
 the table below mirrors it. The **write-jobs**
 (revisor, auto_promote, the consolidation/hygiene sweeps,
-archive_detector, hub_writer)
+archive_detector, map_writer)
 carry an `is_smart_wiki` skip gate so they leave wikis of the
 smart family to the smart consumer. The two smart-wiki read-jobs
 (Briefing dispatcher + Backlink reciprocity detector) invert the
@@ -51,7 +51,7 @@ construction.
 14. lease_expirer                wiki_admin_leases::expire_stale (mark active-past-grace as released + delete released-past-retention)
 15. briefing_processor           drains `wiki_briefing_items` on *non-smart* wikis past grace → briefing_processor::process_briefing_item
 16. husk_gc                      plan-absent page files whose rows are all tombstoned/superseded past the revert window → remove_file + settle offsets (no LLM) *[skips smart]*
-17. hub_writer                   hub_writer LLM + atomic_write index.md                     *[skips smart + plan-owned indexes]*
+17. map_writer                   render the page listing + atomic_write index.md (no LLM)   *[skips smart + plan-owned indexes]*
 ```
 
 Order rationale: the auto_apply + auto_finalize sweeps catch up on any
@@ -77,9 +77,9 @@ non-smart briefing-processor drains operator comments on standard
 wikis past the grace period (the smart-consumer-on-smart-wikis dual);
 the husk-page GC runs after every mover has settled the night's fact
 state (a page one of them just emptied is judged on the final shape);
-hub_writer summarises last so its prompt sees a stable state. Running
-hub_writer first would force re-runs whenever any earlier sub-job
-changed a wiki.
+the map writer runs last so every map lists the pages the night actually
+left behind. Running it first would describe a wiki that no longer exists
+by morning.
 
 ## Smart-wiki classification
 
@@ -112,7 +112,8 @@ pub async fn run_cycle(
 ) -> Result<RemCycleReport>;
 ```
 
-`RemLlms` carries the per-sub-job model handles — `hub_writer` and
+`RemLlms` carries the per-sub-job model handles — `hub_writer` (the
+narrative compiler's `ConceptHub` prose, no longer the index) and
 `revisor` are mandatory `&dyn LlmBackend`, `auto_promote` and `apply`
 are `Option<&dyn LlmBackend>` — wired from the operator's
 `mwe-mcp.config.yaml > llm`: per the
@@ -945,33 +946,61 @@ later.
    notices: the next compile rewrites exactly the touched pages, so
    prose and `lista` records alike stop rotting.
 
-## Hub Writer sub-job
+## Map writer sub-job
 
-The last sub-job in the cycle, and one of the simplest:
+The last sub-job in the cycle, and the only write-job that calls no model
+at all. It writes every standard wiki's `index.md` as its **map**: the
+page listing that answers *where does a fact belong here*, for the write
+side. The read path never opens a map — see the
+[reserved pages](../concepts/memory-model.md).
 
-- Trigger: wiki has children **and** at least one active fact **and**
-  is not in the smart family **and** its `index.md` is not a page of the
-  persisted compilation plan — the compiler is the writer of plan-owned
-  indexes — since the map rule (2026-08-03) no foundation node claims one,
-  so this set is empty on a current plan and the hub writer is the map's
-  only author,
-  and a REM-side regeneration would fight it over the same file. With the
-  Fonditore's topic-wiki pass this covers every standard wiki a plan has
-  seen, so the sub-job serves only wikis outside a plan (or a workdir with
-  no plan yet).
-- For each qualifying wiki (bounded by `hub_writer_cap`, default 10):
-  - Build a prompt from the wiki's title + type + children list + 20
-    most-recent active facts.
-  - Call the `hub_writer` LLM with `max_tokens=2000` and
-    `temperature=0.2`.
-  - `atomic_write` the response to `<wiki_dir>/index.md`.
+- Trigger: the wiki is **not** in the smart family (the smart consumer
+  crafts its own hub pages through `wiki_admin_push`) and its `index.md`
+  is not a page of the persisted compilation plan. Since the map rule
+  (2026-08-03) no foundation node claims one, so that second set is empty
+  on a current plan and this sub-job is the map's only author — the guard
+  stays for a plan persisted before the rule, because two writers on one
+  file is a fight whoever is right.
+- **One refusal, and it is the load-bearing one:** a wiki whose `index.md`
+  the fact index still points at is skipped. The map rule says no fact may
+  live on a root, but a corpus written under the old convention has them
+  until the compiler re-homes each row — and the widened trigger reaches
+  exactly those wikis, where the old one only ever touched group roots,
+  which hold none. Writing a map over them would delete the prose of live
+  facts and leave their `{{f=...}}` byte regions pointing into a file that
+  no longer contains them. Skipping is safe and self-clearing: the compile
+  pass moves the rows, and the next cycle finds the page empty and maps it.
+- For each remaining wiki (bounded by `map_writer_cap`, default 200 — an
+  I/O cap, not a budget one):
+  - list the pages on disk, split reserved from ordinary;
+  - render the map — sub-wikis as `[[wiki_id]]` hops, ordinary pages as
+    `[[wiki_id/stem]]`, and each reserved page with the one line that says
+    what belongs on it;
+  - `atomic_write` it to `<wiki_dir>/index.md`.
 
-The "regen on every cycle that qualifies" model intentionally skips
-the "have children changed since the last regen?" detection: the cost
-of a hub_writer call with a small model is small, and the regen is
-idempotent (atomic_write handles partial writes; the next cycle
-overwrites whatever we wrote last night). Tracking last-hub-run state
-in a side table is a later optimisation if profiling demands it.
+**Why there is no LLM here, and what that cost.** Until 2026-08-03 this
+sub-job asked the `hub_writer` model to compose an index out of the twenty
+most recent fact bodies, and it ran only for a wiki that had **child
+wikis** — so on a corpus of 29 wikis, 19 never got an index at all, and the
+ten that did got a narrative summary of recent facts rather than a map.
+Once the root became a map for the write side only, the thing a model was
+needed for stopped being wanted: a map is the list of pages plus what each
+one is for, and both already exist on disk. Assembling it is free, runs on
+every wiki every cycle, and cannot name a page that does not exist. What
+was traded away is the thematic *grouping* the model used to impose, which
+read well; re-adding it is one pass over an already-correct list — a much
+safer prompt than the one it replaces — and is deliberately not built.
+
+**Link-only by design.** No per-page description or keyword line. A page's
+description and its testata keywords are served by the navigator only to a
+reader at the wiki's default visibility, while a map is one file with one
+audience; page *names* are already visible to anyone the funnel offers a
+sibling to, so a list of them widens nothing. Enriching the lines means
+first deciding whose view the file is written at.
+
+The `hub_writer` LLM slot is **not** retired: the narrative compiler still
+writes `ConceptHub` prose through it (and the operational chat falls back
+to it). See [llm-functions.md](llm-functions.md#11-hub_writer--concepthub-prose--operational-chat-fallback).
 
 ## Briefing dispatcher sub-job
 
@@ -1210,7 +1239,8 @@ keeps prose clean. Pinned by
 
 ## LLM-error semantics
 
-Every LLM-using sub-job (revisor, auto_promote, hub_writer)
+Every LLM-using sub-job (revisor, auto_promote, comment_apply — the map
+writer is not one of them any more)
 distinguishes two failure categories:
 
 | Category | Example | Handling |
@@ -1244,7 +1274,8 @@ exact roster — the headlines:
 - **events**: wire strings + insert payload roundtrip + null payload +
   dedup probe within window + dedup probe across kinds.
 - **rem**: revisor, auto-promote, archive,
-  auto-apply, auto-finalize, hub_writer (qualifying wiki + no-children +
+  auto-apply, auto-finalize, map_writer (a wiki with children, a leaf wiki,
+  the reserved/ordinary split, a nested page's link, an empty wiki, the
   cap), the provenance-hygiene sweep (defect-shape-only detector,
   move+strip+re-embed, ref dedup + idempotence, cap, smart skip), the
   smart-wiki-aware sub-jobs

@@ -402,7 +402,7 @@ contract of a cycle. Defaults verified against `RemPolicy::default()`:
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `hub_writer_cap` | 10 | Max wikis whose `index.md` is regenerated per cycle (Hub Writer is the most expensive sub-job per call). |
+| `map_writer_cap` | 200 | Max wikis whose `index.md` is rewritten as a map per cycle. A plain I/O cap since the map writer stopped calling a model; it was `10` when the sub-job was the priciest one per call, and that number silently starved every wiki past the tenth. |
 | `revisor_cap` | 30 | Max **act-first** `dedup_merge` merges the semantic revisor applies per cycle (born-applied receipt + 7-day revert window — see rem-cycle.md). |
 | `revisor_jaccard_min` | 0.45 | Lower bound of the jaccard pre-pass band: pairs below are dismissed without asking the LLM. |
 | `revisor_jaccard_max` | `recall::DEFAULT_DEDUP_THRESHOLD` | Upper bound: pairs at/above were already deduped at capture time, so the revisor works the **interesting band** in between. |

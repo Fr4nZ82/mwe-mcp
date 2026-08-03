@@ -16,7 +16,8 @@
 //! (dedup, promote, merge, completion, contradiction, refile,
 //! provenance, dates) reorganise the fact set act-first; the archive
 //! detector and the smart-wiki read-jobs emit proposals/briefing items;
-//! and `hub_writer` runs last so its prompt sees a stable state.
+//! and the map writer runs last so every wiki's map lists the pages the
+//! night actually left behind.
 //!
 //! ## Cycle invariants
 //!
@@ -24,7 +25,7 @@
 //!   is load-bearing only at the edges (the proposal sweeps settle
 //!   pending state before the write-jobs touch it, provenance hygiene
 //!   runs right before the date normalizer so later sub-jobs see
-//!   pointer-clean text, and `hub_writer` summarises last).
+//!   pointer-clean text, and the map writer runs last).
 //! - Every state-mutating sub-step is journaled in `rem_ops_log` via
 //!   [`crate::wal::begin_rem_op`] → `complete_rem_op` / `fail_rem_op`.
 //!   The floor's sub-step inverses are idempotent (`atomic_write`
@@ -91,10 +92,15 @@ pub struct RemPolicy {
     /// Wall-clock anchor for lifecycle evaluation (`now` in the rule
     /// expressions). `None` ⇒ [`Utc::now`].
     pub now: Option<DateTime<Utc>>,
-    /// Maximum number of wikis whose `index.md` is regenerated per
-    /// cycle. Hub Writer is the most expensive sub-job per call (LLM
-    /// + `atomic_write`), so the cap shields the operator's budget.
-    pub hub_writer_cap: usize,
+    /// Maximum number of wikis whose `index.md` is rewritten as a map per
+    /// cycle.
+    ///
+    /// A plain I/O cap since the map writer stopped calling a model: the
+    /// per-wiki cost is a directory listing and one `atomic_write`. It was
+    /// `10` while the sub-job was the most expensive one per call, and that
+    /// number silently starved a corpus larger than ten wikis — the tree walk
+    /// is stably ordered, so the *same* tail went unmapped every night.
+    pub map_writer_cap: usize,
     /// Maximum number of dedup supersedes per cycle. Mirrors the
     /// `cap_promotions_per_night` figure in
     /// engine DB and migrations — REM never
@@ -289,7 +295,7 @@ impl Default for RemPolicy {
         Self {
             cycle_id: None,
             now: None,
-            hub_writer_cap: 10,
+            map_writer_cap: 200,
             revisor_cap: 30,
             revisor_jaccard_min: 0.45,
             revisor_jaccard_max: recall::DEFAULT_DEDUP_THRESHOLD,
@@ -391,8 +397,8 @@ pub struct RemCycleReport {
     /// Husk-page GC sub-job report — plan-absent page files whose
     /// rows are all past any revert removed from disk.
     pub husk_gc: HuskGcReport,
-    /// Hub Writer sub-job report (runs last).
-    pub hub_writer: HubWriterReport,
+    /// Map writer sub-job report (runs last).
+    pub map_writer: MapWriterReport,
     /// Negative-verdict memos dropped by the TTL sweep at cycle start
     /// ([`crate::rem_verdicts`]).
     pub verdict_memo_purged: u64,
@@ -576,13 +582,13 @@ pub struct DateNormalizeReport {
     pub errors: Vec<String>,
 }
 
-/// Sub-report for the `hub_writer`.
+/// Sub-report for the map writer.
 #[derive(Debug, Clone, Default)]
-pub struct HubWriterReport {
-    /// Wiki ids whose `index.md` was rewritten.
-    pub regenerated: Vec<String>,
-    /// Wiki ids that did not qualify (no children / no active facts /
-    /// past the cap).
+pub struct MapWriterReport {
+    /// Wiki ids whose `index.md` was rewritten as a map.
+    pub written: Vec<String>,
+    /// Wiki ids left alone: the smart family (the smart consumer owns its
+    /// own hub pages) and any wiki whose map a persisted plan still claims.
     pub skipped: Vec<String>,
     /// Soft errors.
     pub errors: Vec<String>,
@@ -766,7 +772,10 @@ pub struct AutoPromoteReport {
 /// handles so adding a new sub-job (auto-promote, archive, cronista…)
 /// does not grow the public signature of `run_cycle` linearly.
 pub struct RemLlms<'a> {
-    /// `hub_writer` slot — regenerates `index.md`.
+    /// `hub_writer` slot — the **narrative compiler's** `ConceptHub` prose
+    /// ([`crate::compiler`]), which is the slot's only remaining REM-side
+    /// consumer: the sub-job that used to regenerate a wiki's `index.md`
+    /// through it writes the map deterministically now.
     pub hub_writer: &'a dyn LlmBackend,
     /// `rem_dedup_semantic` slot — confirms suspicious dedup pairs.
     pub revisor: &'a dyn LlmBackend,
@@ -886,7 +895,7 @@ pub type Result<T> = std::result::Result<T, RemError>;
 /// revisor's semantic nomination channel instead reads the vectors
 /// already stored on the rows), and a [`RemLlms`] bag carrying the
 /// per-sub-job model handles so the operator can wire each function to
-/// a different profile (`hub_writer` → workhorse, `revisor` → small,
+/// a different profile (`cronista` → workhorse, `revisor` → small,
 /// `auto_promote` → strong; per the ingest pipeline).
 ///
 /// Order of sub-jobs is fixed:
@@ -1037,15 +1046,7 @@ pub async fn run_cycle(
     )
     .await?;
     let husk_gc = run_husk_gc(pool, tree, &cycle_id, now, policy, &smart_wiki_index).await?;
-    let hub_writer = run_hub_writer(
-        pool,
-        tree,
-        llms.hub_writer,
-        &cycle_id,
-        policy,
-        &smart_wiki_index,
-    )
-    .await?;
+    let map_writer = run_map_writer(pool, tree, &cycle_id, policy, &smart_wiki_index).await?;
 
     let ended_at = Utc::now();
     tracing::info!(
@@ -1089,7 +1090,7 @@ pub async fn run_cycle(
         comment_facts_moved = briefing_processor.facts_moved,
         husk_pages_examined = husk_gc.pages_examined,
         husk_pages_removed = husk_gc.removed.len(),
-        hub_regenerated = hub_writer.regenerated.len(),
+        maps_written = map_writer.written.len(),
         verdict_memo_purged,
         "rem: cycle done"
     );
@@ -1115,7 +1116,7 @@ pub async fn run_cycle(
         lease_expirer,
         briefing_processor,
         husk_gc,
-        hub_writer,
+        map_writer,
         verdict_memo_purged,
         verdict_memo_rows,
     })
@@ -5670,17 +5671,43 @@ async fn run_briefing_processor_non_smart(
     Ok(report)
 }
 
-// ---------- Hub Writer sub-job ----------
+// ---------- Map Writer sub-job ----------
 
-async fn run_hub_writer(
+/// Write every non-smart wiki's `index.md` as its **map** — the page listing
+/// that answers *where does a fact belong here*.
+///
+/// **Deterministic, and that is the design.** Until 2026-08-03 this sub-job
+/// asked the `hub_writer` model to compose an index out of the twenty most
+/// recent fact bodies, and it ran only for a wiki that had **child wikis** —
+/// so on a corpus of 29 wikis, 19 never got an index at all, and the ten that
+/// did got a narrative summary rather than a map. Once the founder's ruling
+/// made the root a map for the write side only ([`wiki::INDEX_FILENAME`]),
+/// the content a model was needed for stopped being wanted: a map is the list
+/// of pages plus what each one is about, and both already exist on disk. So
+/// the map is assembled, not generated — free, running on every wiki every
+/// cycle, and structurally unable to name a page that does not exist.
+///
+/// What was traded away, stated plainly: the model used to *group* the links
+/// under thematic headings, which read well. Re-adding that is one pass over
+/// an already-correct list — a far safer prompt than the one this replaces —
+/// and it is deliberately not built here.
+///
+/// **The line each page gets is its testata keywords, not its `description`.**
+/// A map is one file with one audience, while a description is shown by the
+/// navigator only to a reader at the wiki's default visibility. The keywords
+/// are already computed at that boundary ([`meta_annotate::sync_page_keywords`],
+/// the [`fact_at_default_visibility`](meta_annotate) rule), so they are the
+/// subset that is safe in a file everyone who can open the wiki can read.
+/// Richer lines are a card-quality job, and the map improves for free when
+/// the cards do.
+async fn run_map_writer(
     pool: &SqlitePool,
     tree: &WikiTree,
-    llm: &dyn LlmBackend,
     cycle_id: &str,
     policy: &RemPolicy,
     smart_wiki_index: &SmartWikiIndex,
-) -> Result<HubWriterReport> {
-    let mut report = HubWriterReport::default();
+) -> Result<MapWriterReport> {
+    let mut report = MapWriterReport::default();
     // Any wiki whose `index.md` the compilation plan owns stays off-limits:
     // two writers on one file is a fight, whoever is right. Since the map
     // rule (founder, 2026-08-03) **no plan node points at a wiki's map** —
@@ -5700,18 +5727,17 @@ async fn run_hub_writer(
                 .collect(),
             Ok(None) => std::collections::BTreeSet::new(),
             Err(e) => {
-                tracing::warn!(error = %e, "hub_writer: persisted plan unreadable — treating no index as plan-owned");
+                tracing::warn!(error = %e, "map_writer: persisted plan unreadable — treating no index as plan-owned");
                 std::collections::BTreeSet::new()
             },
         };
     for d in tree.walk()? {
-        if report.regenerated.len() >= policy.hub_writer_cap {
+        if report.written.len() >= policy.map_writer_cap {
             break;
         }
         let wiki_id = d.meta.wiki_id.as_str().to_owned();
-        // Hub Writer never rewrites a smart wiki's `index.md` —
-        // the smart consumer crafts its own hub pages via
-        // `wiki_admin_push`.
+        // Never rewrite a smart wiki's `index.md` — the smart consumer
+        // crafts its own hub pages via `wiki_admin_push`.
         if is_smart_wiki(smart_wiki_index, d.meta.wiki_id.as_str()) {
             report.skipped.push(wiki_id);
             continue;
@@ -5720,130 +5746,178 @@ async fn run_hub_writer(
             report.skipped.push(wiki_id);
             continue;
         }
-        // Trigger: the wiki must have at least one child AND at least one active fact.
-        if d.meta.children.is_empty() {
+        // No trigger beyond "is a standard wiki". The old one — must have
+        // child wikis AND active facts — is what left 19 of production's 29
+        // wikis without an index; a map of a wiki with two pages and no
+        // sub-wikis is still the answer to "where does a fact belong here",
+        // and an empty wiki's map says so in one line instead of leaving
+        // whatever bytes happened to be there.
+        //
+        // One refusal, and it is the load-bearing one: **never overwrite an
+        // `index.md` the fact index still points at.** The map rule says no
+        // fact may live on a root, but a corpus written under the old
+        // convention has them until the compiler re-homes each row, and the
+        // widened trigger now reaches exactly those wikis — the previous
+        // trigger only ever touched group roots, which hold none. Writing a
+        // map over them would delete the prose of live facts and leave their
+        // `{{f=...}}` byte regions pointing into a file that no longer
+        // contains them. Skipping is safe and self-clearing: the compile pass
+        // moves the rows, and the next cycle finds the page empty and maps it.
+        let index_source_path = d
+            .rel_dir
+            .join(wiki::INDEX_FILENAME)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if fact_index::count_active_on_page(pool, &index_source_path).await? > 0 {
             report.skipped.push(wiki_id);
             continue;
         }
-        let active = fact_index::count_active_in_wiki(pool, &wiki_id).await?;
-        if active == 0 {
-            report.skipped.push(wiki_id);
-            continue;
-        }
-        let op_id = wal::begin_rem_op(pool, cycle_id, "hub_writer", Some(&wiki_id), None).await?;
-        match regenerate_index(pool, tree, &d, llm).await {
+        let op_id = wal::begin_rem_op(pool, cycle_id, "map_writer", Some(&wiki_id), None).await?;
+        match write_wiki_map(&d) {
             Ok(()) => {
                 wal::complete_rem_op(pool, op_id).await?;
-                report.regenerated.push(wiki_id);
+                report.written.push(wiki_id);
             },
             Err(e) => {
                 wal::fail_rem_op(pool, op_id, &format!("{e}")).await?;
-                report.errors.push(format!("hub_writer on {wiki_id}: {e}"));
+                report.errors.push(format!("map_writer on {wiki_id}: {e}"));
             },
         }
     }
     Ok(report)
 }
 
-/// Bundled default for the `regenerate-index` system prompt — the
-/// Hub Writer's REM-side consumer that regenerates the `index.md` of
-/// a non-smart parent wiki.
+/// Render one wiki's map. Pure function of the wiki's metadata and the
+/// filenames on disk, so it is fully testable and cannot invent a page.
 ///
-/// The verbatim prompt body lives in
-/// `crates/mwe-core/prompts/regenerate-index.md` (frontmatter + a
-/// single ```text ... ``` fenced block) and is loaded through
-/// [`prompts::render`]; an operator override at
-/// `<workdir>/prompts/regenerate-index.md` wins when present.
-/// Referenced from [`prompts::BUNDLED`] so `mwe-mcp init` materialises
-/// it under the workdir. Pre-extraction this prompt was built
-/// inline as a `format!()` string; an audit noted
-/// that the operator override mechanism could not apply to a
-/// hardcoded prompt, and the extraction closes the gap.
-pub const BUNDLED_REGENERATE_INDEX_MD: &str = include_str!("../prompts/regenerate-index.md");
+/// Three sections, each omitted when empty:
+///
+/// - **Sub-wikis** — the child wikis, as `[[wiki_id]]` hops.
+/// - **Pages** — every ordinary page, as `[[wiki_id/stem]]`.
+/// - **Reserved** — the pages with a fixed structural role, each with the one
+///   line that says what belongs on it. This section is the part REM and a
+///   future classifier prompt actually need: it is where the rule *"a fact
+///   with no page goes on the buffer, an identity fact goes on the card"*
+///   stops being tribal knowledge held in Rust and becomes something written
+///   in the wiki itself.
+///
+/// Deliberately **link-only**: no per-page description or keyword line. Page
+/// names are already visible to any reader the funnel offers a sibling to, so
+/// a list of them adds no exposure — whereas a page's description and its
+/// testata keywords are served by the navigator only at the wiki's default
+/// visibility, and a map is one file with one audience. Enriching the lines
+/// means first deciding whose view the file is written at.
+fn render_wiki_map(meta: &wiki::WikiMeta, pages: &[std::path::PathBuf], today: &str) -> String {
+    let wiki_id = meta.wiki_id.as_str();
+    let title = if meta.title.trim().is_empty() {
+        wiki_id
+    } else {
+        meta.title.trim()
+    };
+    let mut out = String::new();
+    out.push_str("---\ntitle: ");
+    out.push_str(&serde_yaml::to_string(&title).unwrap_or_else(|_| format!("{title}\n")));
+    out.push_str("updated: ");
+    out.push_str(today);
+    out.push_str("\npage_type: wiki_map\ndescription: \"Map of ");
+    out.push_str(wiki_id);
+    out.push_str(": which pages live here and what belongs on each.\"\n---\n\n# ");
+    out.push_str(title);
+    out.push_str("\n\nThis page is a map, not a memory: it lists what lives in this wiki so a\n");
+    out.push_str("fact can be filed where it belongs. Facts are on the pages below.\n");
 
-fn regenerate_index_prompt(
-    tree: &WikiTree,
-    title: &str,
-    wiki_type: &str,
-    wiki_id: &str,
-    subject: &str,
-    children: &str,
-    snippet: &str,
-    language_directive: &str,
-) -> Result<String> {
-    prompts::render(
-        "regenerate-index",
-        tree.workdir(),
-        BUNDLED_REGENERATE_INDEX_MD,
-        &[
-            ("locale", language_directive),
-            ("title", title),
-            ("wiki_type", wiki_type),
-            ("wiki_id", wiki_id),
-            ("subject", subject),
-            ("children", children),
-            ("snippet", snippet),
-        ],
-    )
-    .map_err(RemError::from)
+    if let Some(summary) = wiki::meta_summary(meta).filter(|s| !s.trim().is_empty()) {
+        out.push('\n');
+        out.push_str(summary.trim());
+        out.push('\n');
+    }
+
+    if !meta.children.is_empty() {
+        out.push_str("\n## Sub-wikis\n\n");
+        for c in &meta.children {
+            out.push_str("- [[");
+            out.push_str(&c.wiki_id);
+            out.push_str("]]\n");
+        }
+    }
+
+    // Split the listing: an ordinary page is content, a reserved page has a
+    // fixed role and the role is the useful half.
+    let mut ordinary: Vec<&std::path::PathBuf> = Vec::new();
+    let mut reserved: Vec<(&std::path::PathBuf, &str)> = Vec::new();
+    for rel in pages {
+        let name = rel.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        match name {
+            // The map never lists itself.
+            wiki::INDEX_FILENAME => {},
+            wiki::PROFILE_FILENAME => reserved.push((
+                rel,
+                "the identity card: biography, health, preferences, standing events",
+            )),
+            wiki::NOTES_FILENAME => reserved.push((
+                rel,
+                "the buffer: where a fact lands when no page fits it, and what the nightly reorg drains",
+            )),
+            wiki::RULES_FILENAME => reserved.push((
+                rel,
+                "behaviour rules, not facts (outside every structural sweep)",
+            )),
+            wiki::PROJECTS_FILENAME => {
+                reserved.push((rel, "one door sign per project — written by the signpost channel"));
+            },
+            _ => ordinary.push(rel),
+        }
+    }
+
+    out.push_str("\n## Pages\n\n");
+    if ordinary.is_empty() {
+        out.push_str("(none yet — a fact with no page goes to the buffer below)\n");
+    } else {
+        for rel in ordinary {
+            out.push_str("- ");
+            out.push_str(&page_wikilink(wiki_id, rel));
+            out.push('\n');
+        }
+    }
+
+    if !reserved.is_empty() {
+        out.push_str("\n## Reserved\n\n");
+        for (rel, role) in reserved {
+            out.push_str("- ");
+            out.push_str(&page_wikilink(wiki_id, rel));
+            out.push_str(" — ");
+            out.push_str(role);
+            out.push('\n');
+        }
+    }
+    out
 }
 
-async fn regenerate_index(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    d: &wiki::DiscoveredWiki,
-    llm: &dyn LlmBackend,
-) -> Result<()> {
-    let facts = fact_index::find_active_in_wiki(pool, d.meta.wiki_id.as_str()).await?;
-    // The prompt shows the 20 most-recent facts, most-recent first. The
-    // query returns the whole wiki oldest-first (`created_at ASC`), so
-    // take the tail via `.rev()` (newest first) and cap at 20 — never the
-    // 20 oldest, which a plain `truncate(20)` on the ASC list would keep.
-    let bodies: Vec<&str> = facts
-        .iter()
-        .rev()
-        .take(20)
-        .map(|f| f.text.as_str())
+/// `[[wiki_id/stem]]` for a page path relative to its wiki — the canonical
+/// hop grammar the navigator and the dashboard click-through both resolve.
+/// A relative markdown link resolves for neither.
+fn page_wikilink(wiki_id: &str, rel: &std::path::Path) -> String {
+    let stem = rel
+        .to_string_lossy()
+        .trim_end_matches(".md")
+        .replace('\\', "/");
+    format!("[[{wiki_id}/{stem}]]")
+}
+
+/// Assemble and write one wiki's map to its `index.md`.
+///
+/// Rewrites unconditionally rather than diffing: the map is a pure function
+/// of the directory, so an identical render is an identical file, and the
+/// atomic write is cheaper than reading the old one back to compare.
+fn write_wiki_map(d: &wiki::DiscoveredWiki) -> Result<()> {
+    let pages: Vec<std::path::PathBuf> = wiki::list_wiki_pages(&d.abs_dir)?
+        .into_iter()
+        .map(|p| p.rel_path)
         .collect();
-    let snippet = bodies.join("\n\n---\n\n");
-    // Child wikis as canonical `[[wiki_id]]` wiki hops (the link grammar in
-    // recall-pipeline.md): the regenerated index must carry rails the recall
-    // navigator and the dashboard click-through can follow — a relative
-    // markdown link resolves for neither.
-    let children = d
-        .meta
-        .children
-        .iter()
-        .map(|c| format!("- [[{}]]", c.wiki_id))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let language_directive =
-        crate::locale::memory_directive_for_wiki_meta(pool, tree, &d.meta).await;
-    let prompt = regenerate_index_prompt(
-        tree,
-        &d.meta.title,
-        &d.meta.wiki_type,
-        d.meta.wiki_id.as_str(),
-        wiki::subject_directive(&d.meta),
-        &children,
-        &snippet,
-        &language_directive,
-    )?;
-    let resp = llm
-        .complete(
-            CompletionRequest::new(prompt)
-                .with_temperature(0.2)
-                .with_max_tokens(2_000),
-        )
-        .await
-        .map_err(|e| {
-            RemError::Llm(format!(
-                "hub_writer failed on wiki {}: {e}",
-                d.meta.wiki_id.as_str()
-            ))
-        })?;
-    let index_path = d.abs_dir.join("index.md");
-    wiki::atomic_write(&index_path, resp.text.as_bytes())?;
+    let today = Utc::now().date_naive().to_string();
+    let body = render_wiki_map(&d.meta, &pages, &today);
+    let index_path = d.abs_dir.join(wiki::INDEX_FILENAME);
+    wiki::atomic_write(&index_path, body.as_bytes())?;
     Ok(())
 }
 
@@ -6858,15 +6932,13 @@ mod tests {
         drop(dir);
     }
 
-    // ---------- hub_writer: regenerates index.md when triggers met ----------
+    // ---------- map_writer: every standard wiki gets a map ----------
 
     #[tokio::test]
-    async fn hub_writer_rewrites_index_for_qualifying_wiki() {
+    async fn map_writer_writes_a_map_for_a_wiki_with_children() {
         let (dir, mut tree, pool) = setup_workdir().await;
-        // Parent has children + an active fact ⇒ regen required.
         let parent = "alice";
         let child = "alice-acmecorp";
-        // Build parent wiki with one child entry in meta.
         let parent_dir = tree.wikis_dir().join(parent);
         std::fs::create_dir_all(&parent_dir).unwrap();
         let fm = format!(
@@ -6874,14 +6946,22 @@ mod tests {
         );
         std::fs::write(parent_dir.join("_meta.md"), fm).unwrap();
         std::fs::write(parent_dir.join("index.md"), "# old\n").unwrap();
-        // Child wiki.
+        std::fs::write(parent_dir.join("concerti.md"), "# Concerti\n").unwrap();
+        std::fs::write(parent_dir.join("notes.md"), "# Notes\n").unwrap();
         write_wiki(&tree, child, "ACME Corp", "wiki-tech");
         tree = WikiTree::open(dir.path()).unwrap();
-        // Plant an active fact in the parent so count_active > 0.
-        plant_fact(&tree, &pool, parent, "alice landed in mwe-mcp", "alice").await;
+        plant_fact_on_page(
+            &tree,
+            &pool,
+            parent,
+            "concerti.md",
+            "alice landed in mwe-mcp",
+            "alice",
+        )
+        .await;
 
         let policy = RemPolicy::default();
-        let hub_llm = FakeLlmBackend::new("hub", "# regenerated by hub writer\n\nfresh body\n");
+        let hub_llm = FakeLlmBackend::new("hub", "# never used by the map writer\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let report = run_cycle(
             &pool,
@@ -6893,98 +6973,31 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            report.hub_writer.regenerated.iter().any(|w| w == parent),
-            "parent wiki must be in regenerated list, got {report:?}"
+            report.map_writer.written.iter().any(|w| w == parent),
+            "parent wiki must be mapped, got {report:?}"
         );
         let index = std::fs::read_to_string(parent_dir.join("index.md")).unwrap();
-        assert!(index.contains("regenerated by hub writer"));
+        assert!(index.contains("page_type: wiki_map"), "{index}");
+        assert!(index.contains("[[alice-acmecorp]]"), "{index}");
+        assert!(index.contains("[[alice/concerti]]"), "{index}");
+        // The buffer is listed with its role, not as an ordinary page.
+        assert!(index.contains("[[alice/notes]] — the buffer"), "{index}");
+        // The map never lists itself.
+        assert!(!index.contains("[[alice/index]]"), "{index}");
         drop(dir);
     }
 
-    // ---------- regenerate_index: feeds the 20 MOST-RECENT facts, newest first ----------
-
+    /// The old trigger was "has child wikis AND has active facts", which left
+    /// 19 of production's 29 wikis with no index at all. A leaf wiki's map is
+    /// exactly as much an answer to "where does a fact belong here".
     #[tokio::test]
-    async fn regenerate_index_snippet_takes_most_recent_facts_newest_first() {
-        let (dir, mut tree, pool) = setup_workdir().await;
-        write_wiki(&tree, "alice", "Alice", "wiki-user");
-        tree = WikiTree::open(dir.path()).unwrap();
-
-        // Plant 22 facts oldest→newest (fact-00 .. fact-21). Dedup is
-        // disabled (threshold 1.01) so the shared fake embedding does not
-        // collapse them; created_at is then backdated monotonically so the
-        // ASC query order is deterministic.
-        for i in 0..22u32 {
-            let req = CaptureRequest {
-                authored_refs: Vec::new(),
-                wiki_id: WikiId::parse("alice").unwrap(),
-                page: PathBuf::from("index.md"),
-                body: format!("fact-{i:02}"),
-                owner: Principal::User("alice".to_owned()),
-                allow: Vec::new(),
-                sender: None,
-                fact_type: None,
-                topics: Vec::new(),
-                dedup_threshold: Some(1.01),
-                valid_from: None,
-                valid_to: None,
-                style: None,
-                page_description: None,
-                salience: None,
-            };
-            let id = capture::wiki_capture(&tree, &pool, fake_embedder(), req)
-                .await
-                .expect("plant")
-                .fact_id;
-            // Minutes 00..21 sort lexicographically the same way they sort
-            // chronologically — fact-00 oldest, fact-21 newest.
-            let created = format!("2026-01-01T00:{i:02}:00Z");
-            sqlx::query("UPDATE fact_index SET created_at = ? WHERE fact_id = ?")
-                .bind(&created)
-                .bind(id.as_str())
-                .execute(&pool)
-                .await
-                .unwrap();
-        }
-
-        let d = tree
-            .walk()
-            .unwrap()
-            .into_iter()
-            .find(|d| d.meta.wiki_id.as_str() == "alice")
-            .expect("alice discovered");
-        let hub_llm = FakeLlmBackend::new("hub", "# regenerated\n");
-        regenerate_index(&pool, &tree, &d, &hub_llm).await.unwrap();
-
-        let prompt = hub_llm.last_prompt().expect("hub writer was called");
-        // The two oldest facts are dropped; the newest is kept.
-        assert!(
-            prompt.contains("fact-21"),
-            "newest fact must be in the snippet, prompt: {prompt}"
-        );
-        assert!(
-            !prompt.contains("fact-00") && !prompt.contains("fact-01"),
-            "the 2 oldest facts must be dropped (only the 20 most recent survive), prompt: {prompt}"
-        );
-        // Most-recent first: the newest fact leads the oldest surviving one.
-        let pos_newest = prompt.find("fact-21").unwrap();
-        let pos_oldest_surviving = prompt.find("fact-02").unwrap();
-        assert!(
-            pos_newest < pos_oldest_surviving,
-            "snippet must be most-recent first (fact-21 before fact-02), prompt: {prompt}"
-        );
-        drop(dir);
-    }
-
-    // ---------- hub_writer: skips wikis without children or active facts ----------
-
-    #[tokio::test]
-    async fn hub_writer_skips_wiki_without_children() {
+    async fn map_writer_maps_a_leaf_wiki_too() {
         let (dir, mut tree, pool) = setup_workdir().await;
         write_wiki(&tree, "lonely", "Lonely", "wiki-user");
         tree = WikiTree::open(dir.path()).unwrap();
-        plant_fact(&tree, &pool, "lonely", "lonely fact", "lonely").await;
+        plant_fact_on_page(&tree, &pool, "lonely", "notes.md", "lonely fact", "lonely").await;
         let policy = RemPolicy::default();
-        let hub_llm = FakeLlmBackend::new("hub", "# never written\n");
+        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let report = run_cycle(
             &pool,
@@ -6995,40 +7008,156 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(report.hub_writer.regenerated.is_empty());
-        assert!(report.hub_writer.skipped.iter().any(|w| w == "lonely"));
-        // index.md untouched.
+        assert!(report.map_writer.written.iter().any(|w| w == "lonely"));
         let index =
             std::fs::read_to_string(tree.wikis_dir().join("lonely").join("index.md")).unwrap();
-        assert!(index.contains("placeholder"));
+        assert!(index.contains("page_type: wiki_map"), "{index}");
+        assert!(!index.contains("placeholder"), "{index}");
         drop(dir);
+    }
+
+    /// The one refusal that matters. A corpus written before the map rule
+    /// has facts homed on a wiki root, and the widened trigger reaches
+    /// exactly those wikis — the old one only ever touched group roots,
+    /// which hold none. Overwriting would delete live fact prose and leave
+    /// every `{{f=...}}` region pointing into a file that no longer holds
+    /// it, with the row still claiming the page.
+    #[tokio::test]
+    async fn map_writer_refuses_a_root_that_still_holds_facts() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "legacy", "Legacy", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        let index_path = tree.wikis_dir().join("legacy").join("index.md");
+        std::fs::write(&index_path, "# Legacy\n\nfact prose that must survive\n").unwrap();
+        // A fact homed on the root, exactly as the old convention wrote it.
+        plant_fact_on_page(
+            &tree,
+            &pool,
+            "legacy",
+            "index.md",
+            "an old rooted fact",
+            "legacy",
+        )
+        .await;
+
+        let policy = RemPolicy::default();
+        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
+        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
+        let report = run_cycle(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &test_llms(&hub_llm, &rev_llm),
+            &policy,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !report.map_writer.written.iter().any(|w| w == "legacy"),
+            "a root still holding facts must not be mapped, got {:?}",
+            report.map_writer
+        );
+        let index = std::fs::read_to_string(&index_path).unwrap();
+        assert!(
+            index.contains("fact prose that must survive"),
+            "the page bytes must be untouched, got {index}"
+        );
+        drop(dir);
+    }
+
+    // ---------- render_wiki_map: the pure renderer ----------
+
+    fn map_meta(dir: &std::path::Path, wiki_id: &str, title: &str) -> wiki::WikiMeta {
+        let wdir = dir.join("wikis").join(wiki_id);
+        std::fs::create_dir_all(&wdir).expect("wiki dir");
+        let fm = format!(
+            "---\nwiki_id: {wiki_id}\nwiki_type: wiki-user\nslug: {wiki_id}\ntitle: {title}\nacl_default: 'user:{wiki_id}'\n---\n"
+        );
+        let meta_path = wdir.join("_meta.md");
+        std::fs::write(&meta_path, &fm).expect("write meta");
+        wiki::WikiMeta::parse(&meta_path, &fm)
+            .expect("meta parses")
+            .0
+    }
+
+    /// Reserved pages carry their role, ordinary pages carry a link, and the
+    /// map never lists itself — the three properties the classifier and REM
+    /// read it for.
+    #[test]
+    fn a_map_separates_reserved_pages_from_content_pages() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let meta = map_meta(dir.path(), "alice", "Alice");
+        let pages: Vec<PathBuf> = [
+            "index.md",
+            "profile.md",
+            "notes.md",
+            "rules.md",
+            "viaggi.md",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+        let out = render_wiki_map(&meta, &pages, "2026-08-03");
+
+        assert!(out.contains("- [[alice/viaggi]]\n"), "{out}");
+        assert!(
+            out.contains("[[alice/profile]] — the identity card"),
+            "{out}"
+        );
+        assert!(out.contains("[[alice/notes]] — the buffer"), "{out}");
+        assert!(out.contains("[[alice/rules]] — behaviour rules"), "{out}");
+        assert!(!out.contains("[[alice/index]]"), "{out}");
+        // No fact markers: a map is not a memory, so nothing on it can need
+        // ACL redaction.
+        assert!(!out.contains("{{f="), "{out}");
+    }
+
+    /// A nested page keeps its directory in the link target, or the hop
+    /// resolves to a page that does not exist.
+    #[test]
+    fn a_nested_page_keeps_its_path_in_the_link() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let meta = map_meta(dir.path(), "alice", "Alice");
+        let pages = vec![PathBuf::from("viaggi/norvegia.md")];
+        let out = render_wiki_map(&meta, &pages, "2026-08-03");
+        assert!(out.contains("[[alice/viaggi/norvegia]]"), "{out}");
+    }
+
+    /// An empty wiki gets a map that says so, rather than keeping whatever
+    /// bytes happened to be on the page.
+    #[test]
+    fn an_empty_wiki_still_gets_an_honest_map() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let meta = map_meta(dir.path(), "alice", "Alice");
+        let out = render_wiki_map(&meta, &[], "2026-08-03");
+        assert!(out.contains("(none yet"), "{out}");
+        assert!(out.contains("page_type: wiki_map"), "{out}");
     }
 
     // ---------- policy caps ----------
 
     #[tokio::test]
-    async fn hub_writer_cap_bounds_regeneration_count() {
+    async fn map_writer_cap_bounds_the_number_of_maps_per_cycle() {
         let (dir, mut tree, pool) = setup_workdir().await;
-        // Two qualifying parents, but cap = 1 ⇒ only one regen.
         for parent in ["p1", "p2"] {
             let pdir = tree.wikis_dir().join(parent);
             std::fs::create_dir_all(&pdir).unwrap();
             let fm = format!(
-                "---\nwiki_id: {parent}\nwiki_type: wiki-user\nslug: {parent}\ntitle: P\nacl_default: 'user:{parent}'\nchildren:\n  - wiki_id: {parent}-c\n    slug: c\n    title: C\n    wiki_type: wiki-tech\n---\n"
+                "---\nwiki_id: {parent}\nwiki_type: wiki-user\nslug: {parent}\ntitle: P\nacl_default: 'user:{parent}'\n---\n"
             );
             std::fs::write(pdir.join("_meta.md"), fm).unwrap();
             std::fs::write(pdir.join("index.md"), "# old\n").unwrap();
-            write_wiki(&tree, &format!("{parent}-c"), "C", "wiki-tech");
         }
         tree = WikiTree::open(dir.path()).unwrap();
-        plant_fact(&tree, &pool, "p1", "f1", "p1").await;
-        plant_fact(&tree, &pool, "p2", "f2", "p2").await;
+        plant_fact_on_page(&tree, &pool, "p1", "notes.md", "f1", "p1").await;
+        plant_fact_on_page(&tree, &pool, "p2", "notes.md", "f2", "p2").await;
 
         let policy = RemPolicy {
-            hub_writer_cap: 1,
+            map_writer_cap: 1,
             ..RemPolicy::default()
         };
-        let hub_llm = FakeLlmBackend::new("hub", "# regen\n");
+        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let report = run_cycle(
             &pool,
@@ -7039,7 +7168,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(report.hub_writer.regenerated.len(), 1);
+        assert_eq!(report.map_writer.written.len(), 1);
         drop(dir);
     }
 
@@ -8774,9 +8903,9 @@ mod tests {
         .expect("cycle");
 
         assert!(
-            !report.hub_writer.regenerated.iter().any(|w| w == parent),
-            "Hub Writer must skip smart wiki, got {:?}",
-            report.hub_writer
+            !report.map_writer.written.iter().any(|w| w == parent),
+            "the map writer must skip a smart wiki, got {:?}",
+            report.map_writer
         );
         let index = std::fs::read_to_string(parent_dir.join("index.md")).unwrap();
         assert!(

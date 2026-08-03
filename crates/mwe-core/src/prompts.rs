@@ -248,7 +248,10 @@ pub const BUNDLED: &[(&str, &str)] = &[
         "rem-page-grouping",
         crate::rem::BUNDLED_REM_PAGE_GROUPING_MD,
     ),
-    ("regenerate-index", crate::rem::BUNDLED_REGENERATE_INDEX_MD),
+    (
+        "regenerate-index",
+        crate::compiler::BUNDLED_REGENERATE_INDEX_MD,
+    ),
     (
         "document-classify",
         crate::document::BUNDLED_DOCUMENT_CLASSIFY_MD,

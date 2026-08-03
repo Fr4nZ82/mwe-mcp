@@ -304,10 +304,10 @@ The loop runs against a single `LlmBackend`, resolved at
 `agentic_submission` entry by `MemoryHandles::backend_for_chat()`: it
 prefers the dedicated `llm.operator_chat` slot and falls back to
 `llm.hub_writer` when `operator_chat` is unconfigured. The chat is a
-distinct workload from the `regenerate_index` sub-job that also rides
-`hub_writer` — interactive, multi-step function-calling, faithful
+distinct workload from the compiler's `ConceptHub` prose writer that also
+rides `hub_writer` — interactive, multi-step function-calling, faithful
 fact-id handling — so an operator can point it at a **strong**
-tool-calling model without inflating the index-regen cost. The fallback
+tool-calling model without inflating the hub-prose cost. The fallback
 keeps deployments that never set `operator_chat` working exactly as
 before, with no new YAML key (only `SlotMissing` on the dedicated slot
 falls through; a `BuildFailed` is surfaced, not masked). The per-slot

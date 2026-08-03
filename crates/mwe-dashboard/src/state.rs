@@ -334,11 +334,11 @@ impl MemoryHandles {
     /// Resolve the backend for the dashboard's operational agentic chat:
     /// prefer the dedicated [`LlmFunction::OperatorChat`] slot, falling
     /// back to [`LlmFunction::HubWriter`] when it is unconfigured. The
-    /// chat is a distinct workload from the `regenerate_index` sub-job
-    /// that also rides `hub_writer` (interactive, multi-step
-    /// function-calling, faithful fact-id handling), so an operator can
-    /// point it at a stronger model without inflating the index-regen
-    /// cost — but the fallback keeps deployments that never set
+    /// chat is a distinct workload from the narrative compiler's
+    /// `ConceptHub` prose writer, which also rides `hub_writer`
+    /// (interactive, multi-step function-calling, faithful fact-id
+    /// handling), so an operator can point it at a stronger model without
+    /// inflating the hub-prose cost — but the fallback keeps deployments that never set
     /// `operator_chat` working exactly as before, with no new YAML key.
     ///
     /// Only [`BackendForError::SlotMissing`] on the dedicated slot falls

@@ -764,8 +764,9 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
         report.cycle.archive_detector.proposals_emitted.len(),
     );
     println!(
-        "hub_writer     : regenerated={}",
-        report.cycle.hub_writer.regenerated.len()
+        "map_writer     : written={} skipped={}",
+        report.cycle.map_writer.written.len(),
+        report.cycle.map_writer.skipped.len()
     );
     println!(
         "compile        : leaves={} lists={} hubs={} unchanged={} errors={}",

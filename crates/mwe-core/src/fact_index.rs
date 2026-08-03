@@ -1658,6 +1658,27 @@ pub async fn count_active_in_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<i6
     Ok(n)
 }
 
+/// Count how many active rows are homed on one page.
+///
+/// `source_path` is the workdir-relative `wikis/<id>/…` form the rows
+/// store. Used by the map writer as its refusal test: a page the fact
+/// index still points at is a page whose bytes are load-bearing, whatever
+/// its name.
+///
+/// # Errors
+///
+/// As [`sqlx::Error`].
+pub async fn count_active_on_page(pool: &SqlitePool, source_path: &str) -> Result<i64> {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM fact_index
+           WHERE source_path = ? AND superseded_at IS NULL AND deleted_at IS NULL",
+    )
+    .bind(source_path)
+    .fetch_one(pool)
+    .await?;
+    Ok(n)
+}
+
 /// Structured filter for [`find_by_filters`].
 ///
 /// Every field is optional. `None` means "no constraint on this

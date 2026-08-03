@@ -1,16 +1,23 @@
 ---
 name: regenerate-index
-description: Hub Writer prompt — regenerate `index.md` of a parent wiki from its children list + most recent active facts (the REM regenerator); also reused by the compiler's hub-page pass (`compiler::compile_hub_page`)
+description: Hub Writer prompt — the prose of a compilation plan's `ConceptHub` page, from its children list. The file name is historical: the REM index regenerator this was written for was retired on 2026-08-03 (a wiki's `index.md` is now assembled without a model), and renaming the file would orphan every operator override.
 version: 1.4
 default_version_at_bootstrap: v1.4
-source_of_truth: crates/mwe-core/src/rem.rs (fn regenerate_index)
+source_of_truth: crates/mwe-core/src/compiler.rs (fn compile_hub_page)
 ---
 
 # Prompt: regenerate-index
 
-Prompt for the REM nightly sub-job that rebuilds the `index.md`
-of any non-smart wiki whose body has fallen behind the children + facts
-state. It renders against the `hub_writer` slot. The dashboard agentic
+Prompt for the narrative compiler's **hub page** pass: a plan page that
+has no facts of its own but one or more child leaves, rendered as a short
+overview citing every child as a `[[wikilink]]`. It renders against the
+`hub_writer` slot.
+
+**Historical name.** This was REM's `index.md` regenerator, and the hub
+pass borrowed it. Since 2026-08-03 a wiki's `index.md` is its **map** and
+is assembled from the pages on disk with no model involved, so the hub page
+is the only caller left. The file keeps its name because renaming it would
+orphan every operator override at `<workdir>/prompts/regenerate-index.md`. The dashboard agentic
 chat panel is a separate prompt at
 [`crates/mwe-dashboard/prompts/agentic-chat-panel.md`](../../mwe-dashboard/prompts/agentic-chat-panel.md);
 it resolves its own `LlmFunction::OperatorChat` slot (which falls back to
@@ -23,15 +30,10 @@ narrative compiler.
 Operational specs that ship next to the prompt body so they can't
 drift from it. Code is the source of truth; the
 narrative compiler
-page covers the hub writer's two consumers (this regenerator and the
-compiler's hub-page pass, `compiler::compile_hub_page`).
+page covers the hub writer's one remaining consumer.
 
-**Call site**: `crates/mwe-core/src/rem.rs::regenerate_index` — invoked
-once per non-smart wiki by `run_hub_writer` when (a) the wiki has
-at least one child AND at least one active fact, (b) the per-cycle cap
-`policy.hub_writer_cap` (default `10`) has not been reached, (c) the
-wiki is not a smart wiki (a smart wiki's `index.md` is the smart
-consumer's responsibility).
+**Call site**: `crates/mwe-core/src/compiler.rs::compile_hub_page` —
+invoked once per plan page of type `ConceptHub` during the compile pass.
 
 **Placeholders** (substituted at render time by
 `mwe_core::prompts::render`):

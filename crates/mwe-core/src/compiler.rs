@@ -108,6 +108,23 @@ pub const BUNDLED_CRONISTA_MD: &str = include_str!("../prompts/cronista.md");
 /// description becomes the wiki's `_meta` abstract.
 const INDEX_PAGE: &str = "index.md";
 
+/// Bundled default for the `regenerate-index` system prompt — the prose
+/// writer for a plan's `ConceptHub` pages.
+///
+/// **The name is historical and is kept deliberately.** It was REM's
+/// index regenerator, and this compiler stage borrowed it; since 2026-08-03
+/// the map writer assembles a wiki's `index.md` without a model, so the hub
+/// page is the prompt's only caller. Renaming the file would orphan every
+/// operator override at `<workdir>/prompts/regenerate-index.md`, which is
+/// the exact failure the prompt-drift work exists to avoid — so the name
+/// stays wrong and this comment stays right.
+///
+/// The verbatim body lives in `crates/mwe-core/prompts/regenerate-index.md`
+/// and is loaded through [`prompts::render`]; an operator override wins when
+/// present. Referenced from [`prompts::BUNDLED`] so `mwe-mcp init`
+/// materialises it under the workdir.
+pub const BUNDLED_REGENERATE_INDEX_MD: &str = include_str!("../prompts/regenerate-index.md");
+
 /// Errors raised by the compiler. Per-page LLM/parse failures are collected
 /// into the report (soft); infrastructure failures bubble.
 #[derive(Debug, Error)]
@@ -1378,7 +1395,7 @@ async fn compile_hub_page(
     let prompt = prompts::render(
         "regenerate-index",
         tree.workdir(),
-        crate::rem::BUNDLED_REGENERATE_INDEX_MD,
+        BUNDLED_REGENERATE_INDEX_MD,
         &[
             ("locale", language_directive),
             ("title", page.title.as_str()),

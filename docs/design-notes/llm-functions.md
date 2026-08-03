@@ -39,7 +39,7 @@ under `llm:` and as the suffix of the env-var override convention
 
 | Slot (`LlmFunction`) | YAML key | Status in code |
 |---|---|---|
-| `HubWriter` | `hub_writer` | Active — REM `regenerate_index`, plus the operational-chat fallback (see below). |
+| `HubWriter` | `hub_writer` | Active — the narrative compiler's `ConceptHub` prose, plus the operational-chat fallback (see below). |
 | `Ingest` | `ingest` | Active — `wiki_ingest_message` + the dashboard chat's plain (non-agentic) path. |
 | `OperatorChat` | `operator_chat` | Active — the dashboard's operational agentic chat. Optional: unset falls back to `hub_writer`. |
 | `RemPromotions` | `rem_promotions` | Active — REM auto-promote. |
@@ -138,28 +138,34 @@ estimate a prompt change from its byte count — replay it and read
 [`ingest_replay`](../../crates/mwe-core/examples/ingest_replay.rs), see
 [ingest-pipeline.md](ingest-pipeline.md#the-replay-differential--measuring-a-prompt-change).
 
-### 1.1 `hub_writer` — index regeneration (+ operational-chat fallback)
+### 1.1 `hub_writer` — `ConceptHub` prose (+ operational-chat fallback)
 
-`hub_writer`'s primary consumer is the REM `regenerate_index` sub-job;
-it is also the **fallback** backend for the operational chat (§1.1b)
-when the dedicated `operator_chat` slot is unset.
+`hub_writer`'s consumer is the **narrative compiler's hub-page writer**;
+it is also the **fallback** backend for the operational chat (§1.1b) when
+the dedicated `operator_chat` slot is unset.
 
-**REM `regenerate_index`.** During the nightly cycle, the Hub Writer
-sub-job (`run_hub_writer` in
-[`crates/mwe-core/src/rem.rs`](../../crates/mwe-core/src/rem.rs))
-regenerates the `index.md` summary of every non-smart parent wiki
-whose children changed. It calls `regenerate_index`, which renders the
-`regenerate-index` prompt and issues a single `complete` against the
-`hub_writer` backend. The prompt body lives in
+**It no longer writes a wiki's `index.md`.** Until 2026-08-03 that was its
+primary job: REM's Hub Writer sub-job composed an index out of the twenty
+most recent fact bodies. Since a wiki root became a **map** for the write
+side only, the map is *assembled* from the pages on disk with no model
+involved — see the [map writer](rem-cycle.md#map-writer-sub-job). The slot
+stays because two other consumers still need it.
+
+**Narrative compiler, `ConceptHub` pages.** When the compilation plan has
+a hub over child leaves, the compiler renders the `regenerate-index`
+prompt from the plan (title, children, one line per child leaf) and issues
+a single `complete` against this backend. The prompt body lives in
 [`crates/mwe-core/prompts/regenerate-index.md`](../../crates/mwe-core/prompts/regenerate-index.md);
-its `## Runtime contract` pins `temperature: 0.2` and `max_tokens:
-800` (target output is 6-12 lines of reference prose). Smart wikis
-are skipped — the smart consumer crafts its own hub pages via
-`wiki_admin_push`, so REM never rewrites them.
+its `## Runtime contract` pins `temperature: 0.2` and `max_tokens: 800`
+(target output is 6-12 lines of reference prose). **The prompt's file name
+is historical and kept on purpose**: renaming it would orphan every
+operator override at `<workdir>/prompts/regenerate-index.md` — an upgrade
+that silently keeps serving the old body is the failure mode the whole
+override-drift surface exists to prevent.
 
 | Property | Value |
 |---|---|
-| Trigger | REM cycle, a non-smart parent wiki with ≥1 child + ≥1 active fact. |
+| Trigger | Compile pass, a plan page of type `ConceptHub`. |
 | Quality tier | Workhorse (low-to-medium — short summaries). |
 | Runtime params | `temperature 0.2`, `max_tokens 800` (pinned by the prompt's runtime contract). |
 | `think:false` | **Mandatory** for the local Qwen workhorse (see §4). |
@@ -188,12 +194,12 @@ chat is operational, not conversational — it operates *on* the memory
 > `LlmFunction::Ingest`, not the chat slot. Only the tool-calling agentic
 > loop uses `operator_chat` / `hub_writer`.
 
-Why a dedicated slot? The chat is a different workload from
-`regenerate_index`: interactive, multi-step function-calling, and it must
-handle fact ids faithfully. It wants a **strong** tool-calling model,
-whereas index regen is a cost-bound summary. Decoupling lets an operator
-raise the chat's tier without inflating the nightly index-regen cost; the
-fallback keeps existing deployments unchanged with no new YAML key.
+Why a dedicated slot? The chat is a different workload from hub prose:
+interactive, multi-step function-calling, and it must handle fact ids
+faithfully. It wants a **strong** tool-calling model, whereas a hub page is
+a cost-bound summary. Decoupling lets an operator raise the chat's tier
+without inflating the nightly compile cost; the fallback keeps existing
+deployments unchanged with no new YAML key.
 
 | Property | Value |
 |---|---|
@@ -307,7 +313,7 @@ The REM scheduler builds one backend per slot in
 
 | `RemLlms` field | Config slot | REM sub-jobs |
 |---|---|---|
-| `hub_writer` | `hub_writer` | `regenerate_index` (Hub Writer). **Mandatory** — without it `build_backends` returns `None` and the scheduler is skipped. |
+| `hub_writer` | `hub_writer` | the compile pass's `ConceptHub` prose. **Mandatory** — without it `build_backends` returns `None` and the scheduler is skipped. |
 | `revisor` | `rem_dedup_semantic` | revisor (semantic dedup). **Mandatory.** |
 | `auto_promote` | `rem_promotions` | auto-promote (REM). Optional. |
 | `apply` | `ingest` | the workhorse/Flash-tier backend the **light dream**'s compile pass reuses (`dream.rs`: `let flash = llms.apply`). Optional. |
