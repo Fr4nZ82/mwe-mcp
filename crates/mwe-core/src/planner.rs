@@ -149,14 +149,14 @@ impl PageType {
 
     /// Foundation pages (the identity cards and the buffer) are a wiki's own
     /// pages rather than the topology's, and are never garbage-collected.
-    const fn is_foundation(self) -> bool {
+    pub(crate) const fn is_foundation(self) -> bool {
         matches!(self, Self::Person | Self::GroupTheme | Self::WikiBuffer)
     }
 
     /// True when this node is a wiki's **identity card** — the page that
     /// answers *who is this actor*, and the home of the always-on identity
     /// core an ingest `salience: "high"` reserves.
-    const fn is_identity_card(self) -> bool {
+    pub(crate) const fn is_identity_card(self) -> bool {
         matches!(self, Self::Person | Self::GroupTheme)
     }
 

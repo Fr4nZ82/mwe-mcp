@@ -776,6 +776,12 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
         report.compile.unchanged,
         report.compile.errors.len(),
     );
+    if !report.compile.cards_over_budget.is_empty() {
+        println!(
+            "  ⚠ identity cards past their ceiling (cut when served): {}",
+            report.compile.cards_over_budget.join(", ")
+        );
+    }
     drop(lock);
     Ok(())
 }

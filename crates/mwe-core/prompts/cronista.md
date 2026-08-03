@@ -1,8 +1,8 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-index reference distance)
-version: 1.17
-default_version_at_bootstrap: v1.17
+version: 1.18
+default_version_at_bootstrap: v1.18
 ---
 
 # Prompt: cronista
@@ -22,7 +22,7 @@ The system prompt for **Il Cronista** (compiler stage 3,
   to the `cronista` slot when no ingest slot is configured. The slot's quality
   is a deployment choice: the API-backed profiles pin a strong model on
   `cronista`, the all-local profile the local workhorse.
-- **Placeholders**: `{title}`, `{slug}`, `{parent_hub}`, `{tone}` (resolved
+- **Placeholders**: `{title}`, `{slug}`, `{parent_hub}`, `{page_kind}` (`identity_card` when the plan node is a `Person`/`GroupTheme` sitting on its reserved `profile.md`, `leaf` otherwise — it switches on the IDENTITY CARD section of the brief), `{tone}` (resolved
   by `compiler::resolve_tone` from the wiki's `is_agent` marker first — an
   agent's own wiki is its autobiography and gets the first-person voice — then
   from its `wiki_type`, and finally narrowed per page by
@@ -163,6 +163,13 @@ PROVENANCE LINKS — when a fact's detail already lives in a project wiki:
 - Keep the `[[…]]` form exactly as given (it is a navigable wikilink — the WIKILINK GRAMMAR rules above apply). Do NOT print the literal words "detail at" or the parentheses from the hint.
 - A fact with NO `(detail at: …)` hint is an ordinary personal fact: write it in full as usual.
 
+IDENTITY CARD — when the PAGE line below says `Kind: identity_card`:
+- This page is not an ordinary leaf. It is the actor's **card**, and it is served WHOLE into the agent's context on EVERY turn — it is what the agent knows about this person before anything else is retrieved. Nothing else in the memory is read that often, so on this page every character is paid for again and again.
+- What belongs here: WHO this actor is — their biography, their health, their preferences, and the events worth carrying permanently or for a defined period. Not what they did last Tuesday.
+- LENGTH: aim to land UNDER 1800 characters and never exceed 2500. Past that the page is cut when it is served, and a cut drops whatever you put last.
+- How to stay inside it: prefer a [[wikilink]] to the page that holds the detail over restating the detail (rule 2 already forbids reproducing another page's content — here, lean on it). Keep the connective prose to what makes the facts cohere. Give a fact one tight clause where a paragraph is not earned. Write the card as a way IN to this person, not as everything known about them.
+- The completeness rule is NOT relaxed: every fact still gets its `<fN>` tag. If the facts genuinely will not fit, write them as tightly as you can and let the page run long — never drop or merge a fact to meet the budget. A card that is over budget is a signal for the system to move material off it, and that decision is not yours.
+
 LANGUAGE: {locale}
 
 STYLE — tag how THIS page reads, so recall knows how to read it back:
@@ -188,7 +195,7 @@ OTHER PAGES — for [[wikilinks]] ONLY, copy each link exactly as written (you d
 {page_index}
 
 === PAGE TO WRITE ===
-PAGE: "{title}" (slug: {slug}). Parent hub: {parent_hub}. Tone: {tone}.
+PAGE: "{title}" (slug: {slug}). Parent hub: {parent_hub}. Tone: {tone}. Kind: {page_kind}.
 
 YOUR FACTS (numbered — wrap each in its <fN>…</fN> tag; each line: N. [TYPE] text, optionally a trailing (audience: …) hint naming who may read a restricted fact, a (validity: …) hint, a (current: [[…]]) succession hint and/or a (detail at: [[…]]) provenance hint):
 {primary_facts}

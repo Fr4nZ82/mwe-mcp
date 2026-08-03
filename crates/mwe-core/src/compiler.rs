@@ -171,6 +171,11 @@ pub struct CompileReport {
     pub degraded: Vec<String>,
     /// Per-page soft errors (`"<slug>: <error>"`).
     pub errors: Vec<String>,
+    /// Identity cards written past [`IDENTITY_CARD_CEILING_CHARS`]
+    /// (`"<slug>: <n> chars"`). Not an error — the page is on disk and the
+    /// facts are all on it. It says the card will be **cut when served**, so
+    /// the material that belongs elsewhere has not been moved off it yet.
+    pub cards_over_budget: Vec<String>,
 }
 
 impl CompileReport {
@@ -272,6 +277,14 @@ pub async fn compile_dirty_pages(
         {
             Ok(PageOutcome::Leaf) => {
                 report.leaves += 1;
+                note_page_success(pool, tree, page).await;
+            },
+            Ok(PageOutcome::CardOverBudget { chars }) => {
+                // A clean compile that wrote a page too long to serve whole.
+                report.leaves += 1;
+                report
+                    .cards_over_budget
+                    .push(format!("{slug}: {chars} chars"));
                 note_page_success(pool, tree, page).await;
             },
             Ok(PageOutcome::Hub) => {
@@ -499,6 +512,13 @@ enum PageOutcome {
     Degraded {
         reason: String,
     },
+    /// A written identity card that came out past
+    /// [`IDENTITY_CARD_CEILING_CHARS`]. A **successful** leaf compile that
+    /// also carries a warning: the page is on disk, and the read path will
+    /// truncate it when it serves it.
+    CardOverBudget {
+        chars: usize,
+    },
 }
 
 /// Pre-point every dirty-page fact whose `fact_index` row still lives on a
@@ -699,6 +719,7 @@ async fn compile_leaf_page(
             ("slug", page.slug.as_str()),
             ("parent_hub", page.parent_hub.as_deref().unwrap_or("—")),
             ("tone", tone),
+            ("page_kind", page_kind(page)),
             (
                 "primary_facts",
                 primary_facts_text(
@@ -811,17 +832,56 @@ async fn compile_leaf_page(
         return Ok(PageOutcome::Unchanged);
     }
 
-    // Recall navigation: a wiki's `index.md` overview page carries the
-    // wiki's one-line abstract. Persist the Cronista's fresh `description` into the
-    // wiki's `_meta` summary so the catalog / root index can show it. Best-effort —
-    // a `_meta` hiccup must not fail the page that already wrote.
-    if page.page_path == INDEX_PAGE
-        && let Err(e) = meta_annotate::sync_wiki_summary(handle.abs_dir(), body.description.trim())
-    {
-        tracing::warn!(slug = %page.slug, error = %e, "compiler: _meta summary sync failed");
+    sync_foundation_summary(page, handle.abs_dir(), &body.description);
+
+    if let Some(outcome) = card_over_budget(page, &contents) {
+        return Ok(outcome);
     }
 
     Ok(PageOutcome::Leaf)
+}
+
+/// Refresh the wiki's one-line abstract in `_meta` from the page that answers
+/// *what is this wiki* — its **foundation** node: an actor's card, or a topic
+/// wiki's buffer.
+///
+/// The abstract is what the entry fan and the root-index catalog show for the
+/// wiki as a whole. This used to key on `index.md`, which was right until the
+/// map rule moved every foundation node off the root (2026-08-03) — after
+/// which the branch could never fire again and the abstract would have gone
+/// stale forever, with nothing to say so.
+///
+/// Best-effort: a `_meta` hiccup must not fail a page that already wrote.
+fn sync_foundation_summary(page: &PagePlan, abs_dir: &std::path::Path, description: &str) {
+    if !page.page_type.is_foundation() {
+        return;
+    }
+    if let Err(e) = meta_annotate::sync_wiki_summary(abs_dir, description.trim()) {
+        tracing::warn!(slug = %page.slug, error = %e, "compiler: _meta summary sync failed");
+    }
+}
+
+/// An identity card past its ceiling: a **curation** failure, not a compile
+/// one. The page is written as-is with every fact on it; what it reports is
+/// that the read path will cut it when it serves it, and a cut drops whatever
+/// sorted last. Judged here, where the numbers are still in hand — the
+/// serve-time warning fires every turn thereafter and names no remedy.
+fn card_over_budget(page: &PagePlan, contents: &str) -> Option<PageOutcome> {
+    if page_kind(page) != "identity_card" {
+        return None;
+    }
+    let chars = contents.chars().count();
+    if chars <= IDENTITY_CARD_CEILING_CHARS {
+        return None;
+    }
+    tracing::warn!(
+        slug = %page.slug,
+        chars,
+        ceiling = IDENTITY_CARD_CEILING_CHARS,
+        facts = page.primary_facts.len(),
+        "compiler: identity card is over its ceiling and will be cut when served"
+    );
+    Some(PageOutcome::CardOverBudget { chars })
 }
 
 /// Output budget for one Cronista page rewrite — scales with the page's
@@ -1813,6 +1873,30 @@ fn resolve_tone(tree: &WikiTree, wiki_id: &str) -> String {
 /// only when most of the page's facts are owned by the agent itself. An
 /// identity wiki's id is its principal's id, which is the whole test. Pages of
 /// every other wiki are untouched.
+/// Hard ceiling on an identity card's compiled body, in characters.
+///
+/// The founder's number (2026-08-03), and it is the **same** one the read
+/// path enforces as `IngestPolicy::max_sender_identity_chars` — deliberately,
+/// so a card written inside its authored bound is never cut when served. The
+/// Cronista is told to aim well under it (~1800); this is the failsafe, and it
+/// firing means the curation upstream did not happen.
+pub const IDENTITY_CARD_CEILING_CHARS: usize = 2_500;
+
+/// Which brief the Cronista should apply to this page.
+///
+/// `identity_card` only for a foundation node sitting on its **reserved**
+/// page: the page type alone is not enough, because a `Person` node names the
+/// actor and could in principle be planned elsewhere, and a brief that told
+/// the model "this is served on every turn" about an ordinary page would be a
+/// lie that costs prose.
+fn page_kind(page: &PagePlan) -> &'static str {
+    if page.page_type.is_identity_card() && page.page_path == crate::wiki::PROFILE_FILENAME {
+        "identity_card"
+    } else {
+        "leaf"
+    }
+}
+
 fn tone_for_page(wiki_tone: &str, page: &PagePlan) -> String {
     if wiki_tone != AGENT_TONE {
         return wiki_tone.to_owned();
@@ -1963,6 +2047,42 @@ mod tests {
         // A human's wiki is untouched by the narrowing.
         let plain = page_with_owners("alice", &["user:alice"]);
         assert_eq!(tone_for_page(IDENTITY_TONE, &plain), IDENTITY_TONE);
+    }
+
+    /// The card brief must switch on the **page**, not on the type alone: a
+    /// `Person` node planned anywhere but its reserved page is an ordinary
+    /// leaf, and telling the model "this is served on every turn" about it
+    /// would be a lie that costs prose on a page nobody serves.
+    #[test]
+    fn only_a_person_node_on_its_reserved_page_is_an_identity_card() {
+        let mut page = page_with_owners("alice", &["user:alice"]);
+
+        page.page_type = PageType::Person;
+        page.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
+        assert_eq!(page_kind(&page), "identity_card");
+
+        page.page_type = PageType::GroupTheme;
+        assert_eq!(page_kind(&page), "identity_card");
+
+        // Right type, wrong page.
+        page.page_type = PageType::Person;
+        page.page_path = "viaggi.md".to_owned();
+        assert_eq!(page_kind(&page), "leaf");
+
+        // Right page, wrong type — the buffer is not a card.
+        page.page_type = PageType::WikiBuffer;
+        page.page_path = crate::wiki::NOTES_FILENAME.to_owned();
+        assert_eq!(page_kind(&page), "leaf");
+    }
+
+    /// The serve-time failsafe and the compile-time ceiling must be the same
+    /// number, or a card written inside its authored bound would still be cut.
+    #[test]
+    fn the_card_ceiling_matches_what_the_read_path_will_serve() {
+        assert_eq!(
+            IDENTITY_CARD_CEILING_CHARS,
+            crate::ingest::IngestPolicy::default().max_sender_identity_chars
+        );
     }
 
     /// A `PagePlan` carrying one fact per owner string, for the tone tests.

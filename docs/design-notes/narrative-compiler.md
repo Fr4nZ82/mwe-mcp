@@ -83,9 +83,9 @@ sole writer.
 
 **Two foundation pages per wiki, and neither is its `index.md`.** A wiki's
 map is not a plan node at all (founder's ruling, 2026-08-03: the root
-answers *where does a fact belong*, for REM and the ingest classifier, and
-the read path never opens it), which is also what frees the REM
-[hub writer](rem-cycle.md#hub-writer-sub-job) to author it. The two nodes
+answers *where does a fact belong* for whoever is filing one, and the read
+path never opens it), which is also what frees the REM
+[map writer](rem-cycle.md#map-writer-sub-job) to author it. The two nodes
 are not interchangeable, because two different things arrive at the
 [orphan fallback](#orphan-fallback):
 
@@ -99,6 +99,29 @@ pet, a project — never a user (maintainer 2026-07-05), so there is no
 identity to card. Sending both kinds to one page is not a smaller version
 of this design: it either buries the card under unsorted facts or promotes
 every unplaced fact to identity.
+
+**The card compiles under its own brief, and under a budget.** A card is
+the one page the read path serves **whole, on every turn**
+(`WHO IS SPEAKING`), so unlike any other page its length is paid for again
+and again. The Cronista is told which kind of page it is writing —
+`page_kind` on the PAGE line, `identity_card` only for a `person` /
+`group_theme` node sitting on its reserved `profile.md` — and the brief
+tells it what a card is for (who this actor is: biography, health,
+preferences, standing or period events) and to land under **~1800
+characters**, never past **2500**.
+
+The completeness rule is **not** relaxed by the budget: every fact still
+gets its `<fN>` tag, and the model is told explicitly to let the page run
+long rather than drop or merge a fact to fit. So an over-budget card is a
+signal that material needs moving **off** it, not a licence to lose any —
+and that decision belongs to REM, not to the writer. The compiler reports
+it (`CompileReport::cards_over_budget`, a `warn!` with the numbers, and a
+line on `mwe-mcp dream`) because the alternative is finding out at serve
+time, every turn, from a truncation that drops whatever sorted last.
+[`IDENTITY_CARD_CEILING_CHARS`](../../crates/mwe-core/src/compiler.rs) is
+deliberately the same number as `IngestPolicy::max_sender_identity_chars`,
+pinned by a test: a card written inside its authored bound must never be
+cut when it is served.
 
 Foundation pages are **never garbage-collected**
 ([`PageType::is_foundation`](../../crates/mwe-core/src/planner.rs)) — an
@@ -146,12 +169,12 @@ the model weighs; no ownership or count gate exists in Rust:
   (`enrollment::members_for`); `any` for the builtin global group (world
   context is never a foreign subject); `none` for a group with no enrolled
   members. The prompt's **identity-page discipline** reads the tag: an
-  identity index (a `person` page — a `wiki-user`'s `index.md`, the agent
+  identity card (a `person` page — a `wiki-user`'s `profile.md`, the agent
   wiki included) carries **one subject** and never takes a
   **foreign-subject** fact (owner = a different user, or a group the page's
   user is not a member of — a group they belong to is their own shared
   context, never foreign). The foreign detail is homed on the subject's own
-  pages, split by content; the relation surfaces on the identity index only
+  pages, split by content; the relation surfaces on the identity card only
   through the page-user's **own** facts (a coordinating own-fact is
   preferred when one exists) plus a `[[wikilink]]` to the subject's home —
   a bare link line is acceptable when no own-fact exists.
@@ -198,8 +221,8 @@ flattens to one leaf; the light path does not nest), seeded with the ingest-prop
 foundation page), never a page named "index". **A `high`-salience fact
 (`fact_index.salience`) is routed the same way regardless
 of its target_page**: `ingest_placement_blueprint` leaves it unassigned so the
-orphan fallback homes it on the actor-wiki's foundation page — whose `page_path`
-*is* `index.md`, the always-on **base context**. The routing *is* the
+orphan fallback homes it on the actor-wiki's **identity card**
+(`profile.md`), the always-on **base context**. The routing *is* the
 reservation: an always-on fact (identity, health/safety, hard standing
 constraints) overrides whatever theme page the classifier proposed. `build_wiki_plan` selects between
 the two paths via the [`NewFactPlacement`](../../crates/mwe-core/src/planner.rs)
@@ -1072,16 +1095,24 @@ the `CompileReport`.
 
 ### The abstract sync — the wiki's `summary`
 
-When the compiler (re)writes a wiki's **`index.md` overview page** — its
-foundation `person` or `group_theme` page; concept pages use `<slug>.md` and are
-skipped — it persists a one-line **abstract** into that wiki's `_meta.md`
-(`extra["summary"]`) via
+When the compiler (re)writes a wiki's **foundation page** — the `person` /
+`group_theme` **card** (`profile.md`) or a topic wiki's **buffer**
+(`notes.md`); concept pages use `<slug>.md` and are skipped — it persists a
+one-line **abstract** into that wiki's `_meta.md` (`extra["summary"]`) via
 [`meta_annotate::sync_wiki_summary`](../../crates/mwe-core/src/meta_annotate.rs).
 The source is the freshest one-liner available: a **person** wiki uses Il
 Cronista's `description` (an LLM summary of the page it just wrote — rich); a
 **hub** or **`lista`** wiki uses the plan's
 [`PagePlan.description`](../../crates/mwe-core/src/planner.rs) (the Hub Writer
 emits prose, not a one-liner, and the Record Writer has no LLM to author one).
+⚠️ **This keyed on `index.md` until 2026-08-03**, which was right for as long
+as the foundation node lived there. The map rule moved every foundation node
+off the root, and the condition then matched **nothing** — the abstract would
+have frozen at whatever it last said, on every wiki, with no error anywhere to
+notice it by. It keys on
+[`PageType::is_foundation`](../../crates/mwe-core/src/planner.rs) now, which is
+the property that was actually meant.
+
 The write is **best-effort** (a
 `_meta` hiccup is logged, never fails the page) and **idempotent** (rewritten
 only when the abstract changed; the `_meta` prose body is preserved), so it

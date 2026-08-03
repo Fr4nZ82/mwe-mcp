@@ -152,7 +152,7 @@ each one honest:
 
 | page | answers | who reads it |
 |---|---|---|
-| `index.md` | *where does a fact belong here?* | a human, and anything that opens the wiki deliberately — **never the read path** |
+| `index.md` | *where does a fact belong here?* | whoever is **filing** a fact — the write path, and a human — **never the read path** |
 | `profile.md` | *who is this actor?* | recall **serves** it verbatim in its own block slot; the funnel never navigates to it |
 | `notes.md` | *nothing yet* | the buffer a fact lands on when no page fits; REM's reorg drains it onto real pages |
 | `rules.md` | *what has this actor asked for?* | the rules channel only — outside every structural sweep |
@@ -164,18 +164,19 @@ Keeping it fact-free is why **nothing may re-home a fact onto `index.md`**
 — a fact parked there is one the navigator can never open, because the
 read path filters the map out of every offer.
 
-**Who writes it, and who reads it — stated precisely, because the two are
-not yet the same set.** It is written by the nightly
+**Who writes it, and who it is for.** It is written by the nightly
 [map writer](../design-notes/rem-cycle.md#map-writer-sub-job), which
-assembles it from the pages on disk with no model involved. It is *read*
-today by a human in the dashboard and by any consumer that opens the page
-on purpose. It is **not** read by the machinery that would benefit most:
-the reorg sweep derives its candidate pages from the fact index rather
-than from the map, and the ingest classifier is never shown a wiki's page
-list at all — it is given each wiki's `scope` prose and nothing more,
-which is why it names a `target_page` it cannot check. Feeding the map to
-the classifier is the obvious next consumer and is a prompt change, not a
-structural one.
+assembles it from the pages on disk with no model involved. It exists for
+**whoever is filing a fact** and has to decide where it goes — which is
+why it lists what is here rather than summarising it, and why the read
+path never opens it.
+
+The deciding consumer is the **ingest classifier**, and it does not have
+the map yet: `available_wikis` gives it each wiki's `wiki_id / title /
+type / scope` and nothing more, which is why it names a `target_page` it
+cannot check against anything. Handing it the map is a prompt change. The
+other write-side reader, REM's reorg sweep, does not need the file — it
+derives its candidate pages from the fact index directly.
 
 There are **no slots and no compatibility checks**: a wiki can host any
 kind of sub-wiki. The system does not block placement — it suggests.
