@@ -210,12 +210,18 @@ fn window_closed_at(valid_to: Option<&str>, now: &chrono::DateTime<chrono::Utc>)
 /// off topic, and ordering *within* each coverage class is preserved. It is
 /// the same reason [`CLOSED_WINDOW_DOWNRANK`] beside it is multiplicative.
 ///
-/// Fitted on the measured turns: the answer leads (8th → **1st**, and the
-/// turn that failed in production 17th → 3rd) while the topical facts stay
-/// in the block — which the flat form pushed out. A ranking **signal, never
-/// a filter**: nothing becomes unreachable and everything that surfaced
-/// before still surfaces.
-pub const SUBJECT_COVERAGE_UPLIFT: f32 = 0.20;
+/// **Set at 0.15 by the founder, 2026-08-03**, over a measurement that
+/// argued for 0.20 — the deliberately conservative end of the range, and
+/// his call to make. What it buys and what it costs, on the labelled turns:
+/// the narrated question's answer goes 8th → **2nd** (0.20 put it 1st), and
+/// the turn that actually failed in production goes 17th → **7th** rather
+/// than 3rd — so **that one still misses a five-fact block**, and closes
+/// only once `recall_top_k` rises, which is separately planned. Everything
+/// topical stays in the block at either value; the flat form pushed it out.
+///
+/// A ranking **signal, never a filter**: nothing becomes unreachable and
+/// everything that surfaced before still surfaces.
+pub const SUBJECT_COVERAGE_UPLIFT: f32 = 0.15;
 
 /// First-person forms that put the SPEAKER among the turn's subjects.
 ///
