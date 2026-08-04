@@ -1727,6 +1727,129 @@ fn parse_llm_yes(raw: &str) -> bool {
 }
 
 // ---------- Auto-promote sub-job ----------
+/// One pair of pages the walk keeps opening together with no rail between
+/// them — a **missing link**, nominated deterministically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingRail {
+    /// Plan slug of one page (the lexicographically smaller of the pair).
+    pub a_slug: String,
+    /// Plan slug of the other.
+    pub b_slug: String,
+    /// How many turns opened both.
+    pub co_opens: usize,
+}
+
+/// Nominate the rails the corpus is missing: pages repeatedly opened
+/// **together** by the walk, with no `[[wikilink]]` between them.
+///
+/// Deterministic, read-only, **no model call** — the structural half of
+/// [62](../../../planning/62_rem-rumination.md)'s lever 2. It nominates; a
+/// confirmer decides whether the pair is genuinely related or merely
+/// co-occurring, and only then is a rail authored with a receipt.
+///
+/// Founder, 2026-08-04: *«è dal lavoro del REM che si conta la bontà della
+/// memoria, perché i link che il navigatore segue alla fine li ha decisi il
+/// REM»*. Measured on production the same day: of the pairs co-opened **≥3
+/// times, 77 % have no link**; at ≥10 co-opens it is 81 %. The pairs are not
+/// noise — `documenti`+`fisco_2026` (35 turns), `automobili`+
+/// `finanziamento_auto` (32), and two cars of the same household that do not
+/// know about each other (22).
+///
+/// The link graph comes from the **persisted plan**, not from re-parsing
+/// markdown: it is already symmetric, already slug-keyed, and it is the same
+/// graph the compiler writes the rails from. `recall_log` stores workdir-
+/// relative page paths, so the plan's pages are resolved to those paths
+/// through the tree to key the two together.
+///
+/// Reserved pages never nominate: the map is not readable, and the rules page
+/// is channel-only.
+///
+/// # Errors
+///
+/// Underlying `sqlx` errors from the recall-log read.
+pub async fn detect_missing_rails(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    plan: &crate::planner::CompilationPlan,
+    min_co_opens: usize,
+    cap: usize,
+) -> Result<Vec<MissingRail>> {
+    if cap == 0 || min_co_opens == 0 {
+        return Ok(Vec::new());
+    }
+    // workdir-relative source path -> plan slug, for the pages a walk can open.
+    let mut by_path: BTreeMap<String, &str> = BTreeMap::new();
+    for (slug, page) in &plan.pages {
+        let rel = std::path::Path::new(&page.page_path);
+        if crate::recall_nav::is_reserved_page_path(rel) {
+            continue;
+        }
+        let Ok(wid) = crate::types::WikiId::parse(&page.wiki_id) else {
+            continue;
+        };
+        let Ok(handle) = tree.locate(&wid) else {
+            continue;
+        };
+        let abs = handle.abs_dir().join(rel);
+        by_path.insert(
+            crate::wiki::workdir_relative_source_path(tree.workdir(), &abs),
+            slug.as_str(),
+        );
+    }
+
+    let sets = crate::recall_log::navigated_page_sets(pool, LINK_DETECTOR_SCAN_LIMIT).await?;
+    let mut counts: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    for set in &sets {
+        let mut slugs: Vec<&str> = set
+            .iter()
+            .filter_map(|p| by_path.get(p.as_str()).copied())
+            .collect();
+        slugs.sort_unstable();
+        slugs.dedup();
+        for (i, a) in slugs.iter().enumerate() {
+            for b in &slugs[i + 1..] {
+                *counts.entry((*a, *b)).or_default() += 1;
+            }
+        }
+    }
+
+    let mut out: Vec<MissingRail> = counts
+        .into_iter()
+        .filter(|&(_, n)| n >= min_co_opens)
+        .filter(|&((a, b), _)| {
+            // Already railed in either direction? The plan's graph is
+            // symmetric, so one lookup would do; both are checked because a
+            // half-written graph must not read as "linked".
+            let linked = |x: &str, y: &str| {
+                plan.link_graph
+                    .get(x)
+                    .is_some_and(|ls| ls.iter().any(|l| l == y))
+            };
+            !linked(a, b) && !linked(b, a)
+        })
+        .map(|((a, b), co_opens)| MissingRail {
+            a_slug: a.to_owned(),
+            b_slug: b.to_owned(),
+            co_opens,
+        })
+        .collect();
+    // Strongest evidence first; slugs break ties so the list is stable across
+    // runs and a diff between two cycles means something.
+    out.sort_by(|x, y| {
+        y.co_opens
+            .cmp(&x.co_opens)
+            .then_with(|| x.a_slug.cmp(&y.a_slug))
+            .then_with(|| x.b_slug.cmp(&y.b_slug))
+    });
+    out.truncate(cap);
+    Ok(out)
+}
+
+/// How many recent turns the rail detector scans. A month of production
+/// traffic is ~800 turns, so this is a memory bound rather than a window:
+/// the meaningful window is `recall_log`'s own retention.
+const LINK_DETECTOR_SCAN_LIMIT: usize = 5_000;
+
 /// The page-mass floor for a page written in `style`, or `None` when mass is
 /// not a reason to split that kind of page at all.
 ///
@@ -7699,6 +7822,110 @@ mod tests {
         );
         // The cap bounds the confirmation spend.
         assert_eq!(merge_candidates(&plan, &[], 1, &family).len(), 1);
+    }
+
+    /// Pages opened together enough times, with no rail, are nominated —
+    /// strongest evidence first; an already-linked pair never is.
+    #[tokio::test]
+    async fn co_opened_pages_with_no_rail_are_nominated_and_linked_ones_are_not() {
+        let (_wd, pool, tree) = crate::test_db::TestWorkdir::with_db_and_tree().await;
+        let wid = crate::types::WikiId::parse("alice").expect("id");
+        crate::wiki::create_identity_wiki(&tree, &wid, "alice", crate::wiki::IdentityKind::User)
+            .expect("wiki");
+        let handle = tree.locate(&wid).expect("handle");
+        for page in ["documenti.md", "fisco.md", "diario.md"] {
+            handle
+                .write_page(std::path::Path::new(page), "# p\n\nprose\n")
+                .expect("page");
+        }
+
+        let mut pages = BTreeMap::new();
+        for (slug, file) in [
+            ("documenti", "documenti.md"),
+            ("fisco", "fisco.md"),
+            ("diario", "diario.md"),
+        ] {
+            pages.insert(
+                slug.to_owned(),
+                crate::planner::PagePlan {
+                    slug: slug.to_owned(),
+                    title: slug.to_owned(),
+                    description: String::new(),
+                    style: None,
+                    page_type: crate::planner::PageType::ConceptLeaf,
+                    owner_scope: None,
+                    parent_hub: None,
+                    child_leaves: Vec::new(),
+                    primary_facts: Vec::new(),
+                    outgoing_links: Vec::new(),
+                    incoming_links: Vec::new(),
+                    wiki_id: "alice".to_owned(),
+                    page_path: file.to_owned(),
+                },
+            );
+        }
+        let mut link_graph = BTreeMap::new();
+        // `diario` and `fisco` already know about each other.
+        link_graph.insert("diario".to_owned(), vec!["fisco".to_owned()]);
+        link_graph.insert("fisco".to_owned(), vec!["diario".to_owned()]);
+        let plan = crate::planner::CompilationPlan {
+            pages,
+            link_graph,
+            merged_pages: Vec::new(),
+            compilation_order: Vec::new(),
+            generated_at: "t".to_owned(),
+            fact_count: 0,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+        };
+
+        // Three turns opened documenti+fisco; three opened diario+fisco.
+        for _ in 0..3 {
+            crate::recall_log::record_turn(
+                &pool,
+                "alice",
+                &chrono::Utc::now().to_rfc3339(),
+                &[],
+                &[
+                    "wikis/alice/documenti.md".to_owned(),
+                    "wikis/alice/fisco.md".to_owned(),
+                ],
+                &[],
+            )
+            .await
+            .expect("log");
+            crate::recall_log::record_turn(
+                &pool,
+                "alice",
+                &chrono::Utc::now().to_rfc3339(),
+                &[],
+                &[
+                    "wikis/alice/diario.md".to_owned(),
+                    "wikis/alice/fisco.md".to_owned(),
+                ],
+                &[],
+            )
+            .await
+            .expect("log");
+        }
+
+        let rails = detect_missing_rails(&pool, &tree, &plan, 3, 10)
+            .await
+            .expect("detect");
+        assert_eq!(rails.len(), 1, "only the unlinked pair: {rails:?}");
+        assert_eq!(rails[0].a_slug, "documenti");
+        assert_eq!(rails[0].b_slug, "fisco");
+        assert_eq!(rails[0].co_opens, 3);
+
+        // Under the floor nothing is nominated.
+        assert!(
+            detect_missing_rails(&pool, &tree, &plan, 4, 10)
+                .await
+                .expect("detect")
+                .is_empty()
+        );
     }
 
     /// The mass floor is about how a page is READ, not how big it is.

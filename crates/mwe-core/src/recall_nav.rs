@@ -392,6 +392,17 @@ fn is_root_page_path(page: &Path) -> bool {
         .is_some_and(|n| n == std::ffi::OsStr::new(wiki::INDEX_FILENAME))
 }
 
+/// True when a page may never be a navigation destination: the wiki's map
+/// ([`is_root_page_path`]) or its channel-only policy page
+/// ([`is_rules_page_path`]).
+///
+/// The one place outside the funnel that needs the same judgement is REM's
+/// rail detector, which must not nominate a link to a page nobody can open.
+#[must_use]
+pub fn is_reserved_page_path(page: &Path) -> bool {
+    is_root_page_path(page) || is_rules_page_path(page)
+}
+
 /// Operator knobs for the navigator funnel — **resources only, never
 /// semantics**.
 ///

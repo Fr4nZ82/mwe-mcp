@@ -244,6 +244,41 @@ pub async fn recent_misses(pool: &SqlitePool, limit: usize) -> sqlx::Result<Vec<
     fetch_misses(pool, "ORDER BY miss_id DESC", None, limit).await
 }
 
+/// Every turn's set of **navigated pages**, newest first — the evidence base
+/// for REM's rail detector ([`crate::rem`]).
+///
+/// Turns that opened fewer than two pages are dropped in SQL: the detector
+/// works on *co-opening*, so a single-page turn carries no pair and fetching
+/// it would only make the scan bigger.
+///
+/// This is the register that was already there. The route journal
+/// (`recall_traces`) records the candidates a hop was *offered* and is what
+/// the offered-and-declined detector needs; it was capped at ten rows
+/// deployment-wide until 2026-08-03, which is why REM's evidence looked
+/// absent. `recall_log` was never capped — it holds a month of real turns —
+/// and *which pages a turn opened together* is all a missing rail needs.
+///
+/// # Errors
+///
+/// Underlying `sqlx` errors.
+pub async fn navigated_page_sets(
+    pool: &SqlitePool,
+    limit: usize,
+) -> sqlx::Result<Vec<Vec<String>>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT page_paths FROM recall_log \
+         WHERE json_array_length(page_paths) >= 2 \
+         ORDER BY log_id DESC LIMIT ?",
+    )
+    .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(json,)| serde_json::from_str::<Vec<String>>(&json).unwrap_or_default())
+        .collect())
+}
+
 /// Unprocessed (`status = 'new'`) misses, oldest first — the repair
 /// sub-job's work queue.
 ///
