@@ -13,16 +13,28 @@
 //! client-side steps that map to the three universal ingest
 //! destinations:
 //!
-//! 1. **Identity + always-on → `index.md`.** The identity card plus a
+//! 1. **Identity + always-on → the identity card.** The card plus a
 //!    health/safety slot. The ingest LLM marks these `salience: high`
 //!    and the engine routes the always-on core to the owner's
-//!    `index.md` base context.
+//!    always-on base context of the card (`profile.md`).
 //! 2. **Governance rules → `rules.md`.** Privacy / sharing / do-not-store
 //!    presets. The ingest LLM marks each `engine_rule: true` and the
 //!    engine appends it to the sender's `rules.md` policy page
 //!    — never a row in `fact_index`.
 //! 3. **The rest → normal pipeline.** Low-weight preferences the LLM
 //!    files wherever it sees fit.
+//!
+//! ⚠️ **The primer names no page**, and that is why the identity split cost
+//! it nothing. It composes first-person prose and pushes it through the
+//! ordinary chat entry point, so where a fact lands is decided downstream:
+//! the ingest classifier marks a biographical statement `salience: high`, and
+//! `planner::orphan_target` sends a high-salience fact to the wiki's
+//! foundation card. Before 63 §8 that card *was* `index.md`; since the split
+//! it is `profile.md` and `index.md` is the map, a page the read path never
+//! opens. Nothing here was hardcoded, so the routing followed the split for
+//! free — only these words had to change. It does mean the primer reaches the
+//! card **through a classifier judgement** rather than by assertion: a primer
+//! fact the model marks `normal` lands on the buffer instead.
 //!
 //! The routing itself is the ingest prompt's job (universal).
 //! The wizard only organises the collection and adds reinforcing section
@@ -95,7 +107,7 @@ pub fn router() -> Router<DashboardState> {
 ///
 /// The fields are grouped by the wizard's three steps, which map to the
 /// three universal ingest destinations: step 1 → the user's
-/// `index.md` always-on base context (identity + health/safety, marked
+/// the card's always-on base context (identity + health/safety, marked
 /// `salience: high` by the ingest LLM), step 2 → the user's `rules.md`
 /// engine-policy page (privacy / do-not-store directives, routed by the
 /// `engine_rule` flag the ingest LLM sets), step 3 → the normal pipeline
@@ -105,7 +117,7 @@ pub fn router() -> Router<DashboardState> {
 /// markers to the composed message.
 #[derive(Debug, Default, Deserialize)]
 pub struct ProfileSubmission {
-    // ── Step 1 → index.md (identity + always-on) ──
+    // ── Step 1 → the identity card (identity + always-on) ──
     #[serde(default)]
     pub display_name: String,
     #[serde(default)]
@@ -129,7 +141,7 @@ pub struct ProfileSubmission {
     /// Health / safety / hard standing constraints an assistant must
     /// know in *every* interaction (allergies, intolerances, chronic
     /// conditions, "only ever write to me in Italian"). Always-on →
-    /// `index.md`, and — like the rest of the primer — framed **public**:
+    /// the identity card, and — like the rest of the primer — framed **public**:
     /// the primer is the public-profile channel, so whatever the user types
     /// here is public. Private health goes in later via normal chat instead.
     #[serde(default)]
@@ -448,7 +460,7 @@ but my RULES for handling my memory — privacy, sharing, and what not to store:
 
 /// Step-3 section marker. Low-weight personal preferences with no special
 /// routing: the ingest LLM files them on whatever page it sees fit
-/// (`salience` stays normal/low → never the always-on `index.md`).
+/// (`salience` stays normal/low → never the always-on identity card).
 const PREFERENCES_SECTION_MARKER: &str =
     "Finally, a few personal preferences and interests, nothing important:";
 
@@ -473,7 +485,7 @@ fn compose_ingest_message(email: Option<&str>, form: &ProfileSubmission) -> Stri
     .join("\n\n")
 }
 
-/// Step 1 → `index.md`. The identity card (email / name / contacts / …),
+/// Step 1 → the identity card. The card's own fields (email / name / contacts / …),
 /// the free-form `presentati`, **and** the always-on `health_safety` line
 /// are all first-person prose under [`PUBLIC_PROFILE_PRIMER_PREFIX`], the
 /// public-consent line the form promises. The primer is the public-profile
@@ -690,7 +702,7 @@ fn render_form(
     Html(layout::authenticated_page(chrome, "Welcome", user, &body))
 }
 
-/// Step 1 fieldset → `index.md`: the identity card plus the always-on
+/// Step 1 fieldset → the identity card: its own fields plus the always-on
 /// health/safety slot. A "Salta tutto" submit is repeated on every step
 /// so the user can bail out at any point.
 fn step1_identity_fieldset(email_value: &str, locale_default: &str) -> Markup {

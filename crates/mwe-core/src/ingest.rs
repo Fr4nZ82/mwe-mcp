@@ -477,6 +477,23 @@ pub struct IngestPolicy {
     /// It fits **whole paragraphs** and warns when it fires, because a cut
     /// card silently drops whatever the author put last.
     pub max_sender_identity_chars: usize,
+    /// How many **named third parties** get their identity card served into
+    /// the block alongside the sender's (roadmap 69d). `0` disables the slot.
+    ///
+    /// Founder's ruling, 2026-08-04: *«la scheda degli utenti nominati va
+    /// inserita deterministicamente nel recall, ci costa caratteri, ma ci dà
+    /// una porta di ingresso con le cose più importanti di un utente che
+    /// comunque vanno sempre prese in considerazione»*. The gate is
+    /// deliberately the coarse one — the turn **names** them — because the
+    /// card holds what is worth knowing about a person whenever they come up
+    /// at all, not only when the turn is *about* them.
+    ///
+    /// Bounded by count rather than by a second character budget: each card
+    /// is already fitted to `max_sender_identity_chars`, which is 69c's
+    /// authored ceiling, so a card within its bound is never cut. The count
+    /// is what stops a turn naming four people from spending the whole block
+    /// on biographies.
+    pub max_mentioned_cards: usize,
     /// Page within the target wiki used when the LLM plan does not
     /// supply one. `index.md` is the unanimous default across bundled
     /// wiki types.
@@ -553,6 +570,11 @@ impl Default for IngestPolicy {
             // ceiling REM curates toward are the same number: a card
             // within its authored bound is never cut here.
             max_sender_identity_chars: 2_500,
+            // Two: a turn naming three or more people is rare, and two cards
+            // at their authored target (~1 800) already cost more than the
+            // navigated prose budget. Raise it when the traces say turns name
+            // more people than that and the extra card earns its characters.
+            max_mentioned_cards: 2,
             // A fact with no better destination lands on a **content page**,
             // never on the wiki's map: the root answers "where does a fact
             // belong", it does not hold facts (founder, 2026-08-03).
@@ -4021,6 +4043,105 @@ async fn who_is_speaking_section(
     Some(SpeakerCard { section, page_path })
 }
 
+/// Header of the block's third-party identity slot.
+const HDR_PEOPLE_MENTIONED: &str = "PEOPLE THIS TURN NAMES:";
+
+/// The cards served for the third parties a turn names, and the bookkeeping
+/// every other slot needs to not repeat them.
+struct MentionedCards {
+    /// The formatted section.
+    section: String,
+    /// Workdir-relative source paths, for the flat slot's page dedup.
+    page_paths: Vec<String>,
+    /// The same pages in the funnel's `(wiki, page)` terms, for
+    /// `navigate`'s `already_served`.
+    served: Vec<(String, PathBuf)>,
+}
+
+/// **`PEOPLE THIS TURN NAMES`** — the identity card of each enrolled person
+/// the turn names, served deterministically (roadmap 69d).
+///
+/// Founder's ruling, 2026-08-04, on the measurement below: *«la scheda degli
+/// utenti nominati va inserita deterministicamente nel recall, ci costa
+/// caratteri, ma ci dà una porta di ingresso con le cose più importanti di un
+/// utente che comunque vanno sempre prese in considerazione»*.
+///
+/// **What it repairs.** Similarity cannot be relied on to surface who someone
+/// *is*. Measured on the live corpus with `examples/subject_gate.rs`, on the
+/// founder's own phrase — *«sta sera cucino io, cosa faccio per carol?»* —
+/// the flat slot returns ten facts about household expenses, meal prep and
+/// baby clothes, and **neither the coeliac disease nor the pregnancy**. Reword
+/// it to *«cosa cucino stasera per carol?»* and both appear (ranks 3 and 8):
+/// the same question, reworded, gets a different answer, because the corpus
+/// packs that turn's candidates into a 0.585–0.612 band where wording decides
+/// the order. Following the walk does not save it either — what a real
+/// navigator reaches is *«Mini Muffin (senza glutine e senza lattosio)»*, a
+/// property of a muffin, never *«Carol è celiaca: non può consumare
+/// glutine»*. That sentence, and the pregnancy, live on the card.
+///
+/// **The gate is that the turn names them** — [`recall::turn_subjects`], a
+/// word match over the enrolled roster, no model call. Deliberately coarse:
+/// the card is what is worth knowing about a person *whenever they come up*,
+/// so a passing mention is not a false positive, it is a cheap piece of
+/// context. What bounds the slot is the **count**
+/// ([`IngestPolicy::max_mentioned_cards`]), not a cleverer gate.
+///
+/// **Projected for the reader, never the subject.** [`identity_card`] is
+/// given `sender` — the person the block is being built for — so a region on
+/// Carol's card that only Bob may read is redacted before Franz sees it.
+/// This is the slot that makes 69a's projection invariant load-bearing rather
+/// than a no-op, which is why its test had to become real before this shipped.
+///
+/// The sender is excluded: `WHO IS SPEAKING` already serves them.
+async fn people_mentioned_section(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    sender: &SenderContext,
+    turn_text: &str,
+    policy: &IngestPolicy,
+) -> Option<MentionedCards> {
+    if policy.max_mentioned_cards == 0 {
+        return None;
+    }
+    let roster = match enrollment::list_users(pool).await {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(error = %err, "ingest: roster unavailable, no mentioned cards");
+            return None;
+        },
+    };
+    let subjects = recall::turn_subjects(turn_text, &sender.sender_id, &roster);
+    let mut section = String::from(HDR_PEOPLE_MENTIONED);
+    let mut page_paths = Vec::new();
+    let mut served = Vec::new();
+    for subject in subjects {
+        if served.len() >= policy.max_mentioned_cards {
+            break;
+        }
+        if subject == sender.sender_id {
+            continue;
+        }
+        let Some(handle) = WikiId::parse(&subject)
+            .ok()
+            .and_then(|id| tree.locate(&id).ok())
+        else {
+            continue;
+        };
+        let Some((prose, source_path)) = identity_card(pool, tree, &handle, sender, policy).await
+        else {
+            continue;
+        };
+        let _ = write!(section, "\n\n- {subject}\n{prose}");
+        page_paths.push(source_path);
+        served.push((subject, PathBuf::from(IDENTITY_PAGE)));
+    }
+    (!served.is_empty()).then_some(MentionedCards {
+        section,
+        page_paths,
+        served,
+    })
+}
+
 /// Read, project and prepare the sender's identity page for injection.
 /// Returns the injectable prose and the page's workdir-relative source
 /// path. `None` — logged at debug, never fatal — when the page is absent,
@@ -4640,6 +4761,7 @@ async fn due_soon_section(
 fn assemble_recall_block(
     who_you_are: Option<String>,
     who_is_speaking: Option<String>,
+    people_mentioned: Option<String>,
     history: Option<String>,
     relevant: Option<String>,
     navigated: Option<String>,
@@ -4648,6 +4770,9 @@ fn assemble_recall_block(
     let sections: Vec<String> = [
         who_you_are,
         who_is_speaking,
+        // Directly after the speaker: both are "who is in this conversation",
+        // and both are served rather than found (69a, 69d).
+        people_mentioned,
         history,
         relevant,
         navigated,
@@ -5909,10 +6034,19 @@ pub async fn wiki_ingest_message(
     // id — `who_is_speaking_section` locates the wiki by parsing it — and the
     // page is always `IDENTITY_PAGE`, which is also what the funnel resolves a
     // page-less wiki-root candidate to, so this one key closes both shapes.
-    let served_identity: Vec<(String, PathBuf)> = identity_path
+    let mut served_identity: Vec<(String, PathBuf)> = identity_path
         .map(|_| (sender_ctx.sender_id.clone(), PathBuf::from(IDENTITY_PAGE)))
         .into_iter()
         .collect();
+    // `PEOPLE THIS TURN NAMES` — the same treatment for the third parties the
+    // turn names (roadmap 69d, founder 2026-08-04). It runs here, beside the
+    // speaker's card and before the walk, for the same three reasons: no
+    // completion, arrives whatever the navigator decides, and the pages it
+    // serves must then be injected nowhere else.
+    let mentioned = people_mentioned_section(pool, tree, &sender_ctx, &request.text, policy).await;
+    if let Some(m) = &mentioned {
+        served_identity.extend(m.served.iter().cloned());
+    }
     let nav_tail = match navigator {
         Some(nav_llm)
             if matches!(intent, IntentKind::Capture | IntentKind::Recall)
@@ -5977,6 +6111,12 @@ pub async fn wiki_ingest_message(
             .map(|t| t.page_paths.clone())
             .unwrap_or_default();
         nav_paths.extend(identity_path.map(str::to_owned));
+        // Same rule for the third-party cards: their prose rides the block, so
+        // restating their facts in the flat list is the double-pay 69a closed
+        // for the sender.
+        if let Some(m) = &mentioned {
+            nav_paths.extend(m.page_paths.iter().cloned());
+        }
         format_snippet(
             &recall_hits,
             &nav_paths,
@@ -6017,6 +6157,11 @@ pub async fn wiki_ingest_message(
         .map(|t| t.page_paths.clone())
         .unwrap_or_default();
     nav_paths.extend(identity_path.map(str::to_owned));
+    // A served card's facts count as surfaced, or restating one reads as a
+    // recall miss to the detector (69a's third dedup site).
+    if let Some(m) = &mentioned {
+        nav_paths.extend(m.page_paths.iter().cloned());
+    }
     let log_id = match recall_log::record_turn(
         pool,
         &request.sender_id,
@@ -6095,6 +6240,8 @@ pub async fn wiki_ingest_message(
     // `WHO IS SPEAKING` — the sender's identity card, built at the top of
     // the tail (69a) so the flat and navigated slots could defer to it.
     let who_is_speaking = speaker.map(|c| c.section);
+    // The third parties the turn names, served beside the speaker (69d).
+    let people_mentioned = mentioned.map(|m| m.section);
     // One-shot notice when a non-admin asked for an agent-wide change: the rule
     // was NOT filed; steer the agent to decline politely this turn (the
     // behaviour-rule governance — the ingest-pipeline design note). It
@@ -6114,6 +6261,7 @@ pub async fn wiki_ingest_message(
     let context_snippet = assemble_recall_block(
         who_you_are,
         who_is_speaking,
+        people_mentioned,
         history,
         relevant,
         navigated,
@@ -8193,6 +8341,153 @@ mod tests {
             Principal::User("alice".into()),
         )
         .await;
+    }
+
+    /// 69d: a third party the turn NAMES gets their card served — and the
+    /// card is projected for **the reader**, not for its subject.
+    ///
+    /// This is the test that makes 69a's projection invariant load-bearing:
+    /// on the sender's own card a foreign-owned region is a no-op by
+    /// construction (nobody else's fact lands there), but here Franz is
+    /// handed *Alice's* card, and a region on it that only Carol may read
+    /// must not reach him.
+    #[tokio::test]
+    async fn a_named_third_party_gets_their_card_served_projected_for_the_reader() {
+        const CAROL_ONLY: &str = "018f1234-5678-7abc-9def-00000000c009";
+        let (dir, _tree, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        let page = dir
+            .path()
+            .join("wikis")
+            .join("alice")
+            .join(crate::wiki::PROFILE_FILENAME);
+        let existing = std::fs::read_to_string(&page).unwrap();
+        std::fs::write(
+            &page,
+            format!("{existing}\n{{{{f={CAROL_ONLY}}}}}Alice is planning a surprise.{{{{/}}}}\n"),
+        )
+        .unwrap();
+        insert_page_fact(
+            &pool,
+            CAROL_ONLY,
+            "alice",
+            "wikis/alice/profile.md",
+            "Alice is planning a surprise.",
+            Principal::User("carol".into()),
+        )
+        .await;
+        // A card whose every fact is private to its subject renders to
+        // nothing for anybody else — correct, and it would make this test
+        // pass for the wrong reason. Alice's home town is public, the way
+        // most of an identity card is; the surprise stays Carol's.
+        sqlx::query("UPDATE fact_index SET owner_id = 'global' WHERE fact_id = ?")
+            .bind(ALICE_FACT_A)
+            .execute(&pool)
+            .await
+            .expect("publish the town");
+        let file = crate::enrollment::EnrollmentFile {
+            version: 1,
+            users: ["alice", "franz"]
+                .into_iter()
+                .map(|id| crate::enrollment::UserEntry {
+                    id: id.to_owned(),
+                    aliases: Vec::new(),
+                    is_admin: false,
+                    locale: None,
+                    timezone: None,
+                })
+                .collect(),
+            groups: Vec::new(),
+        };
+        crate::enrollment::mirror_to_db(&pool, &file)
+            .await
+            .expect("mirror");
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let out = people_mentioned_section(
+            &pool,
+            &tree,
+            &SenderContext::user("franz"),
+            "cosa cucino stasera per alice?",
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("alice is named, so her card is served");
+
+        assert!(
+            out.section.starts_with(HDR_PEOPLE_MENTIONED),
+            "{out:?}",
+            out = out.section
+        );
+        assert!(
+            out.section.contains("Alice lives in Bologna."),
+            "the card's prose rides the block: {}",
+            out.section
+        );
+        assert!(
+            !out.section.contains("Alice is planning a surprise."),
+            "a region THIS reader may not see must never reach the block: {}",
+            out.section
+        );
+        assert_eq!(
+            out.served,
+            vec![("alice".to_owned(), PathBuf::from(IDENTITY_PAGE))],
+            "the served page is handed to the walk as already visited"
+        );
+        assert_eq!(
+            out.page_paths,
+            vec!["wikis/alice/profile.md".to_owned()],
+            "and to the flat slot, so its facts are not restated"
+        );
+    }
+
+    /// The sender is served by `WHO IS SPEAKING`; naming themselves must not
+    /// buy a second copy. And a turn that names nobody produces no slot.
+    #[tokio::test]
+    async fn the_speaker_is_never_their_own_mentioned_card_and_no_name_means_no_slot() {
+        let (dir, _tree, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        let file = crate::enrollment::EnrollmentFile {
+            version: 1,
+            users: vec![crate::enrollment::UserEntry {
+                id: "alice".to_owned(),
+                aliases: Vec::new(),
+                is_admin: false,
+                locale: None,
+                timezone: None,
+            }],
+            groups: Vec::new(),
+        };
+        crate::enrollment::mirror_to_db(&pool, &file)
+            .await
+            .expect("mirror");
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+        let policy = IngestPolicy::default();
+
+        assert!(
+            people_mentioned_section(
+                &pool,
+                &tree,
+                &SenderContext::user("alice"),
+                "cosa mangio stasera?",
+                &policy,
+            )
+            .await
+            .is_none(),
+            "the sender's own card is WHO IS SPEAKING's job"
+        );
+        assert!(
+            people_mentioned_section(
+                &pool,
+                &tree,
+                &SenderContext::user("franz"),
+                "ricordami di chiamare l'idraulico",
+                &policy,
+            )
+            .await
+            .is_none(),
+            "a turn naming nobody opens no slot"
+        );
     }
 
     /// 69a: the slot serves the identity **page**, not one line of
@@ -12875,16 +13170,17 @@ mod tests {
         // The recall block is recalled MEMORY only (roadmap 29d): the role
         // sections of roadmap 41, never behaviour directives.
         assert_eq!(
-            assemble_recall_block(None, None, None, None, None, None),
+            assemble_recall_block(None, None, None, None, None, None, None),
             None
         );
         assert_eq!(
-            assemble_recall_block(None, None, None, Some("  ".into()), None, None),
+            assemble_recall_block(None, None, None, None, Some("  ".into()), None, None),
             None,
             "whitespace-only sections must not resurrect the block"
         );
         assert_eq!(
             assemble_recall_block(
+                None,
                 None,
                 None,
                 None,
@@ -12902,6 +13198,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 Some("UPCOMING:\n- (a) y".into())
             )
             .as_deref(),
@@ -12912,6 +13209,7 @@ mod tests {
             assemble_recall_block(
                 Some("WHO YOU ARE: ...".into()),
                 Some("WHO IS SPEAKING:\n- franz — dev".into()),
+                Some("PEOPLE THIS TURN NAMES:\n\n- carol\nshe is coeliac".into()),
                 Some("YOUR RECENT HISTORY WITH THIS USER: ...".into()),
                 Some("flat".into()),
                 None,
@@ -12920,9 +13218,10 @@ mod tests {
             .as_deref(),
             Some(
                 "WHO YOU ARE: ...\n\nWHO IS SPEAKING:\n- franz — dev\n\n\
+                 PEOPLE THIS TURN NAMES:\n\n- carol\nshe is coeliac\n\n\
                  YOUR RECENT HISTORY WITH THIS USER: ...\n\nflat"
             ),
-            "identity leads, then the speaker, then the history, then the facts"
+            "identity leads, then the speaker, then the people the turn names, then the history, then the facts"
         );
     }
 

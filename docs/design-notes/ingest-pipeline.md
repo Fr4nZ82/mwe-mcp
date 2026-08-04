@@ -763,7 +763,7 @@ places adjacent to this block (the hermes bridge leads with it).
 2. **`WHO IS SPEAKING`** — the sender's identity card, and the one
    **deterministic** slot in the block: a label line
    `<sender_id> — <their wiki's _meta.summary>`, then the sender's
-   **`index.md` itself**. Serving the page rather than an abstract of it
+   **card (`profile.md`) itself**. Serving the page rather than an abstract of it
    is what makes the identity core — name, birthdate, contacts, family
    ties, but also the standing health constraints and the characterising
    preferences a `bio`-typed query would miss — arrive on *every* turn, at
@@ -772,6 +772,36 @@ places adjacent to this block (the hermes bridge leads with it).
    that read the sentence: **the identity page is what the classifier
    decided belongs on the identity page**, and re-deriving that at read
    time from two columns is a second, worse copy of it.
+
+2b. **`PEOPLE THIS TURN NAMES`** — the same treatment for the enrolled
+   people the turn **names**, served beside the speaker's card and bounded
+   by `max_mentioned_cards` (default 2). Deterministic and free:
+   `recall::turn_subjects` is a word match over the roster, no model call.
+
+   *Why it is served rather than found.* Similarity does not reliably surface
+   who someone **is**. Measured on the live corpus (`examples/subject_gate.rs`)
+   the phrase *«sta sera cucino io, cosa faccio per carol?»* returns ten
+   facts about household expenses, meal prep and baby clothes and **neither
+   the coeliac disease nor the pregnancy**; reworded to *«cosa cucino stasera
+   per carol?»* both appear, at ranks 3 and 8. The same question, reworded,
+   gets a different answer, because that turn's candidates sit inside a
+   0.585–0.612 band where the wording decides the order. Nor does the walk
+   save it: what a real navigator reaches is *«Mini Muffin (senza glutine e
+   senza lattosio)»* — a property of a muffin, not a constraint on a person.
+
+   *Why the coarse gate is the right one.* The card holds what is worth
+   knowing about someone **whenever they come up**, so a passing mention is
+   not a false positive — it is a cheap piece of context. What bounds the slot
+   is the count, not a cleverer gate.
+
+   *Projected for the reader, never the subject.* [`identity_card`] receives
+   the **sender**, so a region on a third party's card that this reader may
+   not see is redacted before it reaches them. This slot is what makes that
+   invariant load-bearing rather than a no-op.
+
+   Both slots feed the same three dedups as `WHO IS SPEAKING`: the served
+   pages leave the flat hit list, are handed to `navigate` as already
+   visited, and count as surfaced in the recall log.
 
    Four properties hold whatever REM later writes there:
 
@@ -1687,7 +1717,8 @@ signature stays stable as the policy grows:
 | `due_soon_horizon_hours` | 168 (7 days) | Look-ahead window of the due-soon pull, hours from the turn's clock. |
 | `max_agent_identity_chars` | 900 | Budget of the `WHO YOU ARE` section (whole-bullet fitting; a resource cap, not a semantic gate). |
 | `max_agent_history_chars` | 1400 | Budget of the `YOUR RECENT HISTORY WITH THIS USER` section (same fitting, newest first). |
-| `max_sender_identity_chars` | 2500 | Failsafe on the `WHO IS SPEAKING` identity card (whole-**paragraph** fitting; warns when it fires). `0` serves the label line alone. |
+| `max_sender_identity_chars` | 2500 | Failsafe on the `WHO IS SPEAKING` identity card (whole-**paragraph** fitting; warns when it fires). `0` serves the label line alone. Also the per-card budget of `PEOPLE THIS TURN NAMES`. |
+| `max_mentioned_cards` | 2 | How many **named third parties** get their card served (`PEOPLE THIS TURN NAMES`). `0` disables the slot. |
 
 The recall-block rows (`recall_top_k`, `recall_fresh_top_k`, `nav`,
 `due_soon_*`, `max_agent_*_chars`, `max_sender_identity_chars`) are
