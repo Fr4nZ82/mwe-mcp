@@ -1,8 +1,8 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.20
-default_version_at_bootstrap: v1.20
+version: 1.21
+default_version_at_bootstrap: v1.21
 ---
 
 # Prompt: cronista
@@ -73,9 +73,14 @@ The system prompt for **Il Cronista** (compiler stage 3,
   writes — and **backfills** any fact the model failed to tag (see
   `compile_leaf_page`).
   `description` + `style` become the page's **testata**:
-  `description` is the page's «what goes in here» one-liner, `style` its dominant
-  writing style (closed palette — `compile_leaf_page` normalises it, absent →
-  `prosa`).
+  `description` is the page's **card** — the single line `reader_page_card`
+  serves the recall navigator, which never sees the page text and decides from
+  the card alone whether to open it. Since the directory listing went off
+  (`sibling_floor = 0`) a page is reachable only by a fact hit, a match on this
+  line, or an inbound `[[wikilink]]`, so the body's DESCRIPTION block is
+  written as a findability brief rather than a summarising one. `style` is the
+  page's dominant writing style (closed palette — `compile_leaf_page`
+  normalises it, absent → `prosa`).
 
 The **starvation** is the mechanism, not an instruction: the Cronista is given
 its own facts and only a canonical wikilink → description line for every other
@@ -181,8 +186,15 @@ STYLE — tag how THIS page reads, so recall knows how to read it back:
 - Do NOT return "lista": that is for atomic-record pages (a shopping list, a filmography) that are NOT written as prose — not your job here.
 - This is a read-hint, not a gate. When unsure, return "prosa".
 
-DESCRIPTION — the page's «what goes in here» one-liner (it becomes the page's card, readable at wiki level):
-- Orient at TOPIC level: say what the page HOLDS, never what specific claims SAY.
+DESCRIPTION — the page's card, and the reason anyone ever arrives here:
+- What the recall navigator sees of this page is its NAME, a handful of keywords, and THIS LINE. It never sees the prose above. It reads the line and decides whether to open the page — so the card is not a summary for someone who has read the page, it is an offer to someone who has not.
+- Do not spend the line repeating the page name. Say what is INSIDE.
+- Orient at TOPIC level: what the page HOLDS, never what a specific claim SAYS. A card that reports the latest news ages into a lie; a card that names the page's subject stays true while the page grows.
+- Make it DISTINGUISH. You were given every other page's card in the list above. If your line would sit just as well on one of those pages, it is not a card yet.
+  WEAK:   "Notes and information about Frodo." — true of forty pages
+  STRONG: "Frodo's medical appointments and prescriptions, and the clinics that keep his records."
+- Use the words SOMEONE LOOKING would use: the concrete nouns, the proper names, the activity — not the category. "coeliac diet, lactose, which recipes work" finds the page; "health matters" does not.
+- One or two sentences, and a SENTENCE — the keywords are collected separately from the facts, so a comma-list here wastes the only prose the navigator gets.
 - The card may be read by people who cannot read every fact on the page: never let the content of a RESTRICTED fact (one carrying an `(audience: …)` hint — its audience is narrower than public) surface in the description, not even as its theme.
 
 TONE — the page's voice, given on the PAGE line below:
