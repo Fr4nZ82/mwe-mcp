@@ -100,9 +100,24 @@ pub mod kind {
     /// within the window rejects it, and silence (or an all-voted quorum with no
     /// NO-majority) applies it — tombstoning the fact.
     pub const FACT_FORGET: &str = "fact_forget";
+    /// **Receipt only** — the planner minted a page nobody asked for.
+    ///
+    /// A concept page the Cartografo proposed for facts that fitted no
+    /// existing one. Emitted **born-applied**
+    /// ([`super::emit_applied_proposal`]): the nightly pass cannot stop and
+    /// wait for an answer, but the operator must be able to *see* what the
+    /// machine invented, and revert it.
+    ///
+    /// It exists because the promise was already written and never kept: the
+    /// planner's own module doc said *"emergent-page creation flows through
+    /// `structure_proposals`, it is never a silent write"* while the only
+    /// kinds that existed were about **wikis**. Twelve container pages were
+    /// created over three weeks with nothing anywhere for the founder to read
+    /// (2026-08-04).
+    pub const PAGE_CREATE: &str = "page_create";
 
     /// Every canonical kind — the questionnaire kinds.
-    pub const ALL: &[&str] = &[WIKI_PROMOTE, DEDUP_MERGE, BUNDLE, FACT_FORGET];
+    pub const ALL: &[&str] = &[WIKI_PROMOTE, DEDUP_MERGE, BUNDLE, FACT_FORGET, PAGE_CREATE];
 
     /// `true` when `s` matches one of the canonical kinds.
     #[must_use]
@@ -940,7 +955,11 @@ async fn dispatch_apply_kind(
             let spec = apply_fact_forget(pool, context).await?;
             Ok(Some(spec))
         },
-        kind::BUNDLE => Err(ApplyError::KindNotYetImplemented(kind.to_owned())),
+        // `BUNDLE` is unshipped. `PAGE_CREATE` is never reachable at all: it
+        // is emitted born-applied, so it is never `pending` and this
+        // dispatcher never sees it — a receipt, not a missing handler. They
+        // share an arm because they share an outcome, not a reason.
+        kind::BUNDLE | kind::PAGE_CREATE => Err(ApplyError::KindNotYetImplemented(kind.to_owned())),
         other => Err(ApplyError::UnknownKind(other.to_owned())),
     }
 }
@@ -2378,10 +2397,15 @@ mod tests {
         assert_eq!(kind::DEDUP_MERGE, "dedup_merge");
         assert_eq!(kind::BUNDLE, "bundle");
         assert_eq!(kind::FACT_FORGET, "fact_forget");
-        // The canonical kinds: three questionnaire kinds + the fact-forget vote.
-        assert_eq!(kind::ALL.len(), 4);
+        assert_eq!(kind::PAGE_CREATE, "page_create");
+        // Three questionnaire kinds, the fact-forget vote, and the
+        // receipt-only `page_create` (2026-08-04): a kind that is never
+        // `pending`, emitted born-applied so a page the machine invented
+        // leaves a record the operator can read and revert.
+        assert_eq!(kind::ALL.len(), 5);
         assert!(kind::is_canonical("wiki_promote"));
         assert!(kind::is_canonical("fact_forget"));
+        assert!(kind::is_canonical("page_create"));
         // `wiki_type_forge` was removed with the `wiki_type` registry
         // teardown — it must no longer be canonical.
         assert!(!kind::is_canonical("wiki_type_forge"));

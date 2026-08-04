@@ -39,8 +39,13 @@
 //!   `wiki-group` = group hub); a page's tree home is carried on
 //!   [`PagePlan::wiki_id`] + [`PagePlan::page_path`]. Concept pages are `.md`
 //!   pages **within** the relevant standard wiki (escalating to a sub-wiki only
-//!   when they grow — via the existing promote machinery); emergent-page
-//!   creation flows through `structure_proposals`, it is never a silent write.
+//!   when they grow — via the existing promote machinery). **Emergent-page
+//!   creation leaves a receipt** in `structure_proposals`
+//!   ([`crate::proposals::kind::PAGE_CREATE`], born-applied and revertable —
+//!   see [`record_minted_pages`]). Until 2026-08-04 this paragraph asserted
+//!   the same thing while no page-level kind existed at all: the only kinds
+//!   were about wikis, and twelve container pages were minted over three weeks
+//!   with nothing anywhere for the operator to read.
 //! - Every [`FactForPage`] carries its **stable `fact_id`** so the Cronista can
 //!   emit `{{… f=<id>}}` markers and recall/supersede survive a recompile (a
 //!   defect the TS original had — it lost fact identity at render time).
@@ -2751,6 +2756,18 @@ pub async fn build_wiki_plan(
             "planner: parked pages re-opened — their placements re-judged"
         );
     }
+    // Every page the machine invented this cycle gets a receipt the operator
+    // can read. Not a gate: the nightly pass cannot stop and wait for an
+    // answer, so the record is **born-applied** and revertable — the same
+    // act-first-with-a-receipt rung the refile sweep uses.
+    //
+    // This closes a promise the module doc had been making since the cutover
+    // while the only proposal kinds that existed were about *wikis*: twelve
+    // container pages were minted over three weeks with nothing anywhere for
+    // the founder to read (2026-08-04).
+    if let Some(prev) = &prev {
+        record_minted_pages(pool, prev, &plan, now).await;
+    }
     plan.dirty_pages = match &prev {
         Some(prev) => {
             // Union in any force-dirty pages an out-of-band re-home parked on
@@ -2776,6 +2793,55 @@ pub async fn build_wiki_plan(
         "planner: plan built"
     );
     Ok(plan)
+}
+
+/// Emit one born-applied `page_create` receipt per page this build invented.
+///
+/// "Invented" is `next.pages ∖ prev.pages`, the same set
+/// [`compute_dirty_pages`] already walks — a page nobody asked for by name,
+/// minted because the Cartografo judged some facts fitted no existing page.
+/// Foundation pages are excluded: a person's card and a wiki's buffer appear
+/// because a *user* or a *wiki* was created, which has its own visible route.
+///
+/// Best-effort by contract. A failure here must never fail the nightly plan:
+/// a missing receipt is a gap in the record, a failed plan is a night of no
+/// memory maintenance at all. Logged at `warn!` and swallowed.
+async fn record_minted_pages(
+    pool: &SqlitePool,
+    prev: &CompilationPlan,
+    next: &CompilationPlan,
+    now: &str,
+) {
+    for (slug, page) in &next.pages {
+        if prev.pages.contains_key(slug) || page.page_type.is_foundation() {
+            continue;
+        }
+        let context = serde_json::json!({
+            "slug": slug,
+            "wiki_id": page.wiki_id,
+            "page_path": page.page_path,
+            "title": page.title,
+            "description": page.description,
+            "page_type": format!("{:?}", page.page_type),
+            "parent_hub": page.parent_hub,
+            "fact_count": page.primary_facts.len(),
+            "minted_at": now,
+        });
+        let params = crate::proposals::EmitParams::new(
+            crate::proposals::kind::PAGE_CREATE,
+            context.clone(),
+            serde_json::json!([]),
+        );
+        if let Err(e) =
+            crate::proposals::emit_applied_proposal(pool, params, context, Some("planner")).await
+        {
+            tracing::warn!(
+                slug = %slug,
+                error = %e,
+                "planner: could not record a minted page — the page exists, the receipt does not"
+            );
+        }
+    }
 }
 
 /// Gather every active fact in the standard wikis as [`FactForPage`]s, in a
@@ -3060,6 +3126,62 @@ mod tests {
             wiki_id: slug.to_owned(),
             page_path: "index.md".to_owned(),
         }
+    }
+
+    /// A page the machine invents leaves a receipt; a foundation page does not.
+    ///
+    /// Twelve container pages were minted over three weeks with nothing
+    /// anywhere for the operator to read, while the module doc asserted the
+    /// opposite. The negative half matters as much: a person's card appears
+    /// because a *user* was enrolled, which is already visible, so receipting
+    /// it would bury the ones that are actually the machine's own idea.
+    #[tokio::test]
+    async fn a_page_the_machine_invents_leaves_a_receipt_and_a_foundation_page_does_not() {
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
+        let mut prev_pages = BTreeMap::new();
+        prev_pages.insert("alice".to_owned(), person("alice"));
+        let prev = CompilationPlan {
+            pages: prev_pages,
+            merged_pages: vec![],
+            link_graph: BTreeMap::new(),
+            compilation_order: vec![],
+            generated_at: "t".to_owned(),
+            fact_count: 0,
+            dirty_pages: vec![],
+            force_dirty: vec![],
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+        };
+
+        let mut next = prev.clone();
+        next.pages.insert("bob".to_owned(), person("bob"));
+        let mut leaf = person("ricette");
+        leaf.page_type = PageType::ConceptLeaf;
+        leaf.page_path = "ricette.md".to_owned();
+        leaf.wiki_id = "alice".to_owned();
+        next.pages.insert("ricette".to_owned(), leaf);
+
+        record_minted_pages(&pool, &prev, &next, "2026-08-04T00:00:00Z").await;
+
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT kind, status, context FROM structure_proposals ORDER BY proposal_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("rows");
+        assert_eq!(rows.len(), 1, "one receipt, for the invented page only");
+        assert_eq!(rows[0].0, crate::proposals::kind::PAGE_CREATE);
+        assert_eq!(rows[0].1, "applied", "born-applied, never a gate");
+        assert!(
+            rows[0].2.contains("ricette"),
+            "the receipt must name the page: {}",
+            rows[0].2
+        );
+        assert!(
+            !rows[0].2.contains("bob"),
+            "a person's card is not the machine's idea: {}",
+            rows[0].2
+        );
     }
 
     /// Insert a promoted fact in alice's wiki carrying an ingest placement
