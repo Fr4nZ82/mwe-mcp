@@ -424,12 +424,26 @@ pub struct NavigatorPolicy {
     /// Maximum candidates offered to the navigator per hop.
     pub max_candidates: usize,
     /// How many candidates a hop may be topped up to with **directory
-    /// siblings**, which are a last resort rather than an offer (founder,
-    /// 2026-08-04). See [`prune_pool`]. Defaults to `pages_per_hop`: below
-    /// the number of pages the navigator may open, the choice is not a
-    /// choice. Set it to [`usize::MAX`] to observe the unrationed supply —
-    /// what `examples/pool_shape.rs` does, for the same reason it leaves
-    /// `max_candidates` uncapped.
+    /// siblings**. **`0` — off** (founder, 2026-08-04: *«io credo sia meglio
+    /// toglierle del tutto»*, on learning how they are picked).
+    ///
+    /// They were the funnel's structural breadth channel: on first entry into
+    /// a wiki, every one of its pages was offered. The founder's question was
+    /// *how* the survivors are chosen, and the answer retires the channel —
+    /// [`wiki::list_wiki_pages`] sorts by path, so the ones that fit were the
+    /// **alphabetically first**. That is not a choice, it is an accident of
+    /// filenames, and each one it offers costs a summary-and-keywords line in
+    /// every hop's prompt. Reachability now rests entirely on the four
+    /// content-derived channels — a fact hit, a topic or situational match on
+    /// the page's own card, or an authored `[[wikilink]]` — which is the same
+    /// argument that makes the page cards load-bearing (card 62, lever 1).
+    ///
+    /// Kept as a knob rather than deleted with the code: it is one number to
+    /// restore if the post-deploy dead-end rate says the corpus is not ready,
+    /// and `examples/pool_shape.rs` sets it to [`usize::MAX`] to measure what
+    /// the listing *would* have added, for the same reason it leaves
+    /// `max_candidates` uncapped. Above `0` it is a floor, not a quota: see
+    /// [`prune_pool`].
     pub sibling_floor: usize,
     /// `max_tokens` for each navigator completion (the decision JSON is
     /// small; this is a cost guard, not a quality knob).
@@ -443,7 +457,7 @@ impl Default for NavigatorPolicy {
             pages_per_hop: 3,
             char_budget: 8_000,
             max_candidates: 16,
-            sibling_floor: 3,
+            sibling_floor: 0,
             decision_max_tokens: 600,
         }
     }
@@ -776,6 +790,7 @@ pub async fn navigate(
         entered: BTreeSet::new(),
         acl_defaults: BTreeMap::new(),
         remaining: policy.char_budget,
+        sibling_floor: policy.sibling_floor,
     };
 
     // Overwritten by every earlier exit; reaching the loop's natural end
@@ -928,8 +943,10 @@ struct QuerySeedsJson {
 ///
 /// Best-effort by contract: any LLM or parse failure returns `(empty, empty)`
 /// and the caller degrades to A. Extracted entity names are resolved against
-/// enrollment (user id / alias → `user:`, group id → `group:`); names that do
-/// not resolve fold into `topics`, where they can still substring-match a card.
+/// enrollment (user id / alias → `user:`, group id → `group:`) **and are kept
+/// as topics either way** — resolving a name says who the turn is about, it
+/// does not make the word less useful for matching the cards of the pages that
+/// mention them.
 pub async fn extract_query_seeds(
     pool: &SqlitePool,
     workdir: &Path,
@@ -985,18 +1002,41 @@ pub async fn extract_query_seeds(
                 Vec::new()
             },
         };
-        for entity in parsed.entities {
-            if let Some(p) = resolve_entity(&entity, &users, &groups) {
-                if !owners.contains(&p) {
-                    owners.push(p);
-                }
-            } else if !topics.iter().any(|t| t.eq_ignore_ascii_case(&entity)) {
-                // Unresolved name still helps as a card needle.
-                topics.push(entity);
-            }
-        }
+        fold_entities(parsed.entities, &users, &groups, &mut topics, &mut owners);
     }
     (topics, owners)
+}
+
+/// Route each extracted entity name into the two seed channels.
+///
+/// An entity is recorded on `owners` when the roster resolves it, and is kept
+/// as a `topics` needle **either way**.
+///
+/// That "either way" is the fix, and the shape it replaced is worth naming:
+/// it was an `if let … else`, so a resolved name went ONLY to `owners`. Since
+/// 69b `owners` seeds no door — a principal names a wiki, and recall opens
+/// content pages — so a name the roster *recognised* went to a dead channel
+/// while an unrecognised one went to the live card matcher. A query about an
+/// enrolled person was served strictly worse than one about a stranger.
+/// Resolving a name says who the turn is about; it does not make the word less
+/// useful for finding the pages that mention them.
+fn fold_entities(
+    entities: Vec<String>,
+    users: &[enrollment::EnrolledUserLite],
+    groups: &[enrollment::EnrolledGroupLite],
+    topics: &mut Vec<String>,
+    owners: &mut Vec<Principal>,
+) {
+    for entity in entities {
+        if let Some(p) = resolve_entity(&entity, users, groups)
+            && !owners.contains(&p)
+        {
+            owners.push(p);
+        }
+        if !topics.iter().any(|t| t.eq_ignore_ascii_case(&entity)) {
+            topics.push(entity);
+        }
+    }
 }
 
 /// Resolve one entity name (case-insensitive) to a principal via enrollment:
@@ -1042,6 +1082,11 @@ struct FunnelState {
     entered: BTreeSet<String>,
     acl_defaults: BTreeMap<String, Principal>,
     remaining: usize,
+    /// Mirror of [`NavigatorPolicy::sibling_floor`]. `0` (the default) means
+    /// the directory listing is not produced at all — not produced and then
+    /// discarded: building it walks the wiki and reads every page's testata,
+    /// which is real work for candidates that would be dropped.
+    sibling_floor: usize,
 }
 
 /// Vet one navigator pick against the candidate pool and — when it holds —
@@ -1149,7 +1194,10 @@ async fn open_target(
     state.remaining -= text.len();
     outcome.truncated |= cut;
     let mut discoveries = Vec::new();
-    if state.entered.insert(cand.wiki_id.clone()) {
+    // First entry into a wiki used to dump its whole directory here. It is now
+    // off by default (`sibling_floor = 0`) — see [`prune_pool`] and
+    // [`sibling_page_candidates`].
+    if state.sibling_floor > 0 && state.entered.insert(cand.wiki_id.clone()) {
         discoveries.extend(sibling_page_candidates(d, &state.visited, reader_card));
     }
     discoveries.extend(linked_wiki_candidates(&text, d, by_id, reader_card));
@@ -1790,6 +1838,60 @@ mod tests {
         assert_eq!(parsed.entities, vec!["Morgana".to_owned()]);
         // Garbage in → None (the caller degrades to A).
         assert!(parse_query_seeds("not json at all").is_none());
+    }
+
+    #[test]
+    fn a_resolved_entity_stays_a_topic_needle_instead_of_only_a_dead_owner() {
+        // `owners` seeds no door since 69b. Routing a RESOLVED name there and
+        // ONLY an unresolved one to `topics` served a query about an enrolled
+        // person strictly worse than one about a stranger.
+        let users = vec![enrollment::EnrolledUserLite {
+            user_id: "morgana".to_owned(),
+            aliases: vec!["Xheni".to_owned()],
+            is_agent: false,
+        }];
+        let groups: Vec<enrollment::EnrolledGroupLite> = Vec::new();
+        let mut topics = vec!["concerti".to_owned()];
+        let mut owners: Vec<Principal> = Vec::new();
+
+        fold_entities(
+            vec!["Xheni".to_owned(), "Gandalf".to_owned()],
+            &users,
+            &groups,
+            &mut topics,
+            &mut owners,
+        );
+
+        assert!(
+            topics.iter().any(|t| t == "Xheni"),
+            "a resolved alias must still reach the card matcher: {topics:?}"
+        );
+        assert!(
+            topics.iter().any(|t| t == "Gandalf"),
+            "an unresolved name keeps reaching it: {topics:?}"
+        );
+        assert_eq!(
+            owners,
+            vec![Principal::User("morgana".to_owned())],
+            "and the resolution is still recorded, once"
+        );
+        assert_eq!(topics[0], "concerti", "classifier topics keep their order");
+    }
+
+    #[test]
+    fn fold_entities_does_not_duplicate_a_name_the_classifier_already_gave() {
+        let users: Vec<enrollment::EnrolledUserLite> = Vec::new();
+        let groups: Vec<enrollment::EnrolledGroupLite> = Vec::new();
+        let mut topics = vec!["gandalf".to_owned()];
+        let mut owners: Vec<Principal> = Vec::new();
+        fold_entities(
+            vec!["Gandalf".to_owned()],
+            &users,
+            &groups,
+            &mut topics,
+            &mut owners,
+        );
+        assert_eq!(topics, vec!["gandalf".to_owned()], "case-insensitive dedup");
     }
 
     #[test]
@@ -2542,7 +2644,12 @@ mod tests {
             &sender("mallory", &[]),
             "what do we know?",
             &[entry("alice", "notes.md", EntryOrigin::Topic, 0.8)],
-            &NavigatorPolicy::default(),
+            // These filters guard the directory listing, which is OFF by
+            // default since 2026-08-04 — turn it on so they are still tested.
+            &NavigatorPolicy {
+                sibling_floor: 16,
+                ..NavigatorPolicy::default()
+            },
             &[],
         )
         .await
@@ -3165,7 +3272,12 @@ mod tests {
             &sender("alice", &[]),
             "what do we know?",
             &[entry("alice", "rails.md", EntryOrigin::Rag, 0.9)],
-            &NavigatorPolicy::default(),
+            // These filters guard the directory listing, which is OFF by
+            // default since 2026-08-04 — turn it on so they are still tested.
+            &NavigatorPolicy {
+                sibling_floor: 16,
+                ..NavigatorPolicy::default()
+            },
             &[],
         )
         .await

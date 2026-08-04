@@ -96,8 +96,8 @@ flowchart TB
     GROW --> POOL1
 
     subgraph H1["hop 1 … up to max_hops"]
-        POOL1["candidate pool = siblings + link targets<br/>often 40+ entries"]
-        POOL1 --> PRUNE1["prune_pool → rank by tier<br/>(link &gt; entry fan &gt; sibling page),<br/>THEN dedup — a page reached twice<br/>keeps its best tier —<br/>THEN ration siblings to <b>sibling_floor</b><br/>THEN truncate to <b>max_candidates</b>"]
+        POOL1["candidate pool = link targets<br/>+ the fan's unopened tail"]
+        POOL1 --> PRUNE1["prune_pool → rank by tier<br/>(link &gt; entry fan &gt; sibling page),<br/>THEN dedup — a page reached twice<br/>keeps its best tier —<br/>THEN truncate to <b>max_candidates</b>"]
         PRUNE1 --> LLM1["navigator LLM decides again"]
         LLM1 --> OPEN1["open, collect, grow the pool"]
     end
@@ -134,7 +134,7 @@ knob.** Defaults come from `IngestPolicy::default` / `NavigatorPolicy::default`.
 | `pages_per_hop` | `3` | how many candidates one hop may open |
 | `char_budget` | `8 000` | total projected prose one navigation may collect |
 | `max_candidates` | `16` | how many doors a hop is offered, after tier ranking and dedup |
-| `sibling_floor` | `3` | how far directory siblings may top a hop's offer up — they are a last resort, not an offer; `usize::MAX` observes the unrationed supply |
+| `sibling_floor` | `0` **(off)** | how far directory siblings may top a hop's offer up. Off: the listing is not built at all. `usize::MAX` observes what it would have added |
 | `decision_max_tokens` | `600` | cost guard on the per-hop decision JSON, not a quality dial |
 | `due_soon_top_k` | `3` | the `UPCOMING` slot; `0` disables it |
 | `due_soon_horizon_hours` | `168` (7 d) | how far ahead `UPCOMING` looks |
@@ -814,11 +814,12 @@ object (`open[]` / `done`). Rust then vets every pick against the offered
 candidates (a hallucinated target is discarded, never opened), reads the page,
 drops the testata, and **projects it per-sender** (`render_for_sender`) — the
 navigator never sees a raw ACL marker. Opening a page grows the next hop's
-candidates: the entered wiki's sibling pages and the destinations reachable
-via `[[wikilinks]]` from the collected prose (`Visible`-only) — a page hop
-offers the linked **page directly**, a bare wiki hop offers that wiki's
-**foundation page** (`profile.md`, else `notes.md`) and never its map, each
-with the same reader-relative card (see the link grammar below).
+candidates: the destinations reachable via `[[wikilinks]]` from the collected
+prose (`Visible`-only) — a page hop offers the linked **page directly**, a bare
+wiki hop offers that wiki's **foundation page** (`profile.md`, else `notes.md`)
+and never its map, each with the same reader-relative card (see the link
+grammar below). The wiki's *other* pages are not added — see the directory
+listing below.
 
 Before the next prompt is built, `prune_pool` **stably ranks the pool by
 tier**, drops already-visited / duplicate candidates, **rations the
@@ -826,22 +827,33 @@ siblings**, and truncates to `max_candidates`. The tiers: wikilink
 destinations first (an authored rail out of the page just read), then the
 still-unpicked entry-point fan in the gatherer's own weight order (seeds
 already offered on an earlier hop that the navigator did not choose), then
-sibling pages last.
+sibling pages last — a tier that is **empty in the default configuration**.
 
-**Siblings are a last resort, not an offer** (founder, 2026-08-04: *«le
-pagine vicine entrano solo se non c'è altro, come ultima risorsa… non è
-importante vedere le pagine vicine quanto seguire i links»*). Tiering alone
-did not deliver that. A demoted sibling still fills every slot the rails and
-the fan leave free, and the directory listing is by far the funnel's largest
-producer — `sibling_page_candidates` fires on every wiki entry and dumps the
-whole directory (`carol` alone contributes 47 candidates) while
-`[[wikilink]]` targets are comparatively rare, so **98.2 % of everything the
-cap cuts is siblings** (card 66 §7.2). They are therefore rationed rather
-than merely demoted: they enter only to bring the offer up to
-`sibling_floor` candidates, and not at all above it. That keeps the
-dead-end continuation alive — a page with no rails, in a wiki with no other
-route, still has somewhere to go — without letting the directory dump be
-the walk's default next step.
+**The directory listing is OFF** (`sibling_floor = 0`; founder, 2026-08-04:
+*«io credo sia meglio toglierle del tutto»*). It was the funnel's structural
+breadth channel — on first entry into a wiki, every one of its pages was
+offered — and it was by a distance the largest producer in the funnel:
+`carol` alone contributed 47 candidates on entry, and **98.2 % of everything
+the cap cut was siblings** (card 66 §7.2).
+
+What retired it was asking *how the survivors are chosen*.
+[`wiki::list_wiki_pages`] sorts by path, so the ones that fit were the
+**alphabetically first** — not a choice, an accident of filenames — and each
+one offered costs a summary-and-keywords line in every hop's prompt. Paying a
+per-hop tax to offer arbitrary pages is worse than offering nothing.
+
+**So reachability now rests entirely on the four content-derived channels**: a
+fact hit (`rag`), a topic or situational match against the page's **own card**,
+and an authored `[[wikilink]]`. A page that has none of those is reachable only
+through the flat slot. That is the same argument that makes the page cards
+load-bearing rather than decorative — they are the sole input to every choice
+the funnel makes, and now to reachability itself.
+
+The knob survives the code being off: it is one number to restore if the
+post-deploy dead-end rate says the corpus is not ready for it, and
+`examples/pool_shape.rs` sets it to `usize::MAX` to measure what the listing
+*would* have added. Above `0` it is a floor, not a quota — siblings top the
+offer up to it and never go above.
 
 **The ranking runs before the dedup, and that order is load-bearing.** One
 page routinely reaches the pool by two routes at once: a page linked from
