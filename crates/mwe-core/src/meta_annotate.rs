@@ -30,8 +30,11 @@
 //!   from the card instead of reading whole pages.
 //!
 //! The `_meta` pair is what [`crate::wiki::flatten_keywords`] /
-//! [`crate::wiki::CatalogEntry`] surface into the root index a recall navigator
-//! reads to orient itself.
+//! [`crate::wiki::CatalogEntry`] surface into the wiki catalog. **The recall
+//! navigator is not a consumer of it** — since 2026-08-04 the read side is
+//! shown no wiki catalog at all (see recall-pipeline.md, *The read side has no
+//! concept of a wiki*); what reaches a turn from here is the per-**page** card
+//! ([`read_page_card`]) and, on the write side, the structure the filer needs.
 //!
 //! The recall-navigation principle is to push intelligence to compile-time
 //! (offline, strong model, not latency-critical) so the recall-time navigator

@@ -1,8 +1,8 @@
 ---
 name: navigator
 description: Recall navigator — per-turn funnel that walks the memory wiki from the entry-point fan, choosing which pages to open from their cards (root index + summaries + keywords) and stopping when the collected prose is enough; strict one-JSON-object output
-version: 1.2
-default_version_at_bootstrap: v1.2
+version: 1.3
+default_version_at_bootstrap: v1.3
 ---
 
 # Prompt: navigator
@@ -32,9 +32,13 @@ the bundled default embedded by `include_str!` is the floor; an override at
   **`page` is not optional.** `NavOpen::page` is an `Option` only so a
   page-less request parses instead of failing the whole decision — it then
   matches no candidate and is dropped by `open_target`, and a hop whose every
-  pick is dropped ends the walk with `NavStop::NothingOpened`. The prompt says
-  so explicitly because the ROOT INDEX it is also given renders wiki-level
-  `[[wiki_id]]` entries, which read as openable and are not.
+  pick is dropped ends the walk with `NavStop::NothingOpened`.
+- **No wiki catalogue.** Until v1.3 every hop also carried a ROOT INDEX: one
+  line per visible wiki with its `_meta` abstract and topic union, ~13.5k
+  characters on the live corpus. Removed by the founder's ruling that the read
+  side has no concept of a wiki — it starts on the pages the turn's facts
+  landed on and travels by their `[[wikilinks]]`. `wiki_id` survives only as
+  the first half of a page's address.
 - **ACL**: the navigator never sees raw markers — every page it receives is
   already projected per-sender (`render::render_for_sender`), and the cards it
   chooses from carry only default-visibility topic words (the ACL card
@@ -54,16 +58,18 @@ Each user message gives you:
 - TURN: the message being handled, and who sent it.
 - BUDGET: which hop this is, and roughly how many characters of prose can
   still be collected.
-- ROOT INDEX: the sender's map of the memory, one entry per visible wiki —
-  ORIENTATION ONLY. A wiki is not a page, so nothing listed here is a door.
-- COLLECTED: the prose already brought back, labelled by (wiki, page).
-- CANDIDATES: the only places you may open now. Each line carries the
-  destination's card: wiki_id, page, why it surfaced (rag = a similarity hit
-  put one of this turn's facts on that page; topic/situational = the page's
-  OWN card matched the turn; link = a [[wikilink]] written on a page already
-  collected; card = a [[wikilink]] written on an identity card already handed
-  to the consumer — about the PERSON, so it says nothing about this turn),
-  plus its keywords and summary.
+- COLLECTED: the prose already brought back, one block per page.
+- CANDIDATES: the only places you may open now. Each line is a page address,
+  then why it surfaced (rag = a similarity hit put one of this turn's facts on
+  that page; topic/situational = the page's OWN card matched the turn; link =
+  a [[wikilink]] written on a page already collected; card = a [[wikilink]] on
+  an identity card already handed to the consumer — about the PERSON, so it
+  says nothing about this turn), then the page's keywords and its card.
+
+A page address is written `wiki_id/page.md`, and that is all `wiki_id` is:
+the first half of the name, like the folder in a file path. There is no
+catalogue of them and you never need one — you start on the pages the turn's
+own facts landed on, and you travel by the [[wikilinks]] written on them.
 
 Reply with ONE JSON object and nothing else:
 
@@ -75,14 +81,14 @@ Reply with ONE JSON object and nothing else:
 
 Rules:
 - "open" lists at most {page_budget} entries, chosen ONLY from CANDIDATES —
-  copy wiki_id and page verbatim, BOTH always present. An entry with no page
-  (or "page": null) names a wiki rather than a door: it opens nothing, and it
-  spends a hop for no prose.
+  split each address at the first "/" and copy both halves verbatim, BOTH
+  always present. An entry with no page (or "page": null) names half an
+  address: it opens nothing, and it spends a hop for no prose.
 - Set "done": true with "open": [] the moment COLLECTED is enough to brief
   the consumer. Do not spend budget for completeness' sake; every page you
   open is latency for the person waiting. The bar: would a careful assistant
   be embarrassed to act WITHOUT this page?
-- Choose in this order of pull: the pages of the people and groups the turn
+- Choose in this order of pull: the pages about the people and groups the turn
   touches (that is where the deviating constraints live — the allergy, the
   commitment, the rule of a household); pages whose card names the turn's
   topics; a [[wikilink]] followed out of a page that already proved worth

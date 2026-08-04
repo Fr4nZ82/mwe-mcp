@@ -73,6 +73,37 @@ indistinguishable from a remembered fact. The **cross-consumer recent window**
 `recent_window`: it is the user's live thread from their *other* surfaces, not
 something memory recalled, and it expires in hours rather than being stored.
 
+### The read side has no concept of a wiki
+
+**Founder's ruling, 2026-08-04.** *«Chi scrive deve avere una struttura, per
+sapere dove mettere i fatti e a quali pagine aggiungerli, in modo che i links
+siano fatti bene. Chi legge non ha bisogno di sapere quali sono le wiki, arriva
+direttamente sui fatti, e da lì legge tramite i link le pagine collegate — il
+gioco è collegarle bene in struttura, per questo esiste la struttura.»*
+
+So the structure is the **write** side's instrument: it tells the filer where a
+fact goes and which pages to link, and the quality of that linking is what the
+read side lives on. The reader arrives on the pages its own facts landed on and
+travels by `[[wikilinks]]`. It is never handed a map of containers.
+
+What that removed:
+
+| Was | Cost | Now |
+|---|---|---|
+| **ROOT INDEX** — one line per visible wiki with its `_meta` abstract and full topic union, in **every** hop's prompt | ~13.5k characters per hop on the live corpus, ~27k a turn | gone. The day before it was removed it had to be labelled *"orientation only, not doors"* because the navigator kept trying to open its entries — the label was the smell |
+| **Wiki-then-page matching** in the seed gatherer | none (inert, see above) | flattened to pages |
+
+What stays, and why it is not the same thing:
+
+- **`wiki_id` on a candidate** is an *address*, the first half of `wiki_id/page.md`,
+  exactly as a folder is the first half of a file path. The navigator prompt says
+  this outright so the id is not read as a place.
+- **Visibility is derived per wiki** (`reader_can_read_in`, `summary_visible`) —
+  that is access control, not navigation: a reader who can read no fact in a wiki
+  sees nothing from it, which is a property of the facts, not a wiki-level flag.
+- **Smart wikis are skipped** — a different storage kind with no cards and no
+  link graph, not a container the reader chose not to enter.
+
 ### Inside the funnel — where the doors come from, hop by hop
 
 ```mermaid
@@ -766,8 +797,8 @@ Three invariants:
   [keyword sync](narrative-compiler.md#keyword-sync--fact-topics-into-_meta-and-the-page-testate-recall-navigation)
   writes into the `.md` for the operator's Obsidian view. So a fact the sender
   cannot read never contributes its theme — a restricted fact's topic words can
-  neither act as an entry-point nor surface in the candidate cards / root index
-  the navigator LLM sees. This is the serve-time enforcement of the
+  neither act as an entry-point nor surface in the candidate cards the
+  navigator LLM sees. This is the serve-time enforcement of the
   [ACL card boundary](../concepts/identity-and-acl.md#the-acl-card-boundary--what-card-metadata-may-carry):
   the compile-time `.md` card stays owner-tier, the served card is reader-relative.
   The wiki's one-line abstract (`summary`/page `description`) is gated separately —
@@ -792,13 +823,15 @@ Three invariants:
 
 Duplicates collapse on `(wiki, page)` keeping whichever copy would have sorted
 first — `fan_order` settles the collision and then sorts the survivors, so a
-door two families found is ranked by its **best** route. In particular a person
-whose own wiki root is also a topic or RAG hit keeps the content ranking: the
-identity anchor is the weakest claim on a door, never a demotion applied to
-one. Page-card descent happens only inside a wiki whose own
-card matched — sound because `build_reader_card` derives the wiki-level topic
-union and the per-page unions from the **same** reader-visible fact set, so a
-wiki card matches iff one of its page cards does.
+door two families found is ranked by its **best** route.
+
+**Matching is per page, with no wiki-level step.** Until 2026-08-04 a needle
+was matched against the wiki's topic union first and descended into its pages
+only on a hit. That gate could not actually hide anything —
+`build_reader_card` derives the wiki union and the per-page unions from the
+*same* reader-visible fact set, so a wiki card matched iff one of its page
+cards did — but it shaped the code as though the reader navigated containers.
+It does not: see *The read side has no concept of a wiki* below.
 
 The fan feeds the **navigator funnel** (`recall_nav::navigate`): a
 Rust-owned loop where the `navigator` LLM slot (strong-but-cheap tier — see
@@ -819,9 +852,8 @@ labour is strict — **semantics in the prompt, resources in the knobs**:
   [`recall:` config section](../protocol/config-schema.md#recall); the
   dogfood tunes the values.
 
-Per hop the navigator receives the turn, the per-sender root index, the
-prose collected so far, and a numbered candidate list with **reader-relative
-cards** (topics the sender can read, abstract gated to default visibility — the
+Per hop the navigator receives the turn, the prose collected so far, and a
+numbered candidate list with **reader-relative cards** (topics the sender can read, abstract gated to default visibility — the
 same `build_reader_card` projection as the seeds); it answers one strict JSON
 object (`open[]` / `done`). Rust then vets every pick against the offered
 candidates (a hallucinated target is discarded, never opened), reads the page,

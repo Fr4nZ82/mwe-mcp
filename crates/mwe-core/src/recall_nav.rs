@@ -73,9 +73,7 @@ use crate::prompts;
 use crate::recall::{MULTI_HOP_HARD_LIMIT, RecallHit, SenderContext, extract_wikilinks};
 use crate::render::render_for_sender;
 use crate::types::Principal;
-use crate::wiki::{
-    self, DiscoveredWiki, MarkdownDoc, WikiTree, render_root_index, wiki_catalog_list_for,
-};
+use crate::wiki::{self, DiscoveredWiki, MarkdownDoc, WikiTree};
 
 /// Weight of a topic seed that pinned down a **page** card.
 pub const WEIGHT_TOPIC_PAGE: f32 = 0.8;
@@ -128,13 +126,11 @@ pub struct EntryPoint {
     pub weight: f32,
 }
 
-/// Per-wiki precomputation shared by every seed family: the walk row and the
-/// lowercased reader-relative wiki-card strings. A wiki with an empty `card`
-/// has nothing this reader can see — that emptiness, not a wiki-level flag, is
-/// the visibility signal.
+/// One walk row, kept so a page's `source_path` can be resolved back to its
+/// wiki-relative path. It carries no card of its own: matching is per page
+/// ([`gather_card_seeds`]), and the reader is never shown the container.
 struct WikiSeedInfo {
     wiki: DiscoveredWiki,
-    card: Vec<String>,
 }
 
 /// Gather the entry-point fan for one turn.
@@ -173,7 +169,7 @@ pub async fn gather_entry_points(
         meta_annotate::build_reader_card(pool, tree, &sender.sender_id, &sender.sender_groups)
             .await
             .context("build reader card")?;
-    let infos = build_seed_infos(tree, &reader_card)?;
+    let infos = build_seed_infos(tree)?;
 
     let mut candidates: Vec<EntryPoint> = Vec::new();
 
@@ -248,31 +244,30 @@ pub async fn gather_entry_points(
 /// model call per hop on the per-turn budget. If a hit ever needs its
 /// surroundings, the cheap move is its neighbouring sections on the same page,
 /// not a walk.
-fn build_seed_infos(
-    tree: &WikiTree,
-    reader_card: &meta_annotate::ReaderCard,
-) -> Result<Vec<WikiSeedInfo>> {
+fn build_seed_infos(tree: &WikiTree) -> Result<Vec<WikiSeedInfo>> {
     Ok(tree
         .walk()
         .context("walk wiki tree")?
         .into_iter()
         .filter(|wiki| !wiki.meta.smart)
-        .map(|wiki| {
-            let card = reader_card
-                .wiki_topics(wiki.meta.wiki_id.as_str())
-                .iter()
-                .map(|t| t.to_lowercase())
-                .collect();
-            WikiSeedInfo { wiki, card }
-        })
+        .map(|wiki| WikiSeedInfo { wiki })
         .collect())
 }
 
-/// Match `queries` against the wiki cards and — inside a matched wiki — the
-/// page cards, pushing one seed per match. The cards are reader-relative
-/// ([`build_reader_card`](crate::meta_annotate::build_reader_card)), so a wiki
-/// the reader can read nothing in carries an empty card and matches no needle —
+/// Match `queries` against the **page** cards, pushing one seed per match.
+///
+/// The cards are reader-relative
+/// ([`build_reader_card`](crate::meta_annotate::build_reader_card)), so a page
+/// the reader can read nothing on carries an empty card and matches no needle —
 /// visibility falls out of the match itself, with no extra gate.
+///
+/// **There is no wiki-level step.** Until 2026-08-04 this matched the wiki's
+/// topic union first and descended into its pages only on a hit. That gate
+/// could never actually hide a page — the wiki union is built by unioning the
+/// same per-fact topics, so any page match implies its wiki matches — but it
+/// shaped the code as though the reader navigated containers, and the reader
+/// does not know containers exist (founder's ruling; see [`navigate`]). Now it
+/// walks pages.
 fn gather_card_seeds(
     infos: &[WikiSeedInfo],
     reader_card: &meta_annotate::ReaderCard,
@@ -292,15 +287,6 @@ fn gather_card_seeds(
     for info in infos {
         let wiki_id = info.wiki.meta.wiki_id.as_str();
         for needle in &needles {
-            if !info.card.iter().any(|c| c.contains(needle)) {
-                continue;
-            }
-            // The wiki-level match is not a door of its own — it is the gate
-            // that lets the descent run. Descend into the wiki's
-            // reader-visible page topics; a page whose
-            // topics match the needle seeds at page granularity. The topics
-            // are the reader-relative set (see `build_reader_card`), so no page
-            // the reader cannot read into contributes a seed.
             let Some(pages) = reader_card.pages(wiki_id) else {
                 continue;
             };
@@ -821,12 +807,17 @@ pub async fn navigate(
         .filter(|d| !d.meta.smart)
         .map(|d| (d.meta.wiki_id.as_str(), d))
         .collect();
-    let root_index = render_root_index(&wiki_catalog_list_for(
-        tree,
-        reader_card.readable_wikis(),
-        reader_card.wiki_topics_map(),
-        reader_card.summary_wikis(),
-    )?);
+    // No wiki catalog is built. Until 2026-08-04 every hop carried a ROOT
+    // INDEX — one line per visible wiki with its `_meta` abstract and its
+    // whole topic union, ~13.5k characters on the live corpus, ~27k a turn
+    // across two hops. Founder's ruling: *«chi legge non ha bisogno di sapere
+    // quali sono le wiki, arriva direttamente sui fatti, e da lì legge tramite
+    // i link le pagine collegate»*. The structure is the WRITE side's
+    // instrument — it tells the filer where a fact goes and which pages to
+    // link — and the read side is meant to arrive on a page and follow rails.
+    // A catalog of containers answers a question the reader never asks, and
+    // the day before this it had to be labelled "orientation, not doors"
+    // because the navigator kept trying to open its entries.
     let system = prompts::render(
         "navigator",
         tree.workdir(),
@@ -878,7 +869,6 @@ pub async fn navigate(
         let user = build_user_prompt(
             turn_text,
             sender,
-            &root_index,
             &candidates,
             &outcome.fragments,
             outcome.hops,
@@ -1817,7 +1807,6 @@ fn reader_page_card(
 fn build_user_prompt(
     turn_text: &str,
     sender: &SenderContext,
-    root_index: &str,
     pool: &[Candidate],
     fragments: &[NavigatedFragment],
     hops_spent: usize,
@@ -1833,27 +1822,25 @@ fn build_user_prompt(
         "\n\nBUDGET: hop {} of {max_hops}; ~{chars_remaining} characters of prose still collectable.",
         hops_spent + 1
     );
-    out.push_str("\nROOT INDEX:\n");
-    out.push_str(if root_index.trim().is_empty() {
-        "(empty)"
-    } else {
-        root_index
-    });
-    out.push_str("\n\nCOLLECTED:\n");
+    out.push_str("\nCOLLECTED:\n");
     if fragments.is_empty() {
         out.push_str("(none yet)\n");
     } else {
         for f in fragments {
-            let _ = writeln!(out, "=== {} / {} ===", f.wiki_id, f.page.display());
+            let _ = writeln!(out, "=== {}/{} ===", f.wiki_id, f.page.display());
             out.push_str(&f.text);
             out.push('\n');
         }
     }
     out.push_str("\nCANDIDATES:\n");
     for (i, c) in pool.iter().enumerate() {
+        // The address is one string, not a wiki and a page. The reader is
+        // never told what a wiki is (founder, 2026-08-04: *«chi legge non ha
+        // bisogno di sapere quali sono le wiki»*) — `wiki_id/page` is how a
+        // page is spelled, the same way a file name carries its directory.
         let _ = write!(
             out,
-            "{}. wiki_id={} page={} | origin={}",
+            "{}. {}/{} | origin={}",
             i + 1,
             c.wiki_id,
             c.page.display(),
