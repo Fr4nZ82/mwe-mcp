@@ -32,14 +32,13 @@ flowchart TB
 
     subgraph P3["3 · entry fan — deterministic, no LLM"]
         FAN["gather_entry_points"]
-        S1["principal — the people of the turn<br/>offered at the tail, never ranked"] --> FAN
         S2["<b>rag</b> — each recalled fact mapped<br/>to its HOME PAGE via source_path<br/>weight = the hit's score"] --> FAN
         S3["topic — classified topics vs page cards<br/>0.6 wiki / 0.8 page"] --> FAN
         S4["situational — host strings<br/>0.4 / 0.5"] --> FAN
     end
 
     FAN --> NAV["4 · navigator funnel<br/>see below"]
-    NAV --> BLOCK["5 · injected block<br/>WHO YOU ARE · WHO IS SPEAKING · HISTORY<br/>RELEVANT MEMORY · NAVIGATED PAGES · UPCOMING"]
+    NAV --> BLOCK["5 · injected block<br/>WHO YOU ARE · WHO IS SPEAKING · PEOPLE THIS TURN NAMES<br/>HISTORY · RELEVANT MEMORY · NAVIGATED PAGES · UPCOMING"]
 ```
 
 The section corpus is **not** in this picture: a conversational turn never
@@ -57,7 +56,8 @@ memory and instructions never share a field.
 | Slot | Filled by | Bounded by |
 |---|---|---|
 | `WHO YOU ARE` | the agent wiki's abstract + its identity self-facts | `max_agent_identity_chars` (`900`) |
-| `WHO IS SPEAKING` | the sender's identity card — their `index.md`, projected per sender, testata dropped and links plain. The one **deterministic** slot: no walk, no model decision, no page open | `max_sender_identity_chars` (`2 500`, a failsafe) |
+| `WHO IS SPEAKING` | the sender's identity card — their `profile.md`, projected per sender, testata dropped and links plain. **Deterministic**: no walk, no model decision, no page open | `max_sender_identity_chars` (`2 500`, a failsafe) |
+| `PEOPLE THIS TURN NAMES` | the same card, for each **other** enrolled person the turn names — gated by `recall::turn_subjects` (a word match on the roster, no model call), projected for the *reader*, and silent when a card's every fact is private to its subject | `max_mentioned_cards` (`2`), each under `max_sender_identity_chars` |
 | `YOUR RECENT HISTORY WITH THIS USER` | the agent's own log of what it has done with this person | `max_agent_history_chars` (`1 400`) |
 | `RELEVANT MEMORY` | the flat hit-list — promoted facts, then `Recent (not yet consolidated):` for the fresh slot, then `Project documentation` for the docs slot; deduplicated against the navigated pages | `recall_top_k`, `recall_fresh_top_k`, the docs slot's own budget, and — for the **promoted half only** — `relevance_floor` |
 | `NAVIGATED PAGES` | sender-projected prose the funnel collected | `char_budget`, and the walk's own stop reason |
@@ -77,7 +77,7 @@ something memory recalled, and it expires in hours rather than being stored.
 
 ```mermaid
 flowchart TB
-    FAN["entry fan<br/>(principal + rag + topic + situational)"] --> POOL0
+    FAN["entry fan<br/>(rag + topic + situational)"] --> POOL0
 
     subgraph H0["hop 0"]
         POOL0["candidate pool = the fan<br/>typically 6-8 entries"]
@@ -682,67 +682,66 @@ the per-turn context model.
 **entry-point fan** for recall-as-navigation: the deduplicated, ordered list
 of `(wiki, page?)` places a navigator should start reading for the turn.
 `gather_entry_points` is deterministic — no LLM call, no embedding, no recall
-counters touched — and draws on four seed families:
+counters touched — and draws on three seed families, all content-derived:
 
 | Family | Source | Weight |
 |---|---|---|
-| **Principal** | the identity wikis of the **people** in the turn: the sender, plus each classified owner that is a user. A wiki-level seed (`page: None`) | none — **offered, not ranked**; see *The identity anchor is not a score* below |
-| **Rag** | the turn's flat-recall hits mapped back to `(wiki, page)` via `source_path`; a `fresh` hit (no published page yet) seeds the wiki root | the hit's score, clamped to `[0, 1]` |
-| **Topic** | classified topics matched (case-insensitive substring) against the **reader-relative cards**: the per-wiki topic union, then — inside a matched wiki — the per-page topic union, both recomputed for the sender (see *Reader-relative cards* below) | `0.6` wiki / `0.8` page |
-| **Situational** | free host-supplied strings (location, occasion), matched like topics; empty until a host sends them | `0.4` wiki / `0.5` page |
+| **Rag** | the turn's flat-recall hits mapped back to `(wiki, page)` via `source_path` | the hit's score, clamped to `[0, 1]` |
+| **Topic** | classified topics matched (case-insensitive substring) against the **reader-relative page cards**, recomputed for the sender (see *Reader-relative cards* below) | `WEIGHT_TOPIC_PAGE` = `0.8` |
+| **Situational** | free host-supplied strings (location, occasion), matched like topics; empty until a host sends them | `WEIGHT_SITUATIONAL_PAGE` = `0.5` |
 
-### The identity anchor is not a score
+**Every seed is a page.** `EntryPoint::page` is a `PathBuf`, not an
+`Option` — there is no wiki-level door, so a seed that can only name a wiki
+produces nothing at all. Three hits therefore seed no door and reach the turn
+through the flat slot instead: a `fresh` capture (no published page yet), a hit
+homed on the channel-only `rules.md` (roadmap 41e), and a hit homed on the
+wiki's `index.md` (the map — see *Link grammar* below).
 
-Three of the four families carry a weight and compete on it; the principal
-family does not compete at all. `fan_order` sorts every ranked door first and
-appends the identity anchors after them, whatever the numbers say — so a
-content door leads the fan even at a cosine of `0.42`, and the anchor's
-`weight` field is `0.0` and means nothing.
+### There is no identity family, and that is the fix
 
-The reason is a category error, not a badly chosen constant: a **fixed**
-weight cannot be compared with a **measured** one. Over 141 real turns the
-corpus' single best fact for a turn scores below `0.6` on 87 of them, so at the
-old `WEIGHT_PRINCIPAL = 0.6` every identity door outranked every fact-derived
-door on nearly two turns in three — whatever was asked — and identity pages
-took **330 of the 419 opens at the first decision (79 %)**, 186 of them group
-directories, while the page holding the answer was offered and left unopened.
-Lowering the constant moves that number without changing its kind.
+A fourth family used to exist — **Principal**, the identity wikis of the people
+in the turn, seeded at the wiki level and offered unranked. It was deleted on
+2026-08-03, with `WEIGHT_PRINCIPAL` and `EntryOrigin::Principal`, and the
+reason is worth keeping because it is a design rule, not a tuning result.
 
-Nothing is lost by demoting it. Recall's job is the question, and its
-distinctive power is opening the page a recalled fact lives on and reading the
-prose around it; the sender's identity now reaches the turn by a route that
-costs no navigation at all — `WHO IS SPEAKING` serves their `index.md`
-deterministically on every turn. The seed stays in the fan because the fan is
-computed without knowing what the caller's block already carries, but its job
-is *be available*, not *be the best guess*: when the pool cap bites it is the
-first candidate cut, and that is intended.
+A **fixed** weight cannot be compared with a **measured** one. Over 141 real
+turns the corpus' single best fact for a turn scored below `0.6` on 87 of them,
+so at `WEIGHT_PRINCIPAL = 0.6` every identity door outranked every fact-derived
+door on nearly two turns in three — whatever was asked. Identity pages took
+**330 of the 419 opens at the first decision (79 %)**, 186 of them group
+directories, while the page holding the answer sat offered and unopened.
+Lowering the constant would have moved that number without changing its kind.
 
-For the **sender's own** card the ingest turn goes further and takes it out of
-the walk altogether — it is passed to the funnel as already delivered (the
-`already_served` argument, described under *Wired into the ingest turn*
-below), so neither the anchor nor a RAG hit on that page can spend a page open
-re-reading prose the block already holds. A *subject's* identity page is
-untouched: nothing has served it, and it stays an ordinary — unranked — door.
+Nothing was lost by removing it, because identity now reaches the turn by a
+route that costs no navigation at all: `WHO IS SPEAKING` serves the sender's
+`profile.md` deterministically on every turn, and `PEOPLE THIS TURN NAMES`
+serves the card of each other person the turn names. Measured after the change:
+the first decision went from **79 % identity pages to 19 %**, content opens
+from **21 % to 81 %**, and opens on the sender's own card from **132 to 0**.
 
-**Groups seed no door.** `principal` used to mean "any wiki tied to a
-principal", which swept in the sender's own group memberships and each owner's
-groups. A group's `index.md` is not an identity card — it is a directory
-(`page_type: group_theme`, a members list, links to every child page), it holds
-one identity-core fact against a person's fifteen to twenty-two, and it
-contributed roughly 40 candidates every time it was opened against a pool cap
-of 16. On the measured corpus `famiglia/index.md` was opened at the first
-decision on 137 of 141 turns, effectively always, whatever was asked. Its real
-value is **routing** — deciding where a fact belongs — and routing already has
-two proper consumers: the ingest classifier (which reads `available_wikis` and
-the group scopes) and REM. A group wiki stays reachable as *content*: by a RAG
-hit on one of its pages, by a topic or situational card match, by a
-`[[wikilink]]` followed out of prose the funnel just read. It is only no longer
-a door somebody walks through for being a member.
+The sender's own card is additionally passed to the funnel as **already
+delivered** (the `already_served` argument, described under *Wired into the
+ingest turn* below), which closes the wikilink route to it as well — the block
+already holds that prose. A *subject's* identity page stays an ordinary door:
+it is reached like any other page, by a hit on it, by its own card matching, or
+by a `[[wikilink]]`.
+
+**Groups seed no door either.** `principal` once meant "any wiki tied to a
+principal", which swept in the sender's group memberships and each owner's
+groups. A group root is a directory (`page_type: group_theme`, a members list,
+links to every child), it holds one identity-core fact against a person's
+fifteen to twenty-two, and it contributed roughly 40 candidates every time it
+was opened against a pool cap of 16. On the measured corpus `famiglia`'s root
+was opened at the first decision on 137 of 141 turns, effectively always,
+whatever was asked. Its real value is **routing** — deciding where a fact
+belongs — and routing has two proper consumers already: the ingest classifier
+(which reads `available_wikis` and the group scopes) and REM. A group wiki is
+still reachable as *content*, through its pages.
 
 *Consequence for `wiki_navigate`:* a caller that names a group in `owners`
-(seed rung **C**) no longer gets that group's root as a door either — the same
-rule applies at both call sites. Its pages are still reached through the
-query's own flat hits and its card.
+(seed rung **C**) gets no group-root door either — the same rule applies at
+both call sites. Its pages are still reached through the query's own flat hits
+and their cards.
 
 Two invariants:
 
@@ -967,8 +966,9 @@ Every mechanical emitter writes the canonical forms —
 `capture::wiki_link`, the document-ingest dossier anchor, the smart-push
 `authored_refs`, the root indexes, and the compiler feeds
 (`compiler::plan_page_wikilink`: the starvation index, the recommended
-links, the Hub Writer children — a page hop everywhere, collapsing to the
-wiki hop for a wiki's own `index.md`). The prose-writing prompts
+links, the Hub Writer children — a page hop everywhere, and `None` for a
+wiki's own `index.md`, so a plan node still sitting on the map contributes no
+link at all rather than a dead one). The prose-writing prompts
 (`cronista`, `regenerate-index`) carry the copy-verbatim instruction: a
 model never mints or restyles a link target. There is no mechanical corpus
 rewriter — the verbatim-copied legacy links simply stay navigable through
@@ -1022,9 +1022,8 @@ caller's explicit `topics`/`owners` win (**C**); else a small dedicated
 extraction over the query on the `navigator` slot
 (`recall_nav::extract_query_seeds`, prompt
 [`prompts/query-seeds.md`](../../crates/mwe-core/prompts/query-seeds.md);
-entity names resolved against enrollment, unresolved names folded into topics)
-(**B**); else principal + RAG seeds only (**A**). Each step degrades to the
-next.
+every extracted entity kept as a topic needle whether or not it resolves)
+(**B**); else the RAG seeds alone (**A**). Each step degrades to the next.
 
 ## Recall traces — the route journal
 
@@ -1290,10 +1289,10 @@ table is the larger and the more regenerable of the two.
 - `wiki_facts_for`: 2 (filtered without counter bump / ACL filter).
 - `wiki_recall`: 1 (delegates to search today).
 - `recall_fresh_captures`: 1 (un-promoted buffered capture surfaces, ACL-scoped, flagged `fresh`; another owner's capture is filtered out).
-- `recall_nav` (gatherer): per-family seed tests (people-only principals with
-  no group door / topic wiki→page descent / situational / rag path mapping),
-  the per-family ACL-cascade matrix, the anchor's tail placement against both
-  a `0.42` RAG hit and a `0.4` card match, dedup/sort, `page_within`.
+- `recall_nav` (gatherer): per-family seed tests (topic and situational card
+  matches / rag path mapping / the three hits that seed nothing — `fresh`,
+  `rules.md`, the map), the per-family ACL-cascade matrix, dedup/sort,
+  `page_within`, and `fold_entities` keeping a resolved name as a needle.
 - `recall_nav` (funnel, scripted-LLM): vetted open + per-sender
   projection, hallucinated-target discard, wikilink follow-through
   (wiki hop, direct page hop with alias stripped, dead page hop never

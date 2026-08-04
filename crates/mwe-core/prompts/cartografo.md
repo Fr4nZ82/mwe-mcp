@@ -1,8 +1,8 @@
 ---
 name: cartografo
 description: planner stage 1 — assigns each fact to exactly one page and proposes emergent concept pages (one-fact-one-page; identity pages carry one subject; grown pages split by content)
-version: 1.6
-default_version_at_bootstrap: v1.6
+version: 1.7
+default_version_at_bootstrap: v1.7
 ---
 
 # Prompt: cartografo
@@ -66,9 +66,9 @@ ASSIGNMENT RULES:
 3. owner=global → a thematic concept_leaf, optionally under a concept_hub.
 
 IDENTITY-PAGE DISCIPLINE — a person page carries ONE subject:
-- A person page is a user's identity index. Every fact carries an identity_pages= tag: the person pages its SUBJECT covers — the owner user's own page; for a group-owned fact, the pages of that group's members (a group the user belongs to is their own shared context, never foreign); "any" = global/world context, allowed anywhere; "none" = it covers no person page.
-- NEVER assign a fact to a person page that is not in its identity_pages tag: there it is a FOREIGN SUBJECT — another subject's detail woven into this user's identity index. Home it on the subject's own pages instead (the subject's person page when biographical, else a concept_leaf in the subject's context), split by content.
-- The relation between the page's user and another subject lives on the identity index ONLY through the user's OWN facts (owner = the page's user, e.g. "coordinates her father's care"): prefer assigning such an existing coordinating fact to the person page, and the other subject's detail to the subject's pages — the pages reach each other by [[wikilink]], never by restating the detail.
+- A person page is a user's identity CARD (the reserved `profile.md`). Every fact carries an identity_pages= tag: the person pages its SUBJECT covers — the owner user's own page; for a group-owned fact, the pages of that group's members (a group the user belongs to is their own shared context, never foreign); "any" = global/world context, allowed anywhere; "none" = it covers no person page.
+- NEVER assign a fact to a person page that is not in its identity_pages tag: there it is a FOREIGN SUBJECT — another subject's detail woven into this user's identity card. Home it on the subject's own pages instead (the subject's person page when biographical, else a concept_leaf in the subject's context), split by content.
+- The relation between the page's user and another subject lives on the identity card ONLY through the user's OWN facts (owner = the page's user, e.g. "coordinates her father's care"): prefer assigning such an existing coordinating fact to the person page, and the other subject's detail to the subject's pages — the pages reach each other by [[wikilink]], never by restating the detail.
 
 PAGE MASS — split by content before a page outgrows one reliable page:
 - Every page line carries "facts: N" — how many facts currently live on it. The numbers are a signal, not a rule: YOU judge when a page has grown past what still reads (and renders) reliably as ONE page.
@@ -80,6 +80,7 @@ CONTAINER PAGES — a page with children functions as a hub:
 - This holds even when the container's line says concept_leaf: that is a page whose facts are being re-homed so it can settle into its real hub role. Draining it is normal maintenance, not an error.
 
 HARD RULES:
+- Every new page you propose needs a "description": ONE line saying what belongs on that page. It is the page's CARD — the recall navigator is shown that line and nothing else when it decides whether to open the page, and for a page no [[wikilink]] points at it is the only thing that can bring a reader there. Write the page's TOPIC in the words someone would use to look for it, never a restatement of the fact that happened to create the page.
 - Do NOT create a slug that already exists in EXISTING FOUNDATION PAGES or EXISTING CONCEPT PAGES — REUSE it.
 - Do NOT create a new concept_leaf when an existing one is semantically equivalent — assign the fact there.
 - New slugs are descriptive snake_case (e.g. "health_routine_alice", not a bare generic "health" when specifics already exist).
@@ -88,7 +89,7 @@ HARD RULES:
 OUTPUT — one strict JSON object, no prose around it:
 {
   "assignments": [ { "fact_id": "<uuid from the batch>", "page_slug": "<page>" }, ... ],
-  "new_pages":   [ { "slug": "<snake_case>", "title": "<title>", "description": "<one line>", "page_type": "concept_hub" | "concept_leaf", "parent_hub": "<hub slug>" }, ... ]
+  "new_pages":   [ { "slug": "<snake_case>", "title": "<title>", "description": "<one line: what belongs on this page>", "page_type": "concept_hub" | "concept_leaf", "parent_hub": "<hub slug>" }, ... ]
 }
 
 EXISTING FOUNDATION PAGES:

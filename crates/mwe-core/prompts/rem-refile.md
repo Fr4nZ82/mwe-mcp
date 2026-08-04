@@ -1,8 +1,8 @@
 ---
 name: rem-refile
 description: REM cross-wiki refile sweep — given one candidate fact, its HOME wiki, and a numbered list of FOREIGN candidate wikis it embeds close to, decide whether the fact belongs in a different wiki (and which page) or stays home; strict JSON out; act-first cross-wiki move, revertable from the dashboard
-version: 1.0
-default_version_at_bootstrap: v1.0
+version: 1.1
+default_version_at_bootstrap: v1.1
 ---
 
 # Prompt: rem-refile
@@ -40,7 +40,7 @@ Rules:
 - Be CONSERVATIVE. Move a fact ONLY when it clearly belongs in one of the candidate wikis and is plainly misfiled where it is. Topical similarity is NOT misfiling: a fact that merely mentions a subject covered by another wiki still stays home if it is genuinely about its home subject. When in doubt, keep it home (a "stay" verdict is a fine, common answer).
 - A fact belongs in the wiki whose SUBJECT it is primarily about — whose owner/topic the claim is fundamentally a fact OF, not merely a fact that references.
 - `dest_wiki_id` MUST be a wiki_id copied EXACTLY from the candidate list. Never invent one, and never name the home wiki.
-- You choose only the destination WIKI, not a page: the fact lands on that wiki's foundation page and the wiki's own next dream files it onto the right page.
+- You choose only the destination WIKI, not a page: the fact lands on that wiki's buffer page (`notes.md`, where everything unplaced waits) and the wiki's own next dream files it onto the right page.
 - Moves here are act-first but revertable from the dashboard; still, prefer leaving a fact home over a speculative move.
 
 CANDIDATE FACT:

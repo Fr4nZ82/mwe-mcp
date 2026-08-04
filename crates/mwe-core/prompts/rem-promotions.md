@@ -40,7 +40,7 @@ below the prompt build.
 **Placeholders** (substituted at render time by
 `mwe_core::prompts::render`):
 
-- `{page}` — the wiki-relative page path (`index.md`, `work.md`)
+- `{page}` — the wiki-relative page path (`profile.md`, `work.md`); the wiki's `index.md` never reaches this pass
 - `{page_facts}` — page mass: number of active facts on the page
 - `{facts}` — the whole page, one entry per fact:
   `- [n<k>] recall30d: <n>` followed by the indented fact text, where

@@ -469,7 +469,7 @@ pub struct IngestPolicy {
     pub max_agent_history_chars: usize,
     /// Character cap on the recall block's `WHO IS SPEAKING` section — the
     /// sender's identity card, served deterministically from their
-    /// `index.md` (roadmap 69a).
+    /// `profile.md` (roadmap 69a).
     ///
     /// A **failsafe, not a curation knob**: what belongs on the card and how
     /// dense it is are REM's judgement (69c, hard ceiling 2 500 characters),
@@ -495,8 +495,8 @@ pub struct IngestPolicy {
     /// on biographies.
     pub max_mentioned_cards: usize,
     /// Page within the target wiki used when the LLM plan does not
-    /// supply one. `index.md` is the unanimous default across bundled
-    /// wiki types.
+    /// supply one: the buffer, [`wiki::NOTES_FILENAME`] — never the wiki's
+    /// map. REM's reorg sweep drains it onto real pages.
     pub default_page: PathBuf,
     /// Canned `suggested_seed` returned on every fallback path. Short
     /// on purpose — the agent will rewrite it.
@@ -683,7 +683,7 @@ struct LlmIngestPlan {
     /// Per-fact **salience** (`high` | `normal` | `low`;
     /// absent = unspecified). `high` = "must be known in every interaction"
     /// (identity, health/safety, hard constraints) → routed to the actor-wiki
-    /// `index.md` base context. The classifier decides it; no hardcoded
+    /// `profile.md` identity card. The classifier decides it; no hardcoded
     /// gate. Plan-level mirror for the legacy single-fact fallback; the per-fact
     /// value lives on [`LlmExtraction`].
     #[serde(default)]
@@ -1135,7 +1135,7 @@ enum CapturePlanError {
 /// segment: lowercase, non-alphanumeric runs → `_`), then require the
 /// result to pass [`is_safe_page_path`]; anything that still fails
 /// (empty segment, traversal) falls back to the wiki's default page
-/// (`index.md`) so a normal message can never crash ingest. The
+/// (the buffer, `notes.md`) so a normal message can never crash ingest. The
 /// classifier prompt lists wikis but never page names, so canonicalising
 /// here cannot fight a name the model copied from disk; a hand-authored
 /// hyphenated page stays readable (`is_safe_page_path` still admits
@@ -1294,7 +1294,7 @@ fn validate_capture_plan(
         style: unit.style.map(str::to_owned),
         page_description: unit.page_description.map(str::to_owned),
         // Thread the per-fact salience the classifier
-        // deduced through to the capture row (`high` is routed to index.md).
+        // deduced through to the capture row (`high` is routed to the card).
         salience: unit.salience.map(str::to_owned),
         // Turn-level provenance breadcrumbs (group 17): the project-wiki
         // pages this conversation turn authored, carried in via
@@ -3524,7 +3524,7 @@ fn agent_self_fact_page(is_identity: bool, sender_id: &str, default: &Path) -> P
 /// (prompt Part 12) routes here: the body is filed as a normal fact in the
 /// calling agent's OWN wiki, **owned by the agent** (`owner == sender == the
 /// agent` ⇒ no separate sender), so it becomes the agent's emergent self — its
-/// identity (high-salience facts the REM consolidates onto its index) and its
+/// identity (high-salience facts the REM consolidates onto its card) and its
 /// history with each user. The fact is auto-tagged with the served user's id as
 /// a topic, so the read side ([`recall_agent_self`]) can scope "your history
 /// with THIS user" without surfacing the agent's history with anyone else.
@@ -3980,7 +3980,7 @@ struct SpeakerCard {
 
 /// Render the `WHO IS SPEAKING` section — the sender's identity card.
 ///
-/// Roadmap 69a. The slot serves the sender's **`index.md`**, not a one-line
+/// Roadmap 69a. The slot serves the sender's **`profile.md`**, not a one-line
 /// abstract of it: the card is the set of facts the classifier deterministically
 /// routed to the identity page (name, birthdate, contacts, family ties — but
 /// also the standing health constraints and the characterising preferences a
@@ -4205,7 +4205,7 @@ async fn identity_card(
         &sender.sender_groups,
     );
     // A page whose injected prose carries **no fact this reader may see** is
-    // scaffolding, not a card: a freshly seeded `index.md` is a heading and
+    // scaffolding, not a card: a freshly seeded `profile.md` is a heading and
     // a sentence of connective tissue, and serving that on every turn
     // forever is noise. What earns the slot is the identity core the
     // classifier routed onto the page — so the test is on the *rendered*
@@ -6023,7 +6023,7 @@ pub async fn wiki_ingest_message(
     // survives on whatever the flat path already produced.
     let seeds = nav_seeds(&plan);
     // `WHO IS SPEAKING` — the sender's identity card, served from their
-    // `index.md` (roadmap 69a). It runs FIRST of the tail because it is the
+    // `profile.md` (roadmap 69a). It runs FIRST of the tail because it is the
     // deterministic slot the other two defer to: it costs no completion, it
     // arrives whatever the navigator decides, and the page it serves must
     // then be injected nowhere else.
@@ -6104,7 +6104,7 @@ pub async fn wiki_ingest_message(
     // hit whose page prose already rides in the block is dropped instead of
     // arriving twice ([`format_snippet`] dedup) — from the navigated
     // section, or from the identity card the deterministic slot serves
-    // (69a: a `bio` fact on `index.md` is on both routes by construction).
+    // (69a: a `bio` fact on `profile.md` is on both routes by construction).
     let relevant = if include_flat {
         let mut nav_paths: Vec<String> = nav_tail
             .as_ref()

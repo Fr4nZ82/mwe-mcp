@@ -37,8 +37,9 @@ an operator override at `<workdir>/prompts/comment-apply.md` wins.
   defaulting to `user:<commenter>` / `[]`) with `sender` = the comment's author;
   and a `move` is refused if its destination does
   not exist / is smart / has a different owner. A cross-wiki move always lands
-  on the destination wiki's `index.md` (the dest wiki re-homes it on its next
-  compile). A `move` is born-applied + revertible from the dashboard; an
+  on the destination wiki's **buffer** page (`CROSS_WIKI_DEST_PAGE` =
+  `wiki::NOTES_FILENAME`; not its `index.md`, which is the map — the dest wiki
+  re-homes it on its next compile). A `move` is born-applied + revertible from the dashboard; an
   unparseable response leaves the comments for the next cycle.
 
 ## System prompt

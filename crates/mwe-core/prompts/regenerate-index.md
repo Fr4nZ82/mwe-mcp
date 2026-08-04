@@ -1,8 +1,8 @@
 ---
 name: regenerate-index
 description: Hub Writer prompt — the prose of a compilation plan's `ConceptHub` page, from its children list. The file name is historical: the REM index regenerator this was written for was retired on 2026-08-03 (a wiki's `index.md` is now assembled without a model), and renaming the file would orphan every operator override.
-version: 1.5
-default_version_at_bootstrap: v1.5
+version: 1.6
+default_version_at_bootstrap: v1.6
 source_of_truth: crates/mwe-core/src/compiler.rs (fn compile_hub_page)
 ---
 
@@ -38,10 +38,15 @@ invoked once per plan page of type `ConceptHub` during the compile pass.
 **Placeholders** (substituted at render time by
 `mwe_core::prompts::render`):
 
-- `{title}` — the parent wiki's display title from `_meta.md`
-- `{wiki_type}` — the parent wiki's `wiki_type` slug (e.g.
-  `wiki-user`, `wiki-group`, `wiki-root`)
-- `{wiki_id}` — canonical wiki id of the parent
+⚠️ **Three placeholder NAMES are historical and no longer describe what
+they carry.** They were the REM regenerator's, and the hub pass inherited
+them; renaming them would break every operator override, so the prompt body
+labels them for what they actually are instead.
+
+- `{title}` — the **plan page's** own title (`page.title`), not a wiki's
+- `{wiki_type}` — the literal string `"hub"`, always. The compiler passes a
+  constant; no wiki type ever reaches it
+- `{wiki_id}` — the **plan page's slug** (`page.slug`), not a wiki id
 - `{subject}` — whose memory this is, from `wiki::subject_directive`:
   **empty** for an ordinary wiki, and the first-person directive when the
   wiki carries the `is_agent` marker (its index is the opening page of that
@@ -49,24 +54,23 @@ invoked once per plan page of type `ConceptHub` during the compile pass.
   compiler's hub pass resolves it from the page's wiki, since a hub has no
   subject of its own
 - `{children}` — markdown bullet list of children as **canonical
-  wikilinks** (the link grammar of
-  recall-pipeline.md):
-  the REM regenerator feeds `- [[<child wiki_id>]]` wiki hops, the
-  compiler's Hub Writer consumer feeds `- [[wiki_id/page-slug]]` page
-  hops (via `compiler::plan_page_wikilink`) — either way already
-  resolvable, to be copied verbatim
+  wikilinks** — `- [[wiki_id/page-slug]]`, minted by
+  `compiler::plan_page_wikilink` (the link grammar of
+  recall-pipeline.md). Already resolvable, to be copied verbatim. A child
+  that resolves to no page is omitted rather than rendered as a bare
+  `[[wiki_id]]`, which names a map and leads nowhere
 - `{snippet}` — the context window the model summarises, `\n\n---\n\n`
-  separated. **Consumer-dependent**: the REM regenerator feeds the body
-  texts of the top 20 most-recent active facts; the compiler's
-  ConceptHub / GroupTheme Hub Writer consumer instead feeds child-page
-  blurbs (`- <slug>: <description>`), not facts
+  separated: child-page blurbs, `- <slug>: <description>`. **Not facts** — a
+  hub has none of its own, which is what makes it a hub
 
-**Output schema**: plain markdown body for the new `index.md`. No
-frontmatter, no fenced code block delimiters around the response —
-the orchestrator writes the response verbatim via
-`wiki::atomic_write` to `<wiki_dir>/index.md`. Expected shape: 6-12
-lines of prose + a short list of children. Long outputs are silently
-trimmed by `max_tokens` (no parse failure path).
+**Output schema**: plain markdown body for an ordinary **page**, no
+frontmatter and no fenced code block delimiters around the response. The
+compiler wraps it in a testata (`render_page_file`, `description` taken from
+the plan and `style` forced to `prosa`) and writes it with
+`handle.write_page(page.page_path, …)` — **never** to `<wiki_dir>/index.md`,
+which since 2026-08-03 is the wiki's map and is assembled with no model.
+Expected shape: 6-12 lines of prose + a short list of children. Long outputs
+are silently trimmed by `max_tokens` (no parse failure path).
 
 **Tool subset**: none. Pure generative call, single shot, no
 function-calling.
@@ -75,7 +79,7 @@ function-calling.
 
 | Param | Value | Why |
 |---|---|---|
-| `temperature` | `0.2` | Mildly deterministic — `index.md` is reference prose, not creative writing; small variance avoids the model collapsing on identical wording cycle after cycle. |
+| `temperature` | `0.2` | Mildly deterministic — a hub page is reference prose, not creative writing; small variance avoids the model collapsing on identical wording cycle after cycle. |
 | `max_tokens` | `2000` | The target is 6-12 lines (~200-400 tokens); 2000 is comfortable headroom for a wiki with longer prose in any locale. |
 | `think:false` | implicit | Workhorse default for Qwen 3.x; see narrative compiler, runtime section. |
 
@@ -100,19 +104,19 @@ answering a live turn, so an undeclared locale resolves to **English**
 slots fall back to.
 
 ```text
-Regenerate the `index.md` for the memory wiki below.
+Write the OVERVIEW page described below. It holds no facts of its own: its whole job is to say what this cluster of pages is about and to send the reader to the right child.
 Title: {title}
 Type: {wiki_type}
-Wiki id: {wiki_id}
+Page id: {wiki_id}
 {subject}
 
 Children (a list of [[wikilinks]] — keep every link EXACTLY as written, character-for-character; group sensibly, never restyle or rewrite a link target):
 {children}
 
-Context to summarise (most-recent first):
+What each child holds (most-recent first):
 {snippet}
 
-Output the new index.md body in markdown. No frontmatter. Concise — 6-12 lines.
+Output the page body in markdown. No frontmatter. Concise — 6-12 lines. EVERY child link above must appear, and the prose around each one must say what a reader will find there: those links are the rails somebody follows to reach the detail, and a link nobody can tell apart from its neighbours is a rail nobody takes.
 
 LANGUAGE: {locale}
 ```

@@ -28,9 +28,13 @@ the bundled default embedded by `include_str!` is the floor; an override at
 - **Output schema**: one strict JSON object —
   `{ "topics": [ "…" ], "entities": [ "…" ] }`. The Rust binding is
   `QuerySeedsJson` in `recall_nav.rs`; extracted entity names are resolved
-  against enrollment (user id / alias → `user:`, group id → `group:`), and a
-  name that does not resolve folds into `topics` where it can still
-  substring-match a card. Best-effort by contract: any load / LLM / parse
+  against enrollment (user id / alias → `user:`, group id → `group:`) — and
+  **every** extracted name stays a `topics` needle either way (`fold_entities`,
+  `recall_nav.rs`), because resolving a name says who the turn is about, it
+  does not make the word less useful for matching the cards of the pages that
+  mention them. Before 2026-08-04 a resolved name went *only* to the owners
+  channel, which seeds no door since 69b — so a query about an enrolled person
+  was served strictly worse than one about a stranger. Best-effort by contract: any load / LLM / parse
   failure returns empty seeds and the caller degrades to fallback **A**.
 - **ACL**: the extractor sees only the caller's own query text — no memory
   content and no markers ever reach it.

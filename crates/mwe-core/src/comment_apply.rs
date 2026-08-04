@@ -93,7 +93,7 @@ pub struct CommentApplyReport {
     /// Facts tombstoned at a comment's request.
     pub facts_removed: usize,
     /// Facts relocated at a comment's request — to another page of this wiki,
-    /// or cross-wiki onto the destination wiki's `index.md`. Unlike the other
+    /// or cross-wiki onto the destination wiki's buffer page. Unlike the other
     /// ops these are born-applied + revertible (the `_direct` wrappers mint a
     /// receipt), because a move — especially cross-wiki — must be undoable.
     pub facts_moved: usize,
@@ -164,7 +164,7 @@ struct RawOp {
     dest_wiki_id: Option<String>,
     /// `move` only: the destination page. For a same-wiki move it is a page of
     /// this wiki; for a cross-wiki move it is ignored (the fact always lands on
-    /// the destination wiki's `index.md` — the compilation plan keys pages by
+    /// the destination wiki's buffer page — the compilation plan keys pages by
     /// bare slug forest-wide, so a named cross-wiki page would collide).
     #[serde(default)]
     dest_page: Option<String>,
@@ -617,7 +617,7 @@ async fn apply_add(
 /// intent. Two shapes, both reusing the engine REM already owns:
 ///
 /// - **cross-wiki** (`op.dest_wiki_id` set and ≠ this wiki): the fact is
-///   refiled onto the destination wiki's `index.md` via
+///   refiled onto the destination wiki's buffer page via
 ///   [`promote::apply_fact_refile_direct`]. The destination must locate, be
 ///   **owned by the same owner** as the source (no cross-owner move), and be
 ///   **standard** (a smart wiki is the consumer's — refused).
@@ -709,7 +709,7 @@ async fn apply_move(
 }
 
 /// Cross-wiki branch of [`apply_move`]: validate the destination wiki, then
-/// refile the fact onto its `index.md`.
+/// refile the fact onto its buffer page.
 #[allow(
     clippy::too_many_arguments,
     reason = "the cross-wiki branch carries the fact, both wiki endpoints, source page, owner, recipient, and reason"
@@ -887,7 +887,7 @@ fn page_wiki_relative(handle: &WikiHandle, source_path: &str) -> String {
 ///
 /// - **other wikis** the owner can write — every **non-smart** wiki whose
 ///   resolved `acl_default` equals `owner`, except the source wiki itself
-///   (cross-wiki moves; a fact always lands on the dest wiki's `index.md`);
+///   (cross-wiki moves; a fact always lands on the dest wiki's buffer page);
 /// - **this wiki's other pages** (same-wiki page moves), the source page
 ///   excluded.
 ///

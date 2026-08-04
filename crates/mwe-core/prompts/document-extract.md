@@ -1,8 +1,8 @@
 ---
 name: document-extract
 description: document-ingest map phase — extracts atomic facts from one segment, each with its subject (owner_id) and audience (allow_ids) decided under the ingest rules; the {selectivity} placeholder switches the dossier posture (only what transcends the document) vs the dissolve posture (everything worth remembering)
-version: 1.5
-default_version_at_bootstrap: v1.5
+version: 1.6
+default_version_at_bootstrap: v1.6
 ---
 
 # Prompt: document-extract
@@ -63,7 +63,7 @@ EACH FACT:
 - "topics": up to 3 short tags.
 - "valid_from"/"valid_to": ISO-8601 validity interval when the fact is time-bound (a commitment's window, a stay, an appointment); omit both for open-ended knowledge.
 - "salience": high | normal | low — high only for facts the memory must surface in every interaction.
-- "style"/"page_description": only when target_page would be a NEW page. "style" is "prosa" | "prosa-tecnica" | "lista" — the page's writing register (any other value is coerced to "prosa"); "page_description" is a one-line description of what belongs on that page.
+- "style"/"page_description": only when target_page would be a NEW page. "style" is "prosa" | "prosa-tecnica" | "lista" — the page's writing register (any other value is coerced to "prosa"); "page_description" is a one-line description of what belongs on that page. It is the page's CARD: the recall navigator is shown this line and nothing else when it decides whether to open the page, and for a page no link points at it is the only thing that can bring a reader there. Describe the page's TOPIC in the words someone would use to look for it — never just a restatement of this one fact.
 
 RULES:
 - Facts must come from the segment, never invented, never from your general knowledge.

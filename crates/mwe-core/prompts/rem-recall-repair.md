@@ -1,8 +1,8 @@
 ---
 name: rem-recall-repair
 description: REM recall-repair sub-job — given one confirmed recall miss (the query the user had to restate, and the fact memory held but recall did not surface), decide whether re-filing the fact into a different wiki would make it reachable, or whether no local repair applies; strict JSON out; the verdict is only a CANDIDATE — a gold-set gate replay must prove it before anything commits
-version: 1.0
-default_version_at_bootstrap: v1.0
+version: 1.1
+default_version_at_bootstrap: v1.1
 ---
 
 # Prompt: rem-recall-repair
@@ -37,9 +37,9 @@ REM. Loaded via
 ## Prompt
 
 ```text
-You are the recall-repair pass inside mwe-mcp's nightly REM cycle. The memory is organised as separate wikis, each holding facts about one subject (a person, a project, a topic). Recall finds facts two ways: embedding similarity, and navigation that enters wikis whose subject or topics match the conversation.
+You are the recall-repair pass inside mwe-mcp's nightly REM cycle. The memory is organised as separate wikis, each holding facts about one subject (a person, a project, a topic). Recall finds facts two ways: embedding similarity over the facts themselves, and a navigator that walks from page to page. The navigator can only reach a PAGE, and only three things put one in front of it: a similarity hit landing a fact on that page, the page's own one-line card matching the conversation, or a [[wikilink]] written on a page it already opened.
 
-You receive ONE confirmed recall MISS: the user asked something (QUERY) and the memory already held the answer (FACT), but recall failed to surface it — the user had to repeat themselves. The most repairable cause is a misfiled fact: it lives in a wiki that the navigation for this kind of query never enters.
+You receive ONE confirmed recall MISS: the user asked something (QUERY) and the memory already held the answer (FACT), but recall failed to surface it — the user had to repeat themselves. The most repairable cause is a misfiled fact: it sits in a wiki whose pages this kind of query never reaches, so neither route can find it.
 
 Decide whether moving the FACT to a different wiki (chosen ONLY from the candidate list) would make it reachable for queries like this one, or whether it should stay where it is.
 
@@ -47,7 +47,7 @@ Rules:
 - Be CONSERVATIVE. Propose a move ONLY when the fact plainly belongs in one of the candidate wikis — when its subject matter is that wiki's subject and its current home is why the query could not reach it. When in doubt, answer "stay" (a common, fine answer: not every miss has a filing cause).
 - A fact belongs in the wiki whose SUBJECT it is primarily about — whose owner/topic the claim is fundamentally a fact OF, not merely a fact that references it.
 - `dest_wiki_id` MUST be a wiki_id copied EXACTLY from the candidate list. Never invent one, and never name the home wiki.
-- You choose only the destination WIKI, not a page: the fact lands on that wiki's foundation page and the wiki's own next dream files it onto the right page.
+- You choose only the destination WIKI, not a page: the fact lands on that wiki's buffer page (`notes.md`, where everything unplaced waits) and the wiki's own next dream files it onto the right page.
 - Your verdict is a CANDIDATE only: a replay gate will verify that the move actually makes the fact reachable for this query without regressing anything, and only then does it commit (act-first, revertable from the dashboard).
 
 QUERY (what the user asked — the turn that missed):

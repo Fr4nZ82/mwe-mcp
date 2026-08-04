@@ -198,9 +198,9 @@ pub async fn gather_entry_points(
 
     // RAG seeds: content-driven. The hits are already `can_read`-filtered
     // upstream, so a hit is by definition readable — no further visibility
-    // gate. A fresh hit has no published page yet — it seeds the wiki root;
-    // so does a hit homed on the reserved `rules.md` policy page (the page
-    // itself is channel-only, never a navigation door — roadmap 41e).
+    // gate. What a hit cannot do any more is fall back to a wiki-level door:
+    // there is none, so a hit that names no readable page seeds nothing (see
+    // the per-hit filter below).
     for hit in rag_hits {
         let Some(info) = infos
             .iter()

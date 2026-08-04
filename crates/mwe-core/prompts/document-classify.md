@@ -1,8 +1,8 @@
 ---
 name: document-classify
 description: document-ingest phase 1 — proposes the disposition dial (consult / dossier / dissolve) plus the document's identity (title, page, target wiki, summary, and the page testata seeds — page_description, style, topics) from a policy-capped prefix
-version: 1.3
-default_version_at_bootstrap: v1.3
+version: 1.4
+default_version_at_bootstrap: v1.4
 ---
 
 # Prompt: document-classify
@@ -54,7 +54,7 @@ IDENTITY — always provide:
 - "page_slug": a lowercase_underscore page name for the document page (e.g. "pellet_stove_manual.md").
 - "target_wiki_id": one wiki_id from available_wikis — where the document page (and the default fact routing) belongs.
 - "summary": 2-5 sentences, in the language named under LANGUAGE below: what this document is, who/what it involves, why it matters. OPEN BY NAMING the document — its type, title and date ("The eye examination report of 10 June 2026 for Bruno…"), never a blind "this document": the summary becomes the document page's body AND a standalone memory fact, so it must identify WHICH document it describes even read alone. Write it as prose someone would be glad to find.
-- "page_description": one line saying what belongs on that page.
+- "page_description": one line saying what belongs on that page. It is the page's CARD: the recall navigator is shown this line and nothing else when it decides whether to open the page, and for a page no link points at it is the only thing that can bring a reader there. Describe the page's TOPIC in the words someone would use to look for it — never just a restatement of this one document.
 - "style": "prosa" | "prosa-tecnica" | "lista" — the page's writing register.
 - "topics": up to 5 short topic tags.
 

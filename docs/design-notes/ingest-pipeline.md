@@ -136,7 +136,7 @@ routing → seed) and stays inside the ~500 ms–2 s conversational budget
 > into [`fact_index.salience`](../../crates/mwe-core/src/fact_index.rs) (0037) on both the direct and the
 > standard-wiki paths (the `_captures.md` journal mirrors it as the `sal=` attribute, like `vf`/`vt`). **The light
 > compile cadence reads it**: [`ingest_placement_blueprint`](../../crates/mwe-core/src/planner.rs)
-> routes a `high`-salience fact to the actor-wiki's `index.md` base context, overriding its proposed `target_page`
+> routes a `high`-salience fact to the actor-wiki's `profile.md` identity card, overriding its proposed `target_page`
 > (see [narrative-compiler.md](narrative-compiler.md)).
 
 ### The guest short-circuit — ephemeral turns for the unidentified human
@@ -824,7 +824,7 @@ places adjacent to this block (the hermes bridge leads with it).
      scarcest thing the walk has). A *subject's* card is a different page
      and stays navigable — nothing has served it.
    - **A page with no readable fact is scaffolding, not a card** — a freshly
-     seeded `index.md` is a heading and some connective tissue. The slot
+     seeded `profile.md` is a heading and some connective tissue. The slot
      then degrades to the label line alone, and is omitted entirely when
      there is neither card nor summary.
 
@@ -871,8 +871,9 @@ places adjacent to this block (the hermes bridge leads with it).
    directives are channel-only.
 
    A third gate sits above those two per-hit filters, and unlike them it
-   is **turn-level, not per-hit**: `relevance_floor` (default `0.45`,
-   [`recall::DEFAULT_RELEVANCE_FLOOR`], operator-overridable as
+   is **turn-level, not per-hit**: `relevance_floor`
+   ([`recall::DEFAULT_RELEVANCE_FLOOR`] = `0.0`, i.e. it ships **off** —
+   the number it once carried was never earned; operator-overridable as
    `recall.relevance_floor`) is compared against the **maximum** score
    among the turn's promoted (non-fresh) hits — computed over every
    promoted hit, before the two filters above ever run, so the outcome
@@ -1009,7 +1010,7 @@ or single-fact:
   differently across turns (`lista-spesa` / `Lista della Spesa` /
   `lista_spesa` → `lista_spesa.md`); extension-less page files (which
   break the `.md`-page convention every reader walks and stay hidden from
-  `index.md`-only `wiki_read`) and the hard `internal_error` a non-safe
+  a `.md`-only `wiki_read`) and the hard `internal_error` a non-safe
   page would otherwise raise are prevented by the same pass. The
   classifier prompt lists wikis but never page names, so
   canonicalisation cannot fight a name the model copied from disk.
@@ -1392,10 +1393,10 @@ perimeter, exactly as they all skip smart wikis:
   ([`planner::gather_standard_facts`](../../crates/mwe-core/src/planner.rs))
   skips every `rules.md` fact — otherwise a behaviour-rule fact (written by the
   direct path, so absent from the persisted plan) would look *new* on the next
-  dream and orphan-fall-back onto the owner's `index.md`;
+  dream and orphan-fall-back onto the owner's buffer page;
 - the **REM refile sweep** never *nominates* a `rules.md` fact (a per-user rule
   naturally embeds toward its user's wiki — a confirmed move would land it on a
-  foreign `index.md`); rules facts still count in the similarity pools;
+  foreign wiki's buffer); rules facts still count in the similarity pools;
 - **dedup never crosses the rules-page boundary** — a pair is nominable only
   when both sides are `rules.md` facts or neither is, at capture time
   ([capture-and-dedup.md](capture-and-dedup.md)) and in the REM revisor
@@ -1496,8 +1497,9 @@ The alias is unambiguous by construction — the agent principal resolves only o
 a turn the agent authored, so on a user turn an owner naming the agent keeps its
 ordinary meaning. **The engine chooses the page too**
 ([`agent_self_fact_page`](../../crates/mwe-core/src/ingest.rs)): an identity
-self-fact lands on the agent's `index.md`, where the REM consolidates the
-autobiography; a relationship self-fact lands on `esperienze_<served-user>.md`
+self-fact lands on the agent's buffer page, from which the next compile's
+`orphan_target` lifts it onto the agent's `profile.md` card (`salience: high`)
+and the REM consolidates the autobiography; a relationship self-fact lands on `esperienze_<served-user>.md`
 (through the same `normalize_capture_page` chokepoint). The classifier's own
 `target_page` is **ignored** for self-facts — the same "the engine knows the
 home" treatment the wiki axis already gets, and the reason the diary cannot

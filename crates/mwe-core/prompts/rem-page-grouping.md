@@ -90,8 +90,9 @@ whole wiki is skipped up front when it is a smart wiki
 smart wiki, the smart consumer is the sole writer), and again when the
 wiki has **fewer than `{min_pages}` candidate pages and no existing
 sub-wiki** to file into — with neither a possible birth nor a possible
-move, the call would be wasted. `index.md` is never a candidate
-(moving a wiki's front page out would decapitate it). The verdict memo
+move, the call would be wasted. `index.md` is never a candidate: it is the
+wiki's **map**, holds no facts, and is reassembled from whatever pages remain
+— there is nothing on it to group. The verdict memo
 (`rem_verdicts` kind `page_grouping`) keys on the rendered prompt, so a
 settled "no groups" re-opens by itself as soon as the inventory changes.
 Applies share `policy.auto_promote_cap` (default `5`) with the
