@@ -131,8 +131,20 @@ pub enum PageType {
     /// wiki's `index.md` and held facts there.
     #[serde(alias = "emerged_index")]
     WikiBuffer,
-    /// A thematic hub the Cartografo proposes to group ≥2 related leaves. Holds
-    /// no facts. Garbage-collected when it has no children.
+    /// **Legacy.** A page that groups other pages, with no facts of its own.
+    ///
+    /// Retired 2026-08-04 (founder: *«un contenitore è una wiki»*). Nothing
+    /// mints one any more — the Cartografo's vocabulary no longer offers it
+    /// (prompt v1.8) and the planner no longer promotes an emptied leaf into
+    /// one. The variant stays so a plan or registry written before that date
+    /// still loads, and an existing one is collected as soon as its children
+    /// are re-homed ([`reparent_to_foundation`]).
+    ///
+    /// The reason it went is not tidiness: a page containing pages was a
+    /// second, invisible mechanism for a job wikis already do, and its
+    /// creation left no record anyone could read — twelve of them appeared
+    /// over three weeks unnoticed. See
+    /// [`crate::proposals::kind::PAGE_CREATE`] for the other half of that fix.
     ConceptHub,
     /// A thematic detail page. Holds facts; has a parent hub. Garbage-collected
     /// when it has no facts.
@@ -1060,38 +1072,31 @@ pub fn build_compilation_plan(
     // bug fix): repeat until no removals — an empty hub whose only child is a
     // removed empty leaf must also go.
     loop {
-        // Normalisation before the sweep: an emptied leaf that other pages
-        // parent under functions as a hub — flip it instead of removing it
-        // (removal would orphan every child's `parent_hub`: the dangling-
-        // pointer factory step 6.bis exists to clean up after). The
-        // semantic work — where its facts went — already happened upstream
-        // (refile / placement re-open); this is topology bookkeeping only.
-        for (slug, page) in &mut pages {
-            if page.page_type == PageType::ConceptLeaf
-                && page.primary_facts.is_empty()
-                && !page.child_leaves.is_empty()
-            {
-                tracing::info!(
-                    slug = %slug,
-                    children = page.child_leaves.len(),
-                    "planner: empty leaf with children normalised to concept_hub"
-                );
-                page.page_type = PageType::ConceptHub;
-                if let Some(e) = updated_registry.entries.get_mut(slug) {
-                    e.page_type = PageType::ConceptHub;
-                }
-            }
-        }
+        // **A page is never promoted into a container.** Until 2026-08-04 an
+        // emptied leaf that other pages parented under was flipped to a
+        // `ConceptHub` right here rather than removed — the planner's own
+        // second route to minting one, beside the Cartografo's, and the
+        // reason twelve of them exist. Founder's ruling: *«un contenitore è
+        // una wiki»*. A grouping deep enough to need its own container is a
+        // wiki, and wikis are raised by the promote machinery, which is
+        // visible. So the emptied page stays a leaf and the sweep below
+        // collects it like any other; `reparent_to_foundation` re-homes its
+        // children first, which is what the flip used to be protecting
+        // against.
         let to_remove: Vec<String> = pages
             .iter()
             .filter(|(_, p)| !p.page_type.is_foundation())
             .filter(|(_, p)| match p.page_type {
                 PageType::ConceptLeaf => p.primary_facts.is_empty(),
+                // Legacy only: no new one is minted (see above), and an
+                // existing one goes as soon as its children are re-homed.
                 PageType::ConceptHub => p.child_leaves.is_empty(),
                 _ => false,
             })
             .map(|(slug, _)| slug.clone())
             .collect();
+        // A page about to go must not take its children's parent with it.
+        reparent_to_foundation(&mut pages, &to_remove);
         if to_remove.is_empty() {
             break;
         }
@@ -1359,6 +1364,52 @@ fn foundation_slug_for(
         card.or(buffer)
     } else {
         buffer.or(card)
+    }
+}
+
+/// Re-home the children of every page about to be garbage-collected onto
+/// their wiki's foundation page, so a removal never orphans a `parent_hub`.
+///
+/// Needed since the planner stopped promoting an emptied leaf into a
+/// container (founder, 2026-08-04: *«un contenitore è una wiki»*). Before
+/// that a leaf with children could not be collected — it became a
+/// `ConceptHub` and lived on — so the question never arose. Now it is
+/// collected like any other empty page, and its children have to land
+/// somewhere first.
+///
+/// The wiki's own foundation is the only safe destination: it always exists,
+/// it belongs to the same wiki (so nothing crosses an ACL boundary), and a
+/// page parented there is exactly a page with no grouping above it. A child
+/// whose wiki resolves to no foundation at all keeps its old parent — a
+/// dangling `parent_hub` is inert, an invented one is not.
+fn reparent_to_foundation(pages: &mut BTreeMap<String, PagePlan>, doomed: &[String]) {
+    if doomed.is_empty() {
+        return;
+    }
+    let doomed: BTreeSet<&str> = doomed.iter().map(String::as_str).collect();
+    let snapshot = pages.clone();
+    for page in pages.values_mut() {
+        let Some(parent) = page.parent_hub.as_deref() else {
+            continue;
+        };
+        if !doomed.contains(parent) {
+            continue;
+        }
+        let wiki_slug = slugify(&page.wiki_id);
+        let Some(foundation) = foundation_slug_for(&wiki_slug, false, &snapshot) else {
+            continue;
+        };
+        tracing::info!(
+            slug = %page.slug,
+            from = %parent,
+            to = %foundation,
+            "planner: child re-homed onto its wiki's foundation — its parent page is going"
+        );
+        page.parent_hub = Some(foundation);
+    }
+    // Drop the stale child links from whatever still names them.
+    for page in pages.values_mut() {
+        page.child_leaves.retain(|c| !doomed.contains(c.as_str()));
     }
 }
 
@@ -4921,11 +4972,17 @@ mod tests {
         );
     }
 
+    /// An emptied page is removed, and its children are re-homed onto their
+    /// wiki's foundation — never promoted into a container.
+    ///
+    /// This test used to assert the opposite (*"the emptied container flips to
+    /// hub instead of being GC'd"*), which was the planner's own second route
+    /// to minting a `ConceptHub` and half the reason twelve of them existed.
+    /// Founder's ruling 2026-08-04: a container is a wiki, and wikis are
+    /// raised by the visible promote machinery. The re-homing is what the flip
+    /// was really protecting against — an orphaned `parent_hub`.
     #[test]
-    fn empty_leaf_with_children_normalises_to_hub() {
-        // A leaf whose facts drained but that other pages parent under is
-        // flipped to concept_hub instead of GC-removed (removal would orphan
-        // every child's parent_hub).
+    fn an_emptied_page_is_removed_and_its_children_rise_to_the_foundation() {
         let mut foundation = BTreeMap::new();
         foundation.insert("alice".to_owned(), person("alice"));
         let mut registry = ConceptRegistry::empty("t");
@@ -4952,21 +5009,24 @@ mod tests {
             &registry,
             "t2",
         );
-        assert_eq!(
-            plan.pages["cucina"].page_type,
-            PageType::ConceptHub,
-            "the emptied container flips to hub instead of being GC'd"
-        );
-        assert_eq!(
-            reg.entries["cucina"].page_type,
-            PageType::ConceptHub,
-            "the registry entry flips with it"
+        assert!(
+            !plan.pages.contains_key("cucina"),
+            "an emptied page is collected, never promoted into a container"
         );
         assert!(
-            plan.pages["cucina"]
-                .child_leaves
-                .contains(&"cucina_tecniche".to_owned()),
-            "the child stays parented under the flipped hub"
+            !reg.entries.contains_key("cucina"),
+            "and it leaves the registry, so the next build does not resurrect it"
+        );
+        assert_eq!(
+            plan.pages["cucina_tecniche"].parent_hub.as_deref(),
+            Some("alice"),
+            "the child rises to its wiki's foundation instead of dangling"
+        );
+        assert!(
+            plan.pages
+                .values()
+                .all(|p| !p.child_leaves.contains(&"cucina".to_owned())),
+            "nothing still names the removed page as a child"
         );
     }
 

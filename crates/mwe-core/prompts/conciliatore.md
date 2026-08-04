@@ -1,8 +1,8 @@
 ---
 name: conciliatore
 description: planner stage 1.5 — folds semantically-duplicate proposed concept pages into existing ones (dedup with redirect bias)
-version: 1.4
-default_version_at_bootstrap: v1.4
+version: 1.5
+default_version_at_bootstrap: v1.5
 ---
 
 # Prompt: conciliatore
@@ -59,7 +59,7 @@ RULES:
 OUTPUT — one strict JSON object, no prose around it:
 {
   "redirects":    { "<proposed_slug>": "<existing_slug>", ... },
-  "accepted_new": [ { "slug": "...", "title": "...", "description": "...", "page_type": "concept_hub" | "concept_leaf", "parent_hub": "..." }, ... ]
+  "accepted_new": [ { "slug": "...", "title": "...", "description": "...", "page_type": "concept_leaf", "parent_hub": "..." }, ... ]
 }
 
 EXISTING PAGES:
