@@ -43,6 +43,14 @@
 //! case that the next cycle would overrule anyway — and it would put the one
 //! page served on every turn outside the only process that curates it.
 //!
+//! What the primer *does* owe that judgement is the context to make it well,
+//! and that is [`PUBLIC_PROFILE_PRIMER_PREFIX`]: the message says outright
+//! that it is a first-time profile. The card has to come into existence at
+//! some point, and this is the only turn whose purpose is to bring it there —
+//! but the classifier sees sentences, not forms, and its standing instruction
+//! is to keep `salience: "high"` scarce. Telling it what it is reading is a
+//! framing; telling it where to put things would be the override above.
+//!
 //! The routing itself is the ingest prompt's job (universal).
 //! The wizard only organises the collection and adds reinforcing section
 //! markers to the composed message — it is *just the collection UI*. The
@@ -398,9 +406,32 @@ async fn fetch_email_for(state: &DashboardState, sender_id: &str) -> Result<Opti
 /// next to the "prefer the sender's own wiki" rule, is enough.
 ///
 /// [`AGENT_INSTRUCTIONS.md`]: ../../../AGENT_INSTRUCTIONS.md
-const PUBLIC_PROFILE_PRIMER_PREFIX: &str = "Everything I write below — biographical details, \
-contacts, and health or safety information too — is PUBLIC information on my profile: \
-anyone may see it, it is not private to me, and it is to be treated as public without exception.";
+/// The consent line the form promises, plus the one thing the classifier
+/// cannot infer from the sentences themselves: **what this message is**.
+///
+/// Two clauses, doing two different jobs. The first is visibility — the form
+/// header promises it, so it is stated without exception. The second names the
+/// message as the person's **first-time profile**, and it exists because the
+/// primer is the only turn in a user's life whose whole purpose is to bring
+/// their identity card into being. The ingest prompt already knows what an
+/// identity core is (Part 6: name and aliases, roles and relations, birthdate,
+/// where they live, language and timezone, contacts) and already routes it —
+/// `salience: "high"` lands a fact on `profile.md`. What it has no way of
+/// knowing is that these particular sentences are somebody introducing
+/// themselves rather than chatting, and its own standing instruction is to
+/// keep `high` **scarce**.
+///
+/// It is a **framing, not an override** (founder, 2026-08-04): it does not say
+/// where anything goes and does not ask for everything to be marked always-on
+/// — the closing clause says the opposite out loud, because not everything on
+/// the form is essential and deciding which parts are is the same judgement
+/// REM goes on making afterwards.
+const PUBLIC_PROFILE_PRIMER_PREFIX: &str = "This is my first-time profile: I am introducing \
+myself so that whoever assists me knows who I am from now on. Everything I write below — \
+biographical details, contacts, and health or safety information too — is PUBLIC information on \
+my profile: anyone may see it, it is not private to me, and it is to be treated as public without \
+exception. Judge each statement on its own merits, as always: not all of it is the kind of thing \
+that must be known in every conversation.";
 
 /// Tiny vanilla script attached to the welcome form. While the POST is
 /// in flight (~15 s for Ollama on the workhorse model) we keep the
