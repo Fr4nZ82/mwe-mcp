@@ -32,9 +32,16 @@
 //! foundation card. Before 63 §8 that card *was* `index.md`; since the split
 //! it is `profile.md` and `index.md` is the map, a page the read path never
 //! opens. Nothing here was hardcoded, so the routing followed the split for
-//! free — only these words had to change. It does mean the primer reaches the
-//! card **through a classifier judgement** rather than by assertion: a primer
-//! fact the model marks `normal` lands on the buffer instead.
+//! free — only these words had to change.
+//!
+//! So the primer reaches the card **through a classifier judgement** rather
+//! than by assertion: a primer fact the model marks `normal` lands on the
+//! buffer instead. **That is deliberate, not a gap to close** (founder,
+//! 2026-08-04): not everything a person types into the form is essential, and
+//! deciding what earns a place on the identity card is exactly what REM does
+//! continuously afterwards. Asserting placement here would build a special
+//! case that the next cycle would overrule anyway — and it would put the one
+//! page served on every turn outside the only process that curates it.
 //!
 //! The routing itself is the ingest prompt's job (universal).
 //! The wizard only organises the collection and adds reinforcing section
