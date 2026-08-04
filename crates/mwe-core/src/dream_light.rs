@@ -564,10 +564,14 @@ mod tests {
         let blind = capture_buffer::buffer_capture(&tree, &pool, cap_req("buy   MILK"), None)
             .await
             .unwrap();
+        // Relative to now, never a pinned date: `record_turn` prunes on write
+        // against `Utc::now() - RECALL_LOG_RETENTION_DAYS`, so an absolute
+        // fixture stops being a live row on a calendar day and takes the test
+        // with it (it did, on 2026-08-04).
         let blind_log = crate::recall_log::record_turn(
             &pool,
             "alice",
-            "2026-07-05T10:00:00+00:00",
+            &(chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339(),
             &[],
             &[],
             &[],
@@ -595,7 +599,7 @@ mod tests {
         let seen_log = crate::recall_log::record_turn(
             &pool,
             "alice",
-            "2026-07-05T11:00:00+00:00",
+            &chrono::Utc::now().to_rfc3339(),
             &[first.capture_id.as_str().to_owned()],
             &[],
             &[],

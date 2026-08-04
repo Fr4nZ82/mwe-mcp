@@ -370,13 +370,24 @@ mod tests {
         crate::test_db::TestWorkdir::with_db().await
     }
 
+    /// A timestamp inside **every** retention window, expressed relative to
+    /// now rather than pinned to a date.
+    ///
+    /// Both writers prune on write, against `Utc::now() - retention`. A fixture
+    /// pinned to an absolute day is therefore a time bomb: `2026-07-05T10:00Z`
+    /// was a live row until 2026-08-04T10:00Z and pruned itself one second
+    /// later, failing two tests by the calendar and nothing else.
+    fn recent() -> String {
+        (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339()
+    }
+
     #[tokio::test]
     async fn record_and_lookup_roundtrip_with_surfaced_membership() {
         let (_workdir, pool) = pool().await;
         let log_id = record_turn(
             &pool,
             "franz",
-            "2026-07-05T10:00:00+00:00",
+            &recent(),
             &["fact-a".to_owned(), "fact-b".to_owned()],
             &["wikis/franz/index.md".to_owned()],
             &["cucina".to_owned()],
@@ -402,7 +413,11 @@ mod tests {
             record_miss(
                 &pool,
                 &NewMiss {
-                    created_at: &format!("2026-07-05T10:0{i}:00+00:00"),
+                    // Minutes apart, relative to now — the assertion is on
+                    // ORDER, and `record_miss` prunes against a moving cutoff.
+                    created_at: &(chrono::Utc::now()
+                        + chrono::Duration::minutes(i64::try_from(i).expect("small")))
+                    .to_rfc3339(),
                     sender_id: "franz",
                     fact_id: fid,
                     wiki_id: "franz",
@@ -443,13 +458,13 @@ mod tests {
         .await
         .unwrap();
 
-        record_turn(&pool, "franz", "2026-07-05T10:00:00+00:00", &[], &[], &[])
+        record_turn(&pool, "franz", &recent(), &[], &[], &[])
             .await
             .unwrap();
         record_miss(
             &pool,
             &NewMiss {
-                created_at: "2026-07-05T10:00:00+00:00",
+                created_at: &recent(),
                 sender_id: "franz",
                 fact_id: "f-new",
                 wiki_id: "w",

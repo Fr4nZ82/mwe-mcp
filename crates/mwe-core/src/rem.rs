@@ -10317,7 +10317,7 @@ mod tests {
         crate::recall_log::record_miss(
             &pool,
             &crate::recall_log::NewMiss {
-                created_at: "2026-07-05T10:00:00+00:00",
+                created_at: &chrono::Utc::now().to_rfc3339(),
                 sender_id: "alice",
                 fact_id: target.as_str(),
                 wiki_id: "alice",
@@ -10421,7 +10421,8 @@ mod tests {
             crate::recall_log::record_miss(
                 &pool,
                 &crate::recall_log::NewMiss {
-                    created_at: &format!("2026-07-05T10:0{i}:00+00:00"),
+                    created_at: &(chrono::Utc::now() + chrono::Duration::minutes(i64::from(i)))
+                        .to_rfc3339(),
                     sender_id: "alice",
                     fact_id: target.as_str(),
                     wiki_id: "alice",
