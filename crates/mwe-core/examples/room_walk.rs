@@ -86,8 +86,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // 2. The entry fan: which pages those hits (plus identity) make reachable.
-    let owners = vec![];
+    // 2. The entry fan: which pages those hits make reachable. (No identity
+    // seeds any more — 69b deleted the family; no `owners` argument either.)
     let fan = recall_nav::gather_entry_points(&pool, &tree, &ctx, &[], &hits, &[]).await?;
     println!(
         "\n-- 2. ENTRY FAN — the addresses the walk starts from ({} )",
@@ -100,9 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             e.weight,
             format!("{:?}", e.origin),
             e.wiki_id,
-            e.page
-                .as_ref()
-                .map_or_else(|| "(overview)".to_owned(), |p| p.display().to_string())
+            e.page.display()
         );
     }
     Ok(())

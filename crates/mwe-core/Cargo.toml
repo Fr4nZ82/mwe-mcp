@@ -121,3 +121,9 @@ required-features = ["local-embedder"]
 [[example]]
 name = "pool_shape"
 required-features = ["local-embedder"]
+
+# Planning card 69d — should a third party's identity card be SERVED rather
+# than navigated to, and on what condition?
+[[example]]
+name = "subject_gate"
+required-features = ["local-embedder"]

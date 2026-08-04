@@ -56,6 +56,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace --all-targets --no-fail-fast
+      # The measurement harnesses in `crates/mwe-core/examples/` sit behind
+      # `local-embedder`, so the line above never builds them — and on
+      # 2026-08-04 two of them (`nav_replay`, `room_walk`) turned out to have
+      # been broken for a day by a type change, discovered only when one was
+      # needed to answer a question. They are how every recall claim gets
+      # measured; a rotted instrument is worse than a missing one, because it
+      # is found at the moment it is trusted. Build-only: they need a workdir
+      # to run.
+      - run: cargo build --workspace --examples --features local-embedder
 
   test-fault-injection:
     name: cargo test (fault injection)
