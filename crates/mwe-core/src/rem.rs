@@ -1755,11 +1755,21 @@ pub struct MissingRail {
 /// `finanziamento_auto` (32), and two cars of the same household that do not
 /// know about each other (22).
 ///
-/// The link graph comes from the **persisted plan**, not from re-parsing
-/// markdown: it is already symmetric, already slug-keyed, and it is the same
-/// graph the compiler writes the rails from. `recall_log` stores workdir-
-/// relative page paths, so the plan's pages are resolved to those paths
-/// through the tree to key the two together.
+/// **A link counts only if it is written on the page**, read with the same
+/// extractor the funnel uses ([`crate::recall::extract_wikilinks`]).
+///
+/// The plan's `link_graph` was the obvious source — symmetric, slug-keyed,
+/// and the graph the compiler writes rails *from* — and it is the wrong one.
+/// Measured on the corpus 2026-08-04: **111 of the 334 links the plan
+/// declares (33 %) never reached the page text.** The compiler hands them to
+/// the writing model as *recommended*, and a model that does not weave one in
+/// leaves no link behind. The navigator harvests rails from the **prose**, so
+/// a pair the plan calls linked can be a pair the reader can never travel
+/// between — and trusting the plan would have hidden a third of the real
+/// gaps, silently and in the flattering direction.
+///
+/// `recall_log` stores workdir-relative page paths, so the plan's pages are
+/// resolved to those paths through the tree to key the two together.
 ///
 /// Reserved pages never nominate: the map is not readable, and the rules page
 /// is channel-only.
@@ -1777,8 +1787,12 @@ pub async fn detect_missing_rails(
     if cap == 0 || min_co_opens == 0 {
         return Ok(Vec::new());
     }
-    // workdir-relative source path -> plan slug, for the pages a walk can open.
+    // workdir-relative source path -> plan slug, for the pages a walk can open,
+    // plus the links each page actually carries.
     let mut by_path: BTreeMap<String, &str> = BTreeMap::new();
+    let mut written: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
+    let mut addr: BTreeMap<(String, String), &str> = BTreeMap::new();
+    let mut bodies: Vec<(&str, String)> = Vec::new();
     for (slug, page) in &plan.pages {
         let rel = std::path::Path::new(&page.page_path);
         if crate::recall_nav::is_reserved_page_path(rel) {
@@ -1795,6 +1809,29 @@ pub async fn detect_missing_rails(
             crate::wiki::workdir_relative_source_path(tree.workdir(), &abs),
             slug.as_str(),
         );
+        let stem = page
+            .page_path
+            .strip_suffix(".md")
+            .unwrap_or(&page.page_path)
+            .to_owned();
+        addr.insert((page.wiki_id.clone(), stem), slug.as_str());
+        if let Ok(body) = std::fs::read_to_string(&abs) {
+            bodies.push((slug.as_str(), body));
+        }
+    }
+    for (slug, body) in &bodies {
+        for link in crate::recall::extract_wikilinks(body) {
+            let Some(page) = link.page.as_deref() else {
+                continue;
+            };
+            let key = (
+                link.wiki_id.clone(),
+                page.strip_suffix(".md").unwrap_or(page).to_owned(),
+            );
+            if let Some(target) = addr.get(&key) {
+                written.insert((*slug, *target));
+            }
+        }
     }
 
     let sets = crate::recall_log::navigated_page_sets(pool, LINK_DETECTOR_SCAN_LIMIT).await?;
@@ -1816,17 +1853,9 @@ pub async fn detect_missing_rails(
     let mut out: Vec<MissingRail> = counts
         .into_iter()
         .filter(|&(_, n)| n >= min_co_opens)
-        .filter(|&((a, b), _)| {
-            // Already railed in either direction? The plan's graph is
-            // symmetric, so one lookup would do; both are checked because a
-            // half-written graph must not read as "linked".
-            let linked = |x: &str, y: &str| {
-                plan.link_graph
-                    .get(x)
-                    .is_some_and(|ls| ls.iter().any(|l| l == y))
-            };
-            !linked(a, b) && !linked(b, a)
-        })
+        // Railed in either direction? One written link is enough to travel,
+        // and the funnel does not care which page carries it.
+        .filter(|&((a, b), _)| !written.contains(&(a, b)) && !written.contains(&(b, a)))
         .map(|((a, b), co_opens)| MissingRail {
             a_slug: a.to_owned(),
             b_slug: b.to_owned(),
@@ -7833,7 +7862,17 @@ mod tests {
         crate::wiki::create_identity_wiki(&tree, &wid, "alice", crate::wiki::IdentityKind::User)
             .expect("wiki");
         let handle = tree.locate(&wid).expect("handle");
-        for page in ["documenti.md", "fisco.md", "diario.md"] {
+        // `diario` carries a written link to `fisco`; the others carry none.
+        // A link counts only when it is on the page — the plan may recommend
+        // one the writing model never wove in, and the reader cannot follow a
+        // recommendation.
+        handle
+            .write_page(
+                std::path::Path::new("diario.md"),
+                "# Diario\n\nvedi [[alice/fisco]].\n",
+            )
+            .expect("page");
+        for page in ["documenti.md", "fisco.md"] {
             handle
                 .write_page(std::path::Path::new(page), "# p\n\nprose\n")
                 .expect("page");
@@ -7864,10 +7903,13 @@ mod tests {
                 },
             );
         }
+        // The plan ALSO recommends documenti->fisco. It must not count: the
+        // link was never written, so no reader can travel it. This is the
+        // inversion that matters — trusting the plan hid 33 % of the real
+        // gaps on the live corpus.
         let mut link_graph = BTreeMap::new();
-        // `diario` and `fisco` already know about each other.
-        link_graph.insert("diario".to_owned(), vec!["fisco".to_owned()]);
-        link_graph.insert("fisco".to_owned(), vec!["diario".to_owned()]);
+        link_graph.insert("documenti".to_owned(), vec!["fisco".to_owned()]);
+        link_graph.insert("fisco".to_owned(), vec!["documenti".to_owned()]);
         let plan = crate::planner::CompilationPlan {
             pages,
             link_graph,
