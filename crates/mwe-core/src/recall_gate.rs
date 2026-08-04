@@ -339,8 +339,9 @@ async fn target_surfaced(
         target.query,
         &entries,
         &policy.nav,
-        // The scratch replay has no recall block to dedup against.
-        &[],
+        // The scratch replay has no recall block to dedup against, and so no
+        // served card to take rails off either.
+        recall_nav::Served::default(),
     )
     .await
     .context("navigate replay")?;

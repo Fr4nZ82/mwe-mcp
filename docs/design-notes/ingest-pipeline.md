@@ -803,6 +803,16 @@ places adjacent to this block (the hermes bridge leads with it).
    pages leave the flat hit list, are handed to `navigate` as already
    visited, and count as surfaced in the recall log.
 
+   **And a fourth thing, added 2026-08-04: their rails.** Every card served
+   here also reaches `navigate` as `Served::cards` — the same projection with
+   its `[[wikilinks]]` intact and before the character cut. A page marked
+   already-visited never reaches `open_target`, which is the only place a rail
+   is harvested, so until then a card's own links were the one part of the
+   corpus the funnel could reach by no route at all. They are offered as
+   tier-2 `card` candidates, below the whole entry fan, because a card arrives
+   whatever was asked and so says nothing about *this* turn — see
+   [recall-pipeline.md](recall-pipeline.md#inside-the-funnel--where-the-doors-come-from-hop-by-hop).
+
    Four properties hold whatever REM later writes there:
 
    - **Projected per sender** (`render::render_for_sender_segments`), never

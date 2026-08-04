@@ -97,7 +97,7 @@ flowchart TB
 
     subgraph H1["hop 1 … up to max_hops"]
         POOL1["candidate pool = link targets<br/>+ the fan's unopened tail"]
-        POOL1 --> PRUNE1["prune_pool → rank by tier<br/>(link &gt; entry fan &gt; sibling page),<br/>THEN dedup — a page reached twice<br/>keeps its best tier —<br/>THEN truncate to <b>max_candidates</b>"]
+        POOL1 --> PRUNE1["prune_pool → rank by tier<br/>(link &gt; entry fan &gt; card rail &gt; sibling),<br/>THEN dedup — a page reached twice<br/>keeps its best tier —<br/>THEN truncate to <b>max_candidates</b>"]
         PRUNE1 --> LLM1["navigator LLM decides again"]
         LLM1 --> OPEN1["open, collect, grow the pool"]
     end
@@ -135,6 +135,7 @@ knob.** Defaults come from `IngestPolicy::default` / `NavigatorPolicy::default`.
 | `char_budget` | `8 000` | total projected prose one navigation may collect |
 | `max_candidates` | `16` | how many doors a hop is offered, after tier ranking and dedup |
 | `sibling_floor` | `0` **(off)** | how far directory siblings may top a hop's offer up. Off: the listing is not built at all. `usize::MAX` observes what it would have added |
+| `max_card_rails` | `8` | failsafe cap on the `[[wikilinks]]` taken off **one** served identity card. The real bound is the tier — a `card` rail sorts below the whole fan |
 | `decision_max_tokens` | `600` | cost guard on the per-hop decision JSON, not a quality dial |
 | `due_soon_top_k` | `3` | the `UPCOMING` slot; `0` disables it |
 | `due_soon_horizon_hours` | `168` (7 d) | how far ahead `UPCOMING` looks |
@@ -720,7 +721,7 @@ the first decision went from **79 % identity pages to 19 %**, content opens
 from **21 % to 81 %**, and opens on the sender's own card from **132 to 0**.
 
 The sender's own card is additionally passed to the funnel as **already
-delivered** (the `already_served` argument, described under *Wired into the
+delivered** (the `Served::pages` argument, described under *Wired into the
 ingest turn* below), which closes the wikilink route to it as well — the block
 already holds that prose. A *subject's* identity page stays an ordinary door:
 it is reached like any other page, by a hit on it, by its own card matching, or
@@ -743,8 +744,21 @@ still reachable as *content*, through its pages.
 both call sites. Its pages are still reached through the query's own flat hits
 and their cards.
 
-Two invariants:
+Three invariants:
 
+- **A door is described by its own page's card, never by its wiki's.** Every
+  candidate the funnel offers — fan, rail, card rail, sibling alike — carries
+  the destination page's testata `description` and that page's reader-visible
+  topics (`reader_page_card`). This was not true of the fan until 2026-08-04:
+  `initial_pool` reached for the *wiki*-level abstract, left over from when a
+  seed could still name a wiki alone, so N hits inside one wiki arrived as N
+  candidates carrying **one identical sentence and one identical keyword
+  union**, separable only by their file name. Since the card is the sole input
+  to every choice the funnel makes, that was the fan handing the navigator a
+  constant. A page with no `description` now offers none rather than borrowing
+  its wiki's — an honest blank is a signal for
+  [62](../../planning/62_rem-rumination.md)'s card pass; a wrong sentence is
+  not.
 - **Reader-relative cards.** Topic/situational seeds match a card recomputed
   per turn for the sender by `meta_annotate::build_reader_card`: the union of
   `topics` over the facts in a wiki (and on a page) the sender can read
@@ -822,11 +836,23 @@ listing below.
 
 Before the next prompt is built, `prune_pool` **stably ranks the pool by
 tier**, drops already-visited / duplicate candidates, **rations the
-siblings**, and truncates to `max_candidates`. The tiers: wikilink
-destinations first (an authored rail out of the page just read), then the
-still-unpicked entry-point fan in the gatherer's own weight order (seeds
-already offered on an earlier hop that the navigator did not choose), then
-sibling pages last — a tier that is **empty in the default configuration**.
+siblings**, and truncates to `max_candidates`. The four tiers, in order:
+
+| Tier | Origin | What it is evidence of |
+|---|---|---|
+| 0 | `link` | a `[[wikilink]]` on a page **the navigator chose to open** for this turn — the turn's own judgement, twice |
+| 1 | `rag` · `topic` · `situational` | the entry fan, still unpicked, in the gatherer's weight order — the question itself |
+| 2 | `card` | a `[[wikilink]]` on an identity card **served unconditionally** — the person, never the question |
+| 3 | `page` | a directory sibling — **empty in the default configuration** |
+
+Tier 2 is the newest and its position is the whole design. A served card
+arrives on every turn whatever was asked, so its links describe a
+neighbourhood, not a need; ranked with the rails they would put the sender's
+whole social graph ahead of the pages the question actually found, which is
+the shape of the regression [69b](../../planning/69_identity-seed-family.md)
+removed. Below the fan they can only consume slack the content doors left, and
+`max_card_rails` (`8`) is a failsafe against one over-wired card, not a
+policy.
 
 **The directory listing is OFF** (`sibling_floor = 0`; founder, 2026-08-04:
 *«io credo sia meglio toglierle del tutto»*). It was the funnel's structural
@@ -980,12 +1006,27 @@ section: the funnel runs **after** the classification, reusing its
 seed and classifier input — «RAG for the entrances»), only for intents that
 justify the LLM spend (capture / recall / disambiguation), and only when the
 call site wired the optional `navigator` backend. The reserved `rules.md`
-policy page is never a door (channel-only — the fan skips it, a RAG hit on
-it seeds the wiki root, and the open step discards it as a fail-safe).
+policy page is never a door (channel-only — the fan skips it, a RAG hit
+homed on it seeds nothing, and the open step discards it as a fail-safe).
 
 **The ingest turn also hands the funnel the pages it has already delivered**
-(`navigate`'s `already_served`), which today means exactly one: the sender's
-identity page, served in full by `WHO IS SPEAKING` on every turn. They enter
+(`navigate`'s `Served` argument): the sender's identity card, served in full
+by `WHO IS SPEAKING` on every turn, plus every card `PEOPLE THIS TURN NAMES`
+served. `Served` carries them **twice, by two keys**, and the second is not
+redundant:
+
+- `Served::pages` — `(wiki_id, page)`, which closes the page against re-reading;
+- `Served::cards` — `(wiki_id, projected markdown)`, which keeps what is
+  *written on it* usable. A served page never reaches `open_target`, and
+  `open_target` is the only place `[[wikilinks]]` are harvested — so before
+  2026-08-04 a card's own rails reached the funnel by **no route at all**.
+  That is the tier-2 `card` channel above, and it matters more since
+  [69c](../../planning/69_identity-seed-family.md) gave the card a
+  ~1800-character ceiling whose entire purpose is to push its detail onto
+  linked pages. The text is the **projected** card, so a link inside a region
+  this reader may not see is gone before it can become a door.
+
+They enter
 the walk as if it had opened them, so they are never offered as a candidate,
 never opened, and never charged to the character budget — the guarantee holds
 on every route in, because it is the one `visited` set that `prune_pool`

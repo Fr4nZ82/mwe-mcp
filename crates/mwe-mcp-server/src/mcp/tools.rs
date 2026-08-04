@@ -1410,7 +1410,9 @@ async fn run_navigate_funnel(
         // `wiki_navigate` builds no recall block, so it has delivered nothing
         // the funnel would be re-reading — unlike the ingest turn, whose
         // `WHO IS SPEAKING` slot already carries the sender's identity page.
-        &[],
+        // For the same reason it serves no card, so it has no card rails
+        // either: a caller here reaches an identity page like any other page.
+        mwe_core::recall_nav::Served::default(),
     )
     .await
     .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;

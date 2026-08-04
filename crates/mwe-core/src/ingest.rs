@@ -3976,6 +3976,10 @@ struct SpeakerCard {
     /// `None` when only the one-line summary was served — that duplicates
     /// nothing.
     page_path: Option<String>,
+    /// `(wiki_id, projected card markdown)` for `navigate`'s `served_cards`
+    /// — the card's own `[[wikilinks]]`, which the funnel can reach by no
+    /// other route once the page is marked already-served.
+    rails: Option<(String, String)>,
 }
 
 /// Render the `WHO IS SPEAKING` section — the sender's identity card.
@@ -4035,12 +4039,18 @@ async fn who_is_speaking_section(
         },
         None => return None,
     }
-    let page_path = card.map(|(prose, path)| {
+    let mut rails = None;
+    let page_path = card.map(|c| {
         section.push_str("\n\n");
-        section.push_str(&prose);
-        path
+        section.push_str(&c.prose);
+        rails = Some((sender_id.to_owned(), c.rails_source));
+        c.source_path
     });
-    Some(SpeakerCard { section, page_path })
+    Some(SpeakerCard {
+        section,
+        page_path,
+        rails,
+    })
 }
 
 /// Header of the block's third-party identity slot.
@@ -4054,8 +4064,11 @@ struct MentionedCards {
     /// Workdir-relative source paths, for the flat slot's page dedup.
     page_paths: Vec<String>,
     /// The same pages in the funnel's `(wiki, page)` terms, for
-    /// `navigate`'s `already_served`.
+    /// `navigate`'s [`recall_nav::Served::pages`].
     served: Vec<(String, PathBuf)>,
+    /// `(wiki_id, projected card markdown)` per card, for `navigate`'s
+    /// `served_cards` — see [`SpeakerCard::rails`].
+    rails: Vec<(String, String)>,
 }
 
 /// **`PEOPLE THIS TURN NAMES`** — the identity card of each enrolled person
@@ -4114,6 +4127,7 @@ async fn people_mentioned_section(
     let mut section = String::from(HDR_PEOPLE_MENTIONED);
     let mut page_paths = Vec::new();
     let mut served = Vec::new();
+    let mut rails = Vec::new();
     for subject in subjects {
         if served.len() >= policy.max_mentioned_cards {
             break;
@@ -4127,24 +4141,40 @@ async fn people_mentioned_section(
         else {
             continue;
         };
-        let Some((prose, source_path)) = identity_card(pool, tree, &handle, sender, policy).await
-        else {
+        let Some(card) = identity_card(pool, tree, &handle, sender, policy).await else {
             continue;
         };
-        let _ = write!(section, "\n\n- {subject}\n{prose}");
-        page_paths.push(source_path);
+        let _ = write!(section, "\n\n- {subject}\n{}", card.prose);
+        page_paths.push(card.source_path);
+        rails.push((subject.clone(), card.rails_source));
         served.push((subject, PathBuf::from(IDENTITY_PAGE)));
     }
     (!served.is_empty()).then_some(MentionedCards {
         section,
         page_paths,
         served,
+        rails,
     })
 }
 
+/// What one served identity card yields.
+struct IdentityCard {
+    /// Injectable prose: projected, testata dropped, `[[wikilinks]]` flattened
+    /// to plain names, fitted to the budget.
+    prose: String,
+    /// The page's workdir-relative source path.
+    source_path: String,
+    /// The **same** projection with its `[[wikilinks]]` intact and before the
+    /// budget cut — the navigator's rails off this card
+    /// ([`recall_nav::navigate`]'s `served_cards`). Kept separate from `prose`
+    /// on purpose: the consumer's copy has nothing to navigate from, so its
+    /// links are flattened, and a rail dropped by the character budget is
+    /// still a page worth reaching.
+    rails_source: String,
+}
+
 /// Read, project and prepare the sender's identity page for injection.
-/// Returns the injectable prose and the page's workdir-relative source
-/// path. `None` — logged at debug, never fatal — when the page is absent,
+/// `None` — logged at debug, never fatal — when the page is absent,
 /// unreadable, or renders to nothing for this reader.
 async fn identity_card(
     pool: &SqlitePool,
@@ -4152,7 +4182,7 @@ async fn identity_card(
     handle: &crate::wiki::WikiHandle,
     sender: &SenderContext,
     policy: &IngestPolicy,
-) -> Option<(String, String)> {
+) -> Option<IdentityCard> {
     if policy.max_sender_identity_chars == 0 {
         return None;
     }
@@ -4221,8 +4251,9 @@ async fn identity_card(
         return None;
     }
     let projected = projected.into_output().text;
+    let rails_source = projected.trim().to_owned();
     let (prose, cut) = fit_paragraphs(
-        plain_wikilinks(projected.trim()).trim(),
+        plain_wikilinks(&rails_source).trim(),
         policy.max_sender_identity_chars,
     );
     if cut {
@@ -4235,7 +4266,11 @@ async fn identity_card(
             "ingest: identity card exceeded its budget and was cut — it needs curating, not a bigger budget"
         );
     }
-    (!prose.is_empty()).then_some((prose, source_path))
+    (!prose.is_empty()).then_some(IdentityCard {
+        prose,
+        source_path,
+        rails_source,
+    })
 }
 
 /// Render `[[wikilinks]]` as plain text for an **injected** copy of a page.
@@ -4606,7 +4641,7 @@ async fn navigated_tail(
     seeds: &NavSeeds,
     rag_hits: &[RecallHit],
     nav_policy: &recall_nav::NavigatorPolicy,
-    served_identity: &[(String, PathBuf)],
+    served: recall_nav::Served<'_>,
 ) -> Option<NavigatedTail> {
     let entries = match recall_nav::gather_entry_points(
         pool,
@@ -4636,14 +4671,7 @@ async fn navigated_tail(
         });
     }
     let outcome = match recall_nav::navigate(
-        pool,
-        tree,
-        nav_llm,
-        sender,
-        turn_text,
-        &entries,
-        nav_policy,
-        served_identity,
+        pool, tree, nav_llm, sender, turn_text, &entries, nav_policy, served,
     )
     .await
     {
@@ -6047,6 +6075,19 @@ pub async fn wiki_ingest_message(
     if let Some(m) = &mentioned {
         served_identity.extend(m.served.iter().cloned());
     }
+    // The rails of every card just served. A served page never reaches
+    // `open_target`, the only place `[[wikilinks]]` are harvested, so without
+    // this the cards' own links are the one part of the corpus the funnel can
+    // reach by no route at all — and 69c's character ceiling exists precisely
+    // to push a card's detail onto those linked pages.
+    let mut served_cards: Vec<(String, String)> = speaker
+        .as_ref()
+        .and_then(|c| c.rails.clone())
+        .into_iter()
+        .collect();
+    if let Some(m) = &mentioned {
+        served_cards.extend(m.rails.iter().cloned());
+    }
     let nav_tail = match navigator {
         Some(nav_llm)
             if matches!(intent, IntentKind::Capture | IntentKind::Recall)
@@ -6061,7 +6102,10 @@ pub async fn wiki_ingest_message(
                 &seeds,
                 &recall_hits,
                 &policy.nav,
-                &served_identity,
+                recall_nav::Served {
+                    pages: &served_identity,
+                    cards: &served_cards,
+                },
             )
             .await
         },

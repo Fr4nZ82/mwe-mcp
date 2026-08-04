@@ -360,7 +360,9 @@ async fn navigate_query(
         &q.query,
         &entries,
         &policy.nav,
-        &[],
+        // The gold-set harness builds no recall block, so it has served
+        // nothing and has no card to take rails off.
+        recall_nav::Served::default(),
     )
     .await
     .context("navigate")

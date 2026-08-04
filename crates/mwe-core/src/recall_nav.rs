@@ -445,9 +445,40 @@ pub struct NavigatorPolicy {
     /// `max_candidates` uncapped. Above `0` it is a floor, not a quota: see
     /// [`prune_pool`].
     pub sibling_floor: usize,
+    /// Failsafe cap on the `[[wikilinks]]` harvested from **one** served
+    /// identity card (see `navigate`'s `served_cards`).
+    ///
+    /// A failsafe, not a policy: the real bound is the tier — a `card` rail
+    /// sorts below the whole fan, so it can only consume slack the content
+    /// doors left. This exists because the number of rails on a card is not
+    /// bounded by anything the funnel controls: it is whatever the compiler's
+    /// link graph wired, and a person's card can reach every group they
+    /// belong to. On the live corpus a person's card carries 3–6; a turn
+    /// naming two other people serves three cards. `8` per card leaves that
+    /// untouched and stops one over-wired card from being the whole tail.
+    pub max_card_rails: usize,
     /// `max_tokens` for each navigator completion (the decision JSON is
     /// small; this is a cost guard, not a quality knob).
     pub decision_max_tokens: u32,
+}
+
+/// What the caller has **already put in front of the consumer** by another
+/// route, and which the funnel must therefore not spend a page open on.
+///
+/// The two fields name the *same* pages by two different keys, on purpose:
+/// one closes the page against re-reading, the other keeps what is written on
+/// it usable. Splitting them into positional arguments made that read like a
+/// coincidence.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Served<'a> {
+    /// `(wiki_id, page)` — entered as already visited: never offered as a
+    /// candidate, never opened, never charged to the budget.
+    pub pages: &'a [(String, PathBuf)],
+    /// `(wiki_id, projected markdown)` of the identity cards among them — the
+    /// one thing rescued from a served page, its `[[wikilinks]]`. A served
+    /// page never reaches [`open_target`], which is the only place a rail is
+    /// harvested, so without this its links reach the funnel by no route.
+    pub cards: &'a [(String, String)],
 }
 
 impl Default for NavigatorPolicy {
@@ -458,6 +489,7 @@ impl Default for NavigatorPolicy {
             char_budget: 8_000,
             max_candidates: 16,
             sibling_floor: 0,
+            max_card_rails: 8,
             decision_max_tokens: 600,
         }
     }
@@ -647,19 +679,33 @@ struct Candidate {
 
 /// The tier [`Candidate::prune_tier`] assigns a directory-listing sibling —
 /// the demoted tail, and the tier [`prune_pool`] rations.
-const SIBLING_TIER: u8 = 2;
+const SIBLING_TIER: u8 = 3;
 
 impl Candidate {
     /// Ranking tier for [`prune_pool`] — lower sorts first. A wikilink rail
-    /// beats the entry-point fan (`principal` | `rag` | `topic` |
-    /// `situational`), which beats a directory-listing sibling. Anything
-    /// not recognised above falls into the same tier as `page`, so a future
-    /// origin added elsewhere without updating this match fails safe into
-    /// the demoted tail rather than silently jumping the fan.
+    /// off collected prose beats the entry-point fan (`rag` | `topic` |
+    /// `situational`), which beats a rail off a **served** card, which beats
+    /// a directory-listing sibling. Anything not recognised above falls into
+    /// the same tier as `page`, so a future origin added elsewhere without
+    /// updating this match fails safe into the demoted tail rather than
+    /// silently jumping the fan.
+    ///
+    /// **Why `card` sits below the fan.** The two link tiers differ in what
+    /// they are evidence *of*. A `link` rail was written on a page the
+    /// navigator chose to open for this turn, so it carries the turn's own
+    /// judgement twice over. A `card` rail was written on the identity card,
+    /// which arrives unconditionally on every turn — it is evidence about the
+    /// *person*, never about the question. Ranked with the rails it would put
+    /// the sender's whole neighbourhood ahead of the pages the question
+    /// actually found, which is the shape of the regression
+    /// [69b](../../planning/69_identity-seed-family.md) removed (identity
+    /// pages took 79 % of first opens). Below the fan it can only ever
+    /// consume slack the content doors left.
     fn prune_tier(&self) -> u8 {
         match self.origin {
             "link" => 0,
-            "principal" | "rag" | "topic" | "situational" => 1,
+            "rag" | "topic" | "situational" => 1,
+            "card" => 2,
             _ => SIBLING_TIER,
         }
     }
@@ -707,11 +753,22 @@ struct NavOpen {
 /// from the collected prose (their `_meta` cards, `Visible`-only) are offered on
 /// the next hop.
 ///
-/// `already_served` names pages whose prose the **caller has already put in
+/// [`Served::pages`] names pages whose prose the **caller has already put in
 /// front of the consumer by another route**, as `(wiki_id, page)`. They enter
 /// the funnel as if it had opened them: never offered as a candidate, never
 /// opened, never charged to the budget. Re-reading them would spend the
 /// turn's scarcest resource — a page open — on text that is already there.
+///
+/// [`Served::cards`] names the same pages a second time, as
+/// `(wiki_id, projected card markdown)`, and is the **only** thing rescued
+/// from them: a served page never passes through [`open_target`], which is
+/// the sole place `[[wikilinks]]` are harvested, so the card's own rails
+/// reached the funnel through no route at all. They are offered as `card`
+/// candidates — the destination's page card attached like any other rail,
+/// ranked below the whole fan (see [`Candidate::prune_tier`]), capped at
+/// [`NavigatorPolicy::max_card_rails`] per card. The text must be the
+/// **projected** card, so a link inside a region this reader may not see is
+/// already gone before it can become a door.
 ///
 /// The ingest recall block passes the sender's identity card, which
 /// `WHO IS SPEAKING` serves deterministically every turn (roadmap 69a), so
@@ -740,7 +797,7 @@ pub async fn navigate(
     turn_text: &str,
     entry_points: &[EntryPoint],
     policy: &NavigatorPolicy,
-    already_served: &[(String, PathBuf)],
+    served: Served<'_>,
 ) -> Result<NavigationOutcome> {
     let mut outcome = NavigationOutcome::default();
     if entry_points.is_empty() {
@@ -780,13 +837,19 @@ pub async fn navigate(
 
     let max_hops = policy.max_hops.min(MULTI_HOP_HARD_LIMIT);
     let mut candidates = initial_pool(entry_points, &by_id, &reader_card);
+    candidates.extend(card_rail_candidates(
+        served.cards,
+        &by_id,
+        &reader_card,
+        policy.max_card_rails,
+    ));
     let mut state = FunnelState {
         // Pages the caller already delivered start out **visited**: that one
         // set is what `prune_pool` filters the offer by and what `open_target`
         // refuses on, so a single line makes the guarantee hold on every route
         // into the funnel — the fan, a directory sibling, a `[[wikilink]]` —
         // instead of three filters that have to agree.
-        visited: already_served.iter().cloned().collect(),
+        visited: served.pages.iter().cloned().collect(),
         entered: BTreeSet::new(),
         acl_defaults: BTreeMap::new(),
         remaining: policy.char_budget,
@@ -1212,6 +1275,42 @@ async fn open_target(
 /// Turn the entry-point fan into the hop-0 candidate pool, each entry
 /// enriched with its wiki card. A fan entry whose wiki vanished from the
 /// tree (raced rename) is silently dropped.
+/// The `[[wikilinks]]` written on the identity cards the caller already
+/// served, as candidates.
+///
+/// A served card is inserted into [`FunnelState::visited`] so the funnel
+/// never re-reads prose the block already holds — but `visited` also means
+/// the page never reaches [`open_target`], the one place a rail is harvested.
+/// The links were therefore dropped by omission, not by decision: the
+/// [`Served::pages`] contract says "never offered, never opened, never
+/// charged" and says nothing about what is written on the page.
+///
+/// This matters more since 69c gave the card a ~1800-character ceiling —
+/// the ceiling's whole point is that what does not fit moves onto **linked**
+/// pages, so a card with no live rails is a card that has hidden its own
+/// detail. The founder's example is the test: a card reading *«celiaca»*
+/// links to the food page, and that link should be a door.
+fn card_rail_candidates(
+    served_cards: &[(String, String)],
+    by_id: &BTreeMap<&str, &DiscoveredWiki>,
+    reader_card: &meta_annotate::ReaderCard,
+    max_per_card: usize,
+) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = Vec::new();
+    for (wiki_id, text) in served_cards {
+        let Some(origin) = by_id.get(wiki_id.as_str()) else {
+            continue;
+        };
+        let mut rails = linked_wiki_candidates(text, origin, by_id, reader_card);
+        rails.truncate(max_per_card);
+        for r in &mut rails {
+            r.origin = "card";
+        }
+        out.extend(rails);
+    }
+    out
+}
+
 fn initial_pool(
     entry_points: &[EntryPoint],
     by_id: &BTreeMap<&str, &DiscoveredWiki>,
@@ -1221,7 +1320,16 @@ fn initial_pool(
         .iter()
         .filter_map(|ep| {
             by_id.get(ep.wiki_id.as_str()).map(|d| {
-                let (summary, keywords) = reader_wiki_card(d, reader_card);
+                // The **destination page's** card, never its wiki's. Every
+                // seed has named a page since 63 §8, and the wiki-level card
+                // is what the fan used when a seed could still name a wiki
+                // alone: it describes the subject, not the page, so N hits in
+                // one wiki reached the navigator as N candidates carrying the
+                // *same* sentence and the *same* keyword union, separable
+                // only by their file name. The card is the sole input to
+                // every choice the funnel makes, so that was the fan handing
+                // it a constant.
+                let (summary, keywords) = reader_page_card(d, &ep.page, reader_card);
                 Candidate {
                     wiki_id: ep.wiki_id.clone(),
                     page: ep.page.clone(),
@@ -1232,21 +1340,6 @@ fn initial_pool(
             })
         })
         .collect()
-}
-
-/// The reader-relative wiki-level card shown for a candidate: the abstract
-/// gated to readers at the wiki's default visibility, and the reader-visible
-/// topic union — never the owner-tier `.md` card a denied reader must not see.
-fn reader_wiki_card(
-    d: &DiscoveredWiki,
-    reader_card: &meta_annotate::ReaderCard,
-) -> (Option<String>, Vec<String>) {
-    let wiki_id = d.meta.wiki_id.as_str();
-    let summary = reader_card
-        .summary_visible(wiki_id)
-        .then(|| wiki_summary(d))
-        .flatten();
-    (summary, reader_card.wiki_topics(wiki_id).to_vec())
 }
 
 /// One navigator completion + parse, with a single retry on the failures
@@ -1316,12 +1409,6 @@ const fn navigator_retriable(err: &LlmError) -> bool {
         err,
         LlmError::Protocol(_) | LlmError::Transport(_) | LlmError::Backend(_)
     )
-}
-
-/// The wiki's one-line abstract from `_meta.extra["summary"]` (the same key
-/// the catalog surfaces).
-fn wiki_summary(d: &DiscoveredWiki) -> Option<String> {
-    wiki::meta_summary(&d.meta)
 }
 
 /// Drop visited / duplicate candidates, stably rank the survivors by tier,
@@ -2551,7 +2638,6 @@ mod tests {
         // gatherer's own weight order (`dedup_and_sort`) — pruning must
         // carry it through unchanged, never re-sort or re-weight it.
         let mut pool = vec![
-            cand("p", "index_stand_in.md", "principal"),
             cand("r", "index_stand_in.md", "rag"),
             cand("t", "index_stand_in.md", "topic"),
             cand("s", "index_stand_in.md", "situational"),
@@ -2559,7 +2645,7 @@ mod tests {
         prune_pool(&mut pool, &visited, 16, 3);
         assert_eq!(
             pool.iter().map(|c| c.origin).collect::<Vec<_>>(),
-            vec!["principal", "rag", "topic", "situational"],
+            vec!["rag", "topic", "situational"],
             "prune_pool must not disturb the entry-point fan's relative order"
         );
     }
@@ -2606,6 +2692,164 @@ mod tests {
         }
     }
 
+    /// Build the two arguments every pool-shaping helper needs, off a real tree.
+    async fn pool_inputs(
+        tree: &WikiTree,
+        sender: &str,
+        readable_in: &[(&str, &str)],
+    ) -> (Vec<DiscoveredWiki>, meta_annotate::ReaderCard) {
+        let pool = make_pool().await;
+        // A destination is only offered when the reader can read something in
+        // its wiki, so a link test needs at least one globally-readable fact
+        // per wiki it expects to reach.
+        for (n, (wiki, page)) in readable_in.iter().enumerate() {
+            seed_fact(
+                &pool,
+                &fid(u8::try_from(n).expect("small fixture") + 1),
+                wiki,
+                &format!("wikis/{wiki}/{page}"),
+                Principal::global(),
+                &[],
+            )
+            .await;
+        }
+        let reader = meta_annotate::build_reader_card(&pool, tree, sender, &[])
+            .await
+            .expect("reader card");
+        (tree.walk().expect("walk"), reader)
+    }
+
+    fn by_id_of(wikis: &[DiscoveredWiki]) -> BTreeMap<&str, &DiscoveredWiki> {
+        wikis
+            .iter()
+            .filter(|d| !d.meta.smart)
+            .map(|d| (d.meta.wiki_id.as_str(), d))
+            .collect()
+    }
+
+    /// The fan describes each door by the **page** it names, not by the wiki
+    /// it sits in. Before 2026-08-04 `initial_pool` reached for the wiki-level
+    /// card, so two hits in one wiki arrived as two candidates carrying one
+    /// sentence — and the card is the only thing the navigator gets to judge
+    /// on. Inverting this test is what shows the defect: point both candidates
+    /// at the same wiki summary and the two lines become indistinguishable.
+    #[tokio::test]
+    async fn two_doors_in_one_wiki_carry_their_own_cards_not_their_wikis() {
+        let (_dir, tree) = open_tree();
+        forge_user(&tree, "alice");
+        write_page(
+            &tree,
+            "alice",
+            "cucina.md",
+            "---\ntitle: \"Cucina\"\ndescription: \"gluten-free recipes and what to cook\"\n---\n\nprose\n",
+        );
+        write_page(
+            &tree,
+            "alice",
+            "auto.md",
+            "---\ntitle: \"Auto\"\ndescription: \"servicing and insurance for the car\"\n---\n\nprose\n",
+        );
+        let (wikis, reader) = pool_inputs(
+            &tree,
+            "alice",
+            &[("alice", "cucina.md"), ("alice", "auto.md")],
+        )
+        .await;
+        let pool = initial_pool(
+            &[
+                entry("alice", "cucina.md", EntryOrigin::Rag, 0.9),
+                entry("alice", "auto.md", EntryOrigin::Rag, 0.8),
+            ],
+            &by_id_of(&wikis),
+            &reader,
+        );
+        assert_eq!(pool.len(), 2);
+        assert_eq!(
+            pool[0].summary.as_deref(),
+            Some("gluten-free recipes and what to cook"),
+            "a door must be described by its own page card"
+        );
+        assert_eq!(
+            pool[1].summary.as_deref(),
+            Some("servicing and insurance for the car")
+        );
+        assert_ne!(
+            pool[0].summary, pool[1].summary,
+            "two pages of one wiki must not reach the navigator as the same card"
+        );
+    }
+
+    /// The identity card is served, never opened — so its `[[wikilinks]]` are
+    /// the one part of the corpus the funnel could reach by no route at all
+    /// (`visited` skips `open_target`, the only place rails are harvested).
+    #[tokio::test]
+    async fn a_served_card_contributes_its_rails_ranked_below_the_fan() {
+        let (_dir, tree) = open_tree();
+        forge_user(&tree, "alice");
+        write_page(
+            &tree,
+            "alice",
+            "alimentazione.md",
+            "---\ntitle: \"Alimentazione\"\ndescription: \"what she can and cannot eat\"\n---\n\nprose\n",
+        );
+        let (wikis, reader) = pool_inputs(&tree, "alice", &[("alice", "alimentazione.md")]).await;
+        let rails = card_rail_candidates(
+            &[(
+                "alice".to_owned(),
+                "She is coeliac — the detail lives on [[alice/alimentazione]].".to_owned(),
+            )],
+            &by_id_of(&wikis),
+            &reader,
+            8,
+        );
+        assert_eq!(rails.len(), 1, "the card's one rail must become a door");
+        assert_eq!(rails[0].page, PathBuf::from("alimentazione.md"));
+        assert_eq!(rails[0].origin, "card");
+        assert_eq!(
+            rails[0].summary.as_deref(),
+            Some("what she can and cannot eat"),
+            "a card rail carries the DESTINATION's card, like every other rail"
+        );
+        // The tier is the whole safety argument: a card arrives on every turn,
+        // so its links say nothing about this question and must never outrank
+        // the doors the question itself found.
+        assert!(
+            rails[0].prune_tier()
+                > Candidate {
+                    wiki_id: "alice".to_owned(),
+                    page: PathBuf::from("cucina.md"),
+                    origin: "rag",
+                    summary: None,
+                    keywords: Vec::new(),
+                }
+                .prune_tier(),
+            "a card rail must sort below the entry fan"
+        );
+    }
+
+    /// A card with more rails than the failsafe allows contributes only the cap.
+    #[tokio::test]
+    async fn one_over_wired_card_cannot_become_the_whole_tail() {
+        use std::fmt::Write as _;
+
+        let (_dir, tree) = open_tree();
+        forge_user(&tree, "alice");
+        let mut card = String::from("Links:");
+        for n in 0..6 {
+            write_page(
+                &tree,
+                "alice",
+                &format!("p{n}.md"),
+                &format!("---\ntitle: \"P{n}\"\ndescription: \"page {n}\"\n---\n\nprose\n"),
+            );
+            let _ = write!(card, " [[alice/p{n}]]");
+        }
+        let (wikis, reader) = pool_inputs(&tree, "alice", &[("alice", "p0.md")]).await;
+        let rails =
+            card_rail_candidates(&[("alice".to_owned(), card)], &by_id_of(&wikis), &reader, 2);
+        assert_eq!(rails.len(), 2, "the per-card failsafe must bind");
+    }
+
     fn entry(wiki: &str, page: &str, origin: EntryOrigin, weight: f32) -> EntryPoint {
         EntryPoint {
             wiki_id: wiki.to_owned(),
@@ -2650,7 +2894,7 @@ mod tests {
                 sibling_floor: 16,
                 ..NavigatorPolicy::default()
             },
-            &[],
+            Served::default(),
         )
         .await
         .unwrap();
@@ -2743,7 +2987,7 @@ mod tests {
             "what do we know?",
             &[entry("alice", "notes.md", EntryOrigin::Topic, 0.8)],
             &NavigatorPolicy::default(),
-            &[],
+            Served::default(),
         )
         .await
         .unwrap();
@@ -2773,7 +3017,7 @@ mod tests {
             "turn",
             &[entry("alice", "rails.md", EntryOrigin::Rag, 0.9)],
             &NavigatorPolicy::default(),
-            &[],
+            Served::default(),
         )
         .await
         .unwrap();
@@ -2842,7 +3086,7 @@ mod tests {
             "turn",
             &[entry("alice", "rails.md", EntryOrigin::Rag, 0.9)],
             &NavigatorPolicy::default(), // max_hops = 2
-            &[],
+            Served::default(),
         )
         .await
         .unwrap();
@@ -2908,7 +3152,7 @@ mod tests {
             "turn",
             &[entry("alice", "rails.md", EntryOrigin::Rag, 0.9)],
             &NavigatorPolicy::default(),
-            &[],
+            Served::default(),
         )
         .await
         .unwrap();
@@ -2965,7 +3209,7 @@ mod tests {
             "turn",
             &[entry("alice", "rails.md", EntryOrigin::Rag, 0.9)],
             &NavigatorPolicy::default(), // max_hops = 2
-            &[],
+            Served::default(),
         )
         .await
         .unwrap();
@@ -3018,7 +3262,7 @@ mod tests {
             "turn",
             &[entry("alice", "rails.md", EntryOrigin::Rag, 0.9)],
             &NavigatorPolicy::default(), // max_hops = 2
-            &[],
+            Served::default(),
         )
         .await
         .unwrap();
@@ -3076,7 +3320,7 @@ mod tests {
             "turn",
             &[entry("alice", "rails.md", EntryOrigin::Rag, 0.9)],
             &NavigatorPolicy::default(), // max_hops = 2
-            &[],
+            Served::default(),
         )
         .await
         .unwrap();
@@ -3132,7 +3376,7 @@ mod tests {
             "turn",
             &[entry("alice", "rails.md", EntryOrigin::Rag, 0.9)],
             &NavigatorPolicy::default(),
-            &[],
+            Served::default(),
         )
         .await
         .unwrap();
@@ -3168,7 +3412,7 @@ mod tests {
             "turn",
             &[entry("alice", "notes.md", EntryOrigin::Rag, 0.9)],
             &policy,
-            &[],
+            Served::default(),
         )
         .await
         .unwrap();
@@ -3216,7 +3460,10 @@ mod tests {
                 entry("alice", "notes.md", EntryOrigin::Rag, 0.5),
             ],
             &NavigatorPolicy::default(),
-            &[("alice".to_owned(), PathBuf::from("index.md"))],
+            Served {
+                pages: &[("alice".to_owned(), PathBuf::from("index.md"))],
+                cards: &[],
+            },
         )
         .await
         .unwrap();
@@ -3278,7 +3525,7 @@ mod tests {
                 sibling_floor: 16,
                 ..NavigatorPolicy::default()
             },
-            &[],
+            Served::default(),
         )
         .await
         .unwrap();
@@ -3320,7 +3567,7 @@ mod tests {
             "turn",
             &[entry("alice", "rails.md", EntryOrigin::Rag, 0.9)],
             &NavigatorPolicy::default(),
-            &[],
+            Served::default(),
         )
         .await
         .unwrap();
@@ -3350,7 +3597,7 @@ mod tests {
             "turn",
             &[entry("alice", "rails.md", EntryOrigin::Rag, 0.9)],
             &NavigatorPolicy::default(),
-            &[],
+            Served::default(),
         )
         .await
         .unwrap();
@@ -3371,7 +3618,7 @@ mod tests {
             "turn",
             &[],
             &NavigatorPolicy::default(),
-            &[],
+            Served::default(),
         )
         .await
         .unwrap();

@@ -1,8 +1,8 @@
 ---
 name: navigator
 description: Recall navigator — per-turn funnel that walks the memory wiki from the entry-point fan, choosing which pages to open from their cards (root index + summaries + keywords) and stopping when the collected prose is enough; strict one-JSON-object output
-version: 1.1
-default_version_at_bootstrap: v1.1
+version: 1.2
+default_version_at_bootstrap: v1.2
 ---
 
 # Prompt: navigator
@@ -61,7 +61,9 @@ Each user message gives you:
   destination's card: wiki_id, page, why it surfaced (rag = a similarity hit
   put one of this turn's facts on that page; topic/situational = the page's
   OWN card matched the turn; link = a [[wikilink]] written on a page already
-  collected), plus its keywords and summary.
+  collected; card = a [[wikilink]] written on an identity card already handed
+  to the consumer — about the PERSON, so it says nothing about this turn),
+  plus its keywords and summary.
 
 Reply with ONE JSON object and nothing else:
 
