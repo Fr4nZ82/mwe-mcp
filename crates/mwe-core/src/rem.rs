@@ -145,6 +145,15 @@ pub struct RemPolicy {
     /// thin pages), not a semantic gate — the LLM still makes the
     /// promote verdict.
     pub auto_promote_min_page_facts: usize,
+    /// The same floor for a **`prosa-tecnica`** page — short bullets with
+    /// brief descriptions, scanned by points rather than read as a thread.
+    ///
+    /// Scanning tolerates more mass than following a narrative, so the floor
+    /// is higher (founder, 2026-08-04). A **`lista`** page has no floor at
+    /// all: it is *consulted*, not read, and its value is being complete in
+    /// one place — splitting it by size breaks the only thing it is for, and
+    /// neither half is an answer any more. See [`mass_floor_for_style`].
+    pub auto_promote_min_page_facts_technical: usize,
     /// Minimum **group size**, in pages, for a new sub-wiki to be born
     /// out of the *page-group → wiki* regrouping pass: the LLM must find
     /// at least this many pages of one wiki that are the same subject
@@ -303,6 +312,7 @@ impl Default for RemPolicy {
             revisor_examined_cap: 120,
             auto_promote_cap: 5,
             auto_promote_min_page_facts: 8,
+            auto_promote_min_page_facts_technical: 16,
             auto_promote_group_min_pages: 9,
             page_merge_cap: 3,
             completion_sweep_cap: 8,
@@ -1717,9 +1727,55 @@ fn parse_llm_yes(raw: &str) -> bool {
 }
 
 // ---------- Auto-promote sub-job ----------
+/// The page-mass floor for a page written in `style`, or `None` when mass is
+/// not a reason to split that kind of page at all.
+///
+/// Founder's ruling, 2026-08-04, and the reasoning is about **how a page is
+/// read**, not how long it is:
+///
+/// - **`lista`** — consulted, never read through: the shopping list, the films
+///   seen. Its whole value is being complete in one place, so splitting it by
+///   size breaks the one thing it is for and leaves two halves, neither of
+///   which answers the question. **No floor** — mass is never a reason.
+/// - **`prosa-tecnica`** — short bullets with brief descriptions, *scanned by
+///   points*. Scanning tolerates more mass than following a narrative, so the
+///   floor is higher.
+/// - **`prosa`** (and anything unrecognised or absent) — the value is the
+///   thread tying the facts together, and past a point there is no thread
+///   left, only paragraphs side by side. Two pages with two threads beat one
+///   without. The default floor.
+///
+/// Unrecognised styles fall to the prose floor deliberately: the palette is
+/// closed and normalised at compile time, so an unknown value here is drift,
+/// and drifting toward "may be split" is safer than toward "never".
+/// Whether `path` (holding `mass` active facts) is over the floor its own
+/// writing style sets — reading the style off the page's testata.
+///
+/// A page whose testata cannot be read at all falls to the prose floor: an
+/// unreadable page is drift, and drifting toward "may be split" is safer than
+/// toward "never split".
+fn over_mass_floor(
+    d: &crate::wiki::DiscoveredWiki,
+    path: &str,
+    mass: usize,
+    policy: &RemPolicy,
+) -> bool {
+    let style = wiki_relative_page(d, path)
+        .and_then(|rel| crate::meta_annotate::read_page_card(&d.abs_dir.join(rel)).ok())
+        .and_then(|card| card.style);
+    mass_floor_for_style(style.as_deref(), policy).is_some_and(|floor| mass >= floor)
+}
 
-/// Per page over the floor (`auto_promote_min_page_facts`, the only
-/// deterministic gate — a resource pre-filter), show the **whole
+fn mass_floor_for_style(style: Option<&str>, policy: &RemPolicy) -> Option<usize> {
+    match style.map(str::trim) {
+        Some("lista") => None,
+        Some("prosa-tecnica") => Some(policy.auto_promote_min_page_facts_technical),
+        _ => Some(policy.auto_promote_min_page_facts),
+    }
+}
+
+/// Per page over its **style's** floor ([`over_mass_floor`] — the only
+/// deterministic gate, a resource pre-filter), show the **whole
 /// page** to the `rem_promotions` LLM with each fact's 30-day recall
 /// count and ask whether one sub-topic outgrew its siblings; on a
 /// split verdict **apply the move directly** (act-first: born-applied
@@ -1797,9 +1853,11 @@ async fn run_auto_promote(
         // the only deterministic gate, a cheap resource pre-filter so
         // tiny pages never reach the LLM; everything semantic is the
         // LLM's call ([memory model](../../../docs/concepts/memory-model.md)).
+        // The floor depends on HOW the page is read, not just how big it is
+        // (founder, 2026-08-04). See [`over_mass_floor`].
         let mut pages: Vec<&str> = page_mass
             .iter()
-            .filter(|&(_, &m)| m >= policy.auto_promote_min_page_facts)
+            .filter(|&(&path, &m)| over_mass_floor(d, path, m, policy))
             .map(|(&p, _)| p)
             .filter(|p| !regrouped.contains(*p))
             .collect();
@@ -7641,6 +7699,39 @@ mod tests {
         );
         // The cap bounds the confirmation spend.
         assert_eq!(merge_candidates(&plan, &[], 1, &family).len(), 1);
+    }
+
+    /// The mass floor is about how a page is READ, not how big it is.
+    #[test]
+    fn a_list_is_never_split_by_mass_and_technical_prose_takes_twice_the_room() {
+        let p = RemPolicy::default();
+        assert_eq!(
+            mass_floor_for_style(Some("lista"), &p),
+            None,
+            "a lista is consulted, and half a list answers nothing"
+        );
+        assert_eq!(
+            mass_floor_for_style(Some("prosa-tecnica"), &p),
+            Some(p.auto_promote_min_page_facts_technical)
+        );
+        assert_eq!(
+            mass_floor_for_style(Some("prosa"), &p),
+            Some(p.auto_promote_min_page_facts)
+        );
+        // Absent or drifted → the prose floor. Drifting toward "may be split"
+        // is safer than toward "never".
+        assert_eq!(
+            mass_floor_for_style(None, &p),
+            Some(p.auto_promote_min_page_facts)
+        );
+        assert_eq!(
+            mass_floor_for_style(Some("something-else"), &p),
+            Some(p.auto_promote_min_page_facts)
+        );
+        assert!(
+            p.auto_promote_min_page_facts_technical > p.auto_promote_min_page_facts,
+            "scanning tolerates more mass than following a thread"
+        );
     }
 
     #[tokio::test]

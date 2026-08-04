@@ -1236,9 +1236,15 @@ pub struct RemConfig {
 /// and hot-swaps the running policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemPolicyConfig {
-    /// Override `auto_promote_min_page_facts` (default 8).
+    /// Override `auto_promote_min_page_facts` (default 8) — the floor for a
+    /// `prosa` page.
     #[serde(default)]
     pub auto_promote_min_page_facts: Option<usize>,
+    /// Override `auto_promote_min_page_facts_technical` (default 16) — the
+    /// same floor for a `prosa-tecnica` page. A `lista` page has no floor at
+    /// all and is never split by mass.
+    #[serde(default)]
+    pub auto_promote_min_page_facts_technical: Option<usize>,
     /// Override `auto_promote_group_min_pages` (default 9) — how many
     /// pages of one subject the regrouping pass must find before a new
     /// sub-wiki is born. Governs birth only: filing pages into a
@@ -1299,6 +1305,9 @@ impl RemConfig {
     #[must_use]
     pub fn resolved_policy(&self) -> crate::rem::RemPolicy {
         let mut p = crate::rem::RemPolicy::default();
+        if let Some(m) = self.policy.auto_promote_min_page_facts_technical {
+            p.auto_promote_min_page_facts_technical = m;
+        }
         if let Some(m) = self.policy.auto_promote_min_page_facts {
             p.auto_promote_min_page_facts = m;
         }

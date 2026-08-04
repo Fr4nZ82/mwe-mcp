@@ -61,15 +61,29 @@ struct Knob {
 
 /// The knob roster — every [`RemPolicyConfig`] field — derived from the
 /// live Rust defaults so the panel never hardcodes a stale number.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one literal per operator knob — splitting it hides the panel's shape"
+)]
 fn knobs() -> Vec<Knob> {
     let def = RemPolicy::default();
     vec![
         Knob {
             field: "auto_promote_min_page_facts",
-            label: "Auto-promote — min page mass (facts)",
+            label: "Split — min page mass, prose (facts)",
             default: def.auto_promote_min_page_facts.to_string(),
-            help: "Active facts a page must hold before the line→page split pass shows it \
-                   to the LLM (a resource pre-filter, not a semantic gate)."
+            help: "Active facts a PROSE page must hold before the split pass shows it to \
+                   the LLM (a resource pre-filter, not a semantic gate)."
+                .to_owned(),
+        },
+        Knob {
+            field: "auto_promote_min_page_facts_technical",
+            label: "Split — min page mass, technical prose (facts)",
+            default: def.auto_promote_min_page_facts_technical.to_string(),
+            help: "The same floor for a `prosa-tecnica` page — scanned by points rather \
+                   than read as a thread, so it tolerates more mass. A `lista` page is \
+                   never split by mass at all: it is consulted, and half a list is not \
+                   an answer."
                 .to_owned(),
         },
         Knob {
@@ -172,6 +186,7 @@ fn override_value(cfg: &RemPolicyConfig, field: &str) -> String {
     }
     match field {
         "auto_promote_min_page_facts" => s(cfg.auto_promote_min_page_facts),
+        "auto_promote_min_page_facts_technical" => s(cfg.auto_promote_min_page_facts_technical),
         "auto_promote_group_min_pages" => s(cfg.auto_promote_group_min_pages),
         "auto_promote_cap" => s(cfg.auto_promote_cap),
         "page_merge_cap" => s(cfg.page_merge_cap),
@@ -361,6 +376,10 @@ fn backup_path_for(target: &Path) -> PathBuf {
 fn parse_form(form: &HashMap<String, String>) -> Result<RemPolicyConfig> {
     Ok(RemPolicyConfig {
         auto_promote_min_page_facts: parse_usize(form, "auto_promote_min_page_facts")?,
+        auto_promote_min_page_facts_technical: parse_usize(
+            form,
+            "auto_promote_min_page_facts_technical",
+        )?,
         auto_promote_group_min_pages: parse_usize(form, "auto_promote_group_min_pages")?,
         auto_promote_cap: parse_usize(form, "auto_promote_cap")?,
         page_merge_cap: parse_usize(form, "page_merge_cap")?,

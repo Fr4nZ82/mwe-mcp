@@ -468,6 +468,13 @@ pub(crate) struct PageCard {
     pub description: Option<String>,
     /// Flattened `keywords` entries (`topics=food, wine`, …).
     pub keywords: Vec<String>,
+    /// The page's writing style from the testata (`prosa` /
+    /// `prosa-tecnica` / `lista`), verbatim and un-normalised.
+    ///
+    /// Read by REM's mass floor, which is style-dependent: a `lista` is
+    /// consulted rather than read, so splitting it by size destroys the one
+    /// thing it is for (founder, 2026-08-04).
+    pub style: Option<String>,
 }
 
 /// Read a page's testata card — the read side of [`sync_page_keywords`].
@@ -502,9 +509,16 @@ pub(crate) fn read_page_card(abs_path: &Path) -> Result<PageCard> {
         Some(serde_yaml::Value::Mapping(kw)) => wiki::flatten_keywords_mapping(kw),
         _ => Vec::new(),
     };
+    let style = fm
+        .get("style")
+        .and_then(serde_yaml::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
     Ok(PageCard {
         description,
         keywords,
+        style,
     })
 }
 

@@ -435,10 +435,21 @@ The line→page rung is judged **per page, not per fact**: the internal
 LLM reads the whole page and decides whether to split it. For each page
 in every wiki:
 
-1. Apply the **mass pre-filter** —
-   `page_mass >= auto_promote_min_page_facts` (default 8, where
+1. Apply the **mass pre-filter**, whose floor depends on the page's own
+   **writing style**, because what counts as "too big" is a question about
+   how a page is *read* (founder, 2026-08-04):
+
+   | style | floor | why |
+   |---|---|---|
+   | `lista` | **none — never split by mass** | consulted, not read through: the whole value is being complete in one place, and half a list answers nothing |
+   | `prosa-tecnica` | `auto_promote_min_page_facts_technical` (16) | scanned by points, which tolerates more mass than following a thread |
+   | `prosa`, absent, unrecognised | `auto_promote_min_page_facts` (8) | the value is the thread; past a point there is no thread, only paragraphs side by side |
+
    `page_mass` is the number of active facts sharing the page's
-   `source_path`). This is the **only deterministic gate**, a cheap
+   `source_path`, and the style is read off the page's testata
+   (`meta_annotate::read_page_card`). An unrecognised or unreadable style
+   falls to the prose floor deliberately — drifting toward *may be split* is
+   safer than toward *never*. This is the **only deterministic gate**, a cheap
    **resource** pre-filter (skip thin pages before asking the LLM) —
    there is **no recall floor**: recall is information the LLM weighs,
    not a hardcoded gate ([memory-model.md](../concepts/memory-model.md)).
