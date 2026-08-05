@@ -446,8 +446,10 @@ words is a sane last resort. The slots that **compile memory** — page
 prose, page and sub-wiki names, coined titles and descriptions,
 document summaries, the date normaliser's rewrites — never see a user
 turn: they are handed facts. For them the mirror clause is not a
-fallback but a coin toss the prompt's own few-shot examples decide, and
-those examples are written in Italian.
+fallback at all — there is nothing to mirror — so the language would
+fall to whatever the prompt's own worked examples happen to be written
+in, which is a property of the prompt file rather than a decision
+anybody took.
 
 `locale::render_memory_language_directive` renders the same directive
 body from the same table and resolves an undeclared locale to
