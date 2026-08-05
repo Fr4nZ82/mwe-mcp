@@ -477,8 +477,8 @@ file → sub-wiki and `fact_refile` variants — both go through
 `fact_index::move_to_wiki`, the only `wiki_id`-touching primitive). **All
 of them** close with the
 [plan re-home seam](narrative-compiler.md#act-first-moves-and-the-plan--the-re-home-seam)
-(apply **and** revert) — the emergence re-homes onto the emerged wiki's
-`index.md` plan entry; the `fact_refile` re-homes onto the dest page of
+(apply **and** revert) — the emergence re-homes onto the carried page's
+plan entry in the emerged wiki; the `fact_refile` re-homes onto the dest page of
 the dest wiki (the seam's `RehomePageSeed` natively carries the wiki id,
 so cross-wiki re-home is native, force-dirtying both source and dest) —
 so the planner's carry-over never fights an applied move or an operator's
@@ -487,11 +487,26 @@ nothing changes pages — the validity fields are part of the page
 fingerprint, so the closure (and its revert) recompiles exactly the
 touched page on the next dream.
 
+**A page that crosses a wiki line also takes its inbound links with it.**
+Every such variant closes with a corpus pass (`retarget_links_after_move`)
+that swaps the **wiki half** of any `[[old_wiki/page]]` still naming it,
+keeping everything after the first `/` byte-for-byte so a `.md` suffix or
+an `|display` alias survives, and repairing the byte offsets of each
+rewritten file immediately after. A bare `[[wiki_id]]` names the wiki and
+is never touched by a page move. Not cosmetic: with the directory listing
+off, an inbound link somebody wrote is one of only three ways to reach a
+page, so a link left behind strands its neighbourhood. Two companions —
+the wiki's **map** needs no repair (the REM map writer regenerates it from
+the filenames on disk and cannot name a page that is not there), while
+both wikis' **cards** are parked on `force_dirty`, because a card is
+written prose about what lives here and the compiler copies it into
+`_meta`, which the map then quotes.
+
 ### Paragraph → file
 
-Default variant. The wiki id is unchanged, so no cross-link rewriting
-is required (the rewriter targets ops that change `wiki_id` —
-`change_scope` and the file → sub-wiki variant below). See
+Default variant. The wiki id is unchanged and the page keeps its name, so
+no link retarget is required — the address in `[[wiki_id/page]]` is the
+same before and after. See
 [`tool-reference.md`](../protocol/tool-reference.md) for the
 `structure_proposal` wire surface.
 

@@ -49,19 +49,28 @@
 //! cross-link rewriting is required. The file → sub-wiki variant
 //! changes the wiki id (a new sub-wiki appears under the parent), and
 //! the typical case — promoting `alice/giardinaggio.md` to the new
-//! sub-wiki `alice/giardinaggio/` — leaves `[[alice/giardinaggio]]`
-//! **resolvable but pointing elsewhere**: the parent + slug pair is
-//! unchanged, so the link now reads as a bare wiki hop and lands on
-//! that wiki's foundation page, while the content it was written for
-//! sits on the carried page `[[alice-giardinaggio/giardinaggio]]`.
-//! (It cannot land on the map: since the map rule a bare wiki link
-//! never resolves there.) An automatic
-//! cross-link rewriter that scans every `.md` file for ambiguous
-//! cases (different slug, multiple links per file, links inside
-//! markers vs prose, alias-bearing `[[A|display]]` form) is deferred
-//! to a separate milestone; this handler emits a log line per moved
-//! fact so an operator can grep `wiki_lint` output if cross-links
-//! diverge.
+//! sub-wiki `alice/giardinaggio/` — would leave every
+//! `[[alice/giardinaggio]]` written across the corpus naming an address
+//! the page no longer answers to.
+//!
+//! Every variant that moves a page across a wiki line therefore closes
+//! with [`retarget_links_after_move`]: one pass over the corpus swapping
+//! the **wiki half** of each such link, everything after the first `/`
+//! kept byte-for-byte (so a `.md` suffix and an `|display` alias
+//! survive), the byte offsets of each rewritten file repaired straight
+//! after. A bare `[[alice]]` names the wiki, not a page, and a page move
+//! never touches it. This matters more than tidiness: since the
+//! directory listing went off a page is reachable only by a fact hit, a
+//! match on its card, or an inbound link somebody wrote — so a link left
+//! behind strands the page's whole neighbourhood.
+//!
+//! Two companions on the same seam. The map of the wiki a page left
+//! needs nothing: it is **regenerated** from the filenames on disk by the
+//! REM map writer, which cannot name a page that is not there. The
+//! wiki's **card** does need something — it is written prose about what
+//! lives here, the compiler copies it into `_meta` and the map writer
+//! copies `_meta` into the map — so both wikis' cards are parked for a
+//! rewrite ([`park_wiki_cards_for_recompile`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -1146,6 +1155,180 @@ async fn rehome_rows_with_seed(
     }
 }
 
+/// One page that changed wiki, as the two addresses a wikilink can name it by.
+///
+/// The move variants carry a page over **under its own name**, so `page` — the
+/// wiki-relative path minus `.md`, which is exactly the slug half of the
+/// [link grammar](../../../docs/design-notes/recall-pipeline.md#link-grammar) —
+/// is the same on both sides. Only the wiki changes.
+#[derive(Debug, Clone)]
+struct MovedPageAddress {
+    old_wiki_id: String,
+    new_wiki_id: String,
+    page: String,
+}
+
+impl MovedPageAddress {
+    fn new(old_wiki_id: &str, new_wiki_id: &str, page: &std::path::Path) -> Self {
+        let page = page.to_string_lossy().replace('\\', "/");
+        Self {
+            old_wiki_id: old_wiki_id.to_owned(),
+            new_wiki_id: new_wiki_id.to_owned(),
+            page: page.strip_suffix(".md").unwrap_or(&page).to_owned(),
+        }
+    }
+}
+
+/// Rewrite one body's wikilinks that still name a moved page at its **old**
+/// wiki, returning the new body when anything changed.
+///
+/// Only the wiki half of `[[wiki_id/page]]` is swapped; everything after the
+/// first `/` is kept byte-for-byte, so a `.md` suffix, an odd spacing or an
+/// `|display` alias survives untouched — this repairs an address, it does not
+/// restyle a link. A **bare** `[[wiki_id]]` names the wiki, not a page, and is
+/// never touched by a page move.
+fn retarget_wikilinks(body: &str, moves: &[MovedPageAddress]) -> Option<String> {
+    let bytes = body.as_bytes();
+    let mut out = String::with_capacity(body.len());
+    let mut pos = 0usize;
+    let mut changed = false;
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        if bytes[i] != b'[' || bytes[i + 1] != b'[' {
+            i += 1;
+            continue;
+        }
+        let inner_start = i + 2;
+        let Some(rel) = body[inner_start..].find("]]") else {
+            break;
+        };
+        let inner_end = inner_start + rel;
+        let inner = &body[inner_start..inner_end];
+        // `|display` is presentation; the address is what precedes it.
+        let head = inner.split('|').next().unwrap_or(inner);
+        if let Some((wiki, rest)) = head.split_once('/') {
+            let rest = rest.trim();
+            let page = rest.strip_suffix(".md").unwrap_or(rest);
+            let wiki = wiki.trim();
+            if let Some(m) = moves
+                .iter()
+                .find(|m| m.old_wiki_id == wiki && m.page == page)
+            {
+                out.push_str(&body[pos..inner_start]);
+                out.push_str(&m.new_wiki_id);
+                out.push_str(&inner[head.find('/').unwrap_or(0)..]);
+                pos = inner_end;
+                changed = true;
+            }
+        }
+        i = inner_end + 2;
+    }
+    if !changed {
+        return None;
+    }
+    out.push_str(&body[pos..]);
+    Some(out)
+}
+
+/// Repoint one file's marker offsets after its bytes moved, so a rewritten
+/// link cannot strand the regions below it.
+///
+/// The same repair `reindex_file` performs, narrowed to one file we just
+/// wrote ourselves: re-parse, and for every `{{f=…}}` region push its current
+/// offsets onto the row. Best-effort per fact — a row that vanished mid-move
+/// is not worth failing an already-applied structural change for.
+async fn repoint_markers(pool: &SqlitePool, source_rel: &str, body: &str) {
+    for ev in parser::parse(body).events {
+        let ParseEvent::Region {
+            start, end, attrs, ..
+        } = ev
+        else {
+            continue;
+        };
+        let Some(fid) = attrs.fact_id else { continue };
+        let start = i64::try_from(start).unwrap_or(i64::MAX);
+        let end = i64::try_from(end).unwrap_or(i64::MAX);
+        if let Err(e) =
+            fact_index::move_region(pool, &fid, source_rel, Some(start), Some(end)).await
+        {
+            tracing::error!(
+                fact_id = fid.as_str(),
+                source_path = source_rel,
+                error = %e,
+                "promote: offset repair failed after a link rewrite — reindex will catch it"
+            );
+        }
+    }
+}
+
+/// Follow moved pages across the whole corpus: every link that still names one
+/// of them at its old wiki is repointed at the new one.
+///
+/// A page reached its neighbours by the links somebody wrote on them — since
+/// the directory listing went off (`sibling_floor = 0`) a page is reachable
+/// only by a fact hit, a match on its card, or an inbound link — so a move
+/// that leaves those links behind does not merely make them ugly, it strands
+/// the page's whole neighbourhood. The map of the wiki the page left needs no
+/// help here: it is **regenerated** from the filenames on disk by the REM map
+/// writer, which cannot name a page that is not there.
+///
+/// Rewrites inside a fact's marked region too. That is not a divergence: the
+/// bytes in a region are the prose the writing model produced, never a copy
+/// of the row's `text`, and the offsets are repaired straight after.
+///
+/// Smart wikis are skipped — their files belong to the smart consumer.
+/// Best-effort and loud, like every seam after an applied move.
+async fn retarget_links_after_move(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    moves: &[MovedPageAddress],
+) -> usize {
+    if moves.is_empty() {
+        return 0;
+    }
+    let discovered = match tree.walk() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!(error = %e, "promote: link retarget could not walk the corpus");
+            return 0;
+        },
+    };
+    let mut rewritten = 0usize;
+    for d in discovered {
+        if d.meta.smart {
+            continue;
+        }
+        let pages = match wiki::list_wiki_pages(&d.abs_dir) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(wiki_id = d.meta.wiki_id.as_str(), error = %e, "promote: link retarget could not list pages");
+                continue;
+            },
+        };
+        for p in pages {
+            let abs = d.abs_dir.join(&p.rel_path);
+            let Ok(body) = std::fs::read_to_string(&abs) else {
+                continue;
+            };
+            let Some(updated) = retarget_wikilinks(&body, moves) else {
+                continue;
+            };
+            let source_rel = wiki::workdir_relative_source_path(tree.workdir(), &abs);
+            if let Err(e) = atomic_write(&abs, updated.as_bytes()) {
+                tracing::error!(source_path = %source_rel, error = %e, "promote: link retarget write failed");
+                continue;
+            }
+            repoint_markers(pool, &source_rel, &updated).await;
+            rewritten += 1;
+            tracing::info!(
+                source_path = %source_rel,
+                "promote: links retargeted after a page changed wiki"
+            );
+        }
+    }
+    rewritten
+}
+
 /// Context fields for the page-merge variant: the husk's facts plus the
 /// identity of both pages (presentation + the revert's plan re-seed).
 #[derive(Debug, Clone, Deserialize)]
@@ -1964,6 +2147,20 @@ async fn apply_file_to_subwiki(
         crate::planner::RehomePageSeed::page_in_wiki(&carried_page, new_wiki_id.as_str());
     rehome_rows_with_seed(pool, &fact_ids, &page_seed, &[old_slug], tree).await;
 
+    // The page answers to a new address now; the links that reach it must
+    // say so, or its neighbours lose the only route they had to it.
+    retarget_links_after_move(
+        pool,
+        tree,
+        &[MovedPageAddress::new(
+            &ctx.source_wiki_id,
+            new_wiki_id.as_str(),
+            std::path::Path::new(&carried_page),
+        )],
+    )
+    .await;
+    park_wiki_cards_for_recompile(tree, &[&ctx.source_wiki_id, new_wiki_id.as_str()]);
+
     tracing::info!(
         parent_wiki_id = parent_wiki_id.as_str(),
         new_wiki_id = new_wiki_id.as_str(),
@@ -2167,6 +2364,18 @@ async fn revert_file_to_subwiki(
         &spec.source_wiki_id,
     );
     rehome_rows_with_seed(pool, &back_ids, &source_seed, &[emerged_slug], tree).await;
+
+    retarget_links_after_move(
+        pool,
+        tree,
+        &moved_addresses(
+            std::iter::once(std::path::Path::new(&carried_page)),
+            &spec.new_wiki_id,
+            &spec.source_wiki_id,
+        ),
+    )
+    .await;
+    park_wiki_cards_for_recompile(tree, &[&spec.source_wiki_id, &spec.new_wiki_id]);
 
     tracing::info!(
         parent_wiki_id = parent_wiki_id.as_str(),
@@ -2380,6 +2589,60 @@ async fn relocate_page(
     Ok(dest_rel)
 }
 
+/// Park the card of a wiki a page just left, so it stops describing what
+/// walked out.
+///
+/// A wiki's one-line description is **written**, by the compiler, when its
+/// foundation card page compiles — that card is what
+/// [`sync_foundation_summary`](../../../crates/mwe-core/src/compiler.rs) copies
+/// into `_meta`, and the REM map writer then copies `_meta` into the map. So a
+/// card that still promises a subject which has moved to another wiki spreads
+/// its staleness into two more places. A page leaving does not touch the card,
+/// so nothing would have re-derived it: parking the slug on the plan's
+/// `force_dirty` makes the next cycle rewrite it against what is actually
+/// there.
+///
+/// The card's plan slug is the wiki's own slug — `profile.md` is a foundation
+/// page, keyed per wiki.
+///
+/// Takes **every** wiki whose page set changed, not only the one the pages
+/// left: a card describes what is in its wiki, so gaining pages dates it
+/// exactly as much as losing them. A wiki the move destroyed (an emergence
+/// undone) is skipped — parking a card in a wiki that is gone would leave the
+/// next build chasing a page that cannot be compiled. Best-effort: a plan that
+/// cannot be parked is repaired by the next full rebuild, and the move itself
+/// already stands.
+fn park_wiki_cards_for_recompile(tree: &WikiTree, wiki_ids: &[&str]) {
+    let slugs: Vec<String> = wiki_ids
+        .iter()
+        .filter(|id| WikiId::parse(id).is_ok_and(|parsed| tree.locate(&parsed).is_ok()))
+        .map(|id| crate::planner::plan_slug_for_page(id, wiki::PROFILE_FILENAME))
+        .collect();
+    if slugs.is_empty() {
+        return;
+    }
+    if let Err(e) = crate::planner::park_force_dirty_in_persisted_plan(tree, &slugs) {
+        tracing::error!(
+            ?slugs, error = %e,
+            "promote: could not park a wiki's card — its description may still name pages that moved"
+        );
+    }
+}
+
+/// The two addresses of every page a group move carried, for the link
+/// retarget. Direction is the caller's: an apply passes source→destination,
+/// a revert passes them the other way round.
+fn moved_addresses<'a>(
+    pages: impl IntoIterator<Item = &'a std::path::Path>,
+    from_wiki_id: &str,
+    to_wiki_id: &str,
+) -> Vec<MovedPageAddress> {
+    pages
+        .into_iter()
+        .map(|p| MovedPageAddress::new(from_wiki_id, to_wiki_id, p))
+        .collect()
+}
+
 /// Re-home one moved page in the persisted compilation plan: its facts
 /// leave the old page node and land on a page node of the destination
 /// wiki. Best-effort, exactly like the single-page variants.
@@ -2487,6 +2750,20 @@ async fn apply_pages_to_subwiki(
             fact_ids: page.facts.iter().map(|f| f.as_str().to_owned()).collect(),
         });
     }
+
+    // One corpus pass for the whole group: every link that still reaches
+    // these pages at the wiki they left is repointed at the newborn one.
+    retarget_links_after_move(
+        pool,
+        tree,
+        &moved_addresses(
+            collected.iter().map(|p| p.rel_in_wiki.as_path()),
+            &ctx.source_wiki_id,
+            new_wiki_id.as_str(),
+        ),
+    )
+    .await;
+    park_wiki_cards_for_recompile(tree, &[&ctx.source_wiki_id, new_wiki_id.as_str()]);
 
     tracing::info!(
         parent_wiki_id = parent_wiki_id.as_str(),
@@ -2662,6 +2939,20 @@ async fn revert_pages_to_subwiki(
         RevertError::HandlerIo(format!("remove {dir}: {e}", dir = wiki_dir.display()))
     })?;
 
+    // The pages answer to their old address again, so the links do too.
+    // After the teardown, so the corpus pass never reads the dying wiki.
+    retarget_links_after_move(
+        pool,
+        tree,
+        &moved_addresses(
+            spec.pages.iter().map(|p| std::path::Path::new(&p.page)),
+            &spec.new_wiki_id,
+            &spec.source_wiki_id,
+        ),
+    )
+    .await;
+    park_wiki_cards_for_recompile(tree, &[&spec.source_wiki_id, &spec.new_wiki_id]);
+
     tracing::info!(
         parent_wiki_id = parent_wiki_id.as_str(),
         new_wiki_id = spec.new_wiki_id,
@@ -2778,6 +3069,18 @@ async fn apply_pages_move_wiki(
         });
     }
 
+    retarget_links_after_move(
+        pool,
+        tree,
+        &moved_addresses(
+            collected.iter().map(|p| p.rel_in_wiki.as_path()),
+            &ctx.source_wiki_id,
+            target_wiki_id.as_str(),
+        ),
+    )
+    .await;
+    park_wiki_cards_for_recompile(tree, &[&ctx.source_wiki_id, target_wiki_id.as_str()]);
+
     tracing::info!(
         source_wiki_id = source_wiki_id.as_str(),
         target_wiki_id = target_wiki_id.as_str(),
@@ -2866,6 +3169,18 @@ async fn revert_pages_move_wiki(
         let moved_slug = plan_slug_of_page(&spec.target_wiki_id, &page.page);
         rehome_rows_with_seed(pool, &back_ids, &seed, &[moved_slug], tree).await;
     }
+
+    retarget_links_after_move(
+        pool,
+        tree,
+        &moved_addresses(
+            spec.pages.iter().map(|p| std::path::Path::new(&p.page)),
+            &spec.target_wiki_id,
+            &spec.source_wiki_id,
+        ),
+    )
+    .await;
+    park_wiki_cards_for_recompile(tree, &[&spec.source_wiki_id, &spec.target_wiki_id]);
 
     tracing::info!(
         source_wiki_id = source_wiki_id.as_str(),
@@ -5653,6 +5968,160 @@ mod tests {
             let row = fact_index::find_by_id(&pool, fid).await.unwrap().unwrap();
             assert_eq!(row.wiki_id, "alice");
         }
+    }
+
+    /// The address swap, on every shape a link comes in. What must NOT
+    /// move is as load-bearing as what must: a bare `[[wiki]]` names a
+    /// wiki, not a page, and a page of the same name in another wiki is a
+    /// different page.
+    #[test]
+    fn retarget_wikilinks_swaps_the_wiki_and_leaves_everything_else_alone() {
+        let moves = vec![MovedPageAddress::new(
+            "alice",
+            "alice-giardino",
+            std::path::Path::new("orto.md"),
+        )];
+        let body = "\
+Vedi [[alice/orto]] per il resto.
+Con alias: [[alice/orto|l'orto]].
+Con suffisso: [[alice/orto.md]].
+Il wiki intero: [[alice]].
+Un'altra wiki: [[bob/orto]].
+Un'altra pagina: [[alice/potatura]].
+";
+        let out = retarget_wikilinks(body, &moves).expect("something changed");
+        assert!(out.contains("[[alice-giardino/orto]]"), "{out}");
+        assert!(
+            out.contains("[[alice-giardino/orto|l'orto]]"),
+            "the alias survives: {out}"
+        );
+        assert!(
+            out.contains("[[alice-giardino/orto.md]]"),
+            "the suffix survives: {out}"
+        );
+        assert!(
+            out.contains("[[alice]]"),
+            "a bare wiki hop is not a page: {out}"
+        );
+        assert!(
+            out.contains("[[bob/orto]]"),
+            "another wiki's page is untouched: {out}"
+        );
+        assert!(
+            out.contains("[[alice/potatura]]"),
+            "another page is untouched: {out}"
+        );
+        assert_eq!(out.matches("[[alice-giardino/").count(), 3);
+
+        // Nothing to do ⇒ no rewrite at all, so no file is touched and no
+        // offset is disturbed for a page that merely mentions a stranger.
+        assert!(retarget_wikilinks("solo [[bob/orto]] qui", &moves).is_none());
+    }
+
+    /// The whole point, end to end: a page in the wiki left behind still
+    /// reaches the page that moved, and the fact markers under the edit
+    /// keep pointing at their own bytes.
+    #[tokio::test]
+    async fn a_page_that_changed_wiki_is_still_reachable_from_the_one_it_left() {
+        let (_dir, tree, pool) = setup().await;
+        let emb = embedder();
+        let neighbour =
+            capture_one(&tree, &pool, emb.clone(), "diario.md", "una nota qualsiasi").await;
+        let moved = capture_one(&tree, &pool, emb, "orto.md", "note sull'orto").await;
+
+        // The neighbour's prose reaches the page that is about to move.
+        let diario_abs = tree.wikis_dir().join("alice").join("diario.md");
+        let before = std::fs::read_to_string(&diario_abs).unwrap();
+        let with_rail = format!("Ne parlo in [[alice/orto]].\n\n{before}");
+        atomic_write(&diario_abs, with_rail.as_bytes()).unwrap();
+        // The rail sits ABOVE the marked region, so the offsets must shift.
+        let before_row = fact_index::find_by_id(&pool, &neighbour)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let ctx = json!({
+            "source_wiki_id": "alice",
+            "source_page": "orto.md",
+            "fact_ids": [moved.as_str()],
+        });
+        apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "file_to_subwiki"}))
+            .await
+            .expect("apply");
+
+        let after = std::fs::read_to_string(&diario_abs).unwrap();
+        assert!(
+            after.contains("[[alice-orto/orto]]"),
+            "the rail follows the page: {after}"
+        );
+        assert!(
+            !after.contains("[[alice/orto]]"),
+            "and stops naming the address it left: {after}"
+        );
+
+        // The neighbour's own fact still points at its own bytes.
+        let after_row = fact_index::find_by_id(&pool, &neighbour)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            before_row.region_start, after_row.region_start,
+            "the region moved — otherwise this test proves nothing"
+        );
+        let start = usize::try_from(after_row.region_start.unwrap()).unwrap();
+        let end = usize::try_from(after_row.region_end.unwrap()).unwrap();
+        assert!(
+            after[start..end].contains(neighbour.as_str()),
+            "the repaired offsets frame the marker: {:?}",
+            &after[start..end]
+        );
+    }
+
+    /// A wiki's own card is written prose about what lives in it, and the
+    /// compiler copies it into `_meta`, which the map writer then copies
+    /// into the map. A page leaving touches none of that by itself, so the
+    /// move parks the card for a rewrite — on both wikis, since gaining
+    /// pages dates a card exactly as much as losing them.
+    #[tokio::test]
+    async fn a_page_changing_wiki_parks_both_cards_for_a_rewrite() {
+        use crate::planner::{CompilationPlan, load_previous_plan, save_plan, slugify};
+        let (_dir, tree, pool) = setup().await;
+        let f1 = capture_one(&tree, &pool, embedder(), "orto.md", "note sull'orto").await;
+        // A plan must exist for anything to be parked on it.
+        let plan = CompilationPlan {
+            pages: std::collections::BTreeMap::new(),
+            merged_pages: Vec::new(),
+            compilation_order: vec!["seed".to_owned()],
+            link_graph: std::collections::BTreeMap::new(),
+            dirty_pages: Vec::new(),
+            generated_at: "t".to_owned(),
+            fact_count: 1,
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+        };
+        save_plan(&tree, &plan).expect("save plan");
+
+        let ctx = json!({
+            "source_wiki_id": "alice",
+            "source_page": "orto.md",
+            "fact_ids": [f1.as_str()],
+        });
+        apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "file_to_subwiki"}))
+            .await
+            .expect("apply");
+
+        let after = load_previous_plan(&tree).expect("load").expect("plan");
+        assert!(
+            after.force_dirty.contains(&slugify("alice")),
+            "the wiki the page left rewrites its card: {:?}",
+            after.force_dirty
+        );
+        assert!(
+            after.force_dirty.contains(&slugify("alice-orto")),
+            "and so does the one it joined: {:?}",
+            after.force_dirty
+        );
     }
 
     /// The live emergence and the plan. Each carried page keeps its own
