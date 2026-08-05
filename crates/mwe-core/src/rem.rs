@@ -1319,6 +1319,31 @@ const REVISOR_LLM_FAILURE_ABORT: usize = 5;
     clippy::too_many_lines,
     reason = "pairwise pre-pass + LLM confirm + proposal emit live as one loop on purpose"
 )]
+/// Do these two facts speak to different audiences?
+///
+/// The revisor's **audience gate**, and the reason it is a structural
+/// invariant rather than a prompt instruction: same content is not the same
+/// fact. A claim that reached two people by two private routes, each holding
+/// it privately, is two facts — merging them retires one principal's memory
+/// and leaves the survivor addressing the other's readers, which hands
+/// somebody something they were never told and cannot be undone once the
+/// loser's bytes are off the page (founder, 2026-07-28). Text similarity is a
+/// candidate signal; the audience decides.
+///
+/// The reader set comes from [`crate::acl::reader_set`], beside `can_read`
+/// itself, so this question and the one the read path asks every turn cannot
+/// drift apart. Group rosters are deliberately not expanded there: two facts
+/// naming different groups are two audiences even when today's membership
+/// happens to coincide.
+fn reader_sets_differ(a: &fact_index::FactIndexRow, b: &fact_index::FactIndexRow) -> bool {
+    crate::acl::reader_set(&a.owner_id, &a.allow_ids, a.sender_id.as_ref())
+        != crate::acl::reader_set(&b.owner_id, &b.allow_ids, b.sender_id.as_ref())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the pairing loop is one screen of guards in a load-bearing order — channel, identity core, audience, similarity — and splitting it hides which runs before the LLM"
+)]
 async fn run_revisor_jaccard(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -1400,6 +1425,24 @@ async fn run_revisor_jaccard(
                 // consolidated away. A structural channel invariant, same
                 // shape as the rules-page guard above — the LLM never sees it.
                 if facts[old_idx].is_identity_core() {
+                    continue;
+                }
+                // 🚨 THE AUDIENCE GATE. Two facts carrying the same content
+                // are not necessarily one fact: a claim that reached two
+                // people by two private routes, each holding it privately,
+                // stays TWO facts. Merging them retires one principal's
+                // memory and leaves the survivor speaking to the other's
+                // readers — it hands somebody something they were never told,
+                // and the loser's bytes are gone from the page, so there is no
+                // undo. Text similarity is a candidate signal, never a
+                // sufficient one: the audience and the provenance decide
+                // (founder, 2026-07-28).
+                //
+                // Structural, and placed with the other invariants **before**
+                // the LLM sees the pair — a rule the model could weigh is a
+                // rule that fails on the day it matters. Costs nothing: the
+                // three fields are already on the rows the loop holds.
+                if reader_sets_differ(&facts[new_idx], &facts[old_idx]) {
                     continue;
                 }
                 let score = recall::jaccard_sets(&ngrams[new_idx], &ngrams[old_idx]);
@@ -6694,6 +6737,40 @@ mod tests {
             .fact_id
     }
 
+    /// [`plant_fact`] with the ACL axes spelled out — the audience gate is
+    /// the only guard that reads them, so its tests must set them.
+    async fn plant_fact_with_acl(
+        tree: &WikiTree,
+        pool: &SqlitePool,
+        wiki: &str,
+        body: &str,
+        owner: &str,
+        allow: Vec<Principal>,
+        sender: Option<Principal>,
+    ) -> FactId {
+        let req = CaptureRequest {
+            authored_refs: Vec::new(),
+            wiki_id: WikiId::parse(wiki).unwrap(),
+            page: PathBuf::from("index.md"),
+            body: body.to_owned(),
+            owner: Principal::User(owner.to_owned()),
+            allow,
+            sender,
+            fact_type: None,
+            topics: Vec::new(),
+            dedup_threshold: Some(0.999),
+            valid_from: None,
+            valid_to: None,
+            style: None,
+            page_description: None,
+            salience: None,
+        };
+        capture::wiki_capture(tree, pool, fake_embedder(), req)
+            .await
+            .expect("plant")
+            .fact_id
+    }
+
     /// Plant one **section** of a smart wiki's page, the smart-family
     /// counterpart of [`plant_fact`]. Smart content is content-indexed in
     /// `wiki_sections` (no capture, no ACL, no lifecycle), so the REM
@@ -10216,6 +10293,136 @@ mod tests {
         assert!(
             row.superseded_at.is_none(),
             "the rule must never lose a cross-boundary dedup"
+        );
+        drop(dir);
+    }
+
+    /// 🚨 The audience gate. Two facts saying the same thing to **different
+    /// people** are two facts: merging them would retire one reader's memory
+    /// and hand the survivor to the other's readers. The pair must die before
+    /// the confirmer ever sees it — a rule the model could weigh is a rule
+    /// that fails on the day it matters.
+    #[tokio::test]
+    async fn revisor_refuses_a_pair_whose_readers_differ() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "bob", "Bob", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        // Same subject, same wording family — and one of them is also
+        // readable by Carol. That extra reader is the whole difference.
+        let shared = plant_fact_with_acl(
+            &tree,
+            &pool,
+            "bob",
+            "bob prefers tea with milk every morning",
+            "bob",
+            vec![Principal::User("carol".to_owned())],
+            None,
+        )
+        .await;
+        let private = plant_fact_with_acl(
+            &tree,
+            &pool,
+            "bob",
+            "bob likes morning tea with a splash of milk",
+            "bob",
+            Vec::new(),
+            None,
+        )
+        .await;
+
+        let policy = RemPolicy {
+            revisor_jaccard_min: 0.05,
+            revisor_jaccard_max: 0.99,
+            ..RemPolicy::default()
+        };
+        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
+        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": true}");
+        let report = run_cycle(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &test_llms(&hub_llm, &rev_llm),
+            &policy,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            report.revisor.pairs_examined, 0,
+            "a pair with two audiences must never reach the confirmer: {report:?}"
+        );
+        assert!(report.revisor.applied.is_empty());
+        for fid in [&shared, &private] {
+            let row = fact_index::find_by_id(&pool, fid)
+                .await
+                .unwrap()
+                .expect("row");
+            assert!(
+                row.superseded_at.is_none(),
+                "neither side may be retired: {fid}"
+            );
+        }
+        drop(dir);
+    }
+
+    /// The gate is a gate, not a wall: the same two claims held for the same
+    /// readers still consolidate. Otherwise 54a would have bought governance
+    /// by switching dedup off.
+    #[tokio::test]
+    async fn revisor_still_pairs_two_facts_with_the_same_readers() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "bob", "Bob", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        let carol = || vec![Principal::User("carol".to_owned())];
+        let old_id = plant_fact_with_acl(
+            &tree,
+            &pool,
+            "bob",
+            "bob prefers tea with milk every morning",
+            "bob",
+            carol(),
+            None,
+        )
+        .await;
+        let _new_id = plant_fact_with_acl(
+            &tree,
+            &pool,
+            "bob",
+            "bob likes morning tea with a splash of milk",
+            "bob",
+            carol(),
+            None,
+        )
+        .await;
+
+        let policy = RemPolicy {
+            revisor_jaccard_min: 0.05,
+            revisor_jaccard_max: 0.99,
+            ..RemPolicy::default()
+        };
+        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
+        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": true}");
+        let report = run_cycle(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &test_llms(&hub_llm, &rev_llm),
+            &policy,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            report.revisor.pairs_examined > 0,
+            "one audience, one fact — the pair must still be nominated: {report:?}"
+        );
+        let row = fact_index::find_by_id(&pool, &old_id)
+            .await
+            .unwrap()
+            .expect("row");
+        assert!(
+            row.superseded_at.is_some(),
+            "the older side retires as it always did: {report:?}"
         );
         drop(dir);
     }

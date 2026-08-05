@@ -2126,6 +2126,43 @@ pub async fn update_region_and_authored_refs(
     Ok(res.rows_affected())
 }
 
+/// Replace a row's `authored_refs` and nothing else.
+///
+/// The narrow sibling of [`update_region_and_authored_refs`], for the case
+/// where the prose, the bytes and the embedding are all untouched and only the
+/// provenance pointers move: the `dedup_merge` survivor inheriting the refs of
+/// the fact it absorbed. Rewriting the region there would mean recomputing an
+/// embedding for text that did not change.
+///
+/// ACL columns stay untouched — as everywhere on this path, who may read a
+/// fact is never a side effect of consolidating it.
+///
+/// # Errors
+///
+/// As [`sqlx::Error`]; [`FactIndexError::Json`] if `authored_refs` fails JSON
+/// encoding.
+pub async fn set_authored_refs(
+    pool: &SqlitePool,
+    fact_id: &FactId,
+    authored_refs: &[String],
+) -> Result<u64> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let refs_json = topics_to_json(authored_refs)?;
+    let res = sqlx::query(
+        r"UPDATE fact_index
+             SET authored_refs = ?, updated_at = ?
+           WHERE fact_id = ?
+             AND superseded_at IS NULL
+             AND deleted_at IS NULL",
+    )
+    .bind(&refs_json)
+    .bind(&now)
+    .bind(fact_id.as_str())
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 /// Clear the supersede chain on a row, but only if it is still
 /// superseded by `expected_superseded_by`. Inverse of [`mark_superseded`]
 /// used by the `dedup_merge` structure-proposal revert path.

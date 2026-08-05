@@ -266,6 +266,27 @@ For each **family line** ([family scope](#family-scope--the-consolidation-passes
    fact that restates it ([smart-wikis.md](smart-wikis.md)). A structural
    channel invariant, not a semantic gate — same-page pairs still go to
    the LLM.
+
+   🚨 **And nominable only when both sides have the same AUDIENCE.** Same
+   content is **not** the same fact: a claim that reached two people by two
+   private routes, each holding it privately, is two facts. Merging them
+   retires one principal's memory and leaves the survivor addressing the
+   other's readers — it hands somebody something they were never told, and
+   once the loser's bytes are off the page there is no undo. Text similarity
+   is a *candidate* signal; the audience and the provenance decide (founder,
+   2026-07-28). The reader set is
+   [`acl::reader_set`](../../crates/mwe-core/src/acl.rs) — `owner ∪ allow ∪
+   sender`, the same three axes `can_read` evaluates, taken from there so the
+   two answers cannot drift — compared for equality
+   ([`rem::reader_sets_differ`](../../crates/mwe-core/src/rem.rs)). Group
+   rosters are deliberately **not** expanded: two facts naming different
+   groups are two audiences even when today's membership coincides, because a
+   roster changes and a merge does not un-merge. Structural, and placed with
+   the other invariants **before** the LLM sees the pair — a rule the model
+   could weigh is a rule that fails on the day it matters. It costs nothing:
+   the three fields are already on the rows the loop holds. Where this can
+   actually bite is a group wiki, where facts owned by different users with
+   different `allow` lists share one family scope.
 4. Ask the `rem_dedup_semantic` LLM with a strict-JSON prompt:
    `{"same": true|false}`. Each side is framed with the page it lives
    on (`wiki_id · source_path`, the `{new_page}`/`{old_page}`

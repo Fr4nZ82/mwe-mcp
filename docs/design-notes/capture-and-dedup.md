@@ -158,6 +158,29 @@ If `old_fact_id` is unknown, the call errors with
 `CaptureError::PreviousFactNotFound` *before* any write — the agent
 gets a clean "you superseded a phantom" diagnostic.
 
+## 🚨 Identical text is not a duplicate — the audience decides
+
+**Before any similarity number matters:** two facts carrying the same content
+are not necessarily one fact. The governing case is not style but governance —
+
+> A fact that reached two users by two private routes, each holding it
+> privately, must stay **two** facts. Merging them hands each user something
+> they were never told, and it cannot be undone after the fact.
+
+Founder's ruling, 2026-07-28. So similarity is a **candidate** signal, never a
+sufficient one: the **audience** and the **provenance** decide. Anything that
+consolidates memory must start from that, not from *identical ⇒ collapse* —
+this is the per-fragment governance the product exists to sell, and a
+consolidation feature that skips it sells the opposite.
+
+Where it is enforced today: the nightly revisor's **audience gate**
+([rem-cycle.md](rem-cycle.md#4-revisor--semantic-dedup-across-a-family)) refuses
+to nominate a pair whose reader sets differ, structurally, before the confirmer
+sees it. The reader set is [`acl::reader_set`](../../crates/mwe-core/src/acl.rs)
+— `owner ∪ allow ∪ sender`, read from beside `can_read` so the two cannot
+drift. The write-time scan below is a different case (one author, one turn,
+one audience by construction) and takes no such gate.
+
 ## Jaccard 6-gram dedup
 
 `recall::jaccard_6gram(a, b)` is character-level (window = 6), case-

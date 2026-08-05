@@ -27,7 +27,7 @@
 //! `global` group (a public capture device — edge case, but the data
 //! model is deliberately symmetric).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::types::{Acl, FactId, Principal};
 
@@ -91,6 +91,35 @@ pub fn can_read(
         }
     }
     false
+}
+
+/// The set of principals a region grants read access to, in canonical wire
+/// form — `owner ∪ allow ∪ {sender}`, the **same three axes** [`can_read`]
+/// evaluates.
+///
+/// It lives beside `can_read` on purpose: a caller that reasons about "who can
+/// read this" must not re-derive the union itself, or the two answers drift
+/// and the drift is invisible until somebody is shown something they were
+/// never told. None of the three is sufficient alone — a fact can be readable
+/// through its `allow=` extension or through the principal who captured it,
+/// with no bearing on its owner.
+///
+/// Comparable by construction (a `BTreeSet` of the canonical strings), so
+/// "same audience?" is set equality. Group membership is deliberately **not**
+/// expanded: two facts that name different groups are two audiences even when
+/// today's rosters happen to coincide, because a roster changes and a merge
+/// does not un-merge.
+#[must_use]
+pub fn reader_set(
+    owner: &Principal,
+    allow: &[Principal],
+    sender: Option<&Principal>,
+) -> BTreeSet<String> {
+    std::iter::once(owner)
+        .chain(allow.iter())
+        .chain(sender)
+        .map(ToString::to_string)
+        .collect()
 }
 
 /// Whether `caller` may **delete or edit** the fact directly.
@@ -222,6 +251,55 @@ mod tests {
     use super::*;
     use proptest::collection::vec;
     use proptest::prelude::*;
+
+    /// The reader set is the union of all three axes, and it must agree with
+    /// `can_read` — which is the whole reason it lives here. The negative half
+    /// is the load-bearing one: a set that quietly expanded a group would call
+    /// two different audiences one, and the dedup gate built on it would merge
+    /// facts it must refuse.
+    #[test]
+    fn reader_set_unions_the_three_axes_and_expands_no_group() {
+        let owner = Principal::User("alice".to_owned());
+        let allow = vec![Principal::User("bob".to_owned())];
+        let sender = Principal::Group("famiglia".to_owned());
+
+        let set = reader_set(&owner, &allow, Some(&sender));
+        assert_eq!(
+            set,
+            ["group:famiglia", "user:alice", "user:bob"]
+                .iter()
+                .map(ToString::to_string)
+                .collect::<BTreeSet<_>>()
+        );
+
+        // Each axis alone reaches the set, and `can_read` agrees on each.
+        for (id, groups) in [
+            ("alice", &[][..]),
+            ("bob", &[][..]),
+            ("dora", &["famiglia".to_owned()][..]),
+        ] {
+            let acl = Acl {
+                owner: Some(owner.clone()),
+                allow: allow.clone(),
+            };
+            assert!(
+                can_read(&acl, id, groups, Some(&sender)),
+                "can_read must admit {id}, whom the reader set names"
+            );
+        }
+
+        // A group is a name, not its roster: two facts naming different groups
+        // are two audiences even if the members coincide today, because a
+        // roster changes and a merge does not un-merge.
+        let famiglia = reader_set(&Principal::Group("famiglia".to_owned()), &[], None);
+        let casa = reader_set(&Principal::Group("casa".to_owned()), &[], None);
+        assert_ne!(famiglia, casa);
+
+        // Order and duplication never make two identical audiences differ.
+        let a = reader_set(&owner, &[allow[0].clone(), owner.clone()], Some(&sender));
+        let b = reader_set(&owner, &[sender, allow[0].clone()], Some(&owner));
+        assert_eq!(a, b);
+    }
 
     fn acl_owner(owner: Principal) -> Acl {
         Acl {

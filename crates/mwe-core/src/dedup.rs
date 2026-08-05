@@ -151,6 +151,35 @@ pub(crate) async fn apply_dedup_merge(
         )));
     }
 
+    // Provenance survives the merge. The loser's row is tombstoned, not
+    // deleted, so "who told us this" stays answerable from it — what would
+    // genuinely be lost are its **live references**: `authored_refs` points at
+    // the project pages that hold the fact's detail, the "link, don't
+    // duplicate" tube. Once the loser's bytes leave the page and the survivor
+    // speaks for both, nothing reaches those pages any more unless the
+    // survivor carries the pointers too.
+    //
+    // Union, order-preserving, winner's first: the survivor's own references
+    // stay where its prose expects them. No write when there is nothing new.
+    // Best-effort — the merge itself already stands, and a lost pointer is a
+    // reachability loss, not a correctness one.
+    let mut refs = winner_row.authored_refs.clone();
+    for r in &loser_row.authored_refs {
+        if !refs.contains(r) {
+            refs.push(r.clone());
+        }
+    }
+    if refs.len() != winner_row.authored_refs.len()
+        && let Err(e) = fact_index::set_authored_refs(pool, &winner, &refs).await
+    {
+        tracing::warn!(
+            winner = %winner,
+            loser = %loser,
+            error = %e,
+            "dedup_merge: could not carry the loser's authored_refs onto the survivor"
+        );
+    }
+
     tracing::info!(
         loser = %loser,
         winner = %winner,
@@ -429,6 +458,38 @@ mod tests {
         }
     }
 
+    /// [`capture_one`] carrying `authored_refs` — the provenance pointers the
+    /// merge has to carry across.
+    async fn capture_with_refs(
+        tree: &WikiTree,
+        pool: &SqlitePool,
+        body: &str,
+        refs: &[String],
+    ) -> FactId {
+        let req = CaptureRequest {
+            authored_refs: refs.to_vec(),
+            wiki_id: WikiId::parse("alice").unwrap(),
+            page: PathBuf::from("index.md"),
+            body: body.to_owned(),
+            owner: "user:alice".parse::<Principal>().unwrap(),
+            allow: vec![],
+            sender: None,
+            fact_type: None,
+            topics: vec![],
+            dedup_threshold: Some(1.01),
+            valid_from: None,
+            valid_to: None,
+            style: None,
+            page_description: None,
+            salience: None,
+        };
+        let outcome = wiki_capture(tree, pool, embedder(), req).await.unwrap();
+        match outcome.action {
+            CaptureAction::Captured { .. } => outcome.fact_id,
+            other => panic!("expected Captured, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn apply_marks_loser_superseded() {
         let (_dir, tree, pool) = setup().await;
@@ -455,6 +516,60 @@ mod tests {
             row.superseded_by.as_ref().map(FactId::as_str),
             Some(winner.as_str()),
         );
+    }
+
+    /// Provenance survives the merge. The loser's row is tombstoned, not
+    /// deleted, so *who told us this* stays answerable from it — but its
+    /// `authored_refs` point at the project pages that hold the fact's
+    /// detail, and once its bytes leave the page nothing reaches them unless
+    /// the survivor carries the pointers too.
+    #[tokio::test]
+    async fn the_survivor_inherits_the_absorbed_facts_references() {
+        let (_dir, tree, pool) = setup().await;
+        let winner = capture_with_refs(
+            &tree,
+            &pool,
+            "Alice ora pesa 62 kg",
+            &["[[acme/salute]]".to_owned()],
+        )
+        .await;
+        let loser = capture_with_refs(
+            &tree,
+            &pool,
+            "Alice pesa 62 kg",
+            &["[[acme/salute]]".to_owned(), "[[acme/visite]]".to_owned()],
+        )
+        .await;
+
+        apply_dedup_merge(
+            &pool,
+            &tree,
+            &json!({
+                "loser_fact_id": loser.as_str(),
+                "winner_fact_id": winner.as_str(),
+            }),
+            &json!({}),
+        )
+        .await
+        .expect("apply");
+
+        let row = fact_index::find_by_id(&pool, &winner)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.authored_refs,
+            vec!["[[acme/salute]]".to_owned(), "[[acme/visite]]".to_owned()],
+            "union, winner's own first, no duplicate"
+        );
+
+        // The loser keeps its own record — it is retired, not erased.
+        let dead = fact_index::find_by_id(&pool, &loser)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(dead.superseded_at.is_some());
+        assert_eq!(dead.authored_refs.len(), 2);
     }
 
     #[tokio::test]
