@@ -2,7 +2,7 @@
 title: Narrative compiler — planner + the Cronista, Hub Writer & Record Writer
 area: design-notes
 status: partial
-last_review: "2026-07-05"
+last_review: "2026-08-05"
 ---
 
 # Narrative compiler
@@ -567,14 +567,27 @@ the maintainer (2026-05-31):
   a **`concept_hub` is an `index.md`** hub. A routine emergent concept page
   is *content the Cronista writes* — a new `.md` inside an existing wiki —
   and therefore needs **no `structure_proposal`**.
-- **Escalation** of a grown concept page into a dedicated **sub-wiki**
-  reuses the **existing** [`wiki_promote` / `pages_to_subwiki`](proposal-apply-engine.md)
-  machinery — the REM auto-promote sub-job ([rem-cycle.md](rem-cycle.md)),
-  which is already proposal-gated. The planner does not reinvent promotion.
+- **A sub-wiki emerges from a GROUP of pages, never from one page.** The
+  rung above a page reuses the **existing**
+  [`wiki_promote` / `pages_to_subwiki`](proposal-apply-engine.md) machinery —
+  the REM auto-promote sub-job ([rem-cycle.md](rem-cycle.md)), which is
+  **act-first** (apply + born-applied receipt, no pending proposal). The
+  planner does not reinvent promotion.
+
+  ⚠️ A page that has grown too big is **split into more pages**, by the
+  Cartografo's [split-by-mass lever](#stage-1--the-cartografo-strong-model-classification)
+  at compile time and by the paragraph pass at REM
+  (`auto_promote_min_page_facts`: 8 prose / 16 technical / a `lista` never).
+  A **wiki** emerges from a different signal entirely — a *set* of existing
+  pages that are one subject area (`auto_promote_group_min_pages`). Two
+  mechanisms, two rungs of the *forma fisica* scale, and they never compete:
+  a wiki is never born holding a single page. The one-page-to-sub-wiki
+  variant (`file_to_subwiki`) has **no emitter** — it is an operator move
+  from the dashboard form, never a decision REM makes.
 
 The consequence: **the planner adds no new proposal kind.** Routine concept-page
-creation is prose the Cronista emits; the only gated structural action is
-the sub-wiki escalation, and that already exists. (The
+creation is prose the Cronista emits; the only structural action is
+the page-group → sub-wiki emergence, and that already exists. (The
 [`resolve_page_wiki`](../../crates/mwe-core/src/planner.rs) helper homes a new
 concept page in **its facts' source wiki** (a factless hub falls back to its
 parent's wiki), so a page always has a tree home and lives in the same wiki as

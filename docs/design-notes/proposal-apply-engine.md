@@ -2,7 +2,7 @@
 title: Proposal apply / revert engine
 area: design-notes
 status: implemented
-last_review: "2026-07-02"
+last_review: "2026-08-05"
 ---
 
 # Proposal apply / revert engine
@@ -240,9 +240,11 @@ token.
 | `kind::BUNDLE` | `bundle` | **Revert shipped** (`bundle::revert_bundle`) — born-applied only (wraps tombstones + cross-wiki refiles for the page deletion); no chassis *apply* path, so `apply` stays `KindNotYetImplemented` by design. See [Bundle handler](#bundle-handler). |
 | `kind::FACT_FORGET` | `fact_forget` | **Apply shipped** (`proposals::apply_fact_forget`) — born-`pending` (a non-sender owner's forget request, [`mwe_core::votes`]); apply tombstones the fact when its audience consents; **no revert** (final). See [Fact-forget handler](#fact-forget-handler). |
 
-New-wiki emergence is driven by page mass (auto-promote → page→sub-wiki);
-the classifier is prose-only. See
-[ingest-pipeline.md](ingest-pipeline.md).
+New-wiki emergence is driven by a **group of pages** turning out to be one
+subject area (auto-promote → `pages_to_subwiki`), **never** by the mass of
+any single page — mass splits a page into more pages instead. The
+classifier is prose-only. See [ingest-pipeline.md](ingest-pipeline.md) and
+[rem-cycle.md](rem-cycle.md).
 
 Until a kind handler lands, the dispatch returns
 `ApplyError::KindNotYetImplemented(<kind>)` /
@@ -267,14 +269,30 @@ deserves its own page. A routine emergent concept page is **content the
 Cronista writes** — a new `.md` page (or `index.md` hub) inside an
 **existing** standard wiki — so it does **not** raise a
 `structure_proposal` at all; it is a normal compiled write, not a gated
-structural change. Only the **escalation** of a grown concept page into a
-dedicated **sub-wiki** is a structural change, and that reuses the
-**existing** [`wiki_promote` / `pages_to_subwiki`](#promote-handler)
-machinery driven by the proposal-gated REM auto-promote sub-job
-([`rem-cycle.md`](rem-cycle.md)). The upshot: **the planner adds no new
-proposal kind** — the `kind::ALL` roster above is unchanged, and the
-planner plugs into the chassis only through the sub-wiki escalation path
-that was already here.
+structural change. The one structural rung above a page is a **sub-wiki**,
+and it reuses the **existing**
+[`wiki_promote` / `pages_to_subwiki`](#promote-handler) machinery driven by
+the REM auto-promote sub-job ([`rem-cycle.md`](rem-cycle.md)).
+
+> ⚠️ **A page never becomes a wiki.** A sub-wiki is born only from a
+> **group of pages** that already exist and turn out to be one subject area
+> (`pages_to_subwiki`, floored at `auto_promote_group_min_pages`). A single
+> page that has grown is **split into more pages** by the paragraph pass —
+> a different rung of the *forma fisica* scale, reading a different signal
+> (`auto_promote_min_page_facts`, 8 prose / 16 technical / a `lista` never).
+> The two do not compete: mass splits, and only a **set** of pages emerges.
+> A wiki is therefore never born holding one page, and the trigger is
+> evidence on disk rather than a forecast about what one page might ramify
+> into. The `file_to_subwiki` variant (one page → sub-wiki) exists in the
+> handler but has **no emitter**: it is operator-applied from the dashboard
+> form, never something REM decides.
+
+Both passes are **act-first**: they apply in-cycle and record a
+**born-applied** receipt, so neither raises a pending proposal — the
+`wiki_promote` row they write is the undo anchor, not a request. The
+upshot: **the planner adds no new proposal kind** — the `kind::ALL` roster
+above is unchanged, and the planner plugs into the chassis only through the
+sub-wiki path that was already here.
 
 ## Auto-apply + auto-finalize sweeps
 
