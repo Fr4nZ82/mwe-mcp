@@ -1653,30 +1653,6 @@ impl RehomePageSeed {
             page_path: Some(page.to_owned()),
         }
     }
-
-    /// The seed for an **emerged sub-wiki's `index.md`** — the plan re-home
-    /// of the legacy, revert-only `file_to_subwiki` variant.
-    ///
-    /// ⚠️ **Predates the map rule and is kept only so a receipt written
-    /// before 2026-08-03 stays revertible.** It enters the plan as a
-    /// fact-bearing `ConceptLeaf` on the wiki's `index.md`, which is exactly
-    /// the shape the rule retires — a page the read path never opens and the
-    /// reorg sweep never drains. Nothing emits `file_to_subwiki` any more
-    /// (live emergence is `pages_to_subwiki`, which carries pages over under
-    /// their own names), so this mints nothing on its own; do not reach for
-    /// it in new code. The follow-up it once pointed at is now
-    /// [`PageType::WikiBuffer`].
-    #[must_use]
-    pub fn wiki_index(wiki_id: &str, title: &str, description: &str) -> Self {
-        Self {
-            slug: slugify(wiki_id),
-            title: title.to_owned(),
-            description: description.to_owned(),
-            style: None,
-            wiki_id: wiki_id.to_owned(),
-            page_path: Some("index.md".to_owned()),
-        }
-    }
 }
 
 /// Re-home facts in the **persisted** plan + registry after an act-first
@@ -1703,6 +1679,10 @@ impl RehomePageSeed {
 /// # Errors
 ///
 /// Plan / registry IO.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear pass of plan surgery — detach, seed or relocate, attach, drop husks, park dirty — whose correctness is the order itself; splitting it hides that"
+)]
 pub fn rehome_facts_in_persisted_plan(
     tree: &WikiTree,
     moves: &[(&fact_index::FactIndexRow, &RehomePageSeed)],
@@ -1714,6 +1694,9 @@ pub fn rehome_facts_in_persisted_plan(
     };
     let mut registry = load_concept_registry(tree, now)?;
     let mut touched: BTreeSet<String> = BTreeSet::new();
+    // Destinations this call actually landed facts on — the husk loop
+    // below must not delete one of them.
+    let mut seeded: BTreeSet<String> = BTreeSet::new();
     let mut rehomed = 0usize;
     for (row, seed) in moves {
         // As in `build_compilation_plan` step 4: canonicalise a proposed slug,
@@ -1776,13 +1759,36 @@ pub fn rehome_facts_in_persisted_plan(
                 });
         }
         if let Some(page) = plan.pages.get_mut(&dest) {
+            // A node the plan already holds may be the **same page moving
+            // house**: a plan slug is the page's stem, so a page carried
+            // into another wiki under its own name keeps its key and only
+            // its address changes. Follow the seed when it names one — the
+            // explicit `page_path` is what distinguishes "this exact file"
+            // from a concept seed that merely proposes a slug. Without this
+            // the node kept pointing at the wiki the page just left, and
+            // the compiler would write it back there.
+            if seed.page_path.is_some() {
+                page.wiki_id.clone_from(&seed.wiki_id);
+                if let Some(path) = &seed.page_path {
+                    page.page_path.clone_from(path);
+                }
+            }
             page.primary_facts.push(FactForPage::from_row(row));
-            touched.insert(dest);
+            touched.insert(dest.clone());
+            seeded.insert(dest);
             rehomed += 1;
         }
     }
     for husk in remove_pages {
         let husk = slugify(husk);
+        // A husk that is also a destination of this same call is not a husk:
+        // the page did not empty out, it moved. Removing it here would
+        // delete the node the loop above just filled and leave those facts
+        // in no page at all — and since a plan with no pages reads back as
+        // *no plan*, that is not a cosmetic loss.
+        if seeded.contains(&husk) {
+            continue;
+        }
         if plan.pages.remove(&husk).is_some() {
             plan.merged_pages.push(MergedPage {
                 from: husk.clone(),
@@ -4394,6 +4400,74 @@ mod tests {
                 .refile_candidates
                 .is_empty(),
             "the drain clears the park"
+        );
+        drop(dir);
+    }
+
+    /// The emergence shape: a page crosses into another wiki **under its
+    /// own name**, so its plan slug — the page stem — does not change and
+    /// the caller's husk *is* the destination. The node must be relocated,
+    /// not deleted: deleting it would strand the facts in no page at all,
+    /// and on a one-page corpus the emptied plan reads back as *no plan*.
+    #[tokio::test]
+    async fn rehome_relocates_a_page_that_moved_wiki_under_its_own_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(wikis.join("alice")).unwrap();
+        std::fs::write(
+            wikis.join("alice/_meta.md"),
+            "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
+        )
+        .unwrap();
+        std::fs::write(wikis.join("alice/index.md"), "# alice\n").unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('alice','[]',0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let fid = plant_alice_fact(&pool, "b3", "potatura", Some("giardinaggio"), None, None).await;
+        build_wiki_plan(
+            &pool,
+            &tree,
+            NewFactPlacement::Ingest,
+            None,
+            "2026-08-05T00:00:00Z",
+        )
+        .await
+        .expect("plan");
+
+        // `giardinaggio.md` emerges as its own wiki, carried over under the
+        // same file name — husk and destination are the same plan slug.
+        let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
+        let seed = RehomePageSeed::page_in_wiki("giardinaggio.md", "alice-giardinaggio");
+        assert_eq!(seed.slug, "giardinaggio", "the slug is the page stem");
+        rehome_facts_in_persisted_plan(
+            &tree,
+            &[(&row, &seed)],
+            &["giardinaggio".to_owned()],
+            "2026-08-05T01:00:00Z",
+        )
+        .expect("rehome");
+
+        let edited = load_previous_plan(&tree)
+            .expect("load")
+            .expect("the plan survives");
+        let moved = edited
+            .pages
+            .get("giardinaggio")
+            .expect("the node was relocated, not deleted");
+        assert_eq!(moved.wiki_id, "alice-giardinaggio", "it followed the seed");
+        assert_eq!(moved.page_path, "giardinaggio.md");
+        assert!(
+            moved.primary_facts.iter().any(|f| f.fact_id == fid),
+            "the fact rode along"
+        );
+        assert!(
+            !edited.merged_pages.iter().any(|m| m.from == "giardinaggio"),
+            "a page that moved was not merged away"
         );
         drop(dir);
     }

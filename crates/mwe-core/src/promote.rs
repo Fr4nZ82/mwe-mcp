@@ -19,8 +19,10 @@
 //!   explicit variant discriminator — this is the default).
 //!
 //! - **file → sub-wiki**: take an entire page of a wiki and turn it
-//!   into a new dedicated sub-wiki whose `index.md` carries the page's
-//!   content verbatim. The new wiki id is derived as `parent-childslug`
+//!   into a new dedicated sub-wiki, the page carried over under its own
+//!   name and its bytes verbatim. The new wiki's `index.md` is born a
+//!   bare title stub and is the **map**, written by the REM map writer,
+//!   never by this handler. The new wiki id is derived as `parent-childslug`
 //!   ([`WikiId::child_of`]); the new directory lives at
 //!   `<parent_abs_dir>/<childslug>/`. Selected via
 //!   `answers.variant = "file_to_subwiki"`.
@@ -45,12 +47,15 @@
 //! the parts of the path the wikilink syntax depends on. The
 //! paragraph → file variant keeps the wiki id intact, so no
 //! cross-link rewriting is required. The file → sub-wiki variant
-//! changes the wiki id (a new sub-wiki appears under the parent), but
+//! changes the wiki id (a new sub-wiki appears under the parent), and
 //! the typical case — promoting `alice/giardinaggio.md` to the new
-//! sub-wiki `alice/giardinaggio/` — keeps `[[alice/giardinaggio]]`
-//! valid because the parent + slug pair is unchanged; the link text
-//! now resolves to the sub-wiki's `index.md` instead of the deleted
-//! page, and that index carries the same content. An automatic
+//! sub-wiki `alice/giardinaggio/` — leaves `[[alice/giardinaggio]]`
+//! **resolvable but pointing elsewhere**: the parent + slug pair is
+//! unchanged, so the link now reads as a bare wiki hop and lands on
+//! that wiki's foundation page, while the content it was written for
+//! sits on the carried page `[[alice-giardinaggio/giardinaggio]]`.
+//! (It cannot land on the map: since the map rule a bare wiki link
+//! never resolves there.) An automatic
 //! cross-link rewriter that scans every `.md` file for ambiguous
 //! cases (different slug, multiple links per file, links inside
 //! markers vs prose, alias-bearing `[[A|display]]` form) is deferred
@@ -1700,19 +1705,35 @@ struct SubwikiSpec {
     source_page: String,
     /// Verbatim byte content of the source page before the apply. The
     /// revert path writes this back to disk. Captured as a single
-    /// string because `index.md` of the new sub-wiki is a verbatim
-    /// copy of these bytes — preserving them in `spec` lets the revert
-    /// be a clean `atomic_write` rather than a parse + reassemble.
+    /// string because the carried page inside the new sub-wiki is a
+    /// verbatim copy of these bytes — preserving them in `spec` lets the
+    /// revert be a clean `atomic_write` rather than a parse + reassemble.
     source_page_bytes: String,
     /// New sub-wiki id (parent + slug joined with `-` via
     /// [`WikiId::child_of`]).
     new_wiki_id: String,
     /// Slug used to build the new directory under the parent.
     new_wiki_slug: String,
-    /// Fact ids moved. Their region offsets in the new `index.md` are
+    /// Name the promoted page carries **inside** the new sub-wiki — its
+    /// own file name, e.g. `giardinaggio.md`.
+    ///
+    /// `None` on a receipt written before the map rule, when the page's
+    /// bytes *were* the new wiki's `index.md`. The revert reads that
+    /// absence as "the carried page is `index.md`" and undoes the old
+    /// shape unchanged, so a receipt from that era stays undoable.
+    #[serde(default)]
+    carried_page: Option<String>,
+    /// Fact ids moved. Their region offsets in the carried page are
     /// identical to the offsets they had in the source page because
     /// the bytes are copied verbatim, so we do not need to store them.
     fact_ids: Vec<String>,
+}
+
+/// The page a `file_to_subwiki` receipt carried inside the new wiki:
+/// what `spec.carried_page` names, or `index.md` for a receipt written
+/// before the map rule.
+fn carried_page_of(spec: &SubwikiSpec) -> &str {
+    spec.carried_page.as_deref().unwrap_or(wiki::INDEX_FILENAME)
 }
 
 #[allow(
@@ -1766,8 +1787,30 @@ async fn apply_file_to_subwiki(
 
     let source_abs = parent_handle.abs_dir().join(&source_page_path);
     let source_rel = wiki::workdir_relative_source_path(tree.workdir(), &source_abs);
-    let new_index_abs = new_wiki_dir.join("index.md");
-    let new_index_rel = wiki::workdir_relative_source_path(tree.workdir(), &new_index_abs);
+
+    // The promoted page keeps its own name inside the new wiki. It used to
+    // *become* that wiki's `index.md`, which since the map rule is the one
+    // page the read path refuses — so a wiki born by promotion started with
+    // its founding facts unreachable by recall. The new wiki's map is the
+    // program's to write (see the stub below); what emerges here is a page
+    // like any other. Same shape as the group variant, which carries every
+    // page over under its own name.
+    let carried_page = source_page_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| {
+            ApplyError::InvalidPayload(format!(
+                "context.source_page has no file name: {source_rel}",
+            ))
+        })?
+        .to_owned();
+    if carried_page == wiki::INDEX_FILENAME {
+        return Err(ApplyError::InvalidPayload(format!(
+            "{source_rel} is a wiki's map — a map does not emerge into a wiki of its own",
+        )));
+    }
+    let new_page_abs = new_wiki_dir.join(&carried_page);
+    let new_page_rel = wiki::workdir_relative_source_path(tree.workdir(), &new_page_abs);
 
     // Validate every requested fact is active and currently lives in the
     // source page; collect them in order. Also count *every* active fact
@@ -1791,7 +1834,7 @@ async fn apply_file_to_subwiki(
         )));
     }
 
-    // Read source page contents verbatim — this becomes the new index.md.
+    // Read source page contents verbatim — these become the carried page.
     let source_bytes = std::fs::read_to_string(&source_abs)
         .map_err(|e| ApplyError::HandlerIo(format!("read {source_rel}: {e}")))?;
 
@@ -1828,30 +1871,9 @@ async fn apply_file_to_subwiki(
     // dominant style **default** into `extra["style"]`.
     // The style is a hint, not a gate — only accept the closed palette,
     // and an absent/out-of-palette value leaves the wiki generic (no
-    // default). Both feed the bidirectional root index (placement +
-    // recall navigation).
-    let mut extra = serde_yaml::Mapping::new();
-    if let Some(desc) = context
-        .get("new_wiki_description")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        extra.insert(
-            serde_yaml::Value::from("summary"),
-            serde_yaml::Value::from(desc),
-        );
-    }
-    if let Some(style) = context
-        .get("new_wiki_style")
-        .and_then(Value::as_str)
-        .filter(|s| matches!(*s, "prosa" | "prosa-tecnica" | "lista"))
-    {
-        extra.insert(
-            serde_yaml::Value::from("style"),
-            serde_yaml::Value::from(style),
-        );
-    }
+    // default). This is where a wiki's description lives: the map carries
+    // no prose of its own, so nothing else has to.
+    let extra = subwiki_meta_extra(context);
     let meta = WikiMeta {
         wiki_id: new_wiki_id.clone(),
         wiki_type: DEFAULT_NEW_SUBWIKI_TYPE.to_owned(),
@@ -1876,10 +1898,23 @@ async fn apply_file_to_subwiki(
     // Materialise the sub-wiki (dir + _meta.md + index.md) via the shared
     // filesystem primitive. file_to_subwiki always lands a child under an
     // existing parent and never needs the child-only gate, so requires_parent
-    // is false. Then move fact_index rows (wiki_id + source_path) and delete
-    // the source file.
-    wiki::write_wiki_dir(tree, &meta, &source_bytes, /* requires_parent */ false)
+    // is false.
+    //
+    // `index.md` is born a bare title stub and stays the **program's**: the
+    // REM map writer authors the list of pages living here, deterministically,
+    // for every standard wiki. This handler must not put prose there — a map
+    // is not a plan node, and the next cycle would overwrite it anyway.
+    let index_stub = format!("# {}\n", meta.title);
+    wiki::write_wiki_dir(tree, &meta, &index_stub, /* requires_parent */ false)
         .map_err(|e| ApplyError::HandlerIo(format!("create sub-wiki {new_wiki_id}: {e}")))?;
+
+    // The promoted page itself, bytes verbatim — which is what lets every
+    // fact keep the byte offsets it already had, marker regions included.
+    atomic_write(&new_page_abs, source_bytes.as_bytes())
+        .map_err(|e| ApplyError::HandlerIo(format!("atomic_write {new_page_rel}: {e}")))?;
+
+    // Then move fact_index rows (wiki_id + source_path) and delete the
+    // source file.
 
     for fid in &fact_ids {
         let row = fact_index::find_by_id(pool, fid)
@@ -1888,13 +1923,13 @@ async fn apply_file_to_subwiki(
             .ok_or_else(|| ApplyError::HandlerData(format!("fact {fid} vanished mid-apply")))?;
         // Cross-wiki move: wiki_id + source_path + offsets in one atomic
         // statement (move_region never touches wiki_id). The fact keeps
-        // its byte offsets — the verbatim source bytes become the new
-        // sub-wiki's index.md, so the region position is unchanged.
+        // its byte offsets — the verbatim source bytes are the carried
+        // page's bytes, so the region position is unchanged.
         let touched = fact_index::move_to_wiki(
             pool,
             fid,
             new_wiki_id.as_str(),
-            &new_index_rel,
+            &new_page_rel,
             row.region_start,
             row.region_end,
         )
@@ -1911,20 +1946,23 @@ async fn apply_file_to_subwiki(
         .map_err(|e| ApplyError::HandlerIo(format!("remove {source_rel}: {e}")))?;
 
     // Plan-sync seam: the emergence is a plan move too. The old page
-    // leaves the persisted plan and the facts re-home onto the emerged
-    // wiki's index page — otherwise the next carry-over would keep
+    // leaves the persisted plan and the facts re-home onto the carried
+    // page in the emerged wiki — otherwise the next carry-over would keep
     // claiming them for the parent page (and the compiler's pre-point
     // would drag the rows back the moment that page went dirty).
-    let index_seed = crate::planner::RehomePageSeed::wiki_index(
-        new_wiki_id.as_str(),
-        &meta.title,
-        context
-            .get("new_wiki_description")
-            .and_then(Value::as_str)
-            .unwrap_or(""),
-    );
+    //
+    // The seed carries no description on purpose: the page's own card is
+    // written when it is compiled, and the wiki's «what goes in here»
+    // lives on `_meta`, not on a plan node.
+    //
+    // A plan slug is the page's **stem**, so a page carried over under its
+    // own name keeps the key it had in the parent: husk and destination are
+    // the same string here. `rehome_facts_in_persisted_plan` handles that by
+    // relocating the node rather than deleting it — see its husk loop.
     let old_slug = plan_slug_of_page(&ctx.source_wiki_id, &source_page_path.to_string_lossy());
-    rehome_rows_with_seed(pool, &fact_ids, &index_seed, &[old_slug], tree).await;
+    let page_seed =
+        crate::planner::RehomePageSeed::page_in_wiki(&carried_page, new_wiki_id.as_str());
+    rehome_rows_with_seed(pool, &fact_ids, &page_seed, &[old_slug], tree).await;
 
     tracing::info!(
         parent_wiki_id = parent_wiki_id.as_str(),
@@ -1941,6 +1979,7 @@ async fn apply_file_to_subwiki(
         source_page_bytes: source_bytes,
         new_wiki_id: new_wiki_id.as_str().to_owned(),
         new_wiki_slug: new_slug.as_str().to_owned(),
+        carried_page: Some(carried_page),
         fact_ids: fact_ids.iter().map(|f| f.as_str().to_owned()).collect(),
     };
     Ok(json!(spec))
@@ -1952,10 +1991,14 @@ async fn apply_file_to_subwiki(
 /// if the user has touched it between apply and revert (added files,
 /// added markers, etc.). The exact rules:
 ///
-/// 1. The new wiki directory must contain exactly two entries
-///    (`_meta.md` and `index.md`) and nothing else.
-/// 2. The set of `fact_id` markers in `index.md` must match exactly
-///    the `fact_ids` recorded in the spec.
+/// 1. The new wiki directory must contain exactly what the apply made
+///    and nothing else: `_meta.md`, the program-written `index.md` map,
+///    and the carried page. A receipt written before the map rule
+///    carried its page **as** `index.md`, so there the expected set is
+///    only the two entries — [`carried_page_of`] is what tells the two
+///    eras apart.
+/// 2. The set of `fact_id` markers on the carried page must match
+///    exactly the `fact_ids` recorded in the spec.
 /// 3. The parent's source page (`<parent_abs_dir>/<source_page>`)
 ///    must not exist (we are about to recreate it). If it does, the
 ///    operator manually re-created the file and we refuse to clobber.
@@ -1993,11 +2036,18 @@ async fn revert_file_to_subwiki(
     let new_wiki_dir = parent_handle.abs_dir().join(&spec.new_wiki_slug);
     let new_meta_abs = new_wiki_dir.join("_meta.md");
     let new_index_abs = new_wiki_dir.join("index.md");
+    // The page the receipt carried: its own name today, `index.md` for a
+    // receipt from before the map rule. Everything downstream — the
+    // pristine check, the marker check, the teardown and the plan slug —
+    // reads it from here, so one revert undoes either era.
+    let carried_page = carried_page_of(&spec).to_owned();
+    let carried_is_index = carried_page == wiki::INDEX_FILENAME;
+    let carried_abs = new_wiki_dir.join(&carried_page);
     let source_abs = parent_handle.abs_dir().join(&source_page_path);
     let source_rel = wiki::workdir_relative_source_path(tree.workdir(), &source_abs);
-    let new_index_rel = wiki::workdir_relative_source_path(tree.workdir(), &new_index_abs);
+    let carried_rel = wiki::workdir_relative_source_path(tree.workdir(), &carried_abs);
 
-    // 1. Sub-wiki dir is pristine: exactly _meta.md + index.md.
+    // 1. Sub-wiki dir is pristine: exactly what the apply made.
     let entries: Vec<PathBuf> = std::fs::read_dir(&new_wiki_dir)
         .map_err(|e| {
             RevertError::HandlerIo(format!("read {dir}: {e}", dir = new_wiki_dir.display()))
@@ -2009,17 +2059,22 @@ async fn revert_file_to_subwiki(
         .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_owned))
         .collect();
     names.sort();
-    if names != ["_meta.md", "index.md"] {
+    let mut expected_names = vec!["_meta.md".to_owned(), wiki::INDEX_FILENAME.to_owned()];
+    if !carried_is_index {
+        expected_names.push(carried_page.clone());
+    }
+    expected_names.sort();
+    if names != expected_names {
         return Err(RevertError::HandlerData(format!(
-            "sub-wiki {dir} has extra entries {names:?} — refusing to delete; clean up manually",
+            "sub-wiki {dir} holds {names:?}, the receipt made {expected_names:?} — refusing to delete; clean up manually",
             dir = new_wiki_dir.display(),
         )));
     }
 
-    // 2. Marker set on index.md matches the spec.
-    let index_bytes = std::fs::read_to_string(&new_index_abs)
-        .map_err(|e| RevertError::HandlerIo(format!("read {new_index_rel}: {e}")))?;
-    let parsed = parser::parse(&index_bytes);
+    // 2. Marker set on the carried page matches the spec.
+    let carried_bytes = std::fs::read_to_string(&carried_abs)
+        .map_err(|e| RevertError::HandlerIo(format!("read {carried_rel}: {e}")))?;
+    let parsed = parser::parse(&carried_bytes);
     let mut on_disk: HashSet<String> = HashSet::new();
     for ev in parsed.events {
         if let ParseEvent::Region { attrs, .. } = ev
@@ -2031,7 +2086,7 @@ async fn revert_file_to_subwiki(
     let expected: HashSet<String> = spec.fact_ids.iter().cloned().collect();
     if on_disk != expected {
         return Err(RevertError::HandlerData(format!(
-            "sub-wiki {new_index_rel} marker set diverged from spec (on_disk={on_disk:?}, expected={expected:?}) — refusing to revert",
+            "sub-wiki {carried_rel} marker set diverged from spec (on_disk={on_disk:?}, expected={expected:?}) — refusing to revert",
         )));
     }
 
@@ -2079,6 +2134,10 @@ async fn revert_file_to_subwiki(
     // Tear down the now-orphan sub-wiki directory.
     std::fs::remove_file(&new_meta_abs)
         .map_err(|e| RevertError::HandlerIo(format!("remove _meta.md: {e}")))?;
+    if !carried_is_index {
+        std::fs::remove_file(&carried_abs)
+            .map_err(|e| RevertError::HandlerIo(format!("remove {carried_page}: {e}")))?;
+    }
     std::fs::remove_file(&new_index_abs)
         .map_err(|e| RevertError::HandlerIo(format!("remove index.md: {e}")))?;
     std::fs::remove_dir(&new_wiki_dir).map_err(|e| {
@@ -2089,17 +2148,24 @@ async fn revert_file_to_subwiki(
     })?;
 
     // Plan-sync seam (inverse): the source page re-enters the plan with
-    // its facts; the emerged wiki's index page leaves it.
+    // its facts; the emerged wiki's carried page leaves it. For a
+    // pre-map-rule receipt that node sat on `index.md`, and
+    // `plan_slug_for_page` maps both to the same slug, so one expression
+    // names the right husk in either era.
     let back_ids: Vec<FactId> = spec
         .fact_ids
         .iter()
         .filter_map(|s| FactId::parse(s).ok())
         .collect();
-    let source_seed = crate::planner::RehomePageSeed::concept(
-        &plan_slug_of_page(&spec.source_wiki_id, &spec.source_page),
+    //
+    // Husk and destination are the same slug when the page came back under
+    // its own name, and the re-home relocates rather than deletes in that
+    // case — the mirror of the apply.
+    let emerged_slug = plan_slug_of_page(&spec.new_wiki_id, &carried_page);
+    let source_seed = crate::planner::RehomePageSeed::page_in_wiki(
+        &source_page_path.to_string_lossy(),
         &spec.source_wiki_id,
     );
-    let emerged_slug = crate::planner::slugify(&spec.new_wiki_id);
     rehome_rows_with_seed(pool, &back_ids, &source_seed, &[emerged_slug], tree).await;
 
     tracing::info!(
@@ -4797,22 +4863,62 @@ mod tests {
         assert_eq!(spec["new_wiki_id"], "alice-giardinaggio");
         assert_eq!(spec["new_wiki_slug"], "giardinaggio");
 
-        // New sub-wiki directory exists with _meta.md + index.md, source file gone.
+        assert_eq!(spec["carried_page"], "giardinaggio.md");
+
+        // New sub-wiki directory exists with _meta.md + the carried page +
+        // a map, source file gone.
         let new_dir = tree.wikis_dir().join("alice").join("giardinaggio");
         assert!(new_dir.exists(), "sub-wiki dir must exist");
         assert!(new_dir.join("_meta.md").exists(), "_meta.md must exist");
-        let index = std::fs::read_to_string(new_dir.join("index.md")).unwrap();
-        assert!(index.contains("Note A"), "{index}");
-        assert!(index.contains("Note B"), "{index}");
+        let carried = std::fs::read_to_string(new_dir.join("giardinaggio.md")).unwrap();
+        assert!(carried.contains("Note A"), "{carried}");
+        assert!(carried.contains("Note B"), "{carried}");
         let source_after = tree.wikis_dir().join("alice").join("giardinaggio.md");
         assert!(!source_after.exists(), "source file must be removed");
 
-        // fact_index rows updated: wiki_id = alice-giardinaggio, source_path = new index.
+        // The map is the program's: a bare stub, no facts on it. Putting the
+        // founding content here is what made an emerged wiki unreadable —
+        // `index.md` is refused by every route of the read path.
+        let index = std::fs::read_to_string(new_dir.join("index.md")).unwrap();
+        assert!(
+            !index.contains("Note A"),
+            "the map holds no content: {index}"
+        );
+        assert!(!index.contains("{{f="), "the map holds no markers: {index}");
+
+        // fact_index rows updated: wiki_id = alice-giardinaggio, source_path
+        // = the carried page, never the map.
         for fid in [&f1, &f2] {
             let row = fact_index::find_by_id(&pool, fid).await.unwrap().unwrap();
             assert_eq!(row.wiki_id, "alice-giardinaggio");
-            assert_eq!(row.source_path, "wikis/alice/giardinaggio/index.md");
+            assert_eq!(
+                row.source_path, "wikis/alice/giardinaggio/giardinaggio.md",
+                "a fact must never land on the wiki's map"
+            );
         }
+    }
+
+    /// A wiki's map is not a subject, so it never emerges into a wiki of
+    /// its own — and it is the one page whose name would collide with the
+    /// map the handler writes itself.
+    #[tokio::test]
+    async fn apply_file_to_subwiki_refuses_to_promote_a_map() {
+        let (_dir, tree, pool) = setup().await;
+        let f1 = capture_one(&tree, &pool, embedder(), "index.md", "Note A").await;
+
+        let ctx = json!({
+            "source_wiki_id": "alice",
+            "source_page": "index.md",
+            "fact_ids": [f1.as_str()],
+        });
+        let ans = json!({ "variant": "file_to_subwiki" });
+        let err = apply_wiki_promote(&pool, &tree, &ctx, &ans)
+            .await
+            .expect_err("promoting a map must be refused");
+        assert!(
+            format!("{err}").contains("map"),
+            "the refusal must say why: {err}"
+        );
     }
 
     /// The emergence plan-sync seam: after the apply, the persisted plan
@@ -4880,20 +4986,19 @@ mod tests {
             .expect("apply");
 
         let after = load_previous_plan(&tree).expect("load").expect("plan");
-        assert!(
-            !after.pages.contains_key("giardinaggio"),
-            "the old page left the plan"
-        );
+        // The carried page keeps its own plan slug — a slug is the page
+        // stem — so the node the parent held is now the emerged wiki's,
+        // pointing at the page and never at the map.
         let emerged = after
             .pages
-            .get("alice_giardinaggio")
-            .expect("the emerged wiki's index entered the plan");
+            .get("giardinaggio")
+            .expect("the carried page entered the plan");
         assert_eq!(emerged.wiki_id, "alice-giardinaggio");
-        assert_eq!(emerged.page_path, "index.md");
+        assert_eq!(emerged.page_path, "giardinaggio.md");
         assert_eq!(emerged.primary_facts.len(), 2, "both facts re-homed");
         assert!(
-            after.force_dirty.contains(&"alice_giardinaggio".to_owned()),
-            "the emerged wiki's buffer is parked for recompile"
+            after.force_dirty.contains(&"giardinaggio".to_owned()),
+            "the carried page is parked for recompile"
         );
 
         // The revert restores the original plan shape.
@@ -4901,16 +5006,21 @@ mod tests {
             .await
             .expect("revert");
         let back = load_previous_plan(&tree).expect("load").expect("plan");
-        assert!(
-            !back.pages.contains_key("alice_giardinaggio"),
-            "the emerged wiki's buffer left the plan"
-        );
         let restored = back
             .pages
             .get("giardinaggio")
             .expect("the source page re-entered the plan");
         assert_eq!(restored.primary_facts.len(), 2, "facts back home");
         assert_eq!(restored.wiki_id, "alice");
+        assert_eq!(restored.page_path, "giardinaggio.md");
+        assert_eq!(
+            back.pages
+                .values()
+                .filter(|p| p.wiki_id == "alice-giardinaggio")
+                .count(),
+            0,
+            "nothing is left claiming the wiki that no longer exists"
+        );
     }
 
     #[tokio::test]
@@ -5063,7 +5173,11 @@ mod tests {
             .expect_err("must reject");
         match err {
             RevertError::HandlerData(msg) => {
-                assert!(msg.contains("extra entries"), "{msg}");
+                assert!(msg.contains("refusing to delete"), "{msg}");
+                assert!(
+                    msg.contains("notes.md"),
+                    "the refusal names what it found: {msg}"
+                );
             },
             other => panic!("unexpected: {other:?}"),
         }
@@ -5075,6 +5189,80 @@ mod tests {
                 .join("notes.md")
                 .exists()
         );
+    }
+
+    /// A receipt written **before** the map rule carried its page *as* the
+    /// new wiki's `index.md`, and its spec has no `carried_page` at all.
+    /// Those receipts are on disk in production, so the revert must still
+    /// undo the shape they describe rather than the shape we write now —
+    /// otherwise the change silently strands every open undo window.
+    #[tokio::test]
+    async fn revert_undoes_a_receipt_written_before_the_map_rule() {
+        let (_dir, tree, pool) = setup().await;
+        let f1 = capture_one(&tree, &pool, embedder(), "giardinaggio.md", "Note A").await;
+        let source_bytes =
+            std::fs::read_to_string(tree.wikis_dir().join("alice").join("giardinaggio.md"))
+                .unwrap();
+
+        // Build the old world by hand: the page's bytes ARE the new wiki's
+        // index.md, and the spec carries no `carried_page` key.
+        let new_dir = tree.wikis_dir().join("alice").join("giardinaggio");
+        std::fs::create_dir_all(&new_dir).unwrap();
+        std::fs::write(
+            new_dir.join("_meta.md"),
+            "---\nwiki_id: alice-giardinaggio\nwiki_type: wiki-topic\nparent_wiki_id: alice\nslug: giardinaggio\ntitle: Giardinaggio\n---\n",
+        )
+        .unwrap();
+        std::fs::write(new_dir.join("index.md"), &source_bytes).unwrap();
+        std::fs::remove_file(tree.wikis_dir().join("alice").join("giardinaggio.md")).unwrap();
+        fact_index::move_to_wiki(
+            &pool,
+            &f1,
+            "alice-giardinaggio",
+            "wikis/alice/giardinaggio/index.md",
+            fact_index::find_by_id(&pool, &f1)
+                .await
+                .unwrap()
+                .unwrap()
+                .region_start,
+            fact_index::find_by_id(&pool, &f1)
+                .await
+                .unwrap()
+                .unwrap()
+                .region_end,
+        )
+        .await
+        .unwrap();
+
+        let legacy_spec = json!({
+            "variant": "file_to_subwiki",
+            "source_wiki_id": "alice",
+            "source_page": "giardinaggio.md",
+            "source_page_bytes": source_bytes,
+            "new_wiki_id": "alice-giardinaggio",
+            "new_wiki_slug": "giardinaggio",
+            "fact_ids": [f1.as_str()],
+        });
+        assert!(
+            legacy_spec.get("carried_page").is_none(),
+            "the fixture must be the pre-map-rule shape"
+        );
+
+        revert_wiki_promote(&pool, &tree, &legacy_spec)
+            .await
+            .expect("a legacy receipt must still revert");
+
+        assert!(
+            tree.wikis_dir()
+                .join("alice")
+                .join("giardinaggio.md")
+                .exists(),
+            "the source page is back"
+        );
+        assert!(!new_dir.exists(), "the emerged wiki is gone");
+        let row = fact_index::find_by_id(&pool, &f1).await.unwrap().unwrap();
+        assert_eq!(row.wiki_id, "alice");
+        assert_eq!(row.source_path, "wikis/alice/giardinaggio.md");
     }
 
     #[tokio::test]
@@ -5127,17 +5315,18 @@ mod tests {
         assert_eq!(receipt.spec["new_wiki_id"], "alice-giardinaggio");
         let new_dir = tree.wikis_dir().join("alice").join("giardinaggio");
         assert!(new_dir.join("_meta.md").exists(), "sub-wiki must exist");
-        let index = std::fs::read_to_string(new_dir.join("index.md")).unwrap();
+        let carried = std::fs::read_to_string(new_dir.join("giardinaggio.md")).unwrap();
         assert!(
-            index.contains("Note A") && index.contains("Note B"),
-            "{index}"
+            carried.contains("Note A") && carried.contains("Note B"),
+            "{carried}"
         );
         for fid in [&f1, &f2] {
             let row = fact_index::find_by_id(&pool, fid).await.unwrap().unwrap();
             assert_eq!(row.wiki_id, "alice-giardinaggio");
         }
         // The emergence-decided _meta defaults are stamped: style
-        // default + description, re-read through the parser.
+        // default + description, re-read through the parser. This is where
+        // a wiki's «what goes in here» lives — the map carries none.
         let emerged = tree
             .locate(&WikiId::parse("alice-giardinaggio").unwrap())
             .expect("locate emerged");
@@ -5463,6 +5652,85 @@ mod tests {
         for fid in &planted {
             let row = fact_index::find_by_id(&pool, fid).await.unwrap().unwrap();
             assert_eq!(row.wiki_id, "alice");
+        }
+    }
+
+    /// The live emergence and the plan. Each carried page keeps its own
+    /// plan slug — a slug is the page stem — so the node the parent held
+    /// must **follow the page into the new wiki**, not be dropped as a
+    /// husk. Dropped, the group's facts would have left the plan
+    /// altogether, and here that is every page it has: the emptied plan
+    /// reads back as no plan at all.
+    #[tokio::test]
+    async fn pages_to_subwiki_moves_each_page_node_into_the_new_wiki() {
+        use crate::planner::{
+            CompilationPlan, FactForPage, PagePlan, PageType, load_previous_plan, save_plan,
+        };
+        let (_dir, tree, pool) = setup().await;
+        let emb = embedder();
+        let mut pages = std::collections::BTreeMap::new();
+        let mut order = Vec::new();
+        for page in ["orto.md", "potatura.md"] {
+            let fid =
+                capture_one(&tree, &pool, emb.clone(), page, &format!("note on {page}")).await;
+            let slug = page.trim_end_matches(".md").to_owned();
+            let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
+            pages.insert(
+                slug.clone(),
+                PagePlan {
+                    slug: slug.clone(),
+                    title: slug.clone(),
+                    description: String::new(),
+                    style: None,
+                    page_type: PageType::ConceptLeaf,
+                    owner_scope: None,
+                    parent_hub: None,
+                    child_leaves: Vec::new(),
+                    primary_facts: vec![FactForPage::from_row(&row)],
+                    outgoing_links: Vec::new(),
+                    incoming_links: Vec::new(),
+                    wiki_id: "alice".to_owned(),
+                    page_path: page.to_owned(),
+                },
+            );
+            order.push(slug);
+        }
+        let plan = CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            compilation_order: order,
+            link_graph: std::collections::BTreeMap::new(),
+            dirty_pages: Vec::new(),
+            generated_at: "t".to_owned(),
+            fact_count: 2,
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+        };
+        save_plan(&tree, &plan).expect("save plan");
+
+        let ctx = json!({
+            "variant": "pages_to_subwiki",
+            "source_wiki_id": "alice",
+            "pages": ["orto.md", "potatura.md"],
+            "new_wiki_slug": "giardino",
+            "new_wiki_title": "Giardino",
+        });
+        apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_subwiki"}))
+            .await
+            .expect("apply");
+
+        let after = load_previous_plan(&tree)
+            .expect("load")
+            .expect("the plan survives the move");
+        for page in ["orto", "potatura"] {
+            let node = after
+                .pages
+                .get(page)
+                .unwrap_or_else(|| panic!("{page} kept its plan node"));
+            assert_eq!(node.wiki_id, "alice-giardino", "{page} followed the move");
+            assert_eq!(node.page_path, format!("{page}.md"));
+            assert_eq!(node.primary_facts.len(), 1, "{page} kept its fact");
         }
     }
 

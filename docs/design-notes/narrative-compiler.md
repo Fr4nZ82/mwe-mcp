@@ -502,6 +502,21 @@ nodes keyed per wiki, so `profile.md` resolves to the card's slug and
 `notes.md` to the buffer's, never to a forest-wide `profile` / `notes` key)
 — and drops any husk page a merge removed (plan + registry, audited in
 `merged_pages`).
+
+**A husk that is also a destination of the same call is not a husk.** A plan
+slug is the page's *stem*, so a page that crosses into another wiki **under
+its own name** keeps its key and only changes address — the emergence
+variants both do exactly this. Two rules follow, and together they are what
+makes such a move survive: a destination the plan already holds is
+**relocated** to the seed's `wiki_id` / `page_path` when the seed names one
+explicitly (a `page_in_wiki`-shaped seed means «this exact file»; a bare
+concept seed only proposes a slug and never moves a page), and the husk pass
+**skips** any slug the move pass landed facts on. Without the first the node
+went on pointing at the wiki the page had just left, and the compiler wrote
+it back there; without the second the husk pass deleted the node the move
+pass had just filled — and since a plan with no pages
+[reads back as *no plan*](../../crates/mwe-core/src/planner.rs), a small
+corpus lost its whole plan rather than one page.
 Because after the edit
 the carried-over fingerprint *matches* the next build, the touched slugs are
 parked on the plan's **`force_dirty`** list: `build_wiki_plan` unions them into

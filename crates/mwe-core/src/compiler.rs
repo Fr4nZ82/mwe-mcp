@@ -1864,11 +1864,12 @@ fn is_future(from: &str, now: &str) -> bool {
 /// written for REM and the filing classifier, refused by `open_target` and by
 /// all three offer-side filters — so a rail pointing there leads nowhere, and
 /// **40 % of the links the live corpus carries on a content page** are that
-/// dead form. The planner mints no such node any more (`profile.md`,
-/// `notes.md` or a slug), but a **persisted** plan can still hold one from
-/// before 2026-08-03 (see `planner::RehomePageSeed::wiki_index`, kept so that
-/// corpus stays revertible), so this refuses rather than asserts: a legacy
-/// map node is simply not offered as a rail, and every caller drops it.
+/// dead form. Nothing mints such a node any more — the planner seeds
+/// `profile.md`, `notes.md` or a slug, and the last minter, the sub-wiki
+/// emergence handler, now carries its page over under its own name — but a
+/// **persisted** plan can still hold one from before 2026-08-03, so this
+/// refuses rather than asserts: a legacy map node is simply not offered as a
+/// rail, and every caller drops it.
 ///
 /// The slug is the page **file's** stem, never the plan slug alone (which
 /// would read as a hop to a wiki that does not exist). Every link the

@@ -235,7 +235,7 @@ token.
 
 | Kind constant | Wire string | Handler status |
 |---|---|---|
-| `kind::WIKI_PROMOTE` | `wiki_promote` | **Shipped** — variants `paragraph_to_file` (default), `pages_to_subwiki`, `pages_move_wiki`, `page_merge`, `fact_refile` (born-applied only), `validity_close` (born-applied only), plus the legacy `file_to_subwiki` (revert-only: no longer emitted). See [Promote handler](#promote-handler). |
+| `kind::WIKI_PROMOTE` | `wiki_promote` | **Shipped** — variants `paragraph_to_file` (default), `pages_to_subwiki`, `pages_move_wiki`, `page_merge`, `fact_refile` (born-applied only), `validity_close` (born-applied only), plus `file_to_subwiki` (no emitter — operator-applied from the dashboard form). See [Promote handler](#promote-handler). |
 | `kind::DEDUP_MERGE` | `dedup_merge` | **Shipped** — two-way merge variant. See [Dedup-merge handler](#dedup-merge-handler). |
 | `kind::BUNDLE` | `bundle` | **Revert shipped** (`bundle::revert_bundle`) — born-applied only (wraps tombstones + cross-wiki refiles for the page deletion); no chassis *apply* path, so `apply` stays `KindNotYetImplemented` by design. See [Bundle handler](#bundle-handler). |
 | `kind::FACT_FORGET` | `fact_forget` | **Apply shipped** (`proposals::apply_fact_forget`) — born-`pending` (a non-sender owner's forget request, [`mwe_core::votes`]); apply tombstones the fact when its audience consents; **no revert** (final). See [Fact-forget handler](#fact-forget-handler). |
@@ -434,11 +434,20 @@ field in `answers` (default `paragraph_to_file`):
   exists**. No floor: the home is there. The target must be a child of
   the source wiki — regrouping rearranges a wiki's own subtree, it never
   files content into somebody else's.
-- **`file_to_subwiki`** *(legacy, revert-only)* — the superseded
-  single-page emergence: one whole page became a sub-wiki whose
-  `index.md` carried it verbatim. No emitter reaches it any more; apply
-  and revert stay wired so receipts written before the change remain
-  undoable for the rest of their window.
+- **`file_to_subwiki`** — the single-page emergence: one whole page
+  becomes a sub-wiki of its own, **carried over under its own name**,
+  bytes verbatim (so every marker keeps its offsets). The new wiki's
+  `index.md` is born a bare title stub and is the map, the REM map
+  writer's to author — the handler never puts content there, which it
+  used to: a wiki born that way started with its founding facts on the
+  one page the read path refuses. Refuses to promote a wiki's own
+  `index.md` — a map is not a subject. The wiki's «what goes in here»
+  goes on `_meta` (`extra["summary"]`), never on the map. **No emitter
+  reaches this variant** (REM's live emergence is `pages_to_subwiki`);
+  it is applied by an operator choosing the variant on the dashboard's
+  apply form. A receipt written before the map rule carries no
+  `carried_page` in its spec, and the revert reads that absence as "the
+  carried page was `index.md`", so those stay undoable unchanged.
 - **`page_merge`** — move **every** active fact of one concept page (the
   husk) onto a near-synonym survivor page of the same wiki, **delete the
   husk file**, and re-home the move in the persisted compilation plan
