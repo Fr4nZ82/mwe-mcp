@@ -984,11 +984,20 @@ side. The read path never opens a map — see the
 - For each remaining wiki (bounded by `map_writer_cap`, default 200 — an
   I/O cap, not a budget one):
   - list the pages on disk, split reserved from ordinary;
-  - render the map — sub-wikis **named, not linked** (a link on a page names a
+  - render it — sub-wikis **named, not linked** (a link on a page names a
     page, and no single page stands for a whole wiki), ordinary pages as
     `[[wiki_id/stem]]`, and each reserved page with the one line that says
     what belongs on it;
   - `atomic_write` it to `<wiki_dir>/index.md`.
+
+  **`index.md` is a list of pages and nothing else.** It used to open with the
+  wiki's own description, copied out of `_meta.md`; that copy is gone (founder,
+  2026-08-05). The description has one real consumer — the recall entry fan
+  reads it from `_meta.md` — and nothing ever read it here: the only code that
+  opens this file is this writer, the read path refuses the page by rule, and
+  the ingest classifier is handed `wiki_id` / `title` / `wiki_type` / `scope` /
+  `smart` / `is_agent`, never a page list. A second copy with no reader could
+  only go stale.
 
 **Why there is no LLM here, and what that cost.** Until 2026-08-03 this
 sub-job asked the `hub_writer` model to compose an index out of the twenty

@@ -5997,15 +5997,25 @@ async fn run_map_writer(
     Ok(report)
 }
 
-/// Render one wiki's map. Pure function of the wiki's metadata and the
+/// Render one wiki's `index.md`. Pure function of the wiki's metadata and the
 /// filenames on disk, so it is fully testable and cannot invent a page.
+///
+/// **It is a list of pages and nothing else.** It used to open with the wiki's
+/// own description copied out of `_meta.md`, and that copy is gone (founder,
+/// 2026-08-05: *«questi index sono elenchi di pagine, quindi la descrizione di
+/// una wiki perché andrebbe lì?»*). The description has one real consumer —
+/// the recall entry fan reads it from `_meta.md` — and nothing in the product
+/// ever read it here: the only code that opens this file is the writer below,
+/// the read path refuses the page by rule, and the ingest classifier is handed
+/// `wiki_id`/`title`/`wiki_type`/`scope`/`smart`/`is_agent`, never a page list.
+/// So the copy bought no reader and could only go stale.
 ///
 /// Three sections, each omitted when empty:
 ///
 /// - **Sub-wikis** — the child wikis, **named and not linked**: a link on a
 ///   page names a page, and no single page stands for a wiki (a card exists
 ///   only where the wiki is an enrolled person or group; the two pages every
-///   wiki has are its map, which no reader may open, and its buffer, which is
+///   wiki has are this one, which no reader may open, and its buffer, which is
 ///   where unplaced facts land rather than a portrait of the wiki).
 /// - **Pages** — every ordinary page, as `[[wiki_id/stem]]`.
 /// - **Reserved** — the pages with a fixed structural role, each with the one
@@ -6039,12 +6049,6 @@ fn render_wiki_map(meta: &wiki::WikiMeta, pages: &[std::path::PathBuf], today: &
     out.push_str(title);
     out.push_str("\n\nThis page is a map, not a memory: it lists what lives in this wiki so a\n");
     out.push_str("fact can be filed where it belongs. Facts are on the pages below.\n");
-
-    if let Some(summary) = wiki::meta_summary(meta).filter(|s| !s.trim().is_empty()) {
-        out.push('\n');
-        out.push_str(summary.trim());
-        out.push('\n');
-    }
 
     if !meta.children.is_empty() {
         out.push_str("\n## Sub-wikis\n\n");
