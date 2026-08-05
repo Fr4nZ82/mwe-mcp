@@ -6002,7 +6002,11 @@ async fn run_map_writer(
 ///
 /// Three sections, each omitted when empty:
 ///
-/// - **Sub-wikis** — the child wikis, as `[[wiki_id]]` hops.
+/// - **Sub-wikis** — the child wikis, **named and not linked**: a link on a
+///   page names a page, and no single page stands for a wiki (a card exists
+///   only where the wiki is an enrolled person or group; the two pages every
+///   wiki has are its map, which no reader may open, and its buffer, which is
+///   where unplaced facts land rather than a portrait of the wiki).
 /// - **Pages** — every ordinary page, as `[[wiki_id/stem]]`.
 /// - **Reserved** — the pages with a fixed structural role, each with the one
 ///   line that says what belongs on it. This section is the part REM and a
@@ -6045,9 +6049,18 @@ fn render_wiki_map(meta: &wiki::WikiMeta, pages: &[std::path::PathBuf], today: &
     if !meta.children.is_empty() {
         out.push_str("\n## Sub-wikis\n\n");
         for c in &meta.children {
-            out.push_str("- [[");
+            // Named, **not linked** (founder, 2026-08-05: a link on a page
+            // names a page, never a whole wiki). No single page stands for a
+            // wiki across the three kinds: a card (`profile.md`) exists only
+            // where the wiki is an enrolled person or group, an emerged topic
+            // wiki has none, and the two pages every wiki does have are its
+            // map — which no reader may open — and its buffer, which is where
+            // unplaced facts land, not a portrait of the wiki. This section
+            // exists to tell the filing side that a child wiki is there; the
+            // id alone says it, and a link that led nowhere would say it worse.
+            out.push_str("- ");
             out.push_str(&c.wiki_id);
-            out.push_str("]]\n");
+            out.push('\n');
         }
     }
 
@@ -7188,7 +7201,10 @@ mod tests {
         );
         let index = std::fs::read_to_string(parent_dir.join("index.md")).unwrap();
         assert!(index.contains("page_type: wiki_map"), "{index}");
-        assert!(index.contains("[[alice-acmecorp]]"), "{index}");
+        // A sub-wiki is NAMED, never linked: no page stands for a whole
+        // wiki, and a link on a page names a page (founder, 2026-08-05).
+        assert!(index.contains("- alice-acmecorp\n"), "{index}");
+        assert!(!index.contains("[[alice-acmecorp]]"), "{index}");
         assert!(index.contains("[[alice/concerti]]"), "{index}");
         // The buffer is listed with its role, not as an ordinary page.
         assert!(index.contains("[[alice/notes]] — the buffer"), "{index}");

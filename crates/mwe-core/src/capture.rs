@@ -725,8 +725,10 @@ pub async fn wiki_forget(
 /// `_internal.wiki_link` — append a cross-wiki link to a page.
 ///
 /// The link is rendered as a plain Obsidian-compatible wikilink:
-/// `[[target_wiki/target_page]]` (or `[[target_wiki]]` when
-/// `target_page` is `None`). Returns the byte offsets of the new link
+/// `[[target_wiki/target_page]]` — always a **page**, never a wiki alone.
+/// With no `target_page` it names that wiki's buffer (`notes`), the page a
+/// fact with no home belongs on and the only readable page every wiki has.
+/// Returns the byte offsets of the new link
 /// so a caller that wants to drop a fact-id marker around it can do
 /// so in a follow-up call to [`wiki_capture`].
 ///
@@ -770,7 +772,18 @@ pub fn wiki_link(
         });
     }
     let link_target = target_page.map_or_else(
-        || format!("[[{target_wiki}]]"),
+        // No page named ⇒ the wiki's BUFFER, never the wiki alone (founder,
+        // 2026-08-05: a link on a page names a page). The buffer is the right
+        // page and not merely an available one: it is by definition where a
+        // fact with no page belongs, and it is the only readable page every
+        // wiki has — a card exists only for an enrolled person or group, and
+        // the map is refused by every route of the read path.
+        || {
+            let buffer = crate::wiki::NOTES_FILENAME
+                .strip_suffix(".md")
+                .unwrap_or(crate::wiki::NOTES_FILENAME);
+            format!("[[{target_wiki}/{buffer}]]")
+        },
         |p| {
             let p_str = p.to_string_lossy().replace('\\', "/");
             // Strip the trailing .md so the wikilink reads naturally
@@ -1631,7 +1644,7 @@ mod tests {
     }
 
     #[test]
-    fn link_without_page_renders_wiki_only_target() {
+    fn link_without_page_points_at_the_wikis_buffer() {
         let dir = tempdir().unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
         seed_alice(&tree);
@@ -1646,8 +1659,11 @@ mod tests {
         .unwrap();
 
         let intro = std::fs::read_to_string(dir.path().join("wikis/alice/intro.md")).unwrap();
-        assert!(intro.contains("[[alice-acmecorp]]"));
-        assert!(!intro.contains("alice-acmecorp/"));
+        // Never a wiki alone: with no page named, the link points at that
+        // wiki's buffer — the page a fact with no home belongs on, and the
+        // only readable page every wiki has.
+        assert!(intro.contains("[[alice-acmecorp/notes]]"), "{intro}");
+        assert!(!intro.contains("[[alice-acmecorp]]"), "{intro}");
     }
 
     #[test]

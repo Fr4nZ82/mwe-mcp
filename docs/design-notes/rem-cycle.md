@@ -984,7 +984,8 @@ side. The read path never opens a map — see the
 - For each remaining wiki (bounded by `map_writer_cap`, default 200 — an
   I/O cap, not a budget one):
   - list the pages on disk, split reserved from ordinary;
-  - render the map — sub-wikis as `[[wiki_id]]` hops, ordinary pages as
+  - render the map — sub-wikis **named, not linked** (a link on a page names a
+    page, and no single page stands for a whole wiki), ordinary pages as
     `[[wiki_id/stem]]`, and each reserved page with the one line that says
     what belongs on it;
   - `atomic_write` it to `<wiki_dir>/index.md`.
