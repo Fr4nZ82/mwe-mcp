@@ -156,7 +156,7 @@ YAML means "this function is not wired in this deployment".
 | REM Promotions | `rem_promotions` | The nightly "strong" structural slot: paragraph→file / file→wiki / wiki promotions, forge clustering, archive decisions. | active |
 | REM Dedup (semantic) | `rem_dedup_semantic` | The yes/no semantic-equivalence classifier that runs **after** the cheap jaccard pre-pass during REM dedup. | active |
 | Cronista | `cronista` | The narrative prose compiler: rewrites each dirty standard-wiki leaf from its facts into prose. | active — invoked by the compiler, not dashboard-exposed |
-| Navigator | `navigator` | The per-turn recall navigator: reads the root index + destination cards and decides which wikis/pages to open next (recall pipeline). Wants a **strong-but-cheap** model — per-turn latency/cost bound, but its link choices are the recall quality bar. | configured — the navigator funnel that consumes it is being built |
+| Navigator | `navigator` | The per-turn recall navigator: reads the destination **page** cards and the prose collected so far, and decides which page to open next (recall pipeline). It is shown no wikis and no catalogue of them. Wants a **strong-but-cheap** model — per-turn latency/cost bound, but its link choices are the recall quality bar. | configured — the navigator funnel that consumes it is being built |
 
 > **The `cronista` slot is the active narrative prose-compiler
 > slot.** The `LlmFunction::Cronista` variant backs Il Cronista in

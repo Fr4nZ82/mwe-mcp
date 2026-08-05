@@ -45,9 +45,22 @@
 //! also found therefore keeps the content ranking: the identity anchor is the
 //! weakest claim on a door, never a demotion applied to one.
 //!
+//! # 🚨 THE READ SIDE HAS NO CONCEPT OF A WIKI
+//!
+//! **Whoever reads the memory does not know wikis exist.** No catalogue is
+//! rendered, none is needed, and nothing here picks or enters a container: the
+//! reader arrives on the pages its own facts landed on and travels by the
+//! wikilinks written on them. A wiki is the WRITE side's instrument. On this
+//! side `wiki_id` is an **address** — the first half of `wiki_id/page.md`, as
+//! a folder is the first half of a file path — never a place. What is still
+//! derived per wiki is **visibility** (access control: a reader who can read
+//! no fact in a wiki sees nothing from it) and the **smart-wiki skip** (a
+//! storage kind, not a container). Founder's ruling, shipped 2026-08-03; a
+//! comment anywhere that says the reader chooses or enters a wiki is stale.
+//!
 //! The gatherer's fan feeds the **navigator funnel** ([`navigate`]): a
-//! Rust-owned loop where the `navigator` LLM slot reads the root index, the
-//! destination cards, and the prose collected so far, and decides which
+//! Rust-owned loop where the `navigator` LLM slot reads the
+//! destination cards and the prose collected so far, and decides which
 //! pages to open next — semantics in the prompt, resources in the
 //! [`NavigatorPolicy`] knobs. Every page it brings back is **projected
 //! per-sender** ([`crate::render::render_for_sender`]) — the navigator never
@@ -801,9 +814,10 @@ pub async fn navigate(
         return Ok(outcome);
     }
 
-    // Reader-relative card for the prompt-facing surfaces (root index +
-    // candidate cards): topics the sender can read, abstract gated to the
-    // wiki's default visibility — never the owner-tier `.md`.
+    // Reader-relative card for the prompt-facing surface (the candidate page
+    // cards): topics the sender can read, descriptions gated to the wiki's
+    // default visibility — never the owner-tier `.md`. Wiki-keyed because that
+    // is how the ACL is derived, not because anything renders a wiki.
     let reader_card =
         meta_annotate::build_reader_card(pool, tree, &sender.sender_id, &sender.sender_groups)
             .await

@@ -1,8 +1,8 @@
 ---
 name: navigator
-description: Recall navigator — per-turn funnel that walks the memory wiki from the entry-point fan, choosing which pages to open from their cards (root index + summaries + keywords) and stopping when the collected prose is enough; strict one-JSON-object output
-version: 1.3
-default_version_at_bootstrap: v1.3
+description: Recall navigator — per-turn funnel that starts from the entry-point fan of PAGES and walks their wikilinks, choosing which page to open next from its card (description + keywords) and stopping when the collected prose is enough. It is shown no wikis and no catalogue of them; strict one-JSON-object output
+version: 1.4
+default_version_at_bootstrap: v1.4
 ---
 
 # Prompt: navigator
@@ -47,7 +47,7 @@ the bundled default embedded by `include_str!` is the floor; an override at
 ## Prompt body
 
 ```text
-You are the recall navigator of a wiki-shaped memory. A consumer agent is
+You are the recall navigator of a memory made of linked pages. A consumer agent is
 handling a live turn; your job is to walk the memory like a librarian and
 bring back the pages that hold the context the turn needs — especially the
 constraints that do NOT resemble the words of the turn (the allergy on the

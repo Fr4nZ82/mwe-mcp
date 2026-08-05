@@ -3,10 +3,13 @@
 //!
 //! A deterministic, no-LLM compile sub-stage that derives navigation aids from
 //! the fact index and writes them back into the wiki's card surfaces.
-//! It is the producer side of the catalog / root-index data plane
-//! ([`crate::wiki::CatalogEntry`], [`crate::wiki::render_root_index`]): the
-//! catalog *carries* per-wiki `keywords`, and this stage *populates* them so the
-//! catalog stops showing empty slots.
+//!
+//! 🚨 **The read side has no concept of a wiki**, so nothing here feeds it a
+//! catalogue: none exists. The wiki-level annotations below are for the
+//! **write** side — the filer deciding where a fact goes — and the surface a
+//! turn actually reaches is the per-**page** card. The catalog and root-index
+//! renderers this module used to feed were deleted on 2026-08-05, having been
+//! dead since the ruling.
 //!
 //! It owns three navigation annotations:
 //!
@@ -19,22 +22,19 @@
 //!   keywords), so populating it gives the topic entry-point a populated source.
 //! - **`_meta.extra["summary"]`** — the wiki's one-line **abstract**. Written by
 //!   the compiler via [`sync_wiki_summary`] when it (re)compiles a wiki's
-//!   `index.md` overview page, from the freshest one-liner available (the
-//!   Cronista's `description` for a person wiki, the plan's description for a
-//!   hub).
+//!   **foundation card page**, from the card that page was written with.
 //! - **page testata `keywords["topics"]`** — the per-page card: the sorted union
 //!   of the topics of the active facts *living on that page*
 //!   (`fact_index.source_path`), written into each page's frontmatter by
-//!   [`sync_page_keywords`]. The wiki-level union orients the hop *into* a wiki;
-//!   the page-level entry orients the hop *inside* it, so the navigator decides
-//!   from the card instead of reading whole pages.
+//!   [`sync_page_keywords`]. **This is the only one a turn reaches**: the
+//!   navigator decides which page to open from its card instead of reading the
+//!   whole page.
 //!
-//! The `_meta` pair is what [`crate::wiki::flatten_keywords`] /
-//! [`crate::wiki::CatalogEntry`] surface into the wiki catalog. **The recall
-//! navigator is not a consumer of it** — since 2026-08-04 the read side is
-//! shown no wiki catalog at all (see recall-pipeline.md, *The read side has no
-//! concept of a wiki*); what reaches a turn from here is the per-**page** card
-//! ([`read_page_card`]) and, on the write side, the structure the filer needs.
+//! The two `_meta` annotations are **write-side**: nothing on the read side is
+//! shown a wiki, a wiki card or a list of them, so neither orients a hop. They
+//! serve the filer, and the `summary` additionally has no reader left at all
+//! since the catalog was deleted — it is kept because the write side may yet
+//! want it, not because a turn sees it.
 //!
 //! The recall-navigation principle is to push intelligence to compile-time
 //! (offline, strong model, not latency-critical) so the recall-time navigator
@@ -69,7 +69,8 @@ const TOPICS_KEY: &str = "topics";
 /// Separator used to join the topic set into the scalar keyword value.
 const KEYWORD_JOIN: &str = ", ";
 /// Frontmatter `extra` sub-key holding the wiki's one-line abstract — the same
-/// key [`crate::wiki::meta_summary`] reads back into the catalog.
+/// key [`crate::wiki::meta_summary`] reads back. Write-side: no reader is
+/// shown a wiki's abstract, because no reader is shown a wiki.
 const SUMMARY_KEY: &str = "summary";
 
 /// Sync every wiki's `_meta.keywords["topics"]` to the union of its facts'
@@ -238,9 +239,11 @@ async fn collect_page_topics(
 
 /// Per-reader projection of every wiki's card, recomputed from `fact_index`.
 ///
-/// Consumed by [`crate::recall_nav`] to keep the topic seeds, the candidate
-/// cards, and the root-index reader-relative. Built once per navigator call
-/// by [`build_reader_card`].
+/// Consumed by [`crate::recall_nav`] to keep the topic seeds and the candidate
+/// cards reader-relative. Built once per navigator call by
+/// [`build_reader_card`]. It projects **pages**: no reader is shown a wiki or a
+/// list of them, and the wiki-keyed maps here are addresses and ACL scope, not
+/// destinations.
 pub struct ReaderCard {
     /// `wiki_id` → the reader-visible topic union (original case, sorted).
     wiki_topics: BTreeMap<String, Vec<String>>,
@@ -264,7 +267,9 @@ impl ReaderCard {
         self.wiki_topics.get(wiki_id).map_or(&[][..], Vec::as_slice)
     }
 
-    /// The whole `wiki_id` → topics map (for the catalog / root-index render).
+    /// The whole `wiki_id` → topics map. Address-keyed bulk access for
+    /// callers that need every wiki's reader-visible vocabulary at once; it is
+    /// not a catalogue and nothing renders it to a reader.
     #[must_use]
     pub const fn wiki_topics_map(&self) -> &BTreeMap<String, Vec<String>> {
         &self.wiki_topics
@@ -284,8 +289,9 @@ impl ReaderCard {
         self.summary_wikis.contains(wiki_id)
     }
 
-    /// The set of `wiki_id`s whose abstract the reader may see (for the
-    /// catalog / root-index render).
+    /// The set of `wiki_id`s whose abstract and page descriptions the reader
+    /// may see — their read-set covers the wiki's default visibility. An ACL
+    /// question about card metadata, not a list of places to go.
     #[must_use]
     pub const fn summary_wikis(&self) -> &BTreeSet<String> {
         &self.summary_wikis
@@ -299,8 +305,8 @@ impl ReaderCard {
         self.readable_wikis.contains(wiki_id)
     }
 
-    /// The whole set of `wiki_id`s the reader can read ≥ 1 fact in (for the
-    /// catalog's derived-visibility filter).
+    /// The whole set of `wiki_id`s the reader can read ≥ 1 fact in — the
+    /// derived-visibility filter. Access control, not navigation.
     #[must_use]
     pub const fn readable_wikis(&self) -> &BTreeSet<String> {
         &self.readable_wikis
@@ -458,10 +464,10 @@ fn sync_page_topics(abs_path: &Path, topics: &[String]) -> Result<bool> {
 }
 
 /// A page's **card** as recall navigation reads it: the testata
-/// `description` one-liner plus the `keywords` mapping flattened to the same
-/// `key=value` search strings the catalog exposes for wiki cards
-/// ([`crate::wiki::flatten_keywords_mapping`]), so card matching is uniform
-/// across both levels.
+/// `description` one-liner plus the `keywords` mapping flattened to
+/// `key=value` search strings ([`crate::wiki::flatten_keywords_mapping`]).
+/// This is the only card a turn is ever shown — there is no wiki-level card on
+/// the read side, because there is no wiki on the read side.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PageCard {
     /// The page's «what goes in here» one-liner, when the testata has one.
@@ -602,9 +608,10 @@ pub fn set_page_description(abs_path: &Path, description: &str) -> Result<bool> 
 /// Persist a wiki's one-line abstract into its `_meta.md` (`extra["summary"]`),
 /// rewriting only when it changed. A blank `summary` clears any stale entry.
 ///
-/// Called by the narrative compiler when it (re)compiles a wiki's `index.md`
-/// overview page — the source of the wiki's abstract — so the catalog / root
-/// index can surface it. The prose body of `_meta.md` is preserved.
+/// Called by the narrative compiler when it (re)compiles a wiki's **foundation
+/// card page**, whose written card is the source of the abstract. The prose
+/// body of `_meta.md` is preserved. Write-side only: nothing on the read side
+/// is shown this line, or the wiki it describes.
 ///
 /// # Errors
 ///

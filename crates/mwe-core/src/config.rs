@@ -255,9 +255,10 @@ pub enum LlmFunction {
     /// rewrite each dirty standard-wiki leaf from its facts into prose. Wants a
     /// **strong** model (faithful fact→prose without invention or leak).
     Cronista,
-    /// `navigator` — the recall navigator: per-turn, reads the root
-    /// index + destination cards and decides which wikis/pages to open
-    /// next (the recall pipeline).
+    /// `navigator` — the recall navigator: per-turn, reads the destination
+    /// **page** cards and the prose collected so far and decides which page to
+    /// open next (the recall pipeline). It is shown no wikis and no catalogue
+    /// of them.
     /// Wants a **strong-but-cheap** model: it runs on every turn
     /// (latency + cost bound) but its link choices are the recall
     /// quality bar.

@@ -176,9 +176,11 @@ pub async fn run_compile(
     let report = compiler::compile_dirty_pages(pool, tree, &plan, cronista, hub_writer, now)
         .await
         .context("compiler")?;
-    // Recall-navigation: deterministic, no-LLM pass that syncs each wiki's
-    // `_meta.keywords["topics"]` to the union of its facts' topics, so the
-    // catalog / root index a recall navigator reads carry the topic vocabulary.
+    // Deterministic, no-LLM pass that syncs each wiki's
+    // `_meta.keywords["topics"]` to the union of its facts' topics, and each
+    // page's testata to the topics of the facts on it. The **page** cards are
+    // what a turn reaches; the wiki-level union is write-side vocabulary. No
+    // reader is shown a wiki or a list of them.
     // Best-effort like the reviewer below — a failure degrades recall, it never
     // fails the compile.
     match meta_annotate::sync_wiki_keywords(pool, tree).await {

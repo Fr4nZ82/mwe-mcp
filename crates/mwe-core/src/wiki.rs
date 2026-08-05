@@ -60,7 +60,6 @@
 //! - Validate ACL at read time. The caller composes [`crate::render`] to
 //!   apply per-sender filtering; this module returns raw page contents.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -1713,9 +1712,11 @@ pub fn wiki_write_page(tree: &WikiTree, id: &WikiId, page: &Path, contents: &str
 /// abstract, kept fresh by the compiler's abstract sync.
 ///
 /// Carried in [`WikiMeta::extra`] until promoted to a typed field; `None` when
-/// absent or not a scalar string. Shared by the catalog, the navigator's wiki
-/// cards, and the recall block's identity sections (`WHO YOU ARE` / `WHO IS
-/// SPEAKING`).
+/// absent or not a scalar string. **Write-side**: the filer's placement
+/// prompts read it. The read side is shown no wiki and no wiki card, so
+/// nothing renders this to a reader — the identity sections a turn does get
+/// (`WHO YOU ARE` / `WHO IS SPEAKING`) are built from a person's card
+/// **page**, not from this line.
 pub(crate) fn meta_summary(meta: &WikiMeta) -> Option<String> {
     meta.extra
         .get("summary")
@@ -1726,9 +1727,10 @@ pub(crate) fn meta_summary(meta: &WikiMeta) -> Option<String> {
 /// Flatten a `keywords` frontmatter mapping into `key=value` search strings.
 ///
 /// The value-less `key` alone is emitted when the value is not a scalar string;
-/// non-string keys are skipped. Used by the catalog, the root index, and the
-/// per-page card reader ([`crate::meta_annotate::read_page_card_keywords`]) so
-/// every card surface exposes the same matchable shape.
+/// non-string keys are skipped. Used by the per-page card reader
+/// ([`crate::meta_annotate::read_page_card_keywords`]) and by the write side's
+/// wiki-level vocabulary, so every card surface exposes the same matchable
+/// shape.
 pub(crate) fn flatten_keywords_mapping(keywords: &serde_yaml::Mapping) -> Vec<String> {
     keywords
         .iter()
@@ -1740,154 +1742,6 @@ pub(crate) fn flatten_keywords_mapping(keywords: &serde_yaml::Mapping) -> Vec<St
             )
         })
         .collect()
-}
-
-/// [`flatten_keywords_mapping`] over a wiki's `_meta.md` keywords.
-fn flatten_keywords(meta: &WikiMeta) -> Vec<String> {
-    flatten_keywords_mapping(&meta.keywords)
-}
-
-/// `_internal.wiki_catalog_list` — group wikis by `wiki_type`.
-///
-/// Returns a map `wiki_type → [(WikiId, slug, title)]`, sorted within each
-/// bucket by `wiki_id`. Internal / admin callers see every wiki. For
-/// sender-scoped enumeration — where visibility is **derived** from the
-/// per-fragment ACL (a wiki appears only when the reader can read ≥ 1 fact in
-/// it) — use [`wiki_catalog_list_for`].
-///
-/// # Errors
-///
-/// As [`WikiTree::walk`].
-pub fn wiki_catalog_list(tree: &WikiTree) -> Result<BTreeMap<String, Vec<CatalogEntry>>> {
-    let mut by_type: BTreeMap<String, Vec<CatalogEntry>> = BTreeMap::new();
-    for d in tree.walk()? {
-        let e = CatalogEntry {
-            wiki_id: d.meta.wiki_id.clone(),
-            slug: d.meta.slug.clone(),
-            title: d.meta.title.clone(),
-            summary: meta_summary(&d.meta),
-            keywords: flatten_keywords(&d.meta),
-        };
-        by_type.entry(d.meta.wiki_type).or_default().push(e);
-    }
-    for v in by_type.values_mut() {
-        v.sort_by(|a, b| a.wiki_id.as_str().cmp(b.wiki_id.as_str()));
-    }
-    Ok(by_type)
-}
-
-/// Sender-scoped catalog enumeration, **reader-relative**.
-///
-/// Variant of [`wiki_catalog_list`] where wiki visibility is **derived** from
-/// the per-fragment ACL: a wiki is listed iff the reader can read ≥ 1 fact in
-/// it (`readable_wikis` membership, counting topic-less facts too), and each
-/// surviving wiki's card is projected *for the reader* rather than at the owner
-/// tier — `keywords` come from `reader_topics` (the topic union the reader can
-/// read, computed from `fact_index` by
-/// [`crate::meta_annotate::build_reader_card`]) instead of the `.md`
-/// frontmatter, and `summary` is served only when the wiki's id is in
-/// `summary_visible` (the reader's read-set covers the wiki's default
-/// visibility). This is the catalog half of the reader-relative card boundary
-/// ([identity-and-acl.md §The ACL card boundary](../../../docs/concepts/identity-and-acl.md#the-acl-card-boundary--what-card-metadata-may-carry)):
-/// a reader denied a fact never sees its theme leak through the catalog card.
-///
-/// # Errors
-///
-/// As [`WikiTree::walk`].
-pub fn wiki_catalog_list_for(
-    tree: &WikiTree,
-    readable_wikis: &BTreeSet<String>,
-    reader_topics: &BTreeMap<String, Vec<String>>,
-    summary_visible: &BTreeSet<String>,
-) -> Result<BTreeMap<String, Vec<CatalogEntry>>> {
-    let mut by_type: BTreeMap<String, Vec<CatalogEntry>> = BTreeMap::new();
-    for d in tree.walk()? {
-        let wiki_id = d.meta.wiki_id.as_str();
-        // Derived visibility: a wiki appears only when the reader can read at
-        // least one fact in it. A wiki with nothing visible to this reader is
-        // skipped.
-        if !readable_wikis.contains(wiki_id) {
-            continue;
-        }
-        let e = CatalogEntry {
-            wiki_id: d.meta.wiki_id.clone(),
-            slug: d.meta.slug.clone(),
-            title: d.meta.title.clone(),
-            summary: if summary_visible.contains(wiki_id) {
-                meta_summary(&d.meta)
-            } else {
-                None
-            },
-            keywords: reader_topics.get(wiki_id).cloned().unwrap_or_default(),
-        };
-        by_type.entry(d.meta.wiki_type).or_default().push(e);
-    }
-    for v in by_type.values_mut() {
-        v.sort_by(|a, b| a.wiki_id.as_str().cmp(b.wiki_id.as_str()));
-    }
-    Ok(by_type)
-}
-
-/// One row of [`wiki_catalog_list`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CatalogEntry {
-    /// Stable id.
-    pub wiki_id: WikiId,
-    /// Directory slug.
-    pub slug: WikiSlug,
-    /// Display title.
-    pub title: String,
-    /// One-line `summary` frontmatter key, when present — the abstract the
-    /// root index shows so a navigator can pick a branch without reading the
-    /// wiki. `None` until the compiler populates it (then carried verbatim).
-    pub summary: Option<String>,
-    /// The card's topic tags — what the recall navigator's card seeds match
-    /// against. From [`wiki_catalog_list_for`] these are **reader-relative**
-    /// (the topics the reader can read); from the admin [`wiki_catalog_list`]
-    /// they are the owner-tier `.md` `keywords` flattened. Empty until populated.
-    pub keywords: Vec<String>,
-}
-
-/// Render a sender-scoped catalog as a compact **root index** string.
-///
-/// The root index is the orientation map a recall navigator reads before
-/// descending into a wiki; the input is the output of [`wiki_catalog_list`] /
-/// [`wiki_catalog_list_for`]. Wikis are grouped under a `## <wiki_type>` heading
-/// (the [`BTreeMap`] keys are already sorted) and listed as `[[wiki_id]]`
-/// wikilinks the navigator can follow, with the display title appended when it
-/// adds information. The per-sender ACL filtering is the caller's responsibility
-/// — [`wiki_catalog_list_for`] already drops the wikis a sender may not see — so
-/// this stays a pure, side-effect-free render. Returns an empty string for an
-/// empty catalog.
-///
-/// The navigation-recall entry map (recall pipeline):
-/// `recall_nav::navigate` renders it per turn from the sender-scoped catalog and
-/// hands it to the navigator as the ROOT INDEX section of every hop.
-#[must_use]
-pub fn render_root_index(by_type: &BTreeMap<String, Vec<CatalogEntry>>) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    for (wiki_type, entries) in by_type {
-        if entries.is_empty() {
-            continue;
-        }
-        lines.push(format!("## {wiki_type}"));
-        for e in entries {
-            let id = e.wiki_id.as_str();
-            let head = if e.title.is_empty() || e.title.as_str() == id {
-                format!("- [[{id}]]")
-            } else {
-                format!("- [[{id}]] — {}", e.title)
-            };
-            lines.push(head);
-            if let Some(summary) = &e.summary {
-                lines.push(format!("  {summary}"));
-            }
-            if !e.keywords.is_empty() {
-                lines.push(format!("  keywords: {}", e.keywords.join(" · ")));
-            }
-        }
-    }
-    lines.join("\n")
 }
 
 // ---------- Identity-wiki bootstrap ----------
@@ -2202,9 +2056,9 @@ pub fn ensure_is_agent_marker_in(wiki_dir: &Path) -> Result<bool> {
 /// It is a *loose* file — no `_meta.md` beside it — so it stays invisible
 /// to the engine: the re-index resolves it to `wiki_id = None` (zero
 /// `fact_index` rows, exactly like `_styles/`) and wiki enumeration (which
-/// keys on `_meta.md`) never mistakes it for a wiki. It is **distinct from
-/// the recall "root index"**, which is rendered per-sender at recall
-/// time and never persisted — do not conflate them.
+/// keys on `_meta.md`) never mistakes it for a wiki. It is for a **human**
+/// browsing the files: recall renders nothing of the sort, because the read
+/// side is shown no wiki and no list of them.
 ///
 /// Only **top-level** wikis are listed — direct children of `wikis/`
 /// (`rel_dir` depth 2). Smart wikis and emerged sub-wikis are always
@@ -3373,91 +3227,6 @@ mod tests {
         );
         assert!(!rels.iter().any(|r| r.contains("acmecorp")), "{rels:?}");
         assert!(!rels.iter().any(|r| r.ends_with("_meta.md")), "{rels:?}");
-    }
-
-    // ---------- catalog ----------
-
-    #[test]
-    fn catalog_groups_by_wiki_type() {
-        let dir = tempdir().unwrap();
-        let tree = WikiTree::open(dir.path()).expect("open");
-        write_meta(&tree.wikis_dir().join("alice"), &root_meta("alice"));
-        write_meta(&tree.wikis_dir().join("bob"), &root_meta("bob"));
-        write_meta(
-            &tree.wikis_dir().join("alice/acmecorp"),
-            &child_meta("alice", "acmecorp"),
-        );
-
-        let cat = wiki_catalog_list(&tree).expect("catalog");
-        assert_eq!(cat["wiki-user"].len(), 2);
-        assert_eq!(cat["wiki-cliente"].len(), 1);
-        assert_eq!(cat["wiki-user"][0].wiki_id.as_str(), "alice");
-        assert_eq!(cat["wiki-user"][1].wiki_id.as_str(), "bob");
-    }
-
-    #[test]
-    fn render_root_index_groups_by_type_and_links_wikis() {
-        let dir = tempdir().unwrap();
-        let tree = WikiTree::open(dir.path()).expect("open");
-        write_meta(&tree.wikis_dir().join("alice"), &root_meta("alice"));
-        write_meta(&tree.wikis_dir().join("bob"), &root_meta("bob"));
-        write_meta(
-            &tree.wikis_dir().join("alice/acmecorp"),
-            &child_meta("alice", "acmecorp"),
-        );
-
-        let cat = wiki_catalog_list(&tree).expect("catalog");
-        let rendered = render_root_index(&cat);
-
-        // Grouped under a per-type heading, each wiki a followable [[wikilink]].
-        assert!(rendered.contains("## wiki-user"), "{rendered}");
-        assert!(rendered.contains("## wiki-cliente"), "{rendered}");
-        assert!(rendered.contains("[[alice]]"), "{rendered}");
-        assert!(rendered.contains("[[bob]]"), "{rendered}");
-        // BTreeMap key order: "wiki-cliente" sorts before "wiki-user".
-        let cliente = rendered.find("## wiki-cliente").expect("cliente heading");
-        let user = rendered.find("## wiki-user").expect("user heading");
-        assert!(cliente < user, "{rendered}");
-    }
-
-    #[test]
-    fn render_root_index_empty_catalog_is_empty() {
-        let by_type: BTreeMap<String, Vec<CatalogEntry>> = BTreeMap::new();
-        assert!(render_root_index(&by_type).is_empty());
-    }
-
-    #[test]
-    fn catalog_and_root_index_carry_summary_and_keywords() {
-        let dir = tempdir().unwrap();
-        let tree = WikiTree::open(dir.path()).expect("open");
-        // `summary` is an unknown key → rides in WikiMeta.extra; `keywords` is a
-        // first-class mapping field.
-        let yaml = "---\n\
-                    wiki_id: cook\n\
-                    wiki_type: wiki-user\n\
-                    parent_wiki_id: null\n\
-                    slug: cook\n\
-                    title: Cooking\n\
-                    acl_default: 'user:cook'\n\
-                    summary: A wiki about recipes and meals.\n\
-                    keywords:\n  topics: pasta, cena\n\
-                    ---\n";
-        write_meta(&tree.wikis_dir().join("cook"), yaml);
-
-        let cat = wiki_catalog_list(&tree).expect("catalog");
-        let entry = &cat["wiki-user"][0];
-        assert_eq!(
-            entry.summary.as_deref(),
-            Some("A wiki about recipes and meals.")
-        );
-        assert_eq!(entry.keywords, vec!["topics=pasta, cena".to_owned()]);
-
-        let rendered = render_root_index(&cat);
-        assert!(
-            rendered.contains("A wiki about recipes and meals."),
-            "{rendered}"
-        );
-        assert!(rendered.contains("topics=pasta, cena"), "{rendered}");
     }
 
     // ---------- safe_page_path ----------

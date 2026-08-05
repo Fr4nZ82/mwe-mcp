@@ -1261,10 +1261,11 @@ refreshes exactly when the overview page is recompiled.
 
 This is the LLM-authored companion to the deterministic
 [topic-keyword sync](#keyword-sync--fact-topics-into-_meta-and-the-page-testate-recall-navigation):
-together they fill the per-wiki `summary` + `keywords` the catalog
-(`wiki_catalog_list[_for]`) and the rendered **root index** surface, so a recall
-navigator can pick a branch from the abstract without opening the wiki
-([recall pipeline](recall-pipeline.md#entry-point-gathering--recall_nav-navigation-phase-1)).
+together they fill the per-wiki `summary` + `keywords`. Those are **write-side**
+vocabulary — the filer's, not a reader's: nothing on the read side is shown a
+wiki, a wiki card, or a list of them
+([recall pipeline](recall-pipeline.md)). The catalog and root-index renderers
+that used to surface them were deleted on 2026-08-05, dead since the ruling.
 
 ### The `fact_id` repoint — recall returns prose, `text` stays canonical
 
@@ -1379,10 +1380,9 @@ This is the **producer** for the recall-navigation entry-points
 ([recall pipeline](recall-pipeline.md#entry-point-gathering--recall_nav-navigation-phase-1)): the
 populated wiki-level `topics` keyword is what
 [`wiki_navigate`](recall-pipeline.md#consumer-facing-deep-recall--the-wiki_navigate-tool) substring-matches
-against, and what the catalog (`wiki_catalog_list` / `wiki_catalog_list_for`) and
-the rendered **root index** (`wiki::render_root_index`) surface so a navigator can
-orient itself before descending into prose; the page-level entries are the
-per-page cards the future intra-wiki hops read. It is the **deterministic floor**
+against when it gathers entry **pages**; the page-level entries are the per-page
+cards the navigator decides each hop from. Neither is a wiki offered to a
+reader — [there is no such thing](recall-pipeline.md). It is the **deterministic floor**
 of the compile-time enrichment that design calls for; its LLM-authored companion
 is the per-wiki [abstract](#the-abstract-sync--the-wikis-summary). The
 remaining annotations (annotated `[[slug|hint]]` links, the typed link graph)

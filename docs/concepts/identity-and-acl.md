@@ -573,9 +573,10 @@ tiers, with two boundaries:
   region, a group-owned region on a user wiki, or any other off-default fact is
   special-cased content: its topics never reach the `.md` card.
 - **The served card is reader-relative.** The consumer-facing surfaces that
-  expose card metadata — the recall navigator's topic seeds, its candidate
-  cards and root index (both the ingest recall path and the `wiki_navigate`
-  tool) — never hand out that `.md` card. They recompute it **per reader** from
+  expose card metadata — the recall navigator's topic seeds and its candidate
+  **page** cards (both the ingest recall path and the `wiki_navigate` tool);
+  there is no wiki-level surface, [the read side is shown
+  none](../design-notes/recall-pipeline.md) — never hand out that `.md` card. They recompute it **per reader** from
   `fact_index` ([`meta_annotate::build_reader_card`](../../crates/mwe-core/src/meta_annotate.rs)): the topics are the union
   over the facts that reader `can_read`, and the abstract (`summary` / page
   `description`) is served only to a reader whose read-set covers the wiki's

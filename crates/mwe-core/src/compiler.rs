@@ -853,11 +853,17 @@ async fn compile_leaf_page(
 /// *what is this wiki* — its **foundation** node: an actor's card, or a topic
 /// wiki's buffer.
 ///
-/// The abstract is what the entry fan and the root-index catalog show for the
-/// wiki as a whole. This used to key on `index.md`, which was right until the
-/// map rule moved every foundation node off the root (2026-08-03) — after
-/// which the branch could never fire again and the abstract would have gone
-/// stale forever, with nothing to say so.
+/// 🚨 **The abstract has no reader on the read side, and never had one after
+/// 2026-08-03.** This doc used to claim it is «what the entry fan and the
+/// root-index catalog show for the wiki as a whole»; the catalog was removed
+/// with the read side's whole notion of a wiki, and the sentence outlived it
+/// long enough to be quoted back as fact. What the write side does with the
+/// abstract is its own business — nothing here promises a turn ever sees it.
+///
+/// The sync used to key on `index.md`, which was right until the map rule
+/// moved every foundation node off the root (2026-08-03) — after which the
+/// branch could never fire again and the abstract would have gone stale
+/// forever, with nothing to say so.
 ///
 /// Best-effort: a `_meta` hiccup must not fail a page that already wrote.
 fn sync_foundation_summary(page: &PagePlan, abs_dir: &std::path::Path, description: &str) {
@@ -2795,8 +2801,8 @@ mod tests {
             row.text, "Alice loves pasta",
             "canonical claim text preserved"
         );
-        // The index page's Cronista `description` became the wiki's
-        // `_meta` abstract (what the catalog / root index surface).
+        // The foundation page's Cronista `description` became the wiki's
+        // `_meta` abstract — write-side vocabulary; no reader is shown it.
         let meta = std::fs::read_to_string(dir.path().join("wikis/alice/_meta.md")).unwrap();
         assert!(
             meta.contains("summary: d"),

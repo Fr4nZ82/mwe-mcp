@@ -7,6 +7,34 @@ last_review: "2026-08-03"
 
 # Recall pipeline
 
+> # 🚨 THE READ SIDE HAS NO CONCEPT OF A WIKI
+>
+> **Whoever reads the memory does not know wikis exist.** Not the navigator,
+> not the funnel, not the fan, not any prompt on this side. There is no
+> catalogue of wikis, none is rendered, and none is needed.
+>
+> The reader **arrives on the pages its own facts landed on and travels by the
+> wikilinks written on them**. It never picks a container and never enters one.
+> A wiki is the WRITE side's instrument: it tells the filer where a fact goes
+> and which pages to link, and the quality of that linking is what the read
+> side lives on.
+>
+> **`wiki_id` on a candidate is an ADDRESS, not a place** — the first half of
+> `wiki_id/page.md`, exactly as a folder is the first half of a file path.
+>
+> Two things are still derived per wiki and neither is navigation:
+> **visibility**, which is access control (a reader who can read no fact in a
+> wiki sees nothing from it — a property of the facts), and the **smart-wiki
+> skip**, which is a different storage kind rather than a container.
+>
+> Founder's ruling, shipped 2026-08-03 (`6322206`). Before it, every hop
+> carried a ROOT INDEX — one line per visible wiki, ~13.5k characters per hop
+> on the live corpus — and the day before it was deleted it had to be labelled
+> *«orientation only, not doors»* because the navigator kept trying to open its
+> entries. **The label was the smell; the removal was the fix.** If you find a
+> comment, a doc line or a prompt that still says the reader chooses, enters,
+> or descends into a wiki, it is stale — correct it, do not implement it.
+
 [`mwe-core::recall`](../../crates/mwe-core/src/recall.rs) hosts the
 read-side orchestrators that complement [capture](capture-and-dedup.md).
 The module is layered: pure helpers at the top (n-gram + jaccard +
@@ -1022,7 +1050,7 @@ Two consumers resolve the grammar:
 
 Every mechanical emitter writes the canonical forms —
 `capture::wiki_link`, the document-ingest dossier anchor, the smart-push
-`authored_refs`, the root indexes, and the compiler feeds
+`authored_refs`, and the compiler feeds
 (`compiler::plan_page_wikilink`: the starvation index, the recommended
 links, the Hub Writer children — a page hop everywhere, and `None` for a
 wiki's own `index.md`, so a plan node still sitting on the map contributes no

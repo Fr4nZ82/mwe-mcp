@@ -4477,8 +4477,9 @@ fn file_to_subwiki_context(
 /// (or a value outside the closed palette) means the wiki is **generic**
 /// and carries no style default. `description` is the free-text "what
 /// goes in here" stamped onto `_meta` (`extra["summary"]`); its wording
-/// also encodes how strict the style hint is. Both feed the bidirectional
-/// root index (placement + recall navigation).
+/// also encodes how strict the style hint is. Both are **write-side**
+/// vocabulary — placement. Neither reaches a reader: the read side is shown
+/// no wiki, no wiki card and no list of them.
 ///
 /// # Errors
 ///
