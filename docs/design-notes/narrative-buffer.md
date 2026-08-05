@@ -2,7 +2,7 @@
 title: Narrative captures buffer — the pre-compilation staging area
 area: design-notes
 status: partial
-last_review: "2026-07-02"
+last_review: "2026-08-06"
 ---
 
 # Narrative captures buffer
@@ -80,22 +80,40 @@ branches on the target wiki's class:
 1. Resolve the target wiki from `available_wikis` (smart wikis are
    already filtered out of this set by their `_meta.md` `companion`
    flag).
-2. If the target is narrative (`companion == false`) **and** the
-   classifier did not flag a live `requested_container` →
-   [`capture_buffer::buffer_capture`](../../crates/mwe-core/src/capture_buffer.rs)
+2. If the target is narrative (`companion == false`) →
+   [`capture_buffer::buffer_capture_staged`](../../crates/mwe-core/src/capture_buffer.rs)
    with the classifier's `supersede_target` carried through as
    `supersede_hint`. **No** `.md` write, **no** `fact_index` row.
-3. Otherwise (a `requested_container` the user asked to keep live) → the
-   direct-write path: `capture::wiki_supersede` when the classifier
-   proposed a supersede target, else `capture::wiki_capture`.
+3. There is no step 3 any more. The direct-write path
+   (`capture::wiki_supersede` / `capture::wiki_capture`) is reachable only
+   for a smart target, which the routing window never offers — see
+   [the removal of the live-write exception](ingest-pipeline.md#one-write-speed--everything-is-buffered)
+   (founder, 2026-08-05). Every conversational capture waits for the dream.
 
-The crucial asymmetry is the supersede. On the direct-write path a
-supersede happens *now* (it rewrites the page and chains the
-`fact_index` rows). On the standard-wiki path the supersede target is only
+**What rides with the claim.** `buffer_capture_staged` stages two things
+beside the fact's own fields, both optional and both absent-tolerant:
+
+- the **embedding**, computed once here over the marker-stripped body. It is
+  read by the fresh recall slot and by promotion, which previously computed
+  the same vector over the same text independently — the read side once per
+  turn per pending capture. It is deliberately **not** journalled: a binary
+  blob has no place in a human-readable journal and the vector is derivable,
+  so a journal-rebuilt row simply has none and its two readers recompute.
+- the **origin fingerprint** — a hash of the conversational turn the claim
+  was extracted from, so the fresh slot can avoid restating, as a fact,
+  something the agent is already reading in the message that produced it (see
+  [recall-pipeline.md](recall-pipeline.md#the-mid-range-bridge--the-fresh-slot)).
+  This one **is** journalled (`omsg=`): nothing else on the entry could
+  reconstruct it.
+
+The crucial asymmetry is the supersede. A supersede target is only
 **recorded as a hint** on the buffered capture; the actual supersede is
 deferred to
 [promotion time](#promotion--the-light-dream), because there is no
-`fact_index` row to chain against until the claim is promoted.
+`fact_index` row to chain against until the claim is promoted. Now that
+nothing writes directly, the same is true of **dedup**: it is decided once,
+at promotion, instead of at write time for some captures and at promotion for
+others.
 
 Either way the ingest call returns a `capture_id` that anchors the
 consumer's audit row — for standard wikis that id is the buffered
@@ -154,8 +172,9 @@ dropped to `None`.
 
 Migration 0031 adds the `capture_buffer` table; migration 0034 adds the
 `valid_from` / `valid_to` validity columns, 0035
-the `style` / `page_description` placement columns, and 0038 the
-`decay_reason` closure column.
+the `style` / `page_description` placement columns, 0038 the
+`decay_reason` closure column, and 0068 the `embedding` /
+`embedding_dim` / `origin_message_hash` staging columns.
 **It is a cache/index over the journal, not the SSOT.** Its columns mirror
 the `fact_index` classifier/ACL columns so promotion can be a straight copy:
 `capture_id` (primary key), `wiki_id`, `target_page`, `body`,
@@ -165,6 +184,22 @@ the `fact_index` classifier/ACL columns so promotion can be a straight copy:
 interval `valid_from` / `valid_to` (mirrored in the journal as `vf` /
 `vt`), and the placement style axis `style` / `page_description` (mirrored
 as `style` / `desc`) — all so `rm engine.db` + reindex regenerates them.
+
+The two staging columns divide on exactly that last test — *can a reindex
+rebuild it?*
+
+- `embedding` / `embedding_dim` **cannot go in the journal** (a binary blob
+  in a human-readable file) and **do not need to**: the vector is derivable
+  from the body. A rebuilt row is `NULL` here, and its two readers — the
+  fresh recall slot and `promote_one` — compute it, which is what both did
+  before the column existed. Same DB-only durability class as `status` /
+  `processed_at` / `decay_reason`.
+- `origin_message_hash` **is** journalled, as the `omsg=` attribute, for the
+  opposite reason: it is a fingerprint of the conversational turn the claim
+  came from, and nothing on the entry could reconstruct it. Absent (an older
+  journal) → `None`, and the capture simply never gets suppressed as
+  already-in-context — the safe direction, since showing a fact twice costs
+  characters and hiding one costs the fact.
 
 `decay_reason` is the one **post-capture mutation** among them: it stays
 `NULL` at buffer time (a fresh capture is alive) and is stamped — together

@@ -2,7 +2,7 @@
 title: Recall pipeline — the read-side orchestrators and the entry-point gatherer
 area: design-notes
 status: implemented
-last_review: "2026-08-03"
+last_review: "2026-08-06"
 ---
 
 # Recall pipeline
@@ -185,7 +185,7 @@ knob.** Defaults come from `IngestPolicy::default` / `NavigatorPolicy::default`.
 
 | Knob | Default | Sizes |
 |---|---:|---|
-| `recall_top_k` | `5` | the flat slot — how many promoted facts reach the block, **and** how many home pages seed the fan |
+| `recall_top_k` | `10` | the flat slot — how many promoted facts reach the block, **and** how many home pages seed the fan |
 | `recall_fresh_top_k` | `3` | the fresh slot (buffered, un-promoted captures); `0` disables it |
 | `smart_corpus_floor` | `0.45` | how close a project's signpost description must sit to the query before the merged search may read that project's documentation at all; naming the project bypasses it |
 | `relevance_floor` | `0.0` **(off)** | turn-level gate on *rendering* the promoted flat hits — see [the relevance floor](#the-relevance-floor--a-fourth-gate-but-on-rendering-not-on-recall) for why it ships disabled |
@@ -211,7 +211,7 @@ changed only with a new measurement (`mwe-core::recall`, `mwe-core::recall_nav`)
 | `SUBJECT_COVERAGE_UPLIFT` | `0.15` | multiplies per turn-subject covered beyond the first |
 | `WEIGHT_TOPIC_PAGE` | `0.8` | classified-topic seeds |
 | `WEIGHT_SITUATIONAL_PAGE` | `0.5` | host-supplied situational seeds |
-| `FRESH_CANDIDATE_CAP` | `32` | how many buffered captures are re-embedded per turn |
+| `FRESH_CANDIDATE_CAP` | `32` | how many pending buffered captures the fresh slot ranks per turn |
 
 ## The two corpora
 
@@ -537,7 +537,7 @@ it. A turn that *names* its project comes through
 | `wiki_facts_for` | constant `1.0` | post-fetch | ✗ (audit/list view) | structured SQL query |
 | `wiki_recall` | delegates to `wiki_search` today | inherited | ✓ inherited | semantic recall the LLM ingest uses (stable call site) |
 | `wiki_multi_hop_facts` | seed-fact + per-hop `wiki_search` | inherited | ✓ inherited | early multi-hop link resolution; lives in [`recall.rs`](../../crates/mwe-core/src/recall.rs) and returns a `MultiHopOutcome`. Exported and tested, but the agentic chat and `wiki_ingest_message` do not call it yet, pending the cap-10-hop traversal protection that gates the consumer hookup (see [What is intentionally out of scope](#what-is-intentionally-out-of-scope)). |
-| `recall_fresh_captures` | cosine over **re-embedded** buffered captures | post-fetch via `buffered_visible_to` → [`acl::can_read`] | ✗ (not `fact_index` rows yet) | mid-range "fresh" slot — un-promoted captures; **ingest path only** (see [The mid-range bridge](#the-mid-range-bridge--the-fresh-slot)) |
+| `recall_fresh_captures` | cosine over the buffered captures' **staged** vectors (recomputed only when a row has none) | post-fetch via `buffered_visible_to` → [`acl::can_read`] | ✗ (not `fact_index` rows yet) | mid-range "fresh" slot — un-promoted captures, minus any whose originating message the turn is already showing; **ingest path only** (see [The mid-range bridge](#the-mid-range-bridge--the-fresh-slot)) |
 | `recall_due_soon` | constant `1.0`, ordered by `valid_to` imminence | post-fetch | ✗ (mechanical time-driven pull — counting it would inflate recency without semantic re-use) | the **due-soon slot**: facts whose validity window closes/fires inside `[now, now + horizon]`, most imminent first — a dated commitment surfaces even when nothing in the turn resembles it. Backed by `fact_index::find_due_between`; `now` is caller-supplied (one clock per turn), the horizon is an operator setting (recall-settings panel); the window reads `valid_to`, which stays the only stored firing time — a separate `remind_at` column was considered for reminder delivery and declined, because a `valid_to` on a day boundary means "a date, no hour stated" and the hour is then a delivery-side policy, not a per-fact datum. Wired into the ingest turn as the recall block's `UPCOMING` slot — pulled on **every** LLM-routed turn (time-driven, no LLM cost), see [ingest-pipeline.md](ingest-pipeline.md#the-recall-block--recalled-memory-the-rules-field-is-separate). |
 
 ### The relevance floor — a fourth gate, but on rendering, not on recall
@@ -678,6 +678,21 @@ Order rationale:
   (cheap), spends CPU on the survivors, then drops the rows that
   must not leave the process. ACL post-filter is mandatory: a hit
   count that included unreadable rows would leak existence.
+- **The ACL is also a query predicate now** (2026-08-05, `FactFilters::readable_by`,
+  built by [`acl::reader_principals`](../../crates/mwe-core/src/acl.rs)). Scoring
+  is a cosine against every candidate's stored embedding, so an unreadable
+  candidate used to cost a vector read, a transfer and a decode before being
+  discarded — on the path that runs once per conversational turn over the whole
+  active corpus. The predicate tests all three read axes (`owner_id`,
+  `sender_id`, and the `allow_ids` JSON array), because none of them is
+  sufficient alone. The section corpus already worked this way: `search_sections`
+  applies the ACL before both scans so an unreadable wiki's bytes never leave the
+  store.
+- **The post-filter stays, and stays the authority.** The predicate is a
+  narrowing optimisation; two spellings of one access rule drift, and the
+  failure mode of *this* drift is showing somebody something they were never
+  told, so the stricter of the two must always get the last word. A test pins
+  the two together across every axis.
 - Recall counter bump happens **last**, on the rows actually returned
   to the caller — so a query that gets ACL-filtered out of every hit
   does not inflate counters on rows the caller never saw.
@@ -716,10 +731,41 @@ of the consumer's recent window but not yet a durable fact.
 `recall_fresh_captures` closes it. It fetches the pending buffered captures
 ([`capture_buffer::find_all_buffered`](../../crates/mwe-core/src/capture_buffer.rs),
 capped at `FRESH_CANDIDATE_CAP`), ACL-filters each via `buffered_visible_to`,
-**re-embeds the body at recall time**, cosine-ranks against the query, and
-returns the top `recall_fresh_top_k` as `RecallHit`s flagged `fresh: true`. No
-`fact_index` row exists yet, so it does **not** bump recall counters and the
-hits carry no published-page offsets (`region_start`/`region_end` are `None`).
+cosine-ranks them against the query using the **vector staged when the claim
+was buffered**, and returns the top `recall_fresh_top_k` as `RecallHit`s
+flagged `fresh: true`. No `fact_index` row exists yet, so it does **not** bump
+recall counters and the hits carry no published-page offsets
+(`region_start`/`region_end` are `None`).
+
+**The vector is stored, not recomputed** (2026-08-05). The slot used to embed
+every visible pending capture on every conversational turn — up to
+`FRESH_CANDIDATE_CAP` embeddings on the hot path, for bodies that never
+change. `capture_buffer` now carries the vector, computed once at buffer time
+over the marker-stripped body, and both readers use it: this slot, and
+promotion, which was computing the identical thing over the identical text a
+second time. Nothing new is spent — one of two duplicate computations was
+deleted and the other moved earlier. A row with no vector (recovered by
+reindexing the journal, which does not carry blobs; or staged while the
+embedder was down) falls back to computing it, which is exactly the old
+behaviour.
+
+**It does not repeat what the agent is already reading.** The turn hands the
+consumer its own replayed transcript and the cross-consumer recent window, and
+a capture extracted from one of *those* messages would arrive twice in one
+block — once as the message, once as the fact drawn from it. Each buffered
+capture records a fingerprint of its originating turn
+(`capture_buffer::origin_fingerprint`), the ingest path builds the set of
+fingerprints it is already showing, and a match is skipped.
+
+The suppression keys on the **origin**, not on the age, because age cannot
+answer the question: the recent window is bounded by an entry count and a
+character budget as well as by a TTL, so on a talkative surface a message
+leaves it long before the TTL expires. It also means the slot keeps serving,
+untouched, every capture made by **somebody else** — another user's message
+was never in this sender's context by any route — which is the case the
+mid-range bridge is really for. The closure-topic pass passes an empty set
+deliberately: it is hunting for the *targets* of a "forget that" gesture, and a
+claim the user made moments ago is precisely what such a gesture closes.
 
 **Scope** — the fresh slot is wired into the **ingest / conversational path
 only**: [`wiki_ingest_message`](ingest-pipeline.md) merges it after `wiki_recall`
@@ -728,13 +774,10 @@ and renders it under a `Recent (not yet consolidated):` heading in the
 `wiki_recall`-backed flows — whose edit/locate logic assumes published-page
 offsets the buffer lacks — are unchanged.
 
-**Status — provisional.** This is the minimal bridge: re-embed the few pending
-captures per turn (cheap, the buffer drains at the light-dream backlog
-threshold). The recall-strategy work (roadmap: flat-over-facts vs
-navigation through the prose wiki) tracks the follow-up. The tracked optimisation is to embed once at
-capture time and store the vector (reused at recall and at promotion), removing
-the per-turn re-embed; see
-the per-turn context model.
+Its load grew with the write path: since every standard capture is buffered
+(no live-write exception — see [ingest-pipeline.md](ingest-pipeline.md#one-write-speed--everything-is-buffered)),
+this slot is what makes a just-captured claim answerable at all before the
+light dream runs.
 
 ## Entry-point gathering — `recall_nav` (navigation, phase 1)
 

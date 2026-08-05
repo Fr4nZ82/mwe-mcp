@@ -2191,6 +2191,13 @@ async fn process_job(
             } else {
                 Vec::new()
             };
+            // Stage the vector here too: a document job buffers in bulk, and
+            // every capture it stages would otherwise be embedded by the light
+            // dream one at a time at promotion. No origin fingerprint — a
+            // document is not a conversational turn, so there is no message
+            // the agent could be reading it twice from.
+            let staging =
+                capture_buffer::BufferStaging::build(embedder.as_ref(), &body, None).await;
             let buffered = capture_buffer::buffer_capture_with_source(
                 tree,
                 pool,
@@ -2216,6 +2223,7 @@ async fn process_job(
                 job.source_ref
                     .clone()
                     .or_else(|| Some(format!("document-job:{}", job.job_id))),
+                staging,
             )
             .await?;
             if let Some((beneficiary, notice_body)) = minted_beneficiary {

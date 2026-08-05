@@ -2,7 +2,7 @@
 title: Ingest pipeline — wiki_ingest_message
 area: design-notes
 status: implemented
-last_review: "2026-08-05"
+last_review: "2026-08-06"
 ---
 
 # Ingest pipeline
@@ -238,42 +238,56 @@ concern above is about **bulk project-doc maintenance**, not the
 low-volume per-turn conversational memory — the consumer's own router
 keeps that small by dropping ephemeral ops before any server call.
 
-### Narrative-vs-direct split
+### One write speed — everything is buffered
 
-The wikis that survive the smart-family filter are routed two ways by the
-[`Capture`](#the-four-intents-and-what-each-one-does) arm: a **standard-wiki**
-target (a prose page the nightly compiler writes) is **buffered**; a live
-`requested_container` is a **direct write**. **"standard" = "not
-smart"** — every wiki that survives the smart-family filter is on the
-non-smart path, read from the per-wiki `_meta.md` smart flag rather
-than a registry set.
-The full model and the buffer it feeds live in
+Every capture into a standard wiki is **buffered** (`route_to_buffer =
+target_is_standard`). **"standard" = "not smart"** — every wiki that
+survives the smart-family filter is on the non-smart path, read from the
+per-wiki `_meta.md` smart flag rather than a registry set — so in practice
+every reachable target buffers, and the direct `wiki_capture` /
+`wiki_supersede` branch is left in place only for a smart target the window
+cannot offer. The full model and the buffer it feeds live in
 [narrative-buffer.md](narrative-buffer.md). **This is the standard /
 standard-wiki perimeter only — the smart path is untouched.**
 
-**The two write speeds — narrative sediment vs. live containers** (the model
-and the buffer it feeds live in [narrative-buffer.md](narrative-buffer.md)).
-The split is not a fast path bolted onto an async model as an exception — it
-mirrors the two natures a captured claim can have, and the classifier judges
-which one it is on every extraction. *Accumulated knowledge* (a detail in a
-story — "we ran out of milk while shopping") gains value by consolidating:
-it can ripen in the buffer overnight and come out as compiled prose, and
-nothing about the turn needs it back sooner — recall serves buffered
-captures directly through the fresh slot either way. Batching is also the
-write economics: the compiler renders many ripened facts in one pass
-instead of re-prosing a paragraph on every message. An *operational
-container* (a list, a
-collection, a named note — "add milk to the shopping list") carries a
-**read-your-writes contract**: the user's next question is seconds away
-("what's on the list?"), so waiting for the dream would be wrong *by the
-content's nature*, not slow by implementation. So the classifier emits a
-per-extraction `requested_container` flag, and step 4 routes a flagged
-capture down the **direct-write path even into a standard wiki**
-(`route_to_buffer = target_is_standard && !requested_container`) —
-`wiki_capture` creates the page if absent and writes the fact's marker
-immediately; the dream later refines it. The classifier decides — there is
-no hard-coded gate. Only accumulated knowledge
-(`requested_container: false`, the default) waits in the buffer.
+**There used to be two write speeds** (founder, 2026-08-05 — removed). The
+classifier still emits a per-extraction `requested_container` flag for an
+*operational container* (a list, a collection, a named note — "add milk to
+the shopping list") as against *accumulated knowledge* ("we ran out of milk
+while shopping"), and the orchestrator used to route a flagged capture down
+the direct-write path even into a standard wiki, writing the marker during
+the turn. The argument was a **read-your-writes contract**: "what's on the
+list?" arrives seconds later.
+
+Two things retired it, and neither is about the flag being wrong:
+
+- **A buffered claim is already recallable.** The fresh slot serves it the
+  moment it is staged, so the answer to "what's on the list?" never came
+  from the page — it came from recall, and the consumer composes from
+  there. What the direct write bought was the *page*, not the answer.
+- **The page follows within an interval, not within a night.** The light
+  cadence promotes **and recompiles** the pages it touched
+  ([rem-cycle.md](rem-cycle.md)), so the lag is the light-dream interval.
+
+What removing it buys is that dedup and supersede stop being decided in two
+places — at write time and again at promotion — and are decided once, where
+the fact set is settled. What it costs is that a page opened right after a
+conversation may not show what was just said; the dashboard's wiki list says
+so in as many words, because the alternative is a reasonable person
+concluding the fact was lost.
+
+Two consequences worth naming, both accepted:
+
+- A restated fact is no longer recognised as a duplicate *during the turn*,
+  so a beneficiary notice goes out that the direct path would have
+  suppressed, and the duplicate resolves at promotion.
+- The [due-soon slot](recall-pipeline.md) reads promoted facts, so a dated
+  commitment captured this turn surfaces there only after promotion.
+
+The `requested_container` flag is therefore inert in routing today. It is
+still parsed and still carried on the plan; retiring it from the prompt is a
+separate change, weighed against the prompt's own version and replay
+overhead.
 
 ### Prose-only classification
 
@@ -523,7 +537,7 @@ for three reasons:
 
 | Intent | Side effects | Output | Notes |
 |---|---|---|---|
-| `Capture` | **per filed fact**: narrative target ⇒ [`capture_buffer::buffer_capture`](narrative-buffer.md) (journal append + `capture_buffer` index, **no** `.md` write, **no** `fact_index` row) — **unless** the classifier flagged `requested_container`, which routes live; non-narrative target, **or** a requested container ⇒ `wiki_capture` / `wiki_supersede` (embed + dedup + atomic append + `fact_index` insert). **Per closed fact** (the plan's `closures` array): validity stamped act-first + one born-applied receipt — see [the closure verb](#the-closure-verb--completion--the-relayed-forget-gesture). | `capture_id` (the **first** filed fact) + optional `context_snippet` if recall hits exist | Multi-fact: a bad extraction is skipped, the rest are filed. Legacy single-fact: any plan-validation failure ⇒ demote whole turn to skip. Nothing valid filed **and** nothing closed ⇒ skip. |
+| `Capture` | **per filed fact**: standard target ⇒ [`capture_buffer::buffer_capture_staged`](narrative-buffer.md) (journal append + `capture_buffer` index carrying the staged vector and origin fingerprint, **no** `.md` write, **no** `fact_index` row) — which today is every reachable target; a smart target would take `wiki_capture` / `wiki_supersede` (embed + dedup + atomic append + `fact_index` insert), but the routing window never offers one. **Per closed fact** (the plan's `closures` array): validity stamped act-first + one born-applied receipt — see [the closure verb](#the-closure-verb--completion--the-relayed-forget-gesture). | `capture_id` (the **first** filed fact) + optional `context_snippet` if recall hits exist | Multi-fact: a bad extraction is skipped, the rest are filed. Legacy single-fact: any plan-validation failure ⇒ demote whole turn to skip. Nothing valid filed **and** nothing closed ⇒ skip. |
 | `Recall` | none | `context_snippet` is the deterministic hit-list rebuilt from the flat hits ([`format_snippet`]) | Recall counter already bumped during step 1. |
 | `Structural` | **per filed fact, when the hybrid message carries content** (the same filing loop as `Capture`: explicit `extractions` + `closures` only, no legacy synthesis) | `suggested_seed` (LLM or canned `structural_suggested_seed`) | Never demotes to skip — the dashboard nudge is the turn's outcome even when nothing files. |
 | `Skip` | none | LLM `suggested_seed` if any, else `fallback_suggested_seed` | Greetings, acks, no-ops. |
@@ -539,17 +553,21 @@ override, parseable rather than driving normal behaviour.
 For each unit the arm validates the plan + supersede target, then forks on the
 target wiki's class (resolved from the `available` window — smart wikis are
 already gone from it, filtered by their `_meta.md` smart flag). When the
-target is standard (smart flag `false`) and the unit is not a live
-`requested_container`, the orchestrator calls
-[`capture_buffer::buffer_capture`](narrative-buffer.md): the claim is
+target is standard (smart flag `false`) — which, the window being what it is,
+means always — the orchestrator calls
+[`capture_buffer::buffer_capture_staged`](narrative-buffer.md): the claim is
 appended to the wiki's `_captures.md` journal and indexed in
 `capture_buffer`, with the validated supersede target carried through as
 `supersede_hint` (no `.md` is touched, no `fact_index` row is written,
 and the supersede is *not* applied now — it is recorded for the light
-dream to honour at promotion time). Otherwise the arm keeps the synchronous
-direct-write path: `wiki_supersede` when the LLM proposed a valid supersede
-target, else `wiki_capture`. Every fact files as prose; there is no
-structured route-or-create step.
+dream to honour at promotion time). Two things ride along with the claim: its
+**embedding**, computed here over the marker-stripped body so neither the
+fresh recall slot nor promotion has to compute it again, and the
+**fingerprint of the turn** it came from, which is how the fresh slot knows
+not to restate something the agent is already reading. The synchronous
+direct-write path (`wiki_supersede` / `wiki_capture`) survives for a smart
+target and is unreachable from here in practice. Every fact files as prose;
+there is no structured route-or-create step.
 
 The failure contract is split by plan shape. A **legacy single-fact**
 plan keeps the old "one bad plan demotes the whole turn to skip"

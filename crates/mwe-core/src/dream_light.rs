@@ -282,9 +282,21 @@ async fn promote_one(
     // embed surfaces as a per-capture soft error (caught by run_light_cycle);
     // the capture stays buffered for the next cycle. The embedding reads
     // the marker-stripped text (the marker is semantic noise).
-    let embedding = embedder
-        .embed(&crate::parser::strip_embed_markers(&cap.body))
-        .await?;
+    //
+    // Normally there is nothing to embed: `buffer_capture` already computed
+    // this exact vector, over this exact text, when the claim was staged. The
+    // call below is the fallback for a row that has none — one recovered by
+    // reindexing the journal (a blob is not journalled), or one whose staging
+    // hit a transient embedder fault. Same text either way, so a fact is
+    // ranked identically whichever route its vector took.
+    let embedding = match cap.embedding.clone() {
+        Some(v) => v,
+        None => {
+            embedder
+                .embed(&crate::parser::strip_embed_markers(&cap.body))
+                .await?
+        },
+    };
     let new = NewFact {
         fact_id: cap.capture_id.clone(),
         wiki_id: wiki.to_owned(),

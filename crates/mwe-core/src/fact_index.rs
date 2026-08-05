@@ -1728,6 +1728,31 @@ pub struct FactFilters {
     /// dashboard "includi inattivi" toggle. The default (`false`) keeps the
     /// read-side primitive active-only, as every non-dashboard caller expects.
     pub include_inactive: bool,
+    /// **The ACL as a predicate**: keep only facts readable by this set of
+    /// principals, in canonical wire form
+    /// ([`crate::acl::reader_principals`] builds it from a sender).
+    ///
+    /// `None` — the historical shape — applies no ACL here and leaves the
+    /// caller to filter the rows it got back. That is what every path that
+    /// does its own projection still does; the recall path sets it, because
+    /// a post-filter there means every active fact's **embedding** is read
+    /// off disk, shipped and decoded before most of them are discarded. The
+    /// same move was already made for the section corpus, where the ACL is
+    /// applied before both scans so an unreadable wiki's bytes never leave
+    /// the store.
+    ///
+    /// Read access is `owner ∪ allow ∪ sender` — all three axes, none of
+    /// them sufficient alone — so the predicate tests all three, the
+    /// `allow_ids` JSON array included. It is a **narrowing** filter and
+    /// never a substitute for [`crate::acl::can_read`]: callers keep the
+    /// per-row check as the authority, so if the two ever disagree the
+    /// stricter one still wins and a test can catch the drift.
+    ///
+    /// An empty vector is treated as `None` (no constraint) rather than as
+    /// "nobody": an empty reader set is a caller bug, and silently blanking
+    /// recall is a worse failure than doing the work the row filter will
+    /// then undo.
+    pub readable_by: Option<Vec<String>>,
 }
 
 /// The column a [`FactFilters`] query sorts by.
@@ -1883,6 +1908,24 @@ pub async fn find_by_filters(
         );
         binds.push(at.clone());
         binds.push(at.clone());
+    }
+    // The ACL, as a predicate rather than a post-filter. All three read
+    // axes, because none is sufficient alone: the subject (`owner_id`), the
+    // audience (`allow_ids`, a JSON array scanned the same way `topics_any`
+    // is), and the provenance (`sender_id`). Placeholders are generated from
+    // the list's own length and every value is bound — no caller text ever
+    // reaches the SQL.
+    if let Some(principals) = filters.readable_by.as_ref().filter(|p| !p.is_empty()) {
+        let placeholders = vec!["?"; principals.len()].join(",");
+        preds.push(format!(
+            "(owner_id IN ({placeholders}) \
+              OR sender_id IN ({placeholders}) \
+              OR EXISTS (SELECT 1 FROM json_each(fact_index.allow_ids) \
+                          WHERE json_each.value IN ({placeholders})))"
+        ));
+        for _ in 0..3 {
+            binds.extend(principals.iter().cloned());
+        }
     }
 
     if !preds.is_empty() {

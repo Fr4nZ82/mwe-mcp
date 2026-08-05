@@ -178,6 +178,10 @@ impl FactsFilters {
             limit,
             sort: self.sort_directive(),
             include_inactive: self.include_inactive(),
+            // The facts console is an operator surface: it lists what the
+            // engine holds, and its own auth is the gate. The ACL-as-predicate
+            // is for the recall path, whose job is to serve one reader.
+            readable_by: None,
         }
     }
 

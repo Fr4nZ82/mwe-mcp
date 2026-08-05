@@ -1,0 +1,44 @@
+-- 0068_capture_buffer_embedding_and_origin — stop paying twice for the same
+-- vector, and let the fresh slot know which message it came from.
+--
+-- Two independent columns on `capture_buffer`, added together because they
+-- share a migration's cost and nothing else.
+--
+-- 1. embedding / embedding_dim — the capture's vector, computed once at
+--    buffer time. Until now `capture_buffer` was the only similarity surface
+--    with no stored vector, so the two paths that need one both computed it:
+--    `recall::recall_fresh_captures` re-embedded EVERY visible pending capture
+--    on EVERY conversational turn (up to FRESH_CANDIDATE_CAP of them), and
+--    `dream_light::promote_one` embedded the same marker-stripped body again
+--    at promotion. Storing it at birth removes both: the read path reads, and
+--    promotion copies. It is not new work moved earlier — it is one of the two
+--    existing computations kept and the other deleted.
+--
+--    NULLABLE, and both readers fall back to computing it when absent. That is
+--    what keeps `rm engine.db` + journal reindex correct: a vector is derivable
+--    from the body, so it is deliberately NOT mirrored in `_captures.md` (a
+--    binary blob has no business in a human-readable journal), and a recovered
+--    row simply pays the old cost once until it promotes. Same durability class
+--    as `status` / `processed_at` / `decay_reason`.
+--
+-- 2. origin_message_hash — a fingerprint of the conversational turn the capture
+--    was extracted from. The fresh slot exists to bridge the gap between "said"
+--    and "promoted", but the turn ALREADY carries the raw messages the consumer
+--    holds plus the cross-consumer recent window, so a fresh capture derived
+--    from a message the agent is being shown anyway is the same information
+--    twice in one recall block. The bounds do not settle it either: the recent
+--    window is capped by TTL *and* entry count *and* a character budget, so
+--    "still in the window" is not a property of time alone. Comparing the
+--    origin message is exact where any bound-based heuristic guesses.
+--
+--    A hash, not the text: a capture's origin can be a long paste, and the
+--    buffer must not become a second copy of the transcript. It IS mirrored in
+--    the journal (`omsg=` attr) — unlike the vector it cannot be recomputed
+--    from anything the row holds, so a reindex would lose it for good.
+--
+-- ADDITIVE ONLY. Existing rows get NULL on all three and behave exactly as
+-- before.
+
+ALTER TABLE capture_buffer ADD COLUMN embedding BLOB;
+ALTER TABLE capture_buffer ADD COLUMN embedding_dim INTEGER;
+ALTER TABLE capture_buffer ADD COLUMN origin_message_hash TEXT;

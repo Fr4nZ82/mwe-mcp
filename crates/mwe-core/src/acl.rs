@@ -93,6 +93,42 @@ pub fn can_read(
     false
 }
 
+/// The principals a **reader** answers to, in canonical wire form — the
+/// mirror of [`principal_matches`], seen from the other side.
+///
+/// [`can_read`] asks, per stored principal, "does this reader match it?".
+/// The same question can be asked once per *reader* instead: build the set
+/// of principal strings this reader matches, and a region is readable
+/// exactly when that set intersects `owner ∪ allow ∪ {sender}`. The two
+/// formulations are equivalent, and this one is the shape a **query** can
+/// use — which is why it exists: `fact_index::FactFilters::readable_by`
+/// turns the ACL from a post-filter over every active fact into a
+/// predicate the store evaluates, so an unreadable fact's embedding never
+/// leaves the DB.
+///
+/// It lives here, beside `can_read` and [`reader_set`], for the reason
+/// stated on that function: a caller that re-derives "who can read this"
+/// on its own is a drift waiting to happen, invisible until somebody is
+/// shown something they were never told.
+///
+/// The builtin `global` group is always included — it has universal
+/// membership, so every reader matches it — and it is spelled the way it
+/// is stored: the bare `global`, not `group:global` (see the
+/// [`Principal`] `Display` impl). The returned set is therefore never
+/// empty, whatever the caller passes.
+#[must_use]
+pub fn reader_principals(sender_id: &str, sender_groups: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(sender_groups.len() + 2);
+    out.push(Principal::global().to_string());
+    out.push(Principal::User(sender_id.to_owned()).to_string());
+    out.extend(
+        sender_groups
+            .iter()
+            .map(|g| Principal::Group(g.clone()).to_string()),
+    );
+    out
+}
+
 /// The set of principals a region grants read access to, in canonical wire
 /// form — `owner ∪ allow ∪ {sender}`, the **same three axes** [`can_read`]
 /// evaluates.

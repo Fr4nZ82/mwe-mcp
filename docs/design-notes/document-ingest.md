@@ -137,8 +137,12 @@ on the **`ingest` LLM slot** (workhorse tier — same slot, no new config).
    document segmenting past `max_segments` is refused — no silent
    truncation.
 3. **Anchor** (`consult` / `dossier`) — the document page is born as a
-   direct capture (the live-write exception, like `requested_container`):
-   body = the classify summary, plus the code-rendered `{{embed=…}}` for
+   **direct capture**, and this is now the only ingest-side caller that
+   writes one: the conversational path lost its live-write exception on
+   2026-08-05 ([ingest-pipeline.md](ingest-pipeline.md#one-write-speed--everything-is-buffered)),
+   while a document job still needs its anchor page to exist before the
+   segments it will hang off it are extracted.
+   Body = the classify summary, plus the code-rendered `{{embed=…}}` for
    `media` sources; the document page's **testata** (style, description,
    topics) is seeded from the classify plan; `fact_index.source_ref`
    stamped; the blob's ACL widens monotonically to the anchor's read set

@@ -49,6 +49,7 @@ use sqlx::SqlitePool;
 use thiserror::Error;
 
 use crate::capture::CaptureRequest;
+use crate::embedder::Embedder;
 use crate::types::{
     FactId, FactIdParseError, Principal, PrincipalParseError, WikiId, WikiIdParseError,
 };
@@ -132,7 +133,10 @@ impl CaptureStatus {
 /// One buffered capture — the classifier's output for a single claim, staged
 /// for the light dream. Mirrors `fact_index`'s classifier/ACL columns so
 /// promotion is a straight copy.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// `PartialEq` only: the staged embedding is `Vec<f32>`, and floats have no
+// total equality. Nothing compares captures for `Eq` — the derive was free
+// until a vector landed on the struct.
+#[derive(Debug, Clone, PartialEq)]
 pub struct BufferedCapture {
     /// `UUIDv7`; reused verbatim as the `fact_id` on promotion.
     pub capture_id: FactId,
@@ -209,6 +213,111 @@ pub struct BufferedCapture {
     /// the journal codec as the comma-joined `aref=` attr, like `topics=`.
     /// Empty for a pure-standard capture.
     pub authored_refs: Vec<String>,
+    /// The capture's embedding, computed **once** at buffer time over the
+    /// marker-stripped body — the same text, by the same rule, that
+    /// [`promote_one`](crate::dream_light) would embed at promotion and that
+    /// [`crate::recall::recall_fresh_captures`] would embed to rank it.
+    ///
+    /// Both of those read this instead now. It is not an optimisation stacked
+    /// on top of the old cost: it is one of two identical computations kept
+    /// and the other deleted — the read path's, which ran once per turn per
+    /// pending capture, and was the expensive one.
+    ///
+    /// `None` is a first-class state, not a fault to repair eagerly. A row
+    /// recovered by reindexing the journal has no vector (a blob has no place
+    /// in a human-readable journal, and this one is derivable from the body),
+    /// and a transient embedder fault at buffer time must not cost the
+    /// capture. Both readers fall back to computing it — which is exactly the
+    /// pre-existing behaviour. DB-only, like `status` / `processed_at` /
+    /// `decay_reason`.
+    pub embedding: Option<Vec<f32>>,
+    /// Fingerprint of the conversational turn this capture was extracted from
+    /// ([`origin_fingerprint`]); `None` when there is no single originating
+    /// message (a document job, a dashboard write, a row older than the
+    /// column).
+    ///
+    /// The fresh recall slot uses it to avoid putting the same thing twice in
+    /// one recall block: the turn already carries the raw messages the
+    /// consumer holds plus the cross-consumer recent window, so a fresh
+    /// capture derived from a message the agent is being shown anyway adds
+    /// characters and nothing else. Comparing origins is exact; comparing ages
+    /// is not, because that window is bounded by entry count and by characters
+    /// as well as by TTL.
+    ///
+    /// A hash rather than the text: an origin may be a long paste, and the
+    /// buffer must not become a second transcript. It **is** mirrored in the
+    /// journal (`omsg=`) — unlike the vector it cannot be recomputed from
+    /// anything the row holds, so a reindex would lose it for good.
+    pub origin_message_hash: Option<String>,
+}
+
+/// Fingerprint of an originating message, for
+/// [`BufferedCapture::origin_message_hash`].
+///
+/// SHA-256 of the trimmed text, hex: stable across processes and releases
+/// (which `DefaultHasher` is not), whitespace-free so it rides the journal's
+/// attribute list as a bare token, and fixed-width whatever the message.
+///
+/// Trimming is the whole of the normalisation, deliberately. The two sides
+/// ever compared are the *same string* arriving by two routes — the message
+/// the consumer sent us, and the message we recorded for the cross-consumer
+/// window — so anything cleverer (case folding, whitespace collapsing) would
+/// only widen the match into territory where two genuinely different turns
+/// start colliding, and a collision here silently drops a fact from recall.
+#[must_use]
+pub fn origin_fingerprint(message: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(message.trim().as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Material computed for a capture at buffer time, beside the claim itself.
+///
+/// Both fields are optional and both default to absent, so a caller with
+/// neither an embedder nor an originating message stages nothing and the row
+/// behaves exactly as it did before these columns existed.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BufferStaging {
+    /// See [`BufferedCapture::embedding`].
+    pub embedding: Option<Vec<f32>>,
+    /// See [`BufferedCapture::origin_message_hash`].
+    pub origin_message_hash: Option<String>,
+}
+
+impl BufferStaging {
+    /// Compute the staging for a capture about to be buffered.
+    ///
+    /// The one place that turns a claim into a vector for the buffer, so the
+    /// "which text gets embedded" rule cannot drift from the one promotion and
+    /// the fresh slot apply: the **marker-stripped** body, because a catalog
+    /// id is a key and not prose.
+    ///
+    /// Soft on the embedder. A capture is durable memory and an embedding is
+    /// derivable, so a transient fault leaves the vector `None` with a warning
+    /// and the claim is buffered anyway — the readers recompute. The opposite
+    /// trade (fail the capture to guarantee the column) would lose the one
+    /// thing that cannot be reconstructed.
+    pub async fn build(embedder: &dyn Embedder, body: &str, origin_message: Option<&str>) -> Self {
+        let embedding = match embedder
+            .embed(&crate::parser::strip_embed_markers(body))
+            .await
+        {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "capture_buffer: embedding at buffer time failed — staged without a vector \
+                     (recall and promotion will compute it)"
+                );
+                None
+            },
+        };
+        Self {
+            embedding,
+            origin_message_hash: origin_message.map(origin_fingerprint),
+        }
+    }
 }
 
 /// Outcome of [`buffer_capture`].
@@ -244,7 +353,37 @@ pub async fn buffer_capture(
     req: CaptureRequest,
     supersede_hint: Option<FactId>,
 ) -> Result<BufferOutcome> {
-    buffer_capture_with_source(tree, pool, req, supersede_hint, "ingest", None).await
+    buffer_capture_with_source(
+        tree,
+        pool,
+        req,
+        supersede_hint,
+        "ingest",
+        None,
+        BufferStaging::default(),
+    )
+    .await
+}
+
+/// [`buffer_capture`] with the turn's staged vector and origin fingerprint —
+/// the conversational entry point.
+///
+/// Kept separate from the bare [`buffer_capture`] so a caller that has neither
+/// (a test, a path with no embedder in hand) is not forced to invent them, and
+/// so the staged columns stay visibly optional: they are an optimisation and a
+/// de-duplication hint, never part of what makes a capture valid.
+///
+/// # Errors
+///
+/// See [`CaptureBufferError`].
+pub async fn buffer_capture_staged(
+    tree: &WikiTree,
+    pool: &SqlitePool,
+    req: CaptureRequest,
+    supersede_hint: Option<FactId>,
+    staging: BufferStaging,
+) -> Result<BufferOutcome> {
+    buffer_capture_with_source(tree, pool, req, supersede_hint, "ingest", None, staging).await
 }
 
 /// [`buffer_capture`] variant stamping the capture's source.
@@ -264,6 +403,7 @@ pub async fn buffer_capture_with_source(
     supersede_hint: Option<FactId>,
     source_kind: &str,
     source_ref: Option<String>,
+    staging: BufferStaging,
 ) -> Result<BufferOutcome> {
     let CaptureRequest {
         wiki_id,
@@ -327,6 +467,8 @@ pub async fn buffer_capture_with_source(
         page_description,
         salience,
         authored_refs,
+        embedding: staging.embedding,
+        origin_message_hash: staging.origin_message_hash,
     };
 
     let journal_abs = handle.abs_dir().join(CAPTURES_FILENAME);
@@ -799,7 +941,7 @@ pub async fn reindex_capture_journal(
 const SELECT_COLS: &str = "SELECT capture_id, wiki_id, target_page, body, owner_id, allow_ids, \
      sender_id, fact_type, topics, supersede_hint, status, captured_at, processed_at, \
      resolved_fact_id, source_kind, source_ref, valid_from, valid_to, decay_reason, style, \
-     page_description, salience, authored_refs \
+     page_description, salience, authored_refs, embedding, origin_message_hash \
      FROM capture_buffer";
 
 #[derive(sqlx::FromRow)]
@@ -827,6 +969,8 @@ struct BufferRow {
     page_description: Option<String>,
     salience: Option<String>,
     authored_refs: String,
+    embedding: Option<Vec<u8>>,
+    origin_message_hash: Option<String>,
 }
 
 fn decode(r: BufferRow) -> Result<BufferedCapture> {
@@ -865,6 +1009,18 @@ fn decode(r: BufferRow) -> Result<BufferedCapture> {
         page_description: r.page_description,
         salience: r.salience,
         authored_refs: serde_json::from_str(&r.authored_refs).unwrap_or_default(),
+        // A blob that does not decode is treated as absent, not as an error:
+        // the vector is derivable, both readers recompute when it is `None`,
+        // and refusing to read the row would strand a capture over a column
+        // that exists only to save work.
+        embedding: r.embedding.as_deref().and_then(|b| {
+            crate::fact_index::decode_embedding(b)
+                .inspect_err(|e| {
+                    tracing::warn!(error = %e, "capture_buffer: unreadable staged embedding — recomputing");
+                })
+                .ok()
+        }),
+        origin_message_hash: r.origin_message_hash,
     })
 }
 
@@ -882,8 +1038,9 @@ async fn insert_row(pool: &SqlitePool, cap: &BufferedCapture) -> Result<u64> {
             (capture_id, wiki_id, target_page, body, owner_id, allow_ids, sender_id, fact_type,
              topics, supersede_hint, status, captured_at, processed_at, resolved_fact_id,
              source_kind, source_ref, valid_from, valid_to, decay_reason, style,
-             page_description, salience, authored_refs)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             page_description, salience, authored_refs, embedding, embedding_dim,
+             origin_message_hash)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(capture_id) DO NOTHING",
     )
     .bind(cap.capture_id.as_str())
@@ -909,6 +1066,21 @@ async fn insert_row(pool: &SqlitePool, cap: &BufferedCapture) -> Result<u64> {
     .bind(cap.page_description.clone())
     .bind(cap.salience.clone())
     .bind(authored_refs_json)
+    // `embedding_dim` rides alongside the blob purely as the same
+    // self-description `fact_index` carries: the blob's own length already
+    // gives the dimension, and nothing reads the column, but a stored vector
+    // that cannot say how long it is has bitten this codebase before.
+    .bind(
+        cap.embedding
+            .as_deref()
+            .map(crate::fact_index::encode_embedding),
+    )
+    .bind(
+        cap.embedding
+            .as_ref()
+            .map(|v| i64::try_from(v.len()).unwrap_or(i64::MAX)),
+    )
+    .bind(cap.origin_message_hash.clone())
     .execute(pool)
     .await?;
     Ok(res.rows_affected())
@@ -988,11 +1160,17 @@ fn render_entry(cap: &BufferedCapture) -> String {
     // is a whitespace-free `[[wiki_id/page]]` wikilink with no comma, so it
     // stays one token in this whitespace-delimited attr list.
     let aref_csv = cap.authored_refs.join(",");
+    // The origin fingerprint. Hex, so a bare attr like vf/vt/style/sal. It
+    // MUST ride the journal: unlike the staged embedding beside it — omitted
+    // on purpose, being a binary blob and recomputable from the body — this
+    // one cannot be derived from anything the entry holds, so a `rm engine.db`
+    // + reindex would lose it permanently.
+    let omsg = cap.origin_message_hash.clone().unwrap_or_default();
     format!(
         "<!-- mwe-capture id={id} ts={ts} page={page} type={ft} status={status} \
          owner={owner} allow={allow_csv} sender={sender} sup={sup} topics={topics_csv} \
          vf={vf} vt={vt} style={style} desc={desc} sal={sal} src={src} sref={sref} \
-         aref={aref_csv} -->\n\
+         aref={aref_csv} omsg={omsg} -->\n\
          {body}\n\
          <!-- /mwe-capture -->\n",
         id = cap.capture_id,
@@ -1098,69 +1276,40 @@ fn parse_entry(attrs: &str, body: &str, wiki_id: &WikiId) -> Option<BufferedCapt
         Some(s) if !s.is_empty() => Some(FactId::parse(s).ok()?),
         _ => None,
     };
-    let fact_type = map
-        .get("type")
-        .copied()
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-    let topics = map
-        .get("topics")
-        .copied()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.split(',').map(str::to_owned).collect::<Vec<_>>())
-        .unwrap_or_default();
-    // Per-fact validity (vf/vt). Absent (older journals) or empty → None
-    // (open/unknown).
-    let valid_from = map
-        .get("vf")
-        .copied()
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-    let valid_to = map
-        .get("vt")
-        .copied()
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
+    // Every optional attribute reads the same way — present and non-empty, or
+    // absent — so it is read the same way here. An attribute missing entirely
+    // is an OLDER journal, one written before that attribute existed, and the
+    // codec must keep parsing those: the journal is the durable source of
+    // truth a `rm engine.db` rebuilds from, and it holds entries from every
+    // version the deployment has ever run.
+    let attr = |k: &str| map.get(k).copied().filter(|s| !s.is_empty());
+    let fact_type = attr("type").map(str::to_owned);
+    let csv = |k: &str| {
+        attr(k)
+            .map(|s| s.split(',').map(str::to_owned).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    let topics = csv("topics");
+    // Per-fact validity (vf/vt): absent or empty → None (open/unknown).
+    let valid_from = attr("vf").map(str::to_owned);
+    let valid_to = attr("vt").map(str::to_owned);
     // Placement style axis. `style` is a bare enum token; `desc` is
-    // percent-escaped free text → decode it. Absent/empty → None.
-    let style = map
-        .get("style")
-        .copied()
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-    let page_description = map
-        .get("desc")
-        .copied()
-        .filter(|s| !s.is_empty())
-        .map(dec_attr);
-    // Per-fact salience (sal). Bare enum token; absent (older journals) or
-    // empty → None (unspecified).
-    let salience = map
-        .get("sal")
-        .copied()
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-    // Capture source (src/sref). Absent (older journals) → the historical
-    // default `ingest` with no provenance; `sref` is percent-escaped.
-    let source_kind = map
-        .get("src")
-        .copied()
-        .filter(|s| !s.is_empty())
-        .unwrap_or("ingest")
-        .to_owned();
-    let source_ref = map
-        .get("sref")
-        .copied()
-        .filter(|s| !s.is_empty())
-        .map(dec_attr);
-    // Group-17 provenance breadcrumbs (aref). Absent (older journals) or
-    // empty → no refs. Comma-split like `topics`.
-    let authored_refs = map
-        .get("aref")
-        .copied()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.split(',').map(str::to_owned).collect::<Vec<_>>())
-        .unwrap_or_default();
+    // percent-escaped free text → decode it.
+    let style = attr("style").map(str::to_owned);
+    let page_description = attr("desc").map(dec_attr);
+    // Per-fact salience (sal). Bare enum token; absent → None (unspecified).
+    let salience = attr("sal").map(str::to_owned);
+    // Capture source (src/sref). Absent → the historical default `ingest` with
+    // no provenance; `sref` is percent-escaped.
+    let source_kind = attr("src").unwrap_or("ingest").to_owned();
+    let source_ref = attr("sref").map(dec_attr);
+    // Group-17 provenance breadcrumbs (aref), comma-split like `topics`.
+    let authored_refs = csv("aref");
+    // Origin fingerprint (omsg). Absent → None: the capture simply never gets
+    // suppressed as already-in-context, which is the pre-existing behaviour and
+    // the safe direction — showing a fact twice costs characters, hiding one
+    // costs the fact.
+    let origin_message_hash = attr("omsg").map(str::to_owned);
     Some(BufferedCapture {
         capture_id,
         wiki_id: wiki_id.clone(),
@@ -1187,6 +1336,11 @@ fn parse_entry(attrs: &str, body: &str, wiki_id: &WikiId) -> Option<BufferedCapt
         page_description,
         salience,
         authored_refs,
+        // Derivable from the body, so deliberately absent from the journal —
+        // a rebuilt row pays one embedding at its next read or at promotion,
+        // exactly as every row did before the column existed.
+        embedding: None,
+        origin_message_hash,
     })
 }
 
@@ -1282,6 +1436,11 @@ mod tests {
     async fn journal_round_trips_through_codec() {
         let cap = BufferedCapture {
             authored_refs: Vec::new(),
+            // The vector is deliberately NOT journalled, so a round-trip
+            // through the codec must come back without it; the fingerprint is,
+            // so it must come back intact.
+            embedding: Some(vec![0.25, -0.5]),
+            origin_message_hash: Some(origin_fingerprint("  Cena con i Brandibuck venerdì?  ")),
             capture_id: new_capture_id().unwrap(),
             wiki_id: WikiId::parse("famiglia").unwrap(),
             target_page: PathBuf::from("recipes/pasta.md"),
@@ -1325,6 +1484,26 @@ mod tests {
         assert_eq!(p.valid_to, cap.valid_to);
         assert_eq!(p.style, cap.style);
         assert_eq!(p.page_description, cap.page_description);
+        // The origin fingerprint MUST survive: nothing else on the entry can
+        // reconstruct it, so a reindex that lost it would lose it for good.
+        assert_eq!(p.origin_message_hash, cap.origin_message_hash);
+        // The vector must NOT: it is derivable from the body, and a binary
+        // blob has no place in a human-readable journal. A rebuilt row pays
+        // one embedding at its next read or at promotion.
+        assert_eq!(p.embedding, None);
+    }
+
+    #[test]
+    fn origin_fingerprint_ignores_surrounding_whitespace_only() {
+        // The two sides ever compared are the same string arriving by two
+        // routes, so trimming is the whole of the normalisation.
+        let a = origin_fingerprint("  Ho comprato il latte.\n");
+        assert_eq!(a, origin_fingerprint("Ho comprato il latte."));
+        // Anything beyond that stays a different message: widening the match
+        // would silently drop a fact from recall on a collision.
+        assert_ne!(a, origin_fingerprint("ho comprato il latte."));
+        assert_ne!(a, origin_fingerprint("Ho  comprato il latte."));
+        assert_ne!(a, origin_fingerprint("Ho comprato il pane."));
     }
 
     #[tokio::test]

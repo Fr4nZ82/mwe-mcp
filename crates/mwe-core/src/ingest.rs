@@ -374,8 +374,17 @@ pub struct IngestResponse {
 /// dependency-injected.
 #[derive(Debug, Clone)]
 pub struct IngestPolicy {
-    /// Top-K recall hits to fetch as LLM context. Bounded to keep
-    /// prompt size sane.
+    /// Top-K recall hits to fetch as LLM context.
+    ///
+    /// **Raised from 5 to 10 by the founder, 2026-08-05.** The bound exists
+    /// to keep the prompt sane, not to be small: the turn that failed in
+    /// production sits behind a five-fact block, so at 5 it cannot surface
+    /// however well the ranking is tuned — see
+    /// [`crate::recall::SUBJECT_COVERAGE_UPLIFT`], where the coverage weight
+    /// moved it to 7th and the note recorded that the rest of the gap closes
+    /// only here. The cost is prompt characters, not compute: the scan and
+    /// the scoring read the whole readable corpus either way, and `top_k`
+    /// only decides how much of the ranking survives into the block.
     pub recall_top_k: usize,
     /// Size of the separate "fresh / unconsolidated" recall slot — how many
     /// un-promoted buffered captures the mid-range bridge surfaces per turn
@@ -389,10 +398,19 @@ pub struct IngestPolicy {
     /// slot. A conversational turn otherwise recalls facts only — this is
     /// the narrow, name-triggered exception for "how does `AcmeSigns` do X?".
     pub project_docs_top_k: usize,
-    /// Character budget for that slot. Whole sections only: a hit that
-    /// would overrun the budget is dropped, never truncated. Documentation
-    /// sections are long, so this — not `project_docs_top_k` — is usually
-    /// what bounds the slot.
+    /// Character budget for that slot. Whole sections only — a section is
+    /// never cut mid-text. Documentation sections are long, so this — not
+    /// `project_docs_top_k` — is usually what bounds the slot.
+    ///
+    /// The overrun rule is a **stop, not a skip**: the first section that
+    /// would exceed the remaining budget ends the slot, and the
+    /// lower-ranked ones behind it do not get a turn even when one of them
+    /// would have fit ([`crate::recall`], the section-ranking loop). That
+    /// keeps the slot faithful to the ranking — a smaller section never
+    /// overtakes a better one on size alone — at the price of leaving
+    /// budget unspent. The one exception is the first hit, which is
+    /// admitted whatever its size, because an empty slot is worse than one
+    /// oversized answer.
     ///
     /// Sized against [`document::SECTION_MAX_CHARS`]: strictly greater, so
     /// that even a maximal section leaves room for a second hit rather
@@ -555,7 +573,7 @@ pub struct IngestPolicy {
 impl Default for IngestPolicy {
     fn default() -> Self {
         Self {
-            recall_top_k: 5,
+            recall_top_k: 10,
             recall_fresh_top_k: 3,
             project_docs_top_k: 3,
             project_docs_char_budget: 3_000,
@@ -1818,12 +1836,19 @@ async fn recall_topic_candidates(
             tracing::warn!(error = %err, topic, "ingest: closure-topic recall failed — skipped");
             Vec::new()
         });
+        // No already-in-context suppression here, deliberately. This pass is
+        // hunting for the TARGETS of a closure gesture, and a claim the user
+        // made moments ago — one whose message is still in the window — is
+        // precisely the kind of thing a "forget that" gesture closes. The
+        // suppression exists to stop the recall block saying a thing twice;
+        // it must not hide a candidate from a verb that acts on it.
         let fresh = recall::recall_fresh_captures(
             pool,
             embedder.as_ref(),
             topic,
             sender_ctx,
             policy.recall_fresh_top_k,
+            &std::collections::HashSet::new(),
         )
         .await
         .unwrap_or_else(|err| {
@@ -5158,18 +5183,73 @@ pub async fn wiki_ingest_message(
             Vec::new()
         },
     };
-    // Mid-range bridge (provisional): also surface un-promoted
-    // buffered captures in a separate "fresh" slot, so material captured but not
-    // yet promoted by the light dream stays recall-able. Soft-fails to no fresh
-    // hits — never kills the turn. Scoped to the ingest (conversational) path on
-    // purpose: `wiki_recall` stays promoted-only for the dashboard, whose
-    // edit/locate flows assume published-page offsets the buffer lacks.
+    // Cross-consumer recent window (group 43), fetched HERE rather than at the
+    // end of the turn: it is served back to the consumer as its own field, but
+    // it is also half the answer to "what is this agent already looking at",
+    // which the fresh slot below needs before it decides what to repeat. The
+    // fetch is a read and moving it earlier changes nothing about it; the
+    // WRITE (recording this turn's own exchange) stays at the end, so a
+    // requester is still never handed the message it just sent.
+    //
+    // Fresh-session resume (43j, hermes-agent#43008): a requester that carried
+    // NO local window has no context a served thread could duplicate — a
+    // reborn/blank session, or a consumer that keeps no window at all. Serve it
+    // every surface, its own included: its own channel's tail is exactly the
+    // thread the user is continuing. A requester that brought its window gets
+    // only the other surfaces.
+    let consumer_surface = request.consumer_id.clone().unwrap_or_default();
+    let surface_filter = if request.recent_messages.is_empty() {
+        crate::recent_window::SurfaceFilter::IncludeRequester
+    } else {
+        crate::recent_window::SurfaceFilter::ExcludeRequester
+    };
+    let window_entries = match crate::recent_window::fetch_window(
+        pool,
+        &request.sender_id,
+        &consumer_surface,
+        request.metadata.channel.as_deref(),
+        surface_filter,
+        policy.recent_window_ttl_hours,
+        policy.recent_window_entries,
+    )
+    .await
+    {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!(error = %e, "recent-window: fetch failed (served empty)");
+            Vec::new()
+        },
+    };
+    let recent_window = format_recent_window(&window_entries, turn_now, policy);
+
+    // What the agent is ALREADY being shown this turn, as message
+    // fingerprints: its own replayed transcript plus the window just fetched.
+    // The fresh slot uses it to not restate, as an extracted fact, something
+    // the agent is reading in the message that produced it.
+    let already_in_context: std::collections::HashSet<String> = request
+        .recent_messages
+        .iter()
+        .map(|m| capture_buffer::origin_fingerprint(&m.text))
+        .chain(
+            window_entries
+                .iter()
+                .map(|e| capture_buffer::origin_fingerprint(&e.text)),
+        )
+        .collect();
+
+    // Mid-range bridge: also surface un-promoted buffered captures in a
+    // separate "fresh" slot, so material captured but not yet promoted by the
+    // light dream stays recall-able. Soft-fails to no fresh hits — never kills
+    // the turn. Scoped to the ingest (conversational) path on purpose:
+    // `wiki_recall` stays promoted-only for the dashboard, whose edit/locate
+    // flows assume published-page offsets the buffer lacks.
     let fresh_hits = match recall::recall_fresh_captures(
         pool,
         embedder.as_ref(),
         &request.text,
         &sender_ctx,
         policy.recall_fresh_top_k,
+        &already_in_context,
     )
     .await
     {
@@ -5895,13 +5975,25 @@ pub async fn wiki_ingest_message(
                     .iter()
                     .find(|w| w.wiki_id.as_str() == cap_req.wiki_id.as_str())
                     .is_some_and(|w| !w.smart);
-                // The LIVE exception: an explicitly requested container
-                // (a list / collection
-                // / note the user asked to keep) is written live via the direct
-                // path even into a standard wiki, so it is there immediately;
-                // only accumulated knowledge waits for the dream. The classifier
-                // sets the flag — no hard-coded gate.
-                let route_to_buffer = target_is_standard && !unit.requested_container;
+                // EVERY standard capture waits for the light dream now — there
+                // is no live exception left (founder, 2026-08-05).
+                //
+                // The exception existed for the read-your-writes case: a list
+                // the user adds to and asks about seconds later. It was written
+                // against a light dream that ran every six to twelve hours. Two
+                // things retired it. The dream now promotes AND recompiles the
+                // pages it touched on its own cadence, so a page is stale for
+                // the interval, not for a night. And the fresh slot already
+                // makes a buffered claim recallable the moment it is staged, so
+                // the answer to "what is on the list?" never depended on the
+                // page being written — only the page's own prose did.
+                //
+                // What is bought: the dedup/supersede decision stops being
+                // taken in two places (write time and promotion) and is taken
+                // once, where the fact set is settled. What is paid: the page
+                // itself lags by up to one light-dream interval, and the
+                // dashboard says so.
+                let route_to_buffer = target_is_standard;
 
                 // Cleared when the direct path's write-time dedup proves
                 // nothing new filed — a restated fact is no news to its
@@ -5909,11 +6001,23 @@ pub async fn wiki_ingest_message(
                 // light dream, so a buffered capture always counts.
                 let mut filed_fresh = true;
                 let this_id: FactId = if route_to_buffer {
-                    let buffered = capture_buffer::buffer_capture(
+                    // Staged with the claim: the vector (computed once here
+                    // instead of on every later read AND again at promotion)
+                    // and the fingerprint of the turn it came from, so the
+                    // fresh slot can tell whether the agent is already looking
+                    // at the message that produced it.
+                    let staging = capture_buffer::BufferStaging::build(
+                        embedder.as_ref(),
+                        &cap_req.body,
+                        Some(request.text.as_str()),
+                    )
+                    .await;
+                    let buffered = capture_buffer::buffer_capture_staged(
                         tree,
                         pool,
                         cap_req,
                         supersede_target.clone(),
+                        staging,
                     )
                     .await?;
                     tracing::info!(
@@ -6440,43 +6544,13 @@ pub async fn wiki_ingest_message(
         due_soon,
     );
 
-    // Cross-consumer recent window (group 43): serve the user's thread
-    // from their other surfaces, then buffer this turn for them — the
-    // thread of discourse follows the user. The fetch runs BEFORE the
-    // record so a requester served its own surface can never be handed
-    // the very message it is asking about. Best-effort on both legs: a
-    // buffer hiccup never touches the turn.
-    //
-    // Fresh-session resume (43j, hermes-agent#43008): a requester that
-    // carried NO local window has no context a served thread could
-    // duplicate — a reborn/blank session, or a consumer that keeps no
-    // window at all. Serve it every surface, its own included: its own
-    // channel's tail is exactly the thread the user is continuing. A
-    // requester that brought its window gets only the other surfaces.
-    let consumer_surface = request.consumer_id.clone().unwrap_or_default();
+    // The write half of the cross-consumer recent window (group 43): buffer
+    // this turn for the user's other surfaces — the thread of discourse
+    // follows the user. It stays HERE, after everything the turn serves, so a
+    // requester can never be handed back the very message it just sent (the
+    // fetch ran at the top of the turn). Best-effort: a buffer hiccup never
+    // touches the turn.
     let surface_channel = request.metadata.channel.clone().unwrap_or_default();
-    let surface_filter = if request.recent_messages.is_empty() {
-        crate::recent_window::SurfaceFilter::IncludeRequester
-    } else {
-        crate::recent_window::SurfaceFilter::ExcludeRequester
-    };
-    let recent_window = match crate::recent_window::fetch_window(
-        pool,
-        &request.sender_id,
-        &consumer_surface,
-        request.metadata.channel.as_deref(),
-        surface_filter,
-        policy.recent_window_ttl_hours,
-        policy.recent_window_entries,
-    )
-    .await
-    {
-        Ok(entries) => format_recent_window(&entries, turn_now, policy),
-        Err(e) => {
-            tracing::warn!(error = %e, "recent-window: fetch failed (served empty)");
-            None
-        },
-    };
     if let Err(e) = crate::recent_window::record_exchange(
         pool,
         &request.sender_id,
@@ -6688,6 +6762,31 @@ mod tests {
             "fake-bge",
             vec![0.1, 0.2, 0.3, 0.4],
         ))
+    }
+
+    /// Drain the capture buffer the way the light dream does, so a test can go
+    /// on asserting about `fact_index`.
+    ///
+    /// Ingest buffers **every** standard capture now (founder, 2026-08-05 — the
+    /// live-write exception for requested containers is gone), so a fact
+    /// reaches `fact_index` at the next light cycle rather than during the
+    /// turn. A test that is about WHAT ends up filed — the owner, the validity
+    /// window, the provenance, the inherited audience — still wants to read
+    /// the fact, and reading it through the promotion is better than reaching
+    /// into the buffer and re-deriving by hand what promotion would have
+    /// copied: it exercises the path the product actually takes.
+    ///
+    /// Tests that are about the BUFFERING itself assert on the buffer
+    /// directly and never call this.
+    async fn promote_buffer(pool: &SqlitePool, tree: &WikiTree) {
+        crate::dream_light::run_light_cycle(
+            pool,
+            tree,
+            fake_embedder(),
+            &crate::dream_light::LightPolicy::default(),
+        )
+        .await
+        .expect("light cycle");
     }
 
     // ---------- smart-family filter ----------
@@ -8258,10 +8357,17 @@ mod tests {
 
     // ---------- recall-miss detection (self-correcting REM floor) ----------
 
-    /// The direct half of the judge-free miss signal: the user restates a
-    /// fact memory holds, this turn's recall does not surface it (blind
-    /// top-K), the write-time dedup skips the capture — one `recall_miss`
-    /// record lands, linked to the turn's recall log.
+    /// The judge-free miss signal, end to end and **through the buffer**: the
+    /// user restates a fact memory already holds, this turn's recall does not
+    /// surface it (blind top-K), and the dedup that notices the restatement
+    /// now happens where every capture is resolved — at promotion. One
+    /// `recall_miss` lands, on the `promotion` surface, still linked to the
+    /// turn's recall log because the buffered row carries that linkage.
+    ///
+    /// The `direct` surface is not exercised from ingest any more: there is no
+    /// live write path left for a standard wiki to take (founder, 2026-08-05).
+    /// It stays in the vocabulary for the paths that still write straight
+    /// through — the signal did not move, the writer did.
     #[tokio::test]
     async fn ingest_records_recall_miss_on_unsurfaced_dedup_hit() {
         let (dir, tree, pool) = setup_workdir().await;
@@ -8289,13 +8395,14 @@ mod tests {
         };
         fact_index::insert(&pool, &existing).await.expect("insert");
 
-        // requested_container → the direct path (write-time dedup fires
-        // in-turn); recall_top_k 0 → the turn's recall is blind.
+        // recall_top_k 0 → the turn's recall is blind, which is the whole
+        // premise: memory held the fact and did not offer it, so the user had
+        // to say it again.
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
             \"target_wiki_id\":\"alice\",\"target_page\":\"colore.md\",\
             \"owner_id\":\"user:alice\",\
             \"body\":\"Il colore preferito di Alice è l'indaco.\",\
-            \"fact_type\":\"preference\",\"requested_container\":true}]}";
+            \"fact_type\":\"preference\"}]}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy {
             recall_top_k: 0,
@@ -8314,11 +8421,22 @@ mod tests {
         .await
         .expect("ingest");
         assert_eq!(resp.intent, IntentKind::Capture);
+        // Nothing is judged during the turn any more — the restatement is
+        // still sitting in the buffer.
+        assert!(
+            recall_log::recent_misses(&pool, 10)
+                .await
+                .unwrap()
+                .is_empty(),
+            "the signal is raised at promotion, not in-turn"
+        );
+
+        promote_buffer(&pool, &tree).await;
 
         let misses = recall_log::recent_misses(&pool, 10).await.unwrap();
         assert_eq!(misses.len(), 1, "one restated-known-fact miss: {misses:?}");
         assert_eq!(misses[0].fact_id, "018f1234-5678-7abc-9def-00000000f101");
-        assert_eq!(misses[0].surface, "direct");
+        assert_eq!(misses[0].surface, "promotion");
         assert_eq!(misses[0].sender_id, "alice");
         assert!(
             misses[0].log_id.is_some(),
@@ -8360,7 +8478,7 @@ mod tests {
             \"target_wiki_id\":\"alice\",\"target_page\":\"colore.md\",\
             \"owner_id\":\"user:alice\",\
             \"body\":\"Il colore preferito di Alice è l'indaco.\",\
-            \"fact_type\":\"preference\",\"requested_container\":true}]}";
+            \"fact_type\":\"preference\"}]}";
         let llm = FakeLlmBackend::new("fake", json);
         // Default top-K + the fixed fake embedding → the flat recall
         // surfaces the existing fact this same turn.
@@ -8376,6 +8494,10 @@ mod tests {
         )
         .await
         .expect("ingest");
+        // The judgement happens at promotion, so the test has to get there:
+        // asserting "no miss" straight after the turn would now pass on any
+        // codebase at all, because nothing has been compared yet.
+        promote_buffer(&pool, &tree).await;
 
         let misses = recall_log::recent_misses(&pool, 10).await.unwrap();
         assert!(
@@ -9400,6 +9522,9 @@ mod tests {
         assert!(resp.capture_id.is_some(), "must surface capture_id");
         assert_eq!(resp.suggested_seed.as_deref(), Some("Noted."));
         let cap_id = resp.capture_id.unwrap();
+        // The capture is buffered; the light dream is what turns it into the
+        // fact this test is about.
+        promote_buffer(&pool, &tree).await;
         let row = fact_index::find_by_id(&pool, &cap_id)
             .await
             .expect("find")
@@ -9435,6 +9560,9 @@ mod tests {
         .await
         .expect("ingest");
         let cap_id = resp.capture_id.expect("captured");
+        // The capture is buffered; the light dream is what turns it into the
+        // fact this test is about.
+        promote_buffer(&pool, &tree).await;
         let row = fact_index::find_by_id(&pool, &cap_id)
             .await
             .expect("find")
@@ -9473,6 +9601,9 @@ mod tests {
         .await
         .expect("ingest");
         let cap_id = resp.capture_id.expect("captured");
+        // The capture is buffered; the light dream is what turns it into the
+        // fact this test is about.
+        promote_buffer(&pool, &tree).await;
         let row = fact_index::find_by_id(&pool, &cap_id)
             .await
             .expect("find")
@@ -9505,6 +9636,9 @@ mod tests {
             .await
             .expect("ingest");
         let cap_id = resp.capture_id.expect("captured");
+        // The capture is buffered; the light dream is what turns it into the
+        // fact this test is about.
+        promote_buffer(&pool, &tree).await;
         let row = fact_index::find_by_id(&pool, &cap_id)
             .await
             .expect("find")
@@ -9670,6 +9804,9 @@ mod tests {
         .await
         .expect("ingest");
         assert_eq!(resp.intent, IntentKind::Capture);
+        // The capture is buffered; the light dream is what turns it into the
+        // fact this test is about.
+        promote_buffer(&pool, &tree).await;
         let row = fact_index::find_by_id(&pool, &resp.capture_id.expect("capture_id"))
             .await
             .expect("find")
@@ -9756,6 +9893,9 @@ mod tests {
         )
         .await
         .expect("ingest");
+        // The capture is buffered; the light dream is what turns it into the
+        // fact this test is about.
+        promote_buffer(&pool, &tree).await;
         let row = fact_index::find_by_id(&pool, &resp.capture_id.expect("capture_id"))
             .await
             .expect("find")
@@ -10721,6 +10861,9 @@ mod tests {
         );
 
         // The new row is active and carries the new body.
+        // The capture is buffered; the light dream is what turns it into the
+        // fact this test is about.
+        promote_buffer(&pool, &tree).await;
         let new_row = fact_index::find_by_id(&pool, &new_fact_id)
             .await
             .expect("find new")
@@ -10806,6 +10949,9 @@ mod tests {
         .expect("ingest");
 
         let new_fact_id = resp.capture_id.expect("must surface the new fact_id");
+        // The capture is buffered; the light dream is what turns it into the
+        // fact this test is about.
+        promote_buffer(&pool, &tree).await;
         let new_row = fact_index::find_by_id(&pool, &new_fact_id)
             .await
             .expect("find new")
@@ -11893,17 +12039,78 @@ mod tests {
         drop(dir);
     }
 
-    /// The LIVE exception. A capture
-    /// the classifier flagged as a REQUESTED CONTAINER (`requested_container:
-    /// true`) is written live via the direct path even into a standard wiki — it
-    /// lands in `fact_index` + the page marker immediately, NOT in the buffer (a
-    /// shopping list cannot wait for the dream). Inverse of
-    /// `ingest_standard_wiki_buffers_instead_of_writing_md`.
+    /// A conversational capture is staged with its vector and with the
+    /// fingerprint of the turn it came from, and the vector is the one
+    /// promotion uses — the work is done once, at the point where the text is
+    /// final, instead of once per read AND again at promotion.
     #[tokio::test]
-    async fn ingest_requested_container_writes_live_into_standard_wiki() {
+    async fn ingest_stages_the_vector_and_the_origin_message_on_the_capture() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let json = "{\"intent\":\"capture\",\"extractions\":[{\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+            \"owner_id\":\"user:alice\",\"body\":\"Alice beve il caffè amaro.\",\
+            \"fact_type\":\"preference\"}]}";
+        let llm = FakeLlmBackend::new("fake", json);
+        let message = "il caffè lo bevo amaro";
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req(message, "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        let staged = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+            .await
+            .expect("buffer read");
+        assert_eq!(staged.len(), 1);
+        assert!(
+            staged[0].embedding.is_some(),
+            "the vector is computed once, when the claim is staged"
+        );
+        assert_eq!(
+            staged[0].origin_message_hash.as_deref(),
+            Some(capture_buffer::origin_fingerprint(message).as_str()),
+            "and the turn it came from is recorded, so recall can tell whether \
+             the agent is already reading it"
+        );
+
+        // Promotion copies that vector rather than recomputing: the promoted
+        // fact carries exactly what was staged.
+        let staged_vec = staged[0].embedding.clone().unwrap();
+        promote_buffer(&pool, &tree).await;
+        let row = fact_index::find_by_id(&pool, &staged[0].capture_id)
+            .await
+            .expect("find")
+            .expect("promoted");
+        assert_eq!(row.embedding, staged_vec);
+        drop(dir);
+    }
+
+    /// **There is no live exception any more** (founder, 2026-08-05). A capture
+    /// the classifier flags as a REQUESTED CONTAINER — a shopping list, the
+    /// canonical read-your-writes case — waits in the buffer exactly like
+    /// accumulated knowledge: no `fact_index` row and no page marker during the
+    /// turn.
+    ///
+    /// This is not a regression in what the user can ask a second later. A
+    /// buffered claim is recallable the moment it is staged (the fresh slot),
+    /// so "what is on the list?" is answerable from memory without the page
+    /// having been written; and the light dream now promotes AND recompiles the
+    /// pages it touched, so the page itself follows within one interval instead
+    /// of within a night. What the removal buys is one write path instead of
+    /// two, and therefore one place — promotion — where dedup and supersede are
+    /// decided.
+    #[tokio::test]
+    async fn ingest_requested_container_waits_in_the_buffer_like_everything_else() {
         let (dir, tree, pool) = setup_workdir().await;
 
-        // The classifier asks for a live container (a shopping list).
+        // The classifier still emits the flag; the orchestrator no longer
+        // routes on it.
         let llm = FakeLlmBackend::new(
             "fake",
             "{\"intent\":\"capture\",\"extractions\":[\
@@ -11927,27 +12134,52 @@ mod tests {
         assert_eq!(resp.intent, IntentKind::Capture);
         assert!(
             resp.capture_id.is_some(),
-            "the live write anchors the response"
+            "the buffered capture still anchors the response"
         );
 
-        // LIVE write: the fact is in fact_index and on the page now — NOT buffered.
         assert_eq!(
             capture_buffer::count_buffered(&pool).await.unwrap(),
-            0,
-            "a requested container must NOT wait in the buffer"
-        );
-        let facts = fact_index::find_active_in_wiki(&pool, "alice")
-            .await
-            .unwrap();
-        assert_eq!(
-            facts.len(),
             1,
-            "the requested container is written live to fact_index"
+            "a requested container is buffered like any other capture"
         );
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/spesa.md")).unwrap();
         assert!(
-            page.contains("{{f=") && page.contains("latte"),
-            "the requested container's fact is written to its page marker now: {page}"
+            fact_index::find_active_in_wiki(&pool, "alice")
+                .await
+                .unwrap()
+                .is_empty(),
+            "nothing reaches fact_index during the turn"
+        );
+        assert!(
+            !dir.path().join("wikis/alice/spesa.md").exists(),
+            "and no page is written during the turn"
+        );
+
+        // The claim is nonetheless recallable at once — which is why removing
+        // the live path costs the conversation nothing.
+        let fresh = recall::recall_fresh_captures(
+            &pool,
+            fake_embedder().as_ref(),
+            "cosa c'è sulla spesa",
+            &SenderContext::user("alice"),
+            5,
+            &std::collections::HashSet::new(),
+        )
+        .await
+        .expect("fresh recall");
+        assert!(
+            fresh.iter().any(|h| h.text.contains("latte")),
+            "the buffered list item is recallable before any page exists"
+        );
+
+        // And the dream settles it into the fact + the page.
+        promote_buffer(&pool, &tree).await;
+        assert_eq!(
+            fact_index::find_active_in_wiki(&pool, "alice")
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "the light dream promotes it"
         );
 
         drop(dir);
@@ -11993,6 +12225,9 @@ mod tests {
         .expect("ingest");
 
         assert_eq!(resp.intent, IntentKind::Capture);
+        // The capture is buffered; the light dream is what turns it into the
+        // fact this test is about.
+        promote_buffer(&pool, &tree).await;
         let facts = fact_index::find_active_in_wiki(&pool, "alice")
             .await
             .unwrap();
@@ -12039,6 +12274,9 @@ mod tests {
         )
         .await
         .expect("ingest");
+        // The capture is buffered; the light dream is what turns it into the
+        // fact this test is about.
+        promote_buffer(&pool, &tree).await;
 
         let facts = fact_index::find_active_in_wiki(&pool, "alice")
             .await
@@ -12080,6 +12318,9 @@ mod tests {
         )
         .await
         .expect("ingest");
+        // The capture is buffered; the light dream is what turns it into the
+        // fact this test is about.
+        promote_buffer(&pool, &tree).await;
 
         let facts = fact_index::find_active_in_wiki(&pool, "alice")
             .await
@@ -13916,6 +14157,9 @@ mod tests {
         assert_eq!(resp.intent, IntentKind::Capture);
 
         // The filed fact's body carries the marker, appended by code.
+        // The capture is buffered; the light dream is what turns it into the
+        // fact this test is about.
+        promote_buffer(&pool, &tree).await;
         let row = fact_index::find_by_id(&pool, &resp.capture_id.expect("filed"))
             .await
             .unwrap()
@@ -14132,18 +14376,24 @@ mod tests {
         let resp = wiki_ingest_message(&pool, &tree, fake_embedder(), &llm, None, request, &policy)
             .await
             .expect("ingest");
-        // The fact filed without any marker (the claim was bogus)…
+        // Read the buffer BEFORE the dream drains it. Two rows wait there: the
+        // extraction itself and the fallback that rescued the real attachment
+        // the plan never claimed.
+        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+            .await
+            .expect("buffer read");
+        assert_eq!(buffered.len(), 2, "the extraction and the media fallback");
+        assert!(
+            buffered.iter().any(|c| c.body.contains(cid.as_str())),
+            "the real attachment was filed by the fallback"
+        );
+        // The fact filed without any marker — the claim was bogus.
+        promote_buffer(&pool, &tree).await;
         let row = fact_index::find_by_id(&pool, &resp.capture_id.expect("filed"))
             .await
             .unwrap()
             .unwrap();
         assert!(!row.text.contains("{{embed="), "{}", row.text);
-        // …and the real attachment was filed by the fallback.
-        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
-            .await
-            .expect("buffer read");
-        assert_eq!(buffered.len(), 1);
-        assert!(buffered[0].body.contains(cid.as_str()));
         drop(dir);
     }
 
@@ -14197,18 +14447,23 @@ mod tests {
         let resp = wiki_ingest_message(&pool, &tree, fake_embedder(), &llm, None, request, &policy)
             .await
             .expect("ingest");
-        // The filed fact lost the model-written marker…
+        // Read the buffer BEFORE the dream drains it: the extraction plus the
+        // fallback that rescued the media the plan never claimed.
+        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+            .await
+            .expect("buffer read");
+        assert_eq!(buffered.len(), 2, "the extraction and the media fallback");
+        assert!(
+            buffered.iter().any(|c| c.body.contains(cid.as_str())),
+            "the unclaimed media was filed by the fallback"
+        );
+        // The filed fact lost the model-written marker.
+        promote_buffer(&pool, &tree).await;
         let row = fact_index::find_by_id(&pool, &resp.capture_id.expect("filed"))
             .await
             .unwrap()
             .unwrap();
         assert!(!row.text.contains("{{embed="), "{}", row.text);
-        // …and the unclaimed media was filed by the fallback instead.
-        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
-            .await
-            .expect("buffer read");
-        assert_eq!(buffered.len(), 1);
-        assert!(buffered[0].body.contains(cid.as_str()));
         drop(dir);
     }
 }

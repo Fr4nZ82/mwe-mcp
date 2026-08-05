@@ -215,9 +215,12 @@ fn window_closed_at(valid_to: Option<&str>, now: &chrono::DateTime<chrono::Utc>)
 /// his call to make. What it buys and what it costs, on the labelled turns:
 /// the narrated question's answer goes 8th → **2nd** (0.20 put it 1st), and
 /// the turn that actually failed in production goes 17th → **7th** rather
-/// than 3rd — so **that one still misses a five-fact block**, and closes
-/// only once `recall_top_k` rises, which is separately planned. Everything
-/// topical stays in the block at either value; the flat form pushed it out.
+/// than 3rd — so at the then-current cut of 5 it still missed a five-fact
+/// block. That is the half this weight could not close on its own, and it
+/// closed on 2026-08-05 from the other side: `recall_top_k` is now 10
+/// ([`crate::ingest::IngestPolicy::recall_top_k`]), so 7th is inside the
+/// block. Everything topical stays in the block at either value; the flat
+/// form pushed it out.
 ///
 /// A ranking **signal, never a filter**: nothing becomes unreachable and
 /// everything that surfaced before still surfaces.
@@ -634,13 +637,31 @@ async fn search_inner(
     embedder: Arc<dyn Embedder>,
     query: &str,
     top_k: usize,
-    filters: fact_index::FactFilters,
+    mut filters: fact_index::FactFilters,
     sender: &SenderContext,
     bump: bool,
 ) -> RecallResult<Vec<RecallHit>> {
     if top_k == 0 {
         return Ok(Vec::new());
     }
+    // The ACL goes into the QUERY, not just the loop below. Scoring is a
+    // cosine against every candidate's stored embedding, so a candidate the
+    // sender may not read costs a vector read, a transfer and a decode
+    // before `score_and_filter` throws it away — on a path that runs once
+    // per conversational turn over the whole active corpus. Narrowing in SQL
+    // is the same move the section corpus already makes (`search_sections`:
+    // ACL before both scans, so an unreadable wiki's bytes never leave the
+    // store).
+    //
+    // `row_visible_to` below is deliberately KEPT. The predicate is a
+    // narrowing optimisation and the row check stays the authority: two
+    // spellings of one rule drift, and the failure mode of this particular
+    // drift is showing somebody something they were never told, so the
+    // stricter of the two must always get the last word.
+    filters.readable_by = Some(crate::acl::reader_principals(
+        &sender.sender_id,
+        &sender.sender_groups,
+    ));
     let q_emb = embedder.embed(query).await?;
     tracing::debug!(
         query_len = query.len(),
@@ -1880,11 +1901,23 @@ pub async fn wiki_recall(
 /// unconsolidated" slot, ranked semantically against `query` and
 /// ACL-filtered for `sender`.
 ///
-/// PROVISIONAL — revisit after the recall-strategy review. It
-/// re-embeds each pending capture at recall time; the buffer drains at the
-/// light-dream backlog threshold so the candidate set is small, capped at
-/// [`FRESH_CANDIDATE_CAP`]. The optimisation (embed once at capture time,
-/// store the vector — option C) is the tracked follow-up.
+/// `already_in_context` is the set of [`capture_buffer::origin_fingerprint`]s
+/// of the messages the consumer is **already being shown this turn** — its own
+/// replayed transcript, plus the cross-consumer recent window this turn serves
+/// back. A capture extracted from one of those is skipped: its content is in
+/// front of the agent in the message that produced it, and repeating it as an
+/// extracted fact is the same information twice inside one recall block.
+///
+/// The suppression is by ORIGIN, not by age, because age does not decide it.
+/// The recent window is bounded by a TTL *and* an entry count *and* a
+/// character budget, so on a talkative surface it drops a message long before
+/// the TTL — "recent enough to still be shown" is not a function of time.
+/// Matching the message a capture came from answers the actual question. It
+/// also leaves every capture made by SOMEBODY ELSE untouched, which is the
+/// case the slot is really for: another user's claim was never in this
+/// sender's window by any route, so no fingerprint of theirs can match it.
+///
+/// Empty set = suppress nothing, the historical behaviour.
 ///
 /// Does NOT bump recall counters: buffered captures are not `fact_index`
 /// rows yet, so there is no recency signal to advance.
@@ -1892,12 +1925,13 @@ pub async fn wiki_recall(
 /// # Errors
 ///
 /// See [`RecallError`].
-pub async fn recall_fresh_captures(
+pub async fn recall_fresh_captures<S: std::hash::BuildHasher + Sync>(
     pool: &SqlitePool,
     embedder: &dyn Embedder,
     query: &str,
     sender: &SenderContext,
     fresh_top_k: usize,
+    already_in_context: &HashSet<String, S>,
 ) -> RecallResult<Vec<RecallHit>> {
     if fresh_top_k == 0 {
         return Ok(Vec::new());
@@ -1908,15 +1942,32 @@ pub async fn recall_fresh_captures(
     }
     let q_emb = embedder.embed(query).await?;
     let mut scored: Vec<(f32, BufferedCapture)> = Vec::new();
+    let mut suppressed = 0_usize;
     for cap in candidates {
         if !buffered_visible_to(&cap, sender) {
             continue;
         }
-        // The fresh slot re-embeds buffered bodies per turn; strip the
-        // embed markers like every other similarity surface.
-        let emb = embedder
-            .embed(&crate::parser::strip_embed_markers(&cap.body))
-            .await?;
+        if cap
+            .origin_message_hash
+            .as_deref()
+            .is_some_and(|h| already_in_context.contains(h))
+        {
+            suppressed += 1;
+            continue;
+        }
+        // The staged vector, computed once when the claim was buffered over
+        // this same marker-stripped text. The fallback embeds a row that has
+        // none — journal-recovered, or staged while the embedder was down —
+        // which is what this slot used to do for every candidate on every
+        // turn.
+        let emb = match cap.embedding.clone() {
+            Some(v) => v,
+            None => {
+                embedder
+                    .embed(&crate::parser::strip_embed_markers(&cap.body))
+                    .await?
+            },
+        };
         let mut s = cosine_similarity(&q_emb, &emb);
         // Same validity down-rank as `score_and_filter`: a buffered
         // capture can already carry a closed window (a same-day closure
@@ -1925,6 +1976,13 @@ pub async fn recall_fresh_captures(
             s *= CLOSED_WINDOW_DOWNRANK;
         }
         scored.push((s, cap));
+    }
+    if suppressed > 0 {
+        tracing::debug!(
+            sender_id = sender.sender_id,
+            suppressed,
+            "recall: fresh captures already in the turn's context, not repeated"
+        );
     }
     // Sort by score descending; NaN sinks to the bottom (mirrors `score_and_filter`).
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Less));
@@ -2416,6 +2474,115 @@ mod tests {
 
     // ---------- recall_fresh_captures (mid-range bridge) ----------
 
+    /// The fresh slot must not restate, as an extracted fact, something the
+    /// agent is already reading in the message that produced it — and must
+    /// keep serving everything else, which in practice means everybody else's
+    /// captures, since another person's message was never in this sender's
+    /// context by any route.
+    ///
+    /// The suppression keys on the ORIGIN of the capture, not on its age,
+    /// because age cannot answer the question: the window that carries those
+    /// messages is bounded by an entry count and a character budget as well as
+    /// by a TTL, so "still being shown" is not a function of time.
+    #[tokio::test]
+    async fn recall_fresh_skips_captures_whose_origin_message_is_already_in_context() {
+        use crate::capture::CaptureRequest;
+        use crate::capture_buffer::{BufferStaging, buffer_capture_staged, origin_fingerprint};
+        use crate::types::WikiId;
+        use crate::wiki::WikiTree;
+        use std::path::PathBuf;
+
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(&wikis).unwrap();
+        let d = wikis.join("alice");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("_meta.md"),
+            "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: alice\nacl_default: 'user:alice'\n---\n",
+        )
+        .unwrap();
+        std::fs::write(d.join("index.md"), "# index\n").unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+
+        let mk = |body: &str| CaptureRequest {
+            authored_refs: Vec::new(),
+            wiki_id: WikiId::parse("alice").unwrap(),
+            page: PathBuf::from("index.md"),
+            body: body.to_owned(),
+            owner: "user:alice".parse::<Principal>().unwrap(),
+            allow: Vec::new(),
+            sender: None,
+            fact_type: None,
+            topics: vec![],
+            dedup_threshold: None,
+            valid_from: None,
+            valid_to: None,
+            style: None,
+            page_description: None,
+            salience: None,
+        };
+
+        let shown = "Mi sono iscritta in palestra in Via Roma.";
+        let unshown = "Il corso di nuoto comincia a ottobre.";
+        for (body, origin) in [
+            ("Alice si è iscritta in palestra.", shown),
+            ("Il corso di nuoto di Alice comincia a ottobre.", unshown),
+        ] {
+            buffer_capture_staged(
+                &tree,
+                &pool,
+                mk(body),
+                None,
+                BufferStaging {
+                    embedding: None,
+                    origin_message_hash: Some(origin_fingerprint(origin)),
+                },
+            )
+            .await
+            .expect("buffer");
+        }
+
+        let embedder = embedder_default();
+        let mut in_context = HashSet::new();
+        in_context.insert(origin_fingerprint(shown));
+
+        let hits = recall_fresh_captures(
+            &pool,
+            embedder.as_ref(),
+            "palestra e nuoto",
+            &SenderContext::user("alice"),
+            10,
+            &in_context,
+        )
+        .await
+        .expect("fresh");
+        let texts: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
+        assert!(
+            !texts.iter().any(|t| t.contains("palestra")),
+            "the agent is already reading the message this came from: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("nuoto")),
+            "everything whose origin is NOT in context still surfaces: {texts:?}"
+        );
+
+        // With nothing in context — a consumer that carries no window — the
+        // slot behaves exactly as it did before the suppression existed.
+        let all = recall_fresh_captures(
+            &pool,
+            embedder.as_ref(),
+            "palestra e nuoto",
+            &SenderContext::user("alice"),
+            10,
+            &HashSet::new(),
+        )
+        .await
+        .expect("fresh");
+        assert_eq!(all.len(), 2);
+    }
+
     #[tokio::test]
     async fn recall_fresh_surfaces_unpromoted_captures_acl_scoped() {
         use crate::capture::CaptureRequest;
@@ -2489,6 +2656,7 @@ mod tests {
             "where is my gym",
             &SenderContext::user("alice"),
             5,
+            &HashSet::new(),
         )
         .await
         .expect("fresh recall");
@@ -4570,6 +4738,112 @@ mod tests {
         assert_eq!(
             hits[0].fact_id.as_str(),
             "018f1234-5678-7abc-9def-0123456789ac"
+        );
+    }
+
+    /// The ACL now narrows the QUERY as well as the result rows, and the two
+    /// must agree. This is the test that keeps them agreeing: read access is
+    /// `owner ∪ allow ∪ sender`, none of the three sufficient alone, so a
+    /// predicate that forgot one would silently hide facts a reader is
+    /// entitled to — and nothing else would notice, because the row check
+    /// downstream can only ever remove rows, never restore one the query
+    /// never fetched.
+    #[tokio::test]
+    async fn acl_predicate_admits_every_axis_the_row_check_admits() {
+        let pool = make_pool().await;
+        let emb = vec![1.0, 0.0, 0.0, 0.0];
+        let mut rows = Vec::new();
+        // Readable through the OWNER axis.
+        insert_row(
+            &mut rows,
+            "018f1234-5678-7abc-9def-00000000a001",
+            "w",
+            "user:alice",
+            "own",
+            emb.clone(),
+        );
+        // Through the universal group — stored as the bare `global`.
+        insert_row(
+            &mut rows,
+            "018f1234-5678-7abc-9def-00000000a002",
+            "w",
+            "global",
+            "public",
+            emb.clone(),
+        );
+        // Through the ALLOW axis: owned by somebody else, shared with alice.
+        insert_row(
+            &mut rows,
+            "018f1234-5678-7abc-9def-00000000a003",
+            "w",
+            "user:bob",
+            "shared with alice",
+            emb.clone(),
+        );
+        rows[2].allow_ids = vec!["user:alice".parse().unwrap()];
+        // Through the ALLOW axis by GROUP membership.
+        insert_row(
+            &mut rows,
+            "018f1234-5678-7abc-9def-00000000a004",
+            "w",
+            "user:bob",
+            "shared with the family",
+            emb.clone(),
+        );
+        rows[3].allow_ids = vec!["group:famiglia".parse().unwrap()];
+        // Through the SENDER axis: alice captured it, about somebody else.
+        insert_row(
+            &mut rows,
+            "018f1234-5678-7abc-9def-00000000a005",
+            "w",
+            "user:bob",
+            "alice said this about bob",
+            emb.clone(),
+        );
+        rows[4].sender_id = Some("user:alice".parse().unwrap());
+        // Readable through none of the three.
+        insert_row(
+            &mut rows,
+            "018f1234-5678-7abc-9def-00000000a006",
+            "w",
+            "user:bob",
+            "bob's own business",
+            emb.clone(),
+        );
+        populate(&pool, rows).await;
+
+        let sender = SenderContext {
+            sender_id: "alice".to_owned(),
+            sender_groups: vec!["famiglia".to_owned()],
+        };
+        let hits = wiki_search(
+            &pool,
+            embedder_fixed(emb),
+            "query",
+            50,
+            FactFilters::default(),
+            &sender,
+        )
+        .await
+        .unwrap();
+        let texts: std::collections::BTreeSet<&str> =
+            hits.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "own",
+                "public",
+                "shared with alice",
+                "shared with the family",
+                "alice said this about bob",
+            ]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<&str>>(),
+            "every axis that grants read must survive the predicate"
+        );
+        assert!(
+            !texts.contains("bob's own business"),
+            "and nothing else may"
         );
     }
 
