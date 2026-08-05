@@ -432,9 +432,15 @@ pub struct IngestPolicy {
     /// trimmed first). Stops a runaway tail from blowing the prompt
     /// budget.
     pub max_recent_message_chars: usize,
-    /// Cap on the wikis enumerated in the prompt's `available_wikis`
-    /// section. Larger workdirs are truncated — the operator can grow
-    /// the cap when they know their LLM handles it.
+    /// Cap on the **emerged** wikis enumerated in the prompt's
+    /// `available_wikis` section. Identity wikis (a root `wiki-user` /
+    /// `wiki-group`) are exempt and never counted — they are the
+    /// deployment's routing domains, bounded by enrollment rather than by
+    /// memory growth, and dropping one removes the only correct answer for
+    /// every fact about that principal. Smart wikis are gone before the
+    /// count. Beyond the cap the **newest** emerged wikis are dropped and
+    /// the truncation is logged; the operator can grow it when they know
+    /// their LLM handles it. See [`available_wikis`].
     pub max_wikis_in_prompt: usize,
     /// Cap on the groups enumerated in the prompt's `sender_groups`
     /// section (scope routing). A sender in more groups than this
@@ -1565,10 +1571,11 @@ async fn file_unclaimed_attachments(
         return None;
     }
     // Resolve the sender's identity wiki against the FULL tree, not the
-    // prompt's truncated `available` window — in a deployment with more
-    // wikis than the prompt cap the identity wiki may not have made the
-    // window, and the fallback must still file. The smart filter stays:
-    // a smart-managed identity wiki never takes buffered captures.
+    // prompt's `available` window. An identity wiki is exempt from the cap
+    // and so is always in the window today, but the fallback must file even
+    // if that ever changes — and `available` may be the empty list a soft
+    // enumeration failure left behind. `available_wikis` drops smart wikis
+    // itself: a smart-managed identity wiki never takes buffered captures.
     let target = available
         .iter()
         .find(|w| w.wiki_id == request.sender_id)
@@ -1577,7 +1584,7 @@ async fn file_unclaimed_attachments(
             available_wikis(tree, usize::MAX)
                 .ok()?
                 .into_iter()
-                .find(|w| w.wiki_id == request.sender_id && !w.smart)
+                .find(|w| w.wiki_id == request.sender_id)
         });
     let Some(target) = target else {
         tracing::warn!(
@@ -3017,40 +3024,14 @@ fn build_prompt(
         }
     }
 
-    // available_wikis: the routing window. Each carries the wiki's `scope`
-    // prose (the category description) — a placement signal AND an audience
-    // signal: the destination wiki's scope is one of the inputs to the
+    // available_wikis: the routing window, selected by [`available_wikis`]
+    // and rendered by [`render_available_wikis`] — which the document
+    // extractor shares, so the two prompts cannot disagree about what a wiki
+    // looks like. Each entry's description (`scope` / `holds`) is a placement
+    // signal AND an audience signal: it is one of the inputs to the
     // `allow_ids` decision, alongside the group `scope` above.
-    //
-    // An AGENT's own wiki also carries `is_agent: true`. Its `wiki_type` is
-    // `wiki-user` like a human's — an agent is an enrolled user (the diagonal
-    // identity model) — so without the flag the classifier can only tell the
-    // two apart by guessing at the title, and a fact about a person may be
-    // routed into the agent's autobiography. The flag is emitted only when
-    // set: the vast majority of wikis are human, and a `false` on every line
-    // would be prompt weight spent on nothing.
-    out.push_str("\navailable_wikis:\n");
-    if available_wikis.is_empty() {
-        out.push_str("  (none yet — capture will need a wiki to be forged first)\n");
-    } else {
-        for w in available_wikis {
-            out.push_str("  - wiki_id: ");
-            out.push_str(&w.wiki_id);
-            out.push_str("\n    title: ");
-            out.push_str(&w.title);
-            out.push_str("\n    type: ");
-            out.push_str(&w.wiki_type);
-            if w.is_agent {
-                out.push_str("\n    is_agent: true");
-            }
-            out.push_str("\n    scope: ");
-            match w.scope.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                Some(s) => out.push_str(&truncate(s, policy.max_group_scope_chars)),
-                None => out.push_str("(no scope configured)"),
-            }
-            out.push('\n');
-        }
-    }
+    out.push('\n');
+    render_available_wikis(&mut out, available_wikis, policy.max_group_scope_chars);
 
     out.push_str("\nrecent_messages:\n");
     if request.recent_messages.is_empty() {
@@ -3227,12 +3208,30 @@ pub(crate) struct AvailableWiki {
     pub(crate) wiki_id: String,
     pub(crate) title: String,
     pub(crate) wiki_type: String,
-    /// The wiki's `scope` prose — the category's "what goes in here"
-    /// description, surfaced to the classifier as a placement **and**
+    /// The wiki's `scope` prose — the category's **authored intent**, "what
+    /// goes in here", surfaced to the classifier as a placement **and**
     /// audience signal (the wiki's `scope` is an `allow_ids` input
     /// alongside the group `scope`). `None` for a wiki with no
-    /// description configured.
+    /// description configured — which today is every standard wiki:
+    /// `create_identity_wiki` and both emergence paths stamp `scope: None`,
+    /// and the only writer is the smart-wiki door sign, a family this window
+    /// never carries. It is kept because a hand-authored `_meta.md` round-trips
+    /// it verbatim, and because intent and content are different claims — see
+    /// [`Self::summary`].
     pub(crate) scope: Option<String>,
+    /// The wiki's `_meta.extra["summary"]` — the compiled **abstract**, "what
+    /// it actually holds", written by the compiler from the card its own
+    /// foundation page was written with (and seeded at emergence from the
+    /// promoting model's description).
+    ///
+    /// The twin of [`Self::scope`] and deliberately NOT merged into it: this
+    /// one is machine-written and rewritten on every compile of the wiki's
+    /// foundation page, so folding it onto `scope` would have the nightly
+    /// compile overwrite a human's authored line. It is the field that
+    /// actually carries a description today, and the only description an
+    /// **emerged** wiki has — the case where the wiki id alone says least,
+    /// because it names a topic rather than an enrolled principal.
+    pub(crate) summary: Option<String>,
     /// Per-wiki `smart` flag read straight from `_meta.md`. A smart
     /// wiki is smart-consumer-owned (`wiki_admin_*`, never
     /// `wiki_ingest_message`) so it is hidden from the router window and
@@ -3246,22 +3245,152 @@ pub(crate) struct AvailableWiki {
     pub(crate) is_agent: bool,
 }
 
+/// Render the `available_wikis:` routing window — the ONE renderer, shared by
+/// the conversational classifier ([`build_prompt`]) and the document extractor
+/// ([`crate::document`]), so the two windows cannot drift on what a wiki looks
+/// like or on what counts as its description.
+///
+/// Per wiki: id, title, type, `is_agent` when set, then the description as up
+/// to two lines, each omitted when empty:
+///
+/// - `scope:` — the **authored** intent, "what goes in here" (human-written).
+/// - `holds:` — the **compiled** abstract, "what it actually holds", refreshed
+///   by the compiler from the wiki's own foundation card.
+///
+/// Neither present → `about: (not described yet)`, the honest answer and
+/// shorter than two empty keys. Both are cut at `max_desc_chars` (a runaway
+/// hand-edited `_meta.md` must not eat the prompt budget).
+///
+/// `is_agent` is emitted **only when true**. It has to be emitted at all
+/// because an agent's own wiki is a `wiki-user` exactly like a human's — an
+/// agent is an enrolled user (the diagonal identity model) — so without the
+/// line the classifier can only tell them apart by guessing at the title, and
+/// a fact about a person lands in the agent's autobiography (which the x2
+/// guard in [`validate_capture_plan`] then has to undo). It is omitted when
+/// false because the vast majority of wikis are human, and a `false` on every
+/// line would be prompt weight spent on nothing.
+pub(crate) fn render_available_wikis(
+    out: &mut String,
+    wikis: &[AvailableWiki],
+    max_desc_chars: usize,
+) {
+    out.push_str("available_wikis:\n");
+    if wikis.is_empty() {
+        out.push_str("  (none yet — capture will need a wiki to be forged first)\n");
+        return;
+    }
+    for w in wikis {
+        out.push_str("  - wiki_id: ");
+        out.push_str(&w.wiki_id);
+        out.push_str("\n    title: ");
+        out.push_str(&w.title);
+        out.push_str("\n    type: ");
+        out.push_str(&w.wiki_type);
+        if w.is_agent {
+            out.push_str("\n    is_agent: true");
+        }
+        let scope = w.scope.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let holds = w
+            .summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if scope.is_none() && holds.is_none() {
+            out.push_str("\n    about: (not described yet)");
+        }
+        if let Some(s) = scope {
+            out.push_str("\n    scope: ");
+            out.push_str(&truncate(s, max_desc_chars));
+        }
+        if let Some(s) = holds {
+            out.push_str("\n    holds: ");
+            out.push_str(&truncate(s, max_desc_chars));
+        }
+        out.push('\n');
+    }
+}
+
+/// True for an **identity wiki**: a root (`parent_wiki_id == None`) whose
+/// `wiki_type` is one of the two identity types. Its id **is** its principal's
+/// id, which is what makes it self-describing in the routing window — and what
+/// makes it exempt from the cap below.
+///
+/// An agent's wiki is an [`wiki::IDENTITY_WIKI_TYPE`] root like a human's (it
+/// only adds the `is_agent` marker), so it is an identity wiki here too.
+fn is_identity_wiki(meta: &wiki::WikiMeta) -> bool {
+    meta.parent_wiki_id.is_none()
+        && matches!(
+            meta.wiki_type.as_str(),
+            wiki::IDENTITY_WIKI_TYPE | wiki::GROUP_IDENTITY_WIKI_TYPE
+        )
+}
+
+/// Enumerate the wikis a capture may be routed into, as the classifier will
+/// see them.
+///
+/// Three rules, in this order — each one exists because the naive version cost
+/// the router something it could not get back:
+///
+/// 1. **Smart wikis leave first, before anything is counted.** They are
+///    authoritatively written through the `wiki_admin_*` family and are never a
+///    routing target, so letting one consume a slot would silently shrink the
+///    window by the number of project notebooks the deployment happens to have.
+/// 2. **Identity wikis always enter, outside the count.** A deployment's users
+///    and groups ARE its routing domains: dropping one does not degrade the
+///    choice, it removes the only correct answer for every fact about that
+///    person. They are also bounded by enrollment, not by memory growth.
+/// 3. **Only emerged wikis are capped, oldest first.** They are the unbounded
+///    set (REM mints them from page groups), so the cap belongs here. Ordering
+///    by `created` keeps the settled subject areas — the ones with a history of
+///    facts landing in them — and drops the newest, which are the most likely to
+///    be re-absorbed by a later consolidation anyway. A truncation is logged: a
+///    bounded window must say what it dropped.
+///
+/// The returned order is identity wikis in tree order, then the surviving
+/// emerged ones oldest-first — deterministic, so the same tree always renders
+/// the same prompt.
 pub(crate) fn available_wikis(tree: &WikiTree, cap: usize) -> Result<Vec<AvailableWiki>> {
-    let mut out = Vec::new();
+    let mut identity = Vec::new();
+    let mut emerged: Vec<(String, AvailableWiki)> = Vec::new();
     for d in tree.walk()? {
-        out.push(AvailableWiki {
+        if d.meta.smart {
+            continue;
+        }
+        let w = AvailableWiki {
             wiki_id: d.meta.wiki_id.as_str().to_owned(),
             title: d.meta.title.clone(),
             wiki_type: d.meta.wiki_type.clone(),
             scope: d.meta.scope.clone(),
+            summary: wiki::meta_summary(&d.meta),
             smart: d.meta.smart,
             is_agent: d.meta.is_agent,
-        });
-        if out.len() >= cap {
-            break;
+        };
+        if is_identity_wiki(&d.meta) {
+            identity.push(w);
+        } else {
+            // Sort key: the creation instant, oldest first. An undated wiki
+            // (hand-authored, or born before the field existed) sorts as the
+            // oldest — by every other sign it has been there longest. The
+            // `wiki_id` breaks ties so the order never depends on the walk.
+            emerged.push((d.meta.created.clone().unwrap_or_default(), w));
         }
     }
-    Ok(out)
+    emerged.sort_by(|(a_created, a), (b_created, b)| {
+        a_created
+            .cmp(b_created)
+            .then_with(|| a.wiki_id.cmp(&b.wiki_id))
+    });
+    if emerged.len() > cap {
+        tracing::warn!(
+            emerged = emerged.len(),
+            cap,
+            dropped = emerged.len() - cap,
+            "ingest: emerged-wiki window truncated — the newest wikis are not offered this turn"
+        );
+        emerged.truncate(cap);
+    }
+    identity.extend(emerged.into_iter().map(|(_, w)| w));
+    Ok(identity)
 }
 
 /// Read the sender's `rules.md` user-policy — governance PROSE only,
@@ -5136,20 +5265,19 @@ pub async fn wiki_ingest_message(
     // A wiki whose per-wiki smart flag (read from
     // `_meta.md`) is `true` is managed authoritatively by the
     // user's smart consumer via `wiki_admin_*` and is not writable
-    // through this orchestrator. We hide them from the router's
-    // `available_wikis` window so the LLM never proposes one as
-    // `target_wiki_id`. The defense-in-depth check inside
-    // `validate_capture_plan` catches stale-cache slips.
+    // through this orchestrator. `available_wikis` drops them **before**
+    // the cap is applied so the LLM never proposes one as
+    // `target_wiki_id` *and* a project notebook never consumes a slot;
+    // the identity wikis then enter outside the count and only the
+    // emerged ones are capped (oldest first). The defense-in-depth check
+    // inside `validate_capture_plan` catches stale-cache slips.
     //
-    // Everything that survives the filter is the standard-wiki
+    // Everything in the window is therefore the standard-wiki
     // path: its captures route into the captures buffer
     // (`crate::capture_buffer`) for the nightly compiler instead of the
     // published `.md` — the standard family collapsed to "not
     // smart" when the `wiki_type` registry was retired.
-    let available: Vec<AvailableWiki> = available_wikis(tree, policy.max_wikis_in_prompt)?
-        .into_iter()
-        .filter(|w| !w.smart)
-        .collect();
+    let available: Vec<AvailableWiki> = available_wikis(tree, policy.max_wikis_in_prompt)?;
     tracing::debug!(available = available.len(), "ingest: enumerated wikis");
 
     // Step 3 — call the LLM. The system prompt comes from the hybrid
@@ -6583,13 +6711,141 @@ mod tests {
         crate::wiki::write_wiki_dir(&tree, &nmeta, "# Alice\n", false).expect("create alice");
         crate::wiki::write_wiki_dir(&tree, &cmeta, "# Proj\n", false).expect("create proj");
 
+        // The enumerator itself is the gate now: a smart wiki never reaches
+        // the window at all, so no caller has to remember to filter.
         let avail = available_wikis(&tree, 100).expect("available");
-        assert!(avail.iter().any(|w| w.wiki_id == "alice" && !w.smart));
-        assert!(avail.iter().any(|w| w.wiki_id == "proj" && w.smart));
-        // The router gate hides the smart wiki, keeps the standard one.
-        let offered: Vec<_> = avail.into_iter().filter(|w| !w.smart).collect();
-        assert!(offered.iter().any(|w| w.wiki_id == "alice"));
-        assert!(offered.iter().all(|w| !w.smart));
+        assert!(avail.iter().any(|w| w.wiki_id == "alice"));
+        assert!(
+            !avail.iter().any(|w| w.wiki_id == "proj"),
+            "a smart wiki is never offered as a routing target"
+        );
+        assert!(avail.iter().all(|w| !w.smart));
+    }
+
+    /// Frontmatter for a top-level identity wiki.
+    fn identity_meta_yaml(id: &str, wiki_type: &str) -> String {
+        format!(
+            "---\nwiki_id: {id}\nwiki_type: {wiki_type}\nparent_wiki_id: null\n\
+             slug: {id}\ntitle: {id}\n---\n"
+        )
+    }
+
+    /// Frontmatter for an emerged sub-wiki under `parent`, with a creation
+    /// stamp so the oldest-first ordering is testable.
+    fn emerged_meta_yaml(id: &str, parent: &str, created: &str) -> String {
+        format!(
+            "---\nwiki_id: {id}\nwiki_type: wiki\nparent_wiki_id: {parent}\n\
+             slug: {id}\ntitle: {id}\ncreated: \"{created}\"\n---\n"
+        )
+    }
+
+    fn write_meta(tree: &WikiTree, yaml: &str) {
+        let (meta, _) = WikiMeta::parse(Path::new("_meta.md"), yaml).expect("meta");
+        crate::wiki::write_wiki_dir(tree, &meta, "# x\n", false).expect("create wiki");
+    }
+
+    #[test]
+    fn available_wikis_never_caps_identity_wikis() {
+        // A deployment's users and groups ARE its routing domains: dropping
+        // one does not degrade the choice, it removes the only correct answer
+        // for every fact about that principal. So they are exempt from the cap
+        // and are not counted against it — even at cap 0.
+        let dir = tempfile::tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        write_meta(&tree, &identity_meta_yaml("alice", "wiki-user"));
+        write_meta(&tree, &identity_meta_yaml("bob", "wiki-user"));
+        write_meta(&tree, &identity_meta_yaml("famiglia", "wiki-group"));
+
+        let avail = available_wikis(&tree, 0).expect("available");
+        let ids: Vec<&str> = avail.iter().map(|w| w.wiki_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["alice", "bob", "famiglia"],
+            "identity wikis ignore the cap entirely"
+        );
+    }
+
+    #[test]
+    fn available_wikis_caps_only_emerged_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        write_meta(&tree, &identity_meta_yaml("alice", "wiki-user"));
+        let tree = WikiTree::open(dir.path()).expect("reopen");
+        // Deliberately created in a different order than their timestamps, and
+        // named so that alphabetical order would give a different answer.
+        write_meta(
+            &tree,
+            &emerged_meta_yaml("anewest", "alice", "2026-03-01T00:00:00Z"),
+        );
+        write_meta(
+            &tree,
+            &emerged_meta_yaml("zoldest", "alice", "2026-01-01T00:00:00Z"),
+        );
+        write_meta(
+            &tree,
+            &emerged_meta_yaml("mmiddle", "alice", "2026-02-01T00:00:00Z"),
+        );
+
+        // Cap 2: the identity wiki rides free, the two OLDEST emerged survive.
+        let avail = available_wikis(&tree, 2).expect("available");
+        let ids: Vec<&str> = avail.iter().map(|w| w.wiki_id.as_str()).collect();
+        assert_eq!(ids, vec!["alice", "zoldest", "mmiddle"]);
+
+        // Uncapped: all three, still oldest-first.
+        let all = available_wikis(&tree, 100).expect("available");
+        let ids: Vec<&str> = all.iter().map(|w| w.wiki_id.as_str()).collect();
+        assert_eq!(ids, vec!["alice", "zoldest", "mmiddle", "anewest"]);
+    }
+
+    #[test]
+    fn available_wikis_smart_does_not_consume_a_cap_slot() {
+        // The cap is applied AFTER the smart family leaves, so a deployment
+        // with many project notebooks does not silently get a smaller routing
+        // window than one with none.
+        let dir = tempfile::tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        write_meta(&tree, &identity_meta_yaml("alice", "wiki-user"));
+        let tree = WikiTree::open(dir.path()).expect("reopen");
+        let smart = "---\nwiki_id: proj\nwiki_type: wiki\nparent_wiki_id: alice\n\
+                     slug: proj\ntitle: Proj\nsmart: true\ncreated: \"2026-01-01T00:00:00Z\"\n---\n";
+        write_meta(&tree, smart);
+        write_meta(
+            &tree,
+            &emerged_meta_yaml("viaggi", "alice", "2026-02-01T00:00:00Z"),
+        );
+
+        // Cap 1. Were the smart wiki counted (it is the older of the two) the
+        // real emerged wiki would be squeezed out.
+        let avail = available_wikis(&tree, 1).expect("available");
+        let ids: Vec<&str> = avail.iter().map(|w| w.wiki_id.as_str()).collect();
+        assert_eq!(ids, vec!["alice", "viaggi"]);
+    }
+
+    #[test]
+    fn available_wikis_carries_both_description_fields() {
+        // `scope` (authored intent) and `summary` (the compiled abstract) are
+        // separate claims and both reach the window; the renderer emits each
+        // only when present.
+        let dir = tempfile::tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        let described = "---\nwiki_id: alice\nwiki_type: wiki-user\nparent_wiki_id: null\n\
+                         slug: alice\ntitle: Alice\nscope: What goes in here\n\
+                         summary: What it actually holds\n---\n";
+        write_meta(&tree, described);
+        write_meta(&tree, &identity_meta_yaml("bob", "wiki-user"));
+
+        let avail = available_wikis(&tree, 100).expect("available");
+        let alice = avail.iter().find(|w| w.wiki_id == "alice").expect("alice");
+        assert_eq!(alice.scope.as_deref(), Some("What goes in here"));
+        assert_eq!(alice.summary.as_deref(), Some("What it actually holds"));
+
+        let mut out = String::new();
+        render_available_wikis(&mut out, &avail, 1_000);
+        assert!(out.contains("scope: What goes in here"), "{out}");
+        assert!(out.contains("holds: What it actually holds"), "{out}");
+        // The undescribed one says so once, instead of two empty keys.
+        assert!(out.contains("about: (not described yet)"), "{out}");
+        assert!(!out.contains("scope: \n"), "{out}");
     }
 
     // ---------- sender rules.md read ----------
@@ -7019,6 +7275,7 @@ mod tests {
             title: id.to_owned(),
             wiki_type: "wiki-user".to_owned(),
             scope: None,
+            summary: None,
             smart: false,
             is_agent: false,
         }
@@ -7494,7 +7751,9 @@ mod tests {
             "the agent wiki must announce itself; prompt was:\n{prompt}"
         );
         assert!(
-            prompt.contains("- wiki_id: alice\n    title: alice\n    type: wiki-user\n    scope:"),
+            prompt.contains(
+                "- wiki_id: alice\n    title: alice\n    type: wiki-user\n    about: (not described yet)"
+            ),
             "a human's wiki carries no is_agent line; prompt was:\n{prompt}"
         );
     }
@@ -7804,6 +8063,7 @@ mod tests {
             title: "Alice".into(),
             wiki_type: "wiki-user".into(),
             scope: Some("Alice's personal notes and work".into()),
+            summary: Some("Alice, an engineer in Milan.".into()),
             smart: false,
             is_agent: false,
         }];

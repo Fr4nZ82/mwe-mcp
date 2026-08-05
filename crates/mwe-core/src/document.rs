@@ -29,7 +29,9 @@ use crate::capture_buffer;
 use crate::config::{LlmConfig, LlmFunction};
 use crate::embedder::Embedder;
 use crate::events::{self, EventKind};
-use crate::ingest::{available_wikis, normalize_capture_page, parse_first_json};
+use crate::ingest::{
+    available_wikis, normalize_capture_page, parse_first_json, render_available_wikis,
+};
 use crate::llm::{CompletionRequest, LlmBackend, LlmError};
 use crate::prompts;
 use crate::types::{CatalogId, FactId, Principal, WikiId};
@@ -1239,41 +1241,27 @@ fn truncate_chars(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
+/// Per-wiki description budget in the document window. Generous next to the
+/// conversational one: this prompt is not on the per-turn latency path, and a
+/// document extractor placing a segment benefits from the whole line.
+const DOC_WIKI_DESC_CHARS: usize = 1_000;
+
 /// Render the standard-wiki routing window the document prompts share with
-/// the conversational classifier. Each entry carries the wiki's `scope` prose
-/// (the category description) so the extractor can read it as an audience +
-/// placement signal, exactly as the message classifier does in
-/// `ingest::build_prompt`'s `available_wikis` section.
+/// the conversational classifier — literally shared: the same enumerator
+/// ([`available_wikis`]) and the same renderer ([`render_available_wikis`]), so
+/// a change to what a wiki looks like in one prompt can never miss the other.
+/// Each entry carries the wiki's description (authored `scope` + compiled
+/// `holds`) so the extractor reads it as an audience + placement signal exactly
+/// as the message classifier does.
+///
+/// **Uncapped** (`usize::MAX`), unlike the per-turn window: this runs inside an
+/// async document job, not on the conversational hot path, and a document's
+/// segments may legitimately belong anywhere in the tree. Smart wikis are still
+/// dropped, and identity wikis still lead the list.
 fn wikis_block(tree: &WikiTree) -> Result<String> {
-    let mut out = String::from("available_wikis:\n");
-    let mut any = false;
-    for d in tree.walk()? {
-        if d.meta.smart {
-            continue;
-        }
-        any = true;
-        out.push_str("  - wiki_id: ");
-        out.push_str(d.meta.wiki_id.as_str());
-        out.push_str("\n    title: ");
-        out.push_str(&d.meta.title);
-        out.push_str("\n    type: ");
-        out.push_str(&d.meta.wiki_type);
-        out.push_str("\n    scope: ");
-        match d
-            .meta
-            .scope
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            Some(s) => out.push_str(s),
-            None => out.push_str("(no scope configured)"),
-        }
-        out.push('\n');
-    }
-    if !any {
-        out.push_str("  (none)\n");
-    }
+    let wikis = available_wikis(tree, usize::MAX)?;
+    let mut out = String::new();
+    render_available_wikis(&mut out, &wikis, DOC_WIKI_DESC_CHARS);
     Ok(out)
 }
 

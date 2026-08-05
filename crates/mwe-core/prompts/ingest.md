@@ -1,8 +1,8 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts + a `closures[]` array closing existing facts' validity + an `acl_changes[]` array changing who can read an existing fact + a `validity_edits[]` array correcting an existing fact's dates; the extractions array is the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-page `style` and `page_description`, a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.55
-default_version_at_bootstrap: v2.55
+version: 2.56
+default_version_at_bootstrap: v2.56
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -209,7 +209,7 @@ Worked validity calls (`current_time` shown as CT):
 
 ## Part 4 — page style and `page_description` (per extraction, describing the TARGET PAGE)
 
-Each extraction lands on a page (`target_wiki_id` + `target_page`). Two PER-PAGE hints say how that page is written and what it holds — emit both on every capture extraction. They describe the destination page, not this single fact, so several facts landing on the same page repeat the same `style`/`page_description`. If the page already exists in `available_wikis`, keep its established values.
+Each extraction lands on a page (`target_wiki_id` + `target_page`). Two PER-PAGE hints say how that page is written and what it holds — emit both on every capture extraction. They describe the destination page, not this single fact, so several facts landing on the same page repeat the same `style`/`page_description`. Note that you are shown WIKIS, never their pages: you cannot check whether a page already exists, so name it the plainest way the turn's own subject allows and let the same subject produce the same name next time. The engine canonicalises the spelling, and the nightly pass consolidates near-synonym pages.
 
 - `style` — how the page is written AND read back at recall. Exactly one of:
   - `prosa` — full discursive prose, each fact tied to the next; recall reads it and follows the thread. For interconnected knowledge: people, episodes, opinions.
@@ -514,7 +514,7 @@ Setting it `true` costs the turn a documentation lookup, and — worse — spend
 **Visibility — the `allow_ids` axis (WHO may read), independent of `owner_id` (the subject).** A fact is **always readable by its `owner` and its `sender`** — so `allow_ids: []` means exactly "only those two" (the canonical *"for now it is just between the two of us"*). Everything beyond those two is the audience you decide from three inputs, the more specific overriding the more general:
 
 1. **Group scope** — compare the *meaning* of the fact against each group's `scope` in `sender_groups` (route on what the scope is *about*, not surface keywords). When a fact falls inside a group's domain, the group is normally part of its audience → add `group:<id>` to `allow_ids`. E.g. a `family` scope covering shared plans / who-is-home / the kids' school: "we are going to the grandparents on Sunday", "I am back late from work tonight", "the children's play is on Friday at 5pm" → `allow_ids` includes `group:family`. A `scope` may also state exclusions ("NOT: personal facts irrelevant to the others"); honour them — an excluded fact gets no group in `allow`.
-2. **Destination wiki scope** — each entry in `available_wikis` carries a `scope` prose describing that category's audience; read it the same way, as a SIGNAL alongside the group scope. When the fact's chosen `target_wiki_id` is a shared category whose scope implies a wider readership (a group's wiki, a wiki the scope says the family/team consults), let that reinforce the audience — but it is only a signal, never a forced default: placement and audience stay independent (a fact placed in the family wiki may still be `allow_ids: []` if the user restricts it).
+2. **Destination wiki description** — each entry in `available_wikis` describes itself on up to two lines: `scope` (what the wiki is FOR — authored by a person) and `holds` (what it currently contains — written by the engine from the wiki's own pages). An entry with neither says `about: (not described yet)`. Read them the same way, as a SIGNAL alongside the group scope. When the fact's chosen `target_wiki_id` is a shared category whose description implies a wider readership (a group's wiki, a wiki the description says the family/team consults), let that reinforce the audience — but it is only a signal, never a forced default: placement and audience stay independent (a fact placed in the family wiki may still be `allow_ids: []` if the user restricts it).
 3. **The sender's standing policy** (`sender_rules` / primer): "everything private by default", "never share my health", "Y may see my plans". This overrides the scope defaults.
 4. **What the user says in THIS message** — the strongest signal. Public cues, in whatever language the user speaks — "public", "public information", "visible to anyone / to everyone", "not confidential", "public profile", "anyone can see", "shared with all" and their equivalents — → add `"global"`. An explicit restriction ("keep it private", "just for me", "for now just the two of us") → `allow_ids: []`, even when a group or wiki scope would otherwise match.
 
@@ -553,6 +553,8 @@ Place the body in the wiki whose **domain** the fact belongs to — the same `sc
 - **A user's own wiki** when the fact belongs to a single person's personal or work domain rather than a group's shared life: the sender's private matters (a health note, a bug they fixed, a book they finished) → the sender's wiki; a document one user maintains for a group (Alice's ACME customer docs the team consults) → that user's work wiki, with the group in `allow_ids`; a note about another enrolled user with no group domain → that user's wiki.
 
 The discriminator in one sentence: **whose domain does the fact belong to?** A group's shared life → that group's wiki; one person's own matter → that person's wiki. This is orthogonal to `owner_id` (the subject) and to `allow_ids` (who reads).
+
+**An EMERGED wiki is read from its description, not from its id.** A user's or a group's wiki announces its domain in its id — `frodo` is Frodo's, `famiglia` is the family's, and those ids also appear in `known_users` / `sender_groups`. An emerged wiki (one the engine minted from a set of pages that turned out to be one subject) does not: its id names a TOPIC you have never seen, so its `scope` / `holds` lines are the only thing that says what belongs inside it. Read them before routing anything there, and when they do not clearly cover the fact, prefer the person's or group's own wiki — a fact filed one level too high is moved by the nightly pass, a fact buried in the wrong topic wiki is not looked for.
 
 
 ## `fact_type` — closed enum, semantic hint for dedup and recall (per extraction)

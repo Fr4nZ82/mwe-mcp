@@ -2,7 +2,7 @@
 title: Ingest pipeline — wiki_ingest_message
 area: design-notes
 status: implemented
-last_review: "2026-07-26"
+last_review: "2026-08-05"
 ---
 
 # Ingest pipeline
@@ -160,23 +160,68 @@ consumer *says* on the turn stays the consumer's judgment. Pinned by
 `guest_turn_is_ephemeral_and_recalls_public_slice_only`
 ([`ingest.rs`](../../crates/mwe-core/src/ingest.rs)).
 
-### Smart-family filter
+### The routing window — what step 2 offers, and what it may drop
 
-Step 2 ("enumerate wikis") drops every wiki whose `wiki_type` belongs
-to the smart family before assembling the LLM prompt. Smart-wiki
-wikis are authoritatively managed by smart consumers via the
-`wiki_admin_*` family — routing a capture into one through this
-orchestrator would (a) double-bill the smart consumer's LLM budget
-(server-side `ingest` runs *after* the consumer already paid to
-classify the user message) and (b) bypass the audit row in
-`wiki_admin_op_log`. The filter reads each enumerated wiki's per-wiki
-smart flag straight from `_meta.md` (`available_wikis` carries the
-flag, no registry query); see
-[smart-wikis.md](smart-wikis.md) for the cross-cutting design.
-A smart wiki therefore never appears in the routing window, so the
-classifier cannot target one; the defensive backstop is the
+[`available_wikis`](../../crates/mwe-core/src/ingest.rs) is the one
+enumerator behind both classifier prompts (this one and the
+[document extractor](document-ingest.md)'s, which shares the renderer so
+the two windows cannot drift). It applies three rules **in this order**,
+and each exists because the naive version cost the router something it
+could not get back:
+
+1. **Smart wikis leave first, before anything is counted.** They are
+   authoritatively managed by smart consumers via the `wiki_admin_*`
+   family — routing a capture into one through this orchestrator would
+   (a) double-bill the smart consumer's LLM budget (server-side `ingest`
+   runs *after* the consumer already paid to classify the user message)
+   and (b) bypass the audit row in `wiki_admin_op_log`. The flag is read
+   straight from each wiki's `_meta.md`, no registry query; see
+   [smart-wikis.md](smart-wikis.md). Dropping them **before** the cap is
+   what keeps a deployment's project notebooks from silently shrinking
+   its routing window.
+2. **Identity wikis always enter, outside the count.** A root `wiki-user`
+   / `wiki-group` (an agent's wiki included — it is a `wiki-user` with the
+   `is_agent` marker) is exempt: a deployment's users and groups *are* its
+   routing domains, so dropping one does not degrade the choice, it removes
+   the only correct answer for every fact about that principal. They are
+   bounded by enrollment, not by memory growth.
+3. **Only emerged wikis are capped** (`max_wikis_in_prompt`, default 32),
+   **oldest first** by `_meta` `created`. They are the unbounded set — REM
+   mints them from page groups — so the cap belongs here; keeping the
+   settled subject areas and dropping the newest also aligns with the fact
+   that a young emerged wiki is the most likely to be re-absorbed by a
+   later consolidation. An undated wiki sorts as the oldest, `wiki_id`
+   breaks ties, and a truncation is **logged**: a bounded window must say
+   what it dropped.
+
+The order is deterministic — identity wikis in tree order, then the
+surviving emerged ones oldest-first — so the same tree always renders the
+same prompt. A smart wiki therefore never appears in the routing window and
+the classifier cannot target one; the defensive backstop is the
 capture-plan validation, which rejects any `target_wiki_id` not in the
 offered list.
+
+**What each entry says about itself.** `wiki_id`, `title`, `wiki_type`,
+`is_agent` when set — then the description, as up to two lines, each
+omitted when empty:
+
+| line | what it is | who writes it |
+|---|---|---|
+| `scope:` | the **authored intent** — "what goes in here" | a person, by hand (`_meta.md`); on a **smart** wiki the same field is the [door sign](smart-wikis.md), a family this window never carries |
+| `holds:` | the **compiled abstract** — "what it actually holds" | the compiler, from the card the wiki's own foundation page was written with (`_meta.extra["summary"]`), seeded at emergence from the promoting model's description |
+
+They are kept as **two keys, not merged**: they are different claims with
+different authors, and folding them together would have the nightly compile
+overwrite an operator's authored line. A wiki with neither renders
+`about: (not described yet)` — the honest answer, and shorter than two
+empty keys.
+
+`holds` is the one that is actually populated today (nothing writes `scope`
+on a standard wiki), and it is the **only** description an **emerged** wiki
+has — precisely the case where the id says least, because it names a topic
+rather than an enrolled principal. A user's or group's wiki is
+self-describing: its id **is** its principal's id, and that id also appears
+in the prompt's `known_users` / `sender_groups` blocks.
 
 **The conversation is a superset, not an exclusion** (roadmap group 17).
 The filter keeps a *capture* out of the smart project wiki — it does
