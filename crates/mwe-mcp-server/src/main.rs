@@ -782,6 +782,12 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
             report.compile.cards_over_budget.join(", ")
         );
     }
+    if !report.compile.rails_appended.is_empty() {
+        println!(
+            "  ⚠ rails the prose declined, appended bare: {}",
+            report.compile.rails_appended.join("; ")
+        );
+    }
     drop(lock);
     Ok(())
 }

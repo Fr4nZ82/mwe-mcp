@@ -2691,6 +2691,14 @@ pub async fn build_wiki_plan(
                     "planner: plan reused, compiling force-dirty pages only"
                 );
             }
+            // The card heal belongs on THIS path too, and mostly on this one:
+            // a page's written card changes when the page is compiled, which
+            // is precisely a build with no new facts. Reached only by the
+            // reuse branch it would almost never run at all.
+            let mut reused_registry = registry.clone();
+            if heal_page_cards(tree, &mut reused, &mut reused_registry) > 0 {
+                save_concept_registry(tree, &reused_registry)?;
+            }
             save_plan(tree, &reused)?;
             return Ok(reused);
         }
@@ -2779,7 +2787,7 @@ pub async fn build_wiki_plan(
         }
     }
 
-    let (mut plan, updated_registry) = build_compilation_plan(
+    let (mut plan, mut updated_registry) = build_compilation_plan(
         &facts,
         &foundation,
         &blueprint,
@@ -2787,6 +2795,11 @@ pub async fn build_wiki_plan(
         &registry,
         now,
     );
+    // A page's card is whatever the writer wrote on it, not the guess the
+    // classifier made before it existed — see `heal_page_cards`. Runs before
+    // the receipts so a page minted THIS build still records the frame it was
+    // invented with, which is the thing the operator needs to see.
+    heal_page_cards(tree, &mut plan, &mut updated_registry);
     // The refile-candidate park survives plan rebuilds (drained only by
     // the refile sweep); the re-open park survives every build except the
     // Cartografo one that consumes it.
@@ -2844,6 +2857,93 @@ pub async fn build_wiki_plan(
         "planner: plan built"
     );
     Ok(plan)
+}
+
+/// Adopt each page's **written** card into the plan and the registry.
+///
+/// [`PagePlan::description`] is seeded once — from the ingest classifier's
+/// `page_description` proposal — and the registry then persists that first
+/// guess **forever**: nothing ever read back what the page turned out to say.
+/// Meanwhile the writer puts its own card in the page's testata on every
+/// compile, so the two diverge, and the stale one is the copy the models are
+/// shown: the Cronista's page index carries every page's description
+/// (`compiler::page_index_block`), its own line included, and the Hub Writer's
+/// `{snippet}` carries its children's.
+///
+/// **That is how an invented frame becomes permanent.** Production,
+/// 2026-07-24 (card 57): a turn complaining that an assistant had signed the
+/// sender up for a fair minted a page described as *«Progetti e attività
+/// relativi a …»* — a whole area of work nobody had described — and the
+/// description stayed in the plan, was fed back to the compiler, and grew into
+/// a paragraph about managing external collaborations. The *fact* was roughly
+/// faithful; the **frame** was invented, and nothing could correct it, because
+/// the guess outlived every page that was written from it.
+///
+/// Reading the page back closes the loop: the card the writer produced from
+/// the page's actual facts replaces the guess, so a bad first frame is
+/// **self-correcting** instead of permanent.
+///
+/// Best-effort and idempotent — an unreadable or testata-less page is left
+/// alone. It never marks a page dirty by itself: [`page_fingerprint`] does not
+/// carry the description, so the correction rides the next compile that
+/// happens for its own reasons.
+fn heal_page_cards(
+    tree: &WikiTree,
+    plan: &mut CompilationPlan,
+    registry: &mut ConceptRegistry,
+) -> usize {
+    let mut healed = 0usize;
+    for (slug, page) in &mut plan.pages {
+        let Ok(wid) = crate::types::WikiId::parse(&page.wiki_id) else {
+            continue;
+        };
+        let Ok(handle) = tree.locate(&wid) else {
+            continue;
+        };
+        let Ok(contents) = handle.read_page(std::path::Path::new(&page.page_path)) else {
+            continue;
+        };
+        let Some(written) = testata_description(&contents) else {
+            continue;
+        };
+        if written == page.description {
+            continue;
+        }
+        page.description.clone_from(&written);
+        if let Some(entry) = registry.entries.get_mut(slug) {
+            entry.description.clone_from(&written);
+        }
+        healed += 1;
+    }
+    if healed > 0 {
+        tracing::info!(
+            healed,
+            "planner: page cards adopted from what the writer actually wrote"
+        );
+    }
+    healed
+}
+
+/// The `description:` line of a page's testata — its **card**.
+///
+/// Scoped to the leading `---` fence on purpose: a `description:` line in the
+/// body is prose somebody wrote, not the page's card.
+fn testata_description(page: &str) -> Option<String> {
+    let mut lines = page.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    for line in lines {
+        let t = line.trim();
+        if t == "---" {
+            return None;
+        }
+        if let Some(rest) = t.strip_prefix("description:") {
+            let v = rest.trim().trim_matches(['"', '\'']).trim();
+            return (!v.is_empty()).then(|| v.to_owned());
+        }
+    }
+    None
 }
 
 /// Emit one born-applied `page_create` receipt per page this build invented.
@@ -3733,6 +3833,135 @@ mod tests {
         assert_eq!(bp.new_pages.len(), 1);
         assert_eq!(bp.new_pages[0].page_type, PageType::ConceptLeaf);
         drop(dir);
+    }
+
+    /// An invented frame must not outlive the page written from it (card 57).
+    ///
+    /// The classifier proposes a page and describes it; that description used
+    /// to be frozen in the registry forever, fed back to the writer on every
+    /// compile, and never checked against what the page turned out to say.
+    /// Now the plan adopts the written card — and does so without marking the
+    /// page dirty, since the description is not in the fingerprint.
+    #[tokio::test]
+    async fn the_plan_adopts_the_written_card_over_the_classifiers_guess() {
+        use crate::fact_index::NewFact;
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(wikis.join("alice")).unwrap();
+        std::fs::write(
+            wikis.join("alice/_meta.md"),
+            "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
+        )
+        .unwrap();
+        std::fs::write(wikis.join("alice/index.md"), "# alice\n").unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('alice','[]',0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // The shape of the confirmed case: the turn named the fair, the
+        // classifier minted a page and called it an area of work.
+        let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d99").unwrap();
+        fact_index::insert(
+            &pool,
+            &NewFact {
+                authored_refs: Vec::new(),
+                fact_id: fid.clone(),
+                wiki_id: "alice".to_owned(),
+                source_path: "wikis/alice/_captures.md".to_owned(),
+                region_start: None,
+                region_end: None,
+                text: "Alice did not ask to be signed up for the east fair".to_owned(),
+                embedding: vec![0.1, 0.2],
+                owner_id: "user:alice".parse::<Principal>().unwrap(),
+                allow_ids: Vec::new(),
+                sender_id: None,
+                fact_type: Some("episode".to_owned()),
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                target_page: Some("fiera.md".to_owned()),
+                style: Some("prosa".to_owned()),
+                page_description: Some("Projects and activities relating to the fair".to_owned()),
+                salience: None,
+                source_ref: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let plan = build_wiki_plan(
+            &pool,
+            &tree,
+            NewFactPlacement::Ingest,
+            None,
+            "2026-08-05T00:00:00Z",
+        )
+        .await
+        .expect("plan");
+        assert_eq!(
+            plan.pages["fiera"].description, "Projects and activities relating to the fair",
+            "the classifier's guess seeds the fresh page"
+        );
+
+        // The page is written, and the writer's card says what the facts
+        // actually support.
+        std::fs::write(
+            wikis.join("alice/fiera.md"),
+            "---\ntitle: \"Fiera\"\ncreated: 2026-08-05\nupdated: 2026-08-05\npage_type: concept_leaf\nstyle: prosa\ndescription: \"the east fair, and what Alice has said about it\"\n---\n\nqualcosa.\n",
+        )
+        .unwrap();
+
+        let plan2 = build_wiki_plan(
+            &pool,
+            &tree,
+            NewFactPlacement::Ingest,
+            None,
+            "2026-08-05T01:00:00Z",
+        )
+        .await
+        .expect("plan 2");
+        assert_eq!(
+            plan2.pages["fiera"].description, "the east fair, and what Alice has said about it",
+            "the written card replaces the guess"
+        );
+        assert!(
+            !plan2.dirty_pages.contains(&"fiera".to_owned()),
+            "adopting a card is not a reason to recompile: {:?}",
+            plan2.dirty_pages
+        );
+        // Persisted, so the correction survives the next build rather than
+        // being re-derived from the frozen guess.
+        let reg = load_concept_registry(&tree, "2026-08-05T01:00:00Z").unwrap();
+        assert_eq!(
+            reg.entries["fiera"].description, "the east fair, and what Alice has said about it",
+            "the registry learned it too"
+        );
+        drop(dir);
+    }
+
+    /// The card is read from the testata only — a `description:` line in the
+    /// body is prose somebody wrote, not the page's card.
+    #[test]
+    fn testata_description_reads_the_fence_and_not_the_body() {
+        assert_eq!(
+            testata_description("---\ntitle: \"X\"\ndescription: \"the card\"\n---\n\nbody\n"),
+            Some("the card".to_owned())
+        );
+        assert_eq!(
+            testata_description("---\ntitle: \"X\"\n---\n\ndescription: not the card\n"),
+            None,
+            "past the closing fence is body prose"
+        );
+        assert_eq!(testata_description("no frontmatter at all\n"), None);
+        assert_eq!(
+            testata_description("---\ntitle: \"X\"\ndescription: \"\"\n---\n"),
+            None,
+            "an empty card is not a card"
+        );
     }
 
     #[tokio::test]

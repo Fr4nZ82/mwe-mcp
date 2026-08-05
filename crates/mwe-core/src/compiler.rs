@@ -177,9 +177,29 @@ pub struct CompileReport {
     /// facts are all on it. It says the card will be **cut when served**, so
     /// the material that belongs elsewhere has not been moved off it yet.
     pub cards_over_budget: Vec<String>,
+    /// Pages whose prose declined a recommended rail twice, so the compiler
+    /// appended it (`"<slug>: [[a]], [[b]]"`). Not an error — the rail is on
+    /// the page and the navigator can walk it. It says the Cronista would not
+    /// weave that neighbour into the thread, which is a **prompt** signal:
+    /// a rail carrying no *why* is the weaker form of the same link.
+    pub rails_appended: Vec<String>,
 }
 
 impl CompileReport {
+    /// Record what a **successful** write had to say about itself: the page
+    /// is on disk either way, so these are warnings beside the count, never
+    /// instead of it — and a page can carry both.
+    fn record_notes(&mut self, slug: &str, notes: &PageNotes) {
+        if let Some(chars) = notes.over_budget_chars {
+            self.cards_over_budget
+                .push(format!("{slug}: {chars} chars"));
+        }
+        if !notes.rails_appended.is_empty() {
+            self.rails_appended
+                .push(format!("{slug}: {}", notes.rails_appended.join(", ")));
+        }
+    }
+
     /// How many pages soft-failed (for the dream journal's structured
     /// `pages_failed` count).
     #[must_use]
@@ -276,20 +296,14 @@ pub async fn compile_dirty_pages(
         )
         .await
         {
-            Ok(PageOutcome::Leaf) => {
+            Ok(PageOutcome::Leaf(notes)) => {
                 report.leaves += 1;
+                report.record_notes(slug, &notes);
                 note_page_success(pool, tree, page).await;
             },
-            Ok(PageOutcome::CardOverBudget { chars }) => {
-                // A clean compile that wrote a page too long to serve whole.
-                report.leaves += 1;
-                report
-                    .cards_over_budget
-                    .push(format!("{slug}: {chars} chars"));
-                note_page_success(pool, tree, page).await;
-            },
-            Ok(PageOutcome::Hub) => {
+            Ok(PageOutcome::Hub(notes)) => {
                 report.hubs += 1;
+                report.record_notes(slug, &notes);
                 note_page_success(pool, tree, page).await;
             },
             Ok(PageOutcome::List) => {
@@ -503,8 +517,13 @@ async fn sweep_orphan_page_files(
 }
 
 enum PageOutcome {
-    Leaf,
-    Hub,
+    /// A leaf written by Il Cronista, carrying whatever the write had to
+    /// report about itself ([`PageNotes`]) — success plus warnings, never
+    /// one instead of the other.
+    Leaf(PageNotes),
+    /// An overview page written by the Hub Writer, carrying the same notes:
+    /// a group's foundation page is a card too, and its children are rails.
+    Hub(PageNotes),
     List,
     Unchanged,
     /// The Cronista failed twice and the page fell back to the guard-only
@@ -513,13 +532,21 @@ enum PageOutcome {
     Degraded {
         reason: String,
     },
-    /// A written identity card that came out past
-    /// [`IDENTITY_CARD_CEILING_CHARS`]. A **successful** leaf compile that
-    /// also carries a warning: the page is on disk, and the read path will
-    /// truncate it when it serves it.
-    CardOverBudget {
-        chars: usize,
-    },
+}
+
+/// What a successfully written page reports about itself beyond "it
+/// compiled" — warnings that ride a **success**, so neither may displace
+/// the other: a card can be over its ceiling *and* have had a rail
+/// appended, and the operator needs to see both.
+#[derive(Debug, Default, Clone)]
+struct PageNotes {
+    /// Set when a written identity card came out past
+    /// [`IDENTITY_CARD_CEILING_CHARS`]: the page is on disk with every fact
+    /// on it, and the read path will truncate it when it serves it.
+    over_budget_chars: Option<usize>,
+    /// Recommended rails the writer left out of the prose, appended to the
+    /// page deterministically ([`append_missing_rails`]).
+    rails_appended: Vec<String>,
 }
 
 /// Pre-point every dirty-page fact whose `fact_index` row still lives on a
@@ -689,7 +716,9 @@ fn compile_empty_leaf(tree: &WikiTree, page: &PagePlan, now: &str) -> Result<Pag
         wiki_id = %page.wiki_id,
         "compiler: fact-less leaf rendered deterministically (no LLM)"
     );
-    Ok(PageOutcome::Leaf)
+    // No notes: this render has no prose to drop a rail from, and the next
+    // compile with real facts replaces the page wholesale.
+    Ok(PageOutcome::Leaf(PageNotes::default()))
 }
 
 // ---------- Il Cronista (leaf) ----------
@@ -710,6 +739,7 @@ async fn compile_leaf_page(
     page_index: &str,
     now: &str,
 ) -> Result<PageOutcome> {
+    let recommended = recommended_link_targets(plan, &page.slug);
     let prompt = prompts::render(
         "cronista",
         tree.workdir(),
@@ -732,23 +762,21 @@ async fn compile_leaf_page(
                 .as_str(),
             ),
             ("page_index", page_index),
-            ("links", recommended_links(plan, &page.slug).as_str()),
+            ("links", recommended_links(&recommended).as_str()),
         ],
     )?;
+    let max_tokens = cronista_max_tokens(page.primary_facts.len());
     // One retry on an unusable reply (transport error OR unparseable JSON),
     // then the degraded guard-only fallback — a failing Cronista must never
     // freeze the page (see the module's degraded-mode section).
-    let body = match cronista_with_retry(
-        llm,
-        &prompt,
-        &page.slug,
-        cronista_max_tokens(page.primary_facts.len()),
-    )
-    .await
-    {
+    let body = match cronista_with_retry(llm, &prompt, &page.slug, max_tokens).await {
         Ok(b) => b,
         Err(reason) => return compile_degraded_leaf(pool, tree, page, now, &reason).await,
     };
+    // The rail guard, model half: the page is usable, but a rail the plan
+    // declared may not have reached the prose. Costs a call only when one is
+    // missing (see `cronista_relink`).
+    let body = cronista_relink(llm, &prompt, &page.slug, max_tokens, body, &recommended).await;
 
     // The Cronista marks each fact's prose span with a lightweight `<fN>…</fN>`
     // tag (N = 1-based index into the page's facts); the load-bearing region
@@ -757,8 +785,7 @@ async fn compile_leaf_page(
     // the `fact_index` columns and gates by that key), then drop any orphan tag
     // the model left behind — this removes the brace/attribute miscount failure
     // mode of LLM-written markers.
-    let mut merged_body =
-        strip_orphan_fact_tags(&expand_fact_tags(&body.merged_body, &page.primary_facts));
+    let mut merged_body = expand_and_complete_fact_markers(&body.merged_body, page);
 
     // Every assigned fact must end up wrapped in a marker on the page.
     let known: std::collections::BTreeSet<&str> = page
@@ -766,37 +793,18 @@ async fn compile_leaf_page(
         .iter()
         .map(|f| f.fact_id.as_str())
         .collect();
-    // What actually made it onto the page as a marker.
-    let emitted: std::collections::BTreeSet<String> = parser::parse(&merged_body)
-        .events
-        .into_iter()
-        .filter_map(|ev| match ev {
-            ParseEvent::Region { attrs, .. } => attrs.fact_id.map(|f| f.as_str().to_owned()),
-            _ => None,
-        })
-        .collect();
-    // Forward completeness guard: every assigned fact must have produced a
-    // marker. If the Cronista didn't tag one (omitted it, or used a tag the
-    // expander could not resolve), append it deterministically as its own marked
-    // region so nothing is silently dropped and no non-global fact loses its
-    // protective ACL marker (the `missing_acl_markers` the reviewer flags). A
-    // later full recompile can weave the appended facts back into the prose.
-    let missing: Vec<&FactForPage> = page
-        .primary_facts
-        .iter()
-        .filter(|f| !emitted.contains(f.fact_id.as_str()))
-        .collect();
-    if !missing.is_empty() {
+
+    // The rail guard's floor, re-read off the body that will actually be
+    // written rather than trusting the pre-expansion check: fact-tag
+    // expansion cannot move a wikilink, and this way the two cannot drift.
+    let rails_appended = missing_rails(&recommended, &merged_body);
+    if !rails_appended.is_empty() {
         tracing::warn!(
             slug = %page.slug,
-            missing = missing.len(),
-            "compiler: facts without a marker after tag expansion — appending (forward completeness guard)"
+            rails = rails_appended.len(),
+            "compiler: rails declined twice — appending (rail completeness floor)"
         );
-        for f in missing {
-            let region = crate::capture::render_marker(&f.fact_id, &f.text.replace('\n', " "));
-            merged_body.push_str("\n\n");
-            merged_body.push_str(&region);
-        }
+        append_missing_rails(&mut merged_body, &rails_appended);
     }
 
     let handle = tree.locate(&parse_wiki_id(&page.wiki_id))?;
@@ -835,11 +843,10 @@ async fn compile_leaf_page(
 
     sync_foundation_summary(page, handle.abs_dir(), &body.description);
 
-    if let Some(outcome) = card_over_budget(page, &contents) {
-        return Ok(outcome);
-    }
-
-    Ok(PageOutcome::Leaf)
+    Ok(PageOutcome::Leaf(PageNotes {
+        over_budget_chars: card_over_budget(page, &contents),
+        rails_appended,
+    }))
 }
 
 /// Refresh the wiki's one-line abstract in `_meta` from the page that answers
@@ -867,7 +874,7 @@ fn sync_foundation_summary(page: &PagePlan, abs_dir: &std::path::Path, descripti
 /// that the read path will cut it when it serves it, and a cut drops whatever
 /// sorted last. Judged here, where the numbers are still in hand — the
 /// serve-time warning fires every turn thereafter and names no remedy.
-fn card_over_budget(page: &PagePlan, contents: &str) -> Option<PageOutcome> {
+fn card_over_budget(page: &PagePlan, contents: &str) -> Option<usize> {
     if page_kind(page) != "identity_card" {
         return None;
     }
@@ -882,7 +889,7 @@ fn card_over_budget(page: &PagePlan, contents: &str) -> Option<PageOutcome> {
         facts = page.primary_facts.len(),
         "compiler: identity card is over its ceiling and will be cut when served"
     );
-    Some(PageOutcome::CardOverBudget { chars })
+    Some(chars)
 }
 
 /// Output budget for one Cronista page rewrite — scales with the page's
@@ -1002,6 +1009,142 @@ async fn cronista_with_retry(
             }
         },
     }
+}
+
+/// The rail guard's model half: one rewrite that names exactly the
+/// recommended links the first draft dropped.
+///
+/// A **usable** page that is under-linked is not a failure — the ladder
+/// above has already done its job — so this never degrades the page and
+/// never costs a call unless a rail is actually missing. The second reply
+/// is kept only if it carries **more** of them: a rewrite that trades one
+/// dropped rail for another leaves the prose we already have.
+///
+/// The prompt halves are reused verbatim, so the cached system prefix
+/// (see [`split_cronista_prompt`]) still engages on the second call —
+/// only the short user message differs.
+async fn cronista_relink(
+    llm: &dyn LlmBackend,
+    prompt: &str,
+    slug: &str,
+    max_tokens: u32,
+    first: CronistaOutput,
+    recommended: &[String],
+) -> CronistaOutput {
+    let missing = missing_rails(recommended, &first.merged_body);
+    if missing.is_empty() {
+        return first;
+    }
+    tracing::warn!(
+        slug,
+        missing = missing.len(),
+        recommended = recommended.len(),
+        "compiler: recommended rails absent from the prose — one rewrite"
+    );
+    let (system, task) = split_cronista_prompt(prompt);
+    let msg = format!(
+        "Your draft left out {} of this page's RECOMMENDED LINKS: {}. Write the page \
+         again, complete, with every one of them woven into the prose where it belongs \
+         and copied character-for-character. Everything else about the page is \
+         unchanged — same facts, same <fN> tags, same completeness rules. Return the \
+         JSON object only.",
+        missing.len(),
+        missing.join(", ")
+    );
+    match cronista_attempt(llm, system, task, &msg, max_tokens).await {
+        Ok(second) => {
+            if missing_rails(recommended, &second.merged_body).len() < missing.len() {
+                second
+            } else {
+                tracing::warn!(
+                    slug,
+                    "compiler: the rewrite carried no more rails than the draft — keeping the draft"
+                );
+                first
+            }
+        },
+        Err(e) => {
+            tracing::warn!(
+                slug,
+                error = e.message(),
+                "compiler: rail rewrite unusable — keeping the draft"
+            );
+            first
+        },
+    }
+}
+
+/// Render the Cronista's `<fN>` tags into runtime markers, then make sure
+/// every assigned fact ended up wrapped in one.
+///
+/// The Cronista marks each fact's prose span with a lightweight `<fN>…</fN>`
+/// tag (N = 1-based index into the page's facts); the load-bearing region
+/// marker is rendered HERE by code, never hand-written by the LLM. The tags
+/// expand into the bare runtime `{{f=<uuid>}}…{{/}}` form (the ACL lives in
+/// the `fact_index` columns and gates by that key) and any orphan tag the
+/// model left behind is dropped — which removes the brace/attribute
+/// miscount failure mode of LLM-written markers.
+///
+/// **Forward completeness guard**: a fact the Cronista did not tag (omitted,
+/// or tagged with a number the expander could not resolve) is appended as
+/// its own marked region, so nothing is silently dropped and no non-global
+/// fact loses its protective ACL marker (the `missing_acl_markers` the
+/// reviewer flags). A later full recompile can weave the appended facts back
+/// into the prose. The rail guard's floor is the same discipline applied to
+/// links ([`append_missing_rails`]).
+fn expand_and_complete_fact_markers(raw_body: &str, page: &PagePlan) -> String {
+    let mut body = strip_orphan_fact_tags(&expand_fact_tags(raw_body, &page.primary_facts));
+    // What actually made it onto the page as a marker.
+    let emitted: std::collections::BTreeSet<String> = parser::parse(&body)
+        .events
+        .into_iter()
+        .filter_map(|ev| match ev {
+            ParseEvent::Region { attrs, .. } => attrs.fact_id.map(|f| f.as_str().to_owned()),
+            _ => None,
+        })
+        .collect();
+    let missing: Vec<&FactForPage> = page
+        .primary_facts
+        .iter()
+        .filter(|f| !emitted.contains(f.fact_id.as_str()))
+        .collect();
+    if !missing.is_empty() {
+        tracing::warn!(
+            slug = %page.slug,
+            missing = missing.len(),
+            "compiler: facts without a marker after tag expansion — appending (forward completeness guard)"
+        );
+        for f in missing {
+            let region = crate::capture::render_marker(&f.fact_id, &f.text.replace('\n', " "));
+            body.push_str("\n\n");
+            body.push_str(&region);
+        }
+    }
+    body
+}
+
+/// The rail guard's floor: append whatever the prose still will not carry.
+///
+/// Deterministic and last — it runs after [`cronista_relink`] has asked
+/// twice. An appended rail is the **weaker** form of a link: the page's
+/// thesis is that a relation explained in narrative is what makes recall
+/// accurate, and a bare edge carries the label without the why. It is
+/// written anyway because the alternative is worse — a neighbour reachable
+/// from nowhere — and it is [reported](CompileReport::rails_appended) so
+/// that how often the writer declines a rail stays visible instead of
+/// becoming the silent 33 % this guard exists to end.
+///
+/// The links go on their own line, unlabelled and unadorned: prose in the
+/// page's language would be invented here (this is code, and it does not
+/// know the language), and dressing the appendix as authored text would
+/// hide exactly what the report is trying to show.
+fn append_missing_rails(body: &mut String, rails: &[String]) {
+    if rails.is_empty() {
+        return;
+    }
+    body.push_str("\n\n");
+    body.push_str(&rails.join(" · "));
+    body.push('\n');
 }
 
 /// One Cronista call + parse. `Err` is the human-readable failure — a
@@ -1421,15 +1564,17 @@ async fn compile_hub_page(
     language_directive: &str,
     now: &str,
 ) -> Result<PageOutcome> {
-    let children = page
+    // A hub's children ARE its rails: they are the only route from this page
+    // to the detail underneath it. Kept as links (not pre-formatted) so the
+    // same list can be checked against the prose the model returns.
+    let child_links: Vec<String> = page
         .child_leaves
         .iter()
-        .filter_map(|s| {
-            plan.pages
-                .get(s)
-                .and_then(plan_page_wikilink)
-                .map(|l| format!("- {l}"))
-        })
+        .filter_map(|s| plan.pages.get(s).and_then(plan_page_wikilink))
+        .collect();
+    let children = child_links
+        .iter()
+        .map(|l| format!("- {l}"))
         .collect::<Vec<_>>()
         .join("\n");
     let snippet = page
@@ -1471,39 +1616,76 @@ async fn compile_hub_page(
                 .with_max_tokens(2_000),
         )
         .await;
-    let prose = match resp {
+    let raw = match resp {
         Ok(r) => r.text,
         Err(e) => return Err(soft(&format!("Hub Writer LLM failed: {e}"))),
     };
+    // The Hub Writer answers in the Cronista's shape (v1.7) so a hub gets a
+    // written CARD like every other page. It used to write the planner's
+    // literal `description`, so a group's foundation page presented itself to
+    // the navigator as `Group famiglia` while a person's said «celiachia,
+    // intolleranza al lattosio, gravidanza in corso» — and since a group root
+    // is a door like any other, those two useless words were all the navigator
+    // had to decide on.
+    //
+    // Tolerant on purpose: an operator override written against v1.6 still
+    // returns bare markdown, and so does any reply that is not JSON at all.
+    // Then the whole reply IS the body and the card falls back to the plan's
+    // literal — exactly what this function did before, so the worst case is
+    // the old behaviour rather than a failed page.
+    let (mut prose, card) = match parse_cronista(&raw) {
+        Some(o) if !o.merged_body.trim().is_empty() && !o.description.trim().is_empty() => (
+            o.merged_body.trim().to_owned(),
+            o.description.trim().to_owned(),
+        ),
+        _ => {
+            tracing::warn!(
+                slug = %page.slug,
+                "compiler: hub reply carries no card — body as prose, card from the plan"
+            );
+            (raw.trim().to_owned(), page.description.clone())
+        },
+    };
+    // The rail floor, hub half: a hub's children are the only route to the
+    // detail under it, and the prompt has asked for every one of them since
+    // v1.6 with nothing checking. No rewrite here — the hub call is a
+    // single-shot on the cheap slot, and a hub that lost a child is a page
+    // whose whole job it failed at, so the link goes on rather than costing
+    // a second call to maybe arrive.
+    let rails_appended = missing_rails(&child_links, &prose);
+    if !rails_appended.is_empty() {
+        tracing::warn!(
+            slug = %page.slug,
+            rails = rails_appended.len(),
+            children = child_links.len(),
+            "compiler: hub prose dropped children — appending (rail completeness floor)"
+        );
+        append_missing_rails(&mut prose, &rails_appended);
+    }
 
     let handle = tree.locate(&parse_wiki_id(&page.wiki_id))?;
     let page_path = std::path::Path::new(&page.page_path);
     let existing = handle.read_page(page_path).unwrap_or_default();
     let created = preserved_created(&existing, now);
-    // The testata: a hub is an overview/navigation page, always
-    // `prosa`; its `description` is the plan's one-liner (the Hub Writer emits
-    // prose, not a one-liner).
-    let contents = render_page_file(
-        page,
-        prose.trim(),
-        &page.description,
-        "prosa",
-        &created,
-        now,
-    );
+    // The testata: a hub is an overview/navigation page, always `prosa`.
+    let contents = render_page_file(page, &prose, &card, "prosa", &created, now);
     if contents == existing {
         return Ok(PageOutcome::Unchanged);
     }
     handle.write_page(page_path, &contents)?;
 
-    // Recall navigation: the plan's one-line description is the best abstract
-    // available here (the Hub Writer emits prose, not a one-liner). A
-    // `GroupTheme` card or a drained `WikiBuffer` reaches THIS function once
-    // its facts have moved onto children, so the foundation nodes whose
-    // abstract nobody else refreshes are exactly the ones landing here.
-    sync_foundation_summary(page, handle.abs_dir(), &page.description);
+    // Recall navigation: a `GroupTheme` card or a drained `WikiBuffer` reaches
+    // THIS function once its facts have moved onto children, so the foundation
+    // nodes whose abstract nobody else refreshes are exactly the ones landing
+    // here — which is why the written card matters twice over.
+    sync_foundation_summary(page, handle.abs_dir(), &card);
 
-    Ok(PageOutcome::Hub)
+    Ok(PageOutcome::Hub(PageNotes {
+        // A group's foundation page is an identity card by `page_kind`, and
+        // the read path cuts it at the same ceiling whoever wrote it.
+        over_budget_chars: card_over_budget(page, &contents),
+        rails_appended,
+    }))
 }
 
 // ---------- helpers ----------
@@ -1754,19 +1936,75 @@ fn page_index_block(plan: &CompilationPlan) -> String {
     }
 }
 
-fn recommended_links(plan: &CompilationPlan, slug: &str) -> String {
+/// The rails the plan recommends for one page, as canonical wikilinks.
+///
+/// The plan's `link_graph` is not a list of suggestions: it is hub→child
+/// plus the page's own authored outgoing links, made symmetric
+/// (`planner`, step 9) — i.e. the structure the planner asserts. That is
+/// what makes it enforceable by [`missing_rails`] rather than merely
+/// offered.
+fn recommended_link_targets(plan: &CompilationPlan, slug: &str) -> Vec<String> {
     plan.link_graph
         .get(slug)
         .map(|ls| {
             ls.iter()
                 // The graph stores plan slugs; a slug whose page vanished
-                // from the plan would be a dead rail — skip it.
+                // from the plan would be a dead rail — skip it. A node on a
+                // wiki's map yields `None` for the same reason.
                 .filter_map(|l| plan.pages.get(l).and_then(plan_page_wikilink))
-                .collect::<Vec<_>>()
-                .join(", ")
+                .collect()
         })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "none specific".to_owned())
+        .unwrap_or_default()
+}
+
+fn recommended_links(targets: &[String]) -> String {
+    if targets.is_empty() {
+        "none specific".to_owned()
+    } else {
+        targets.join(", ")
+    }
+}
+
+/// The address a wikilink resolves to — `(wiki_id, page stem)`, the `.md`
+/// suffix stripped and the `|display` alias already gone.
+///
+/// One page, one key, whichever side wrote the link: the recommendation
+/// and the prose are compared through the same parser
+/// ([`crate::recall::extract_wikilinks`], which is also what the recall
+/// funnel harvests rails with) so the two cannot disagree about what a
+/// link is. A bare `[[wiki_id]]` has no page and yields `None` — it names
+/// a map, which is not a rail.
+fn link_address(link: &crate::recall::WikiLink) -> Option<(String, String)> {
+    let page = link.page.as_deref()?;
+    let stem = page.strip_suffix(".md").unwrap_or(page);
+    (!stem.is_empty()).then(|| (link.wiki_id.clone(), stem.to_owned()))
+}
+
+/// Which recommended rails never reached the prose, in the order they were
+/// recommended.
+///
+/// The compiler hands the Cronista a list of links to weave in and, until
+/// this guard, checked nothing: a third of the links the plan declared
+/// never reached the page text on the corpus this was measured on. A rail
+/// that does not land is not a cosmetic loss — the navigator harvests its
+/// candidates from the **prose**, so the neighbour simply cannot be walked
+/// to from here.
+fn missing_rails(recommended: &[String], body: &str) -> Vec<String> {
+    let written: std::collections::BTreeSet<(String, String)> =
+        crate::recall::extract_wikilinks(body)
+            .iter()
+            .filter_map(link_address)
+            .collect();
+    recommended
+        .iter()
+        .filter(|rail| {
+            crate::recall::extract_wikilinks(rail)
+                .first()
+                .and_then(link_address)
+                .is_some_and(|addr| !written.contains(&addr))
+        })
+        .cloned()
+        .collect()
 }
 
 /// Preserve `created:` across recompiles by reading it back from the prior file.
@@ -3838,9 +4076,10 @@ mod tests {
             idx.contains("- [[famiglia-bruno-battaglia/salute_bruno]]: salute_bruno desc"),
             "{idx}"
         );
-        let links = recommended_links(&plan, "hub");
+        let targets = recommended_link_targets(&plan, "hub");
         assert_eq!(
-            links, "[[famiglia-bruno-battaglia/salute_bruno]]",
+            recommended_links(&targets),
+            "[[famiglia-bruno-battaglia/salute_bruno]]",
             "graph slugs resolve through the plan; a vanished slug is skipped"
         );
     }
@@ -4024,6 +4263,311 @@ mod tests {
 
     const GOOD_CRONISTA: &str =
         "{\"mergedBody\":\"Su Alice. <f1>Alice ama la pasta.</f1>\",\"description\":\"d\"}";
+
+    // ---------- the rail guard ----------
+
+    /// A one-fact leaf the plan gives one rail to, pointing at a neighbour
+    /// that exists in the plan but is NOT dirty (so the scripted Cronista is
+    /// called for `cucina` alone and every call in a test's script is
+    /// accounted for).
+    fn leaf_plan_with_rail(f: FactForPage, slug: &str, neighbour: &str) -> CompilationPlan {
+        let mut plan = concept_leaf_plan(f, slug, None);
+        plan.pages.insert(
+            neighbour.to_owned(),
+            PagePlan {
+                slug: neighbour.to_owned(),
+                title: neighbour.to_owned(),
+                description: "il vicino".to_owned(),
+                style: None,
+                page_type: PageType::ConceptLeaf,
+                owner_scope: None,
+                parent_hub: None,
+                child_leaves: Vec::new(),
+                primary_facts: Vec::new(),
+                outgoing_links: Vec::new(),
+                incoming_links: Vec::new(),
+                wiki_id: "alice".to_owned(),
+                page_path: format!("{neighbour}.md"),
+            },
+        );
+        plan.link_graph
+            .insert(slug.to_owned(), vec![neighbour.to_owned()]);
+        plan.compilation_order.push(neighbour.to_owned());
+        plan
+    }
+
+    /// A group's foundation page: no facts of its own, one child leaf, and
+    /// it is the only dirty page — so the hub backend is the only one called.
+    fn hub_plan() -> CompilationPlan {
+        let mut pages = BTreeMap::new();
+        for (slug, page_type, path, children) in [
+            (
+                "famiglia",
+                PageType::GroupTheme,
+                "profile.md",
+                vec!["salute".to_owned()],
+            ),
+            ("salute", PageType::ConceptLeaf, "salute.md", Vec::new()),
+        ] {
+            pages.insert(
+                slug.to_owned(),
+                PagePlan {
+                    slug: slug.to_owned(),
+                    title: slug.to_owned(),
+                    // The planner's literal — what the card used to be.
+                    description: format!("Group {slug}"),
+                    style: None,
+                    page_type,
+                    owner_scope: None,
+                    parent_hub: None,
+                    child_leaves: children,
+                    primary_facts: Vec::new(),
+                    outgoing_links: Vec::new(),
+                    incoming_links: Vec::new(),
+                    wiki_id: "alice".to_owned(),
+                    page_path: path.to_owned(),
+                },
+            );
+        }
+        CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph: BTreeMap::new(),
+            compilation_order: vec!["famiglia".to_owned(), "salute".to_owned()],
+            generated_at: "t".to_owned(),
+            fact_count: 0,
+            dirty_pages: vec!["famiglia".to_owned()],
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+        }
+    }
+
+    /// A hub's card is WRITTEN, like every other page's. It used to be the
+    /// planner's literal, so a group's foundation page introduced itself to
+    /// the navigator as `Group famiglia` — two words, on a page that is a
+    /// door like any other.
+    #[tokio::test]
+    async fn a_hub_card_is_written_by_the_model_not_taken_from_the_plan() {
+        let (dir, tree, pool) = setup().await;
+        let plan = hub_plan();
+        let hub = FakeLlmBackend::new(
+            "fake",
+            "{\"mergedBody\":\"La famiglia, con la [[alice/salute]].\",\
+              \"description\":\"Nucleo familiare: salute, spese comuni, casa\"}",
+        );
+        let cronista = ScriptedCronista::new(vec![]);
+        let report =
+            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
+                .await
+                .expect("compile");
+        assert_eq!(report.hubs, 1);
+        assert!(report.rails_appended.is_empty(), "the child link was woven");
+
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/profile.md")).unwrap();
+        assert!(
+            page.contains("description: \"Nucleo familiare: salute, spese comuni, casa\""),
+            "the model's card is the testata line: {page}"
+        );
+        assert!(
+            !page.contains("Group famiglia"),
+            "the planner's literal is gone: {page}"
+        );
+        drop(dir);
+    }
+
+    /// A reply that is not the JSON shape — a v1.6 operator override, or a
+    /// model that ignored the schema — degrades to exactly the pre-v1.7
+    /// behaviour: the whole reply is the body, the card is the plan's. Never
+    /// a failed page.
+    #[tokio::test]
+    async fn a_hub_reply_without_the_json_shape_keeps_the_plan_card() {
+        let (dir, tree, pool) = setup().await;
+        let plan = hub_plan();
+        let hub = FakeLlmBackend::new("fake", "# La famiglia\n\nVedi [[alice/salute]].");
+        let cronista = ScriptedCronista::new(vec![]);
+        let report =
+            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
+                .await
+                .expect("compile");
+        assert_eq!(report.hubs, 1, "a bare-markdown reply still writes a page");
+
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/profile.md")).unwrap();
+        assert!(page.contains("# La famiglia"), "reply as body: {page}");
+        assert!(
+            page.contains("description: \"Group famiglia\""),
+            "card falls back to the plan's literal: {page}"
+        );
+        drop(dir);
+    }
+
+    /// A hub that drops a child has failed at its one job — the children are
+    /// the only route to the detail under it — so the link is appended rather
+    /// than bought back with a second call on the cheap slot.
+    #[tokio::test]
+    async fn a_hub_that_drops_a_child_gets_it_appended_and_reported() {
+        let (dir, tree, pool) = setup().await;
+        let plan = hub_plan();
+        let hub = FakeLlmBackend::new(
+            "fake",
+            "{\"mergedBody\":\"La famiglia, e nient'altro.\",\"description\":\"Nucleo familiare\"}",
+        );
+        let cronista = ScriptedCronista::new(vec![]);
+        let report =
+            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
+                .await
+                .expect("compile");
+        assert_eq!(report.hubs, 1);
+        assert_eq!(
+            report.rails_appended,
+            vec!["famiglia: [[alice/salute]]".to_owned()],
+        );
+
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/profile.md")).unwrap();
+        assert!(
+            page.trim_end().ends_with("[[alice/salute]]"),
+            "the child is reachable from its hub: {page}"
+        );
+        drop(dir);
+    }
+
+    /// The guard reads the PROSE, not the plan — the whole point of the
+    /// defect it closes. A rail counts as landed when the page text carries
+    /// it, in any form the link grammar allows: the `|display` alias is
+    /// presentation, and a `.md` suffix addresses the same page.
+    #[test]
+    fn missing_rails_reads_the_prose_and_normalises_the_address() {
+        let recommended = vec![
+            "[[alice/spesa]]".to_owned(),
+            "[[alice/cucina]]".to_owned(),
+            "[[bob/profile]]".to_owned(),
+        ];
+        let body = "Fa la [[alice/spesa|spesa]] il sabato, e cucina in [[alice/cucina.md]].";
+        assert_eq!(
+            missing_rails(&recommended, body),
+            vec!["[[bob/profile]]".to_owned()],
+            "an aliased link and a .md-suffixed one both land; only bob's is missing"
+        );
+        // A bare wiki link names a MAP, which no reader may open, so it can
+        // never stand in for the rail to a page of that wiki.
+        assert_eq!(
+            missing_rails(&["[[bob/profile]]".to_owned()], "Ne parla con [[bob]]."),
+            vec!["[[bob/profile]]".to_owned()],
+        );
+        assert!(missing_rails(&[], "nessun binario").is_empty());
+    }
+
+    /// A page whose prose already carries every recommended rail costs ONE
+    /// call: the guard is free unless something is actually missing.
+    #[tokio::test]
+    async fn a_page_that_carries_its_rails_costs_no_extra_call() {
+        let (dir, tree, pool) = setup().await;
+        let f = ffp(0x51, "Alice loves pasta");
+        plant_fact(&pool, &f.fact_id, "user:alice", "Alice loves pasta").await;
+        let plan = leaf_plan_with_rail(f, "cucina", "spesa");
+
+        let cronista = ScriptedCronista::new(vec![Ok(
+            "{\"mergedBody\":\"<f1>Alice ama la pasta</f1>, che compra in [[alice/spesa]].\",\
+              \"description\":\"d\"}",
+        )]);
+        let hub = FakeLlmBackend::new("fake", "# hub\n");
+        let report =
+            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
+                .await
+                .expect("compile");
+        assert_eq!(cronista.remaining(), 0, "exactly one call");
+        assert_eq!(report.leaves, 1);
+        assert!(report.rails_appended.is_empty(), "nothing to append");
+        drop(dir);
+    }
+
+    /// A dropped rail buys ONE rewrite, and a rewrite that carries it wins:
+    /// the rail ends up woven into the prose, not appended, and the page has
+    /// nothing to report.
+    #[tokio::test]
+    async fn a_dropped_rail_costs_one_rewrite_that_weaves_it_in() {
+        let (dir, tree, pool) = setup().await;
+        let f = ffp(0x52, "Alice loves pasta");
+        plant_fact(&pool, &f.fact_id, "user:alice", "Alice loves pasta").await;
+        let plan = leaf_plan_with_rail(f, "cucina", "spesa");
+
+        let cronista = ScriptedCronista::new(vec![
+            Ok("{\"mergedBody\":\"<f1>Alice ama la pasta</f1>.\",\"description\":\"d\"}"),
+            Ok(
+                "{\"mergedBody\":\"<f1>Alice ama la pasta</f1>, che compra in [[alice/spesa]].\",\
+                 \"description\":\"d\"}",
+            ),
+        ]);
+        let hub = FakeLlmBackend::new("fake", "# hub\n");
+        let report =
+            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
+                .await
+                .expect("compile");
+        assert_eq!(cronista.remaining(), 0, "one rewrite, no more");
+        assert_eq!(report.leaves, 1);
+        assert!(
+            report.rails_appended.is_empty(),
+            "the rewrite carried it, so nothing was appended: {:?}",
+            report.rails_appended
+        );
+
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
+        assert!(
+            page.contains("che compra in [[alice/spesa]]"),
+            "the rail is woven into the thread: {page}"
+        );
+        drop(dir);
+    }
+
+    /// Declined twice: the FIRST draft's prose is kept (a rewrite that
+    /// carries no more rails has bought nothing), the rail is appended bare
+    /// so the neighbour is reachable at all, and the report says so — the
+    /// silent 33 % is what this guard exists to end.
+    #[tokio::test]
+    async fn a_rail_declined_twice_is_appended_bare_and_reported() {
+        let (dir, tree, pool) = setup().await;
+        let f = ffp(0x53, "Alice loves pasta");
+        plant_fact(&pool, &f.fact_id, "user:alice", "Alice loves pasta").await;
+        let plan = leaf_plan_with_rail(f, "cucina", "spesa");
+
+        let cronista = ScriptedCronista::new(vec![
+            Ok(
+                "{\"mergedBody\":\"<f1>Alice ama la pasta</f1>. Prima stesura.\",\
+                 \"description\":\"d\"}",
+            ),
+            Ok(
+                "{\"mergedBody\":\"<f1>Alice ama la pasta</f1>. Seconda stesura.\",\
+                 \"description\":\"d\"}",
+            ),
+        ]);
+        let hub = FakeLlmBackend::new("fake", "# hub\n");
+        let report =
+            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
+                .await
+                .expect("compile");
+        assert_eq!(cronista.remaining(), 0, "asked twice, never a third time");
+        assert_eq!(report.leaves, 1, "an under-linked page is still a success");
+        assert_eq!(
+            report.rails_appended,
+            vec!["cucina: [[alice/spesa]]".to_owned()],
+            "the gap is reported, not swallowed"
+        );
+
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
+        assert!(
+            page.contains("Prima stesura"),
+            "the rewrite carried no more rails, so the first draft's prose stands: {page}"
+        );
+        assert!(
+            !page.contains("Seconda stesura"),
+            "the second draft bought nothing and must not replace the first: {page}"
+        );
+        assert!(
+            page.trim_end().ends_with("[[alice/spesa]]"),
+            "the rail is on the page as its own trailing line: {page}"
+        );
+        drop(dir);
+    }
 
     async fn streak_notices(pool: &SqlitePool) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM wiki_events WHERE kind = 'compile_failure_streak'")

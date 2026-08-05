@@ -1,8 +1,8 @@
 ---
 name: regenerate-index
 description: Hub Writer prompt — the prose of a compilation plan's `ConceptHub` page, from its children list. The file name is historical: the REM index regenerator this was written for was retired on 2026-08-03 (a wiki's `index.md` is now assembled without a model), and renaming the file would orphan every operator override.
-version: 1.6
-default_version_at_bootstrap: v1.6
+version: 1.7
+default_version_at_bootstrap: v1.7
 source_of_truth: crates/mwe-core/src/compiler.rs (fn compile_hub_page)
 ---
 
@@ -63,14 +63,36 @@ labels them for what they actually are instead.
   separated: child-page blurbs, `- <slug>: <description>`. **Not facts** — a
   hub has none of its own, which is what makes it a hub
 
-**Output schema**: plain markdown body for an ordinary **page**, no
-frontmatter and no fenced code block delimiters around the response. The
-compiler wraps it in a testata (`render_page_file`, `description` taken from
-the plan and `style` forced to `prosa`) and writes it with
-`handle.write_page(page.page_path, …)` — **never** to `<wiki_dir>/index.md`,
-which since 2026-08-03 is the wiki's map and is assembled with no model.
-Expected shape: 6-12 lines of prose + a short list of children. Long outputs
-are silently trimmed by `max_tokens` (no parse failure path).
+**Output schema** (v1.7): one strict JSON object
+`{ "mergedBody": "...", "description": "..." }` — the Cronista's shape minus
+`style`, which a hub does not choose (it is overview prose, always `prosa`).
+`mergedBody` is the markdown page body, no frontmatter; `description` is the
+page's **card**, the one line the recall navigator decides from.
+
+Until v1.6 the reply was bare markdown and the card was the **planner's
+literal** `page.description`, so a group's foundation page introduced itself
+to the navigator as `Group famiglia` while a person's card said what she
+actually needs remembering. A group root has been a door like any other
+since 69b, so those two words were the whole basis for opening it or not.
+
+Parsing is **tolerant** (`compiler::parse_cronista`, first `{` to last `}`):
+a reply that is not JSON — an operator override still written against v1.6,
+or a model that ignored the schema — degrades to *whole reply as the body,
+card from the plan*, which is exactly the pre-v1.7 behaviour. There is no
+parse-failure path that costs a page.
+
+The compiler wraps the body in a testata (`render_page_file`, `style` forced
+to `prosa`) and writes it with `handle.write_page(page.page_path, …)` —
+**never** to `<wiki_dir>/index.md`, which since 2026-08-03 is the wiki's map
+and is assembled with no model. Expected shape: 6-12 lines of prose. Long
+outputs are silently trimmed by `max_tokens`.
+
+**Rail floor** (v1.7): the body's child links are checked against
+`{children}` after the call (`compiler::missing_rails`, the same parser the
+recall funnel harvests links with), and any child the prose dropped is
+appended to the page — a hub whose children are absent has failed at the one
+job it has. No rewrite is bought here: this is a single-shot call on the
+cheap slot. The gap is reported on `CompileReport::rails_appended`.
 
 **Tool subset**: none. Pure generative call, single shot, no
 function-calling.
@@ -116,7 +138,17 @@ Children (a list of [[wikilinks]] — keep every link EXACTLY as written, charac
 What each child holds (most-recent first):
 {snippet}
 
-Output the page body in markdown. No frontmatter. Concise — 6-12 lines. EVERY child link above must appear, and the prose around each one must say what a reader will find there: those links are the rails somebody follows to reach the detail, and a link nobody can tell apart from its neighbours is a rail nobody takes.
+EVERY child link above must appear in the body, and the prose around each one must say what a reader will find there: those links are the rails somebody follows to reach the detail, and a link nobody can tell apart from its neighbours is a rail nobody takes.
+
+OUTPUT — one strict JSON object, no prose around it, no code fences, newlines inside strings escaped as \n:
+{ "mergedBody": "<the page body in markdown, no frontmatter, concise — 6-12 lines>", "description": "<the page's CARD, one line>" }
+
+DESCRIPTION — the card is not a summary of the body, it is how this page is FOUND:
+- Who reads it: the navigator, which is shown a page's name, its keywords and this ONE line, never its prose, and decides from that alone whether to open it. This page is a door like any other.
+- Do NOT repeat the page name — it is already shown beside the line — and never answer with the page id or a bare label like "Group X". That is the plan's placeholder, not a card.
+- Say what a reader will FIND under here: the subjects this cluster actually covers, in the words somebody LOOKING for them would use, not the category they belong to.
+- Make it DISTINGUISH. If the line would sit just as well on a neighbouring page, it is not a card yet.
+- Stay at TOPIC level: a card that reports the latest news ages into a lie the next time something happens.
 
 LANGUAGE: {locale}
 ```

@@ -1,8 +1,8 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.21
-default_version_at_bootstrap: v1.21
+version: 1.23
+default_version_at_bootstrap: v1.23
 ---
 
 # Prompt: cronista
@@ -140,6 +140,7 @@ WIKILINK GRAMMAR — links are navigation rails, copy them EXACTLY:
 - A link names a PAGE: [[wiki_id/page-slug]]. Optionally add a display alias for prose flow: [[wiki_id/page-slug|readable label]] — the part before the | must stay EXACT.
 - NEVER write a link that names a wiki alone ([[wiki_id]]). A wiki's own address is its map, which is written for filing and is never read back — such a link leads nowhere. To point at a person or a group, link their page: [[wiki_id/profile]].
 - Every link under OTHER PAGES, RECOMMENDED LINKS and in a (detail at: …) hint is already in canonical form. COPY IT CHARACTER-FOR-CHARACTER — never change hyphens to underscores (or vice versa), never drop or add the wiki_id part, never invent a link target you were not given. A restyled link points nowhere.
+- RECOMMENDED LINKS ARE MANDATORY, the same way fact completeness is: EVERY link listed there must appear in your `mergedBody`. They are not suggestions — they are this page's rails, and a reader reaches its neighbours ONLY through the links you write. A rail you leave out is a neighbouring page nobody can walk to from here. Weave each one where it belongs in the thread, in the form rule 2 gives (name the neighbour, link it, move on). If one genuinely has no place in the narrative, give it a short closing sentence that says how it relates — never drop it, and never park them all in a list at the end: a link explained by the prose around it is the whole point, a bare address is the weak form of it.
 3. Write flowing PROSE, not a bullet list. Make the RELATIONS between the facts explicit — causality, chronology, roles, implications — that connective thread is the value, not a pile of sentences.
 4. Use dated events as EVIDENCE of habits / roles, not as a calendar. Do not turn the page into an agenda of appointments.
 
@@ -205,7 +206,7 @@ TONE — the page's voice, given on the PAGE line below:
 OUTPUT — one strict JSON object, no prose around it, newlines inside strings escaped as \n:
 { "mergedBody": "<the full markdown page body with <fN>…</fN> fact tags and [[wikilinks]]>", "description": "<1-2 sentence summary of what this page holds>", "style": "prosa" | "prosa-tecnica" }
 
-OTHER PAGES — for [[wikilinks]] ONLY, copy each link exactly as written (you do NOT see their facts). This is every page of the memory, so the page you are writing is in the list too: NEVER link a page to itself.
+OTHER PAGES — for [[wikilinks]] ONLY, copy each link exactly as written (you do NOT see their facts). This is every page of the memory, so the page you are writing is in the list too: NEVER link a page to itself. Every line here — including your own page's — is a FILING LABEL, not evidence: it says where facts of that kind go, and it may have been written before the page had any content. Never assert what a label implies. If your page's line calls it a project, a collaboration or an area of work and YOUR FACTS do not say so, write what the facts say and let the label be wrong.
 {page_index}
 
 === PAGE TO WRITE ===

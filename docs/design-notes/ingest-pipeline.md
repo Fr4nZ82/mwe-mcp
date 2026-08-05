@@ -268,6 +268,58 @@ the message, not when it was uttered.
 > "form-to-chat bridge" taken to its conclusion: one
 > conversational surface. Plan: [agentic-chat.md](agentic-chat.md).
 
+### The anchor rule — re-word freely, never sharpen (prompt v2.55)
+
+The classifier **may re-word; it may not add specificity the turn did not
+carry.** The test is not *was the detail written* but **is there an anchor in
+the turn it follows from** — "tomorrow", "Saturday", "the 5th" are anchors, and
+resolving them against `current_time` is the wanted behaviour above. What the
+model knows from its own training is not an anchor.
+
+Two confirmed production cases shaped the rule (card 57, measured offline over
+444 production and 125 demo facts — **1 confirmed in 444**, so the phenomenon is
+narrow, and most detector flags were correct date resolution):
+
+- **Knowledge imported as a personal fact.** A car's road-tax deadline became
+  *«can be paid without penalty until 30 September, at a cost of about €185»*.
+  Neither the second date nor the amount nor the grace period was in the turn:
+  an Italian tax rule the model knows, filed as a fact about this household. It
+  is the most dangerous class because it is **unfalsifiable from inside** — no
+  author to contradict it, and the night's confirmers judge facts against other
+  *facts*, never against the turn that produced them.
+- **An invented frame.** A turn complaining that an assistant had signed the
+  sender up for a fair produced a defensible `body` — and a **new page**
+  described as *«Progetti e attività relativi a …»*. "Project" occurs zero times
+  in the message: an event was promoted into a body of work, inside a group
+  wiki, and the compiler then grew prose from the description. The invention was
+  in the **container**, and every guard we had judged facts.
+
+So the rule binds the frame as hard as the body: `target_page` and
+`page_description` are covered by the same clause, and **opening a NEW page is
+called out as the moment to be conservative** — the subject must be one the turn
+named, the description must be answerable from the turn, and when in doubt an
+existing page wins, because an under-filed fact is moved by the nightly pass
+while an invented page outlives the turn that caused it.
+
+The sibling clause: **an unresolved reference stays unresolved.** A gap the turn
+did not fill keeps the turn's own wording; the fact is neither dropped nor
+completed with a plausible specific. A missing detail is recoverable by asking,
+an invented one is not — afterwards it reads exactly like something that was
+said.
+
+Two things carry the rule downstream, because a prompt rule alone would not have
+held: the writer is told that a page's index line is a **filing label, not
+evidence** (cronista v1.23), and the plan stops treating the classifier's
+description as permanent — see
+[the card heal](narrative-compiler.md#the-card-heal--a-page-is-described-by-what-was-written-on-it).
+A page the machine invents also leaves a
+[receipt](narrative-compiler.md) (`page_create`, born-applied and revertable).
+
+**Not built, deliberately**: a stated/inferred axis on every fact. It is
+invasive, and it would have caught **neither** confirmed case — the road-tax
+fact would have been marked inferred and kept, and the frame invention is not in
+a fact at all.
+
 ## The contract the orchestrator honours
 
 Two invariants drive almost every design choice:

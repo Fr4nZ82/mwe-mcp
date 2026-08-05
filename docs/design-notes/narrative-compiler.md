@@ -216,7 +216,10 @@ the page the **ingest classifier already proposed** (`fact_index.target_page`)
 by [`ingest_placement_blueprint`](../../crates/mwe-core/src/planner.rs) — a
 `concept_leaf` per distinct target slug (a path like `recipes/dinner.md`
 flattens to one leaf; the light path does not nest), seeded with the ingest-proposed
-`style` + `page_description` so the page gets a testata. A fact whose target is
+`style` + `page_description` so the page gets a testata — a **seed**, not the
+page's permanent card, see
+[the card heal](#the-card-heal--a-page-is-described-by-what-was-written-on-it).
+A fact whose target is
 `index.md` / empty falls through to the deterministic orphan fallback (its
 foundation page), never a page named "index". **A `high`-salience fact
 (`fact_index.salience`) is routed the same way regardless
@@ -709,9 +712,11 @@ leaf, fed:
 Every link the compiler feeds a prose-writing prompt is rendered by
 [`plan_page_wikilink`](../../crates/mwe-core/src/compiler.rs) in the
 **canonical grammar** ([recall-pipeline.md §Link grammar](recall-pipeline.md#link-grammar)):
-`[[wiki_id/page-slug]]` for a page, collapsing to the bare `[[wiki_id]]` wiki
-hop for a wiki's own `index.md` — never a bare plan slug, which would read as
-a hop to a wiki that does not exist. The prompt's counterpart rule is
+`[[wiki_id/page-slug]]`, always a **page** — never a bare plan slug, which
+would read as a hop to a wiki that does not exist, and (since 2026-08-04)
+never the bare `[[wiki_id]]` wiki hop either: that names the wiki's **map**,
+which every route of the read path refuses, so a node sitting on `index.md`
+yields `None` and is simply not offered as a rail. The prompt's counterpart rule is
 **copy-verbatim**: the model weaves the given links in character-for-character
 and never mints or restyles a target (a hyphen flipped to the surrounding
 underscore slug style is a dead rail). Non-canonical links still on compiled
@@ -760,6 +765,11 @@ The compiler then turns that into the on-disk page in two deterministic steps
    marked region, so no fact is silently lost and no non-global fact loses its
    protective ACL marker (the `missing_acl_markers` the reviewer would otherwise
    flag). A later full recompile can weave the appended facts back in.
+   Both steps live in
+   [`expand_and_complete_fact_markers`](../../crates/mwe-core/src/compiler.rs).
+
+The same discipline then runs over the page's **links** — see
+[the rail guard](#the-rail-guard--a-recommended-link-that-never-reached-the-prose).
 
 The **on-disk runtime marker format is the bare** `{{f=…}}` — only the
 Cronista's transient output uses `<fN>` tags; the parser, the capture path, and
@@ -819,6 +829,60 @@ Every other backend ignores the flag and its wire shape is unchanged — the
 light dream compiles on the ingest tier, where this is a no-op. An operator
 prompt override with no marker degrades cleanly: the whole body stays in the
 system prompt, nothing is marked cacheable.
+
+### The rail guard — a recommended link that never reached the prose
+
+The compiler hands the writer the links it must weave in — for a leaf the
+plan's `link_graph` row
+([`recommended_link_targets`](../../crates/mwe-core/src/compiler.rs)), for a
+hub its `child_leaves` — and until this guard **nothing checked that any of
+them landed**. The links are not suggestions: `link_graph` is hub→child plus
+the page's own authored outgoing links, made symmetric (planner, step 9),
+i.e. the structure the plan asserts. And a link that does not land is not a
+cosmetic loss — the navigator harvests its next hops from the **prose**, and
+since the directory listing went off (`sibling_floor = 0`) a page is reachable
+only by a fact hit, a match on its card, or an inbound link somebody wrote. A
+dropped rail is a neighbour nobody can walk to.
+
+Three parts, cheapest first:
+
+1. **The rule.** The Cronista's brief (v1.22) makes RECOMMENDED LINKS
+   mandatory the way fact completeness already was, with the reason stated and
+   one prohibition: they may not be parked in a list at the end — a link
+   explained by the prose around it is the point, a bare address is the weak
+   form of it. The Hub Writer has carried the equivalent rule since v1.6.
+2. **The check, and one rewrite.** After a usable reply, the written links are
+   parsed out of the body with
+   [`recall::extract_wikilinks`](../../crates/mwe-core/src/recall.rs) — the
+   same function the recall funnel harvests rails with, so the two cannot
+   disagree about what a link is — and compared by address
+   (`wiki_id` + page stem, `.md` and `|display` alias normalised away:
+   [`missing_rails`](../../crates/mwe-core/src/compiler.rs)). A gap buys the
+   leaf **one rewrite** naming exactly the dropped links
+   ([`cronista_relink`](../../crates/mwe-core/src/compiler.rs)), reusing both
+   prompt halves so the cached prefix still engages. The second reply is kept
+   **only if it carries more of them**: a rewrite that trades one dropped rail
+   for another has bought nothing, and the first draft stands. No gap, no call.
+3. **The floor.** Whatever the prose still will not carry is **appended** to
+   the page as its own line
+   ([`append_missing_rails`](../../crates/mwe-core/src/compiler.rs)), and the
+   page is reported on `CompileReport.rails_appended`. This is deliberately the
+   *weaker* form of a link — a bare edge carries the label without the why,
+   against this page's own prose-first thesis — and it is written anyway
+   because an unreachable neighbour is worse. The report is what keeps the
+   trade visible: how often the writer declines a rail is a **prompt** signal,
+   and it used to be invisible.
+
+The hub arm has **no rewrite**: it is a single-shot call on the cheap slot, and
+a hub whose children are absent has failed at the one job it has, so the links
+go on directly.
+
+⚠️ The size of the loss is **unmeasured on this engine**. It was 111 of 334
+links (33 %) on the corpus compiled before 2026-08-04, which is a static
+property of files that no longer exist — and those pages were written under
+the older prompt, before the map rule stopped minting `[[wiki_id]]` links
+that pointed at an unopenable page. What is certain is the mechanism, which
+was read off the code: nothing checked.
 
 ### Degraded mode — the guard-only rewrite
 
@@ -1024,12 +1088,16 @@ later work (it is born with emergence), not this one.
   coerces the value into the palette; absent / unrecognised → `prosa`. A **hub** is
   an overview/navigation page, always `prosa` (it holds no facts → takes no ingest
   style).
-- **`description`** is the page's «what goes in here» one-liner — for a leaf the
-  Cronista's fresh `description`, for a hub the plan's
-  [`PagePlan.description`](../../crates/mwe-core/src/planner.rs). Besides the testata
-  it also feeds the [abstract sync](#the-abstract-sync--the-wikis-summary) for an
-  `index.md` overview page. It serves both **recall** (orient before opening) and
-  **placement** (where to file a new fact).
+- **`description`** is the page's **card** — the one line the recall navigator
+  decides from, since it is shown a page's name, its keywords and this line and
+  never its prose. It is **written**, by whichever model wrote the page: the
+  Cronista's fresh `description` for a leaf, the Hub Writer's for a hub (v1.7).
+  It falls back to the plan's
+  [`PagePlan.description`](../../crates/mwe-core/src/planner.rs) only when the
+  writer returned none. Besides the testata it feeds the
+  [abstract sync](#the-abstract-sync--the-wikis-summary). It serves both
+  **recall** (orient before opening) and **placement** (where to file a new
+  fact).
 
 [`render_page_file`](../../crates/mwe-core/src/compiler.rs) writes both into the
 frontmatter (after `page_type`; `description` is omitted when empty, quotes /
@@ -1040,15 +1108,31 @@ sits over a [record body](#the-record-writer--lista-pages-no-llm), never prose.
 ### The Hub Writer — the overview (cheap model)
 
 [`compile_hub_page`](../../crates/mwe-core/src/compiler.rs) writes a hub's
-overview on the cheap `HubWriter` slot. Rather than a new prompt it **reuses the
-existing [`regenerate-index`](../../crates/mwe-core/prompts/regenerate-index.md)
-prompt** — the same one a normal `index.md` write already uses — fed from the
-plan's children (each child as its canonical `plan_page_wikilink` +
-`description`; the REM regenerator consumer feeds child *wikis* as
-`[[wiki_id]]` hops instead). It emits raw markdown that cites **every** child
-as a canonical `[[wikilink]]` (the prompt says copy-verbatim) and carries
-**no ACL markers** — a hub holds no facts, so there is nothing to mark or
-repoint.
+overview on the cheap `HubWriter` slot, through the
+[`regenerate-index`](../../crates/mwe-core/prompts/regenerate-index.md) prompt
+(the name is historical — REM's map is assembled with no model since
+2026-08-03, so the hub pass is its only caller left). It is fed the plan's
+children, each as its canonical `plan_page_wikilink` + `description`, and
+carries **no ACL markers** — a hub holds no facts, so there is nothing to mark
+or repoint.
+
+It returns the Cronista's JSON shape minus `style` (v1.7):
+`{ mergedBody, description }`. The `description` matters more here than
+anywhere: it used to be the **planner's literal**, so a group's foundation page
+introduced itself to the navigator as `Group famiglia` while a person's card
+said what she actually needs remembering — and since a group root is a door
+like any other, those two words were the whole basis for opening it or not.
+The card brief is the Cronista's, adapted: say what a reader will find under
+here, in the words somebody looking would use, and make it distinguish from
+the neighbours.
+
+Parsing is **tolerant** (`parse_cronista`, first `{` to last `}`). A reply that
+is not JSON — an operator override still written against v1.6, or a model that
+ignored the schema — degrades to *whole reply as the body, card from the plan*,
+which is exactly the pre-v1.7 behaviour: there is no parse-failure path that
+costs a page. The children are then checked against the body by
+[the rail guard](#the-rail-guard--a-recommended-link-that-never-reached-the-prose),
+which appends any the prose dropped.
 
 ### The Record Writer — `lista` pages (no LLM)
 
@@ -1093,6 +1177,46 @@ the `CompileReport`.
 > so the list page itself stays current. Registry entries age out through
 > organic forgetting (roadmap group 11).
 
+### The card heal — a page is described by what was written on it
+
+[`PagePlan::description`](../../crates/mwe-core/src/planner.rs) is seeded once,
+from the ingest classifier's `page_description` proposal, and the
+[concept registry](../../crates/mwe-core/src/planner.rs) then persists that
+first guess. Nothing used to read back what the page turned out to say — while
+the writer puts **its own card** in the testata on every compile. So the two
+diverged, and the stale one was the copy the models saw: the Cronista's
+[page index](#the-cacheable-split--why-the-page-comes-last) carries every
+page's description, its own line included, and the Hub Writer's `{snippet}`
+carries its children's.
+
+**That is how an invented frame becomes permanent.** The confirmed production
+case (card 57, 2026-07-24): a turn complaining that an assistant had signed the
+sender up for a fair minted a page described as *«Progetti e attività relativi
+a …»* — a body of work nobody had described. The **fact** was a defensible
+paraphrase; the **frame** was invented, it was fed back to the compiler on
+every cycle, and the compiled page grew a paragraph about managing external
+collaborations out of it. Every guard we have judges facts.
+
+[`heal_page_cards`](../../crates/mwe-core/src/planner.rs) closes the loop: each
+plan build reads the page's testata `description:` and adopts it onto the plan
+page and its registry entry. The card the writer produced **from the page's
+actual facts** replaces the guess, so a bad first frame is self-correcting
+rather than permanent.
+
+Three properties worth keeping:
+
+- it runs on the **plan-reuse path too**, and mostly there — a page's written
+  card changes when the page is *compiled*, which is exactly a build with no
+  new facts. Reached only by the full-rebuild branch it would almost never run;
+- it **never marks a page dirty**: [`page_fingerprint`](../../crates/mwe-core/src/planner.rs)
+  does not carry the description, so the correction rides the next compile that
+  happens for its own reasons instead of buying one;
+- it reads the **testata fence only**. A `description:` line in the body is
+  prose somebody wrote, not the page's card.
+
+Best-effort and idempotent: an unreadable or testata-less page is left alone,
+and the registry is rewritten only when something actually healed.
+
 ### The abstract sync — the wiki's `summary`
 
 When the compiler (re)writes a wiki's **foundation page** — the `person` /
@@ -1100,11 +1224,13 @@ When the compiler (re)writes a wiki's **foundation page** — the `person` /
 (`notes.md`); concept pages use `<slug>.md` and are skipped — it persists a
 one-line **abstract** into that wiki's `_meta.md` (`extra["summary"]`) via
 [`meta_annotate::sync_wiki_summary`](../../crates/mwe-core/src/meta_annotate.rs).
-The source is the freshest one-liner available: a **person** wiki uses Il
-Cronista's `description` (an LLM summary of the page it just wrote — rich); a
-**hub** or **`lista`** wiki uses the plan's
-[`PagePlan.description`](../../crates/mwe-core/src/planner.rs) (the Hub Writer
-emits prose, not a one-liner, and the Record Writer has no LLM to author one).
+The source is the page's own **card**, so it is written by whichever model
+wrote the page: Il Cronista's `description` for a **person** wiki, the Hub
+Writer's for a **hub** (v1.7 — until then the Hub Writer emitted prose and no
+one-liner, so a group's abstract was the plan's literal `Group <slug>`). A
+**`lista`** wiki still uses the plan's
+[`PagePlan.description`](../../crates/mwe-core/src/planner.rs): the Record
+Writer has no LLM to author one.
 ⚠️ **This keyed on `index.md` until 2026-08-03**, which was right for as long
 as the foundation node lived there. The map rule moved every foundation node
 off the root, and the condition then matched **nothing** — the abstract would
