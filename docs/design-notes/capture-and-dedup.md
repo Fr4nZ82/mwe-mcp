@@ -33,38 +33,41 @@ light-dream hygiene sweep converges it (the full map of strip sites is in
 dedup-merge revert) reactivates the row as a pending render: the next
 compile re-renders its prose from the DB-authoritative claim text.
 
-## The ingest write path: buffered, with no exception
+## Two ingest write paths: direct (requested containers) vs buffered (standard)
 
 The four operations above are *direct-write* primitives: each touches the
-published `.md` and the `fact_index` synchronously. **The conversational
-ingest path does not use them.** Every classified claim is staged in the
-per-wiki [narrative captures buffer](narrative-buffer.md), and the published
-`.md` is the compiler's *output* rather than the ingest path's.
+published `.md` and the `fact_index` synchronously. On the ingest path
+they fire only for the **live exception**: an explicitly **requested
+container** (a list / collection / note the user asked to keep — the
+classifier sets the `requested_container` flag, no hard-coded gate) is
+written live via `wiki_capture` so it is there immediately. Every other
+classified claim is **standard**: the ingest router stages it in the
+per-wiki [narrative captures buffer](narrative-buffer.md) instead, and
+the published `.md` becomes the compiler's *output* rather than
+the ingest path's.
 
-There used to be one **live exception** — an explicitly requested container
-(a list, a collection, a note the user asked to keep) written straight
-through so it was there immediately. It was removed on 2026-08-05: a
-buffered claim is already recallable through the fresh slot, and the light
-cadence recompiles the pages it touched, so what the direct write bought was
-page freshness measured against a dream that used to run twice a day. The
-reasoning, and what it costs, are in
-[ingest-pipeline.md](ingest-pipeline.md#one-write-speed--everything-is-buffered).
+Collapsing the two — buffering the containers as well — was proposed on
+2026-08-05 and rejected: the fresh recall slot is a *ranked top-K*, which
+cannot serve a **whole list**, and the dedup scan below was never actually
+decided twice (it is one function with two callers). The argument is kept in
+[ingest-pipeline.md](ingest-pipeline.md#narrative-vs-direct-split) so it is
+not re-proposed.
 Narrative = non-smart — the routing keys off the single per-wiki smart flag
 in `_meta.md` (`smart: bool`, legacy alias `companion:`); see
 [smart-wikis.md](smart-wikis.md). The **companion (smart) perimeter is
 unaffected**: smart wikis are filtered out upstream and keep their own
 admin-tool write path.
 
-**These primitives are not retired — the conversational caller is.** They
-remain the write path for everything that is not a classified claim (the
-dashboard's own edits, reindexing, the rules and agent-self pages, a smart
-target the routing window never offers), and — the load-bearing one — they
-are the **promotion primitive** the light dream reuses to turn a buffered
-capture into a `fact_index` fact. So the step-by-step below still describes
-what a conversational capture *becomes*; it describes it at promotion rather
-than during the turn. A buffered capture is meanwhile recallable through the
-fresh-captures slot ([recall-pipeline.md](recall-pipeline.md)); the buffer
-write side is documented in [narrative-buffer.md](narrative-buffer.md).
+`wiki_capture` / `wiki_supersede` stay load-bearing on both sides of the
+fork. On the direct path they remain the ingest write for requested
+containers. On the standard-wiki path they are the **promotion primitive**
+the light dream reuses to turn a buffered capture into a `fact_index`
+fact — so this page's step-by-step still describes what a standard-wiki
+capture *becomes* once it is promoted, just not when it is written. A
+buffered capture is already recallable before promotion through the
+fresh-captures slot ([recall-pipeline.md](recall-pipeline.md)); the
+buffer write side is documented in
+[narrative-buffer.md](narrative-buffer.md).
 
 ## `wiki_capture` step-by-step
 

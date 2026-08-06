@@ -774,10 +774,13 @@ and renders it under a `Recent (not yet consolidated):` heading in the
 `wiki_recall`-backed flows — whose edit/locate logic assumes published-page
 offsets the buffer lacks — are unchanged.
 
-Its load grew with the write path: since every standard capture is buffered
-(no live-write exception — see [ingest-pipeline.md](ingest-pipeline.md#one-write-speed--everything-is-buffered)),
-this slot is what makes a just-captured claim answerable at all before the
-light dream runs.
+**What it is NOT for.** It is a ranked top-K, so it serves *the most relevant
+pending claims*, never a complete set. That is why an explicitly requested
+container (a list, a collection) is still written live rather than buffered:
+a list added to faster than the dream drains would come back missing items,
+and an incomplete list is a wrong answer rather than a partial one. Proposed
+and rejected on 2026-08-05 — see
+[ingest-pipeline.md](ingest-pipeline.md#narrative-vs-direct-split).
 
 ## Entry-point gathering — `recall_nav` (navigation, phase 1)
 

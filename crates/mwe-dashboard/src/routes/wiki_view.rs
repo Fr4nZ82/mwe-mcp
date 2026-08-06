@@ -592,24 +592,27 @@ fn render_wikis_index(
             a href="/dashboard/wiki/smart" { "Smart" } " tab."
         }
 
-        // The pages behind this list are the CONSOLIDATED memory, and they are
-        // written by the light dream — never by the conversational turn that
-        // captured the fact (founder, 2026-08-05: every capture is buffered
-        // now, the live-write exception is gone). Somebody reading a page
-        // minutes after a conversation and not finding what was just said
-        // would reasonably conclude the fact was lost. It was not: it is
-        // stored, and it is already being served to the agent. Say so here,
-        // once, before a wiki is opened — the alternative is a support
-        // question every time.
+        // The prose pages behind this list are CONSOLIDATED memory: they are
+        // written by the compiler, not by the conversational turn that
+        // captured the fact. Somebody reading a page minutes after a
+        // conversation and not finding what was just said would reasonably
+        // conclude the fact was lost. It was not — it is stored, and it is
+        // already being served to the agent. Say so here, once, before a wiki
+        // is opened; the alternative is the same question every time.
+        //
+        // Lists and other containers the user asked to keep are the exception
+        // and are written live, so the notice is careful not to claim
+        // otherwise (ingest-pipeline: the live-write exception).
         p.flash.flash-info {
-            strong { "Pages lag the conversation." }
+            strong { "Prose pages lag the conversation." }
             " A fact captured from a conversation is stored and recallable "
             "immediately, but its "
             em { "prose" }
             " is written when the light dream next runs, together with the rest "
-            "of that page. So a page opened right after a conversation may not "
-            "show what was just said. Nothing is lost — the cadence is set on "
-            a href="/dashboard/admin/rem-settings" { "REM settings" } "."
+            "of that page — so a page opened right after a conversation may not "
+            "show what was just said. Nothing is lost, and the cadence is set on "
+            a href="/dashboard/admin/rem-settings" { "REM settings" }
+            ". Lists and notes the user asked to keep are written straight away."
         }
 
         @if rows.is_empty() {

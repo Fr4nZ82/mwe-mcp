@@ -80,15 +80,17 @@ branches on the target wiki's class:
 1. Resolve the target wiki from `available_wikis` (smart wikis are
    already filtered out of this set by their `_meta.md` `companion`
    flag).
-2. If the target is narrative (`companion == false`) →
+2. If the target is narrative (`companion == false`) **and** the
+   classifier did not flag a live `requested_container` →
    [`capture_buffer::buffer_capture_staged`](../../crates/mwe-core/src/capture_buffer.rs)
    with the classifier's `supersede_target` carried through as
    `supersede_hint`. **No** `.md` write, **no** `fact_index` row.
-3. There is no step 3 any more. The direct-write path
-   (`capture::wiki_supersede` / `capture::wiki_capture`) is reachable only
-   for a smart target, which the routing window never offers — see
-   [the removal of the live-write exception](ingest-pipeline.md#one-write-speed--everything-is-buffered)
-   (founder, 2026-08-05). Every conversational capture waits for the dream.
+3. Otherwise (a `requested_container` the user asked to keep live) → the
+   direct-write path: `capture::wiki_supersede` when the classifier
+   proposed a supersede target, else `capture::wiki_capture`. Buffering
+   these as well was proposed on 2026-08-05 and rejected — this slot's
+   ranked top-K cannot serve a whole list; see
+   [narrative-vs-direct](ingest-pipeline.md#narrative-vs-direct-split).
 
 **What rides with the claim.** `buffer_capture_staged` stages two things
 beside the fact's own fields, both optional and both absent-tolerant:
@@ -106,14 +108,14 @@ beside the fact's own fields, both optional and both absent-tolerant:
   This one **is** journalled (`omsg=`): nothing else on the entry could
   reconstruct it.
 
-The crucial asymmetry is the supersede. A supersede target is only
-**recorded as a hint** on the buffered capture; the actual supersede is
-deferred to
+The crucial asymmetry is the supersede. On the direct-write path a
+supersede happens *now* (it rewrites the page and chains the `fact_index`
+rows). On the standard-wiki path the supersede target is only **recorded as a
+hint** on the buffered capture; the actual supersede is deferred to
 [promotion time](#promotion--the-light-dream), because there is no
-`fact_index` row to chain against until the claim is promoted. Now that
-nothing writes directly, the same is true of **dedup**: it is decided once,
-at promotion, instead of at write time for some captures and at promotion for
-others.
+`fact_index` row to chain against until the claim is promoted. Dedup is the
+same scan on both paths — one function, `capture::best_dedup_candidate`,
+called at write time on one and at promotion on the other.
 
 Either way the ingest call returns a `capture_id` that anchors the
 consumer's audit row — for standard wikis that id is the buffered

@@ -1822,16 +1822,16 @@ async fn chat_agentic_loop_dispatches_tool_then_returns_final_message() {
 /// Assertions:
 ///
 /// - the JSON envelope has `intent=capture`;
-/// - the capture is staged in the buffer for `wiki_id=alice`.
-///
-/// The turn stages rather than writes: since 2026-08-05 every standard
-/// capture waits for the light dream, with no live exception, so what a
-/// conversational surface produces in-turn is a buffered capture. Promotion
-/// into `fact_index` and the page prose belong to the dream and are covered
-/// where the dream is.
+/// - `fact_index` has one active row for `wiki_id=alice`;
+/// - the source markdown carries an `owner=` marker emitted by the
+///   capture pipeline.
 #[tokio::test]
 async fn chat_ingest_e2e_captures_fact_with_fake_backend() {
-    use mwe_core::capture_buffer;
+    use mwe_core::fact_index;
+    // `requested_container: true` takes the live direct-write path so the
+    // fact lands in `fact_index` immediately. Every non-smart wiki is
+    // a standard wiki, so a plain capture into `alice`
+    // would buffer for the compiler instead.
     let plan = serde_json::json!({
         "intent": "capture",
         "suggested_seed": "ho salvato",
@@ -1885,15 +1885,10 @@ async fn chat_ingest_e2e_captures_fact_with_fake_backend() {
     assert!(html.contains("capture"), "intent capture in {html}");
     let _ = inner; // silence unused
 
-    let staged = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+    let count = fact_index::count_active_in_wiki(&pool, "alice")
         .await
-        .expect("buffer read");
-    assert_eq!(staged.len(), 1, "exactly one capture staged (body: {body})");
-    assert!(
-        staged[0].body.contains("tester della pipeline ingest"),
-        "the claim the classifier extracted: {:?}",
-        staged[0].body
-    );
+        .expect("count");
+    assert_eq!(count, 1, "exactly one fact captured (body: {body})");
 }
 
 /// The agentic chat panel can drive a structure-proposal apply
