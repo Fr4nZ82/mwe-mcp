@@ -59,10 +59,10 @@
 //! kept byte-for-byte (so a `.md` suffix and an `|display` alias
 //! survive), the byte offsets of each rewritten file repaired straight
 //! after. A bare `[[alice]]` names the wiki, not a page, and a page move
-//! never touches it. This matters more than tidiness: since the
-//! directory listing went off a page is reachable only by a fact hit, a
-//! match on its card, or an inbound link somebody wrote — so a link left
-//! behind strands the page's whole neighbourhood.
+//! never touches it. This matters more than tidiness: a page is reachable
+//! only by a fact hit, a match on its card, or an inbound link somebody
+//! wrote — nothing offers it for sitting in the same folder — so a link
+//! left behind strands the page's whole neighbourhood.
 //!
 //! Two companions on the same seam. The map of the wiki a page left
 //! needs nothing: it is **regenerated** from the filenames on disk by the

@@ -1179,7 +1179,7 @@ places adjacent to this block (the hermes bridge leads with it).
      logged as a recall miss. It cannot arrive as a navigated fragment at
      all: the funnel is handed the page as **already visited**, so it is
      neither offered as a candidate nor opened by any route — fan seed,
-     directory sibling or `[[wikilink]]`. **The identity page is not a
+     card rail or `[[wikilink]]`. **The identity page is not a
      navigation destination for its own owner** (founder's ruling,
      2026-08-03: the recalled facts already land on the pages that answer
      the turn, so the hub's routing buys nothing and a page open is the

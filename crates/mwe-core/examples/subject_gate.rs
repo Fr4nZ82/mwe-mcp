@@ -142,8 +142,6 @@ async fn main() -> anyhow::Result<()> {
             "--sender" => sender_id = args.next().unwrap_or_default(),
             "--probes" => probes_path = args.next().map(PathBuf::from),
             "--top-k" => top_k = args.next().unwrap_or_default().parse().unwrap_or(10),
-            // A/B the 2026-08-04 ruling: restore the directory listing to see
-            // what turning it off costs a given phrase.
             other => anyhow::bail!("unknown flag {other}"),
         }
     }

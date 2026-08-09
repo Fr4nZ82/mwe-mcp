@@ -511,9 +511,10 @@ that swaps the **wiki half** of any `[[old_wiki/page]]` still naming it,
 keeping everything after the first `/` byte-for-byte so a `.md` suffix or
 an `|display` alias survives, and repairing the byte offsets of each
 rewritten file immediately after. A bare `[[wiki_id]]` names the wiki and
-is never touched by a page move. Not cosmetic: with the directory listing
-off, an inbound link somebody wrote is one of only three ways to reach a
-page, so a link left behind strands its neighbourhood. Two companions —
+is never touched by a page move. Not cosmetic: an inbound link somebody
+wrote is one of only three ways to reach a page at all — beside a fact hit
+and a match on the page's own card — so a link left behind strands its
+neighbourhood. Two companions —
 the wiki's **map** needs no repair (the REM map writer regenerates it from
 the filenames on disk and cannot name a page that is not there), while
 both wikis' **cards** are parked on `force_dirty`, because a card is

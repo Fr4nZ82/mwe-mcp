@@ -634,12 +634,6 @@ pub struct OpenedPage {
     pub discovered: usize,
 }
 
-/// What [`OpenedPage::page`] carries when the funnel **entered a wiki**
-/// rather than reading a page: no prose, no budget, just its table of
-/// contents. Not a path — no page by this name can exist
-/// ([`wiki::is_safe_page_path`] rejects the parentheses).
-const ENTERED_WIKI: &str = "(entered)";
-
 /// Leading slice of `s`, at most `cap` bytes, cut on a char boundary.
 fn excerpt_of(s: &str, cap: usize) -> String {
     if s.len() <= cap {
@@ -657,8 +651,8 @@ struct Candidate {
     wiki_id: String,
     /// The page to read — always one. The funnel has no wiki-level door.
     page: PathBuf,
-    /// Display label of how it surfaced (`principal`, `rag`, `topic`,
-    /// `situational`, `link`, `page`).
+    /// Display label of how it surfaced (`rag`, `topic`, `situational`,
+    /// `link`, `card`) — the tiers [`Candidate::prune_tier`] ranks by.
     origin: &'static str,
     summary: Option<String>,
     keywords: Vec<String>,
@@ -920,28 +914,19 @@ pub async fn navigate(
             )
             .await?
             {
-                // A page open pushes exactly one fragment; entering a wiki
-                // pushes none and yields its table of contents instead —
-                // journal whichever happened, so the operator record never
-                // attributes an enter to the previous page.
-                if outcome.fragments.len() > fragments_before {
-                    let frag = &outcome.fragments[fragments_before];
-                    hop.opened.push(OpenedPage {
-                        wiki_id: frag.wiki_id.clone(),
-                        page: frag.page.to_string_lossy().into_owned(),
-                        chars: frag.text.len(),
-                        excerpt: excerpt_of(&frag.text, TRACE_EXCERPT_CAP),
-                        discovered: found.len(),
-                    });
-                } else {
-                    hop.opened.push(OpenedPage {
-                        wiki_id: target.wiki_id.clone(),
-                        page: ENTERED_WIKI.to_owned(),
-                        chars: 0,
-                        excerpt: String::new(),
-                        discovered: found.len(),
-                    });
-                }
+                // `open_target` reaches this arm only after pushing exactly
+                // one fragment — every other path returns `None` — so the
+                // page just read is the one at `fragments_before`, and the
+                // operator record can never attribute it to the previous
+                // page.
+                let frag = &outcome.fragments[fragments_before];
+                hop.opened.push(OpenedPage {
+                    wiki_id: frag.wiki_id.clone(),
+                    page: frag.page.to_string_lossy().into_owned(),
+                    chars: frag.text.len(),
+                    excerpt: excerpt_of(&frag.text, TRACE_EXCERPT_CAP),
+                    discovered: found.len(),
+                });
                 hop.requested.push(RequestedOpen {
                     wiki_id: target.wiki_id.clone(),
                     page: target.page.clone(),

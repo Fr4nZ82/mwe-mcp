@@ -5069,7 +5069,7 @@ struct NavigatedTail {
 /// `served_identity` is the sender's identity page, when `WHO IS SPEAKING`
 /// served it this turn (roadmap 69a). It is handed to the funnel as
 /// **already visited**, so the walk neither offers nor opens it by any route
-/// — fan seed, directory sibling or `[[wikilink]]`. Founder's ruling,
+/// — fan seed, card rail or `[[wikilink]]`. Founder's ruling,
 /// 2026-08-03: *«la pagina di identità la escluderei dai risultati del rag,
 /// visto che già c'è nel recall… non ci frega dell'indice se col rag
 /// arriviamo già sulle pagine giuste»*. The page's prose is in the block
