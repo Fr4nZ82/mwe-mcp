@@ -147,15 +147,35 @@ config slot distinct from the 9B workhorse; see
 they are chunked** (`cartografo_batches`), so a batch never straddles two
 wikis. That order is what lets one language directive be true for the
 whole batch: this stage coins page titles and descriptions a person
-reads. Only the batch composition narrows — the model is still shown
-every foundation and concept page of the whole forest, so a fact can
-still be assigned to a page that lives elsewhere. For each fact it returns the **one**
+reads. For each fact it returns the **one**
 page slug the fact belongs on, and it may propose emergent `concept_hub` /
 `concept_leaf` pages when a theme warrants its own page. The prompt
 ([`crates/mwe-core/prompts/cartografo.md`](../../crates/mwe-core/prompts/cartografo.md))
 is handed the foundation pages and the existing concept pages (from
 the registry plus any proposed earlier this run) so the model **reuses**
 an existing page rather than minting a duplicate.
+
+**The batch's wiki is also the whole page list** (`describe_foundation`,
+`describe_concepts`, both filtered on `wiki_id`). Nothing is lost by that: a
+fact's wiki was settled at capture by
+[`derive_target_wiki`](../../crates/mwe-core/src/ingest.rs) — a group's fact
+lands in the group's wiki, a user's in theirs — so the structure that should
+receive it is the one it is already in, and the forest-wide list this replaced
+offered nothing but a way to file a fact onto another user's card, which the
+identity-page discipline below then spends a paragraph forbidding. It also
+bounds a list that had no ceiling: the pages of one wiki, not of the memory.
+
+The rest of the forest survives in one line, as **`{taken_slugs}`** — bare page
+names, no titles, no descriptions
+([`describe_taken_slugs`](../../crates/mwe-core/src/planner.rs)). That half is
+load-bearing in the other direction: a plan is keyed by slug across the whole
+forest (`CompilationPlan::pages`), so a name is unique memory-wide, and a batch
+that coined a slug another wiki already owns would have its facts filed onto
+that wiki's page by step 4 of the Architetto — a page nobody chose. The list is
+**never truncated** and therefore carries no ordering rule: a collision guard
+with a gap answers "free" for a taken name. It grows with the number of pages
+in the *other* wikis, at a few tokens each instead of the thirty a described
+page line costs.
 
 The engine enriches that context with **structural signals**
 ([`CartografoSignals`](../../crates/mwe-core/src/planner.rs)) — information
@@ -277,8 +297,8 @@ empty falls through to the same orphan fallback, never a page named "index".
 strong-model call **per prospective wiki** that folds
 **semantically-duplicate proposed pages** into existing ones. The
 Cartografo, working batch by batch, cannot see the whole proposed set at
-once; the Conciliatore does — it gets all foundation + registry pages and
-every page proposed this run for that wiki, and returns a `redirects` map
+once; the Conciliatore does — it gets that wiki's foundation + registry pages
+and every page proposed this run for that wiki, and returns a `redirects` map
 (`proposed_slug → existing_slug`) plus the genuinely-new `accepted_new`
 list.
 
@@ -288,9 +308,11 @@ applies one stage later); a proposal no assignment claims rides its own
 group and is homed or dropped by the plan builder as before. The split is
 what gives the stage a language: it picks which title and description
 survive a merge, and those are read by a person. **What each call sees
-does not narrow** — `describe_existing` is computed once, outside the
-loop, and every group is shown the whole forest, so a proposal can still
-be folded into a page that lives in another wiki exactly as before. The
+narrows with it** — `describe_existing` is rendered per group, scoped to that
+group's wiki, because a redirect *is* a merge: folding a proposal into a page
+of another wiki would move this wiki's facts there. The homeless bucket (a
+proposal no assignment claims) has no wiki to be scoped to, so it keeps the
+forest-wide view and the plan builder decides its home as before. The
 prompt
 ([`crates/mwe-core/prompts/conciliatore.md`](../../crates/mwe-core/prompts/conciliatore.md))
 carries a **redirect bias**: when in doubt, consolidate — fewer

@@ -22,7 +22,10 @@ The system prompt for the **Conciliatore** (planner stage 1.5,
   `rem_dedup_semantic` / revisor slot (the low binary-classifier tier); the
   **light** dream uses the cheap **ingest tier**, falling back to the revisor
   slot when no ingest slot is configured. `temperature` low, JSON output.
-- **Placeholders**: `{existing_pages}` (all foundation + registry pages),
+- **Placeholders**: `{existing_pages}` (the foundation + registry pages **of
+  the group's wiki** — a redirect is a merge, so folding a proposal into
+  another wiki's page would move this wiki's facts there; the homeless bucket,
+  a proposal no assignment claims, keeps the forest-wide view),
   `{new_pages}` (every page proposed this run — from the Cartografo in the full
   cadence, or the ingest-placement blueprint in the light dream).
 - **Output**: one strict JSON object —

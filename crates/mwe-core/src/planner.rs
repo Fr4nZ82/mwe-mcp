@@ -2115,10 +2115,17 @@ pub async fn subject_scopes_for(
 /// descriptions a person reads, so a batch has to belong to one wiki for
 /// "the language of this page" to exist at all — chunking first and
 /// grouping after would leave a 15-fact chunk straddling two wikis with
-/// two languages and one directive. Only the batch *composition*
-/// narrows: the model still sees every foundation and concept page of
-/// the whole forest, so a fact can still be assigned to a page that
-/// lives elsewhere.
+/// two languages and one directive.
+///
+/// The wiki of the batch is also the wiki of every page the model may
+/// choose from: the pages it is shown are scoped to it
+/// ([`describe_foundation`], [`describe_concepts`]), and the rest of the
+/// forest appears only as names already taken
+/// ([`describe_taken_slugs`]). Nothing is lost by that — a fact's wiki
+/// was settled at capture by [`crate::ingest::derive_target_wiki`], which
+/// files a group's fact in the group's wiki and a user's in theirs, so
+/// the wiki whose structure should receive it is the one it is already
+/// in.
 ///
 /// Deterministic: `BTreeMap` orders the wikis, and the caller's
 /// `fact_id` sort survives inside each one.
@@ -2202,11 +2209,21 @@ pub async fn classify_facts(
                 .collect::<Vec<_>>()
         })
         .collect();
+    // Which wiki proposed each page of this run — a proposal is homed in its
+    // facts' wiki, so an earlier batch's page belongs to that batch's wiki and
+    // is offered only there.
+    let mut proposal_wikis: BTreeMap<String, String> = BTreeMap::new();
     for (wiki, batch) in &batches {
         let wiki = wiki.as_str();
         let batch = batch.as_slice();
-        let foundation_desc = describe_foundation(foundation, &running_mass);
-        let concept_desc = describe_concepts(registry, &merged.new_pages, &running_mass);
+        let proposed_here: Vec<&NewPage> = merged
+            .new_pages
+            .iter()
+            .filter(|np| proposal_wikis.get(&np.slug).is_some_and(|w| w == wiki))
+            .collect();
+        let foundation_desc = describe_foundation(foundation, wiki, &running_mass);
+        let concept_desc = describe_concepts(registry, wiki, &proposed_here, &running_mass);
+        let taken_desc = describe_taken_slugs(foundation, registry, &proposal_wikis, wiki);
         let facts_desc = describe_facts(batch, signals);
         let language_directive = signals.language_for(wiki);
         let system = prompts::render(
@@ -2217,6 +2234,7 @@ pub async fn classify_facts(
                 ("locale", language_directive.as_str()),
                 ("foundation_pages", foundation_desc.as_str()),
                 ("concept_pages", concept_desc.as_str()),
+                ("taken_slugs", taken_desc.as_str()),
                 ("facts", facts_desc.as_str()),
             ],
         )?;
@@ -2249,6 +2267,7 @@ pub async fn classify_facts(
         for np in bp.new_pages {
             let slug = slugify(&np.slug);
             if !slug.is_empty() && known.insert(slug.clone()) {
+                proposal_wikis.insert(slug.clone(), wiki.to_owned());
                 merged.new_pages.push(NewPage { slug, ..np });
             }
         }
@@ -2508,10 +2527,10 @@ fn merge_blueprints(mut named: Blueprint, classified: Blueprint) -> Blueprint {
 /// fact claims is homeless and rides the last group, where the plan
 /// builder will decide its home or drop it.
 ///
-/// What each call *sees* does not narrow: `existing` is still every
-/// foundation and concept page of the whole forest, so a proposal can
-/// still be folded into a page that lives in another wiki — exactly as
-/// before.
+/// What each call sees narrows with it: `existing` is that wiki's pages
+/// only ([`describe_existing`]), because a redirect is a merge and
+/// folding a proposal into another wiki's page would move this wiki's
+/// facts there. The homeless bucket keeps the forest-wide view.
 ///
 /// Infallible: on any failure the affected group falls back to accepting
 /// every proposed page with no merges (conservative — never loses a page).
@@ -2528,12 +2547,16 @@ pub async fn conciliate_new_pages(
         return ConciliatorResult::default();
     }
     let by_wiki = conciliatore_groups(new_pages, page_wikis);
-    // Computed ONCE, outside the loop, and handed to every group: the
-    // batch narrows to one wiki, what the model may fold a proposal into
-    // does not.
-    let existing = describe_existing(foundation, registry);
     let mut merged = ConciliatorResult::default();
     for (wiki, group) in by_wiki {
+        // Rendered per group, not once outside the loop: what a proposal may
+        // fold into narrows with the batch. The homeless bucket (`""`) has no
+        // wiki, so it keeps the forest-wide view.
+        let existing = describe_existing(
+            foundation,
+            registry,
+            (!wiki.is_empty()).then_some(wiki.as_str()),
+        );
         let result = conciliate_one_wiki(
             llm,
             &group,
@@ -3176,15 +3199,24 @@ pub const fn page_type_tag(pt: PageType) -> &'static str {
     }
 }
 
+/// The foundation pages **of one wiki**, as the Cartografo's prompt shows them.
+///
+/// Scoped, and the scope is a correctness property rather than a saving. The
+/// batch handed to the model belongs to one wiki, and the fact's wiki was
+/// already decided at capture by [`crate::ingest::derive_target_wiki`]: a
+/// group-owned fact lands in the group's wiki, a user's in theirs. So the
+/// only foundation pages that can legitimately receive a fact of this batch
+/// are this wiki's — showing the other 30 identity cards of the forest offered
+/// the model nothing but a way to break the identity-page discipline the
+/// prompt then spends a paragraph forbidding.
 fn describe_foundation(
     foundation: &BTreeMap<String, PagePlan>,
+    wiki: &str,
     mass: &BTreeMap<String, usize>,
 ) -> String {
-    if foundation.is_empty() {
-        return "(none)".to_owned();
-    }
-    foundation
+    let lines: Vec<String> = foundation
         .values()
+        .filter(|p| p.wiki_id == wiki)
         .map(|p| match p.page_type {
             PageType::Person => format!(
                 "- [{}] {} — {} (parent_hub: {}) | facts: {}",
@@ -3217,13 +3249,24 @@ fn describe_foundation(
             ),
             _ => format!("- [{}] {}", page_type_tag(p.page_type), p.slug),
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    if lines.is_empty() {
+        "(none)".to_owned()
+    } else {
+        lines.join("\n")
+    }
 }
 
+/// The concept pages **of one wiki** — the registry's, plus the ones earlier
+/// batches of this same wiki proposed.
+///
+/// Same scope rule as [`describe_foundation`], for the same reason: a page in
+/// another wiki is not a place this batch's facts may go. `this_run` is
+/// pre-filtered by the caller, which knows which wiki proposed each page.
 fn describe_concepts(
     registry: &ConceptRegistry,
-    this_run: &[NewPage],
+    wiki: &str,
+    this_run: &[&NewPage],
     mass: &BTreeMap<String, usize>,
 ) -> String {
     // The container signal, sibling of the fact-mass one: how many pages
@@ -3250,6 +3293,7 @@ fn describe_concepts(
     let mut lines: Vec<String> = registry
         .entries
         .values()
+        .filter(|e| e.wiki_id == wiki)
         .map(|e| {
             format!(
                 "- [{}] {} — {} | {} | facts: {}{}",
@@ -3280,6 +3324,54 @@ fn describe_concepts(
     }
 }
 
+/// Every page name **already used outside** `wiki`, as bare slugs.
+///
+/// The counterweight to the scoping above, and it is load-bearing. A plan is
+/// keyed by slug across the whole forest ([`CompilationPlan::pages`]), so a
+/// name is unique memory-wide: if this wiki's batch coined a slug another wiki
+/// already owns, [`build_compilation_plan`] would find the page and file this
+/// wiki's facts onto it — a page in someone else's wiki, chosen by nobody.
+/// Hiding the other wikis' pages without this list is what would make that
+/// collision likely rather than rare.
+///
+/// Bare names, not full lines: this list answers "is this name free?" and
+/// nothing else — the model may neither read those pages nor file into them —
+/// so a slug costs a few tokens where a described page line costs ten times
+/// that.
+///
+/// **Never truncated**, and that is why it carries no ordering rule: a
+/// collision guard missing an entry is a guard that reports "free" for a taken
+/// name, which is worse than no guard at all. It grows with the forest, not
+/// with the memory's depth — one line per page of the other wikis.
+fn describe_taken_slugs(
+    foundation: &BTreeMap<String, PagePlan>,
+    registry: &ConceptRegistry,
+    proposal_wikis: &BTreeMap<String, String>,
+    wiki: &str,
+) -> String {
+    let mut taken: BTreeSet<&str> = BTreeSet::new();
+    for p in foundation.values() {
+        if p.wiki_id != wiki {
+            taken.insert(p.slug.as_str());
+        }
+    }
+    for e in registry.entries.values() {
+        if e.wiki_id != wiki {
+            taken.insert(e.slug.as_str());
+        }
+    }
+    for (slug, w) in proposal_wikis {
+        if w != wiki {
+            taken.insert(slug.as_str());
+        }
+    }
+    if taken.is_empty() {
+        "(none)".to_owned()
+    } else {
+        taken.into_iter().collect::<Vec<_>>().join(", ")
+    }
+}
+
 fn describe_facts(batch: &[FactForPage], signals: &CartografoSignals) -> String {
     batch
         .iter()
@@ -3297,12 +3389,22 @@ fn describe_facts(batch: &[FactForPage], signals: &CartografoSignals) -> String 
         .join("\n")
 }
 
+/// The pages a proposal may be folded into: `wiki`'s own, or — for the
+/// homeless bucket (`None`, a proposal no assignment claims) — the forest.
+///
+/// Scoped for the same reason the Cartografo's lists are: a redirect is a
+/// merge, so folding a proposal into a page of another wiki moves this wiki's
+/// facts there. The homeless bucket has no wiki to be scoped to, so it keeps
+/// the old forest-wide view and the plan builder decides its home as before.
 fn describe_existing(
     foundation: &BTreeMap<String, PagePlan>,
     registry: &ConceptRegistry,
+    wiki: Option<&str>,
 ) -> String {
+    let here = |page_wiki: &str| wiki.is_none_or(|w| w == page_wiki);
     let mut lines: Vec<String> = foundation
         .values()
+        .filter(|p| here(&p.wiki_id))
         .map(|p| {
             format!(
                 "- [{}] {} — {} | {}",
@@ -3313,7 +3415,7 @@ fn describe_existing(
             )
         })
         .collect();
-    for e in registry.entries.values() {
+    for e in registry.entries.values().filter(|e| here(&e.wiki_id)) {
         lines.push(format!(
             "- [{}] {} — {} | {}",
             page_type_tag(e.page_type),
@@ -5093,9 +5195,9 @@ mod tests {
         mass.insert("alice".to_owned(), 7usize);
         mass.insert("dossier".to_owned(), 51usize);
 
-        let f = describe_foundation(&foundation, &mass);
+        let f = describe_foundation(&foundation, "alice", &mass);
         assert!(f.contains("- [person] alice — Alice (parent_hub: —) | facts: 7"));
-        let c = describe_concepts(&registry, &[], &mass);
+        let c = describe_concepts(&registry, "alice", &[], &mass);
         assert!(
             c.contains("dossier — Dossier | d | facts: 51 | children: 1"),
             "a parented-under page carries the children signal"
@@ -5124,12 +5226,9 @@ mod tests {
         signals
             .subject_scopes
             .insert("user:bruno".to_owned(), "bruno".to_owned());
-        let facts = vec![fact(
-            1,
-            "Bruno's therapy schedule",
-            "user:bruno",
-            "famiglia",
-        )];
+        // In `franz`'s wiki: the pages a batch is shown are its own wiki's,
+        // so the page under test has to live where the fact does.
+        let facts = vec![fact(1, "Bruno's therapy schedule", "user:bruno", "franz")];
         let llm = FakeLlmBackend::new("fake", "{\"assignments\":[],\"new_pages\":[]}");
         classify_facts(
             &llm,
@@ -5151,6 +5250,102 @@ mod tests {
             "identity scope tag visible to the model"
         );
         drop(dir);
+    }
+
+    /// A batch is shown its **own wiki's** pages, and the rest of the forest
+    /// only as names that are taken.
+    ///
+    /// Two halves, and both are load-bearing. Offering another wiki's pages
+    /// as destinations is what let a fact captured in Bob's wiki be filed
+    /// onto Alice's card — the identity-page discipline spends a paragraph
+    /// forbidding what the page list was inviting. But a plan is keyed by
+    /// slug across the whole memory, so simply hiding those pages would make
+    /// the model coin a name another wiki already owns, and
+    /// `build_compilation_plan` would then file these facts onto that wiki's
+    /// page. Hence the bare-name list: unusable as a destination, complete as
+    /// a guard.
+    #[tokio::test]
+    async fn a_batch_sees_its_own_wikis_pages_and_the_other_names_as_taken() {
+        use crate::llm::FakeLlmBackend;
+        let dir = tempfile::tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        let mut foundation = BTreeMap::new();
+        foundation.insert("alice".to_owned(), person("alice"));
+        foundation.insert("bob".to_owned(), person("bob"));
+        let mut registry = ConceptRegistry::empty("t");
+        for (slug, wiki) in [("cucina_alice", "alice"), ("cucina_bob", "bob")] {
+            registry.entries.insert(
+                slug.to_owned(),
+                ConceptRegistryEntry {
+                    slug: slug.to_owned(),
+                    title: "Cucina".to_owned(),
+                    description: "what gets cooked".to_owned(),
+                    style: None,
+                    page_type: PageType::ConceptLeaf,
+                    parent_hub: None,
+                    wiki_id: wiki.to_owned(),
+                    created_at: "t".to_owned(),
+                },
+            );
+        }
+        let facts = vec![fact(1, "bob roasted a chicken", "user:bob", "bob")];
+        let llm = FakeLlmBackend::new("fake", "{\"assignments\":[],\"new_pages\":[]}");
+        classify_facts(
+            &llm,
+            &facts,
+            &foundation,
+            &registry,
+            tree.workdir(),
+            &CartografoSignals::default(),
+        )
+        .await
+        .expect("classify");
+        let system = llm.last_system_prompt().expect("system prompt captured");
+        assert!(
+            system.contains("- [person] bob"),
+            "this wiki's own card is offered"
+        );
+        assert!(
+            !system.contains("- [person] alice"),
+            "another wiki's identity card is not a destination for this batch"
+        );
+        assert!(
+            system.contains("cucina_bob — Cucina"),
+            "this wiki's concept page is offered, described"
+        );
+        assert!(
+            !system.contains("cucina_alice — Cucina"),
+            "another wiki's concept page is not offered as a destination"
+        );
+        // The other half: the names are still visible, bare, so the model
+        // cannot coin one of them.
+        assert!(
+            system.contains("NAMES ALREADY TAKEN"),
+            "the collision guard is in the prompt"
+        );
+        assert!(
+            system.contains("alice, cucina_alice"),
+            "every slug of the other wikis is listed as taken, and only as a name"
+        );
+        drop(dir);
+    }
+
+    /// A page proposed by an EARLIER batch of another wiki is taken too — it
+    /// is homed in that batch's wiki, so this one may neither reuse the name
+    /// nor file into it.
+    #[test]
+    fn a_proposal_from_another_wikis_batch_counts_as_taken() {
+        let mut foundation = BTreeMap::new();
+        foundation.insert("alice".to_owned(), person("alice"));
+        let registry = ConceptRegistry::empty("t");
+        let mut proposals = BTreeMap::new();
+        proposals.insert("orto".to_owned(), "alice".to_owned());
+        proposals.insert("garage".to_owned(), "bob".to_owned());
+        let taken = describe_taken_slugs(&foundation, &registry, &proposals, "bob");
+        assert_eq!(
+            taken, "alice, orto",
+            "alice's card and alice's fresh proposal are taken; bob's own is not"
+        );
     }
 
     /// The conciliatore output schema omits `NewPage::style`, so a parsed

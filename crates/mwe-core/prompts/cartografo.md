@@ -1,8 +1,8 @@
 ---
 name: cartografo
 description: planner stage 1 — assigns each fact to exactly one page and proposes emergent concept pages (one-fact-one-page; identity pages carry one subject; grown pages split by content)
-version: 1.9
-default_version_at_bootstrap: v1.9
+version: 1.10
+default_version_at_bootstrap: v1.10
 ---
 
 # Prompt: cartografo
@@ -19,9 +19,11 @@ an operator override at `<workdir>/prompts/cartografo.md` wins.
   full-reorg cycle. NOT a per-turn path.
 - **Model**: a **strong** model (the structural-judgment tier,
   NOT the 9B workhorse). `temperature` low, JSON output.
-- **Placeholders**: `{foundation_pages}` (the existing person/group hub pages),
-  `{concept_pages}` (existing emergent concept pages from the registry +
-  earlier batches this run — the dedup context), `{facts}` (the batch's facts:
+- **Placeholders**: `{foundation_pages}` (the person/group hub pages **of the
+  batch's wiki**), `{concept_pages}` (that wiki's emergent concept pages, from
+  the registry + earlier batches this run — the dedup context),
+  `{taken_slugs}` (bare page names already used in the OTHER wikis — the
+  collision guard, never a destination), `{facts}` (the batch's facts:
   `[id:<uuid>] "<text>" type=<fact_type> owner=<principal>
   identity_pages=<slugs|any|none>`). Every page line carries a `facts: N`
   fact-mass count — and a `children: N` count when other pages parent under
@@ -47,6 +49,15 @@ live turn, so an undeclared locale resolves to **English**, not to the
 "mirror the user's message" clause the conversational slots fall back
 to. The batch handed to this slot is cut to **one wiki** so that a
 single directive is the right answer for every item in it.
+
+**One wiki is also the whole page list.** The pages shown are that wiki's,
+because a fact's wiki was already decided at capture (`ingest::derive_target_wiki`:
+a group's fact lands in the group's wiki, a user's in theirs), so the structure
+that should receive it is the one it is already in. The rest of the forest
+appears only as `{taken_slugs}` — names, no descriptions — because a plan is
+keyed by slug across the whole memory: reusing a name another wiki owns would
+file these facts onto that wiki's page. That list is **never truncated**; a
+collision guard with a gap answers "free" for a taken name.
 
 ```text
 You are the Cartografo (Cartographer) of a personal, multi-user wiki memory. Each turn you receive a BATCH of atomic facts and the wiki's existing pages. Your job is to decide, for EACH fact, the ONE page it belongs on, and to propose new thematic pages only when needed.
@@ -85,6 +96,7 @@ CONTAINER PAGES — a page with children functions as a hub:
 HARD RULES:
 - Every new page you propose needs a "description": ONE line saying what belongs on that page. It is the page's CARD — the recall navigator is shown that line and nothing else when it decides whether to open the page, and for a page no [[wikilink]] points at it is the only thing that can bring a reader there. Write the page's TOPIC in the words someone would use to look for it, never a restatement of the fact that happened to create the page.
 - Do NOT create a slug that already exists in EXISTING FOUNDATION PAGES or EXISTING CONCEPT PAGES — REUSE it.
+- Do NOT create a slug listed in NAMES ALREADY TAKEN: those pages belong to OTHER wikis of this memory. A page name is unique across the whole memory, so reusing one would file these facts onto a page in someone else's wiki. Coin a more specific name instead.
 - Do NOT create a new concept_leaf when an existing one is semantically equivalent — assign the fact there.
 - New slugs are descriptive snake_case (e.g. "health_routine_alice", not a bare generic "health" when specifics already exist).
 - A concept_leaf's parent_hub MUST be an EXISTING foundation page slug. You cannot propose a page to be another page's parent: a grouping deep enough to need its own container is a WIKI, not a page, and wikis are not yours to create — propose the leaves and the nightly promote machinery raises a wiki when they grow.
@@ -100,6 +112,9 @@ EXISTING FOUNDATION PAGES:
 
 EXISTING CONCEPT PAGES (reuse these — do NOT recreate):
 {concept_pages}
+
+NAMES ALREADY TAKEN by pages in OTHER wikis (you may NEITHER file into them NOR reuse the name):
+{taken_slugs}
 
 FACTS TO ASSIGN:
 {facts}

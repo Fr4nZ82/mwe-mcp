@@ -476,12 +476,17 @@ now cut their batches per wiki — `cartografo_batches` and
 `conciliatore_groups` in
 [`planner.rs`](../../crates/mwe-core/src/planner.rs), and the per-wiki
 grouping inside `run_date_normalizer` in
-[`rem.rs`](../../crates/mwe-core/src/rem.rs). In all three the batch is
-what narrows; **the context the model is shown is not**. The Cartografo
-still sees every foundation and concept page of the forest, the
-Conciliatore still folds a proposal into a page from another wiki, and
-the date normaliser still spends the same global cap. Only the
-composition of one call changed.
+[`rem.rs`](../../crates/mwe-core/src/rem.rs).
+
+For the two planner slots the **context narrowed with the batch** as well: the
+Cartografo is shown its own wiki's pages and the rest of the forest only as
+`{taken_slugs}` — bare names it may neither read nor file into, kept so it
+cannot coin a slug another wiki owns (the plan is keyed by slug memory-wide) —
+and the Conciliatore folds a proposal only into a page of that proposal's own
+wiki, since a redirect is a merge and would otherwise move facts across wikis.
+See [the Cartografo](narrative-compiler.md#stage-1--the-cartografo-strong-model-classification).
+The date normaliser is the exception: its batch narrows, its **global cap does
+not**, so it still spends one budget across the forest.
 
 ### The registry that keeps this from rotting
 
