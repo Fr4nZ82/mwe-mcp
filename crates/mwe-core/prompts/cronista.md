@@ -1,8 +1,8 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.23
-default_version_at_bootstrap: v1.23
+version: 1.24
+default_version_at_bootstrap: v1.24
 ---
 
 # Prompt: cronista
@@ -75,10 +75,13 @@ The system prompt for **Il Cronista** (compiler stage 3,
   `description` + `style` become the page's **testata**:
   `description` is the page's **card** — the single line `reader_page_card`
   serves the recall navigator, which never sees the page text and decides from
-  the card alone whether to open it. Since the directory listing went off
-  (`sibling_floor = 0`) a page is reachable only by a fact hit, a match on this
-  line, or an inbound `[[wikilink]]`, so the body's DESCRIPTION block is
-  written as a findability brief rather than a summarising one. `style` is the
+  the card alone whether to open it. A page is reachable **only** by a fact
+  hit, a match on this line, or an inbound `[[wikilink]]` — the directory
+  listing of neighbouring pages was retired by design, so nothing offers a page
+  merely for sitting in the same folder. That is why the body's DESCRIPTION
+  block is written as a findability brief rather than a summarising one, and
+  why an authored `[[wikilink]]` is load-bearing rather than decorative.
+  `style` is the
   page's dominant writing style (closed palette — `compile_leaf_page`
   normalises it, absent → `prosa`).
 

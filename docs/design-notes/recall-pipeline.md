@@ -147,16 +147,15 @@ flowchart TB
 
     OPEN0 --> GROW
 
-    subgraph GROW["the pool GROWS — this is the part that surprises"]
-        G1["entering a wiki adds<br/><b>ALL its pages</b> as candidates<br/>(measured: 22 and 44 on two real wikis)"]
-        G2["links found in the opened prose<br/>add their destinations"]
+    subgraph GROW["the pool GROWS — only by what the prose asserts"]
+        G1["<b>[[wikilinks]]</b> found in the opened prose<br/>add their destinations —<br/>nothing is offered for merely sitting<br/>in the same directory"]
     end
 
     GROW --> POOL1
 
     subgraph H1["hop 1 … up to max_hops"]
         POOL1["candidate pool = link targets<br/>+ the fan's unopened tail"]
-        POOL1 --> PRUNE1["prune_pool → rank by tier<br/>(link &gt; entry fan &gt; card rail &gt; sibling),<br/>THEN dedup — a page reached twice<br/>keeps its best tier —<br/>THEN truncate to <b>max_candidates</b>"]
+        POOL1 --> PRUNE1["prune_pool → rank by tier<br/>(link &gt; entry fan &gt; card rail),<br/>THEN dedup — a page reached twice<br/>keeps its best tier —<br/>THEN truncate to <b>max_candidates</b>"]
         PRUNE1 --> LLM1["navigator LLM decides again"]
         LLM1 --> OPEN1["open, collect, grow the pool"]
     end
@@ -170,11 +169,11 @@ flowchart TB
 
 **So the two knobs size different hops.** `recall_top_k` sizes the *fan*, i.e.
 hop 0: more recalled facts means more distinct home pages to start from. From
-hop 1 onward the doors are no longer the facts' pages at all — they are every
-page of the wikis already entered, plus whatever the prose links to. That pool
-is set by the corpus's own shape, not by `top_k`, which is why
-`max_candidates` has to be sized against **how many pages a wiki has**, not
-against how many facts were recalled.
+hop 1 onward the doors are no longer the facts' pages at all — they are the
+`[[wikilink]]` destinations of the prose already collected, plus the fan's
+unopened tail. That pool is set by **how densely the corpus is linked**, not by
+`top_k`, which is why `max_candidates` has to be sized against how many rails a
+page carries, not against how many facts were recalled.
 
 ### Every knob, and what it sizes
 
@@ -193,7 +192,6 @@ knob.** Defaults come from `IngestPolicy::default` / `NavigatorPolicy::default`.
 | `pages_per_hop` | `3` | how many candidates one hop may open |
 | `char_budget` | `8 000` | total projected prose one navigation may collect |
 | `max_candidates` | `16` | how many doors a hop is offered, after tier ranking and dedup |
-| `sibling_floor` | `0` **(off)** | how far directory siblings may top a hop's offer up. Off: the listing is not built at all. `usize::MAX` observes what it would have added |
 | `max_card_rails` | `8` | failsafe cap on the `[[wikilinks]]` taken off **one** served identity card. The real bound is the tier — a `card` rail sorts below the whole fan |
 | `decision_max_tokens` | `600` | cost guard on the per-hop decision JSON, not a quality dial |
 | `due_soon_top_k` | `3` | the `UPCOMING` slot; `0` disables it |
@@ -852,7 +850,7 @@ and their cards.
 Three invariants:
 
 - **A door is described by its own page's card, never by its wiki's.** Every
-  candidate the funnel offers — fan, rail, card rail, sibling alike — carries
+  candidate the funnel offers — fan, rail, card rail alike — carries
   the destination page's testata `description` and that page's reader-visible
   topics (`reader_page_card`). This was not true of the fan until 2026-08-04:
   `initial_pool` reached for the *wiki*-level abstract, left over from when a
@@ -890,7 +888,7 @@ Three invariants:
   `[[wikilink]]` graph, and wiki-level (not per-fragment) ACL, so there is
   nothing for the funnel to hop through. They are dropped from `infos` in
   `gather_entry_points` (no seed family reaches them) and from the navigable
-  `by_id` map in `navigate` (never a candidate, sibling, or link target).
+  `by_id` map in `navigate` (never a candidate or a link target).
   Smart content is reached via flat recall instead (cf. the REM cross-wiki
   refile sweep, which likewise skips smart). This holds for both call sites —
   the ingest navigator and the `wiki_navigate` tool below.
@@ -937,19 +935,23 @@ candidates: the destinations reachable via `[[wikilinks]]` from the collected
 prose (`Visible`-only) — a page hop offers the linked **page directly**, a bare
 wiki hop offers that wiki's **foundation page** (`profile.md`, else `notes.md`)
 and never its map, each with the same reader-relative card (see the link
-grammar below). The wiki's *other* pages are not added — see the directory
-listing below.
+grammar below). Nothing else is added: the other pages of that wiki are not
+offered for living in the same directory as one the funnel opened.
 
 Before the next prompt is built, `prune_pool` **stably ranks the pool by
-tier**, drops already-visited / duplicate candidates, **rations the
-siblings**, and truncates to `max_candidates`. The four tiers, in order:
+tier**, drops already-visited / duplicate candidates, and truncates to
+`max_candidates`. The tiers `Candidate::prune_tier` hands out, in order:
 
 | Tier | Origin | What it is evidence of |
 |---|---|---|
 | 0 | `link` | a `[[wikilink]]` on a page **the navigator chose to open** for this turn — the turn's own judgement, twice |
 | 1 | `rag` · `topic` · `situational` | the entry fan, still unpicked, in the gatherer's weight order — the question itself |
 | 2 | `card` | a `[[wikilink]]` on an identity card **served unconditionally** — the person, never the question |
-| 3 | `page` | a directory sibling — **empty in the default configuration** |
+
+Those three are the whole offer: every candidate carries one of those origins.
+`UNKNOWN_TIER` (`3`) is the catch-all arm of the match and has **no producer** —
+it exists so that an origin introduced elsewhere without updating `prune_tier`
+lands in a demoted tail instead of silently jumping the fan.
 
 Tier 2 is the newest and its position is the whole design. A served card
 arrives on every turn whatever was asked, so its links describe a
@@ -960,46 +962,25 @@ removed. Below the fan they can only consume slack the content doors left, and
 `max_card_rails` (`8`) is a failsafe against one over-wired card, not a
 policy.
 
-**The directory listing is OFF** (`sibling_floor = 0`; founder, 2026-08-04:
-*«io credo sia meglio toglierle del tutto»*). It was the funnel's structural
-breadth channel — on first entry into a wiki, every one of its pages was
-offered — and it was by a distance the largest producer in the funnel:
-`carol` alone contributed 47 candidates on entry, and **98.2 % of everything
-the cap cut was siblings** (card 66 §7.2).
+**Reachability rests entirely on what the content itself asserts.** A page is a
+door by exactly three routes: a **fact hit** on it (`rag`), a **topic or
+situational match against its own card** (its testata `description` plus the
+reader-visible topics), and an **authored `[[wikilink]]`** pointing at it. There
+is no fourth — no channel offers a page for sitting in a directory the funnel
+happened to open, so a page with none of the three is reachable only through the
+flat slot. That is what makes the page card and the authored link graph
+load-bearing rather than decorative: the card is the sole input to every choice
+the funnel makes, and between them they *are* reachability.
 
-What retired it was asking *how the survivors are chosen*.
-[`wiki::list_wiki_pages`] sorts by path, so the ones that fit were the
-**alphabetically first** — not a choice, an accident of filenames — and each
-one offered costs a summary-and-keywords line in every hop's prompt. Paying a
-per-hop tax to offer arbitrary pages is worse than offering nothing.
-
-**So reachability now rests entirely on the four content-derived channels**: a
-fact hit (`rag`), a topic or situational match against the page's **own card**,
-and an authored `[[wikilink]]`. A page that has none of those is reachable only
-through the flat slot. That is the same argument that makes the page cards
-load-bearing rather than decorative — they are the sole input to every choice
-the funnel makes, and now to reachability itself.
-
-The knob survives the code being off: it is one number to restore if the
-post-deploy dead-end rate says the corpus is not ready for it, and
-`examples/pool_shape.rs` sets it to `usize::MAX` to measure what the listing
-*would* have added. Above `0` it is a floor, not a quota — siblings top the
-offer up to it and never go above.
-
-**The ranking runs before the dedup, and that order is load-bearing.** One
-page routinely reaches the pool by two routes at once: a page linked from
-the prose just read is, whenever it lives in the wiki the funnel has
-entered, *also* one of that directory's siblings. The two copies are one
-destination at two very different tiers, so the dedup has to keep the
-**best** route, not the earliest — and the earliest is always the sibling,
-because `open_target` lists the directory before it reads the links. It is
-the same rule `dedup_and_sort` applies to the fan, where the copy that
-sorts first wins a collision.
-
-Measured over 141 real turns on the live corpus: the cap bites on **49 % of
-hops**, and once the ranking precedes the dedup **1 628 of 10 955 offered
-candidates (14.9 %) change tier** — 1 442 of them from filesystem sibling to
-authored rail, leading the pool instead of being cut with the tail.
+**The ranking runs before the dedup, and that order is load-bearing.** One page
+routinely reaches the pool by two routes at once — a `[[wikilink]]` on the prose
+just read is, whenever the same page is also wired from a served identity card,
+two copies of one destination at two very different tiers. `open_target` fills
+its discoveries in its own order, so the weaker copy can arrive first, and
+deduplicating before ranking would keep *that* one and file the rail in the
+demoted tail. Ranking first makes the survivor carry the **best** route rather
+than the earliest — the same rule `dedup_and_sort` applies to the fan, where the
+copy that sorts first wins a collision.
 
 ### Why a walk stopped — the seven `NavStop` reasons
 
@@ -1445,16 +1426,13 @@ table is the larger and the more regenerable of the two.
   (wiki hop, direct page hop with alias stripped, dead page hop never
   offered), char-budget truncation, soft-fail on unparseable decisions,
   done / empty-fan short-circuits, fence-tolerant decision parse.
-- `prune_pool`: 8 — the tier order (a rail leads a sibling / a sibling
-  never displaces a fan seed / the cap keeps the highest tiers, not the
-  alphabetically-first entries / a sibling-only page still surfaces when
-  there is room / the fan's own order survives untouched), **plus the
-  collision the first five could not see**: one page reached by two routes
-  keeps the better route, a linked page buried in a 30-entry directory
-  listing still leads the pool, and a fan seed re-offered as a sibling of
-  its own wiki is not demoted. Every one of the original five used
-  *different* pages for the two routes, which is how a 14.9 % mis-tiering
-  survived a green suite.
+- `prune_pool`: 3 — the cap keeps the highest tiers rather than whatever the
+  producers inserted first; the fan's own weight order survives the ranking
+  untouched; and **the collision neither of those can see**, one page reached by
+  two routes at once keeping the better route instead of the copy that happened
+  to be emitted first. That last one needs the two routes to name the *same*
+  page: a test that gives each route its own page proves the sort and misses the
+  dedup entirely.
 - Subject coverage, in [`recall`](../../crates/mwe-core/src/recall.rs): 6 —
   `turn_subjects` admits the speaker when the first person puts them in the
   question and leaves them out when they are only addressed; an alias

@@ -630,7 +630,7 @@ pub struct OpenedPage {
     /// Leading slice of that prose (≤ [`TRACE_EXCERPT_CAP`] bytes, cut on a
     /// char boundary).
     pub excerpt: String,
-    /// New candidates this page exposed (sibling pages + wikilink targets).
+    /// New candidates this page exposed (its `[[wikilink]]` targets).
     pub discovered: usize,
 }
 
@@ -664,18 +664,29 @@ struct Candidate {
     keywords: Vec<String>,
 }
 
-/// The tier [`Candidate::prune_tier`] assigns a directory-listing sibling —
-/// the demoted tail, and the tier [`prune_pool`] rations.
+/// The demoted tail: the tier [`Candidate::prune_tier`] assigns anything it
+/// does not recognise.
+///
+/// **Nothing produces it today** — every origin the funnel emits is matched
+/// above — and that is the design, not an oversight. It is the fail-safe for
+/// an origin added elsewhere without updating the match: such a candidate
+/// lands behind every content-derived door instead of silently jumping the
+/// fan. It stops being empty the moment someone adds a channel and forgets
+/// this file, which is exactly when it is worth having.
 const UNKNOWN_TIER: u8 = 3;
 
 impl Candidate {
     /// Ranking tier for [`prune_pool`] — lower sorts first. A wikilink rail
     /// off collected prose beats the entry-point fan (`rag` | `topic` |
-    /// `situational`), which beats a rail off a **served** card, which beats
-    /// a directory-listing sibling. Anything not recognised above falls into
-    /// the same tier as `page`, so a future origin added elsewhere without
-    /// updating this match fails safe into the demoted tail rather than
-    /// silently jumping the fan.
+    /// `situational`), which beats a rail off a **served** card. Anything not
+    /// recognised falls to [`UNKNOWN_TIER`], so an origin added elsewhere
+    /// without updating this match fails safe into the demoted tail rather
+    /// than silently jumping the fan.
+    ///
+    /// Three tiers, and they are the three ways a page can be reached at all:
+    /// a fact hit put its page in the fan, somebody wrote a `[[wikilink]]` to
+    /// it, or its own card matched. Nothing offers a page for merely sitting
+    /// in the same folder as one that was opened.
     ///
     /// **Why `card` sits below the fan.** The two link tiers differ in what
     /// they are evidence *of*. A `link` rail was written on a page the
@@ -735,10 +746,11 @@ struct NavOpen {
 /// The loop is deterministic Rust — hop count, per-hop page cap, character
 /// budget, candidate vetting, ACL projection — while each hop's *choice* (which
 /// candidates to open, whether to stop) is one completion on the `navigator`
-/// LLM slot. Candidates grow as pages are opened: the sibling pages of every
-/// wiki entered (their testata cards) and the wikis reachable via `[[wikilinks]]`
-/// from the collected prose (their `_meta` cards, `Visible`-only) are offered on
-/// the next hop.
+/// LLM slot. Candidates grow as pages are opened: the pages reachable via
+/// `[[wikilinks]]` from the collected prose are offered on the next hop,
+/// carrying their own testata cards. That is the only way the pool grows —
+/// a page is never offered for merely sitting in the same folder as one that
+/// was opened, so an authored link is the load-bearing structure here.
 ///
 /// [`Served::pages`] names pages whose prose the **caller has already put in
 /// front of the consumer by another route**, as `(wiki_id, page)`. They enter
@@ -803,7 +815,7 @@ pub async fn navigate(
     let wikis = tree.walk().context("walk wiki tree")?;
     // Smart wikis are excluded from the navigable graph (see
     // `gather_entry_points`): no cards / wikilinks / per-fragment ACL to hop
-    // through. They never appear as a candidate, sibling, or link target.
+    // through. They never appear as a candidate or a link target.
     let by_id: BTreeMap<&str, &DiscoveredWiki> = wikis
         .iter()
         .filter(|d| !d.meta.smart)
@@ -840,8 +852,8 @@ pub async fn navigate(
         // Pages the caller already delivered start out **visited**: that one
         // set is what `prune_pool` filters the offer by and what `open_target`
         // refuses on, so a single line makes the guarantee hold on every route
-        // into the funnel — the fan, a directory sibling, a `[[wikilink]]` —
-        // instead of three filters that have to agree.
+        // into the funnel — the fan or a `[[wikilink]]` — instead of two
+        // filters that have to agree.
         visited: served.pages.iter().cloned().collect(),
         acl_defaults: BTreeMap::new(),
         remaining: policy.char_budget,
@@ -1122,9 +1134,8 @@ fn parse_query_seeds(raw: &str) -> Option<QuerySeedsJson> {
 }
 
 /// Mutable funnel bookkeeping threaded through the hops: pages already
-/// opened (resolved paths), wikis whose siblings were already offered,
-/// the per-wiki resolved `acl_default` cache, and the character budget
-/// still spendable.
+/// opened (resolved paths), the per-wiki resolved `acl_default` cache, and
+/// the character budget still spendable.
 struct FunnelState {
     visited: BTreeSet<(String, PathBuf)>,
     acl_defaults: BTreeMap<String, Principal>,
@@ -1387,58 +1398,37 @@ const fn navigator_retriable(err: &LlmError) -> bool {
 /// Drop visited / duplicate candidates, stably rank the survivors by tier,
 /// then cap the pool for the next prompt.
 ///
-/// The pool mixes two producers of very different value. `linked_wiki_candidates`
-/// offers wikilink destinations found in the prose just read — an authored
-/// assertion that two pages belong together, the design's only expansion
-/// mechanism. The retired directory listing offered **every page of a wiki's
-/// directory**, filesystem order, the moment the funnel first enters it —
-/// a crutch for an unevenly linked corpus, not a rail. Truncating this pool
-/// positionally lets whichever producer happened to run last, or a big
-/// alphabetically-sorted directory, crowd out the other: measured on the
-/// live corpus, one turn offered all 16 candidates from a single wiki's
-/// listing while another entered wiki's 20 pages were never offered, and
-/// `famiglia` (22 pages, cap 16) always lost the same three content pages.
+/// A page reaches the pool by exactly three routes, and they are not of equal
+/// value. A **wikilink rail** is a destination found in the prose the
+/// navigator has just read — an authored assertion that two pages belong
+/// together, and the design's only expansion mechanism. The **entry-point
+/// fan** (`rag` | `topic` | `situational`) are the doors the turn's own
+/// content found. A **card rail** is a link written on a served identity
+/// card, which arrives on every turn whatever was asked.
 ///
-/// So before truncating, [`Candidate::prune_tier`] partitions the pool
-/// stably into: wikilink rails first; the entry-point fan (`principal` |
-/// `rag` | `topic` | `situational`) next, **in the order the gatherer
-/// already weighed them** — untouched here, because from hop 1 on these are
-/// seeds the navigator was already offered and did not choose, whereas a
-/// freshly discovered link is a rail straight out of the page it just read;
-/// siblings last, a demoted tail kept only because a page nobody links
-/// would otherwise be reachable solely by direct RAG seeding — it must
-/// never displace a rail or a seed. At hop 0 there are no links yet, so
-/// this ordering only bites from hop 1 on.
+/// Truncating positionally would let whichever producer happened to run last
+/// crowd out the others, so [`Candidate::prune_tier`] partitions the pool
+/// stably first: rails off collected prose, then the fan **in the order the
+/// gatherer already weighed it** — untouched here, because from hop 1 on
+/// these are seeds the navigator was already offered and did not choose,
+/// whereas a freshly discovered link is a rail straight out of the page it
+/// just read — then card rails. At hop 0 there are no links yet, so the
+/// ordering only bites from hop 1 on.
 ///
 /// **The ranking runs before the dedup, and that order is the point.** One
-/// page routinely reaches the pool by more than one route at once — a page
-/// linked from the prose just read is, whenever it lives in the wiki the
-/// funnel just entered, *also* one of that directory's siblings — and the two
-/// copies are the same destination at two very different tiers. Deduplicating
-/// first keeps whichever copy the producers happened to emit first, which is
-/// the sibling ([`open_target`] lists the directory before it reads the
-/// links), so the surviving copy carries the demoted tier and is cut with the
-/// filesystem tail. Ranking first makes the survivor the *best* route instead
-/// of the earliest one — the same rule [`dedup_and_sort`] already applies to
-/// the fan, where the heaviest seed wins a collision.
+/// page routinely reaches the pool by more than one route at once, and the
+/// copies carry different tiers. Deduplicating first keeps whichever copy the
+/// producers happened to emit earliest; ranking first makes the survivor the
+/// **best** route instead of the earliest one — the same rule
+/// [`dedup_and_sort`] already applies to the fan, where the heaviest seed wins
+/// a collision.
 ///
-/// Measured on the live corpus over 141 real turns (card 66): the cap bites on
-/// **49 % of hops**, and ranking first moves **1 628 of 10 955 offered
-/// candidates (14.9 %) to a better tier** — 1 442 of them from sibling to rail.
-/// It is what lost the traced turn its answer page: `famiglia/concerti.md`,
-/// linked from the page just read, was offered at #18 of a 54-candidate pool as
-/// a filesystem sibling and cut; it now leads at #12 and survives.
-///
-/// **There is no directory listing.** Retired outright by the founder on
-/// 2026-08-04 — *«non è importante vedere le pagine vicine quanto seguire i
-/// links»*, then, on learning the survivors were whichever sorted first by
-/// filename, *«io credo sia meglio toglierle del tutto»*. It had been the
-/// funnel's largest producer — entering `carol` alone contributed 47
-/// candidates and **98.2 % of everything the cap cut was a sibling** — and
-/// none of it was a choice. Reachability now rests entirely on the
-/// content-derived channels: a fact hit, a topic or situational match on the
-/// page's own card, and an authored `[[wikilink]]`. That is what makes the
-/// page cards load-bearing (card 62, lever 1).
+/// **There is no directory listing**: nothing offers a page for merely sitting
+/// in the same folder as one that was opened. Reachability rests entirely on
+/// the content-derived channels — a fact hit, a topic or situational match on
+/// the page's own card, and an authored `[[wikilink]]` — which is what makes
+/// the page cards and the authored link graph load-bearing rather than
+/// decorative.
 fn prune_pool(pool: &mut Vec<Candidate>, visited: &BTreeSet<(String, PathBuf)>, cap: usize) {
     // Stable, so within a tier the producers' order still stands.
     pool.sort_by_key(Candidate::prune_tier);
@@ -2781,8 +2771,7 @@ mod tests {
     /// `[[bob]]` rail names a wiki, so it is **not** a door: what it points at
     /// is that wiki's map, which belongs to REM and the ingest classifier. A
     /// page hop (`[[bob/hobbies]]`) still is one — that is the rail that names
-    /// content, and the sibling listing is the only other way in, arrived at by
-    /// reading a page rather than by choosing a wiki.
+    /// content, arrived at by reading a page rather than by choosing a wiki.
     #[tokio::test]
     async fn a_bare_wiki_rail_resolves_to_the_foundation_page_never_the_map() {
         let (_dir, tree) = open_tree();
@@ -3175,8 +3164,7 @@ mod tests {
     /// Founder, 2026-08-03: *«non ci frega dell'indice se col rag arriviamo
     /// già sulle pagine giuste»*. The three routes are covered here — the
     /// entry fan (the seed is offered but the pool drops it), a verbatim
-    /// navigator request for it, and the directory listing of the wiki once
-    /// the funnel is inside.
+    /// navigator request for it, and a `[[wikilink]]` naming it.
     #[tokio::test]
     async fn navigate_never_opens_a_page_the_caller_already_served() {
         let (_dir, tree) = open_tree();
@@ -3184,8 +3172,9 @@ mod tests {
         write_page(&tree, "alice", "index.md", "# Alice\n\nHer whole card.\n");
         write_page(&tree, "alice", "notes.md", "Ordinary prose.\n");
         // Hop 1 asks for the wiki root — which resolves to `index.md` — and
-        // for a real page beside it. Hop 2 asks for `index.md` by name, the
-        // shape a sibling listing would offer.
+        // for a real page beside it. Hop 2 asks for `index.md` by name, i.e.
+        // the navigator naming the map verbatim: `open_target`'s gate is the
+        // central fail-safe and this is the case that exercises it.
         let llm = ScriptedLlm::new(&[
             r#"{"open":[{"wiki_id":"alice"},{"wiki_id":"alice","page":"notes.md"}],"done":false}"#,
             r#"{"open":[{"wiki_id":"alice","page":"index.md"}],"done":false}"#,
@@ -3228,7 +3217,7 @@ mod tests {
                 .candidates
                 .iter()
                 .all(|c| c.page.as_deref() != Some("index.md"))),
-            "nor is it ever offered — not from the fan, not from the directory listing"
+            "nor is it ever offered — not from the fan, not from a rail"
         );
         assert!(
             !out.fragments.iter().any(|f| f.text.contains("whole card")),
@@ -3237,8 +3226,8 @@ mod tests {
     }
 
     /// Roadmap 41e — the reserved `rules.md` policy page is channel-only:
-    /// the sibling fan never offers it as a door, and even a navigator that
-    /// asks for it verbatim is discarded by the `open_target` fail-safe.
+    /// no route offers it as a door, and even a navigator that asks for it
+    /// verbatim is discarded by the `open_target` fail-safe.
     #[tokio::test]
     async fn navigate_never_offers_nor_opens_the_rules_page() {
         let (_dir, tree) = open_tree();

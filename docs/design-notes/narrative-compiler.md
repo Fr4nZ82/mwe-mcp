@@ -908,10 +908,10 @@ hub its `child_leaves` — and until this guard **nothing checked that any of
 them landed**. The links are not suggestions: `link_graph` is hub→child plus
 the page's own authored outgoing links, made symmetric (planner, step 9),
 i.e. the structure the plan asserts. And a link that does not land is not a
-cosmetic loss — the navigator harvests its next hops from the **prose**, and
-since the directory listing went off (`sibling_floor = 0`) a page is reachable
-only by a fact hit, a match on its card, or an inbound link somebody wrote. A
-dropped rail is a neighbour nobody can walk to.
+cosmetic loss — the navigator harvests its next hops from the **prose**, and a
+page is reachable by exactly three routes: a fact hit, a match on its own card,
+or an inbound link somebody wrote. Nothing offers a page for merely sitting in
+the same directory, so a dropped rail is a neighbour nobody can walk to.
 
 Three parts, cheapest first:
 
