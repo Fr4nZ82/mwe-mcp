@@ -248,6 +248,9 @@ pub struct ReindexFullReport {
     /// Per-file reports for files that actually changed (idle files are
     /// elided to keep the report small).
     pub per_file: Vec<ReindexFileReport>,
+    /// `page_card` rows written by the card pass — the one part of the sweep
+    /// that also covers standard wikis.
+    pub cards_refreshed: usize,
 }
 
 // ---------- reindex_file ----------
@@ -325,6 +328,12 @@ pub async fn reindex_file(
             } else {
                 drop_active_rows_for_source(pool, &source_path, spare_pending).await?
             };
+            // The card describes a page that no longer exists. Unlike a fact
+            // row it has no tombstone to leave: it is derived from the file,
+            // so it goes with it.
+            if let Err(e) = crate::page_card::drop_page(pool, &source_path).await {
+                tracing::warn!(source_path = %source_path, error = %e, "reindex_file: page card not dropped");
+            }
             report.orphaned = dropped;
             if dropped > 0 {
                 tracing::info!(
@@ -344,6 +353,12 @@ pub async fn reindex_file(
         // sense. Just return a clean report.
         return Ok(report);
     };
+
+    // Refresh the page's card from the bytes already in hand. Standard wikis
+    // only: a smart wiki is not funnel-navigable and syncs no testata.
+    if !resolved.smart {
+        refresh_one_card(pool, &source_path, &resolved.wiki_id, abs_path, &raw).await;
+    }
 
     if resolved.smart {
         // Markerless smart wiki: index the page content by section into
@@ -1186,16 +1201,129 @@ pub async fn reindex_full(
             ),
         }
     }
+    // Cards, for EVERY family including the standard wikis the sweep above
+    // skips. Skipping them there is right and stays: that pass repairs
+    // `fact_index`, it has no own-write suppression, and observing a
+    // mid-compile window would let it tombstone a live row. This pass writes
+    // nothing but `page_card`, which is derived from the file and has no
+    // lifecycle to corrupt — the worst a mid-compile read can do is store a
+    // description that the next event overwrites. Without it a card missed by
+    // the watcher would never come back, and a page absent from the table can
+    // never be *offered* by the selection built on top of it.
+    report.cards_refreshed = refresh_page_cards(pool, tree, &discovered).await;
     if report.total_inserted + report.total_updated + report.total_orphaned > 0 {
         tracing::info!(
             files = report.files_scanned,
             inserted = report.total_inserted,
             updated = report.total_updated,
             orphaned = report.total_orphaned,
+            cards = report.cards_refreshed,
             "reindex_full: done"
         );
     }
     Ok(report)
+}
+
+/// Re-read every offerable page's testata card into `page_card`, and drop the
+/// rows of pages that are gone. Returns how many rows were written.
+///
+/// Best-effort throughout: this is a cache refresh, and every reader falls
+/// back to opening the page, so a failure costs speed and never correctness.
+async fn refresh_page_cards(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    discovered: &[crate::wiki::DiscoveredWiki],
+) -> usize {
+    let mut written = 0_usize;
+    for d in discovered {
+        // Smart wikis sync no testata and are not funnel-navigable.
+        if d.meta.smart {
+            continue;
+        }
+        let Ok(pages) = enumerate_pages(&d.abs_dir) else {
+            continue;
+        };
+        let mut seen: HashSet<String> = HashSet::new();
+        for abs in &pages {
+            let source_path = crate::wiki::workdir_relative_source_path(tree.workdir(), abs);
+            if !offerable_page(&source_path) {
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(abs) else {
+                continue;
+            };
+            written +=
+                refresh_one_card(pool, &source_path, d.meta.wiki_id.as_str(), abs, &raw).await;
+            seen.insert(source_path);
+        }
+        // A row whose page is no longer on disk (a delete this tick is
+        // recovering, or a page that stopped being offerable).
+        match crate::page_card::list_for_wiki(pool, d.meta.wiki_id.as_str()).await {
+            Ok(rows) => {
+                for row in rows {
+                    if !seen.contains(&row.source_path)
+                        && let Err(e) = crate::page_card::drop_page(pool, &row.source_path).await
+                    {
+                        tracing::warn!(source_path = %row.source_path, error = %e, "reindex_full: stale page card not dropped");
+                    }
+                }
+            },
+            Err(e) => tracing::warn!(
+                error = %e,
+                wiki_id = %d.meta.wiki_id,
+                "reindex_full: page card listing failed"
+            ),
+        }
+    }
+    written
+}
+
+/// Whether a page can ever be **offered** to a reader, and therefore whether
+/// its card is worth storing.
+///
+/// The wiki's map is refused by the read path outright, and a channel page
+/// (`rules.md`, `projects.md`) is its own pipeline's perimeter. Neither is a
+/// destination, so a card for them would only pad the selection.
+/// Store one page's card from bytes already read. Returns the rows written
+/// (0 when the page is not offerable, or when the write failed).
+///
+/// Soft throughout: the table is a cache and every reader falls back to
+/// opening the page, so a failed refresh costs speed, never correctness.
+async fn refresh_one_card(
+    pool: &SqlitePool,
+    source_path: &str,
+    wiki_id: &str,
+    abs_path: &Path,
+    raw: &str,
+) -> usize {
+    if !offerable_page(source_path) {
+        return 0;
+    }
+    let parsed = crate::meta_annotate::parse_page_card(raw);
+    let (mtime, size) = crate::page_card::file_stamp(abs_path).unzip();
+    let card = crate::page_card::NewPageCard {
+        source_path: source_path.to_owned(),
+        wiki_id: wiki_id.to_owned(),
+        description: parsed.description,
+        keywords: parsed.keywords,
+        style: parsed.style,
+        file_mtime_ms: mtime,
+        file_size: size,
+    };
+    match crate::page_card::upsert(pool, &card).await {
+        Ok(n) => usize::try_from(n).unwrap_or(0),
+        Err(e) => {
+            tracing::warn!(source_path, error = %e, "reindex: page card not refreshed");
+            0
+        },
+    }
+}
+
+fn offerable_page(source_path: &str) -> bool {
+    let is_map = Path::new(source_path)
+        .file_name()
+        .is_some_and(|n| n == crate::wiki::INDEX_FILENAME);
+    !is_map && !crate::wiki::is_channel_page(source_path)
 }
 
 // ---------- watcher loop ----------
@@ -1842,6 +1970,138 @@ mod tests {
             source_ref: None,
         };
         fact_index::insert(pool, &new).await.expect("seed fact");
+    }
+
+    /// The reindex sweep is where a page's card enters the table, and where
+    /// it leaves. It is the one path every page change already flows through
+    /// — the watcher on each edit, `reindex_full` on cold start — so wiring
+    /// the refresh here is what keeps the cache from needing a write-through
+    /// at every site that can rewrite a page.
+    ///
+    /// The exclusions are the other half of the contract: the table holds
+    /// cards of pages a reader can be *offered*, so the wiki's map (which the
+    /// read path refuses outright) and the channel pages (`rules.md`,
+    /// `projects.md`, their own pipelines' perimeter) get no row — a card for
+    /// them would only pad the selection built on top of this.
+    #[tokio::test]
+    async fn reindex_stores_a_pages_card_and_drops_it_with_the_page() {
+        let dir = tempdir().unwrap();
+        let wiki_dir = dir.path().join("wikis/alice");
+        write_wiki_meta(&wiki_dir, "alice");
+        let tree = WikiTree::open(dir.path()).expect("open tree");
+        let pool = make_pool().await;
+        let embedder = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
+
+        write_page(
+            &wiki_dir,
+            "cucina.md",
+            "---\ntitle: \"Cucina\"\ndescription: \"what gets cooked and when\"\nstyle: prosa\n---\n\nprose\n",
+        );
+        write_page(
+            &wiki_dir,
+            "index.md",
+            "---\ntitle: \"map\"\ndescription: \"the map\"\n---\n\nlinks\n",
+        );
+        write_page(
+            &wiki_dir,
+            "rules.md",
+            "---\ntitle: \"rules\"\ndescription: \"policy\"\n---\n\nrules\n",
+        );
+        for page in ["cucina.md", "index.md", "rules.md"] {
+            reindex_file(&pool, &tree, embedder.clone(), &wiki_dir.join(page))
+                .await
+                .expect("reindex");
+        }
+
+        let card = crate::page_card::get(&pool, "wikis/alice/cucina.md")
+            .await
+            .expect("get")
+            .expect("the page got a card");
+        assert_eq!(
+            card.description.as_deref(),
+            Some("what gets cooked and when")
+        );
+        assert_eq!(card.style.as_deref(), Some("prosa"));
+        assert_eq!(card.wiki_id, "alice");
+        assert!(
+            card.matches_file(&wiki_dir.join("cucina.md")),
+            "the row is stamped against the file it was read from"
+        );
+        for excluded in ["wikis/alice/index.md", "wikis/alice/rules.md"] {
+            assert!(
+                crate::page_card::get(&pool, excluded)
+                    .await
+                    .expect("get")
+                    .is_none(),
+                "{excluded} is not a destination, so it gets no card"
+            );
+        }
+
+        // The page goes; its card is derived from it, so it goes too — there
+        // is nothing to tombstone.
+        std::fs::remove_file(wiki_dir.join("cucina.md")).unwrap();
+        reindex_file(&pool, &tree, embedder, &wiki_dir.join("cucina.md"))
+            .await
+            .expect("reindex removal");
+        assert!(
+            crate::page_card::get(&pool, "wikis/alice/cucina.md")
+                .await
+                .expect("get")
+                .is_none(),
+            "a removed page leaves no card behind"
+        );
+    }
+
+    /// `reindex_full` deliberately skips standard wikis — that pass repairs
+    /// `fact_index` with no own-write suppression, so a mid-compile window
+    /// would let it tombstone a live row. The card pass is the exception, and
+    /// it is safe for exactly the reason the other one is not: it writes
+    /// nothing but `page_card`, which is derived from the file and has no
+    /// lifecycle to corrupt. Without it a card the watcher missed would never
+    /// come back, and a page absent from the table can never be offered.
+    #[tokio::test]
+    async fn the_full_sweep_refreshes_standard_page_cards_it_indexes_no_facts_for() {
+        let dir = tempdir().unwrap();
+        let wiki_dir = dir.path().join("wikis/alice");
+        write_wiki_meta(&wiki_dir, "alice");
+        write_page(
+            &wiki_dir,
+            "cucina.md",
+            "---\ntitle: \"Cucina\"\ndescription: \"what gets cooked\"\n---\n\nprose\n",
+        );
+        let tree = WikiTree::open(dir.path()).expect("open tree");
+        let pool = make_pool().await;
+        let embedder = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
+
+        let report = reindex_full(&pool, &tree, embedder.clone())
+            .await
+            .expect("full");
+        assert_eq!(
+            report.files_scanned, 0,
+            "the fact sweep still skips the standard wiki entirely"
+        );
+        assert_eq!(report.cards_refreshed, 1, "its card was refreshed anyway");
+        assert_eq!(
+            crate::page_card::get(&pool, "wikis/alice/cucina.md")
+                .await
+                .expect("get")
+                .expect("row")
+                .description
+                .as_deref(),
+            Some("what gets cooked")
+        );
+
+        // A card whose page vanished between ticks is dropped by the sweep,
+        // even though no watcher event ever arrived for it.
+        std::fs::remove_file(wiki_dir.join("cucina.md")).unwrap();
+        reindex_full(&pool, &tree, embedder).await.expect("full");
+        assert!(
+            crate::page_card::get(&pool, "wikis/alice/cucina.md")
+                .await
+                .expect("get")
+                .is_none(),
+            "the sweep reaps a card whose page is gone"
+        );
     }
 
     #[tokio::test]

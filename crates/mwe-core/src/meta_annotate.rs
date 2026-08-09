@@ -499,11 +499,19 @@ pub(crate) struct PageCard {
 pub(crate) fn read_page_card(abs_path: &Path) -> Result<PageCard> {
     let raw = std::fs::read_to_string(abs_path)
         .with_context(|| format!("read {}", abs_path.display()))?;
-    let Some(doc) = wiki::MarkdownDoc::parse(&raw) else {
-        return Ok(PageCard::default());
+    Ok(parse_page_card(&raw))
+}
+
+/// [`read_page_card`] over a page already in memory — for the callers that
+/// have just read the file for another reason (the reindex sweep) and must
+/// not read it twice.
+#[must_use]
+pub(crate) fn parse_page_card(raw: &str) -> PageCard {
+    let Some(doc) = wiki::MarkdownDoc::parse(raw) else {
+        return PageCard::default();
     };
     let Ok(fm) = serde_yaml::from_str::<serde_yaml::Mapping>(&doc.frontmatter) else {
-        return Ok(PageCard::default());
+        return PageCard::default();
     };
     let description = fm
         .get("description")
@@ -521,11 +529,11 @@ pub(crate) fn read_page_card(abs_path: &Path) -> Result<PageCard> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
-    Ok(PageCard {
+    PageCard {
         description,
         keywords,
         style,
-    })
+    }
 }
 
 /// Read a leaf page's testata `description` (its «what goes in here» one-liner).

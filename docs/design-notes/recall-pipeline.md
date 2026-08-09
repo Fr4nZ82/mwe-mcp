@@ -859,8 +859,13 @@ Three invariants:
   unbounded while the pool is capped, so filling it earlier bought a read for
   every candidate the cut was about to throw away, at a price that grows with
   the memory. A candidate carries `summary_read` so a page whose card is
-  simply absent is not re-read on every hop it survives. This was not true of
-  the fan until 2026-08-04:
+  simply absent is not re-read on every hop it survives. `fill_summaries`
+  reads [`page_card`](engine-db-and-migrations.md#migration-ledger) first and
+  checks its `(mtime, size)` stamp against the file, so the usual case costs a
+  `stat`; a missing row, a stale stamp or a DB that will not answer all fall
+  back to opening the page. The table is a cache and **the file is the
+  truth** — an empty table degrades to exactly the behaviour that shipped
+  before it. This was not true of the fan until 2026-08-04:
   `initial_pool` reached for the *wiki*-level abstract, left over from when a
   seed could still name a wiki alone, so N hits inside one wiki arrived as N
   candidates carrying **one identical sentence and one identical keyword

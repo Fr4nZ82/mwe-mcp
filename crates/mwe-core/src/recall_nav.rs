@@ -82,6 +82,7 @@ use crate::enrollment;
 use crate::fact_index;
 use crate::llm::{CompletionRequest, LlmBackend, LlmError};
 use crate::meta_annotate;
+use crate::page_card;
 use crate::prompts;
 use crate::recall::{MULTI_HOP_HARD_LIMIT, RecallHit, SenderContext, extract_wikilinks};
 use crate::render::render_for_sender;
@@ -872,7 +873,7 @@ pub async fn navigate(
         prune_pool(&mut candidates, &state.visited, policy.max_candidates);
         // Only now, and only for the survivors: the card is the one field
         // that costs a page read, and the fan above is unbounded.
-        fill_summaries(&mut candidates, &by_id, &reader_card);
+        fill_summaries(pool, tree, &mut candidates, &by_id, &reader_card).await;
         if candidates.is_empty() || state.remaining == 0 {
             outcome.stop = if state.remaining == 0 {
                 NavStop::Budget
@@ -1695,12 +1696,20 @@ fn reader_page_keywords(
 /// paid that price for every discarded page — a bill that grows with the
 /// memory while the number of pages actually shown to the model does not.
 ///
+/// `page_card` is consulted first and its stamp checked against the file
+/// ([`page_card::PageCardRow::matches_file`]), so the usual case costs a
+/// `stat`. Anything else — no row, a stale stamp, a DB that will not answer —
+/// falls back to opening the page, which is never wrong; the table is a
+/// cache and an empty one degrades to exactly the previous behaviour.
+///
 /// The description is read from the **owner-tier** testata but shown only
 /// where the reader is inside the wiki's default visibility
 /// (`summary_visible`) — the same gate as before, moved, not relaxed. A page
 /// whose card cannot be read (vanished, unparseable) is marked read with no
 /// summary: a missing card is a candidate with no abstract, never an error.
-fn fill_summaries(
+async fn fill_summaries(
+    db: &SqlitePool,
+    tree: &WikiTree,
     pool: &mut [Candidate],
     by_id: &BTreeMap<&str, &DiscoveredWiki>,
     reader_card: &meta_annotate::ReaderCard,
@@ -1713,7 +1722,15 @@ fn fill_summaries(
         if !reader_card.summary_visible(c.wiki_id.as_str()) {
             continue;
         }
-        c.summary = meta_annotate::read_page_card(&d.abs_dir.join(&c.page))
+        let abs = d.abs_dir.join(&c.page);
+        let source_path = wiki::workdir_relative_source_path(tree.workdir(), &abs);
+        if let Ok(Some(row)) = page_card::get(db, &source_path).await
+            && row.matches_file(&abs)
+        {
+            c.summary = row.description;
+            continue;
+        }
+        c.summary = meta_annotate::read_page_card(&abs)
             .unwrap_or_default()
             .description;
     }
@@ -2463,7 +2480,7 @@ mod tests {
         tree: &WikiTree,
         sender: &str,
         readable_in: &[(&str, &str)],
-    ) -> (Vec<DiscoveredWiki>, meta_annotate::ReaderCard) {
+    ) -> (Vec<DiscoveredWiki>, meta_annotate::ReaderCard, SqlitePool) {
         let pool = make_pool().await;
         // A destination is only offered when the reader can read something in
         // its wiki, so a link test needs at least one globally-readable fact
@@ -2482,7 +2499,7 @@ mod tests {
         let reader = meta_annotate::build_reader_card(&pool, tree, sender, &[])
             .await
             .expect("reader card");
-        (tree.walk().expect("walk"), reader)
+        (tree.walk().expect("walk"), reader, pool)
     }
 
     fn by_id_of(wikis: &[DiscoveredWiki]) -> BTreeMap<&str, &DiscoveredWiki> {
@@ -2515,7 +2532,7 @@ mod tests {
             "auto.md",
             "---\ntitle: \"Auto\"\ndescription: \"servicing and insurance for the car\"\n---\n\nprose\n",
         );
-        let (wikis, reader) = pool_inputs(
+        let (wikis, reader, db) = pool_inputs(
             &tree,
             "alice",
             &[("alice", "cucina.md"), ("alice", "auto.md")],
@@ -2531,7 +2548,7 @@ mod tests {
         );
         // The card is attached after the cut, so a pool straight from the fan
         // carries none yet — the funnel does the same, one step later.
-        fill_summaries(&mut pool, &by_id_of(&wikis), &reader);
+        fill_summaries(&db, &tree, &mut pool, &by_id_of(&wikis), &reader).await;
         assert_eq!(pool.len(), 2);
         assert_eq!(
             pool[0].summary.as_deref(),
@@ -2571,7 +2588,7 @@ mod tests {
                 &format!("---\ntitle: \"t\"\ndescription: \"{desc}\"\n---\n\nprose\n"),
             );
         }
-        let (wikis, reader) = pool_inputs(
+        let (wikis, reader, db) = pool_inputs(
             &tree,
             "alice",
             &[("alice", "cucina.md"), ("alice", "auto.md")],
@@ -2590,11 +2607,80 @@ mod tests {
             "the fan produced candidates without opening a single page"
         );
         prune_pool(&mut pool, &BTreeSet::new(), 1);
-        fill_summaries(&mut pool, &by_id_of(&wikis), &reader);
+        fill_summaries(&db, &tree, &mut pool, &by_id_of(&wikis), &reader).await;
         assert_eq!(pool.len(), 1, "the cut kept one candidate");
         assert!(
             pool[0].summary.is_some(),
             "the survivor is the one page whose card was read"
+        );
+    }
+
+    /// The stored card is used when its stamp still vouches for the file, and
+    /// ignored the moment it does not.
+    ///
+    /// Both halves are the contract. Without the first the table is dead
+    /// weight; without the second it is a way to show a reader a sentence the
+    /// page stopped saying — which on this path is the *only* thing that
+    /// decides whether the page gets opened at all. The row here carries a
+    /// description the file does not, so there is no way to pass by accident.
+    #[tokio::test]
+    async fn a_stored_card_is_used_only_while_its_stamp_still_matches_the_file() {
+        let (_dir, tree) = open_tree();
+        forge_user(&tree, "alice");
+        write_page(
+            &tree,
+            "alice",
+            "cucina.md",
+            "---\ntitle: \"Cucina\"\ndescription: \"from the file\"\n---\n\nprose\n",
+        );
+        let (wikis, reader, db) = pool_inputs(&tree, "alice", &[("alice", "cucina.md")]).await;
+        let abs = tree.workdir().join("wikis/alice/cucina.md");
+        let (mtime, size) = page_card::file_stamp(&abs).expect("stamp");
+        page_card::upsert(
+            &db,
+            &page_card::NewPageCard {
+                source_path: "wikis/alice/cucina.md".to_owned(),
+                wiki_id: "alice".to_owned(),
+                description: Some("from the table".to_owned()),
+                keywords: Vec::new(),
+                style: None,
+                file_mtime_ms: Some(mtime),
+                file_size: Some(size),
+            },
+        )
+        .await
+        .expect("upsert");
+
+        let mut pool = initial_pool(
+            &[entry("alice", "cucina.md", EntryOrigin::Rag, 0.9)],
+            &by_id_of(&wikis),
+            &reader,
+        );
+        fill_summaries(&db, &tree, &mut pool, &by_id_of(&wikis), &reader).await;
+        assert_eq!(
+            pool[0].summary.as_deref(),
+            Some("from the table"),
+            "a vouched row spares the page read"
+        );
+
+        // Rewrite the page: the stamp no longer matches, so the stale row must
+        // lose to what the page actually says now.
+        write_page(
+            &tree,
+            "alice",
+            "cucina.md",
+            "---\ntitle: \"Cucina\"\ndescription: \"the page says something else now\"\n---\n\nprose\n",
+        );
+        let mut pool = initial_pool(
+            &[entry("alice", "cucina.md", EntryOrigin::Rag, 0.9)],
+            &by_id_of(&wikis),
+            &reader,
+        );
+        fill_summaries(&db, &tree, &mut pool, &by_id_of(&wikis), &reader).await;
+        assert_eq!(
+            pool[0].summary.as_deref(),
+            Some("the page says something else now"),
+            "a stale row is never shown — the file is the truth"
         );
     }
 
@@ -2611,7 +2697,8 @@ mod tests {
             "alimentazione.md",
             "---\ntitle: \"Alimentazione\"\ndescription: \"what she can and cannot eat\"\n---\n\nprose\n",
         );
-        let (wikis, reader) = pool_inputs(&tree, "alice", &[("alice", "alimentazione.md")]).await;
+        let (wikis, reader, db) =
+            pool_inputs(&tree, "alice", &[("alice", "alimentazione.md")]).await;
         let mut rails = card_rail_candidates(
             &[(
                 "alice".to_owned(),
@@ -2621,7 +2708,7 @@ mod tests {
             &reader,
             8,
         );
-        fill_summaries(&mut rails, &by_id_of(&wikis), &reader);
+        fill_summaries(&db, &tree, &mut rails, &by_id_of(&wikis), &reader).await;
         assert_eq!(rails.len(), 1, "the card's one rail must become a door");
         assert_eq!(rails[0].page, PathBuf::from("alimentazione.md"));
         assert_eq!(rails[0].origin, "card");
@@ -2665,7 +2752,7 @@ mod tests {
             );
             let _ = write!(card, " [[alice/p{n}]]");
         }
-        let (wikis, reader) = pool_inputs(&tree, "alice", &[("alice", "p0.md")]).await;
+        let (wikis, reader, _db) = pool_inputs(&tree, "alice", &[("alice", "p0.md")]).await;
         let rails =
             card_rail_candidates(&[("alice".to_owned(), card)], &by_id_of(&wikis), &reader, 2);
         assert_eq!(rails.len(), 2, "the per-card failsafe must bind");
