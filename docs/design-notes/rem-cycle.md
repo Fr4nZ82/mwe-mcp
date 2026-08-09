@@ -1427,12 +1427,16 @@ after a promotion (`dream::run_light`, fresh pages without waiting for the
 night — maintainer option 2), the REM full cycle compiles after the reorg
 sub-jobs settle the fact set (`dream::run_full`). The two are distinguished by
 a [`Cadence`](../../crates/mwe-core/src/dream.rs) argument: the light dream runs
-at `Cadence::Light`, which **skips the strong-model Conciliatore** (it is
-REM-only — [memory-model.md](../concepts/memory-model.md); the nightly `Cadence::Full` pass, and the
-operator-driven compile, reconcile/dedup the pages the light dream accepted
-as-is) and **runs every compile stage on the cheap ingest-tier (Flash)
-backend** — the strong (Pro) slots are REM-only (see the
-[tier-per-cadence note](narrative-compiler.md#the-strong-model-tier)). The pass
+at `Cadence::Light`, which **runs every compile stage on the cheap ingest-tier
+(Flash) backend** — the strong (Pro) slots are REM-only (see the
+[tier-per-cadence note](narrative-compiler.md#the-strong-model-tier)). Every
+stage, Cartografo and Conciliatore included: the light pass places the facts
+the user did not name a page for
+([`NewFactPlacement::NamedThenCartografo`](../../crates/mwe-core/src/planner.rs)),
+and the near-synonym check runs beside it so a page born on the light path is
+never minted without one. What is REM's alone is not a *stage* but a
+*decision*: only the full pass consumes the **re-open park**, the reviewer's
+nominations to re-judge a placement that was already made. The pass
 rebuilds the plan incrementally and writes only the dirty pages (cost-guard),
 then ends with the deterministic post-compile reviewer
 ([narrative-compiler.md §The reviewer](narrative-compiler.md#the-reviewer)),

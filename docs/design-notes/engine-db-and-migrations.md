@@ -194,13 +194,18 @@ obituary to today's truth
 classifier (the "Cartografo at runtime") already decides, per claim, *where* it
 goes plus the target page's style and a "cosa ci va dentro" one-liner. These
 three columns carry that proposal onto the fact so the **light** dream can
-settle a fact on its ingest page without re-running the strong-model Cartografo
-(which becomes REM-only). They are a **hint, not the home**: the
-compilation plan stays authoritative on placement and the REM Cartografo may
-re-home a fact. The standard-wiki path stages `style`/`page_description` on the
-buffer (`target_page` rode it already) and `promote_one` copies the whole axis
-across; the direct path carries it from the request. **Additive and inert** as
-of 0035 — the consumer (`build_wiki_plan` in the light cadence) lands later.
+settle a fact on its ingest page without calling a model at all. Since prompt
+v2.59 the classifier only fills them when the write cannot wait — a `lista`, or
+a container the user asked for by name — and those are exactly the placements
+**no model may revise**: they are settled first and never enter the Cartografo's
+batch. Everything else reaches the light Cartografo on the cheap tier
+(`NewFactPlacement::NamedThenCartografo`). For anything that does arrive with a
+hint from an older row or an operator-overridden prompt, the hint is still a
+**hint, not the home**: the compilation plan stays authoritative on placement
+and the REM Cartografo may re-home a fact. The standard-wiki path stages
+`style`/`page_description` on the buffer (`target_page` rode it already) and
+`promote_one` copies the whole axis across; the direct path carries it from the
+request.
 
 **Per-fact salience (`salience`, migration 0037).** Design SSOT
 [`ingest-pipeline.md`](ingest-pipeline.md) (the "Per-fact salience" section). One more

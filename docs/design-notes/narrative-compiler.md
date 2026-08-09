@@ -208,43 +208,68 @@ flaky batch never aborts the cycle. New-page slugs are slugified and
 de-duplicated across batches as they accumulate, so two batches proposing
 the same slug collapse to one.
 
-**Cadence — the Cartografo is REM-only too.** Like the Conciliatore below, the
-strong-model Cartografo runs only in
-the **full** cadence. The frequent **light dream** (`Cadence::Light`) does
-**not** call it: new facts are placed **deterministically, with no LLM**, onto
-`fact_index.target_page`
-by [`ingest_placement_blueprint`](../../crates/mwe-core/src/planner.rs) — a
-`concept_leaf` per distinct target slug (a path like `recipes/dinner.md`
-flattens to one leaf; the light path does not nest), seeded with the proposed
-`style` + `page_description` so the page gets a testata — a **seed**, not the
-page's permanent card, see
-[the card heal](#the-card-heal--a-page-is-described-by-what-was-written-on-it).
-A fact whose target is
-`index.md` / empty falls through to the deterministic orphan fallback (its
-foundation page), never a page named "index".
+**Cadence — both cadences place, and the difference is what they are allowed
+to touch.** `build_wiki_plan` selects the path through the
+[`NewFactPlacement`](../../crates/mwe-core/src/planner.rs) enum, and
+[`dream::placement_for`](../../crates/mwe-core/src/dream.rs) is the single site
+that maps a cadence onto it — factored out so the policy is pinned by a unit
+test rather than buried in `run_compile`.
 
-**That input is now list-only, and this stage is the open half of the work.**
-The ingest classifier no longer proposes a destination for prose — it is shown
-no wikis and no prose pages, so any name it emitted was a guess it could not
-check ([ingest-pipeline.md](ingest-pipeline.md)). Only `lista` extractions
-carry a `target_page`. Everything else arrives with the wiki's buffer page and
-therefore takes the orphan fallback, waiting on `notes.md` for REM's reorg to
-lift it. The replacement is to run the Cartografo at the **light** cadence on
-the cheap tier — the code path already exists
-(`NewFactPlacement::Cartografo`), it is the model tier and the cost of smaller,
-more frequent batches that have to be decided. Until then, a page is chosen
-either by a user pointing at a list or by REM. **A `high`-salience fact
-(`fact_index.salience`) is routed the same way regardless
-of its target_page**: `ingest_placement_blueprint` leaves it unassigned so the
-orphan fallback homes it on the actor-wiki's **identity card**
-(`profile.md`), the always-on **base context**. The routing *is* the
-reservation: an always-on fact (identity, health/safety, hard standing
-constraints) overrides whatever theme page the classifier proposed. `build_wiki_plan` selects between
-the two paths via the [`NewFactPlacement`](../../crates/mwe-core/src/planner.rs)
-enum (`Ingest` for light, `Cartografo` for full, `OrphanFallback` for a Full
-pass with no strong slot). So a fact is **catalogued at ingest and laid down
-cheaply by the light dream**, then the nightly REM re-runs the strong Cartografo
-to re-home and reorganise.
+**Light (`NamedThenCartografo`) — the page the user named, then the model.**
+Two halves, in this order, and the order is the design:
+
+1. **What the user named is settled deterministically, with no LLM**, onto
+   `fact_index.target_page` by
+   [`ingest_placement_blueprint`](../../crates/mwe-core/src/planner.rs) — a
+   `concept_leaf` per distinct target slug (a path like `recipes/dinner.md`
+   flattens to one leaf; the light path does not nest), seeded with the
+   proposed `style` + `page_description` so the page gets a testata — a
+   **seed**, not the page's permanent card, see
+   [the card heal](#the-card-heal--a-page-is-described-by-what-was-written-on-it).
+   Since prompt v2.59 that input is exactly the two cases where the write
+   could not wait: a `lista`, or a container the user asked for by name
+   ([ingest-pipeline.md](ingest-pipeline.md)). **Those facts never reach the
+   model.** A `lista` is a *set* — half a shopping list is a wrong answer, not
+   a partial one — and the Cartografo is shown neither the style nor the
+   proposed page ([`describe_facts`](../../crates/mwe-core/src/planner.rs)), so
+   offering it a list item is how that item leaves the list it was added to,
+   an hour after the user watched it land there.
+2. **Everything the classifier left unplaced goes to the Cartografo on the
+   cheap ingest tier.** That is every prose fact, and it is the reason this
+   stage runs hourly at all: without it a prose fact has no page of its own,
+   takes the orphan fallback to its wiki's buffer (`notes.md`), and is then
+   *carried over* by every later build — so the strong nightly Cartografo
+   never sees it as new either, and the buffer only drains when REM's split or
+   the reviewer's oversize nomination reaches it.
+
+With no ingest slot wired there is no cheap tier to run half 2 on, and the
+light pass degrades to half 1 alone (`NewFactPlacement::Ingest`), which is the
+pre-2026-08-09 behaviour. The chosen placement is on the compile log
+(`placement.label()`), so the degradation is visible rather than silent.
+
+**Full (`Cartografo`) — the strong slot over everything, and the re-open park
+is its alone.** The nightly pass re-runs the strong-model Cartografo to re-home
+and reorganise. It is also the **only** placement that consumes the re-open
+park, where the reviewer and the compile-failure ledger nominate *carried*
+placements for a second judgement: consuming a nomination clears it, so
+whichever build consumes it is the one that answers it, and a cheap hourly
+build answering it is how a considered cross-wiki move gets silently reversed
+before morning (observed live 2026-07-04). The light pass runs a Cartografo and
+still carries the park forward untouched — its job is placing facts that never
+had a page, never re-judging one the strong model already chose. In the code
+this is deliberately `matches!(placement, NewFactPlacement::Cartografo(_))` and
+**not** `placement.runs_cartografo()`.
+
+**A `high`-salience fact (`fact_index.salience`) is in neither half.**
+`ingest_placement_blueprint` leaves it unassigned so the orphan fallback homes
+it on the actor-wiki's **identity card** (`profile.md`), the always-on **base
+context**, and the light Cartografo's remainder excludes it with the same test.
+The routing *is* the reservation: an always-on fact (identity, health/safety,
+hard standing constraints) overrides whatever theme page was proposed, so it is
+not a decision to put in front of a model. A fact whose target is `index.md` /
+empty falls through to the same orphan fallback, never a page named "index".
+
+`OrphanFallback` remains for a Full pass with no strong slot.
 
 ### Stage 1.5 — the Conciliatore (strong-model dedup)
 
@@ -619,21 +644,25 @@ and `conciliatore` arguments; `NewFactPlacement::OrphanFallback` / `conciliatore
 the deterministic orphan fallback homing every fact and all proposed pages
 accepted as-is. No half-baked "structure without a verdict" path, and no hard
 dependency on a configured strong slot just to get a usable plan. The light
-cadence passes `NewFactPlacement::Ingest` deliberately — the strong Cartografo
-is REM-only — while the Conciliatore runs at **both** cadences on the cadence's
-tier (see [Stage 1](#stage-1--the-cartografo-strong-model-classification) /
+cadence passes `NewFactPlacement::NamedThenCartografo` — the same Cartografo on
+the **cheap** tier, over the remainder only — while the Conciliatore runs at
+**both** cadences on the cadence's tier (see
+[Stage 1](#stage-1--the-cartografo-strong-model-classification) /
 [Stage 1.5](#stage-15--the-conciliatore-strong-model-dedup)).
 
 **Tier per cadence — "the strong model works ONLY at
 REM".** The strong tier above applies to the [`Cadence::Full`](../../crates/mwe-core/src/dream.rs)
-compile (nightly REM + operator-driven compiles). The frequent, cheap
-**light dream** (`Cadence::Light`) does **not** run the Cartografo at all
-(placement is the deterministic [ingest-hint path](#stage-1--the-cartografo-strong-model-classification),
-`NewFactPlacement::Ingest`); the remaining LLM stages — Conciliatore, Cronista,
-Hub Writer — run on the cheap **ingest-tier (Flash)** backend (the same model
-the classifier runs on; it reaches `run_compile` as the bag's `apply` slot),
-falling back to the strong slot only when no `ingest` slot is configured. So a light dream never
-touches the Pro tier; the nightly REM recompiles the same pages at full quality.
+compile (nightly REM + operator-driven compiles). Every LLM stage of the
+frequent, cheap **light dream** (`Cadence::Light`) — Cartografo, Conciliatore,
+Cronista, Hub Writer — runs on the cheap **ingest-tier (Flash)** backend (the
+same model the classifier runs on; it reaches `run_compile` as the bag's `apply`
+slot), falling back to the strong slot only when no `ingest` slot is configured.
+The Cartografo is the one that does not fall back: with no `ingest` slot the
+light pass simply keeps its deterministic half
+(`NewFactPlacement::Ingest`) rather than borrowing the Pro tier hourly. So a
+light dream never touches the Pro tier; the nightly REM recompiles the same
+pages at full quality — and re-judges the placements the reviewer nominated,
+which the light pass never touches.
 No new operator config — the slots already exist (`ingest` = Flash, `cronista` /
 `rem_promotions` = strong, `hub_writer` = workhorse — see
 [LLM functions](llm-functions.md)); `run_compile` just selects per cadence

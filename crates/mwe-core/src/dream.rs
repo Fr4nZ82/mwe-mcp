@@ -66,9 +66,12 @@ pub struct FullOutcome {
 /// Which dream cadence is driving a compile pass.
 ///
 /// The distinction lets the frequent, cheap light dream run on the cheap
-/// ingest tier while the nightly REM runs at full strong-model quality; the
-/// Cartografo (strong-model fact classification) stays REM-only. A
-/// manual/operator compile runs at full quality.
+/// ingest tier while the nightly REM runs at full strong-model quality. Both
+/// cadences place new facts with the Cartografo — the light one on the cheap
+/// tier and only over what the user did not name — but the **re-open park**,
+/// where the reviewer nominates carried placements for a second judgement, is
+/// answered by the strong pass alone. A manual/operator compile runs at full
+/// quality.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cadence {
     /// The frequent automatic light dream (promote → compile dirty pages).
@@ -114,6 +117,36 @@ fn tier_backend<'a>(
     }
 }
 
+/// Pick how NEW facts are placed, per cadence.
+///
+/// LIGHT honours every page the USER named and hands only the remainder to the
+/// Cartografo on the cheap ingest tier — the half that gives the write side its
+/// structure back within the hour instead of overnight. With no ingest slot
+/// there is no cheap tier to run it on, so it degrades to the deterministic
+/// half alone. FULL runs the strong Cartografo over everything, and it alone
+/// answers the re-open park (see [`planner::build_wiki_plan`]); with no strong
+/// slot it degrades to the orphan-fallback.
+///
+/// Factored out, like [`tier_backend`] beside it, so the policy is pinned by a
+/// unit test instead of being buried in `run_compile` where changing it goes
+/// unnoticed by every test in the suite.
+fn placement_for<'a>(
+    cadence: Cadence,
+    flash: Option<&'a dyn LlmBackend>,
+    strong: Option<&'a dyn LlmBackend>,
+) -> NewFactPlacement<'a> {
+    match cadence {
+        Cadence::Light => flash.map_or(
+            NewFactPlacement::Ingest,
+            NewFactPlacement::NamedThenCartografo,
+        ),
+        Cadence::Full => strong.map_or(
+            NewFactPlacement::OrphanFallback,
+            NewFactPlacement::Cartografo,
+        ),
+    }
+}
+
 /// Run the narrative compile pass: (incrementally) rebuild the
 /// compilation plan, compile the dirty pages into prose, then run the
 /// deterministic reviewer.
@@ -123,12 +156,11 @@ fn tier_backend<'a>(
 /// [`Cadence::Full`] each stage uses its own configured slot — the Cartografo
 /// the strong `rem_promotions` slot (`llms.auto_promote`), the Conciliatore the
 /// `rem_dedup_semantic` slot (`llms.revisor` — the low binary-classifier
-/// confirmer tier), the Cronista its own slot, the
-/// Hub Writer the `hub_writer` slot. In [`Cadence::Light`] the Cartografo does
-/// not run at all — new facts are placed on their ingest-proposed page
-/// ([`NewFactPlacement::Ingest`]) — while the Conciliatore, the Cronista and
-/// the Hub Writer run on the cheap ingest-tier (Flash) backend via
-/// [`tier_backend`]; the strong tier is REM-only.
+/// confirmer tier), the Cronista its own slot, the Hub Writer the `hub_writer`
+/// slot. In [`Cadence::Light`] every stage runs on the cheap ingest-tier
+/// (Flash) backend via [`tier_backend`], the Cartografo included
+/// ([`NewFactPlacement::NamedThenCartografo`], which reaches only the facts the
+/// user did not name a page for); the strong tier is REM-only.
 ///
 /// # Errors
 ///
@@ -152,18 +184,28 @@ pub async fn run_compile(
     let flash = llms.apply;
     let cronista = tier_backend(cadence, cronista_strong, flash);
     let hub_writer = tier_backend(cadence, llms.hub_writer, flash);
-    // Placement of NEW facts per cadence. LIGHT settles each
-    // fact on the page the ingest classifier already proposed — no LLM, the
-    // strong-model Cartografo is REM-only. FULL runs the Cartografo (the
-    // `rem_promotions` slot); a Full pass with no strong slot configured degrades
-    // to the deterministic orphan-fallback (the historical `None` behaviour).
-    let placement = match cadence {
-        Cadence::Light => NewFactPlacement::Ingest,
-        Cadence::Full => llms.auto_promote.map_or(
-            NewFactPlacement::OrphanFallback,
-            NewFactPlacement::Cartografo,
-        ),
-    };
+    // Placement of NEW facts per cadence.
+    //
+    // LIGHT honours every page the USER named — a list, a container asked for
+    // by name — deterministically, then hands the remainder to the Cartografo
+    // on the cheap ingest tier. The second half is what gives the write side
+    // its structure back: since the classifier stopped proposing a page for
+    // prose, a fact with no name of its own had nowhere to go but the wiki's
+    // buffer, and the strong Cartografo only ever looked at it the next night
+    // — by which time the light build had already settled it there, so the
+    // carry-over kept it. With no ingest slot wired there is no cheap tier to
+    // run it on, and the light pass degrades to the deterministic half alone.
+    //
+    // FULL runs the strong Cartografo (the `rem_promotions` slot) over
+    // everything, and it alone answers the re-open park; a Full pass with no
+    // strong slot configured degrades to the deterministic orphan-fallback
+    // (the historical `None` behaviour).
+    let placement = placement_for(cadence, flash, llms.auto_promote);
+    tracing::debug!(
+        cadence = ?cadence,
+        placement = placement.label(),
+        "dream compile: placement policy"
+    );
     // Conciliatore at BOTH cadences (placement-time near-synonym resistance,
     // see `conciliatore_backend`): the light dream runs it on the ingest tier
     // so a page born on the light path still passes the redirect check before
@@ -543,6 +585,68 @@ mod tests {
         assert_eq!(
             conciliatore_backend(Cadence::Light, &strong, None).model_id(),
             "pro"
+        );
+    }
+
+    /// Placement per cadence, on the shipped policy rather than on an argument
+    /// a test wrote by hand.
+    ///
+    /// The light dream PLACES: it honours the page the user named and hands
+    /// the remainder to the Cartografo on the cheap ingest tier. Before this
+    /// it settled only what the classifier had already named, which — since
+    /// the classifier stopped naming a page for prose — meant every prose fact
+    /// sat on its wiki's buffer until the next REM.
+    ///
+    /// Both degradations are part of the policy: no ingest slot ⇒ the light
+    /// pass keeps the deterministic half alone; no strong slot ⇒ the full pass
+    /// falls back to the orphan-fallback.
+    #[test]
+    fn light_places_with_the_cheap_cartografo_and_full_with_the_strong_one() {
+        let strong = FakeLlmBackend::new("pro", "x");
+        let flash = FakeLlmBackend::new("flash", "x");
+        assert_eq!(
+            placement_for(Cadence::Light, Some(&flash), Some(&strong)).label(),
+            "named-then-cartografo",
+            "the light dream places the facts the user did not name a page for"
+        );
+        assert_eq!(
+            placement_for(Cadence::Full, Some(&flash), Some(&strong)).label(),
+            "cartografo",
+            "REM classifies everything with the strong slot"
+        );
+        assert_eq!(
+            placement_for(Cadence::Light, None, Some(&strong)).label(),
+            "ingest",
+            "no ingest slot ⇒ no cheap tier to run it on"
+        );
+        assert_eq!(
+            placement_for(Cadence::Full, Some(&flash), None).label(),
+            "orphan-fallback",
+            "a Full pass never borrows the cheap tier"
+        );
+    }
+
+    /// The re-open park is the STRONG pass's work queue and nothing else may
+    /// clear it. The light cadence now runs a Cartografo too, so "runs the
+    /// Cartografo" stopped being the same question as "may answer a
+    /// nomination" — this pins them apart, which is the whole hazard of
+    /// letting the light pass place (a cheap hourly build reversed a
+    /// considered cross-wiki move within three hours on 2026-07-04).
+    #[test]
+    fn only_the_strong_pass_may_consume_the_reopen_park() {
+        let strong = FakeLlmBackend::new("pro", "x");
+        let flash = FakeLlmBackend::new("flash", "x");
+        let light = placement_for(Cadence::Light, Some(&flash), Some(&strong));
+        let full = placement_for(Cadence::Full, Some(&flash), Some(&strong));
+        assert!(light.runs_cartografo(), "the light pass does place facts");
+        assert!(full.runs_cartografo());
+        assert!(
+            matches!(full, NewFactPlacement::Cartografo(_)),
+            "only this variant consumes the park in build_wiki_plan"
+        );
+        assert!(
+            !matches!(light, NewFactPlacement::Cartografo(_)),
+            "the light pass must carry the park forward untouched"
         );
     }
 

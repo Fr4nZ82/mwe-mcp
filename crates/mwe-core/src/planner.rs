@@ -2009,7 +2009,7 @@ pub fn extract_assigned_fact_ids(plan: &CompilationPlan) -> BTreeMap<String, Str
 ///   page, so the model can split a grown page by content before it exceeds
 ///   what renders reliably as one page. The numbers are the signal; where
 ///   the content splits is the model's judgment.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct CartografoSignals {
     /// Owner principal (wire form, e.g. `user:bruno` / `group:famiglia` /
     /// `global`) → the rendered identity-page scope tag: a comma-joined list
@@ -2269,18 +2269,70 @@ pub async fn classify_facts(
 /// assignments regardless; only the facts the planner has not seen before flow
 /// through this choice.
 pub enum NewFactPlacement<'a> {
-    /// LIGHT cadence: settle each new fact onto the page the ingest classifier
-    /// already proposed (`fact_index.target_page`), deterministically and with
-    /// NO LLM call — the strong-model Cartografo is REM-only. A fact with
-    /// no concrete proposed page (a reserved name / empty / `None`)
-    /// orphan-falls-back.
+    /// Settle each new fact onto the page the ingest classifier already
+    /// proposed (`fact_index.target_page`), deterministically and with NO LLM
+    /// call. A fact with no concrete proposed page (a reserved name / empty /
+    /// `None`) orphan-falls-back.
+    ///
+    /// Since the classifier stopped proposing a page for prose, this places
+    /// only what the USER named — a `lista`, or a container they asked for by
+    /// name — so on its own it leaves every prose fact on the wiki's buffer.
+    /// Kept as the degraded light path for a deployment with no ingest slot
+    /// wired, and as the first half of [`Self::NamedThenCartografo`].
     Ingest,
     /// FULL / REM cadence: classify new facts with the strong-model Cartografo.
     Cartografo(&'a dyn LlmBackend),
+    /// LIGHT cadence: honour every page the user named, then hand ONLY the
+    /// remainder to the cheap-tier Cartografo.
+    ///
+    /// The two halves are not interchangeable and the order is the design.
+    /// A page the user named is not a model's to choose: a `lista` is a **set**
+    /// (half a shopping list is a wrong answer, not a partial one) and a
+    /// container someone asked for by name was already written there, live, in
+    /// front of them. Handing those to a model that is shown neither the style
+    /// nor the proposed page ([`describe_facts`]) is how an item leaves the
+    /// list it was added to. So they are settled first, deterministically, and
+    /// never reach the batch.
+    ///
+    /// What DOES reach it is everything the classifier left unplaced — which,
+    /// since prose stopped carrying a page name, is the material the buffer was
+    /// filling up with. That is the whole point of running the Cartografo
+    /// hourly: the write side gets its structure within the hour instead of
+    /// overnight.
+    ///
+    /// A `salience: "high"` fact is in neither half — it is reserved for the
+    /// owner's identity card and gets there by orphan-fallback, exactly as
+    /// under [`Self::Ingest`].
+    NamedThenCartografo(&'a dyn LlmBackend),
     /// No placement intelligence: every new fact orphan-falls-back to its
     /// owner / source-wiki foundation page — the historical `cartografo = None`
     /// degradation, kept for a Full pass on a deployment with no strong slot.
     OrphanFallback,
+}
+
+impl NewFactPlacement<'_> {
+    /// Does this placement actually call the Cartografo?
+    ///
+    /// Gates the context the model needs and nothing else pays for — the
+    /// enrollment-derived identity scopes and the per-wiki language directive.
+    /// Deliberately NOT the gate for consuming the re-open park: see
+    /// [`build_wiki_plan`], where that is the strong pass's alone.
+    #[must_use]
+    pub const fn runs_cartografo(&self) -> bool {
+        matches!(self, Self::Cartografo(_) | Self::NamedThenCartografo(_))
+    }
+
+    /// Stable name of the placement, for the compile log and for the test that
+    /// pins which one each cadence actually ships with.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Ingest => "ingest",
+            Self::Cartografo(_) => "cartografo",
+            Self::NamedThenCartografo(_) => "named-then-cartografo",
+            Self::OrphanFallback => "orphan-fallback",
+        }
+    }
 }
 
 /// Flatten an ingest `target_page` hint (a slug or `.md` path) to a concept-leaf
@@ -2387,8 +2439,61 @@ async fn place_new_facts(
             classify_facts(*llm, facts, foundation, registry, workdir, signals).await
         },
         NewFactPlacement::Ingest => Ok(ingest_placement_blueprint(facts)),
+        NewFactPlacement::NamedThenCartografo(llm) => {
+            let named = ingest_placement_blueprint(facts);
+            let settled: BTreeSet<&str> = named
+                .assignments
+                .iter()
+                .map(|a| a.fact_id.as_str())
+                .collect();
+            // The remainder is what the classifier left unplaced. A
+            // `high`-salience fact is excluded with the same `continue` that
+            // keeps it out of `named`: its home is the owner's card, reserved
+            // by the routing rather than chosen, so putting it in front of the
+            // Cartografo would offer a decision that is already made.
+            let remainder: Vec<FactForPage> = facts
+                .iter()
+                .filter(|f| {
+                    f.salience.as_deref() != Some("high") && !settled.contains(f.fact_id.as_str())
+                })
+                .cloned()
+                .collect();
+            if remainder.is_empty() {
+                return Ok(named);
+            }
+            // The mass the deterministic half just added is part of what the
+            // Cartografo has to judge against — a page that took four list
+            // items this hour is not the empty page the carried-over count
+            // says it is.
+            let mut signals = signals.clone();
+            for a in &named.assignments {
+                *signals.page_mass.entry(a.page_slug.clone()).or_default() += 1;
+            }
+            let classified =
+                classify_facts(*llm, &remainder, foundation, registry, workdir, &signals).await?;
+            Ok(merge_blueprints(named, classified))
+        },
         NewFactPlacement::OrphanFallback => Ok(Blueprint::default()),
     }
+}
+
+/// Fold the Cartografo's blueprint onto the deterministic one.
+///
+/// The two halves place disjoint fact sets, so assignments simply concatenate.
+/// Pages can collide — both halves may propose the same slug — and the
+/// deterministic one wins: it carries the style and description the user's own
+/// turn supplied, which is better testata than anything the model coins for a
+/// page it is meeting for the first time.
+fn merge_blueprints(mut named: Blueprint, classified: Blueprint) -> Blueprint {
+    let claimed: BTreeSet<String> = named.new_pages.iter().map(|p| p.slug.clone()).collect();
+    named.assignments.extend(classified.assignments);
+    named.new_pages.extend(
+        classified
+            .new_pages
+            .into_iter()
+            .filter(|p| !claimed.contains(&p.slug)),
+    );
+    named
 }
 
 // ---------- Stadio 1.5 — Il Conciliatore (LLM) ----------
@@ -2567,11 +2672,11 @@ fn backfill_accepted_new_style(accepted: &mut [NewPage], original: &[NewPage]) {
 /// the dirty set.
 ///
 /// `placement` chooses how NEW facts are placed ([`NewFactPlacement`]: LIGHT =
-/// the ingest classifier's `target_page` hint, no LLM; FULL = the strong-model
-/// Cartografo; or deterministic orphan-fallback). `conciliatore` is the
-/// strong-model backend for the dedup stage; `None` accepts every proposed page
-/// as-is. Carried-over assignments of already-known facts are preserved either
-/// way — only NEW facts flow through `placement`.
+/// the page the user named, then the cheap-tier Cartografo for the rest; FULL =
+/// the strong-model Cartografo; or deterministic orphan-fallback).
+/// `conciliatore` is the strong-model backend for the dedup stage; `None`
+/// accepts every proposed page as-is. Carried-over assignments of already-known
+/// facts are preserved either way — only NEW facts flow through `placement`.
 ///
 /// # Errors
 ///
@@ -2595,13 +2700,23 @@ pub async fn build_wiki_plan(
     // Placement re-opening (the carried-placement healing bridge): the
     // parked pages' facts leave the carry-over below and flow through the
     // Cartografo again — consumed here, cleared on the plan this build
-    // saves. Only a build that actually runs the Cartografo may consume
-    // the park: an Ingest (light) or OrphanFallback (degraded-full) build
-    // would re-settle the re-opened facts on stale ingest `target_page`
-    // hints / the owner's foundation page — burning the nomination and
-    // silently reversing considered moves (observed live 2026-07-04: a
-    // light build undid the refile judge's cross-wiki move within three
-    // hours). Non-Cartografo builds carry the park forward untouched.
+    // saves.
+    //
+    // **The park belongs to the STRONG pass, and to it alone.** It is filled
+    // by the reviewer and the compile-failure ledger with pages whose CARRIED
+    // placements deserve a second judgement — a considered re-home, not a
+    // first guess. Consuming it clears it, so whichever build consumes it is
+    // the one that answers the nomination. A cheap hourly build answering it
+    // is how a cross-wiki move made overnight gets silently reversed before
+    // morning (observed live 2026-07-04: a light build undid the refile
+    // judge's move within three hours).
+    //
+    // So this is deliberately NOT `placement.runs_cartografo()`. The light
+    // cadence now runs a Cartografo too ([`NewFactPlacement::NamedThenCartografo`]),
+    // on the cheap tier, and it must still carry the park forward untouched:
+    // its job is placing facts that have never had a page, never re-judging
+    // one the strong model already chose. Every other placement carries it
+    // forward for the older reason — it has no judgement to bring at all.
     // Only slugs the previous plan actually knows count.
     let reopen_consumable = matches!(placement, NewFactPlacement::Cartografo(_));
     let reopen: BTreeSet<String> = if reopen_consumable {
@@ -2640,7 +2755,7 @@ pub async fn build_wiki_plan(
             }
         }
     }
-    if matches!(placement, NewFactPlacement::Cartografo(_)) {
+    if placement.runs_cartografo() {
         signals.subject_scopes = subject_scopes_for(pool, &facts).await?;
         // Same shape, same moment: the page names both LLM stages coin are
         // read by a person, so each batch carries its wiki's language.
@@ -3267,6 +3382,101 @@ mod tests {
             page_description: None,
             salience: None,
         }
+    }
+
+    /// The light cadence's two halves, and the order that makes it safe.
+    ///
+    /// A page the USER named is settled deterministically and **never reaches
+    /// the model**: a `lista` is a set, and a shopping item re-homed by a
+    /// classifier an hour after it was added leaves the list it was added to.
+    /// Everything the classifier left unplaced — which since v2.59 is every
+    /// prose fact — is exactly what the Cartografo is there for.
+    #[tokio::test]
+    async fn light_placement_settles_the_named_page_and_shows_the_model_only_the_rest() {
+        use crate::llm::FakeLlmBackend;
+        let dir = tempfile::tempdir().unwrap();
+        let llm = FakeLlmBackend::new("flash", "{\"assignments\":[],\"new_pages\":[]}");
+
+        let mut named = fact(1, "detersivo per i piatti", "group:famiglia", "famiglia");
+        named.target_page = Some("spesa.md".to_owned());
+        named.style = Some("lista".to_owned());
+
+        let mut unplaced = fact(
+            2,
+            "Bob ha cominciato nuoto il martedi",
+            "user:franz",
+            "franz",
+        );
+        unplaced.target_page = Some(crate::wiki::NOTES_FILENAME.to_owned());
+
+        let mut reserved = fact(3, "Franz e celiaco", "user:franz", "franz");
+        reserved.target_page = Some(crate::wiki::NOTES_FILENAME.to_owned());
+        reserved.salience = Some("high".to_owned());
+
+        let bp = place_new_facts(
+            &NewFactPlacement::NamedThenCartografo(&llm),
+            &[named.clone(), unplaced.clone(), reserved.clone()],
+            &BTreeMap::new(),
+            &ConceptRegistry::empty("2026-08-09T00:00:00Z"),
+            dir.path(),
+            &CartografoSignals::default(),
+        )
+        .await
+        .expect("placement");
+
+        let seen = format!(
+            "{}{}",
+            llm.last_system_prompt().unwrap_or_default(),
+            llm.last_prompt().unwrap_or_default()
+        );
+        assert!(
+            !seen.contains("detersivo"),
+            "the list item the user named a page for must never be offered to the model"
+        );
+        assert!(
+            seen.contains("nuoto"),
+            "the unplaced prose fact is precisely what the light Cartografo is for"
+        );
+        assert!(
+            !seen.contains("celiaco"),
+            "a high-salience fact is reserved for the owner's card by the routing, \
+             so it is not a decision to offer"
+        );
+        assert_eq!(
+            bp.assignments
+                .iter()
+                .map(|a| a.page_slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["spesa"],
+            "only the deterministic half assigned anything — the fake returned no verdict"
+        );
+    }
+
+    /// With no cheap tier to run it on, the light pass keeps the deterministic
+    /// half and places nothing else — the pre-2026-08-09 behaviour, which is
+    /// the right degradation and not a silent one (`placement.label()` is on
+    /// the compile log).
+    #[tokio::test]
+    async fn light_placement_without_a_model_still_honours_the_named_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut named = fact(1, "detersivo", "group:famiglia", "famiglia");
+        named.target_page = Some("spesa.md".to_owned());
+        named.style = Some("lista".to_owned());
+        let mut unplaced = fact(2, "nuoto il martedi", "user:franz", "franz");
+        unplaced.target_page = Some(crate::wiki::NOTES_FILENAME.to_owned());
+
+        let bp = place_new_facts(
+            &NewFactPlacement::Ingest,
+            &[named, unplaced],
+            &BTreeMap::new(),
+            &ConceptRegistry::empty("2026-08-09T00:00:00Z"),
+            dir.path(),
+            &CartografoSignals::default(),
+        )
+        .await
+        .expect("placement");
+        assert_eq!(bp.assignments.len(), 1);
+        assert_eq!(bp.assignments[0].page_slug, "spesa");
     }
 
     fn person(slug: &str) -> PagePlan {

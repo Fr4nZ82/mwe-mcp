@@ -116,10 +116,12 @@ routing → seed) and stays inside the ~500 ms–2 s conversational budget
 > classifier stopped proposing a destination, `target_page` and `page_description` are only ever
 > populated when the write cannot wait — `lista` material, or a container the user
 > just asked for (see that section below); anything else carries the buffer page
-> and no description. In the **light**
-> cadence `build_wiki_plan` then places each new fact on its `target_page` **deterministically, with no LLM**
-> (`NewFactPlacement::Ingest` → `ingest_placement_blueprint`) — which for prose means the deterministic
-> orphan home — so the strong-model Cartografo is **REM-only**
+> and no description. In the **light** cadence `build_wiki_plan` settles each
+> fact that carries a `target_page` **deterministically, with no LLM**
+> (`ingest_placement_blueprint`), and hands everything else — i.e. all prose —
+> to the Cartografo on the cheap tier
+> (`NewFactPlacement::NamedThenCartografo`). The **strong** Cartografo, and the
+> re-open park it alone answers, stay REM-only
 > (see [narrative-compiler.md](narrative-compiler.md#stage-1--the-cartografo-strong-model-classification)).
 > The page frontmatter's `style` **prefers the ingest-proposed `style`** (carried on the plan as
 > `PagePlan.style`), falling back to the **Cronista's** compile-time choice when ingest proposed none
@@ -429,12 +431,25 @@ that reaches disk is a page. Pinned by
 switches.
 
 
-**This is deliberately an interim state.** Prose facts land on their wiki's
-buffer page — the designed holding place, which REM's reorg lifts onto real
-pages — until the light cadence learns to choose the page itself
-(`NewFactPlacement::Cartografo` on the cheap tier, today REM-only). That is the
-open work; the point of doing this half first is that the decision is now made
-by nobody rather than by the participant that could not see the pages.
+**Who chooses the page instead: the light dream, within the hour.** The
+decision did not disappear with the classifier's name for it, it moved to the
+one participant that can see the pages. The hourly light compile places every
+unnamed fact with the Cartografo on the cheap tier
+(`NewFactPlacement::NamedThenCartografo` — see
+[narrative-compiler.md](narrative-compiler.md#stage-1--the-cartografo-strong-model-classification)),
+and what the user *did* name — a `lista`, a container asked for by name — is
+settled before the model is called and never shown to it.
+
+So the wiki's buffer page (`notes.md`) is what a fact passes through between
+being captured and the next light cycle, not where it waits for the night. It
+is still the designed holding place for anything the Cartografo declines to
+place, and REM's reorg still drains it.
+
+Nothing about the *reading* depends on this: the recall block renders the
+fact's own text, and a fact captured this minute is served from the capture
+buffer's own slot. What placement buys is the **shape** of the memory a person
+opens — and the links, since a page is now reachable only through a fact hit,
+its card, or an authored `[[wikilink]]`.
 
 The sibling clause: **an unresolved reference stays unresolved.** A gap the turn
 did not fill keeps the turn's own wording; the fact is neither dropped nor
