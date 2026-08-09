@@ -1891,6 +1891,177 @@ struct TopicClosureDecision {
     closures: Vec<LlmClosure>,
 }
 
+/// What the reconciliation stage decided about facts that already existed.
+///
+/// Deliberately the SAME per-verb types the classifier used to emit, so the
+/// three `apply_plan_*` functions — and their guards, receipts and revert
+/// tokens — are reused rather than reimplemented. All three empty is the
+/// common, correct answer.
+#[derive(Debug, Default, serde::Deserialize)]
+struct ReconcileDecision {
+    #[serde(default)]
+    closures: Vec<LlmClosure>,
+    #[serde(default)]
+    validity_edits: Vec<LlmValidityEdit>,
+    #[serde(default)]
+    acl_changes: Vec<LlmAclChange>,
+}
+
+impl ReconcileDecision {
+    const fn is_empty(&self) -> bool {
+        self.closures.is_empty() && self.validity_edits.is_empty() && self.acl_changes.is_empty()
+    }
+}
+
+/// Render one candidate as the stage's prompt sees it:
+/// `fact_id · validity · audience · text`.
+///
+/// The audience is rendered because `acl_changes` REPLACES the allow list:
+/// a model asked to add the family to a fact has to be shown who is already
+/// on it, or "share it with the family too" silently drops everyone else.
+fn reconcile_candidate_line(h: &RecallHit) -> String {
+    let validity = match (h.valid_from.as_deref(), h.valid_to.as_deref()) {
+        (_, Some(to)) => format!("closed {to}"),
+        (Some(from), None) => format!("open since {from}"),
+        (None, None) => "open".to_owned(),
+    };
+    let audience = if h.allow_ids.is_empty() {
+        format!("owner {}", h.owner_id)
+    } else {
+        let allow = h
+            .allow_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("owner {} allow [{allow}]", h.owner_id)
+    };
+    format!(
+        "{} · {validity} · {audience} · {}",
+        h.fact_id,
+        truncate(&h.text, 160)
+    )
+}
+
+/// Assemble the reconciliation stage's candidate set: the union, deduplicated
+/// by `fact_id`, of what this turn actually read.
+///
+/// Order matters and is not arbitrary. The flat hits come first because they
+/// are ranked by relevance to this very message; the page-scoped facts follow
+/// because they are complete rather than ranked, so if the cap ever bites it
+/// takes from the tail of the structural leg rather than from the head of the
+/// relevant one.
+async fn reconcile_candidates(
+    pool: &SqlitePool,
+    flat: &[RecallHit],
+    nav_paths: &[String],
+    sender_ctx: &SenderContext,
+) -> Vec<RecallHit> {
+    let mut out: Vec<RecallHit> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for h in flat {
+        if seen.insert(h.fact_id.as_str().to_owned()) {
+            out.push(h.clone());
+        }
+    }
+    match recall::facts_on_pages(pool, nav_paths, sender_ctx, RECONCILE_CANDIDATE_CAP).await {
+        Ok(hits) => {
+            for h in hits {
+                if seen.insert(h.fact_id.as_str().to_owned()) {
+                    out.push(h);
+                }
+            }
+        },
+        Err(err) => {
+            // Soft, like every other leg: reconciling against less is worse
+            // than reconciling against nothing only if the turn then claims
+            // completeness, and it never does.
+            tracing::warn!(error = %err, "ingest: page-scoped candidates unavailable — reconciling on the flat hits alone");
+        },
+    }
+    out.truncate(RECONCILE_CANDIDATE_CAP);
+    out
+}
+
+/// The **reconciliation stage** — one call, after the navigator, deciding what
+/// this turn does to facts that ALREADY EXIST.
+///
+/// Runs at the last point in the turn where the engine has actually *read* the
+/// memory, which is the whole reason it is here and not in the classifier:
+/// the four verbs all judge stored facts, and the classifier is shown a top-K
+/// similarity sample. The founder's rule — *a slot may reconcile against a set
+/// it is shown COMPLETE, never against a sample* — is satisfiable here because
+/// [`recall::facts_on_pages`] returns every readable fact on each opened page.
+///
+/// Skipped with no model call when the candidate set is empty: a turn that
+/// read nothing has nothing to reconcile against, and that is the shape of a
+/// pure chat turn.
+///
+/// Every failure is soft — an unreachable model, an unparseable answer, a
+/// hallucinated id — and returns "nothing changed". The stage may only ever
+/// retire, re-date or re-share something the message plainly named; when in
+/// doubt it does nothing, because a missed reconciliation comes back next turn
+/// and a wrong one has already forgotten the wrong thing.
+async fn reconcile_after_reading(
+    tree: &WikiTree,
+    llm: &dyn LlmBackend,
+    request: &IngestRequest,
+    turn_now: chrono::DateTime<chrono::Utc>,
+    candidates: &[RecallHit],
+) -> ReconcileDecision {
+    if candidates.is_empty() {
+        return ReconcileDecision::default();
+    }
+    let lines = candidates
+        .iter()
+        .map(reconcile_candidate_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let turn_time = format!("{} ({})", turn_now.to_rfc3339(), turn_now.format("%A"));
+    let prompt = match prompts::render(
+        "ingest-reconcile",
+        tree.workdir(),
+        BUNDLED_INGEST_RECONCILE_MD,
+        &[
+            ("message", request.text.as_str()),
+            ("current_time", turn_time.as_str()),
+            ("candidates", lines.as_str()),
+        ],
+    ) {
+        Ok(p) => p,
+        Err(err) => {
+            tracing::warn!(error = %err, "ingest: reconcile prompt failed — nothing reconciled");
+            return ReconcileDecision::default();
+        },
+    };
+    let resp = match llm
+        .complete(
+            CompletionRequest::new(prompt)
+                .with_temperature(0.1)
+                .with_max_tokens(1024),
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(error = %err, "ingest: reconciler unavailable — nothing reconciled");
+            return ReconcileDecision::default();
+        },
+    };
+    let decision = parse_first_json::<ReconcileDecision>(&resp.text).unwrap_or_else(|| {
+        tracing::warn!("ingest: reconciler answer unparseable — nothing reconciled");
+        ReconcileDecision::default()
+    });
+    tracing::info!(
+        candidates = candidates.len(),
+        closures = decision.closures.len(),
+        validity_edits = decision.validity_edits.len(),
+        acl_changes = decision.acl_changes.len(),
+        "ingest: reconciliation stage done"
+    );
+    decision
+}
+
 /// The focused per-topic recall of [`confirm_topic_closures`]: each
 /// topic is its own query against promoted facts AND the fresh buffered
 /// slot (a same-day target lives only there), the union deduplicated by
@@ -2925,6 +3096,19 @@ pub const BUNDLED_INGEST_PROMPT_MD: &str = include_str!("../prompts/ingest.md");
 /// see [`confirm_topic_closures`]. Operator override:
 /// `<workdir>/prompts/ingest-closures.md`.
 pub const BUNDLED_INGEST_CLOSURES_MD: &str = include_str!("../prompts/ingest-closures.md");
+
+/// Bundled system prompt of the **reconciliation stage**
+/// ([`reconcile_after_reading`]). Operator override:
+/// `<workdir>/prompts/ingest-reconcile.md`.
+pub const BUNDLED_INGEST_RECONCILE_MD: &str = include_str!("../prompts/ingest-reconcile.md");
+
+/// Resource bound on the reconciliation stage's candidate set.
+///
+/// Not a semantic limit: the point of the stage is to be shown the opened
+/// pages COMPLETE, so this exists only to keep one pathological turn from
+/// rendering a thousand lines into a prompt. [`recall::facts_on_pages`] logs
+/// when its own share of it bites.
+const RECONCILE_CANDIDATE_CAP: usize = 120;
 
 /// Standing directive returned on the `rules` channel for every turn of the
 /// builtin `guest` pseudo-identity (the unidentified-human sender).
@@ -6290,6 +6474,12 @@ pub async fn wiki_ingest_message(
                 }
 
                 // Surface the first filed fact as the turn's anchor id.
+                //
+                // The supersede half of reconciliation will need EVERY id this
+                // turn wrote, not just the first: a fact that replaces another
+                // has to be nameable before it can inherit that fact's
+                // audience. Collected then, with the setters it needs — not
+                // parked here unread.
                 if capture_id.is_none() {
                     capture_id = Some(this_id);
                 }
@@ -6515,6 +6705,52 @@ pub async fn wiki_ingest_message(
         _ => None,
     };
     let navigated = nav_tail.as_ref().and_then(|t| t.section.clone());
+
+    // Step 5a-bis — THE RECONCILIATION STAGE. The last point in the turn where
+    // the engine has actually read the memory, and therefore the only place a
+    // judgement about an ALREADY-STORED fact can be made honestly: the
+    // classifier that used to make it was shown a top-K similarity sample, and
+    // a judgement that needs the store and gets a sample fails silently, by
+    // omission, and compounds. See `docs/design-notes/ingest-pipeline.md`
+    // §"The reconciliation stage".
+    //
+    // Runs on a turn that CAPTURED (a recall turn asks; it does not change
+    // what is stored), and only when the turn actually read something — with
+    // no candidates there is nothing to reconcile against and no call is made,
+    // which is the shape of an ordinary chat turn.
+    let mut reconciled = 0usize;
+    if matches!(intent, IntentKind::Capture) {
+        let nav_paths: Vec<String> = nav_tail
+            .as_ref()
+            .map(|t| t.page_paths.clone())
+            .unwrap_or_default();
+        let candidates = reconcile_candidates(pool, &recall_hits, &nav_paths, &sender_ctx).await;
+        let decision = reconcile_after_reading(tree, llm, &request, turn_now, &candidates).await;
+        if !decision.is_empty() {
+            reconciled +=
+                apply_plan_closures(pool, &decision.closures, &candidates, &request, turn_now)
+                    .await;
+            reconciled += apply_plan_validity_edits(
+                pool,
+                tree,
+                &decision.validity_edits,
+                &candidates,
+                &request,
+            )
+            .await;
+            reconciled +=
+                apply_plan_acl_changes(pool, tree, &decision.acl_changes, &candidates, &request)
+                    .await;
+        }
+        // A turn that filed no fact but retired one is not a turn that did
+        // nothing. `nothing_filed` was computed before this stage ran, and it
+        // gates the canned "I've noted that" seed — leaving it set here would
+        // make the engine tell the user nothing happened on the very turn the
+        // gesture landed.
+        if reconciled > 0 {
+            nothing_filed = false;
+        }
+    }
 
     // Step 5b — project-docs slot, second half (roadmap 48i). A signpost
     // in the recall block says a project exists; whether READING that
@@ -11377,7 +11613,15 @@ mod tests {
              \"suggested_seed\":\"Segnato come visto.\"}}",
             planted.fact_id.as_str()
         );
-        let llm = FakeLlmBackend::new("fake", &llm_resp);
+        // Scripted rather than a fake that repeats itself: the reconciliation
+        // stage runs after the reading and would otherwise be handed the
+        // classifier's own JSON back and apply the same closure twice. This
+        // test is about the operator-override route into `apply_plan_closures`,
+        // so the stage is scripted to change nothing.
+        let llm = ScriptedLlm::new(&[
+            &llm_resp,
+            "{\"closures\":[],\"validity_edits\":[],\"acl_changes\":[]}",
+        ]);
         let resp = wiki_ingest_message(
             &pool,
             &tree,
@@ -11837,7 +12081,14 @@ mod tests {
              \"valid_to\":null}}]}}",
             planted.fact_id.as_str()
         );
-        let llm = ScriptedLlm::new(&[classify, &confirm]);
+        // Plus the reconciliation stage, which runs after the reading on
+        // every capture turn that surfaced candidates; scripted to change
+        // nothing so this test keeps measuring the topic pass alone.
+        let llm = ScriptedLlm::new(&[
+            classify,
+            &confirm,
+            "{\"closures\":[],\"validity_edits\":[],\"acl_changes\":[]}",
+        ]);
         let resp = wiki_ingest_message(
             &pool,
             &tree,
@@ -11867,6 +12118,103 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(receipts, 1, "one born-applied validity_close receipt");
+        drop(dir);
+    }
+
+    /// The reconciliation stage closes a fact the classifier never even saw a
+    /// verb for. The classifier's plan carries NO closures — the bundled
+    /// prompt stopped asking for them in v2.59 — and the retirement is decided
+    /// after the memory has been read, from the candidate set the turn built.
+    #[tokio::test]
+    async fn the_reconciliation_stage_retires_what_the_message_says_is_done() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let planted = capture::wiki_capture(
+            &tree,
+            &pool,
+            fake_embedder(),
+            CaptureRequest {
+                authored_refs: Vec::new(),
+                wiki_id: WikiId::parse("alice").unwrap(),
+                page: PathBuf::from("index.md"),
+                body: "alice deve comprare il latte".into(),
+                owner: Principal::User("alice".into()),
+                allow: Vec::new(),
+                sender: None,
+                fact_type: Some("commitment".into()),
+                topics: vec!["spesa".into()],
+                dedup_threshold: Some(0.99),
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                page_description: None,
+                salience: None,
+            },
+        )
+        .await
+        .expect("plant");
+
+        // The classifier says only what the MESSAGE is; it names no fact.
+        let classify = "{\"intent\":\"capture\",\"extractions\":[],\
+                        \"suggested_seed\":\"Fatto.\"}";
+        let reconcile = format!(
+            "{{\"closures\":[{{\"target\":\"{}\",\"reason\":\"completed\",\"valid_to\":null}}],\
+              \"validity_edits\":[],\"acl_changes\":[]}}",
+            planted.fact_id.as_str()
+        );
+        let llm = ScriptedLlm::new(&[classify, &reconcile]);
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("ho comprato il latte", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert_eq!(resp.intent, IntentKind::Capture);
+
+        let row = fact_index::find_by_id(&pool, &planted.fact_id)
+            .await
+            .expect("find")
+            .expect("row");
+        assert_eq!(
+            row.decay_reason.as_deref(),
+            Some(fact_index::decay::COMPLETED),
+            "the reconciliation stage retired the spent commitment"
+        );
+        assert!(
+            row.valid_to.is_some(),
+            "and stamped when it stopped holding"
+        );
+        drop(dir);
+    }
+
+    /// The stage is a precision instrument: an empty answer changes nothing,
+    /// and — the part that matters for cost — a turn whose reading surfaced
+    /// no candidate at all makes no second call, so the script's single entry
+    /// is never popped twice.
+    #[tokio::test]
+    async fn the_reconciliation_stage_calls_nothing_when_the_turn_read_nothing() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let llm = ScriptedLlm::new(&["{\"intent\":\"capture\",\"extractions\":[]}"]);
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("dimentica quello che ti ho detto sul golf", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+        assert_eq!(
+            resp.intent,
+            IntentKind::Capture,
+            "a gesture still reaches the reading"
+        );
         drop(dir);
     }
 
@@ -11938,6 +12286,12 @@ mod tests {
             // The confirmer hallucinates an id that is in NO candidate list.
             "{\"closures\":[{\"target\":\"0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d99\",\
              \"reason\":\"retracted\",\"valid_to\":null}]}",
+            // The reconciliation stage runs after the reading on every capture
+            // turn that surfaced candidates. This legacy path exercises the
+            // operator-override route into the same appliers, so the stage is
+            // scripted to change nothing and the test keeps measuring what it
+            // was written to measure.
+            "{\"closures\":[],\"validity_edits\":[],\"acl_changes\":[]}",
         ]);
         let resp = wiki_ingest_message(
             &pool,

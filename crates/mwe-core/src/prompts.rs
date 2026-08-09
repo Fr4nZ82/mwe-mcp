@@ -230,6 +230,10 @@ const WORKDIR_PROMPTS_SUBDIR: &str = "prompts";
 pub const BUNDLED: &[(&str, &str)] = &[
     ("ingest", crate::ingest::BUNDLED_INGEST_PROMPT_MD),
     ("ingest-closures", crate::ingest::BUNDLED_INGEST_CLOSURES_MD),
+    (
+        "ingest-reconcile",
+        crate::ingest::BUNDLED_INGEST_RECONCILE_MD,
+    ),
     ("rem-dedup", crate::rem::BUNDLED_REM_DEDUP_MD),
     ("rem-promotions", crate::rem::BUNDLED_REM_PROMOTIONS_MD),
     ("rem-completion", crate::rem::BUNDLED_REM_COMPLETION_MD),
@@ -328,6 +332,7 @@ pub const PROSE_REGISTRY: &[(&str, PromptOutput)] = &[
     ("document-merge", PromptOutput::Prose),
     // --- emits judgements, ids, numbers, enum choices ---
     ("ingest-closures", PromptOutput::Internal),
+    ("ingest-reconcile", PromptOutput::Internal),
     ("navigator", PromptOutput::Internal),
     ("query-seeds", PromptOutput::Internal),
     ("rem-dedup", PromptOutput::Internal),

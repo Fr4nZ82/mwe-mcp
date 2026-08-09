@@ -712,21 +712,35 @@ top-level synthesis would capture the container request itself), and it
 never demotes to the skip fallback — the nudge IS its outcome even when
 nothing files.
 
-## The reconciliation stage — OPEN WORK, and why it is not the classifier's
+## The reconciliation stage — BUILT, and why it is not the classifier's
 
 Four operations decide the fate of a fact that **already exists**: closing it
 (completion / forget gesture), **superseding** it, correcting its **dates**,
 changing **who may read it**. Until prompt v2.59 all four were the classifier's,
 decided against the ten-odd facts the flat recall happened to surface.
 
-**They were removed from the classifier and are not yet re-implemented
-anywhere.** Between v2.59 and the stage described below, nothing closes,
-nothing supersedes, no date is corrected and no sharing is changed from chat —
-a deliberate interim, taken while production was down and this area was being
-rebuilt (founder, 2026-08-06). The engine's `apply_plan_closures` /
-`apply_plan_validity_edits` / `apply_plan_acl_changes` and the matching
-`LlmIngestPlan` fields are **kept on purpose**: they are this stage's substrate,
-and an operator-overridden prompt that still emits them keeps working.
+They were removed from the classifier and rebuilt here, on the read side:
+[`ingest::reconcile_after_reading`](../../crates/mwe-core/src/ingest.rs), one
+call on the `ingest` slot, after the navigator, with
+`prompts/ingest-reconcile.md` as its brief. **Three of the four verbs are
+live** — close, re-date, re-share — and each one is applied by the same
+`apply_plan_*` function the classifier used to feed, so the guards, the
+born-applied receipts and the revert tokens are reused rather than
+reimplemented. An operator-overridden prompt that still emits the fields at
+classification time keeps working, unchanged, alongside it.
+
+**The fourth verb, `supersede`, is not built.** A restatement is retired
+through `closures` / `contradicted`, which is what stops the stale value being
+served as true; what is missing is welding the new fact to the old one — the
+successor pointer and, load-bearing, the **audience inheritance**. Deciding the
+supersede *after* the successor has been written makes that a second write
+against whichever store holds it (`fact_index` for a live write,
+`capture_buffer` for a buffered one), and neither setter exists. It also needs
+the orchestrator to keep **every** id the turn filed: `capture_id` retains only
+the first, as the turn's anchor for the wire, and a successor must be nameable
+before it can inherit anything. Until then a restatement leaves both rows
+present with the old one closed — which is honest — rather than one row
+silently re-privatised, which is the failure this verb exists to prevent.
 
 ### The rule that decides where a judgement belongs
 
@@ -779,15 +793,26 @@ bound on the whole set and it **logs when it bites** — a candidate silently
 dropped here is a fact that quietly cannot be closed. Pinned by
 `facts_on_pages_returns_the_whole_page_and_only_what_the_reader_may_see`.
 
-**Still to build**, in order: the stage that assembles the three legs and makes
-the call; generalising `prompts/ingest-closures.md` from one verb to four; the
-supersede write. Note for whoever picks it up: the orchestrator currently
-retains only the turn's **first** filed fact (`capture_id`, the turn's anchor),
-so supersede needs the capture loop to collect all of this turn's ids — a
-superseding fact has to be nameable before it can inherit anything. And
-`nothing_filed` (`ingest.rs`) is computed *before* this stage would run, so it
-has to be recomputed after it: a turn that files nothing but closes something
-is not a turn that did nothing.
+**How the legs are assembled**, in `ingest::reconcile_candidates`: the flat
+hits first, because they are ranked by relevance to *this* message, then the
+page-scoped facts, because they are complete rather than ranked. Deduplicated
+by `fact_id`, capped at `RECONCILE_CANDIDATE_CAP` (120) — so if the cap ever
+bites it takes from the tail of the structural leg rather than from the head of
+the relevant one. A failure of the page leg is soft: the stage reconciles
+against the flat hits alone rather than not at all, and says so in the log.
+
+**When it runs.** On a `capture` turn — a recall turn asks, it does not change
+what is stored — and only when the candidate set is non-empty. A turn that read
+nothing has nothing to reconcile against and makes **no second call**, which is
+the shape of an ordinary chat turn. Founder's ruling, 2026-08-09: always, when
+there are candidates; no cleverness deciding in advance whether a message
+"looks like" it changes something, because a filter that guesses wrong loses
+the turn silently.
+
+**`nothing_filed` is recomputed after it.** It gates the canned *"I've noted
+that"* seed and is calculated before this stage runs, so a turn that filed no
+fact but retired one would otherwise be told nothing happened on the very turn
+its gesture landed.
 
 ### What it decides, and what it must not lose
 
