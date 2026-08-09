@@ -818,7 +818,18 @@ hits first, because they are ranked by relevance to *this* message, then the
 page-scoped facts, because they are complete rather than ranked. Deduplicated
 by `fact_id`, capped at `RECONCILE_CANDIDATE_CAP` (120) — so if the cap ever
 bites it takes from the tail of the structural leg rather than from the head of
-the relevant one. A failure of the page leg is soft: the stage reconciles
+the relevant one.
+
+**Within the page leg the order is NEWEST FIRST, across all opened pages
+together** (`recall::facts_on_pages`). The cap decides what the stage never
+sees, so it has to drop the least likely candidate: what a message closes is
+almost always recent. A family shopping page a year old, a turn saying "ho
+comprato il latte" — fill the cap oldest-first and the item written three days
+ago is the one never shown, the model answers honestly that nothing matches,
+and it stays open forever. The store's query returns `created_at ASC` and is
+shared with `comment_apply` and `signposts`, which is why the reversal lives in
+`facts_on_pages` rather than in the SQL; the sort is stable, so the navigator's
+page order survives as the tie-break. A failure of the page leg is soft: the stage reconciles
 against the flat hits alone rather than not at all, and says so in the log.
 
 **When it runs.** On a `capture` turn — a recall turn asks, it does not change

@@ -2089,14 +2089,9 @@ pub async fn facts_on_pages(
     }
     let mut hits: Vec<RecallHit> = Vec::new();
     let mut seen_paths: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    let mut truncated = false;
     for path in paths {
         if !seen_paths.insert(path.as_str()) {
             continue;
-        }
-        if hits.len() >= cap {
-            truncated = true;
-            break;
         }
         let rows = fact_index::find_active_by_source_path(pool, path).await?;
         hits.extend(
@@ -2105,17 +2100,32 @@ pub async fn facts_on_pages(
                 .map(|row| RecallHit::from_row(row, 1.0)),
         );
     }
+    // NEWEST FIRST, across all the pages together — the cap decides what the
+    // stage never sees, so it has to drop the least likely candidate, not the
+    // nearest one to hand.
+    //
+    // The store's query returns `created_at ASC` (a shared query: `comment_apply`
+    // and `signposts` rely on that order, which is why the reversal lives here
+    // and not in the SQL), and collecting page by page would put the second
+    // page's recent facts behind the first page's ancient ones. On a family
+    // shopping page a year old, "ho comprato il latte" targets something
+    // written days ago: fill the cap oldest-first and the one candidate that
+    // would have matched is the one never shown, the model answers honestly
+    // that nothing matches, and the item stays open forever.
+    //
+    // `created_at` is ISO-8601 UTC, so the lexical compare IS the chronological
+    // one. Ties keep their relative order (`sort_by` is stable), which leaves
+    // the navigator's page order as the tie-break.
+    hits.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     if hits.len() > cap {
-        truncated = true;
-        hits.truncate(cap);
-    }
-    if truncated {
         tracing::warn!(
             cap,
+            total = hits.len(),
             pages = seen_paths.len(),
-            "recall: page-scoped candidate set hit its cap — some facts on the \
-             opened pages cannot be reconciled this turn"
+            "recall: page-scoped candidate set hit its cap — the oldest facts on \
+             the opened pages cannot be reconciled this turn"
         );
+        hits.truncate(cap);
     }
     tracing::debug!(
         sender_id = sender.sender_id,
@@ -5326,6 +5336,24 @@ mod tests {
         assert!(
             !texts.iter().any(|t| t.contains("unrelated")),
             "a page nobody opened contributes nothing"
+        );
+
+        // Newest first, so the cap drops the least likely candidate. A
+        // closure almost always targets something written recently; filling
+        // the cap oldest-first hides exactly the fact that would have matched.
+        let cheap = facts_on_pages(
+            &pool,
+            &["wikis/alice/intro.md".to_owned()],
+            &SenderContext::user("alice"),
+            1,
+        )
+        .await
+        .expect("capped");
+        assert_eq!(cheap.len(), 1);
+        assert_eq!(
+            cheap[0].text, "greenhouse abandoned",
+            "the cap kept the most recent fact, not the alphabetically or \
+             chronologically first one"
         );
 
         // No pages, or a zero cap, is not an error — it is an empty leg.
