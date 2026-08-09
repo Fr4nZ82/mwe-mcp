@@ -654,7 +654,19 @@ struct Candidate {
     /// Display label of how it surfaced (`rag`, `topic`, `situational`,
     /// `link`, `card`) — the tiers [`Candidate::prune_tier`] ranks by.
     origin: &'static str,
+    /// The page's one-line card, filled by [`fill_summaries`] **after**
+    /// [`prune_pool`] — never by the gatherers. It is the only part of a
+    /// candidate that costs a page read, and the fan that produces
+    /// candidates is unbounded (every reader-visible page whose card topics
+    /// match a classified topic seeds one) while the pool is cut to
+    /// `max_candidates`. Reading it eagerly meant paying a read + a YAML
+    /// parse for every page the cut was about to discard, and that count
+    /// grows with the memory.
     summary: Option<String>,
+    /// Whether [`fill_summaries`] has already looked. Distinguishes "not
+    /// read yet" from "read, and this page has no card" — without it a
+    /// card-less page is re-read on every hop it survives.
+    summary_read: bool,
     keywords: Vec<String>,
 }
 
@@ -858,6 +870,9 @@ pub async fn navigate(
     outcome.stop = NavStop::HopCap;
     for _ in 0..max_hops {
         prune_pool(&mut candidates, &state.visited, policy.max_candidates);
+        // Only now, and only for the survivors: the card is the one field
+        // that costs a page read, and the fan above is unbounded.
+        fill_summaries(&mut candidates, &by_id, &reader_card);
         if candidates.is_empty() || state.remaining == 0 {
             outcome.stop = if state.remaining == 0 {
                 NavStop::Budget
@@ -1298,13 +1313,13 @@ fn initial_pool(
                 // only by their file name. The card is the sole input to
                 // every choice the funnel makes, so that was the fan handing
                 // it a constant.
-                let (summary, keywords) = reader_page_card(d, &ep.page, reader_card);
                 Candidate {
                     wiki_id: ep.wiki_id.clone(),
                     page: ep.page.clone(),
                     origin: ep.origin.label(),
-                    summary,
-                    keywords,
+                    summary: None,
+                    summary_read: false,
+                    keywords: reader_page_keywords(d, &ep.page, reader_card),
                 }
             })
         })
@@ -1542,12 +1557,13 @@ fn linked_wiki_candidates(
                     && let Some(target) = resolve_bare_slug_wiki(origin, by_id, &rel)
                     && reader_card.reader_can_read_in(target.meta.wiki_id.as_str())
                 {
-                    let (summary, keywords) = reader_page_card(target, &rel, reader_card);
+                    let keywords = reader_page_keywords(target, &rel, reader_card);
                     out.push(Candidate {
                         wiki_id: target.meta.wiki_id.as_str().to_owned(),
                         page: rel,
                         origin: "link",
-                        summary,
+                        summary: None,
+                        summary_read: false,
                         keywords,
                     });
                 }
@@ -1593,12 +1609,13 @@ fn linked_wiki_candidates(
             if is_root_page_path(&resolved) {
                 continue;
             }
-            let (summary, keywords) = reader_page_card(d, &resolved, reader_card);
+            let keywords = reader_page_keywords(d, &resolved, reader_card);
             out.push(Candidate {
                 wiki_id: link.wiki_id,
                 page: resolved,
                 origin: "link",
-                summary,
+                summary: None,
+                summary_read: false,
                 keywords,
             });
         }
@@ -1643,25 +1660,20 @@ fn resolve_bare_slug_wiki<'a>(
         .find(|d| d.abs_dir.join(rel).is_file())
 }
 
-/// The reader-relative testata card for one page — the single-page
-/// counterpart of the entry fan's card logic: keywords are the
-/// reader-visible page topics, the description is read from the owner-tier
-/// testata but shown only at the wiki's default visibility.
-fn reader_page_card(
+/// The reader-visible page topics of one page — the single-page counterpart
+/// of the entry fan's card logic.
+///
+/// Free: they come from the prebuilt [`meta_annotate::ReaderCard`], which is
+/// derived from `fact_index` once per turn, so every gatherer may attach them
+/// eagerly. The page's *description* is the half that costs a read, and it is
+/// filled later by [`fill_summaries`].
+fn reader_page_keywords(
     d: &DiscoveredWiki,
     rel: &Path,
     reader_card: &meta_annotate::ReaderCard,
-) -> (Option<String>, Vec<String>) {
+) -> Vec<String> {
     let wiki_id = d.meta.wiki_id.as_str();
-    let summary = reader_card
-        .summary_visible(wiki_id)
-        .then(|| {
-            meta_annotate::read_page_card(&d.abs_dir.join(rel))
-                .unwrap_or_default()
-                .description
-        })
-        .flatten();
-    let keywords = reader_card
+    reader_card
         .pages(wiki_id)
         .and_then(|pages| {
             pages
@@ -1671,8 +1683,40 @@ fn reader_page_card(
                 })
                 .map(|(_, topics)| topics.clone())
         })
-        .unwrap_or_default();
-    (summary, keywords)
+        .unwrap_or_default()
+}
+
+/// Read the one-line card of every candidate that survived the cut, once.
+///
+/// Called right after [`prune_pool`], and that order is the whole point: the
+/// gatherers produce as many candidates as the memory has matching pages,
+/// the pool keeps `max_candidates`, and the description is the only field
+/// that costs a filesystem read and a YAML parse. Filling it at gather time
+/// paid that price for every discarded page — a bill that grows with the
+/// memory while the number of pages actually shown to the model does not.
+///
+/// The description is read from the **owner-tier** testata but shown only
+/// where the reader is inside the wiki's default visibility
+/// (`summary_visible`) — the same gate as before, moved, not relaxed. A page
+/// whose card cannot be read (vanished, unparseable) is marked read with no
+/// summary: a missing card is a candidate with no abstract, never an error.
+fn fill_summaries(
+    pool: &mut [Candidate],
+    by_id: &BTreeMap<&str, &DiscoveredWiki>,
+    reader_card: &meta_annotate::ReaderCard,
+) {
+    for c in pool.iter_mut().filter(|c| !c.summary_read) {
+        c.summary_read = true;
+        let Some(d) = by_id.get(c.wiki_id.as_str()) else {
+            continue;
+        };
+        if !reader_card.summary_visible(c.wiki_id.as_str()) {
+            continue;
+        }
+        c.summary = meta_annotate::read_page_card(&d.abs_dir.join(&c.page))
+            .unwrap_or_default()
+            .description;
+    }
 }
 
 /// Assemble the per-hop user prompt: the turn, the budget line, the root
@@ -2305,6 +2349,7 @@ mod tests {
             page: PathBuf::from(page),
             origin,
             summary: None,
+            summary_read: false,
             keywords: Vec::new(),
         }
     }
@@ -2476,7 +2521,7 @@ mod tests {
             &[("alice", "cucina.md"), ("alice", "auto.md")],
         )
         .await;
-        let pool = initial_pool(
+        let mut pool = initial_pool(
             &[
                 entry("alice", "cucina.md", EntryOrigin::Rag, 0.9),
                 entry("alice", "auto.md", EntryOrigin::Rag, 0.8),
@@ -2484,6 +2529,9 @@ mod tests {
             &by_id_of(&wikis),
             &reader,
         );
+        // The card is attached after the cut, so a pool straight from the fan
+        // carries none yet — the funnel does the same, one step later.
+        fill_summaries(&mut pool, &by_id_of(&wikis), &reader);
         assert_eq!(pool.len(), 2);
         assert_eq!(
             pool[0].summary.as_deref(),
@@ -2497,6 +2545,56 @@ mod tests {
         assert_ne!(
             pool[0].summary, pool[1].summary,
             "two pages of one wiki must not reach the navigator as the same card"
+        );
+    }
+
+    /// A gatherer must leave the card unread until the pool has been cut.
+    ///
+    /// The fan is unbounded — every reader-visible page whose topics match a
+    /// classified topic seeds a candidate — while the pool keeps
+    /// `max_candidates`. A description fetched at gather time is therefore a
+    /// page read and a YAML parse spent on a candidate that is about to be
+    /// discarded, and the bill grows with the memory while the number of
+    /// pages the model is shown does not.
+    #[tokio::test]
+    async fn the_fan_reads_no_page_card_until_the_pool_has_been_cut() {
+        let (_dir, tree) = open_tree();
+        forge_user(&tree, "alice");
+        for (page, desc) in [
+            ("cucina.md", "gluten-free recipes and what to cook"),
+            ("auto.md", "servicing and insurance for the car"),
+        ] {
+            write_page(
+                &tree,
+                "alice",
+                page,
+                &format!("---\ntitle: \"t\"\ndescription: \"{desc}\"\n---\n\nprose\n"),
+            );
+        }
+        let (wikis, reader) = pool_inputs(
+            &tree,
+            "alice",
+            &[("alice", "cucina.md"), ("alice", "auto.md")],
+        )
+        .await;
+        let mut pool = initial_pool(
+            &[
+                entry("alice", "cucina.md", EntryOrigin::Rag, 0.9),
+                entry("alice", "auto.md", EntryOrigin::Rag, 0.8),
+            ],
+            &by_id_of(&wikis),
+            &reader,
+        );
+        assert!(
+            pool.iter().all(|c| !c.summary_read && c.summary.is_none()),
+            "the fan produced candidates without opening a single page"
+        );
+        prune_pool(&mut pool, &BTreeSet::new(), 1);
+        fill_summaries(&mut pool, &by_id_of(&wikis), &reader);
+        assert_eq!(pool.len(), 1, "the cut kept one candidate");
+        assert!(
+            pool[0].summary.is_some(),
+            "the survivor is the one page whose card was read"
         );
     }
 
@@ -2514,7 +2612,7 @@ mod tests {
             "---\ntitle: \"Alimentazione\"\ndescription: \"what she can and cannot eat\"\n---\n\nprose\n",
         );
         let (wikis, reader) = pool_inputs(&tree, "alice", &[("alice", "alimentazione.md")]).await;
-        let rails = card_rail_candidates(
+        let mut rails = card_rail_candidates(
             &[(
                 "alice".to_owned(),
                 "She is coeliac — the detail lives on [[alice/alimentazione]].".to_owned(),
@@ -2523,6 +2621,7 @@ mod tests {
             &reader,
             8,
         );
+        fill_summaries(&mut rails, &by_id_of(&wikis), &reader);
         assert_eq!(rails.len(), 1, "the card's one rail must become a door");
         assert_eq!(rails[0].page, PathBuf::from("alimentazione.md"));
         assert_eq!(rails[0].origin, "card");
@@ -2541,6 +2640,7 @@ mod tests {
                     page: PathBuf::from("cucina.md"),
                     origin: "rag",
                     summary: None,
+                    summary_read: false,
                     keywords: Vec::new(),
                 }
                 .prune_tier(),

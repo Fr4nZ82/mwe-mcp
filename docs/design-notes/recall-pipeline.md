@@ -852,7 +852,15 @@ Three invariants:
 - **A door is described by its own page's card, never by its wiki's.** Every
   candidate the funnel offers — fan, rail, card rail alike — carries
   the destination page's testata `description` and that page's reader-visible
-  topics (`reader_page_card`). This was not true of the fan until 2026-08-04:
+  topics. The topics come free from the prebuilt reader card
+  (`reader_page_keywords`) and are attached by the gatherers; the
+  `description` costs a page read and a YAML parse, so it is attached by
+  `fill_summaries` **after** `prune_pool`, for the survivors only — the fan is
+  unbounded while the pool is capped, so filling it earlier bought a read for
+  every candidate the cut was about to throw away, at a price that grows with
+  the memory. A candidate carries `summary_read` so a page whose card is
+  simply absent is not re-read on every hop it survives. This was not true of
+  the fan until 2026-08-04:
   `initial_pool` reached for the *wiki*-level abstract, left over from when a
   seed could still name a wiki alone, so N hits inside one wiki arrived as N
   candidates carrying **one identical sentence and one identical keyword
@@ -940,7 +948,9 @@ offered for living in the same directory as one the funnel opened.
 
 Before the next prompt is built, `prune_pool` **stably ranks the pool by
 tier**, drops already-visited / duplicate candidates, and truncates to
-`max_candidates`. The tiers `Candidate::prune_tier` hands out, in order:
+`max_candidates`; `fill_summaries` then reads the one-line card of whatever
+survived, and of nothing else. The tiers `Candidate::prune_tier` hands out, in
+order:
 
 | Tier | Origin | What it is evidence of |
 |---|---|---|
