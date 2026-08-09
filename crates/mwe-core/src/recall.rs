@@ -2049,6 +2049,83 @@ pub async fn recall_due_soon(
     Ok(hits)
 }
 
+/// Every active fact living on the pages a turn actually opened.
+///
+/// The third leg of the reconciliation stage's candidate set, and the reason
+/// that stage sits after the navigator rather than beside the classifier: a
+/// slot may reconcile against a set it is shown COMPLETE, never against a
+/// sample. The flat recall hands the turn a top-K sample of the store, so a
+/// judgement about a fact that ALREADY EXISTS ("is this the one the message
+/// closes?") is answered out of a window that may simply not contain it. The
+/// pages the navigator opened are different in kind: for each one this returns
+/// **all** of its readable facts, so within that page nothing is hidden by
+/// ranking.
+///
+/// Cheap by construction, not by luck: `NavigatedFragment` already carries the
+/// page it came from and `fact_index` is indexed on `(source_path,
+/// region_start)` (`idx_fact_path`), so this is one indexed read per opened
+/// page — never a second search.
+///
+/// ACL-filtered by the same [`row_visible_to`] every other slot uses, so a
+/// fact the reader may not see can neither be shown nor closed. Score is
+/// always `1.0`: membership of a page is structural, not similarity.
+///
+/// `cap` is a resource bound on the whole set. When it bites, the pages are
+/// consumed in the order given (the navigator's own order, best first) and the
+/// truncation is **logged** — a candidate silently dropped here is a fact that
+/// quietly cannot be closed.
+///
+/// # Errors
+///
+/// See [`RecallError`].
+pub async fn facts_on_pages(
+    pool: &SqlitePool,
+    paths: &[String],
+    sender: &SenderContext,
+    cap: usize,
+) -> RecallResult<Vec<RecallHit>> {
+    if paths.is_empty() || cap == 0 {
+        return Ok(Vec::new());
+    }
+    let mut hits: Vec<RecallHit> = Vec::new();
+    let mut seen_paths: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut truncated = false;
+    for path in paths {
+        if !seen_paths.insert(path.as_str()) {
+            continue;
+        }
+        if hits.len() >= cap {
+            truncated = true;
+            break;
+        }
+        let rows = fact_index::find_active_by_source_path(pool, path).await?;
+        hits.extend(
+            rows.into_iter()
+                .filter(|row| row_visible_to(row, sender))
+                .map(|row| RecallHit::from_row(row, 1.0)),
+        );
+    }
+    if hits.len() > cap {
+        truncated = true;
+        hits.truncate(cap);
+    }
+    if truncated {
+        tracing::warn!(
+            cap,
+            pages = seen_paths.len(),
+            "recall: page-scoped candidate set hit its cap — some facts on the \
+             opened pages cannot be reconciled this turn"
+        );
+    }
+    tracing::debug!(
+        sender_id = sender.sender_id,
+        pages = seen_paths.len(),
+        hits = hits.len(),
+        "recall: facts on the navigated pages pulled"
+    );
+    Ok(hits)
+}
+
 // ---------- Multi-hop link resolution ----------
 
 /// Hard cap on the number of hops [`wiki_multi_hop_facts`] will follow.
@@ -5180,6 +5257,95 @@ mod tests {
         let wiki = owner.split(':').next_back().unwrap_or(owner);
         insert_row(pool_setup, id_str, wiki, owner, text, vec![0.1; 4]);
         pool_setup.last_mut().unwrap().valid_to = valid_to.map(str::to_owned);
+    }
+
+    /// The candidate leg that makes reconciliation honest: for a page the
+    /// turn actually opened, **every** readable fact on it comes back — not a
+    /// top-K sample of it — while a fact the reader may not see is absent, and
+    /// a page nobody opened contributes nothing.
+    #[tokio::test]
+    async fn facts_on_pages_returns_the_whole_page_and_only_what_the_reader_may_see() {
+        let pool = make_pool().await;
+        let mut rows = Vec::new();
+        // Three facts on ONE page, all alice's — a similarity top-K would
+        // have shown at most some of them.
+        for (n, text) in [
+            (1u8, "greenhouse frame ordered"),
+            (2, "greenhouse glass in may"),
+            (3, "greenhouse abandoned"),
+        ] {
+            insert_row(
+                &mut rows,
+                &format!("018f1234-5678-7abc-9def-0000000e000{n}"),
+                "alice",
+                "user:alice",
+                text,
+                vec![0.1; 4],
+            );
+        }
+        // Bob's private fact, on the SAME page — must never come back for alice.
+        insert_row(
+            &mut rows,
+            "018f1234-5678-7abc-9def-0000000e0009",
+            "alice",
+            "user:bob",
+            "bob's private note",
+            vec![0.1; 4],
+        );
+        // A fact on a page the navigator did not open.
+        insert_row(
+            &mut rows,
+            "018f1234-5678-7abc-9def-0000000e000a",
+            "carol",
+            "user:alice",
+            "unrelated page",
+            vec![0.1; 4],
+        );
+        populate(&pool, rows).await;
+
+        let hits = facts_on_pages(
+            &pool,
+            &["wikis/alice/intro.md".to_owned()],
+            &SenderContext::user("alice"),
+            32,
+        )
+        .await
+        .expect("page-scoped candidates");
+
+        let texts: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(
+            texts.len(),
+            3,
+            "every readable fact on the opened page, not a ranked sample: {texts:?}"
+        );
+        assert!(texts.contains(&"greenhouse abandoned"));
+        assert!(
+            !texts.iter().any(|t| t.contains("bob")),
+            "a fact the reader may not see can neither be shown nor closed"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("unrelated")),
+            "a page nobody opened contributes nothing"
+        );
+
+        // No pages, or a zero cap, is not an error — it is an empty leg.
+        assert!(
+            facts_on_pages(&pool, &[], &SenderContext::user("alice"), 32)
+                .await
+                .expect("no pages")
+                .is_empty()
+        );
+        assert!(
+            facts_on_pages(
+                &pool,
+                &["wikis/alice/intro.md".to_owned()],
+                &SenderContext::user("alice"),
+                0
+            )
+            .await
+            .expect("zero cap")
+            .is_empty()
+        );
     }
 
     #[tokio::test]

@@ -767,6 +767,28 @@ of them; not always. And on a deployment with no navigator slot the stage still
 runs — with (1) + (2), i.e. exactly today's coverage, done by the right
 component.
 
+**Leg (3) is built:
+[`recall::facts_on_pages`](../../crates/mwe-core/src/recall.rs).** For each page
+the turn opened it returns **every** readable fact on it — not a ranked sample
+of it — which is the whole point: within an opened page, nothing is hidden by
+ranking, so the stage is shown that page complete. ACL-filtered by the same
+`row_visible_to` as every other slot (a fact the reader may not see can neither
+be shown nor closed), score always `1.0` (membership of a page is structural),
+and one indexed read per page against `idx_fact_path`. Its `cap` is a resource
+bound on the whole set and it **logs when it bites** — a candidate silently
+dropped here is a fact that quietly cannot be closed. Pinned by
+`facts_on_pages_returns_the_whole_page_and_only_what_the_reader_may_see`.
+
+**Still to build**, in order: the stage that assembles the three legs and makes
+the call; generalising `prompts/ingest-closures.md` from one verb to four; the
+supersede write. Note for whoever picks it up: the orchestrator currently
+retains only the turn's **first** filed fact (`capture_id`, the turn's anchor),
+so supersede needs the capture loop to collect all of this turn's ids — a
+superseding fact has to be nameable before it can inherit anything. And
+`nothing_filed` (`ingest.rs`) is computed *before* this stage would run, so it
+has to be recomputed after it: a turn that files nothing but closes something
+is not a turn that did nothing.
+
 ### What it decides, and what it must not lose
 
 One cheap-tier call, one prompt, four answers: what this turn closes, what it
