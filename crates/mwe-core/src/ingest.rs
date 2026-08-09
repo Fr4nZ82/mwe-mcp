@@ -3418,6 +3418,22 @@ fn day_of(t: chrono::DateTime<chrono::FixedOffset>) -> String {
     t.format("%Y-%m-%d").to_string()
 }
 
+/// Log a prompt list that the cap actually cut.
+///
+/// Silence here is the defect: a truncated block reads to the model exactly
+/// like a complete one, so the operator has to be able to see it happened.
+fn warn_if_capped(kind: &str, total: usize, cap: usize) {
+    if total > cap {
+        tracing::warn!(
+            kind,
+            total,
+            cap,
+            dropped = total - cap,
+            "ingest: prompt list truncated — entries the turn did not name were cut"
+        );
+    }
+}
+
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // a sequential context-bundle builder; one block per section reads top-to-bottom, splitting hides the layout — and each per-sender input is one section, so the argument list IS the section list
 fn build_prompt(
     request: &IngestRequest,
@@ -3477,6 +3493,13 @@ fn build_prompt(
     if sender_groups.is_empty() {
         out.push_str("  (none)\n");
     } else {
+        // Same class as the roster above: a product limit, to be enforced when
+        // a user is added to their ninth group. Audible until then.
+        warn_if_capped(
+            "sender_groups",
+            sender_groups.len(),
+            policy.max_groups_in_prompt,
+        );
         for (id, scope) in sender_groups.iter().take(policy.max_groups_in_prompt) {
             out.push_str("  - id: ");
             out.push_str(id);
@@ -3519,6 +3542,12 @@ fn build_prompt(
     if known_users.is_empty() {
         out.push_str("  (none)\n");
     } else {
+        // These three caps are PRODUCT limits, not scalability ones (founder,
+        // 2026-08-09): the right enforcement is a refusal when the 25th user
+        // is enrolled, not a silent cut here. Until that exists the cut at
+        // least stops being silent — an alphabetical truncation hides whoever
+        // sorts late, and the fact is then filed under the sender instead.
+        warn_if_capped("known_users", known_users.len(), policy.max_users_in_prompt);
         for u in known_users.iter().take(policy.max_users_in_prompt) {
             out.push_str("  - id: ");
             out.push_str(&u.user_id);
@@ -3546,7 +3575,16 @@ fn build_prompt(
     if list_pages.is_empty() {
         out.push_str("  (none yet)\n");
     } else {
-        for l in list_pages {
+        // Same class again. It matters more here than anywhere: a list the
+        // classifier cannot see is a list it mints a SECOND copy of, live, in
+        // front of the user — which is the exact failure this inventory exists
+        // to prevent.
+        warn_if_capped(
+            "list_pages",
+            list_pages.len(),
+            policy.max_list_pages_in_prompt,
+        );
+        for l in list_pages.iter().take(policy.max_list_pages_in_prompt) {
             out.push_str("  - page: ");
             out.push_str(&l.page);
             if let Some(d) = l
@@ -5869,10 +5907,16 @@ pub async fn wiki_ingest_message(
     // mints a second shopping list live, in front of the user. Soft-fails to
     // an empty inventory — a turn that cannot read it still captures, it just
     // proposes a fresh name.
+    // Fetched UNCAPPED: the store's job is to say what this sender may read,
+    // the prompt's job is to decide what fits. Capping here meant capping in
+    // `(wiki_id, page)` order — alphabetically — so the shopping list of a
+    // wiki whose id sorts late was simply absent, and the classifier, seeing
+    // no such list, minted a second one live in front of the user.
+    // `build_prompt` now applies the cap with the turn's text in hand.
     let list_pages = match fact_index::list_pages_readable_by(
         pool,
         &crate::acl::reader_principals(&sender_ctx.sender_id, &sender_ctx.sender_groups),
-        policy.max_list_pages_in_prompt,
+        usize::MAX,
     )
     .await
     {

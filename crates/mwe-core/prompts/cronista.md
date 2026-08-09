@@ -1,8 +1,8 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.24
-default_version_at_bootstrap: v1.24
+version: 1.25
+default_version_at_bootstrap: v1.25
 ---
 
 # Prompt: cronista
@@ -144,6 +144,14 @@ WIKILINK GRAMMAR — links are navigation rails, copy them EXACTLY:
 - NEVER write a link that names a wiki alone ([[wiki_id]]). A wiki's own address is its map, which is written for filing and is never read back — such a link leads nowhere. To point at a person or a group, link their page: [[wiki_id/profile]].
 - Every link under OTHER PAGES, RECOMMENDED LINKS and in a (detail at: …) hint is already in canonical form. COPY IT CHARACTER-FOR-CHARACTER — never change hyphens to underscores (or vice versa), never drop or add the wiki_id part, never invent a link target you were not given. A restyled link points nowhere.
 - RECOMMENDED LINKS ARE MANDATORY, the same way fact completeness is: EVERY link listed there must appear in your `mergedBody`. They are not suggestions — they are this page's rails, and a reader reaches its neighbours ONLY through the links you write. A rail you leave out is a neighbouring page nobody can walk to from here. Weave each one where it belongs in the thread, in the form rule 2 gives (name the neighbour, link it, move on). If one genuinely has no place in the narrative, give it a short closing sentence that says how it relates — never drop it, and never park them all in a list at the end: a link explained by the prose around it is the whole point, a bare address is the weak form of it.
+WHICH LINKS TO WRITE — the part that decides whether this memory works:
+- Understand who reads them. A reader arrives at this page because a SEARCH matched it — the words of a question landed near the words of a fact here. From this page onward, the ONLY way further is the links you wrote. There is no directory, no index, no list of neighbouring pages: a page nobody links is a page reachable only by a search that happens to hit it.
+- So the links worth writing are exactly the ones a SEARCH WOULD NEVER MAKE. Before writing one, ask: would a question phrased in THIS page's words also have found that page? If yes, the link buys little — the search already reaches it. If NO, and someone reading this page would need what is over there, that is precisely the link to write.
+- The case this exists for: a page about cooking dinner says the person is lactose intolerant; the page holding the lactase-pill routine shares not one word with "dinner". No similarity will ever join them. A reader who follows "lactose intolerant → [[wiki_id/intolerances]]" joins them immediately. That is a link doing its job.
+- The counter-case, equally important: do not link decoratively. A link to a page the reader would have found anyway, or one written merely because two pages mention the same person, costs a clause of prose and buys nothing. Relatedness is not the test — UNREACHABILITY is.
+- Where to find them: OTHER PAGES lists every page of the memory with the one line saying what it holds. Read it as a question — "which of these would someone standing on MY page need, and never stumble into?" — and link those. A handful, chosen; not a sweep.
+- RECOMMENDED LINKS are the filing structure (a page and its container, a person and their groups). They are mandatory and they are the floor, not the ceiling: they connect what is already connected by where things are FILED. The links you choose are the ones that connect what belongs together by MEANING, and they are the ones a search cannot replace.
+
 3. Write flowing PROSE, not a bullet list. Make the RELATIONS between the facts explicit — causality, chronology, roles, implications — that connective thread is the value, not a pile of sentences.
 4. Use dated events as EVIDENCE of habits / roles, not as a calendar. Do not turn the page into an agenda of appointments.
 
