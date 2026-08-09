@@ -172,7 +172,7 @@ why it lists what is here rather than summarising it, and why the read
 path never opens it.
 
 The deciding consumer is the **ingest classifier**, and it does not have
-the map yet: `available_wikis` gives it each wiki's `wiki_id / title /
+the map yet: the document extractor's window gives it each wiki's `wiki_id / title /
 type / scope` and nothing more, which is why it names a `target_page` it
 cannot check against anything. Handing it the map is a prompt change. The
 other write-side reader, REM's reorg sweep, does not need the file — it
@@ -294,7 +294,7 @@ only the server-written marker is trusted — and a consumer may claim the
 forged before the marker existed converges after one session.
 
 Reading it: the ingest router (an
-agent's wiki is announced in `available_wikis`, a fact about a person is
+agent's wiki is flagged `is_agent` in the engine's own enumeration, a fact about a person is
 never filed there, and the assistant's own entry in the `known_users` roster
 is flagged so the classifier knows which principal is the one being talked
 *to*), the REM (first-person voice for an autobiography, and the four

@@ -64,9 +64,10 @@ in the target wiki's `_meta.md`, read directly (no registry). **"narrative"
 
 - **smart** wikis are smart-consumer-owned and authoritatively
   managed through the family-H `wiki_admin_*` tools
-  ([smart-wikis.md](smart-wikis.md)). They are filtered out of
-  `available_wikis` upstream of the ingest router, so the routing decision
-  never even sees them. **The smart / companion perimeter is untouched.**
+  ([smart-wikis.md](smart-wikis.md)). They are filtered out of the wikis a
+  capture may be filed into, upstream of the router, so every arm of the
+  destination derivation inherits the exclusion.
+  **The smart / companion perimeter is untouched.**
 - **narrative** wikis are everything else — `wiki-root`, user, group, and
   every emerged sub-wiki. Their pages are written by the compiler; their
   captures land in this buffer.
@@ -77,9 +78,11 @@ The `Capture` arm of
 [`ingest::wiki_ingest_message`](../../crates/mwe-core/src/ingest.rs) now
 branches on the target wiki's class:
 
-1. Resolve the target wiki from `available_wikis` (smart wikis are
-   already filtered out of this set by their `_meta.md` `companion`
-   flag).
+1. Derive the target wiki
+   ([`ingest::derive_target_wiki`](../../crates/mwe-core/src/ingest.rs) —
+   the classifier is no longer shown one; see
+   [ingest-pipeline.md](ingest-pipeline.md)). Smart wikis are already
+   filtered out of the candidate set by their `_meta.md` flag.
 2. If the target is narrative (`companion == false`) **and** the
    classifier did not flag a live `requested_container` →
    [`capture_buffer::buffer_capture_staged`](../../crates/mwe-core/src/capture_buffer.rs)

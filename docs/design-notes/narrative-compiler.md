@@ -2,7 +2,7 @@
 title: Narrative compiler — planner + the Cronista, Hub Writer & Record Writer
 area: design-notes
 status: partial
-last_review: "2026-08-05"
+last_review: "2026-08-06"
 ---
 
 # Narrative compiler
@@ -212,16 +212,28 @@ the same slug collapse to one.
 strong-model Cartografo runs only in
 the **full** cadence. The frequent **light dream** (`Cadence::Light`) does
 **not** call it: new facts are placed **deterministically, with no LLM**, onto
-the page the **ingest classifier already proposed** (`fact_index.target_page`)
+`fact_index.target_page`
 by [`ingest_placement_blueprint`](../../crates/mwe-core/src/planner.rs) — a
 `concept_leaf` per distinct target slug (a path like `recipes/dinner.md`
-flattens to one leaf; the light path does not nest), seeded with the ingest-proposed
+flattens to one leaf; the light path does not nest), seeded with the proposed
 `style` + `page_description` so the page gets a testata — a **seed**, not the
 page's permanent card, see
 [the card heal](#the-card-heal--a-page-is-described-by-what-was-written-on-it).
 A fact whose target is
 `index.md` / empty falls through to the deterministic orphan fallback (its
-foundation page), never a page named "index". **A `high`-salience fact
+foundation page), never a page named "index".
+
+**That input is now list-only, and this stage is the open half of the work.**
+The ingest classifier no longer proposes a destination for prose — it is shown
+no wikis and no prose pages, so any name it emitted was a guess it could not
+check ([ingest-pipeline.md](ingest-pipeline.md)). Only `lista` extractions
+carry a `target_page`. Everything else arrives with the wiki's buffer page and
+therefore takes the orphan fallback, waiting on `notes.md` for REM's reorg to
+lift it. The replacement is to run the Cartografo at the **light** cadence on
+the cheap tier — the code path already exists
+(`NewFactPlacement::Cartografo`), it is the model tier and the cost of smaller,
+more frequent batches that have to be decided. Until then, a page is chosen
+either by a user pointing at a list or by REM. **A `high`-salience fact
 (`fact_index.salience`) is routed the same way regardless
 of its target_page**: `ingest_placement_blueprint` leaves it unassigned so the
 orphan fallback homes it on the actor-wiki's **identity card**

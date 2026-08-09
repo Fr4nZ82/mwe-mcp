@@ -450,16 +450,18 @@ pub struct IngestPolicy {
     /// trimmed first). Stops a runaway tail from blowing the prompt
     /// budget.
     pub max_recent_message_chars: usize,
-    /// Cap on the **emerged** wikis enumerated in the prompt's
-    /// `available_wikis` section. Identity wikis (a root `wiki-user` /
-    /// `wiki-group`) are exempt and never counted — they are the
-    /// deployment's routing domains, bounded by enrollment rather than by
-    /// memory growth, and dropping one removes the only correct answer for
-    /// every fact about that principal. Smart wikis are gone before the
-    /// count. Beyond the cap the **newest** emerged wikis are dropped and
-    /// the truncation is logged; the operator can grow it when they know
-    /// their LLM handles it. See [`available_wikis`].
-    pub max_wikis_in_prompt: usize,
+    /// Cap on the `list_pages` inventory — the only placement surface the
+    /// classifier is shown.
+    ///
+    /// It replaced the wiki window, and the two are not the same size of
+    /// problem: a wiki is an address [`derive_target_wiki`] computes, while a
+    /// list's file name is knowledge only the store holds. Lists are few by
+    /// nature (a deployment has a shopping list, a watchlist, some errands),
+    /// so this bounds a pathological corpus rather than an ordinary one.
+    /// Beyond the cap the extras are dropped, and a turn adding to a dropped
+    /// list proposes a fresh name instead — the cost of raising it is prompt
+    /// weight on every turn. See [`fact_index::list_pages_readable_by`].
+    pub max_list_pages_in_prompt: usize,
     /// Cap on the groups enumerated in the prompt's `sender_groups`
     /// section (scope routing). A sender in more groups than this
     /// gets the first `max_groups_in_prompt` (alphabetical by id);
@@ -583,7 +585,7 @@ impl Default for IngestPolicy {
             dedup_threshold: DEFAULT_DEDUP_THRESHOLD,
             max_recent_messages: 16,
             max_recent_message_chars: 280,
-            max_wikis_in_prompt: 32,
+            max_list_pages_in_prompt: 32,
             max_groups_in_prompt: 8,
             max_group_scope_chars: 1_000,
             max_users_in_prompt: 24,
@@ -1070,7 +1072,13 @@ struct LlmDisambig {
 
 #[derive(Debug, Error)]
 enum CapturePlanError {
-    #[error("missing target_wiki_id")]
+    /// No wiki could be resolved for the capture. Since the classifier
+    /// stopped choosing one, this is not a model failure but a deployment
+    /// one: [`derive_target_wiki`] exhausted every arm, which means the
+    /// sender themself has no writable wiki — an enrollment gap, or a tree
+    /// where every candidate is smart-managed. The extraction is dropped and
+    /// the turn continues.
+    #[error("no writable wiki for this capture (subject nor sender has one)")]
     MissingTargetWiki,
     /// A multi-fact extraction carried no `body`. The legacy single-fact shape
     /// falls back to the raw message; an extraction must supply its own text or
@@ -1081,15 +1089,6 @@ enum CapturePlanError {
     BadWikiId(#[from] WikiIdParseError),
     #[error("invalid principal: {0}")]
     BadPrincipal(#[from] PrincipalParseError),
-    /// The LLM hallucinated a `target_wiki_id` that does not appear in
-    /// the `available_wikis` window enumerated in the prompt. Guards
-    /// against the failure mode where Qwen reuses a principal keyword
-    /// (e.g. `global`, an ACL value) as a wiki id and the capture
-    /// pipeline then crashes inside `tree.locate` with the confusing
-    /// "wiki not found" message — instead the caller demotes the turn
-    /// to a skip response with a clear warn log.
-    #[error("target_wiki_id `{id}` is not one of the available wikis ({available})")]
-    TargetWikiNotAvailable { id: String, available: String },
     /// A non-`self` fact (owned by a user or group) named an AGENT's own wiki
     /// as its `target_wiki_id`. The agent wiki is reserved for the agent's
     /// `owner_id:"self"` autobiography (roadmap 27); a user/group fact there
@@ -1103,12 +1102,12 @@ enum CapturePlanError {
     TargetIsAgentWiki { target: String, owner: String },
     /// `supersede_target` carried a string that is not a well-formed
     /// `FactId`. Same demote-to-skip treatment as
-    /// [`Self::TargetWikiNotAvailable`].
+    /// [`Self::MissingTargetWiki`].
     #[error("invalid supersede_target fact_id: {0}")]
     BadSupersedeFactId(#[from] FactIdParseError),
     /// `supersede_target` named a `fact_id` that does not appear in the
     /// `recalled_memory` window of the current turn. Anti-hallucination
-    /// guard parallel to [`Self::TargetWikiNotAvailable`]: if the model
+    /// guard parallel to [`Self::MissingTargetWiki`]: if the model
     /// emits an id it never saw in context, the capture would crash
     /// inside [`capture::wiki_supersede`] with `PreviousFactNotFound`;
     /// we'd rather demote the whole turn to a skip with a warn log.
@@ -1192,37 +1191,121 @@ fn owner_is_the_wikis_own_principal(owner: &Principal, wiki_id: &str) -> bool {
     }
 }
 
+/// Resolve the wiki a capture is filed into, in four descending preferences.
+///
+/// The classifier is no longer shown the wiki tree — it cannot choose from a
+/// list it cannot see, and the list cost a full per-turn prompt block for one
+/// decision out of the twenty-odd it makes. So the destination is derived
+/// from things the turn already decided:
+///
+/// 1. **An explicit `target_wiki_id`**, when something still emits one. The
+///    bundled prompt no longer does; an operator override on
+///    `<workdir>/prompts/ingest.md` may, and honouring it costs one lookup
+///    and keeps those deployments working. Still gated on `available`, so an
+///    invented or smart-managed id does not slip through.
+/// 2. **The list page the turn is adding to.** "Add detergent to the shopping
+///    list" names a page from the inventory, and that page's own wiki is the
+///    answer — this is the one route by which a capture still reaches a topic
+///    wiki from a turn, and it is exactly the case where the user said so.
+/// 3. **The subject's own wiki.** An identity wiki's id IS its principal's id,
+///    so a fact about `user:marco` belongs in `marco` and a fact the family
+///    owns belongs in `family`. This is the ordinary path.
+/// 4. **The sender's own wiki** — for a `global`-owned fact (no wiki carries
+///    that principal) and for a subject with no wiki of their own.
+///
+/// `None` only when even the sender has no wiki in `available`, which the
+/// caller reports as a missing destination and drops the extraction.
+fn derive_target_wiki(
+    unit: &CaptureUnit<'_>,
+    request: &IngestRequest,
+    owner: &Principal,
+    honoured_page: Option<&str>,
+    available: &[AvailableWiki],
+    list_pages: &[fact_index::ListPage],
+) -> Option<String> {
+    // `available` is the full tree minus the smart wikis, so every arm below
+    // inherits the smart-wiki exclusion for free.
+    let known = |id: &str| {
+        available
+            .iter()
+            .any(|w| w.wiki_id == id)
+            .then(|| id.to_owned())
+    };
+    if let Some(explicit) = unit.target_wiki_id.and_then(known) {
+        return Some(explicit);
+    }
+    if let Some(name) = honoured_page
+        .map(Path::new)
+        .and_then(Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
+        && let Some(hit) = list_pages.iter().find(|l| l.page == name)
+        && let Some(id) = known(&hit.wiki_id)
+    {
+        return Some(id);
+    }
+    let home = match owner {
+        Principal::User(id) | Principal::Group(id) => id.as_str(),
+    };
+    known(home).or_else(|| known(&request.sender_id))
+}
+
 fn validate_capture_plan(
     unit: &CaptureUnit<'_>,
     request: &IngestRequest,
     policy: &IngestPolicy,
     available: &[AvailableWiki],
+    list_pages: &[fact_index::ListPage],
     allow_message_fallback: bool,
 ) -> std::result::Result<CaptureRequest, CapturePlanError> {
-    let target_wiki_str = unit
-        .target_wiki_id
-        .ok_or(CapturePlanError::MissingTargetWiki)?;
-    let mut wiki_id = WikiId::parse(target_wiki_str)?;
-    if !available.iter().any(|w| w.wiki_id == target_wiki_str) {
-        let listed = available
-            .iter()
-            .map(|w| w.wiki_id.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(CapturePlanError::TargetWikiNotAvailable {
-            id: target_wiki_str.to_owned(),
-            available: if listed.is_empty() {
-                "<none>".to_owned()
-            } else {
-                listed
-            },
-        });
-    }
-    let page = normalize_capture_page(unit.target_page, &policy.default_page);
+    // Owner first: since the classifier stopped choosing a wiki, the subject
+    // is an INPUT to the destination rather than a sibling decision.
     let owner = match unit.owner_id {
         Some(s) => Principal::from_str(s)?,
         None => Principal::User(request.sender_id.clone()),
     };
+    // A page name is honoured exactly when THE WRITE CANNOT WAIT.
+    //
+    // Two cases, and they are two independent switches on the plan:
+    //
+    // - **List-shaped material.** A list is a *set*: it is right or it is
+    //   wrong, and half a shopping list is a wrong answer rather than a
+    //   partial one — so it must land on the page it belongs to, by its exact
+    //   name, which is what the `list_pages` inventory exists to supply.
+    // - **A requested container** (the user asked *now* for a list, a
+    //   collection, a named note). That write bypasses the buffer and reaches
+    //   disk inside the turn, so the page has to exist inside the turn too.
+    //   Deliberately independent of `style`: a note someone asks you to keep
+    //   can be prose, and it still needs the name they gave it.
+    //
+    // Everything else waits, and waiting is what makes the name unnecessary:
+    // no single page is the right answer at capture time, the classifier is
+    // shown no prose pages to check against, and any name it proposes is a
+    // guess the consolidation would have to undo. Those take the wiki's buffer
+    // page ([`IngestPolicy::default_page`]) — the designed holding place
+    // placement settles from later.
+    //
+    // Enforced here rather than asked for in the prompt: a guessed page name
+    // that reaches disk is a page, and pages outlive the turn that minted them.
+    let list_shaped = unit
+        .style
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("lista"));
+    let names_its_page = list_shaped || unit.requested_container;
+    let page = if names_its_page {
+        normalize_capture_page(unit.target_page, &policy.default_page)
+    } else {
+        policy.default_page.clone()
+    };
+    let target_wiki_str = derive_target_wiki(
+        unit,
+        request,
+        &owner,
+        names_its_page.then_some(unit.target_page).flatten(),
+        available,
+        list_pages,
+    )
+    .ok_or(CapturePlanError::MissingTargetWiki)?;
+    let target_wiki_str = target_wiki_str.as_str();
+    let mut wiki_id = WikiId::parse(target_wiki_str)?;
     // Guard (item 47-x2): a fact about SOMEONE ELSE must never be physically
     // filed into an AGENT's own wiki — that space is the agent's autobiography
     // (roadmap 27). owner↔wiki are otherwise DECOUPLED by design (a
@@ -1312,11 +1395,16 @@ fn validate_capture_plan(
         // degrades to open (see [`normalize_capture_bound`]).
         valid_from: normalize_capture_bound(unit.valid_from, "valid_from"),
         valid_to: normalize_capture_bound(unit.valid_to, "valid_to"),
-        // Forward the per-page placement hints (style +
-        // page_description) the classifier deduced so the
-        // write/compile path can place the fact on the right subject page.
+        // `style` is a property of the FACT — is this list-shaped material or
+        // prose — and survives whoever ends up choosing the page; the compiler
+        // takes a page's style from the majority of the facts on it.
         style: unit.style.map(str::to_owned),
-        page_description: unit.page_description.map(str::to_owned),
+        // `page_description` describes the TARGET PAGE, so it only means
+        // anything when this extraction actually named one. On the prose path
+        // it would describe a page nobody chose.
+        page_description: names_its_page
+            .then(|| unit.page_description.map(str::to_owned))
+            .flatten(),
         // Thread the per-fact salience the classifier
         // deduced through to the capture row (`high` is routed to the card).
         salience: unit.salience.map(str::to_owned),
@@ -2938,7 +3026,7 @@ fn day_of(t: chrono::DateTime<chrono::FixedOffset>) -> String {
 fn build_prompt(
     request: &IngestRequest,
     recall_hits: &[RecallHit],
-    available_wikis: &[AvailableWiki],
+    list_pages: &[fact_index::ListPage],
     sender_groups: &[(String, Option<String>)],
     known_users: &[enrollment::EnrolledUserLite],
     sender_rules: Option<&str>,
@@ -3049,14 +3137,34 @@ fn build_prompt(
         }
     }
 
-    // available_wikis: the routing window, selected by [`available_wikis`]
-    // and rendered by [`render_available_wikis`] — which the document
-    // extractor shares, so the two prompts cannot disagree about what a wiki
-    // looks like. Each entry's description (`scope` / `holds`) is a placement
-    // signal AND an audience signal: it is one of the inputs to the
-    // `allow_ids` decision, alongside the group `scope` above.
-    out.push('\n');
-    render_available_wikis(&mut out, available_wikis, policy.max_group_scope_chars);
+    // list_pages: the lists that already exist and the sender may add to.
+    // The classifier is shown NO wikis — a wiki is an address the engine
+    // derives from the fact's subject ([`derive_target_wiki`]) — and exactly
+    // one placement surface: the file names of the open lists. That is the
+    // one write that cannot wait for consolidation, and the one name the
+    // model has no other way to learn: a recalled fact carries its wiki, its
+    // owner and its audience, never the page it sits on. Without this block
+    // "add detergent to the shopping list" invents a name and mints a second
+    // shopping list in front of the user.
+    out.push_str("\nlist_pages:\n");
+    if list_pages.is_empty() {
+        out.push_str("  (none yet)\n");
+    } else {
+        for l in list_pages {
+            out.push_str("  - page: ");
+            out.push_str(&l.page);
+            if let Some(d) = l
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+            {
+                out.push_str("\n    holds: ");
+                out.push_str(&truncate(d, policy.max_group_scope_chars));
+            }
+            out.push('\n');
+        }
+    }
 
     out.push_str("\nrecent_messages:\n");
     if request.recent_messages.is_empty() {
@@ -5341,24 +5449,44 @@ pub async fn wiki_ingest_message(
         });
     }
 
-    // Step 2 — enumerate available wikis (bounded compact list).
-    // A wiki whose per-wiki smart flag (read from
-    // `_meta.md`) is `true` is managed authoritatively by the
-    // user's smart consumer via `wiki_admin_*` and is not writable
-    // through this orchestrator. `available_wikis` drops them **before**
-    // the cap is applied so the LLM never proposes one as
-    // `target_wiki_id` *and* a project notebook never consumes a slot;
-    // the identity wikis then enter outside the count and only the
-    // emerged ones are capped (oldest first). The defense-in-depth check
-    // inside `validate_capture_plan` catches stale-cache slips.
+    // Step 2 — enumerate the wikis a capture may be filed into. **Internal
+    // only**: this list is no longer rendered into the prompt, so it is
+    // uncapped — the cap existed solely to bound a prompt block that is gone.
+    // A wiki whose per-wiki smart flag (read from `_meta.md`) is `true` is
+    // managed authoritatively by the user's smart consumer via `wiki_admin_*`
+    // and is not writable through this orchestrator, so `available_wikis`
+    // drops those; every arm of [`derive_target_wiki`] then inherits that
+    // exclusion, and the agent-wiki guard inside `validate_capture_plan`
+    // reads `is_agent` from the same rows.
     //
-    // Everything in the window is therefore the standard-wiki
-    // path: its captures route into the captures buffer
-    // (`crate::capture_buffer`) for the nightly compiler instead of the
-    // published `.md` — the standard family collapsed to "not
+    // Everything here is therefore the standard-wiki path: its captures route
+    // into the captures buffer (`crate::capture_buffer`) for the compiler
+    // instead of the published `.md` — the standard family collapsed to "not
     // smart" when the `wiki_type` registry was retired.
-    let available: Vec<AvailableWiki> = available_wikis(tree, policy.max_wikis_in_prompt)?;
+    let available: Vec<AvailableWiki> = available_wikis(tree, usize::MAX)?;
     tracing::debug!(available = available.len(), "ingest: enumerated wikis");
+
+    // Step 2b — the list-page inventory, the ONE placement surface the
+    // classifier still sees. It is not the wiki window in a smaller hat: a
+    // wiki is an address the engine can derive, but the file name of the
+    // shopping list is knowledge only the store has, and getting it wrong
+    // mints a second shopping list live, in front of the user. Soft-fails to
+    // an empty inventory — a turn that cannot read it still captures, it just
+    // proposes a fresh name.
+    let list_pages = match fact_index::list_pages_readable_by(
+        pool,
+        &crate::acl::reader_principals(&sender_ctx.sender_id, &sender_ctx.sender_groups),
+        policy.max_list_pages_in_prompt,
+    )
+    .await
+    {
+        Ok(pages) => pages,
+        Err(err) => {
+            tracing::warn!(error = %err, "ingest: list-page inventory failed, continuing without it");
+            Vec::new()
+        },
+    };
+    tracing::debug!(list_pages = list_pages.len(), "ingest: list inventory");
 
     // Step 3 — call the LLM. The system prompt comes from the hybrid
     // loader: operator override at `<workdir>/prompts/ingest.md` wins,
@@ -5442,7 +5570,7 @@ pub async fn wiki_ingest_message(
     let mut prompt = build_prompt(
         &request,
         &recall_hits,
-        &available,
+        &list_pages,
         &sender_groups_scoped,
         &known_users,
         sender_policy.as_deref(),
@@ -5582,6 +5710,11 @@ pub async fn wiki_ingest_message(
     // restated-known-fact miss signal, judged after the navigation tail).
     let mut buffered_ids: Vec<FactId> = Vec::new();
     let mut direct_dedup_hits: Vec<(FactId, f32, String)> = Vec::new();
+    // A capture turn that filed nothing: it still reads (the gesture it
+    // carries is reconciled downstream), but it must not promise a write
+    // that did not happen — the canned seed applies if the reading is empty
+    // too.
+    let mut nothing_filed = false;
 
     match intent {
         IntentKind::Capture | IntentKind::Structural => {
@@ -5858,28 +5991,34 @@ pub async fn wiki_ingest_message(
                             continue;
                         },
                     };
-                let mut cap_req =
-                    match validate_capture_plan(&unit, &request, policy, &available, legacy) {
-                        Ok(req) => req,
-                        Err(err) => {
-                            tracing::warn!(error = %err, "ingest: capture plan invalid");
-                            if legacy {
-                                return Ok(fallback_with_unclaimed_media(
-                                    pool,
-                                    tree,
-                                    &request,
-                                    &available,
-                                    policy,
-                                    &recall_hits,
-                                    start.elapsed(),
-                                    true,
-                                    &claimed_attachments,
-                                )
-                                .await);
-                            }
-                            continue;
-                        },
-                    };
+                let mut cap_req = match validate_capture_plan(
+                    &unit,
+                    &request,
+                    policy,
+                    &available,
+                    &list_pages,
+                    legacy,
+                ) {
+                    Ok(req) => req,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "ingest: capture plan invalid");
+                        if legacy {
+                            return Ok(fallback_with_unclaimed_media(
+                                pool,
+                                tree,
+                                &request,
+                                &available,
+                                policy,
+                                &recall_hits,
+                                start.elapsed(),
+                                true,
+                                &claimed_attachments,
+                            )
+                            .await);
+                        }
+                        continue;
+                    },
+                };
 
                 // Supersede = content update, NOT a sharing change: the new
                 // fact INHERITS the superseded fact's audience (`allow`).
@@ -6174,13 +6313,29 @@ pub async fn wiki_ingest_message(
                 .await;
             }
 
-            // The closure half of the turn — completion / forget gestures
-            // against facts in this turn's recall window. A pure gesture
-            // (closures, no extractions) is real activity: it must not
-            // demote to the skip fallback. When the classifier named
-            // `closure_topics` (targets its gesture covers but the first
-            // recall never surfaced), a focused second recall + confirm
-            // call widens the aim before anything is stamped.
+            // Reconciliation against facts already stored — closing,
+            // replacing, re-dating, re-sharing.
+            //
+            // **Nothing populates these today.** The bundled prompt stopped
+            // asking the classifier for them (v2.59): all four decide the fate
+            // of a fact that already exists, which cannot be judged from the
+            // ten-hit sample the classifier is shown. The rule the founder
+            // drew: a slot may reconcile against a set it sees COMPLETE (the
+            // list inventory, the agent's behaviour rules, the sender's own
+            // policy) and never against a sample.
+            //
+            // The machinery below is kept ON PURPOSE, not stranded: it is the
+            // substrate of the recall-side **reconciliation stage** — one
+            // cheap call after the navigator, judging against the union of the
+            // flat hits, the fresh captures and the facts on the pages the
+            // navigator actually opened. See `docs/design-notes/ingest-pipeline.md`
+            // §"The reconciliation stage". An operator-overridden prompt that
+            // still emits the fields keeps working meanwhile.
+            //
+            // A pure gesture (closures, no extractions) is real activity: it
+            // must not demote to the skip fallback. `closure_topics` widens
+            // the aim with a focused second recall + confirm call — the seed
+            // the reconciliation stage generalises.
             let mut turn_closures = plan.closures.clone();
             let mut closure_hits = recall_hits.clone();
             if !plan.closure_topics.is_empty() {
@@ -6234,28 +6389,32 @@ pub async fn wiki_ingest_message(
                 if suggested_seed.is_none() {
                     suggested_seed = Some(policy.structural_suggested_seed.clone());
                 }
-            } else if captured_any || agent_wide_denied {
-                // `agent_wide_denied`: nothing was filed (a non-admin's
-                // agent-wide rule was refused), but the turn is NOT a silent
-                // skip — it must carry the one-shot decline notice to the agent,
-                // so flow on to the recall-block assembly instead of demoting.
-                include_flat = true;
             } else {
-                // Nothing valid to file (empty plan, or every extraction
-                // invalid) — demote to a skip with the canned seed, same as a
-                // malformed plan.
-                return Ok(fallback_with_unclaimed_media(
-                    pool,
-                    tree,
-                    &request,
-                    &available,
-                    policy,
-                    &recall_hits,
-                    start.elapsed(),
-                    true,
-                    &claimed_attachments,
-                )
-                .await);
+                // A capture turn ALWAYS flows on to the reading, whether or
+                // not an extraction filed.
+                //
+                // It used to return here, demoted to a skip, and that was
+                // sound while "filed nothing" meant "nothing happened": a
+                // forget gesture carried its own closures, and a closure
+                // counted as activity. Since reconciliation left this slot
+                // (prompt v2.59) a gesture files NOTHING — "forget what I
+                // told you about the greenhouse" is a capture with an empty
+                // `extractions` array — so returning here would (a) answer
+                // the user out of an empty context and (b) skip the navigator,
+                // which is where the recall-side reconciliation stage reads
+                // from. The one case the old shape existed for is exactly the
+                // case it now breaks.
+                //
+                // `agent_wide_denied` rides the same path: nothing filed, but
+                // the turn must still carry the one-shot decline notice.
+                //
+                // Nothing is lost by continuing: unclaimed media is filed by
+                // the deterministic pass below (the same call the demotion
+                // used to make), and a turn whose reading also comes back
+                // empty still gets the canned seed — see the fallback right
+                // after the recall block.
+                include_flat = true;
+                nothing_filed = !captured_any && !agent_wide_denied;
             }
         },
         IntentKind::Recall => {
@@ -6555,6 +6714,16 @@ pub async fn wiki_ingest_message(
         navigated,
         due_soon,
     );
+
+    // A capture turn that filed nothing AND read nothing has genuinely
+    // produced no turn: fall back to the canned seed, which is what the old
+    // early-return did. When the reading DID produce something the seed stays
+    // whatever the classifier proposed — a forget gesture is answered from
+    // the memory it just opened, not with "I've noted that", which would be
+    // a lie about a write that never happened.
+    if nothing_filed && context_snippet.is_none() && suggested_seed.is_none() {
+        suggested_seed = Some(policy.fallback_suggested_seed.clone());
+    }
 
     // The write half of the cross-consumer recent window (group 43): buffer
     // this turn for the user's other surfaces — the thread of discourse
@@ -7109,8 +7278,184 @@ mod tests {
 
     // ---------- capture plan validation ----------
 
+    /// A page name is honoured exactly when the write cannot wait.
+    ///
+    /// Two independent switches reach that state and both must work: LIST
+    /// material (a set — half a shopping list is a wrong answer, not a partial
+    /// one) and a REQUESTED CONTAINER (the user asked now, the write bypasses
+    /// the buffer, so the page has to exist now — whatever its style, since a
+    /// note someone asks you to keep can be prose).
+    ///
+    /// Everything else has no right page at capture time and the classifier is
+    /// shown none to check against, so a name it proposes is a guess that would
+    /// become a real file on disk. Those take the wiki's buffer page instead.
     #[test]
-    fn validate_capture_plan_requires_target_wiki() {
+    fn a_page_name_is_honoured_only_when_the_write_cannot_wait() {
+        let request = req("qualcosa", "alice");
+        let policy = IngestPolicy::default();
+        let available = [sample_available("alice")];
+        let no_ids: [String; 0] = [];
+        let unit = |style: Option<&'static str>, requested: bool| CaptureUnit {
+            target_wiki_id: None,
+            target_page: Some("spesa.md"),
+            owner_id: None,
+            allow_ids: &no_ids,
+            fact_type: None,
+            valid_from: None,
+            valid_to: None,
+            style,
+            page_description: Some("what the family still needs to buy"),
+            salience: None,
+            requested_container: requested,
+            engine_rule: false,
+            behaviour_rule: false,
+            behaviour_scope: None,
+            topics: &no_ids,
+            body: Some("latte"),
+            supersede_target: None,
+            attachments: &no_ids,
+        };
+
+        let plan = |style, requested| {
+            validate_capture_plan(
+                &unit(style, requested),
+                &request,
+                &policy,
+                &available,
+                &[],
+                true,
+            )
+            .expect("capture")
+        };
+
+        // A list names its page, and may describe the one it is creating.
+        let list = plan(Some("lista"), false);
+        assert_eq!(list.page, PathBuf::from("spesa.md"));
+        assert_eq!(
+            list.page_description.as_deref(),
+            Some("what the family still needs to buy")
+        );
+
+        // A container the user asked for names its page too, PROSE INCLUDED —
+        // "keep me a note about project X" is written live, so the page they
+        // named has to exist now.
+        let note = plan(Some("prosa"), true);
+        assert_eq!(
+            note.page,
+            PathBuf::from("spesa.md"),
+            "a requested container keeps the name the user gave it"
+        );
+        assert!(note.page_description.is_some());
+
+        // Everything else waits, so the engine picks the page.
+        for style in [Some("prosa"), Some("prosa-tecnica"), None] {
+            let waits = plan(style, false);
+            assert_eq!(
+                waits.page, policy.default_page,
+                "a page named on material that can wait is discarded ({style:?})"
+            );
+            assert!(
+                waits.page_description.is_none(),
+                "no page was chosen, so there is nothing to describe ({style:?})"
+            );
+        }
+    }
+
+    /// The four arms of [`derive_target_wiki`], in the order they fire.
+    ///
+    /// The list arm is the interesting one: it is the ONLY route left by
+    /// which a turn puts a fact into a wiki that is not its owner's, and it
+    /// fires exactly when the user pointed at a list themselves.
+    #[test]
+    fn derive_target_wiki_walks_list_then_subject_then_sender() {
+        let request = req("qualcosa", "alice");
+        let available = [
+            sample_available("alice"),
+            sample_available("bob"),
+            sample_available("famiglia"),
+            sample_available("casa"),
+        ];
+        let lists = [fact_index::ListPage {
+            wiki_id: "casa".into(),
+            page: "spesa.md".into(),
+            description: None,
+        }];
+        let no_ids: [String; 0] = [];
+        let unit = |wiki: Option<&'static str>, page: Option<&'static str>| CaptureUnit {
+            target_wiki_id: wiki,
+            target_page: page,
+            owner_id: None,
+            allow_ids: &no_ids,
+            fact_type: None,
+            valid_from: None,
+            valid_to: None,
+            style: None,
+            page_description: None,
+            salience: None,
+            requested_container: false,
+            engine_rule: false,
+            behaviour_rule: false,
+            behaviour_scope: None,
+            topics: &no_ids,
+            body: Some("qualcosa"),
+            supersede_target: None,
+            attachments: &no_ids,
+        };
+        let user = |id: &str| Principal::User(id.to_owned());
+        let derive = |wiki, page, owner: Principal| {
+            derive_target_wiki(
+                &unit(wiki, page),
+                &request,
+                &owner,
+                page,
+                &available,
+                &lists,
+            )
+        };
+
+        // 1 — an explicit id still wins, for an operator-overridden prompt…
+        assert_eq!(
+            derive(Some("bob"), None, user("alice")).as_deref(),
+            Some("bob")
+        );
+        // …but only when it names a real wiki; otherwise it is ignored and
+        // the fact survives on the next arm instead of being dropped.
+        assert_eq!(
+            derive(Some("nowhere"), None, user("bob")).as_deref(),
+            Some("bob")
+        );
+        // 2 — the list the turn names carries its own wiki, beating the owner.
+        assert_eq!(
+            derive(None, Some("spesa.md"), Principal::Group("famiglia".into())).as_deref(),
+            Some("casa")
+        );
+        // A page that is not a known list is just a page: the owner decides.
+        assert_eq!(
+            derive(None, Some("altro.md"), Principal::Group("famiglia".into())).as_deref(),
+            Some("famiglia")
+        );
+        // 3 — the subject's own wiki is the ordinary path.
+        assert_eq!(derive(None, None, user("bob")).as_deref(), Some("bob"));
+        // 4 — a `global`-owned fact has no wiki of its own → the sender's…
+        assert_eq!(
+            derive(None, None, Principal::global()).as_deref(),
+            Some("alice")
+        );
+        // …and so does a subject with no wiki at all.
+        assert_eq!(derive(None, None, user("nobody")).as_deref(), Some("alice"));
+        // Nothing left to fall back on → the caller drops the extraction.
+        assert_eq!(
+            derive_target_wiki(&unit(None, None), &request, &user("nobody"), None, &[], &[]),
+            None
+        );
+    }
+
+    /// No `target_wiki_id` is the NORMAL case now, not a broken plan: the
+    /// classifier is shown no wikis and is told not to emit one. The
+    /// destination comes from the subject, and a fact with no stated subject
+    /// is the sender's own.
+    #[test]
+    fn validate_capture_plan_derives_the_wiki_from_the_sender() {
         let plan = LlmIngestPlan {
             intent: "capture".into(),
             suggested_seed: None,
@@ -7143,9 +7488,14 @@ mod tests {
         let request = req("a fact", "alice");
         let policy = IngestPolicy::default();
         let available = vec![sample_available("alice")];
-        let err = validate_capture_plan(&first_unit(&plan), &request, &policy, &available, true)
-            .expect_err("missing target");
-        assert!(matches!(err, CapturePlanError::MissingTargetWiki));
+        let cap =
+            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
+                .expect("a plan with no wiki is derived, not refused");
+        assert_eq!(
+            cap.wiki_id.as_str(),
+            "alice",
+            "a fact with no stated subject is the sender's, and lands in their wiki"
+        );
     }
 
     #[test]
@@ -7182,8 +7532,9 @@ mod tests {
         let request = req("alice prefers coffee black", "alice");
         let policy = IngestPolicy::default();
         let available = vec![sample_available("alice")];
-        let cap = validate_capture_plan(&first_unit(&plan), &request, &policy, &available, true)
-            .expect("validated");
+        let cap =
+            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
+                .expect("validated");
         assert_eq!(cap.wiki_id.as_str(), "alice");
         assert_eq!(cap.page, PathBuf::from("notes.md"));
         assert!(matches!(cap.owner, Principal::User(ref id) if id == "alice"));
@@ -7230,8 +7581,9 @@ mod tests {
         let request = req("alice prefers coffee black", "alice");
         let policy = IngestPolicy::default();
         let available = vec![sample_available("alice")];
-        let cap = validate_capture_plan(&first_unit(&plan), &request, &policy, &available, true)
-            .expect("validated");
+        let cap =
+            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
+                .expect("validated");
         assert_eq!(cap.allow, vec![Principal::Group("famiglia".into())]);
     }
 
@@ -7269,19 +7621,23 @@ mod tests {
         let request = req("hello", "alice");
         let policy = IngestPolicy::default();
         let available = vec![sample_available("alice")];
-        let err = validate_capture_plan(&first_unit(&plan), &request, &policy, &available, true)
-            .expect_err("bad principal");
+        let err =
+            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
+                .expect_err("bad principal");
         assert!(matches!(err, CapturePlanError::BadPrincipal(_)));
     }
 
-    /// Defends the capture pipeline from a hallucinated `target_wiki_id`
-    /// that does not exist on disk — the failure observed during a
-    /// smoke test (Qwen reused the principal keyword
-    /// `"global"` as a wiki id). The validator must refuse the plan
-    /// here so the caller demotes the turn to a skip response, instead
-    /// of letting it crash inside `wiki_capture` → `tree.locate`.
+    /// A `target_wiki_id` that names nothing on disk is IGNORED, not fatal.
+    ///
+    /// The historical failure (Qwen reusing the ACL keyword `"global"` as a
+    /// wiki id) used to crash inside `wiki_capture` → `tree.locate`, and was
+    /// then made a hard rejection that dropped the extraction. Since the
+    /// classifier stopped being shown wikis at all, an id it emits anyway is
+    /// just noise from an operator-overridden prompt: `derive_target_wiki`
+    /// declines it and falls through to the sender's own wiki, so the fact
+    /// survives instead of being thrown away over a field nobody asked for.
     #[test]
-    fn validate_capture_plan_rejects_hallucinated_target_wiki() {
+    fn validate_capture_plan_ignores_a_hallucinated_target_wiki() {
         let plan = LlmIngestPlan {
             intent: "capture".into(),
             suggested_seed: None,
@@ -7314,18 +7670,14 @@ mod tests {
         let request = req("public fact", "alice");
         let policy = IngestPolicy::default();
         let available = vec![sample_available("alice")];
-        let err = validate_capture_plan(&first_unit(&plan), &request, &policy, &available, true)
-            .expect_err("hallucinated target_wiki_id must fail validation");
-        match err {
-            CapturePlanError::TargetWikiNotAvailable { id, available } => {
-                assert_eq!(id, "global");
-                assert!(
-                    available.contains("alice"),
-                    "available list must enumerate alice: {available}"
-                );
-            },
-            other => panic!("expected TargetWikiNotAvailable, got {other:?}"),
-        }
+        let cap =
+            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
+                .expect("an unknown target_wiki_id is ignored, not fatal");
+        assert_eq!(
+            cap.wiki_id.as_str(),
+            "alice",
+            "a `global`-owned fact falls through to the sender's own wiki"
+        );
     }
 
     #[test]
@@ -7344,9 +7696,15 @@ mod tests {
              \"body\":\"the milk expires\",\"valid_to\":\"domani sera\"}",
         )
         .expect("plan parses");
-        let cap =
-            validate_capture_plan(&first_unit(&malformed), &request, &policy, &available, true)
-                .expect("a malformed bound must not kill the capture");
+        let cap = validate_capture_plan(
+            &first_unit(&malformed),
+            &request,
+            &policy,
+            &available,
+            &[],
+            true,
+        )
+        .expect("a malformed bound must not kill the capture");
         assert_eq!(cap.valid_to, None, "malformed valid_to degrades to open");
         assert_eq!(cap.valid_from, None);
     }
@@ -7364,8 +7722,15 @@ mod tests {
              \"valid_to\":\"2026-07-05T21:00:00Z\"}",
         )
         .expect("plan parses");
-        let cap = validate_capture_plan(&first_unit(&valid), &request, &policy, &available, true)
-            .expect("validated");
+        let cap = validate_capture_plan(
+            &first_unit(&valid),
+            &request,
+            &policy,
+            &available,
+            &[],
+            true,
+        )
+        .expect("validated");
         assert_eq!(cap.valid_from.as_deref(), Some("2026-07-04T10:00:00Z"));
         assert_eq!(cap.valid_to.as_deref(), Some("2026-07-05T21:00:00Z"));
 
@@ -7374,8 +7739,15 @@ mod tests {
              \"body\":\"the milk expires\"}",
         )
         .expect("plan parses");
-        let cap = validate_capture_plan(&first_unit(&absent), &request, &policy, &available, true)
-            .expect("validated");
+        let cap = validate_capture_plan(
+            &first_unit(&absent),
+            &request,
+            &policy,
+            &available,
+            &[],
+            true,
+        )
+        .expect("validated");
         assert_eq!(cap.valid_from, None, "absent valid_from stays open");
         assert_eq!(cap.valid_to, None, "absent valid_to stays open");
     }
@@ -7415,8 +7787,9 @@ mod tests {
              \"owner_id\":\"user:morgana\",\"body\":\"Morgana prefers herbal tea\"}",
         )
         .expect("plan parses");
-        let cap = validate_capture_plan(&first_unit(&plan), &request, &policy, &available, true)
-            .expect("a redirect must succeed");
+        let cap =
+            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
+                .expect("a redirect must succeed");
         assert_eq!(
             cap.wiki_id.as_str(),
             "morgana",
@@ -7431,6 +7804,7 @@ mod tests {
             &request,
             &policy,
             &available_no_home,
+            &[],
             true,
         )
         .expect_err("no resolvable home → drop");
@@ -7459,8 +7833,9 @@ mod tests {
              \"owner_id\":\"user:hermes1\",\"body\":\"L'agente è competente sulle pratiche INPS\"}",
         )
         .expect("plan parses");
-        let cap = validate_capture_plan(&first_unit(&plan), &request, &policy, &available, true)
-            .expect("the agent's own fact stays home");
+        let cap =
+            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
+                .expect("the agent's own fact stays home");
         assert_eq!(cap.wiki_id.as_str(), "hermes1");
         assert_eq!(cap.owner, Principal::User("hermes1".to_owned()));
 
@@ -7471,8 +7846,15 @@ mod tests {
              \"owner_id\":\"user:morgana\",\"body\":\"Morgana ha una pratica INPS aperta\"}",
         )
         .expect("plan parses");
-        let cap = validate_capture_plan(&first_unit(&other), &request, &policy, &available, true)
-            .expect("redirect");
+        let cap = validate_capture_plan(
+            &first_unit(&other),
+            &request,
+            &policy,
+            &available,
+            &[],
+            true,
+        )
+        .expect("redirect");
         assert_eq!(cap.wiki_id.as_str(), "morgana");
     }
 
@@ -7494,8 +7876,9 @@ mod tests {
              \"owner_id\":\"user:samvisebot\",\"body\":\"Samvise gestisce le prenotazioni\"}",
         )
         .expect("plan parses");
-        let cap = validate_capture_plan(&first_unit(&plan), &request, &policy, &available, true)
-            .expect("redirect to the other agent's own wiki");
+        let cap =
+            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
+                .expect("redirect to the other agent's own wiki");
         assert_eq!(cap.wiki_id.as_str(), "samvisebot");
     }
 
@@ -7833,21 +8216,23 @@ mod tests {
         );
     }
 
-    /// The routing window marks an AGENT's own wiki. Its `wiki_type` is
-    /// `wiki-user` exactly like a human's — an agent is an enrolled user — so
-    /// without the line the classifier can only guess from the title, and a
-    /// fact about a person lands in the agent's autobiography (which the x2
-    /// guard then has to undo). A human's entry stays lean: no `is_agent:
-    /// false` on every wiki of the window.
+    /// The classifier prompt names NO wiki — the destination is derived
+    /// ([`derive_target_wiki`]) rather than chosen, and the window that used
+    /// to carry it was a per-turn block paid at full price for one decision
+    /// out of the twenty-odd this call makes. It also carried a one-line
+    /// abstract of every principal's memory into every turn's prompt.
+    ///
+    /// The renderer itself still exists for the document extractor, which
+    /// does place segments across the tree; `available_wikis_carries_both_description_fields`
+    /// covers it there.
     #[test]
-    fn build_prompt_flags_an_agent_wiki_in_the_routing_window() {
+    fn build_prompt_names_no_wiki() {
         let request = req("la mia pressione è alta", "alice");
         let policy = IngestPolicy::default();
-        let available = [sample_available("alice"), sample_agent_available("hermes1")];
         let prompt = build_prompt(
             &request,
             &[],
-            &available,
+            &[],
             &[],
             &[],
             None,
@@ -7856,16 +8241,16 @@ mod tests {
             &policy,
         );
         assert!(
-            prompt.contains(
-                "- wiki_id: hermes1\n    title: hermes1\n    type: wiki-user\n    is_agent: true\n"
-            ),
-            "the agent wiki must announce itself; prompt was:\n{prompt}"
+            !prompt.contains("available_wikis"),
+            "the wiki window must be gone; prompt was:\n{prompt}"
         );
         assert!(
-            prompt.contains(
-                "- wiki_id: alice\n    title: alice\n    type: wiki-user\n    about: (not described yet)"
-            ),
-            "a human's wiki carries no is_agent line; prompt was:\n{prompt}"
+            !prompt.contains("wiki_id: alice"),
+            "no wiki may be named to the classifier; prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("list_pages:\n  (none yet)"),
+            "the list inventory is the only placement surface; prompt was:\n{prompt}"
         );
     }
 
@@ -8167,22 +8552,25 @@ mod tests {
     }
 
     #[test]
-    fn build_prompt_lists_wikis_and_message() {
+    fn build_prompt_lists_the_open_lists_and_the_message() {
         let request = req("the quick brown fox", "alice");
-        let wikis = vec![AvailableWiki {
-            wiki_id: "alice".into(),
-            title: "Alice".into(),
-            wiki_type: "wiki-user".into(),
-            scope: Some("Alice's personal notes and work".into()),
-            summary: Some("Alice, an engineer in Milan.".into()),
-            smart: false,
-            is_agent: false,
-        }];
+        let list_pages = vec![
+            fact_index::ListPage {
+                wiki_id: "famiglia".into(),
+                page: "spesa.md".into(),
+                description: Some("what the family still needs to buy".into()),
+            },
+            fact_index::ListPage {
+                wiki_id: "alice".into(),
+                page: "da_leggere.md".into(),
+                description: None,
+            },
+        ];
         let policy = IngestPolicy::default();
         let prompt = build_prompt(
             &request,
             &[],
-            &wikis,
+            &list_pages,
             &[],
             &[],
             None,
@@ -8192,10 +8580,18 @@ mod tests {
         );
         assert!(prompt.contains("sender_id: alice"));
         assert!(prompt.contains("context_hint: conversation"));
-        assert!(prompt.contains("wiki_id: alice"));
-        assert!(prompt.contains("type: wiki-user"));
-        // The wiki's scope prose is surfaced as an audience/placement signal.
-        assert!(prompt.contains("scope: Alice's personal notes and work"));
+        // The page name and what it holds — the two things the model needs to
+        // reuse an existing list instead of minting a second one.
+        assert!(prompt.contains("- page: spesa.md"), "{prompt}");
+        assert!(
+            prompt.contains("holds: what the family still needs to buy"),
+            "{prompt}"
+        );
+        // A list with no recorded description takes one line, not an empty key.
+        assert!(prompt.contains("- page: da_leggere.md\n"), "{prompt}");
+        assert!(!prompt.contains("holds: \n"), "{prompt}");
+        // The wiki a list lives in is the ENGINE's business, never the model's.
+        assert!(!prompt.contains("famiglia"), "{prompt}");
         assert!(prompt.contains("current_message: the quick brown fox"));
         assert!(prompt.contains("recalled_memory:\n  (none)"));
     }
@@ -10684,18 +11080,29 @@ mod tests {
         drop(dir);
     }
 
-    /// The bundled ingest prompt carries the supersede restatement guard: a
-    /// restated / near-identical fact is a DEDUP case, not a supersede — in
-    /// the general supersede section and in Part 7b for behaviour rules.
+    /// The bundled ingest prompt keeps the boundary that decides what this
+    /// slot may act on.
+    ///
+    /// `supersede_target` survives for ONE target — a behaviour rule — because
+    /// `agent_behaviour_rules` is the complete set of the directives in force,
+    /// so the model can see everything it would be replacing. `recalled_memory`
+    /// is a similarity sample of a store that may hold thousands, and a
+    /// judgement about a stored fact made from a sample fails by omission: the
+    /// prompt must keep saying so, and must keep the repeat-vs-revise guard on
+    /// the one supersede that remains.
     #[test]
-    fn bundled_ingest_prompt_carries_the_supersede_restatement_guard() {
+    fn bundled_ingest_prompt_keeps_the_complete_set_boundary() {
         assert!(
-            BUNDLED_INGEST_PROMPT_MD.contains("RESTATEMENT is not a supersede"),
-            "the general supersede guard is gone from the bundled prompt"
+            BUNDLED_INGEST_PROMPT_MD.contains("You may act against a set you are shown COMPLETE"),
+            "the complete-set-vs-sample rule is gone from the bundled prompt"
         );
         assert!(
             BUNDLED_INGEST_PROMPT_MD.contains("REVISING vs REPEATING a standing directive"),
             "the behaviour-rule repeat guard is gone from the bundled prompt"
+        );
+        assert!(
+            !BUNDLED_INGEST_PROMPT_MD.contains("\"closures\":"),
+            "reconciliation against stored facts must not come back to this slot"
         );
     }
 
@@ -11126,7 +11533,11 @@ mod tests {
         )
         .await
         .expect("ingest");
-        assert_eq!(resp.intent, IntentKind::Skip, "nothing applied → fallback");
+        assert_eq!(
+            resp.intent,
+            IntentKind::Capture,
+            "nothing applied, but a capture turn always reaches the reading"
+        );
         let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM structure_proposals")
             .fetch_one(&pool)
             .await
@@ -11481,7 +11892,11 @@ mod tests {
         )
         .await
         .expect("ingest");
-        assert_eq!(resp.intent, IntentKind::Skip, "nothing applied → fallback");
+        assert_eq!(
+            resp.intent,
+            IntentKind::Capture,
+            "nothing applied, but a capture turn always reaches the reading"
+        );
         let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM structure_proposals")
             .fetch_one(&pool)
             .await
@@ -11535,7 +11950,11 @@ mod tests {
         )
         .await
         .expect("ingest");
-        assert_eq!(resp.intent, IntentKind::Skip, "nothing applied → fallback");
+        assert_eq!(
+            resp.intent,
+            IntentKind::Capture,
+            "nothing applied, but a capture turn always reaches the reading"
+        );
         let row = fact_index::find_by_id(&pool, &planted.fact_id)
             .await
             .expect("find")
@@ -11669,8 +12088,8 @@ mod tests {
         .expect("ingest");
         assert_eq!(
             resp.intent,
-            IntentKind::Skip,
-            "non-owner edit skipped → fallback"
+            IntentKind::Capture,
+            "the edit was refused, but a capture turn always reaches the reading"
         );
         let row = fact_index::find_by_id(&pool, &planted.fact_id)
             .await
@@ -13025,7 +13444,7 @@ mod tests {
     /// orchestrator demotes the turn to a skip with the canned seed rather
     /// than writing an empty fact.
     #[tokio::test]
-    async fn ingest_capture_with_empty_extractions_demotes_to_skip() {
+    async fn ingest_capture_with_empty_extractions_still_reads() {
         let (dir, tree, pool) = setup_workdir().await;
 
         let llm = FakeLlmBackend::new(
@@ -13047,8 +13466,10 @@ mod tests {
 
         assert_eq!(
             resp.intent,
-            IntentKind::Skip,
-            "capture intent with no extractions has nothing to file → skip"
+            IntentKind::Capture,
+            "a capture that filed nothing still reads: the gesture it carries \
+             (\"forget the greenhouse\") is reconciled on the reading side, and \
+             returning early here would answer out of an empty context"
         );
         assert!(resp.capture_id.is_none(), "no fact written");
         assert!(resp.llm_used, "the LLM did respond, just with no facts");
@@ -13231,9 +13652,14 @@ mod tests {
     #[tokio::test]
     async fn ingest_invalid_capture_plan_demotes_to_skip() {
         let (dir, tree, pool) = setup_workdir().await;
-        // capture intent but no target_wiki_id ⇒ plan validation fails
-        // ⇒ demoted to skip with fallback seed.
-        let llm = FakeLlmBackend::new("fake", "{\"intent\":\"capture\",\"body\":\"orphan fact\"}");
+        // A capture whose `owner_id` is not a principal at all: the plan
+        // cannot be validated, so the turn demotes to skip with the fallback
+        // seed. (A missing `target_wiki_id` no longer qualifies — it is the
+        // normal shape now, and the wiki is derived from the subject.)
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"body\":\"orphan fact\",\"owner_id\":\"not a principal\"}",
+        );
         let policy = IngestPolicy::default();
         let resp = wiki_ingest_message(
             &pool,

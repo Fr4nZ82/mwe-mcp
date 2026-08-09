@@ -117,7 +117,7 @@ families A–K.
 
 | Tool | Status | Backing module |
 |---|---|---|
-| `wiki_ingest_message` | ✅ full | [`mwe_core::ingest`](../../crates/mwe-core/src/ingest.rs); smart wikis — those whose `_meta.md` `smart:` flag is `true` — are filtered from `available_wikis` before the LLM router call |
+| `wiki_ingest_message` | ✅ full | [`mwe_core::ingest`](../../crates/mwe-core/src/ingest.rs); smart wikis — those whose `_meta.md` `smart:` flag is `true` — are excluded from the wikis a capture may be filed into |
 | `events_poll` | ✅ full | [`mwe_core::events::poll_events`](../../crates/mwe-core/src/events.rs) |
 | `events_ack` | ✅ full | [`mwe_core::events::ack_events`](../../crates/mwe-core/src/events.rs) |
 | `wiki_read` | ✅ full — per-region ACL projection via `render::render_for_sender` (the sole read gate; no wiki-level gate above it) | [`mwe_core::wiki::WikiHandle`](../../crates/mwe-core/src/wiki.rs) + [`mwe_core::render`](../../crates/mwe-core/src/render.rs); returns `content_rendered_for_sender` + `redacted_count` (there is no `fully_redacted` flag — the body equals the canonical `[!redacted]` callout when the whole page collapses) |

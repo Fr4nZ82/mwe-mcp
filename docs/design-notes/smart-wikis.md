@@ -1247,7 +1247,7 @@ through `WikiMeta::to_yaml`.
    token). Operator on Telegram: "appunta: il modulo MFA è scaduto."
    Openclaw routes the message into `wiki_ingest_message` →
    classifies as `capture` → wants to target the lnprint companion.
-   Server filters the companion out of `available_wikis` (it's
+   Server filters the companion out of the ingest enumeration (it's
    never an LLM-driven capture target). Openclaw falls back to
    `wiki_admin_notify(wiki_id: <lnprint>, topic: "MFA expired", body:
    "il modulo MFA è scaduto.", source: { kind: "user", ref: "tg" })`.

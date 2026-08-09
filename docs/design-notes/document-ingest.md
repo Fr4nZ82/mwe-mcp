@@ -153,8 +153,11 @@ on the **`ingest` LLM slot** (workhorse tier — same slot, no new config).
    placement seeds, **and the fact's `owner_id`/`allow_ids`** — its
    subject and audience, decided under the same ingest rules), capped at
    `max_facts_per_segment`. The prompt input mirrors `ingest`'s assembly:
-   the uploader's `sender_groups` (id + `scope`) and each `available_wikis`
-   entry's `scope` prose are the audience signals the extractor reads. In
+   the uploader's `sender_groups` (id + `scope`) and each window entry's
+   `scope` prose are the audience signals the extractor reads. Note the
+   conversational classifier no longer gets that window at all
+   ([ingest-pipeline.md](ingest-pipeline.md)); the document path keeps it,
+   uncapped, because a document's segments may belong anywhere in the tree. In
    `dialogue` format a fact without its own validity inherits the segment's
    instant as `valid_from` — per-utterance time flows to per-fact
    validity.

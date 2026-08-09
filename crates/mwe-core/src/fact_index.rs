@@ -1916,13 +1916,7 @@ pub async fn find_by_filters(
     // the list's own length and every value is bound — no caller text ever
     // reaches the SQL.
     if let Some(principals) = filters.readable_by.as_ref().filter(|p| !p.is_empty()) {
-        let placeholders = vec!["?"; principals.len()].join(",");
-        preds.push(format!(
-            "(owner_id IN ({placeholders}) \
-              OR sender_id IN ({placeholders}) \
-              OR EXISTS (SELECT 1 FROM json_each(fact_index.allow_ids) \
-                          WHERE json_each.value IN ({placeholders})))"
-        ));
+        preds.push(readable_by_sql("fact_index", principals.len()));
         for _ in 0..3 {
             binds.extend(principals.iter().cloned());
         }
@@ -2391,6 +2385,150 @@ pub async fn rebase_source_path_prefix(
     Ok(touched)
 }
 
+/// The three-axis read predicate as SQL, bound `3 × n` times by the caller.
+///
+/// `owner ∪ allow ∪ sender` — the query-side mirror of
+/// [`crate::acl::can_read`], written once here so every store query that
+/// pre-filters by reader agrees with the row check that follows it. `table`
+/// qualifies the `allow_ids` column for `json_each`, which needs the owning
+/// table named when a statement mentions more than one.
+///
+/// Placeholders are generated from `n`, never from caller text, so the result
+/// is injection-safe by construction; the caller binds the principal list
+/// three times, in the order the clauses appear.
+fn readable_by_sql(table: &str, n: usize) -> String {
+    let placeholders = vec!["?"; n].join(",");
+    format!(
+        "(owner_id IN ({placeholders}) \
+          OR sender_id IN ({placeholders}) \
+          OR EXISTS (SELECT 1 FROM json_each({table}.allow_ids) \
+                      WHERE json_each.value IN ({placeholders})))"
+    )
+}
+
+// ---------- List-page inventory ----------
+
+/// One `lista`-style page a container capture may be added to.
+///
+/// The ingest classifier is shown **pages**, never wikis, and only these:
+/// the whole reason it needs an inventory at all is the one write that
+/// cannot wait for consolidation — a list the user is adding to right now.
+/// "Add detergent to the shopping list" has to land on the shopping list
+/// that already exists, and the classifier has no other way to learn its
+/// file name (a recalled fact carries its wiki, never its page).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListPage {
+    /// Wiki the page lives in — the address a capture aimed here inherits,
+    /// which is why a list may be added to across wikis without the
+    /// classifier being shown the wiki tree.
+    pub wiki_id: String,
+    /// File name within the wiki (`spesa.md`).
+    pub page: String,
+    /// The "what goes in here" line recorded when the page was proposed;
+    /// `None` for a list that never carried one.
+    pub description: Option<String>,
+}
+
+/// Every `lista`-style page the reader may add to — promoted and still
+/// pending alike, deduplicated, oldest wiki first.
+///
+/// Both halves are needed and neither is redundant: `fact_index` holds the
+/// lists that already exist on disk, and `capture_buffer` holds a list
+/// created minutes ago that the light dream has not promoted yet. Serving
+/// only the first is precisely the gap that mints a second shopping list
+/// when someone adds two items in the same hour.
+///
+/// `principals` is [`crate::acl::reader_principals`] for the sender; an
+/// empty slice returns nothing rather than everything, because unlike a
+/// recall query this one has no per-row check behind it.
+///
+/// # Errors
+///
+/// `sqlx::Error`.
+pub async fn list_pages_readable_by(
+    pool: &SqlitePool,
+    principals: &[String],
+    cap: usize,
+) -> Result<Vec<ListPage>> {
+    if principals.is_empty() || cap == 0 {
+        return Ok(Vec::new());
+    }
+    let acl_facts = readable_by_sql("fact_index", principals.len());
+    let acl_buffer = readable_by_sql("capture_buffer", principals.len());
+    // `source_path` is the truth for a page that exists (a live-written list
+    // is compiled in place); `target_page` is the intent for one that does
+    // not yet. Both are selected and resolved in Rust — SQLite has no
+    // basename, and the precedence is a judgement, not a string operation.
+    let sql = format!(
+        "SELECT wiki_id, source_path, target_page, page_description \
+           FROM fact_index \
+          WHERE style = 'lista' AND superseded_at IS NULL AND deleted_at IS NULL \
+            AND {acl_facts} \
+          UNION ALL \
+         SELECT wiki_id, '', target_page, page_description \
+           FROM capture_buffer \
+          WHERE style = 'lista' AND status = 'buffered' \
+            AND {acl_buffer}"
+    );
+    let mut q = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(&sql);
+    for _ in 0..6 {
+        for p in principals {
+            q = q.bind(p.clone());
+        }
+    }
+    let rows = q.fetch_all(pool).await?;
+
+    // Deduplicate on (wiki, page). A list is one page however many facts sit
+    // on it, and the first non-empty description wins — a page whose
+    // description was only ever proposed on a later item still gets one.
+    let mut seen: std::collections::BTreeMap<(String, String), Option<String>> =
+        std::collections::BTreeMap::new();
+    for (wiki_id, source_path, target_page, description) in rows {
+        let Some(page) = list_page_name(&source_path, target_page.as_deref()) else {
+            continue;
+        };
+        let entry = seen.entry((wiki_id, page)).or_default();
+        if entry.is_none() {
+            *entry = description.filter(|d| !d.trim().is_empty());
+        }
+    }
+    Ok(seen
+        .into_iter()
+        .take(cap)
+        .map(|((wiki_id, page), description)| ListPage {
+            wiki_id,
+            page,
+            description,
+        })
+        .collect())
+}
+
+/// Resolve a list row to the page file name the classifier should name.
+///
+/// The compiled `source_path` wins when it points at a real page: that is
+/// where the list actually is. A row still sitting in the buffer — or one
+/// promoted but not yet compiled, whose `source_path` is the captures
+/// journal — falls back to the proposed `target_page`. Reserved pages are
+/// refused: none of them is a list a capture may be aimed at.
+fn list_page_name(source_path: &str, target_page: Option<&str>) -> Option<String> {
+    let from_source = std::path::Path::new(source_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| *n != crate::wiki::CAPTURES_FILENAME)
+        .map(str::to_owned);
+    let name = from_source.or_else(|| {
+        std::path::Path::new(target_page?)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_owned)
+    })?;
+    let stem = name.strip_suffix(".md").unwrap_or(&name);
+    if stem.is_empty() || crate::wiki::is_reserved_page_stem(stem) {
+        return None;
+    }
+    Some(name)
+}
+
 // ---------- Retirement disk-half helpers ----------
 //
 // The DB tombstone (`superseded_at` / `deleted_at`) is the authoritative
@@ -2788,6 +2926,110 @@ mod tests {
             salience: None,
             source_ref: None,
         }
+    }
+
+    // ---------- list-page inventory ----------
+
+    /// The inventory answers the one question the classifier cannot answer
+    /// from anything else in its prompt: what is the shopping list called.
+    /// It must therefore see a `lista` page wherever it currently is — on
+    /// disk, or still sitting in the buffer minutes after it was created —
+    /// and it must obey the ACL, because a list is a page like any other.
+    #[tokio::test]
+    async fn list_inventory_serves_compiled_and_buffered_lists_and_honours_the_acl() {
+        let pool = make_pool().await;
+
+        // A compiled list of the family's, readable by the family.
+        let mut shopping = sample_new_fact(SAMPLE_UUID_V7_1, "famiglia", "group:famiglia", "latte");
+        shopping.source_path = "wikis/famiglia/spesa.md".to_owned();
+        shopping.style = Some("lista".to_owned());
+        shopping.page_description = Some("what the family still needs to buy".to_owned());
+        insert_if_absent(&pool, &shopping).await.unwrap();
+
+        // A second item on the SAME list — one page, not two entries.
+        let mut bread = sample_new_fact(SAMPLE_UUID_V7_2, "famiglia", "group:famiglia", "pane");
+        bread.source_path = "wikis/famiglia/spesa.md".to_owned();
+        bread.style = Some("lista".to_owned());
+        bread.page_description = None;
+        insert_if_absent(&pool, &bread).await.unwrap();
+
+        // A prose fact on the same wiki — not a list, must not appear.
+        let mut prose = sample_new_fact(SAMPLE_UUID_V7_3, "famiglia", "group:famiglia", "vacanze");
+        prose.source_path = "wikis/famiglia/vacanze.md".to_owned();
+        prose.style = Some("prosa".to_owned());
+        insert_if_absent(&pool, &prose).await.unwrap();
+
+        // Carol's own list — she is in no group here, so the family may not see it.
+        let mut carols = sample_new_fact(SAMPLE_UUID_V7_4, "carol", "user:carol", "Dune");
+        carols.source_path = "wikis/carol/da_leggere.md".to_owned();
+        carols.style = Some("lista".to_owned());
+        carols.allow_ids = Vec::new();
+        carols.sender_id = Some("user:carol".parse().unwrap());
+        insert_if_absent(&pool, &carols).await.unwrap();
+
+        let family = crate::acl::reader_principals("bob", &["famiglia".to_owned()]);
+        let pages = list_pages_readable_by(&pool, &family, 32).await.unwrap();
+        assert_eq!(
+            pages,
+            vec![ListPage {
+                wiki_id: "famiglia".into(),
+                page: "spesa.md".into(),
+                description: Some("what the family still needs to buy".into()),
+            }],
+            "one entry per list page, prose excluded, Carol's private list withheld"
+        );
+
+        // Carol sees hers, and not the family's.
+        let carol = crate::acl::reader_principals("carol", &[]);
+        let hers = list_pages_readable_by(&pool, &carol, 32).await.unwrap();
+        assert_eq!(hers.len(), 1, "{hers:?}");
+        assert_eq!(hers[0].page, "da_leggere.md");
+    }
+
+    /// A list created minutes ago is still in the buffer, and its fact's
+    /// `source_path` is the captures journal, not a page. Serving only the
+    /// compiled half is exactly the gap that mints a second shopping list
+    /// when someone adds two items inside one light-dream interval.
+    #[tokio::test]
+    async fn list_inventory_reaches_a_list_that_is_still_pending() {
+        let pool = make_pool().await;
+        sqlx::query(
+            "INSERT INTO capture_buffer \
+               (capture_id, wiki_id, target_page, body, owner_id, allow_ids, sender_id, \
+                status, captured_at, source_kind, style, page_description) \
+             VALUES (?, 'famiglia', 'spesa.md', 'latte', 'group:famiglia', '[]', \
+                     'user:bob', 'buffered', '2026-08-06T10:00:00Z', 'ingest', \
+                     'lista', 'what the family still needs to buy')",
+        )
+        .bind(SAMPLE_UUID_V7_1)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let family = crate::acl::reader_principals("bob", &["famiglia".to_owned()]);
+        let pages = list_pages_readable_by(&pool, &family, 32).await.unwrap();
+        assert_eq!(pages.len(), 1, "{pages:?}");
+        assert_eq!(pages[0].page, "spesa.md");
+        assert_eq!(pages[0].wiki_id, "famiglia");
+    }
+
+    /// A reserved page is never a destination a classifier may name, so it is
+    /// never offered as one — not even when a `lista` fact somehow sits on it.
+    #[test]
+    fn list_page_name_prefers_the_real_page_and_refuses_reserved_ones() {
+        assert_eq!(
+            list_page_name("wikis/famiglia/spesa.md", Some("altro.md")),
+            Some("spesa.md".to_owned()),
+            "a compiled page is where the list actually is"
+        );
+        assert_eq!(
+            list_page_name("wikis/famiglia/_captures.md", Some("spesa.md")),
+            Some("spesa.md".to_owned()),
+            "a promoted-but-uncompiled fact falls back to the proposed page"
+        );
+        assert_eq!(list_page_name("", Some("notes.md")), None);
+        assert_eq!(list_page_name("wikis/famiglia/profile.md", None), None);
+        assert_eq!(list_page_name("", None), None);
     }
 
     // ---------- identity core ----------

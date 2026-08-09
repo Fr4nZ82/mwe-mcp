@@ -112,9 +112,14 @@ routing → seed) and stays inside the ~500 ms–2 s conversational budget
 > The ingest **placement axis** (`target_page` + `style` + `page_description`) **reaches the fact** and is
 > **consumed**: `buffer_capture` stages `style`/`page_description` alongside the
 > `target_page` it already carries, the journal mirrors them (`style`/`desc`, the free-text `desc`
-> percent-escaped), and `promote_one` copies the whole axis into `fact_index` (0035). In the **light**
+> percent-escaped), and `promote_one` copies the whole axis into `fact_index` (0035). Since the
+> classifier stopped proposing a destination, `target_page` and `page_description` are only ever
+> populated when the write cannot wait — `lista` material, or a container the user
+> just asked for (see that section below); anything else carries the buffer page
+> and no description. In the **light**
 > cadence `build_wiki_plan` then places each new fact on its `target_page` **deterministically, with no LLM**
-> (`NewFactPlacement::Ingest` → `ingest_placement_blueprint`), so the strong-model Cartografo is **REM-only**
+> (`NewFactPlacement::Ingest` → `ingest_placement_blueprint`) — which for prose means the deterministic
+> orphan home — so the strong-model Cartografo is **REM-only**
 > (see [narrative-compiler.md](narrative-compiler.md#stage-1--the-cartografo-strong-model-classification)).
 > The page frontmatter's `style` **prefers the ingest-proposed `style`** (carried on the plan as
 > `PagePlan.style`), falling back to the **Cronista's** compile-time choice when ingest proposed none
@@ -160,50 +165,78 @@ consumer *says* on the turn stays the consumer's judgment. Pinned by
 `guest_turn_is_ephemeral_and_recalls_public_slice_only`
 ([`ingest.rs`](../../crates/mwe-core/src/ingest.rs)).
 
-### The routing window — what step 2 offers, and what it may drop
+### Destination — derived, not chosen
 
-[`available_wikis`](../../crates/mwe-core/src/ingest.rs) is the one
-enumerator behind both classifier prompts (this one and the
-[document extractor](document-ingest.md)'s, which shares the renderer so
-the two windows cannot drift). It applies three rules **in this order**,
-and each exists because the naive version cost the router something it
-could not get back:
+The classifier is shown **no wikis**. It was, until the block was measured
+against what it bought: one decision out of the twenty-odd the call makes,
+paid at full per-turn price (the window rides the *user* message, not the
+cached system prefix), by the one participant that could not see the pages
+it was routing into. It also carried a one-line abstract of every
+principal's memory into every turn's prompt.
 
-1. **Smart wikis leave first, before anything is counted.** They are
-   authoritatively managed by smart consumers via the `wiki_admin_*`
-   family — routing a capture into one through this orchestrator would
-   (a) double-bill the smart consumer's LLM budget (server-side `ingest`
-   runs *after* the consumer already paid to classify the user message)
-   and (b) bypass the audit row in `wiki_admin_op_log`. The flag is read
-   straight from each wiki's `_meta.md`, no registry query; see
-   [smart-wikis.md](smart-wikis.md). Dropping them **before** the cap is
-   what keeps a deployment's project notebooks from silently shrinking
-   its routing window.
-2. **Identity wikis always enter, outside the count.** A root `wiki-user`
-   / `wiki-group` (an agent's wiki included — it is a `wiki-user` with the
-   `is_agent` marker) is exempt: a deployment's users and groups *are* its
-   routing domains, so dropping one does not degrade the choice, it removes
-   the only correct answer for every fact about that principal. They are
-   bounded by enrollment, not by memory growth.
-3. **Only emerged wikis are capped** (`max_wikis_in_prompt`, default 32),
-   **oldest first** by `_meta` `created`. They are the unbounded set — REM
-   mints them from page groups — so the cap belongs here; keeping the
-   settled subject areas and dropping the newest also aligns with the fact
-   that a young emerged wiki is the most likely to be re-absorbed by a
-   later consolidation. An undated wiki sorts as the oldest, `wiki_id`
-   breaks ties, and a truncation is **logged**: a bounded window must say
-   what it dropped.
+[`derive_target_wiki`](../../crates/mwe-core/src/ingest.rs) resolves the
+destination instead, in four descending preferences:
 
-The order is deterministic — identity wikis in tree order, then the
-surviving emerged ones oldest-first — so the same tree always renders the
-same prompt. A smart wiki therefore never appears in the routing window and
-the classifier cannot target one; the defensive backstop is the
-capture-plan validation, which rejects any `target_wiki_id` not in the
-offered list.
+1. **An explicit `target_wiki_id`**, when something still emits one. The
+   bundled prompt does not; an operator override may, and honouring it
+   keeps those deployments working. Gated on the enumeration, so an
+   invented or smart-managed id is ignored rather than fatal — the fact
+   falls through to the next arm instead of being dropped.
+2. **The list page the turn names.** A `target_page` matching an entry of
+   the `list_pages` inventory takes that page's own wiki. This is the one
+   route by which a turn still files into a wiki that is not its owner's,
+   and it fires exactly when the user pointed at the list themselves.
+3. **The subject's own wiki.** An identity wiki's id *is* its principal's
+   id, so `user:marco` → `marco` and `group:famiglia` → `famiglia`. The
+   ordinary path.
+4. **The sender's own wiki** — for a `global`-owned fact (no wiki carries
+   that principal) and for a subject with no wiki of their own.
 
-**What each entry says about itself.** `wiki_id`, `title`, `wiki_type`,
-`is_agent` when set — then the description, as up to two lines, each
-omitted when empty:
+Nothing left → `MissingTargetWiki`, and the extraction is dropped. That is
+now a deployment fault (the sender has no writable wiki) rather than a
+model fault. Pinned by
+`derive_target_wiki_walks_list_then_subject_then_sender`.
+
+[`available_wikis`](../../crates/mwe-core/src/ingest.rs) survives as the
+**internal** enumeration behind those arms — and as the window the
+[document extractor](document-ingest.md) still renders, since a document's
+segments may legitimately belong anywhere in the tree. On the
+conversational path it is now called **uncapped**: the cap existed solely
+to bound a prompt block that no longer exists. It still drops smart wikis
+first — they are authoritatively managed by smart consumers via the
+`wiki_admin_*` family, and routing a capture into one here would both
+double-bill the smart consumer's LLM budget (server-side `ingest` runs
+*after* the consumer already paid to classify the message) and bypass the
+audit row in `wiki_admin_op_log`. The flag is read straight from each
+wiki's `_meta.md`; see [smart-wikis.md](smart-wikis.md). Every arm of the
+derivation inherits that exclusion for free.
+
+### The list-page inventory — the one placement surface left
+
+`list_pages` ([`fact_index::list_pages_readable_by`](../../crates/mwe-core/src/fact_index.rs))
+is what replaced the wiki window, and it is not the same block in a smaller
+hat. A wiki is an *address* the engine can compute; the file name of the
+shopping list is knowledge only the store holds, and a recalled fact
+carries its wiki, its owner and its audience but **never the page it sits
+on**. Without the inventory, "add detergent to the shopping list" invents a
+name, and — because a requested container is written live — mints a second
+shopping list in front of the user.
+
+It serves every `lista`-style page the sender may read, from **both**
+halves of the write path: `fact_index` for the lists already on disk, and
+`capture_buffer` for one created minutes ago that the light dream has not
+promoted yet. Serving only the first is exactly the gap that splits a list
+when two items are added inside one light-dream interval. Entries are
+deduplicated per page, ACL-filtered by the query (the three-axis
+`readable_by` predicate, shared with recall), capped at
+`max_list_pages_in_prompt`, and rendered as a page name plus the `holds`
+line recorded when the page was proposed — **never** the wiki it lives in,
+which stays the engine's business.
+
+
+**What each entry of the document extractor's window says about itself.**
+`wiki_id`, `title`, `wiki_type`, `is_agent` when set — then the
+description, as up to two lines, each omitted when empty:
 
 | line | what it is | who writes it |
 |---|---|---|
@@ -216,12 +249,10 @@ overwrite an operator's authored line. A wiki with neither renders
 `about: (not described yet)` — the honest answer, and shorter than two
 empty keys.
 
-`holds` is the one that is actually populated today (nothing writes `scope`
-on a standard wiki), and it is the **only** description an **emerged** wiki
-has — precisely the case where the id says least, because it names a topic
-rather than an enrolled principal. A user's or group's wiki is
-self-describing: its id **is** its principal's id, and that id also appears
-in the prompt's `known_users` / `sender_groups` blocks.
+`holds` is the one that is actually populated today: nothing writes `scope`
+on a standard wiki, which is why removing the window from the
+conversational prompt cost that path no audience signal it was actually
+receiving.
 
 **The conversation is a superset, not an exclusion** (roadmap group 17).
 The filter keeps a *capture* out of the smart project wiki — it does
@@ -360,11 +391,50 @@ narrow, and most detector flags were correct date resolution):
   in the **container**, and every guard we had judged facts.
 
 So the rule binds the frame as hard as the body: `target_page` and
-`page_description` are covered by the same clause, and **opening a NEW page is
+`page_description` are covered by the same clause, and **opening a NEW list is
 called out as the moment to be conservative** — the subject must be one the turn
 named, the description must be answerable from the turn, and when in doubt an
-existing page wins, because an under-filed fact is moved by the nightly pass
-while an invented page outlives the turn that caused it.
+existing list wins, because a misfiled item is moved later while an invented list
+outlives the turn that caused it.
+
+The clause now has far less surface to guard, because the classifier can only
+name a page for a list at all — see below.
+
+### A page name is honoured exactly when the write cannot wait
+
+`target_page` and `page_description` survive validation in **two** cases;
+everywhere else the classifier's proposal is discarded and the fact takes the
+wiki's buffer page (`IngestPolicy::default_page`, `notes.md`).
+
+- **`style: "lista"`.** A list is a *set*. Half a shopping list is not a partial
+  answer, it is a wrong one — which is also why a ranked top-K cannot serve one.
+  It has to land on the page it belongs to, **by its exact name**, and
+  `list_pages` exists so that name can be copied rather than guessed.
+- **`requested_container: true`.** That extraction bypasses the buffer and
+  reaches disk inside the turn, so the page must exist inside the turn.
+  Independent of `style` by design — "keep me a note about project X" is prose
+  and still needs the name the user gave it. Binding the page to `style` alone
+  was a regression this rule's first cut introduced (2026-08-06, caught the same
+  day): a requested note landed on `notes.md` instead of the page asked for.
+
+Everything else waits, and waiting is what makes the name unnecessary: no single
+page is the answer before a fact is seen beside its neighbours, the classifier is
+shown no prose pages to check against, and any name it emits is a guess the
+consolidation would have to undo. Undoing it is not free — a guessed name becomes
+a real file on disk, and pages outlive the turn that minted them.
+
+Enforced in `validate_capture_plan`, not merely asked for in the prompt: a name
+that reaches disk is a page. Pinned by
+`a_page_name_is_honoured_only_when_the_write_cannot_wait`, which exercises both
+switches.
+
+
+**This is deliberately an interim state.** Prose facts land on their wiki's
+buffer page — the designed holding place, which REM's reorg lifts onto real
+pages — until the light cadence learns to choose the page itself
+(`NewFactPlacement::Cartografo` on the cheap tier, today REM-only). That is the
+open work; the point of doing this half first is that the decision is now made
+by nobody rather than by the participant that could not see the pages.
 
 The sibling clause: **an unresolved reference stays unresolved.** A gap the turn
 did not fill keeps the turn's own wording; the fact is neither dropped nor
@@ -626,6 +696,105 @@ structural turn only files the explicit multi-fact array (the legacy
 top-level synthesis would capture the container request itself), and it
 never demotes to the skip fallback — the nudge IS its outcome even when
 nothing files.
+
+## The reconciliation stage — OPEN WORK, and why it is not the classifier's
+
+Four operations decide the fate of a fact that **already exists**: closing it
+(completion / forget gesture), **superseding** it, correcting its **dates**,
+changing **who may read it**. Until prompt v2.59 all four were the classifier's,
+decided against the ten-odd facts the flat recall happened to surface.
+
+**They were removed from the classifier and are not yet re-implemented
+anywhere.** Between v2.59 and the stage described below, nothing closes,
+nothing supersedes, no date is corrected and no sharing is changed from chat —
+a deliberate interim, taken while production was down and this area was being
+rebuilt (founder, 2026-08-06). The engine's `apply_plan_closures` /
+`apply_plan_validity_edits` / `apply_plan_acl_changes` and the matching
+`LlmIngestPlan` fields are **kept on purpose**: they are this stage's substrate,
+and an operator-overridden prompt that still emits them keeps working.
+
+### The rule that decides where a judgement belongs
+
+> **A slot may reconcile against a set it is shown COMPLETE. It may never
+> reconcile against a sample.**
+
+The classifier is shown three complete sets, and reconciling against those
+stays its job:
+
+| set | what reconciling means there |
+|---|---|
+| `list_pages` | reuse an existing list's exact name instead of minting a second. It sees WHICH lists exist, never what is ON them — so it cannot act on an individual item. |
+| `agent_behaviour_rules` | revise a standing directive with `supersede_target`; the block is every directive in force. |
+| `sender_rules` | honour the policy, and do not append a governance rule already in force. |
+
+It is shown **one sample** — `recalled_memory`, top-K by similarity over a store
+that may hold thousands. Every judgement that needs the store and gets a sample
+fails the same way: silently, by omission, and the failure compounds. Superseding
+is the worst of the four, because the new fact is filed while the contradicted
+one stays alive beside it; a missed closure merely leaves something open.
+
+### Where the stage goes, and what it sees
+
+After the navigator, before the response is assembled — the last point in the
+turn where the engine has actually *read* the memory. Its candidate set is the
+**union**, deduplicated by `fact_id`:
+
+1. the flat recall hits (the classifier's own window),
+2. the fresh buffered captures — a fact captured this morning is on no page, so
+   the navigator cannot reach it by construction,
+3. **the active facts on the pages the navigator opened.** `NavigatedFragment`
+   carries `wiki_id` + `page`, and `fact_index` is indexed on `source_path`
+   (`idx_fact_path`), so this is one cheap indexed read, not a second search.
+
+Why the union and not (3) alone: the navigator opens pages to **answer** the
+turn, guided by the classifier's own seeds. Usually the fact to close is on one
+of them; not always. And on a deployment with no navigator slot the stage still
+runs — with (1) + (2), i.e. exactly today's coverage, done by the right
+component.
+
+### What it decides, and what it must not lose
+
+One cheap-tier call, one prompt, four answers: what this turn closes, what it
+supersedes, whose dates it corrects, whose sharing it changes. The prompt shape
+already exists — `prompts/ingest-closures.md` takes `{message}`,
+`{current_time}` and a `{candidates}` list rendered as `id · validity · text`;
+the stage generalises it from closures to all four.
+
+**The one thing that must be carried over.** Today a superseding fact
+**inherits the superseded fact's `allow`** before it is written, because "the
+classifier can restate the content but must not be relied on to restate the
+ACL" — without it a re-statement silently re-privatises a shared fact. Deciding
+the supersede *after* the write means the new fact already carries whatever
+audience the classifier chose, so the inheritance becomes a second write. It is
+not optional: it is the difference between a memory that governs sharing and
+one that loses it on every restatement.
+
+**The precision rule gets stricter, not looser.** A wider candidate set is more
+chances to hit the right fact *and* more chances to retire the wrong one. The
+existing clause — close only what the message plainly states, never what you
+suspect — has to be carried into the new prompt with the same force.
+
+**One accepted limit:** the reply of the turn that triggers the reconciliation
+was composed from material collected earlier, so it may still show a closed item
+as open. It is right from the next turn; re-composing is not worth the spend.
+
+### Its prerequisite, already landed: a capture turn always reaches the reading
+
+A `capture` that filed nothing used to return early, demoted to a skip. That was
+sound while "filed nothing" meant "nothing happened" — a forget gesture carried
+its own closures, and a closure counted as activity. Since reconciliation left
+the classifier, a gesture files **nothing**: "forget what I told you about the
+greenhouse" is a capture with an empty `extractions` array. The early return
+would therefore have (a) answered the user out of an empty context and (b)
+skipped the navigator, which is exactly where this stage reads from — breaking
+the one case it exists for.
+
+So the demotion is gone: a capture turn always flows on to the reading. Nothing
+is lost — unclaimed media is still filed by the deterministic pass, and a turn
+whose reading *also* comes back empty still gets the canned seed, so the engine
+never promises a write that did not happen. Four tests moved from asserting
+`Skip` to asserting `Capture` on that path; the fifth is renamed
+`ingest_capture_with_empty_extractions_still_reads`.
 
 ## The closure verb — completion + the relayed forget gesture
 
@@ -1126,9 +1295,11 @@ element, or one synthesised from the legacy top-level fields — so the
 reconstruction below applies uniformly whether the plan is multi-fact
 or single-fact:
 
-- `target_wiki_id` ⇒ explicit failure (`MissingTargetWiki` → skip the
-  extraction, or demote the legacy single-fact turn).
-- `target_page` ⇒ normalised by `normalize_capture_page`: the
+- `target_wiki_id` ⇒ not read from the model at all (derived — see
+  "Destination" above). `MissingTargetWiki` now means the *derivation*
+  exhausted every arm: the sender has no writable wiki.
+- `target_page` ⇒ on a `lista` extraction, normalised by
+  `normalize_capture_page` (elsewhere discarded before it gets here): the
   LLM-proposed page is untrusted, so it runs through
   [`planner::canonical_page_path`](../../crates/mwe-core/src/planner.rs)
   — every path segment through the canonical `planner::slugify`
@@ -1214,8 +1385,8 @@ Behaviour-rule and `self` facts never reach this function at all (both
 pin their wiki in code, upstream). Every other owner⊥wiki placement the
 classifier proposes is honoured.
 
-The guard is the net, not the routing. Upstream of it the **routing window
-itself says so**: an agent's entry in `available_wikis` carries `is_agent:
+The guard is the net, and since the classifier stopped naming wikis it is
+also the belt: an agent's entry in the internal enumeration carries `is_agent:
 true` (emitted only when set — a human's entry stays lean), and the prompt
 rules an agent's wiki out as a destination for anyone else's fact. Without
 that line the classifier saw `type: wiki-user, title: Hermes` and had only
@@ -1838,7 +2009,7 @@ signature stays stable as the policy grows:
 | `dedup_threshold` | `recall::DEFAULT_DEDUP_THRESHOLD` (0.85) | Mirrors capture's default — a turn that paraphrases an existing fact should be deduped. |
 | `max_recent_messages` | 16 | The "keepTurns×2" sliding window — wide enough for coreference and the classifier's multi-fact split. The consumer owns the transcript and supplies the window via `IngestRequest.recent_messages`; this caps how much of it the prompt carries. |
 | `max_recent_message_chars` | 280 | One tweet-length per turn keeps the prompt compact. |
-| `max_wikis_in_prompt` | 32 | A workdir with hundreds of wikis truncates — the LLM should still pick a sensible target for the common case. |
+| `max_list_pages_in_prompt` | 32 | Lists are few by nature; this bounds a pathological corpus, not an ordinary one. Past the cap a turn adding to a dropped list proposes a fresh name instead. |
 | `max_groups_in_prompt` | 8 | Cap on the `sender_groups` entries injected for group-scope routing; a sender in more groups gets the first 8 (alphabetical). |
 | `max_group_scope_chars` | 1000 | Per-group `scope` truncation — large enough to keep the scope's exclusion clause, bounded so a pathological scope can't blow the prompt budget. |
 | `max_users_in_prompt` | 24 | Cap on the `known_users` roster injected for cross-user attribution; a deployment with more enrolled users gets the first 24 (alphabetical by id). |

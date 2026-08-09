@@ -2306,10 +2306,9 @@ pub enum NewFactPlacement<'a> {
 /// suffix is stripped first so slugify does not fold it into a trailing
 /// `_md`.
 fn placement_slug(target_page: &str) -> Option<String> {
-    const RESERVED: [&str; 5] = ["index", "rules", "projects", "profile", "notes"];
     let stripped = target_page.strip_suffix(".md").unwrap_or(target_page);
     let slug = slugify(stripped);
-    if slug.is_empty() || RESERVED.contains(&slug.as_str()) {
+    if slug.is_empty() || crate::wiki::is_reserved_page_stem(&slug) {
         None
     } else {
         Some(slug)

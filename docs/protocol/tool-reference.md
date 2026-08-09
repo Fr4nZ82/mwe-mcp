@@ -292,7 +292,7 @@ never as an `Err`.
   sees the deployment-wide count. The block is structured (not prose)
   so consumers in any locale compose their own warning.
 - **Smart-family routing exclusion:** smart wikis are
-  filtered out of the ingest LLM's `available_wikis` window — they are
+  filtered out of the wikis ingest may file into — they are
   authoritatively managed by smart consumers via `wiki_admin_*`, and
   routing a capture into them through ingest would double-bill the
   consumer's LLM budget. Because a smart wiki never appears in the

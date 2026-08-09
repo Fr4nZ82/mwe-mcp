@@ -193,6 +193,25 @@ pub fn is_rules_page(source_path: &str) -> bool {
 /// and navigable: delivery through ordinary recall is the entire point.
 pub const PROJECTS_FILENAME: &str = "projects.md";
 
+/// True when `stem` (a page name without its `.md`) names one of the five
+/// **reserved pages** no classifier may aim a capture at.
+///
+/// The wiki's map ([`INDEX_FILENAME`], which holds no facts), its card and
+/// its buffer ([`PROFILE_FILENAME`] / [`NOTES_FILENAME`], per-wiki foundation
+/// nodes the planner owns), and the two deterministic channels
+/// ([`RULES_FILENAME`] / [`PROJECTS_FILENAME`], written by their own code
+/// paths). A capture that names one is not filed there — it falls through to
+/// the deterministic home its owner and salience choose.
+///
+/// One list, read by both sides of that decision: the planner's placement
+/// flattener and the ingest list-page inventory
+/// ([`crate::fact_index::list_pages_readable_by`]). They must never disagree
+/// about what a classifier is allowed to name.
+#[must_use]
+pub fn is_reserved_page_stem(stem: &str) -> bool {
+    matches!(stem, "index" | "rules" | "projects" | "profile" | "notes")
+}
+
 /// The owner's reserved **project diary** — one line per project per day,
 /// saying what happened.
 ///

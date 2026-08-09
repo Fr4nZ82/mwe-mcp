@@ -841,7 +841,7 @@ was opened against a pool cap of 16. On the measured corpus `famiglia`'s root
 was opened at the first decision on 137 of 141 turns, effectively always,
 whatever was asked. Its real value is **routing** — deciding where a fact
 belongs — and routing has two proper consumers already: the ingest classifier
-(which reads `available_wikis` and the group scopes) and REM. A group wiki is
+(which reads the group scopes) and REM. A group wiki is
 still reachable as *content*, through its pages.
 
 *Consequence for `wiki_navigate`:* a caller that names a group in `owners`
