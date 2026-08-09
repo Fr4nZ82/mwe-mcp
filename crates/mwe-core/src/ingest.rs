@@ -158,7 +158,7 @@ pub struct IngestRequest {
     /// orchestrator flips to [`MessageRole::Assistant`] only when the consumer
     /// agent feeds back its OWN prior reply for extraction (roadmap 27,
     /// agent-authored memory): then the classifier applies the agent-turn
-    /// discriminator (prompt Part 12) and any captured fact is attributed with
+    /// discriminator (prompt Part 9) and any captured fact is attributed with
     /// `sender = <the calling agent>` (resolved from [`Self::consumer_id`]) instead
     /// of the user — so the agent remembers the synthesis in its own reply (a
     /// deadline it derived, advice it gave) without it masquerading as a
@@ -3044,13 +3044,13 @@ fn build_prompt(
     // — the whole prompt already assumes a user message, and emitting nothing
     // keeps that 99% path byte-identical. When the consumer agent feeds back its
     // OWN prior reply for extraction (roadmap 27) the line flips to `assistant`
-    // and arms Part 12, so the model reads `text` as its own words and keeps only
+    // and arms Part 9, so the model reads `text` as its own words and keeps only
     // the durable sediment it synthesised.
     if request.author == MessageRole::Assistant {
         out.push_str(
             "author: assistant\n\
              # THIS TURN'S `text` IS YOUR OWN PRIOR REPLY, not a user message. \
-             Apply Part 12 (the agent-turn discriminator): keep only the durable \
+             Apply Part 9 (the agent-turn discriminator): keep only the durable \
              sediment you synthesised (an episode/decision, advice tied to the \
              user), default hard to skip, and never re-capture what \
              `recalled_memory` already holds.\n",
@@ -3783,7 +3783,7 @@ fn agent_self_fact_page(is_identity: bool, sender_id: &str, default: &Path) -> P
 }
 
 /// The `owner_id: "self"` sentinel on an assistant turn
-/// (prompt Part 12) routes here: the body is filed as a normal fact in the
+/// (prompt Part 9) routes here: the body is filed as a normal fact in the
 /// calling agent's OWN wiki, **owned by the agent** (`owner == sender == the
 /// agent` ⇒ no separate sender), so it becomes the agent's emergent self — its
 /// identity (high-salience facts the REM consolidates onto its card) and its
@@ -5883,7 +5883,7 @@ pub async fn wiki_ingest_message(
                     continue;
                 }
 
-                // `owner_id: "self"` sentinel (prompt Part 12) → a fact the
+                // `owner_id: "self"` sentinel (prompt Part 9) → a fact the
                 // agent states about ITSELF, filed owner=agent in the agent's
                 // own wiki. Only meaningful on an assistant turn
                 // where the agent principal resolved (`agent_sender`); on any
@@ -5892,7 +5892,7 @@ pub async fn wiki_ingest_message(
                 // agent's own wiki, the model cannot name it.
                 //
                 // The sentinel has TWO spellings in the wild. `self` is the one
-                // Part 12 prescribes; a model that knows its own principal
+                // Part 9 prescribes; a model that knows its own principal
                 // writes it out instead (`user:<agent>`) — the identical claim,
                 // "this fact is about me". Only the literal used to match, so
                 // the spelled-out form fell through to the normal path and the
@@ -12746,8 +12746,8 @@ mod tests {
         drop(dir);
     }
 
-    /// `build_prompt` arms Part 12 only on an assistant-authored turn: the
-    /// `author: assistant` line + the Part 12 pointer appear for the agent's
+    /// `build_prompt` arms Part 9 only on an assistant-authored turn: the
+    /// `author: assistant` line + the Part 9 pointer appear for the agent's
     /// own reply, and the 99% user path stays byte-clean (no `author:` line).
     #[test]
     fn build_prompt_marks_assistant_authored_turn_only() {
@@ -12788,9 +12788,21 @@ mod tests {
             asst_prompt.contains("author: assistant"),
             "an assistant turn injects the author line"
         );
+        // The pointer has to name a section the BUNDLED PROMPT ACTUALLY HAS.
+        // Asserting the literal alone is what let the renumbering of v2.59
+        // survive: the injection still said "Part 12", the prompt stopped at
+        // Part 9, and this test stayed green comparing a stale string with
+        // itself. So read the number back out of the injection and look for
+        // that heading in the prompt.
+        let pointer = asst_prompt
+            .split("Apply ")
+            .nth(1)
+            .and_then(|t| t.split(" (").next())
+            .expect("the assistant turn injects an `Apply Part N` pointer");
         assert!(
-            asst_prompt.contains("Part 12"),
-            "and points the classifier at the agent-turn discriminator"
+            BUNDLED_INGEST_PROMPT_MD.contains(&format!("## {pointer} — `author: assistant`")),
+            "the injected pointer names `{pointer}`, which is not the \
+             agent-turn discriminator's heading in the bundled prompt"
         );
     }
 
@@ -12859,7 +12871,7 @@ mod tests {
     }
 
     /// The sentinel's OTHER spelling. A model that knows its own principal
-    /// writes `owner_id: "user:<agent>"` where Part 12 asks for `self` — the
+    /// writes `owner_id: "user:<agent>"` where Part 9 asks for `self` — the
     /// identical claim, "this fact is about me". Only the literal used to
     /// match, so the spelled-out form fell through to the normal path and the
     /// agent's diary entry landed in whichever wiki `target_wiki_id` named (40

@@ -1749,8 +1749,8 @@ fires the pass on a daemon thread after the reply has gone out (act-as the user;
 the server resolves the agent provenance from the consumer token), so it adds no
 turn latency and a hiccup never kills a turn.
 
-**The discriminator — prompt Part 12.** Wholesale ingest of the agent's prose is
-poison (noise, opinions, regenerable world knowledge, feedback loops). Part 12 is
+**The discriminator — prompt Part 9.** Wholesale ingest of the agent's prose is
+poison (noise, opinions, regenerable world knowledge, feedback loops). Part 9 is
 gated hard on the `author: assistant` context line `build_prompt` injects — on a
 normal turn it is ignored and the prompt is byte-identical to before. When armed,
 it classifies each thing the reply states into six kinds and keeps three:
@@ -1800,7 +1800,7 @@ captures the source exhaustively; this captures the agent's *synthesis*.
 **The self side — the agent has a loaded sense of who it is (roadmap 27d core).**
 The facts above are about the *user* (`owner=user`, in their wiki). The same
 exchange also has an agent's-eye side, and that lands in the **agent's own**
-wiki: Part 12's `owner_id: "self"` sentinel routes an extraction through
+wiki: Part 9's `owner_id: "self"` sentinel routes an extraction through
 `capture_agent_self_fact` into the calling agent's wiki, **owned by the agent**
 (`owner == sender == the agent` ⇒ no separate sender), auto-tagged with the
 served user — *except* a high-salience **identity** fact, which stays untagged so
@@ -1885,7 +1885,7 @@ column, migration 0050) says which entry it is. Without it the "you" of every
 turn reads as one more stranger in the list, and a sentence addressed **to**
 the assistant is indistinguishable from a sentence **about** a third party;
 with it the prompt can state the asymmetry outright: the agent is a real
-principal (a fact whose subject is the agent is owned by it, Part 12's
+principal (a fact whose subject is the agent is owned by it, Part 9's
 `owner_id: "self"`), but a human name in the message never resolves onto that
 entry, and a name addressed to it is address, not attribution — the same
 discrimination the naming-deixis rule makes. Emitted only when true, so a

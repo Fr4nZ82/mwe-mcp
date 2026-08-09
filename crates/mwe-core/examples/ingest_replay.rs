@@ -179,9 +179,9 @@ struct Record {
     /// The recorded user message (`build_prompt` output), replayed verbatim.
     user: String,
     /// This turn fed the agent's own reply back (roadmap 27) — the gate for
-    /// Part 12.
+    /// Part 9.
     author_is_assistant: bool,
-    /// This turn carried media — the gate for Part 9.
+    /// This turn carried media — the gate for Part 8.
     has_attachments: bool,
     /// The turn rode inline images whose bytes the spool dropped, so the
     /// replay is not faithful for it.
@@ -260,7 +260,7 @@ enum Variant {
 impl Variant {
     /// Parse `baseline` / `gated` / `drop:<heading>;<heading>`. The drop
     /// arguments are matched as **prefixes of the `## ` heading line**, so
-    /// `drop:Part 10;Part 11` is enough to name two sections.
+    /// `drop:Part 8;Part 9` is enough to name two sections.
     fn parse(spec: &str) -> Result<Self, String> {
         match spec {
             "baseline" => Ok(Self::Baseline),
@@ -291,10 +291,10 @@ impl Variant {
             Self::Gated => {
                 let mut drop = Vec::new();
                 if !record.author_is_assistant {
-                    drop.push("Part 12".to_owned());
+                    drop.push("Part 9".to_owned());
                 }
                 if !record.has_attachments {
-                    drop.push("Part 9".to_owned());
+                    drop.push("Part 8".to_owned());
                 }
                 drop
             },
