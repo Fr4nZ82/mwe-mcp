@@ -134,6 +134,30 @@ pub enum EnrollmentError {
          pseudo-identity and can never be enrolled"
     )]
     ReservedId(String),
+    /// The roster would grow past the product limit on enrolled users.
+    #[error(
+        "this memory holds {cap} people at most, and enrolling this one would make {wanted}. \
+         Remove someone first, or raise the limit."
+    )]
+    TooManyUsers {
+        /// Users the incoming file declares.
+        wanted: usize,
+        /// The limit in force ([`MAX_ENROLLED_USERS`]).
+        cap: usize,
+    },
+    /// One user would be put in more groups than the product limit allows.
+    #[error(
+        "{user} would be in {wanted} groups, and a person may be in {cap}. \
+         Take them out of one first, or raise the limit."
+    )]
+    TooManyGroupsForUser {
+        /// The user the change is over-subscribing.
+        user: String,
+        /// Groups the incoming file would put them in.
+        wanted: usize,
+        /// The limit in force ([`MAX_GROUPS_PER_USER`]).
+        cap: usize,
+    },
     /// Underlying `sqlx` error while mirroring to the DB.
     #[error("enrollment db error: {0}")]
     Db(#[from] sqlx::Error),
@@ -793,10 +817,89 @@ pub async fn reject_if_agent(pool: &SqlitePool, user_id: &str) -> Result<(), Str
     Ok(())
 }
 
+/// How many people one memory may hold (founder, 2026-08-09).
+///
+/// A **product** limit, not a scalability one: it is enforced by refusing the
+/// 25th enrolment rather than by cutting a list at render time. The prompt
+/// caps that used to stand in for it (`IngestPolicy::max_users_in_prompt` and
+/// friends) truncate alphabetically, so the person the cut hides is whoever
+/// sorts late, and their facts are then filed under the sender.
+pub const MAX_ENROLLED_USERS: usize = 24;
+
+/// How many groups one person may belong to (founder, 2026-08-09). Same
+/// class, same reason — see [`MAX_ENROLLED_USERS`].
+pub const MAX_GROUPS_PER_USER: usize = 8;
+
+/// Refuse a change that would push the roster past its product limits —
+/// **growth only**.
+///
+/// A deployment can already be over a limit the day it is switched on, and
+/// six people cannot be un-enrolled retroactively (founder's ruling,
+/// 2026-08-09: refuse the growth, keep whoever is there). So the test is not
+/// "is it over the cap" but "is it over the cap **and larger than it was**":
+/// a memory with 30 people can still fix an alias, change a locale or take
+/// someone out — every edit that does not add — while the 31st is refused.
+///
+/// Read against the DB rather than against a previous file, because the DB is
+/// what [`mirror_to_db`] is about to replace and is the only thing every
+/// writer shares.
+async fn refuse_growth_past_limits(
+    pool: &SqlitePool,
+    file: &EnrollmentFile,
+) -> Result<(), EnrollmentError> {
+    let wanted_users = file.users.len();
+    if wanted_users > MAX_ENROLLED_USERS {
+        let current: i64 = sqlx::query_scalar("SELECT count(*) FROM enrollment_users")
+            .fetch_one(pool)
+            .await?;
+        if wanted_users > usize::try_from(current).unwrap_or(usize::MAX) {
+            return Err(EnrollmentError::TooManyUsers {
+                wanted: wanted_users,
+                cap: MAX_ENROLLED_USERS,
+            });
+        }
+    }
+    // Per user, because that is the shape the limit has: the prompt's
+    // `sender_groups` section enumerates the groups of ONE sender.
+    let mut wanted_groups: std::collections::BTreeMap<&str, usize> =
+        std::collections::BTreeMap::new();
+    for group in &file.groups {
+        for member in &group.members {
+            *wanted_groups.entry(member.as_str()).or_default() += 1;
+        }
+    }
+    for (user, wanted) in wanted_groups {
+        if wanted <= MAX_GROUPS_PER_USER {
+            continue;
+        }
+        let current = groups_for(pool, user).await?.len();
+        if wanted > current {
+            return Err(EnrollmentError::TooManyGroupsForUser {
+                user: user.to_owned(),
+                wanted,
+                cap: MAX_GROUPS_PER_USER,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Atomically replace the contents of `enrollment_users` and
 /// `enrollment_groups` with the given file. Assumes the file has
 /// already passed [`validate`].
+///
+/// Also the choke point for the **product limits** — see
+/// [`refuse_growth_past_limits`], which runs before anything is deleted.
+///
+/// # Errors
+///
+/// [`EnrollmentError::TooManyUsers`] / [`EnrollmentError::TooManyGroupsForUser`]
+/// when the change would grow the roster past a limit, plus DB / JSON
+/// failures.
 pub async fn mirror_to_db(pool: &SqlitePool, file: &EnrollmentFile) -> Result<(), EnrollmentError> {
+    // Before the wholesale delete/re-insert: a refusal has to happen while
+    // the old roster is still there to fall back on.
+    refuse_growth_past_limits(pool, file).await?;
     // Reads `preserved_agents` before the wholesale delete/re-insert, so
     // IMMEDIATE avoids the read→write snapshot upgrade (`database is locked`).
     let mut tx = crate::db::begin_immediate(pool).await?;
@@ -1091,6 +1194,99 @@ mod tests {
                 scope: Some("Project decisions and shared deadlines.".into()),
             }],
         }
+    }
+
+    fn roster(n: usize) -> EnrollmentFile {
+        EnrollmentFile {
+            version: 1,
+            users: (0..n).map(|i| user(&format!("u{i}"))).collect(),
+            groups: Vec::new(),
+        }
+    }
+
+    /// The 25th person is refused — and a memory that is ALREADY over the
+    /// limit can still be edited, as long as the edit does not add.
+    ///
+    /// The second half is the whole ruling (founder, 2026-08-09). A limit
+    /// switched on over a deployment that already holds thirty people cannot
+    /// un-enrol six of them, and a guard that refuses every save until it
+    /// does would lock the operator out of fixing an alias.
+    #[tokio::test]
+    async fn the_roster_refuses_growth_past_the_limit_but_never_what_is_already_there() {
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
+        mirror_to_db(&pool, &roster(MAX_ENROLLED_USERS))
+            .await
+            .expect("a full roster is fine");
+        let err = mirror_to_db(&pool, &roster(MAX_ENROLLED_USERS + 1))
+            .await
+            .expect_err("the 25th is refused");
+        assert!(
+            matches!(err, EnrollmentError::TooManyUsers { wanted, cap }
+                if wanted == MAX_ENROLLED_USERS + 1 && cap == MAX_ENROLLED_USERS),
+            "{err}"
+        );
+
+        // Force the DB over the limit the way an older deployment would be,
+        // then prove the guard still lets an equal-sized edit through.
+        for i in 0..5 {
+            sqlx::query(
+                "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES (?, '[]', 0)",
+            )
+            .bind(format!("legacy{i}"))
+            .execute(&pool)
+            .await
+            .expect("seed");
+        }
+        let mut over = roster(MAX_ENROLLED_USERS + 5);
+        over.users[0].aliases = vec!["renamed".to_owned()];
+        mirror_to_db(&pool, &over)
+            .await
+            .expect("an over-limit roster can still be edited, as long as it does not grow");
+        assert!(
+            mirror_to_db(&pool, &roster(MAX_ENROLLED_USERS + 6))
+                .await
+                .is_err(),
+            "one more than it already holds is still refused"
+        );
+    }
+
+    /// The ninth group of one person is refused; the other people are
+    /// untouched, because the limit is per person.
+    #[tokio::test]
+    async fn a_person_is_refused_their_ninth_group() {
+        let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
+        let groups = |n: usize| EnrollmentFile {
+            version: 1,
+            users: vec![user("alice"), user("bob")],
+            groups: (0..n)
+                .map(|i| GroupEntry {
+                    id: format!("g{i}"),
+                    members: vec!["alice".to_owned()],
+                    scope: None,
+                })
+                .collect(),
+        };
+        mirror_to_db(&pool, &groups(MAX_GROUPS_PER_USER))
+            .await
+            .expect("eight groups is fine");
+        let err = mirror_to_db(&pool, &groups(MAX_GROUPS_PER_USER + 1))
+            .await
+            .expect_err("the ninth is refused");
+        assert!(
+            matches!(err, EnrollmentError::TooManyGroupsForUser { ref user, wanted, cap }
+                if user == "alice" && wanted == MAX_GROUPS_PER_USER + 1 && cap == MAX_GROUPS_PER_USER),
+            "{err}"
+        );
+        // Bob is in none of them, so a group of his own still goes in.
+        let mut with_bob = groups(MAX_GROUPS_PER_USER);
+        with_bob.groups.push(GroupEntry {
+            id: "bobs".to_owned(),
+            members: vec!["bob".to_owned()],
+            scope: None,
+        });
+        mirror_to_db(&pool, &with_bob)
+            .await
+            .expect("the limit is per person, not per memory");
     }
 
     #[test]

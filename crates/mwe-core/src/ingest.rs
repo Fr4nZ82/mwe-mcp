@@ -1249,6 +1249,69 @@ fn derive_target_wiki(
     known(home).or_else(|| known(&request.sender_id))
 }
 
+/// How many `lista` pages one wiki may hold (founder, 2026-08-09).
+///
+/// A **product** limit — «se non ci entrano più di 24 persone non deve far
+/// creare l'utente, stessa cosa per gruppo e liste» — counted **per wiki**,
+/// so one person's shopping lists never consume another's allowance. Distinct
+/// in kind from [`IngestPolicy::max_list_pages_in_prompt`], which is a
+/// scalability cap on the inventory *shown* to the classifier: cutting that
+/// list hides a list, and a hidden list is one the turn mints a second copy
+/// of, live, in front of the user.
+pub const MAX_LIST_PAGES_PER_WIKI: usize = 32;
+
+/// Send a capture that would mint the wiki's 33rd list to the buffer instead.
+///
+/// **Growth only, and never a lost fact.** An existing list stays addable-to
+/// however many the wiki holds — the check fires only for a name the wiki
+/// does not already have. And the refusal downgrades the *destination*, not
+/// the capture: the fact still lands, on the wiki's buffer, where the nightly
+/// placement settles it like any other unplaced prose. Refusing the whole
+/// extraction would throw away what the person said in order to enforce a
+/// filing limit.
+///
+/// Soft on error: a count that cannot be taken lets the capture through
+/// unchanged — a limit is not worth dropping a turn's work over.
+async fn refuse_new_list_over_cap(
+    pool: &SqlitePool,
+    cap_req: &mut CaptureRequest,
+    unit: &CaptureUnit<'_>,
+    list_pages: &[fact_index::ListPage],
+    policy: &IngestPolicy,
+) -> std::result::Result<(), fact_index::FactIndexError> {
+    let list_shaped = unit
+        .style
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("lista"));
+    if !list_shaped {
+        return Ok(());
+    }
+    let wiki_id = cap_req.wiki_id.as_str().to_owned();
+    let Some(page) = cap_req.page.file_name().and_then(|n| n.to_str()) else {
+        return Ok(());
+    };
+    let page = page.to_owned();
+    // Already a list here — adding to it is never growth.
+    if list_pages
+        .iter()
+        .any(|l| l.wiki_id == wiki_id && l.page == page)
+    {
+        return Ok(());
+    }
+    let held = fact_index::count_list_pages_in_wiki(pool, &wiki_id).await?;
+    if held < MAX_LIST_PAGES_PER_WIKI {
+        return Ok(());
+    }
+    tracing::warn!(
+        wiki_id,
+        page,
+        held,
+        cap = MAX_LIST_PAGES_PER_WIKI,
+        "ingest: wiki is at its list limit — the new list is not minted, the fact goes to the buffer"
+    );
+    cap_req.page = PathBuf::from(&policy.default_page);
+    Ok(())
+}
+
 fn validate_capture_plan(
     unit: &CaptureUnit<'_>,
     request: &IngestRequest,
@@ -6464,6 +6527,18 @@ pub async fn wiki_ingest_message(
                         continue;
                     },
                 };
+
+                // Product limit: a wiki holds at most `MAX_LIST_PAGES_PER_WIKI`
+                // lists, and the limit is enforced by refusing to MINT the
+                // next one — never by cutting the inventory the classifier is
+                // shown, which would hide a list and have the turn mint a
+                // second copy of it live. Growth only: an existing list is
+                // always addable-to, however many the wiki already has.
+                if let Err(e) =
+                    refuse_new_list_over_cap(pool, &mut cap_req, &unit, &list_pages, policy).await
+                {
+                    tracing::warn!(error = %e, "ingest: list-page cap check failed");
+                }
 
                 // Supersede = content update, NOT a sharing change: the new
                 // fact INHERITS the superseded fact's audience (`allow`).

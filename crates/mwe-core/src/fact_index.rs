@@ -2505,6 +2505,37 @@ pub async fn list_pages_readable_by(
 
 /// Resolve a list row to the page file name the classifier should name.
 ///
+/// How many distinct `lista` pages one wiki already holds — **uncapped and
+/// ACL-blind**, unlike [`list_pages_readable_by`].
+///
+/// It answers a product question ("may this memory mint another list here?"),
+/// not a recall one, so neither a reader's permissions nor a prompt budget
+/// belongs in it: a list somebody else cannot see still occupies the name and
+/// still counts against the limit.
+///
+/// # Errors
+///
+/// `sqlx::Error`.
+pub async fn count_list_pages_in_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<usize> {
+    let rows = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT source_path, target_page FROM fact_index \
+          WHERE style = 'lista' AND superseded_at IS NULL AND deleted_at IS NULL \
+            AND wiki_id = ? \
+         UNION ALL \
+         SELECT '', target_page FROM capture_buffer \
+          WHERE style = 'lista' AND status = 'buffered' AND wiki_id = ?",
+    )
+    .bind(wiki_id)
+    .bind(wiki_id)
+    .fetch_all(pool)
+    .await?;
+    let names: std::collections::BTreeSet<String> = rows
+        .iter()
+        .filter_map(|(sp, tp)| list_page_name(sp, tp.as_deref()))
+        .collect();
+    Ok(names.len())
+}
+
 /// The compiled `source_path` wins when it points at a real page: that is
 /// where the list actually is. A row still sitting in the buffer — or one
 /// promoted but not yet compiled, whose `source_path` is the captures

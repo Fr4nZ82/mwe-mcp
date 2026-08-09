@@ -235,6 +235,29 @@ deduplicated per page, ACL-filtered by the query (the three-axis
 line recorded when the page was proposed — **never** the wiki it lives in,
 which stays the engine's business.
 
+**That cap and the product limit are two different things** (founder,
+2026-08-09). `max_list_pages_in_prompt` is a *scalability* cap on what one
+call is shown, and cutting it is a defect in slow motion: a list the
+classifier cannot see is one the turn mints a second copy of, live, in front
+of the user. The *product* limit is
+[`MAX_LIST_PAGES_PER_WIKI`](../../crates/mwe-core/src/ingest.rs) — 32 **per
+wiki**, so one person's lists never consume another's allowance — and it is
+enforced where a list is born: `refuse_new_list_over_cap` sends a capture
+that would mint the wiki's 33rd list to the buffer instead. Growth only (an
+existing list is always addable-to, however many the wiki holds), and never a
+lost fact: the refusal downgrades the *destination*, not the capture, so the
+prose lands on the buffer and the nightly placement settles it like any other
+unplaced fact.
+
+The same shape governs the roster: `MAX_ENROLLED_USERS` (24) and
+`MAX_GROUPS_PER_USER` (8) are refused in
+[`enrollment::mirror_to_db`](../../crates/mwe-core/src/enrollment.rs), the one
+choke point every writer shares, before anything is deleted. **Growth only
+there too**: a deployment can already be over a limit the day it is switched
+on and six people cannot be un-enrolled retroactively, so the test is "over
+the cap **and larger than it was**". A memory holding thirty people can still
+fix an alias or take somebody out; only the thirty-first is refused.
+
 
 **What each entry of the document extractor's window says about itself.**
 `wiki_id`, `title`, `wiki_type`, `is_agent` when set — then the
