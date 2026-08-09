@@ -511,7 +511,7 @@ pub struct RecallHit {
 }
 
 impl RecallHit {
-    fn from_row(row: FactIndexRow, score: f32) -> Self {
+    pub(crate) fn from_row(row: FactIndexRow, score: f32) -> Self {
         Self {
             fact_id: row.fact_id,
             wiki_id: row.wiki_id,

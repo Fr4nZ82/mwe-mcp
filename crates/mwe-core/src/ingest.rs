@@ -1902,6 +1902,8 @@ struct ReconcileDecision {
     #[serde(default)]
     closures: Vec<LlmClosure>,
     #[serde(default)]
+    supersedes: Vec<LlmSupersede>,
+    #[serde(default)]
     validity_edits: Vec<LlmValidityEdit>,
     #[serde(default)]
     acl_changes: Vec<LlmAclChange>,
@@ -1909,8 +1911,204 @@ struct ReconcileDecision {
 
 impl ReconcileDecision {
     const fn is_empty(&self) -> bool {
-        self.closures.is_empty() && self.validity_edits.is_empty() && self.acl_changes.is_empty()
+        self.closures.is_empty()
+            && self.supersedes.is_empty()
+            && self.validity_edits.is_empty()
+            && self.acl_changes.is_empty()
     }
+}
+
+/// One requested supersede: an existing fact is replaced by one this turn
+/// wrote.
+#[derive(Debug, serde::Deserialize)]
+struct LlmSupersede {
+    /// `fact_id` of the OLD fact, from the candidate list.
+    #[serde(default)]
+    target: Option<String>,
+    /// `fact_id` of the NEW fact — one this turn filed.
+    #[serde(default)]
+    successor: Option<String>,
+}
+
+/// Apply the reconciler's supersedes: weld each new fact to the one it
+/// replaces, **audience first**.
+///
+/// The order is the whole point. A supersede is a **content update, not a
+/// sharing change**: the new fact INHERITS the superseded fact's audience.
+/// The reconciler can tell that a claim was restated; it must never be relied
+/// on to restate who may read it, because a re-statement that quietly drops
+/// the allow list re-privatises a shared fact and nothing anywhere says so.
+/// The classifier used to do this inheritance *before* writing the new fact,
+/// which was free; deciding the supersede after the write makes it a second
+/// write, and that is the cost of asking the question where it can be answered
+/// honestly.
+///
+/// Three guards, each refusing rather than guessing:
+/// - the **target** must be one of the candidates the stage was shown, so a
+///   hallucinated id retires nothing;
+/// - the **successor** must be one of the facts this turn actually filed, so
+///   a fact can never be welded to something that does not exist or to itself;
+/// - the sender must **own** the target — the same rule its two siblings
+///   (`apply_plan_validity_edits`, `apply_plan_acl_changes`) apply. Reading a
+///   fact is not authority over it, and a supersede rewrites both its validity
+///   and its successor pointer.
+///
+/// The current sender is stripped from the inherited list, mirroring
+/// `validate_capture_plan`'s `SenderRedundantInAllow` guard. Every step is
+/// soft: a refused or failed supersede is logged and skipped, never fatal.
+///
+/// Returns how many were applied.
+/// Vet one requested supersede, refusing rather than guessing.
+///
+/// Three guards, and each one answers a different way of being wrong:
+/// - the **target** must be one of the candidates the stage was shown, so a
+///   hallucinated id retires nothing;
+/// - the **successor** must be one of the facts this turn actually filed, so a
+///   fact can never be welded to something that does not exist, or to itself;
+/// - the sender must **own** the target — the same rule its two siblings
+///   (`apply_plan_validity_edits`, `apply_plan_acl_changes`) apply. Reading a
+///   fact is not authority over it, and a supersede rewrites both its validity
+///   and its successor pointer.
+fn vet_supersede<'a>(
+    s: &LlmSupersede,
+    candidates: &'a [RecallHit],
+    turn_facts: &[(FactId, String)],
+    sender: &Principal,
+) -> Option<(FactId, FactId, &'a RecallHit)> {
+    let (Some(target_raw), Some(successor_raw)) = (s.target.as_deref(), s.successor.as_deref())
+    else {
+        tracing::warn!("ingest: reconcile supersede missing target or successor — skipped");
+        return None;
+    };
+    let (Ok(target_id), Ok(successor_id)) =
+        (FactId::parse(target_raw), FactId::parse(successor_raw))
+    else {
+        tracing::warn!(
+            target = target_raw,
+            successor = successor_raw,
+            "ingest: reconcile supersede carries an unparseable id"
+        );
+        return None;
+    };
+    let Some(prev) = candidates.iter().find(|h| h.fact_id == target_id) else {
+        tracing::warn!(
+            target = target_raw,
+            "ingest: reconcile supersede target is not a candidate — refused"
+        );
+        return None;
+    };
+    if !turn_facts.iter().any(|(id, _)| *id == successor_id) {
+        tracing::warn!(
+            successor = successor_raw,
+            "ingest: reconcile supersede successor is not a fact this turn filed — refused"
+        );
+        return None;
+    }
+    if prev.owner_id != *sender {
+        tracing::warn!(
+            target = target_raw,
+            owner = %prev.owner_id,
+            "ingest: reconcile supersede refused — the sender does not own the target"
+        );
+        return None;
+    }
+    Some((target_id, successor_id, prev))
+}
+
+/// Carry the superseded fact's audience onto its successor, wherever the
+/// successor currently lives.
+///
+/// The fact store is probed first; `Ok(None)` there means the successor is
+/// still a buffered capture, and since the id is stable across promotion the
+/// buffer row is the one to correct. Returns whether the audience landed.
+async fn inherit_audience(
+    pool: &SqlitePool,
+    successor: &FactId,
+    owner: &Principal,
+    allow: &[Principal],
+    sender: &Principal,
+) -> bool {
+    match fact_index::set_acl(pool, successor, owner, allow, Some(sender)).await {
+        Ok(Some(_)) => true,
+        Ok(None) => matches!(
+            capture_buffer::set_acl(pool, successor, owner, allow, Some(sender)).await,
+            Ok(Some(_))
+        ),
+        Err(err) => {
+            tracing::warn!(error = %err, "ingest: supersede audience inheritance failed");
+            false
+        },
+    }
+}
+
+/// Apply the reconciler's supersedes: weld each new fact to the one it
+/// replaces, **audience first**.
+///
+/// The order is the whole point. A supersede is a **content update, not a
+/// sharing change**: the new fact INHERITS the superseded fact's audience.
+/// The reconciler can tell that a claim was restated; it must never be relied
+/// on to restate who may read it, because a re-statement that quietly drops
+/// the allow list re-privatises a shared fact and nothing anywhere says so.
+/// The classifier used to do this inheritance *before* writing the new fact,
+/// which was free; deciding the supersede after the write makes it a second
+/// write, and that is the price of asking the question where it can be
+/// answered honestly.
+///
+/// Inheriting before welding also fails in the recoverable direction: a failed
+/// inheritance leaves the old fact open beside the new one, which is visibly
+/// wrong, where a failed weld after a good inheritance leaves the new fact
+/// already correctly shared. The current sender is stripped from the inherited
+/// list, mirroring `validate_capture_plan`'s `SenderRedundantInAllow` guard.
+/// Every step is soft: a refused or failed supersede is logged and skipped,
+/// never fatal.
+///
+/// Returns how many were applied.
+async fn apply_reconciled_supersedes(
+    pool: &SqlitePool,
+    supersedes: &[LlmSupersede],
+    candidates: &[RecallHit],
+    turn_facts: &[(FactId, String)],
+    request: &IngestRequest,
+) -> usize {
+    let sender = Principal::User(request.sender_id.clone());
+    let mut applied = 0usize;
+    for s in supersedes {
+        let Some((target_id, successor_id, prev)) =
+            vet_supersede(s, candidates, turn_facts, &sender)
+        else {
+            continue;
+        };
+        let inherited: Vec<Principal> = prev
+            .allow_ids
+            .iter()
+            .filter(|p| **p != sender)
+            .cloned()
+            .collect();
+        if !inherit_audience(pool, &successor_id, &prev.owner_id, &inherited, &sender).await {
+            tracing::warn!(
+                successor = successor_id.as_str(),
+                "ingest: supersede successor not found in either store — not superseding"
+            );
+            continue;
+        }
+        match fact_index::mark_superseded(pool, &target_id, &successor_id).await {
+            Ok(n) if n > 0 => {
+                applied += 1;
+                tracing::info!(
+                    target = target_id.as_str(),
+                    successor = successor_id.as_str(),
+                    inherited = inherited.len(),
+                    "ingest: reconcile superseded a fact, audience carried over"
+                );
+            },
+            Ok(_) => tracing::warn!(
+                target = target_id.as_str(),
+                "ingest: reconcile supersede target already closed — nothing to do"
+            ),
+            Err(err) => tracing::warn!(error = %err, "ingest: reconcile supersede write failed"),
+        }
+    }
+    applied
 }
 
 /// Render one candidate as the stage's prompt sees it:
@@ -2008,6 +2206,7 @@ async fn reconcile_after_reading(
     request: &IngestRequest,
     turn_now: chrono::DateTime<chrono::Utc>,
     candidates: &[RecallHit],
+    turn_facts: &[(FactId, String)],
 ) -> ReconcileDecision {
     if candidates.is_empty() {
         return ReconcileDecision::default();
@@ -2018,6 +2217,18 @@ async fn reconcile_after_reading(
         .collect::<Vec<_>>()
         .join("\n");
     let turn_time = format!("{} ({})", turn_now.to_rfc3339(), turn_now.format("%A"));
+    // The only legal `successor` values. `(none)` rather than an empty block:
+    // a gesture turn files nothing, and the model has to see that there is
+    // nothing to weld to rather than infer it from a blank.
+    let new_facts = if turn_facts.is_empty() {
+        "(none)".to_owned()
+    } else {
+        turn_facts
+            .iter()
+            .map(|(id, text)| format!("{id} · {text}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     let prompt = match prompts::render(
         "ingest-reconcile",
         tree.workdir(),
@@ -2026,6 +2237,7 @@ async fn reconcile_after_reading(
             ("message", request.text.as_str()),
             ("current_time", turn_time.as_str()),
             ("candidates", lines.as_str()),
+            ("new_facts", new_facts.as_str()),
         ],
     ) {
         Ok(p) => p,
@@ -5899,6 +6111,11 @@ pub async fn wiki_ingest_message(
     // that did not happen — the canned seed applies if the reading is empty
     // too.
     let mut nothing_filed = false;
+    // EVERY fact this turn filed, on both the buffered and the live path.
+    // `capture_id` keeps only the first, as the turn's anchor for the wire;
+    // the supersede verb needs them all, because a fact that replaces another
+    // has to be NAMEABLE before it can inherit that fact's audience.
+    let mut turn_facts: Vec<(FactId, String)> = Vec::new();
 
     match intent {
         IntentKind::Capture | IntentKind::Structural => {
@@ -6335,6 +6552,10 @@ pub async fn wiki_ingest_message(
                 // beneficiary. Buffer-time dedup resolves later in the
                 // light dream, so a buffered capture always counts.
                 let mut filed_fresh = true;
+                // Snapshotted before `cap_req` is consumed by either write
+                // path: the reconciler is shown what this turn wrote, so it
+                // can name a successor without being handed an id alone.
+                let this_body = truncate(&cap_req.body, 160);
                 let this_id: FactId = if route_to_buffer {
                     // Staged with the claim: the vector (computed once here
                     // instead of on every later read AND again at promotion)
@@ -6473,13 +6694,9 @@ pub async fn wiki_ingest_message(
                         .push((this_id.clone(), notice_wiki, notice_body));
                 }
 
-                // Surface the first filed fact as the turn's anchor id.
-                //
-                // The supersede half of reconciliation will need EVERY id this
-                // turn wrote, not just the first: a fact that replaces another
-                // has to be nameable before it can inherit that fact's
-                // audience. Collected then, with the setters it needs — not
-                // parked here unread.
+                // Surface the first filed fact as the turn's anchor id, and
+                // keep every one of them for the supersede verb.
+                turn_facts.push((this_id.clone(), this_body));
                 if capture_id.is_none() {
                     capture_id = Some(this_id);
                 }
@@ -6725,11 +6942,20 @@ pub async fn wiki_ingest_message(
             .map(|t| t.page_paths.clone())
             .unwrap_or_default();
         let candidates = reconcile_candidates(pool, &recall_hits, &nav_paths, &sender_ctx).await;
-        let decision = reconcile_after_reading(tree, llm, &request, turn_now, &candidates).await;
+        let decision =
+            reconcile_after_reading(tree, llm, &request, turn_now, &candidates, &turn_facts).await;
         if !decision.is_empty() {
             reconciled +=
                 apply_plan_closures(pool, &decision.closures, &candidates, &request, turn_now)
                     .await;
+            reconciled += apply_reconciled_supersedes(
+                pool,
+                &decision.supersedes,
+                &candidates,
+                &turn_facts,
+                &request,
+            )
+            .await;
             reconciled += apply_plan_validity_edits(
                 pool,
                 tree,
@@ -12187,6 +12413,200 @@ mod tests {
         assert!(
             row.valid_to.is_some(),
             "and stamped when it stopped holding"
+        );
+        drop(dir);
+    }
+
+    /// The supersede verb, and the half that must never be lost: a fact that
+    /// replaces another **inherits its audience**.
+    ///
+    /// A restatement is a content update, not a sharing change. The reconciler
+    /// can tell that a claim was restated; it must never be relied on to
+    /// restate WHO MAY READ it, because a shared fact quietly coming back
+    /// private is invisible to everyone including its owner. Exercised on the
+    /// applier directly: the successor's id is minted inside the turn, so a
+    /// scripted end-to-end run cannot name it in advance.
+    #[tokio::test]
+    async fn a_superseding_fact_inherits_the_audience_of_the_one_it_replaces() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let plant = |body: &'static str, allow: Vec<Principal>| {
+            let tree = &tree;
+            let pool = &pool;
+            async move {
+                capture::wiki_capture(
+                    tree,
+                    pool,
+                    fake_embedder(),
+                    CaptureRequest {
+                        authored_refs: Vec::new(),
+                        wiki_id: WikiId::parse("alice").unwrap(),
+                        page: PathBuf::from("index.md"),
+                        body: body.into(),
+                        owner: Principal::User("alice".into()),
+                        allow,
+                        sender: None,
+                        fact_type: Some("bio".into()),
+                        topics: vec!["lavoro".into()],
+                        dedup_threshold: Some(1.01),
+                        valid_from: None,
+                        valid_to: None,
+                        style: None,
+                        page_description: None,
+                        salience: None,
+                    },
+                )
+                .await
+                .expect("plant")
+            }
+        };
+        // The old fact is SHARED with the family; the new one carries no
+        // audience of its own — the case the inheritance exists for.
+        let old = plant(
+            "alice lavora alla Acme",
+            vec![Principal::Group("famiglia".into())],
+        )
+        .await;
+        let new = plant("alice lavora alla Initech", Vec::new()).await;
+
+        let candidates = vec![recall::RecallHit::from_row(
+            fact_index::find_by_id(&pool, &old.fact_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            1.0,
+        )];
+        let turn_facts = vec![(new.fact_id.clone(), "alice lavora alla Initech".to_owned())];
+
+        let applied = apply_reconciled_supersedes(
+            &pool,
+            &[LlmSupersede {
+                target: Some(old.fact_id.as_str().to_owned()),
+                successor: Some(new.fact_id.as_str().to_owned()),
+            }],
+            &candidates,
+            &turn_facts,
+            &req("alice adesso lavora alla Initech", "alice"),
+        )
+        .await;
+        assert_eq!(applied, 1, "the supersede applied");
+
+        let successor = fact_index::find_by_id(&pool, &new.fact_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            successor.allow_ids,
+            vec![Principal::Group("famiglia".into())],
+            "the new fact carries the audience of the one it replaced — a restatement \
+             must never re-privatise a shared fact"
+        );
+        let retired = fact_index::find_by_id(&pool, &old.fact_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            retired.superseded_by.as_ref(),
+            Some(&new.fact_id),
+            "and the old one is welded to its successor"
+        );
+        drop(dir);
+    }
+
+    /// Three refusals, each preferring to change nothing over guessing: a
+    /// target nobody showed the stage, a successor this turn did not write,
+    /// and a target the sender does not own. Reading a fact is not authority
+    /// over it.
+    #[tokio::test]
+    async fn supersede_refuses_a_stranger_target_a_stranger_successor_and_a_foreign_owner() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let bobs = capture::wiki_capture(
+            &tree,
+            &pool,
+            fake_embedder(),
+            CaptureRequest {
+                authored_refs: Vec::new(),
+                wiki_id: WikiId::parse("alice").unwrap(),
+                page: PathBuf::from("index.md"),
+                body: "bob lavora alla Acme".into(),
+                owner: Principal::User("bob".into()),
+                allow: vec![Principal::User("alice".into())],
+                sender: None,
+                fact_type: Some("bio".into()),
+                topics: vec!["lavoro".into()],
+                dedup_threshold: Some(1.01),
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                page_description: None,
+                salience: None,
+            },
+        )
+        .await
+        .expect("plant");
+        let row = fact_index::find_by_id(&pool, &bobs.fact_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let candidates = vec![recall::RecallHit::from_row(row, 1.0)];
+        let mine = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d01").unwrap();
+        let request = req("bob adesso lavora alla Initech", "alice");
+
+        // Alice can READ bob's fact — it is a candidate — but does not own it.
+        assert_eq!(
+            apply_reconciled_supersedes(
+                &pool,
+                &[LlmSupersede {
+                    target: Some(bobs.fact_id.as_str().to_owned()),
+                    successor: Some(mine.as_str().to_owned()),
+                }],
+                &candidates,
+                &[(mine.clone(), "bob lavora alla Initech".to_owned())],
+                &request,
+            )
+            .await,
+            0,
+            "reading a fact is not authority over it"
+        );
+        // A target nobody showed the stage.
+        assert_eq!(
+            apply_reconciled_supersedes(
+                &pool,
+                &[LlmSupersede {
+                    target: Some("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d99".to_owned()),
+                    successor: Some(mine.as_str().to_owned()),
+                }],
+                &candidates,
+                &[(mine.clone(), "x".to_owned())],
+                &request,
+            )
+            .await,
+            0,
+            "a hallucinated target retires nothing"
+        );
+        // A successor this turn did not write.
+        assert_eq!(
+            apply_reconciled_supersedes(
+                &pool,
+                &[LlmSupersede {
+                    target: Some(bobs.fact_id.as_str().to_owned()),
+                    successor: Some("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d98".to_owned()),
+                }],
+                &candidates,
+                &[],
+                &request,
+            )
+            .await,
+            0,
+            "a fact can only be welded to something this turn actually filed"
+        );
+        assert!(
+            fact_index::find_by_id(&pool, &bobs.fact_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .superseded_at
+                .is_none(),
+            "and after all three refusals the fact is untouched"
         );
         drop(dir);
     }

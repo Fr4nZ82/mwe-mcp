@@ -722,25 +722,45 @@ decided against the ten-odd facts the flat recall happened to surface.
 They were removed from the classifier and rebuilt here, on the read side:
 [`ingest::reconcile_after_reading`](../../crates/mwe-core/src/ingest.rs), one
 call on the `ingest` slot, after the navigator, with
-`prompts/ingest-reconcile.md` as its brief. **Three of the four verbs are
-live** — close, re-date, re-share — and each one is applied by the same
-`apply_plan_*` function the classifier used to feed, so the guards, the
-born-applied receipts and the revert tokens are reused rather than
-reimplemented. An operator-overridden prompt that still emits the fields at
-classification time keeps working, unchanged, alongside it.
+`prompts/ingest-reconcile.md` as its brief. **All four verbs are live.** Close,
+re-date and re-share are applied by the same `apply_plan_*` function the
+classifier used to feed, so the guards, the born-applied receipts and the
+revert tokens are reused rather than reimplemented. An operator-overridden
+prompt that still emits the fields at classification time keeps working,
+unchanged, alongside it.
 
-**The fourth verb, `supersede`, is not built.** A restatement is retired
-through `closures` / `contradicted`, which is what stops the stale value being
-served as true; what is missing is welding the new fact to the old one — the
-successor pointer and, load-bearing, the **audience inheritance**. Deciding the
-supersede *after* the successor has been written makes that a second write
-against whichever store holds it (`fact_index` for a live write,
-`capture_buffer` for a buffered one), and neither setter exists. It also needs
-the orchestrator to keep **every** id the turn filed: `capture_id` retains only
-the first, as the turn's anchor for the wire, and a successor must be nameable
-before it can inherit anything. Until then a restatement leaves both rows
-present with the old one closed — which is honest — rather than one row
-silently re-privatised, which is the failure this verb exists to prevent.
+### Supersede, and the half that must not be lost
+
+A supersede is a **content update, not a sharing change**: the new fact
+**inherits the superseded fact's audience**. The reconciler can tell that a
+claim was restated; it must never be relied on to restate who may read it,
+because a restatement that quietly drops the allow list re-privatises a shared
+fact and nothing anywhere says so — invisible to everyone, its owner included.
+
+The classifier used to do this inheritance *before* writing the new fact, which
+was free. Deciding the supersede **after** the successor exists makes it a
+**second write**, against whichever store holds it —
+[`fact_index::set_acl`](../../crates/mwe-core/src/fact_index.rs) for a live
+write, [`capture_buffer::set_acl`](../../crates/mwe-core/src/capture_buffer.rs)
+for one still buffered, probed in that order because the `fact_id` is stable
+across promotion. That second write is the price of asking the question where
+it can be answered honestly.
+
+**Audience first, then the weld**, and the order fails in the recoverable
+direction: a failed inheritance leaves the old fact open beside the new one,
+which is visibly wrong; a failed weld after a good inheritance leaves the new
+fact already correctly shared.
+
+Three guards in `vet_supersede`, each refusing rather than guessing — the
+target must be one of the candidates the stage was shown (a hallucinated id
+retires nothing), the successor must be one of the facts **this turn filed**
+(so a fact is never welded to something that does not exist, or to itself), and
+the sender must **own** the target. That last is the same rule the two sibling
+verbs apply: reading a fact is not authority over it, and a supersede rewrites
+both its validity and its successor pointer. The orchestrator therefore keeps
+**every** id the turn filed (`turn_facts`) — `capture_id` retains only the
+first, as the turn's anchor for the wire, and a successor must be nameable
+before it can inherit anything.
 
 ### The rule that decides where a judgement belongs
 
