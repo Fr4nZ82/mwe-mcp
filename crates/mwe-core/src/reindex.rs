@@ -357,7 +357,15 @@ pub async fn reindex_file(
     // Refresh the page's card from the bytes already in hand. Standard wikis
     // only: a smart wiki is not funnel-navigable and syncs no testata.
     if !resolved.smart {
-        refresh_one_card(pool, &source_path, &resolved.wiki_id, abs_path, &raw).await;
+        refresh_one_card(
+            pool,
+            embedder.as_ref(),
+            &source_path,
+            &resolved.wiki_id,
+            abs_path,
+            &raw,
+        )
+        .await;
     }
 
     if resolved.smart {
@@ -1210,7 +1218,7 @@ pub async fn reindex_full(
     // description that the next event overwrites. Without it a card missed by
     // the watcher would never come back, and a page absent from the table can
     // never be *offered* by the selection built on top of it.
-    report.cards_refreshed = refresh_page_cards(pool, tree, &discovered).await;
+    report.cards_refreshed = refresh_page_cards(pool, embedder.as_ref(), tree, &discovered).await;
     if report.total_inserted + report.total_updated + report.total_orphaned > 0 {
         tracing::info!(
             files = report.files_scanned,
@@ -1231,6 +1239,7 @@ pub async fn reindex_full(
 /// back to opening the page, so a failure costs speed and never correctness.
 async fn refresh_page_cards(
     pool: &SqlitePool,
+    embedder: &dyn Embedder,
     tree: &WikiTree,
     discovered: &[crate::wiki::DiscoveredWiki],
 ) -> usize {
@@ -1252,8 +1261,15 @@ async fn refresh_page_cards(
             let Ok(raw) = std::fs::read_to_string(abs) else {
                 continue;
             };
-            written +=
-                refresh_one_card(pool, &source_path, d.meta.wiki_id.as_str(), abs, &raw).await;
+            written += refresh_one_card(
+                pool,
+                embedder,
+                &source_path,
+                d.meta.wiki_id.as_str(),
+                abs,
+                &raw,
+            )
+            .await;
             seen.insert(source_path);
         }
         // A row whose page is no longer on disk (a delete this tick is
@@ -1291,6 +1307,7 @@ async fn refresh_page_cards(
 /// opening the page, so a failed refresh costs speed, never correctness.
 async fn refresh_one_card(
     pool: &SqlitePool,
+    embedder: &dyn Embedder,
     source_path: &str,
     wiki_id: &str,
     abs_path: &Path,
@@ -1301,6 +1318,7 @@ async fn refresh_one_card(
     }
     let parsed = crate::meta_annotate::parse_page_card(raw);
     let (mtime, size) = crate::page_card::file_stamp(abs_path).unzip();
+    let description = parsed.description.clone();
     let card = crate::page_card::NewPageCard {
         source_path: source_path.to_owned(),
         wiki_id: wiki_id.to_owned(),
@@ -1310,13 +1328,40 @@ async fn refresh_one_card(
         file_mtime_ms: mtime,
         file_size: size,
     };
-    match crate::page_card::upsert(pool, &card).await {
+    let written = match crate::page_card::upsert(pool, &card).await {
         Ok(n) => usize::try_from(n).unwrap_or(0),
         Err(e) => {
             tracing::warn!(source_path, error = %e, "reindex: page card not refreshed");
-            0
+            return 0;
         },
+    };
+    // Embed the card here, where an embedder is already in hand, and only
+    // when the upsert left the row without one — `page_card::upsert` clears
+    // the vector exactly when the description changed, so this re-embeds a
+    // rewritten card and skips an untouched one. The compile-time selection
+    // that ranks cards has no embedder of its own and must not grow one: it
+    // reads vectors, it does not make them.
+    if let Some(text) = description.as_deref().filter(|d| !d.trim().is_empty()) {
+        let needs = matches!(
+            crate::page_card::get(pool, source_path).await,
+            Ok(Some(row)) if row.embedding.is_none()
+        );
+        if needs {
+            match embedder.embed(text).await {
+                Ok(v) => {
+                    if let Err(e) = crate::page_card::set_embedding(pool, source_path, &v).await {
+                        tracing::warn!(source_path, error = %e, "reindex: card vector not stored");
+                    }
+                },
+                // Soft: an un-embedded card simply drops out of the ranking,
+                // which is a smaller offer, never a wrong one.
+                Err(e) => {
+                    tracing::warn!(source_path, error = %e, "reindex: card not embedded");
+                },
+            }
+        }
     }
+    written
 }
 
 fn offerable_page(source_path: &str) -> bool {

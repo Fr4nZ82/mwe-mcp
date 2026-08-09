@@ -777,7 +777,27 @@ leaf, fed:
   the page being written, so the block is **one string per run** — built once,
   identical for every leaf, which is what makes it cacheable (see
   [the cacheable split](#the-cacheable-split--why-the-page-comes-last)); the
-  prompt carries the rule that pays for it: never link a page to itself;
+  prompt carries the rule that pays for it: never link a page to itself.
+
+  **Above `CARD_INDEX_CACHE_CEILING_PAGES` (400) it changes shape and changes
+  half.** `build_page_index` switches to a per-page **selection**: the
+  `CARD_INDEX_SELECTION_PAGES` (40) pages whose cards sit closest to the card
+  of the page being written, ranked from the vectors
+  [`page_card`](engine-db-and-migrations.md#migration-ledger) holds. The
+  ceiling is ten times the selection because that is where the arithmetic
+  flips, not a guess at a corpus size: a cached whole index of `B` lines costs
+  the first call `B` and the rest roughly `B/10`, while a per-page slice of
+  `S` lines is paid in full every call, so the slice wins only while
+  `S < B/10`. Because the slice differs per page it moves to the **task**
+  half (`{page_index_task}`) — left in the cacheable half it would write one
+  cache entry per page and read none, which is worse than not caching at all —
+  and `{page_index}` keeps the rules plus a line saying where the pages are
+  listed. The compiler has **no embedder and does not grow one**: cards are
+  embedded by `reindex::refresh_one_card`, and a card with no vector simply
+  does not rank. A page with no vector of its own (new this run, no
+  description, an embedder that failed) falls back to its own wiki's pages.
+  The slice is rendered **nearest first**, never re-sorted by slug: where a
+  list is cut, the order is the selection;
 - the recommended outgoing `[[wikilinks]]` from the plan's link graph;
 - the wiki's prose tone (`resolve_tone`, cached per wiki within a run): the
   `is_agent` marker first — an agent's own wiki is its **autobiography**, so

@@ -1,8 +1,8 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.25
-default_version_at_bootstrap: v1.25
+version: 1.26
+default_version_at_bootstrap: v1.26
 ---
 
 # Prompt: cronista
@@ -99,7 +99,7 @@ The body is one document but ships as **two halves**, cut on the
 | Half | Content | Where it rides |
 |---|---|---|
 | Before the line | the standing brief + `{page_index}` | the **system** prompt, marked cacheable |
-| From the line on | `{title}` / `{slug}` / `{parent_hub}` / `{tone}`, `{primary_facts}`, `{links}` | the **user** turn, followed by the write instruction |
+| From the line on | `{title}` / `{slug}` / `{parent_hub}` / `{tone}`, `{primary_facts}`, `{links}`, `{page_index_task}` | the **user** turn, followed by the write instruction |
 
 Why: the brief plus the index is ~5.8k tokens and is **byte-identical for
 every page of one compile run**, while a page's own facts are ~170 tokens on
@@ -114,6 +114,18 @@ the body encodes:
 - `{page_index}` lists **every** page including the one being written (one
   string per run, built once by `compiler::page_index_block`), so the body
   carries the rule that pays for it: *never link a page to itself*.
+
+**Above `compiler::CARD_INDEX_CACHE_CEILING_PAGES` the index changes shape and
+changes half.** A memory with more pages than that no longer fits its whole
+index in a call, so the Cronista is shown a **selection** instead: the pages
+whose cards sit closest to its own, ranked from the vectors `page_card` holds.
+That slice is different for every page, so it moves to `{page_index_task}` in
+the **task** half — left in the cacheable one it would write a cache entry per
+page and read none, which is worse than not caching at all — and `{page_index}`
+becomes a single line saying where the pages are listed. The rules about the
+index stay in the cached half either way: only the lines move. Below the
+ceiling nothing changes, because a cached whole index is both cheaper and
+complete.
 
 An operator override without the marker still works: the whole rendered body
 goes to the system prompt as before and nothing is marked cacheable.
@@ -227,4 +239,6 @@ YOUR FACTS (numbered — wrap each in its <fN>…</fN> tag; each line: N. [TYPE]
 {primary_facts}
 
 RECOMMENDED LINKS for this page (copy exactly as written): {links}
+
+{page_index_task}
 ```

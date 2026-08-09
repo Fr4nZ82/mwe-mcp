@@ -83,7 +83,7 @@
 //! plan — and thus the compiler — never sees a smart wiki. No
 //! per-page smart-wiki guard is needed.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Deserialize;
 use sqlx::SqlitePool;
@@ -271,7 +271,7 @@ pub async fn compile_dirty_pages(
     // them, which is exactly what makes it the cacheable half of the Cronista
     // system prompt (see `split_cronista_prompt`). Rebuilding it per page also
     // rebuilt the same string 15-plus times for nothing.
-    let page_index = page_index_block(plan);
+    let page_index = build_page_index(pool, tree, plan).await;
     // Pages whose compile failed or degraded: parked on the persisted plan's
     // `force_dirty` below, so the next build retries the proper rewrite even
     // on an otherwise-idle night (the early-skip would clear the dirty set).
@@ -615,7 +615,7 @@ async fn compile_page(
     hub: &dyn LlmBackend,
     tone_cache: &mut HashMap<String, String>,
     locale_cache: &mut HashMap<String, String>,
-    page_index: &str,
+    page_index: &PageIndex,
     now: &str,
 ) -> Result<PageOutcome> {
     // A wiki's buffer rides the same dispatch: it renders as prose while it
@@ -736,10 +736,11 @@ async fn compile_leaf_page(
     llm: &dyn LlmBackend,
     tone: &str,
     language_directive: &str,
-    page_index: &str,
+    page_index: &PageIndex,
     now: &str,
 ) -> Result<PageOutcome> {
     let recommended = recommended_link_targets(plan, &page.slug);
+    let (index_cached, index_task) = page_index.render_for(plan, page);
     let prompt = prompts::render(
         "cronista",
         tree.workdir(),
@@ -761,7 +762,8 @@ async fn compile_leaf_page(
                 )
                 .as_str(),
             ),
-            ("page_index", page_index),
+            ("page_index", index_cached.as_str()),
+            ("page_index_task", index_task.as_str()),
             ("links", recommended_links(&recommended).as_str()),
         ],
     )?;
@@ -1927,6 +1929,155 @@ fn successor_wikilink(
 /// of the Cronista's input. Included, the block is one string per run,
 /// built once and reused verbatim, and the prompt carries the one rule
 /// that costs: never link a page to itself.
+/// How many pages a plan may hold before the Cronista stops being shown the
+/// **whole** index and gets a per-page selection instead.
+///
+/// The number is the point where the arithmetic flips, not a guess at a
+/// corpus size. The whole index is byte-identical for every page of a run, so
+/// it rides the cached prefix: the first call pays it, the rest pay roughly a
+/// tenth. A per-page selection is different per call, so it is paid in full,
+/// every time. A selection of `S` lines therefore beats a cached index of `B`
+/// lines only while `S < B/10` — which is why the ceiling is ten times
+/// [`CARD_INDEX_SELECTION_PAGES`], and why the switch is a ceiling at all
+/// rather than a replacement.
+///
+/// Below it nothing changes; the whole index is both cheaper and complete.
+/// Above it the whole index stops fitting a call at all, and a ranked slice
+/// is the only remaining shape.
+pub const CARD_INDEX_CACHE_CEILING_PAGES: usize = 400;
+
+/// How many cards a selection carries once the ceiling is passed.
+pub const CARD_INDEX_SELECTION_PAGES: usize = 40;
+
+/// What the Cronista is shown of the rest of the memory.
+///
+/// Two shapes, chosen once per run by [`build_page_index`]:
+///
+/// - [`Self::Whole`] — every page, one string built once, identical for every
+///   call, living in the **cacheable** half of the prompt.
+/// - [`Self::Selected`] — above [`CARD_INDEX_CACHE_CEILING_PAGES`], a slice
+///   ranked by how close each page's card is to the card of the page being
+///   written. It is different per call, so it moves to the **task** half:
+///   left in the system half it would write one cache entry per page and read
+///   none, which is strictly worse than not caching at all.
+enum PageIndex {
+    Whole(String),
+    /// Plan slug → that page's stored card vector. A page with no vector (new
+    /// this run, no description, an embedder that failed) is simply absent
+    /// and falls back to its own wiki's pages.
+    Selected(BTreeMap<String, Vec<f32>>),
+}
+
+/// Build the index for one run: whole below the ceiling, ranked above it.
+///
+/// The vectors come from `page_card`, which the reindex pipeline fills — the
+/// compiler has no embedder and deliberately does not grow one. A card that
+/// was never embedded simply does not rank, which makes the offer smaller,
+/// never wrong.
+async fn build_page_index(pool: &SqlitePool, tree: &WikiTree, plan: &CompilationPlan) -> PageIndex {
+    if plan.pages.len() <= CARD_INDEX_CACHE_CEILING_PAGES {
+        return PageIndex::Whole(page_index_block(plan));
+    }
+    let mut vectors: BTreeMap<String, Vec<f32>> = BTreeMap::new();
+    for (slug, p) in &plan.pages {
+        let Some(source_path) = plan_page_source_path(tree, p) else {
+            continue;
+        };
+        if let Ok(Some(row)) = crate::page_card::get(pool, &source_path).await
+            && let Some(v) = row.embedding
+        {
+            vectors.insert(slug.clone(), v);
+        }
+    }
+    tracing::info!(
+        pages = plan.pages.len(),
+        ceiling = CARD_INDEX_CACHE_CEILING_PAGES,
+        embedded = vectors.len(),
+        "compiler: page index over its cache ceiling — ranking cards per page"
+    );
+    PageIndex::Selected(vectors)
+}
+
+/// The workdir-relative path of a planned page — the `page_card` key.
+fn plan_page_source_path(tree: &WikiTree, p: &PagePlan) -> Option<String> {
+    let handle = tree
+        .locate(&crate::types::WikiId::parse(&p.wiki_id).ok()?)
+        .ok()?;
+    Some(crate::wiki::workdir_relative_source_path(
+        tree.workdir(),
+        &handle.abs_dir().join(&p.page_path),
+    ))
+}
+
+impl PageIndex {
+    /// `(cacheable_half, task_half)` for one page.
+    fn render_for(&self, plan: &CompilationPlan, page: &PagePlan) -> (String, String) {
+        match self {
+            Self::Whole(all) => (all.clone(), String::new()),
+            Self::Selected(vectors) => (
+                "(listed with your page below — the pages nearest yours, not every page \
+                 of the memory)"
+                    .to_owned(),
+                format!(
+                    "OTHER PAGES you may [[wikilink]] (same rules as above):\n{}",
+                    Self::selection_lines(plan, page, vectors)
+                ),
+            ),
+        }
+    }
+
+    /// The ranked slice, or — when the page being written has no card vector
+    /// of its own — its own wiki's pages, which is where its links most often
+    /// go and needs no arithmetic at all.
+    fn selection_lines<'p>(
+        plan: &'p CompilationPlan,
+        page: &PagePlan,
+        vectors: &BTreeMap<String, Vec<f32>>,
+    ) -> String {
+        // Rendered in the order they were picked — nearest first. Sorting the
+        // slice by slug afterwards would hand the model an alphabetical list
+        // again, which is the ordering the whole card exists to get rid of;
+        // and where a list is cut, the order IS the selection.
+        let picked: Vec<&'p PagePlan> = vectors.get(&page.slug).map_or_else(
+            || {
+                plan.pages
+                    .values()
+                    .filter(|p| p.wiki_id == page.wiki_id && p.slug != page.slug)
+                    .take(CARD_INDEX_SELECTION_PAGES)
+                    .collect()
+            },
+            |mine| {
+                let mut scored: Vec<(f32, &PagePlan)> = plan
+                    .pages
+                    .iter()
+                    .filter(|(slug, _)| *slug != &page.slug)
+                    .filter_map(|(slug, p)| {
+                        let v = vectors.get(slug)?;
+                        Some((crate::recall::cosine_similarity(mine, v), p))
+                    })
+                    .collect();
+                // Descending by similarity; the plan's own order breaks ties,
+                // so the same plan always yields the same slice.
+                scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+                scored
+                    .into_iter()
+                    .take(CARD_INDEX_SELECTION_PAGES)
+                    .map(|(_, p)| p)
+                    .collect()
+            },
+        );
+        let lines: Vec<String> = picked
+            .iter()
+            .filter_map(|p| Some(format!("- {}: {}", plan_page_wikilink(p)?, p.description)))
+            .collect();
+        if lines.is_empty() {
+            "(no other pages)".to_owned()
+        } else {
+            lines.join("\n")
+        }
+    }
+}
+
 fn page_index_block(plan: &CompilationPlan) -> String {
     let lines: Vec<String> = plan
         .compilation_order
@@ -3950,6 +4101,118 @@ mod tests {
     /// page being written: one string per run is what makes the system
     /// half of the Cronista prompt a cacheable prefix, and the body pays
     /// for it with an explicit never-link-to-itself rule.
+    /// Fixture: `n` leaf pages in one wiki, plus one in another.
+    fn selection_plan() -> CompilationPlan {
+        let mut pages = BTreeMap::new();
+        for (slug, wiki) in [
+            ("cucina", "alice"),
+            ("orto", "alice"),
+            ("auto", "alice"),
+            ("garage", "bob"),
+        ] {
+            pages.insert(
+                slug.to_owned(),
+                PagePlan {
+                    slug: slug.to_owned(),
+                    title: slug.to_owned(),
+                    description: format!("{slug} desc"),
+                    style: None,
+                    page_type: PageType::ConceptLeaf,
+                    owner_scope: None,
+                    parent_hub: None,
+                    child_leaves: Vec::new(),
+                    primary_facts: Vec::new(),
+                    outgoing_links: Vec::new(),
+                    incoming_links: Vec::new(),
+                    wiki_id: wiki.to_owned(),
+                    page_path: format!("{slug}.md"),
+                },
+            );
+        }
+        CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph: BTreeMap::new(),
+            compilation_order: vec![
+                "auto".to_owned(),
+                "cucina".to_owned(),
+                "garage".to_owned(),
+                "orto".to_owned(),
+            ],
+            generated_at: "t".to_owned(),
+            fact_count: 0,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+        }
+    }
+
+    /// Below the ceiling the whole index rides the cacheable half and the
+    /// task half stays empty — the prefix a run reuses must not move.
+    #[test]
+    fn the_whole_index_leaves_the_task_half_empty() {
+        let plan = selection_plan();
+        let page = plan.pages.get("cucina").expect("page");
+        let (cached, task) = PageIndex::Whole(page_index_block(&plan)).render_for(&plan, page);
+        assert!(cached.contains("[[alice/orto]]: orto desc"));
+        assert!(
+            task.is_empty(),
+            "nothing moves to the per-page half while the whole index is cached"
+        );
+    }
+
+    /// Above the ceiling the lines move to the task half — leaving them in the
+    /// cacheable one would write a cache entry per page and read none — and
+    /// they arrive **nearest first**, because where a list is cut the order is
+    /// the selection.
+    #[test]
+    fn the_card_selection_moves_to_the_task_half_nearest_first() {
+        let plan = selection_plan();
+        let mut vectors = BTreeMap::new();
+        vectors.insert("cucina".to_owned(), vec![1.0, 0.0, 0.0]);
+        // `orto` points nearly the same way as `cucina`; `auto` is orthogonal;
+        // `garage` points away.
+        vectors.insert("orto".to_owned(), vec![0.9, 0.1, 0.0]);
+        vectors.insert("auto".to_owned(), vec![0.0, 1.0, 0.0]);
+        vectors.insert("garage".to_owned(), vec![-1.0, 0.0, 0.0]);
+        let index = PageIndex::Selected(vectors);
+        let page = plan.pages.get("cucina").expect("page");
+        let (cached, task) = index.render_for(&plan, page);
+
+        assert!(
+            !cached.contains("[[alice/orto]]"),
+            "no page line may stay in the cacheable half: {cached}"
+        );
+        let orto = task.find("[[alice/orto]]").expect("nearest page offered");
+        let auto = task
+            .find("[[alice/auto]]")
+            .expect("orthogonal page offered");
+        let garage = task.find("[[bob/garage]]").expect("far page offered");
+        assert!(orto < auto && auto < garage, "ranked nearest first: {task}");
+        assert!(
+            !task.contains("[[alice/cucina]]"),
+            "a page is never offered itself"
+        );
+    }
+
+    /// A page the table has no vector for — new this run, no description, an
+    /// embedder that failed — falls back to its own wiki's pages, which is
+    /// where its links most often go and costs no arithmetic.
+    #[test]
+    fn a_page_with_no_card_vector_falls_back_to_its_own_wiki() {
+        let plan = selection_plan();
+        let index = PageIndex::Selected(BTreeMap::new());
+        let page = plan.pages.get("cucina").expect("page");
+        let (_, task) = index.render_for(&plan, page);
+        assert!(task.contains("[[alice/orto]]"), "same wiki is offered");
+        assert!(task.contains("[[alice/auto]]"));
+        assert!(
+            !task.contains("[[bob/garage]]"),
+            "another wiki's page is not the fallback neighbourhood"
+        );
+    }
+
     #[test]
     fn page_index_includes_self_and_shows_only_descriptions() {
         let mut pages = BTreeMap::new();
