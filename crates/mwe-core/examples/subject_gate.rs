@@ -135,7 +135,6 @@ async fn main() -> anyhow::Result<()> {
     let mut sender_id = String::new();
     let mut probes_path: Option<PathBuf> = None;
     let mut top_k = 10usize;
-    let mut sibling_floor = NavigatorPolicy::default().sibling_floor;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -145,7 +144,6 @@ async fn main() -> anyhow::Result<()> {
             "--top-k" => top_k = args.next().unwrap_or_default().parse().unwrap_or(10),
             // A/B the 2026-08-04 ruling: restore the directory listing to see
             // what turning it off costs a given phrase.
-            "--siblings" => sibling_floor = args.next().unwrap_or_default().parse().unwrap_or(0),
             other => anyhow::bail!("unknown flag {other}"),
         }
     }
@@ -168,10 +166,8 @@ async fn main() -> anyhow::Result<()> {
         sender_groups: sender_groups.clone(),
     };
     let policy = NavigatorPolicy {
-        sibling_floor,
         ..NavigatorPolicy::default()
     };
-    println!("policy sibling_floor={sibling_floor}");
     let roster = enrollment::list_users(&pool).await?;
     println!(
         "sender={sender_id} groups={sender_groups:?} roster={:?} top_k={top_k}\n",

@@ -1265,7 +1265,7 @@ async fn repoint_markers(pool: &SqlitePool, source_rel: &str, body: &str) {
 /// of them at its old wiki is repointed at the new one.
 ///
 /// A page reached its neighbours by the links somebody wrote on them — since
-/// the directory listing went off (`sibling_floor = 0`) a page is reachable
+/// the directory listing was retired a page is reachable
 /// only by a fact hit, a match on its card, or an inbound link — so a move
 /// that leaves those links behind does not merely make them ugly, it strands
 /// the page's whole neighbourhood. The map of the wiki the page left needs no

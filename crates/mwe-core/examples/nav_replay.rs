@@ -39,7 +39,6 @@ async fn main() -> anyhow::Result<()> {
     let mut sender_id = String::new();
     let mut turn = String::new();
     let mut needle: Option<String> = None;
-    let mut sibling_floor = mwe_core::recall_nav::NavigatorPolicy::default().sibling_floor;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -47,8 +46,6 @@ async fn main() -> anyhow::Result<()> {
             "--sender" => sender_id = args.next().unwrap_or_default(),
             "--turn" => turn = args.next().unwrap_or_default(),
             "--needle" => needle = args.next().map(|n| n.to_lowercase()),
-            // A/B the 2026-08-04 directory-listing ruling on one real turn.
-            "--siblings" => sibling_floor = args.next().unwrap_or_default().parse().unwrap_or(0),
             other => anyhow::bail!("unknown flag {other}"),
         }
     }
@@ -90,8 +87,6 @@ async fn main() -> anyhow::Result<()> {
     // own top_k, used as the RAG seeds. The classifier returned no topics and no
     // owners on the real turn, so both stay empty here.
     let mut policy = IngestPolicy::default();
-    policy.nav.sibling_floor = sibling_floor;
-    println!("sibling_floor={sibling_floor}");
     let rag = recall::wiki_search(
         &pool,
         Arc::clone(&embedder),

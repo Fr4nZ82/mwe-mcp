@@ -433,28 +433,6 @@ pub struct NavigatorPolicy {
     pub char_budget: usize,
     /// Maximum candidates offered to the navigator per hop.
     pub max_candidates: usize,
-    /// How many candidates a hop may be topped up to with **directory
-    /// siblings**. **`0` — off** (founder, 2026-08-04: *«io credo sia meglio
-    /// toglierle del tutto»*, on learning how they are picked).
-    ///
-    /// They were the funnel's structural breadth channel: on first entry into
-    /// a wiki, every one of its pages was offered. The founder's question was
-    /// *how* the survivors are chosen, and the answer retires the channel —
-    /// [`wiki::list_wiki_pages`] sorts by path, so the ones that fit were the
-    /// **alphabetically first**. That is not a choice, it is an accident of
-    /// filenames, and each one it offers costs a summary-and-keywords line in
-    /// every hop's prompt. Reachability now rests entirely on the four
-    /// content-derived channels — a fact hit, a topic or situational match on
-    /// the page's own card, or an authored `[[wikilink]]` — which is the same
-    /// argument that makes the page cards load-bearing (card 62, lever 1).
-    ///
-    /// Kept as a knob rather than deleted with the code: it is one number to
-    /// restore if the post-deploy dead-end rate says the corpus is not ready,
-    /// and `examples/pool_shape.rs` sets it to [`usize::MAX`] to measure what
-    /// the listing *would* have added, for the same reason it leaves
-    /// `max_candidates` uncapped. Above `0` it is a floor, not a quota: see
-    /// [`prune_pool`].
-    pub sibling_floor: usize,
     /// Failsafe cap on the `[[wikilinks]]` harvested from **one** served
     /// identity card (see `navigate`'s `served_cards`).
     ///
@@ -498,7 +476,6 @@ impl Default for NavigatorPolicy {
             pages_per_hop: 3,
             char_budget: 8_000,
             max_candidates: 16,
-            sibling_floor: 0,
             max_card_rails: 8,
             decision_max_tokens: 600,
         }
@@ -689,7 +666,7 @@ struct Candidate {
 
 /// The tier [`Candidate::prune_tier`] assigns a directory-listing sibling —
 /// the demoted tail, and the tier [`prune_pool`] rations.
-const SIBLING_TIER: u8 = 3;
+const UNKNOWN_TIER: u8 = 3;
 
 impl Candidate {
     /// Ranking tier for [`prune_pool`] — lower sorts first. A wikilink rail
@@ -716,7 +693,7 @@ impl Candidate {
             "link" => 0,
             "rag" | "topic" | "situational" => 1,
             "card" => 2,
-            _ => SIBLING_TIER,
+            _ => UNKNOWN_TIER,
         }
     }
 }
@@ -866,22 +843,15 @@ pub async fn navigate(
         // into the funnel — the fan, a directory sibling, a `[[wikilink]]` —
         // instead of three filters that have to agree.
         visited: served.pages.iter().cloned().collect(),
-        entered: BTreeSet::new(),
         acl_defaults: BTreeMap::new(),
         remaining: policy.char_budget,
-        sibling_floor: policy.sibling_floor,
     };
 
     // Overwritten by every earlier exit; reaching the loop's natural end
     // means the depth dial ran out.
     outcome.stop = NavStop::HopCap;
     for _ in 0..max_hops {
-        prune_pool(
-            &mut candidates,
-            &state.visited,
-            policy.max_candidates,
-            policy.sibling_floor,
-        );
+        prune_pool(&mut candidates, &state.visited, policy.max_candidates);
         if candidates.is_empty() || state.remaining == 0 {
             outcome.stop = if state.remaining == 0 {
                 NavStop::Budget
@@ -1157,14 +1127,8 @@ fn parse_query_seeds(raw: &str) -> Option<QuerySeedsJson> {
 /// still spendable.
 struct FunnelState {
     visited: BTreeSet<(String, PathBuf)>,
-    entered: BTreeSet<String>,
     acl_defaults: BTreeMap<String, Principal>,
     remaining: usize,
-    /// Mirror of [`NavigatorPolicy::sibling_floor`]. `0` (the default) means
-    /// the directory listing is not produced at all — not produced and then
-    /// discarded: building it walks the wiki and reads every page's testata,
-    /// which is real work for candidates that would be dropped.
-    sibling_floor: usize,
 }
 
 /// Vet one navigator pick against the candidate pool and — when it holds —
@@ -1272,12 +1236,6 @@ async fn open_target(
     state.remaining -= text.len();
     outcome.truncated |= cut;
     let mut discoveries = Vec::new();
-    // First entry into a wiki used to dump its whole directory here. It is now
-    // off by default (`sibling_floor = 0`) — see [`prune_pool`] and
-    // [`sibling_page_candidates`].
-    if state.sibling_floor > 0 && state.entered.insert(cand.wiki_id.clone()) {
-        discoveries.extend(sibling_page_candidates(d, &state.visited, reader_card));
-    }
     discoveries.extend(linked_wiki_candidates(&text, d, by_id, reader_card));
     outcome.fragments.push(NavigatedFragment {
         wiki_id: cand.wiki_id.clone(),
@@ -1432,7 +1390,7 @@ const fn navigator_retriable(err: &LlmError) -> bool {
 /// The pool mixes two producers of very different value. `linked_wiki_candidates`
 /// offers wikilink destinations found in the prose just read — an authored
 /// assertion that two pages belong together, the design's only expansion
-/// mechanism. `sibling_page_candidates` offers **every page of a wiki's
+/// mechanism. The retired directory listing offered **every page of a wiki's
 /// directory**, filesystem order, the moment the funnel first enters it —
 /// a crutch for an unevenly linked corpus, not a rail. Truncating this pool
 /// positionally lets whichever producer happened to run last, or a big
@@ -1471,50 +1429,23 @@ const fn navigator_retriable(err: &LlmError) -> bool {
 /// linked from the page just read, was offered at #18 of a 54-candidate pool as
 /// a filesystem sibling and cut; it now leads at #12 and survives.
 ///
-/// **`sibling_floor` — the directory listing is a last resort, not an offer**
-/// (founder, 2026-08-04: *«le pagine vicine entrano solo se non c'è altro,
-/// come ultima risorsa… non è importante vedere le pagine vicine quanto
-/// seguire i links»*). Tiering alone did not deliver that: a sibling sorted
-/// last still fills every slot the rails and the fan leave free, and the
-/// directory listing is by far the funnel's largest producer — entering
-/// `carol` alone contributes 47 candidates, and **98.2 % of everything the
-/// cap cuts is siblings**. So they are now rationed rather than merely
-/// demoted: they enter only to bring the offer up to `sibling_floor`
-/// candidates, and not at all above it. The floor is [`NavigatorPolicy`]'s
-/// `pages_per_hop` — below the number of pages the navigator may open, the
-/// choice is not a choice — which also keeps the dead-end continuation alive:
-/// a page with no rails in a wiki with no other route still has somewhere to
-/// go. This is card 66's 66b, answered by ruling rather than by measurement.
-fn prune_pool(
-    pool: &mut Vec<Candidate>,
-    visited: &BTreeSet<(String, PathBuf)>,
-    cap: usize,
-    sibling_floor: usize,
-) {
+/// **There is no directory listing.** Retired outright by the founder on
+/// 2026-08-04 — *«non è importante vedere le pagine vicine quanto seguire i
+/// links»*, then, on learning the survivors were whichever sorted first by
+/// filename, *«io credo sia meglio toglierle del tutto»*. It had been the
+/// funnel's largest producer — entering `carol` alone contributed 47
+/// candidates and **98.2 % of everything the cap cut was a sibling** — and
+/// none of it was a choice. Reachability now rests entirely on the
+/// content-derived channels: a fact hit, a topic or situational match on the
+/// page's own card, and an authored `[[wikilink]]`. That is what makes the
+/// page cards load-bearing (card 62, lever 1).
+fn prune_pool(pool: &mut Vec<Candidate>, visited: &BTreeSet<(String, PathBuf)>, cap: usize) {
     // Stable, so within a tier the producers' order still stands.
     pool.sort_by_key(Candidate::prune_tier);
     let mut seen: BTreeSet<(String, PathBuf)> = BTreeSet::new();
     pool.retain(|c| {
         let key = (c.wiki_id.clone(), c.page.clone());
         !visited.contains(&key) && seen.insert(key)
-    });
-    // Siblings are the last resort, not a routine offer. `prune_tier` sorts
-    // them last, which kept them out of the top of the offer but still let
-    // them fill every leftover slot: a hop with 5 rails and a cap of 16 still
-    // showed the navigator 11 directory entries. They now enter only to bring
-    // the offer up to `sibling_floor`.
-    let rails_and_fan = pool
-        .iter()
-        .filter(|c| c.prune_tier() < SIBLING_TIER)
-        .count();
-    let sibling_room = sibling_floor.saturating_sub(rails_and_fan);
-    let mut siblings_kept = 0usize;
-    pool.retain(|c| {
-        if c.prune_tier() < SIBLING_TIER {
-            return true;
-        }
-        siblings_kept += 1;
-        siblings_kept <= sibling_room
     });
     pool.truncate(cap);
 }
@@ -1568,63 +1499,6 @@ fn take_budget(text: String, budget: usize) -> (String, bool) {
         .last()
         .unwrap_or(0);
     (text[..cut].to_owned(), true)
-}
-
-/// Sibling pages of a freshly entered wiki, offered with their
-/// **reader-relative** testata cards: every page is still offered (navigation
-/// breadth is structural, not a leak), but its keywords are the reader-visible
-/// page topics and its description is shown only at the wiki's default
-/// visibility — never the owner-tier testata.
-fn sibling_page_candidates(
-    d: &DiscoveredWiki,
-    visited: &BTreeSet<(String, PathBuf)>,
-    reader_card: &meta_annotate::ReaderCard,
-) -> Vec<Candidate> {
-    let Ok(pages) = wiki::list_wiki_pages(&d.abs_dir) else {
-        return Vec::new();
-    };
-    let wiki_id = d.meta.wiki_id.as_str();
-    let show_description = reader_card.summary_visible(wiki_id);
-    // Reader-visible page topics keyed by the page path relative to the wiki.
-    let topics_by_page: BTreeMap<PathBuf, &Vec<String>> = reader_card
-        .pages(wiki_id)
-        .map(|pages| {
-            pages
-                .iter()
-                .filter_map(|(source_path, topics)| {
-                    Some((page_within(&d.rel_dir, source_path)?, topics))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    pages
-        .into_iter()
-        // Neither the reserved policy page nor the wiki root is a navigation
-        // door (see `open_target`'s fail-safe gates).
-        .filter(|p| !is_rules_page_path(&p.rel_path) && !is_root_page_path(&p.rel_path))
-        .filter(|p| !visited.contains(&(wiki_id.to_owned(), p.rel_path.clone())))
-        .map(|p| {
-            // Read the owner-tier testata only for the (gated) description; the
-            // keywords come from the reader-relative topic set instead.
-            let summary = show_description
-                .then(|| {
-                    meta_annotate::read_page_card(&p.abs_path)
-                        .unwrap_or_default()
-                        .description
-                })
-                .flatten();
-            let keywords = topics_by_page
-                .get(&p.rel_path)
-                .map_or_else(Vec::new, |t| (*t).clone());
-            Candidate {
-                wiki_id: wiki_id.to_owned(),
-                page: p.rel_path,
-                origin: "page",
-                summary,
-                keywords,
-            }
-        })
-        .collect()
 }
 
 /// The page a bare `[[wiki_id]]` rail resolves to: the wiki's **foundation
@@ -1795,7 +1669,7 @@ fn resolve_bare_slug_wiki<'a>(
 }
 
 /// The reader-relative testata card for one page — the single-page
-/// counterpart of [`sibling_page_candidates`]' card logic: keywords are the
+/// counterpart of the entry fan's card logic: keywords are the
 /// reader-visible page topics, the description is read from the owner-tier
 /// testata but shown only at the wiki's default visibility.
 fn reader_page_card(
@@ -2461,35 +2335,18 @@ mod tests {
     }
 
     #[test]
-    fn prune_pool_ranks_a_link_above_a_sibling_page_of_the_same_wiki() {
-        let visited = BTreeSet::new();
-        // Built in the order the real producers emit them: `open_target`
-        // extends `discoveries` with siblings first, links second — the
-        // exact positional bias that used to let the directory dump bury
-        // the rail.
-        let mut pool = vec![cand("alice", "b.md", "page"), cand("alice", "a.md", "link")];
-        prune_pool(&mut pool, &visited, 16, 3);
-        assert_eq!(
-            pool.iter().map(|c| c.origin).collect::<Vec<_>>(),
-            vec!["link", "page"],
-            "a wikilink rail must be offered ahead of a directory sibling of the same wiki"
-        );
-    }
-
-    #[test]
     fn one_page_reached_by_two_routes_keeps_the_better_route_not_the_first() {
         let visited = BTreeSet::new();
-        // The commonest collision in the live corpus: the funnel enters
-        // `alice`, lists its directory, then reads a page whose prose links
-        // `alice/concerti`. The SAME destination is now in the pool twice —
-        // sibling first (that is the order `open_target` fills `discoveries`
-        // in), rail second. Deduplicating before ranking kept the sibling and
-        // filed an authored rail in the demoted tail.
+        // One destination reached by two surviving routes: a served identity
+        // card's rail (lowest tier of the three) and an authored `[[wikilink]]`
+        // on the page just read. `open_target` fills `discoveries` in its own
+        // order, so the weaker copy can arrive first — deduplicating before
+        // ranking would keep it and file the rail in the demoted tail.
         let mut pool = vec![
-            cand("alice", "concerti.md", "page"),
+            cand("alice", "concerti.md", "card"),
             cand("alice", "concerti.md", "link"),
         ];
-        prune_pool(&mut pool, &visited, 16, 3);
+        prune_pool(&mut pool, &visited, 16);
         assert_eq!(pool.len(), 1, "the two copies are one destination");
         assert_eq!(
             pool[0].origin, "link",
@@ -2498,149 +2355,26 @@ mod tests {
     }
 
     #[test]
-    fn a_linked_page_that_is_also_a_sibling_survives_a_cap_full_of_siblings() {
-        let visited = BTreeSet::new();
-        // The consequence of the rule above, at the size the live corpus
-        // actually offers: a directory listing far larger than the cap, with
-        // the one page the prose links to sitting late in it. Filed as a
-        // sibling it is cut with the tail; filed as the rail it is, it leads.
-        let mut pool: Vec<Candidate> = (0..30)
-            .map(|i| Candidate {
-                wiki_id: "alice".to_owned(),
-                page: PathBuf::from(format!("p{i:02}.md")),
-                origin: "page",
-                summary: None,
-                keywords: Vec::new(),
-            })
-            .collect();
-        pool.push(cand("alice", "p29.md", "link"));
-        prune_pool(&mut pool, &visited, 16, 3);
-        assert_eq!(
-            (pool[0].origin, Some(pool[0].page.as_path())),
-            ("link", Some(Path::new("p29.md"))),
-            "the linked page must lead the pool even when its directory buries it"
-        );
-    }
-
-    #[test]
-    fn a_fan_seed_that_is_also_a_sibling_is_not_demoted_to_the_tail() {
-        let visited = BTreeSet::new();
-        // Same rule, the other collision: the gatherer already weighed this
-        // page into the fan, and entering its wiki later re-offers it as one
-        // of the directory's siblings.
-        let mut pool = vec![
-            cand("alice", "hit.md", "page"),
-            cand("alice", "hit.md", "rag"),
-        ];
-        prune_pool(&mut pool, &visited, 16, 3);
-        assert_eq!(
-            pool.iter().map(|c| c.origin).collect::<Vec<_>>(),
-            vec!["rag"],
-            "a page the fan already weighed must not lose that provenance to a directory listing"
-        );
-    }
-
-    #[test]
-    fn prune_pool_never_lets_a_sibling_page_displace_a_rag_seed() {
-        let visited = BTreeSet::new();
-        let mut pool = vec![
-            cand("alice", "sib.md", "page"),
-            cand("bob", "index_stand_in.md", "rag"),
-        ];
-        // Cap forces a choice between the two.
-        prune_pool(&mut pool, &visited, 1, 3);
-        assert_eq!(
-            pool.iter().map(|c| c.origin).collect::<Vec<_>>(),
-            vec!["rag"],
-            "a RAG-seeded page must survive the cap over a sibling, whatever their pool position"
-        );
-    }
-
-    #[test]
     fn prune_pool_keeps_the_highest_tier_entries_not_the_alphabetically_first_ones() {
         let visited = BTreeSet::new();
-        // `wiki_id` is alphabetical in insertion order — mirroring
-        // `wiki::list_wiki_pages`'s sort — but the alphabetically-first
-        // entries are the lowest tier (`page`) and the alphabetically-last
-        // are the highest (`rag`, `link`). A positional `truncate` would
-        // keep exactly the wrong four; tier order must win instead.
+        // Insertion order is deliberately the reverse of tier order: the
+        // first four entries are card rails (the weakest claim on a door) and
+        // the last two are the strongest. A positional `truncate` would keep
+        // exactly the wrong two; tier order must win instead.
         let mut pool = vec![
-            cand("a-sib", "index.md", "page"),
-            cand("b-sib", "index.md", "page"),
-            cand("c-sib", "index.md", "page"),
-            cand("d-sib", "index.md", "page"),
+            cand("a-card", "index_stand_in.md", "card"),
+            cand("b-card", "index_stand_in.md", "card"),
+            cand("c-card", "index_stand_in.md", "card"),
+            cand("d-card", "index_stand_in.md", "card"),
             cand("e-rag", "index_stand_in.md", "rag"),
             cand("f-link", "index_stand_in.md", "link"),
         ];
-        prune_pool(&mut pool, &visited, 2, 3);
+        prune_pool(&mut pool, &visited, 2);
         assert_eq!(
             pool.iter().map(|c| c.wiki_id.as_str()).collect::<Vec<_>>(),
             vec!["f-link", "e-rag"],
-            "the cap must keep the rail and the fan seed, not the alphabetically-first siblings"
+            "the cap must keep the rail and the fan seed, not the first-inserted card rails"
         );
-    }
-
-    #[test]
-    fn prune_pool_still_offers_a_sibling_only_page_when_the_cap_allows() {
-        let visited = BTreeSet::new();
-        let mut pool = vec![
-            cand("alice", "index_stand_in.md", "rag"),
-            // Linked from nowhere yet — reachable only as a directory sibling.
-            cand("alice", "orphan.md", "page"),
-        ];
-        prune_pool(&mut pool, &visited, 16, 3);
-        assert!(
-            pool.iter()
-                .any(|c| c.wiki_id == "alice"
-                    && Some(c.page.as_path()) == Some(Path::new("orphan.md"))),
-            "a page reachable only as a sibling must still surface while the offer is under \
-             the floor — rationed, not removed"
-        );
-    }
-
-    #[test]
-    fn prune_pool_admits_no_sibling_at_all_once_the_rails_reach_the_floor() {
-        let visited = BTreeSet::new();
-        // The shape the founder ruled on (2026-08-04): the funnel has real
-        // rails to follow, and the wiki it just entered also offers its whole
-        // directory. Tiering alone left the directory filling every slot below
-        // the rails; the floor now keeps it out entirely.
-        let mut pool = vec![
-            cand("alice", "sib1.md", "page"),
-            cand("alice", "sib2.md", "page"),
-            cand("alice", "sib3.md", "page"),
-            cand("alice", "rail1.md", "link"),
-            cand("alice", "rail2.md", "link"),
-            cand("alice", "rail3.md", "link"),
-        ];
-        prune_pool(&mut pool, &visited, 16, 3);
-        assert_eq!(
-            pool.iter().map(|c| c.origin).collect::<Vec<_>>(),
-            vec!["link", "link", "link"],
-            "with the floor already met by rails, the directory listing must not be offered \
-             at all — the cap has room, and that is no longer the test"
-        );
-    }
-
-    #[test]
-    fn prune_pool_tops_the_offer_up_with_siblings_when_the_rails_fall_short() {
-        let visited = BTreeSet::new();
-        // The other half of the same rule: one rail is not a choice, so the
-        // directory tops the offer up to the floor — and stops there. This is
-        // the dead-end continuation (card 66's 66b) the ruling keeps alive.
-        let mut pool = vec![
-            cand("alice", "sib1.md", "page"),
-            cand("alice", "sib2.md", "page"),
-            cand("alice", "sib3.md", "page"),
-            cand("alice", "rail1.md", "link"),
-        ];
-        prune_pool(&mut pool, &visited, 16, 3);
-        assert_eq!(
-            pool.len(),
-            3,
-            "one rail plus two siblings reaches the floor of 3, and the third sibling stays out"
-        );
-        assert_eq!(pool[0].origin, "link", "the rail still leads");
     }
 
     #[test]
@@ -2654,7 +2388,7 @@ mod tests {
             cand("t", "index_stand_in.md", "topic"),
             cand("s", "index_stand_in.md", "situational"),
         ];
-        prune_pool(&mut pool, &visited, 16, 3);
+        prune_pool(&mut pool, &visited, 16);
         assert_eq!(
             pool.iter().map(|c| c.origin).collect::<Vec<_>>(),
             vec!["rag", "topic", "situational"],
@@ -2884,13 +2618,13 @@ mod tests {
                  {{{{owner=user:alice f={UUID_1}}}}}secret{{{{/}}}}\n"
             ),
         );
-        // A second page, so the pool is not empty at hop 2 and the scripted
-        // "done" decision is reached: the wiki root no longer stands in as a
-        // sibling, being the map rather than a page.
-        write_page(&tree, "alice", "more.md", "Filler.\n");
+        // One hop is the whole walk here, and that is the shipped behaviour:
+        // an opened page with no `[[wikilinks]]` exposes nothing, there is no
+        // directory listing to stand in for one, and the wiki root is the map
+        // rather than a page. What this test is about is the projection of the
+        // page that WAS opened.
         let llm = ScriptedLlm::new(&[
             r#"{"open":[{"wiki_id":"alice","page":"notes.md"}],"done":false,"note":"go"}"#,
-            r#"{"open":[],"done":true}"#,
         ]);
 
         let out = navigate(
@@ -2900,18 +2634,13 @@ mod tests {
             &sender("mallory", &[]),
             "what do we know?",
             &[entry("alice", "notes.md", EntryOrigin::Topic, 0.8)],
-            // These filters guard the directory listing, which is OFF by
-            // default since 2026-08-04 — turn it on so they are still tested.
-            &NavigatorPolicy {
-                sibling_floor: 16,
-                ..NavigatorPolicy::default()
-            },
+            &NavigatorPolicy::default(),
             Served::default(),
         )
         .await
         .unwrap();
 
-        assert_eq!(out.hops, 2);
+        assert_eq!(out.hops, 1);
         assert!(!out.truncated);
         assert_eq!(out.fragments.len(), 1);
         let f = &out.fragments[0];
@@ -2925,10 +2654,12 @@ mod tests {
         );
         assert!(!f.text.contains("title:"), "testata must be dropped");
 
-        // The funnel journal mirrors the run: hop 1 offered the fan card,
-        // opened the pick (note captured), hop 2 was the done decision.
-        assert_eq!(out.stop, NavStop::Done);
-        assert_eq!(out.trace.len(), 2);
+        // The funnel journal mirrors the run: hop 1 offered the fan card and
+        // opened the pick (note captured), and the walk then stopped because
+        // the page it read exposed no further door — which is the ordinary
+        // shape of a walk now that nothing offers a page nobody linked.
+        assert_eq!(out.stop, NavStop::PoolExhausted);
+        assert_eq!(out.trace.len(), 1);
         let hop = &out.trace[0];
         assert_eq!(hop.note.as_deref(), Some("go"));
         assert_eq!(hop.candidates.len(), 1);
@@ -2943,7 +2674,6 @@ mod tests {
                 && !hop.opened[0].excerpt.contains("secret"),
             "the journaled excerpt is the projected prose, never the raw region"
         );
-        assert!(out.trace[1].done && out.trace[1].requested.is_empty());
     }
 
     #[tokio::test]
@@ -3516,12 +3246,14 @@ mod tests {
         write_page(&tree, "alice", "rules.md", "# Rules\n\nStanding policy.\n");
         write_page(&tree, "alice", "notes.md", "Ordinary prose.\n");
         write_page(&tree, "alice", "rails.md", "Entry prose.\n");
-        // Hop 1 opens a page (which reveals the wiki's sibling listing); hop 2
-        // asks for the rules page verbatim — a non-candidate by construction,
-        // and gated even if it were offered.
+        // The navigator asks for the rules page **verbatim**, which is the
+        // case that matters: `open_target`'s gate is the central fail-safe and
+        // refuses it whatever door the funnel found. The offer side is checked
+        // below on the same walk — with the directory listing retired, nothing
+        // can put a reserved page in front of the navigator by accident, so
+        // the remaining risk is exactly a navigator that names one itself.
         let llm = ScriptedLlm::new(&[
-            r#"{"open":[{"wiki_id":"alice","page":"rails.md"}],"done":false}"#,
-            r#"{"open":[{"wiki_id":"alice","page":"rules.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"alice","page":"rules.md"},{"wiki_id":"alice","page":"rails.md"}],"done":false}"#,
         ]);
 
         let out = navigate(
@@ -3531,12 +3263,7 @@ mod tests {
             &sender("alice", &[]),
             "what do we know?",
             &[entry("alice", "rails.md", EntryOrigin::Rag, 0.9)],
-            // These filters guard the directory listing, which is OFF by
-            // default since 2026-08-04 — turn it on so they are still tested.
-            &NavigatorPolicy {
-                sibling_floor: 16,
-                ..NavigatorPolicy::default()
-            },
+            &NavigatorPolicy::default(),
             Served::default(),
         )
         .await
@@ -3555,13 +3282,14 @@ mod tests {
                 .all(|c| c.page.as_deref() != Some("rules.md")),
             "the rules page must never be offered as a candidate door"
         );
-        // The ordinary sibling page IS offered once the wiki is entered.
+        // The control: the ordinary page named beside it in the same decision
+        // IS opened, so the assertions above are about the reserved page and
+        // not about a walk that did nothing.
         assert!(
-            out.trace
+            out.fragments
                 .iter()
-                .flat_map(|h| h.candidates.iter())
-                .any(|c| c.page.as_deref() == Some("notes.md")),
-            "content siblings keep being offered"
+                .any(|f| f.page == Path::new("rails.md")),
+            "the ordinary page named in the same decision must still be opened"
         );
     }
 

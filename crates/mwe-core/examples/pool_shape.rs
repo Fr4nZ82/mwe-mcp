@@ -11,7 +11,7 @@
 //! - **66a — does the cap bite, and on what?** Every hop is run with the pool
 //!   left uncapped, then the real cap is applied in the report, so what the
 //!   truncation *would* have dropped is visible by origin (`link` rail /
-//!   entry-point fan / `page` sibling) instead of being invisible by
+//!   entry-point fan / card rail) instead of being invisible by
 //!   construction.
 //! - **66b — how often is an opened page a dead end?** The funnel already
 //!   journals how many candidates each opened page exposed
@@ -23,7 +23,7 @@
 //! funnel that needs a model. In its place every hop opens the first
 //! `pages_per_hop` candidates *as offered*, which is what the pool ordering is
 //! for and what position bias makes the likeliest pick anyway. Everything else
-//! — the fan, the link extraction, the sibling listing, the ACL projection, the
+//! — the fan, the link extraction, the ACL projection, the
 //! dedup — is the production code path, called, not re-implemented.
 //!
 //! One thing the harness asserts rather than derives: the ingest turn serves
@@ -265,11 +265,6 @@ async fn main() -> anyhow::Result<()> {
         max_hops,
         pages_per_hop,
         max_candidates: UNCAPPED,
-        // Same reason as the line above: the point of this harness is to see
-        // the supply *before* any rationing, so what a rule would drop is
-        // visible by origin instead of invisible by construction. Leave the
-        // sibling floor off here and apply it in the report.
-        sibling_floor: UNCAPPED,
         ..NavigatorPolicy::default()
     };
 
