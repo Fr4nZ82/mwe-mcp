@@ -34,11 +34,17 @@ classification (`capture | recall | structural | skip`) and — for
 capture — the facts to file. The plan is **multi-fact and array-only**:
 every captured fact lives in an `extractions` array on
 [`LlmIngestPlan`](../../crates/mwe-core/src/ingest.rs), one
-self-contained capture plan per atomic fact (`target_wiki_id`,
-`target_page`, `owner_id`, `allow_ids`, `fact_type`, the validity
+self-contained capture plan per atomic fact (`target_page`, `owner_id`,
+`allow_ids`, `fact_type`, the validity
 interval `valid_from`/`valid_to`, the per-page `style` and
 `page_description`, the per-fact `salience`, the `engine_rule` governance
-flag, `topics`, `body`, `supersede_target`).
+flag, `topics`, `body`, `supersede_target`). **`target_wiki_id` is not on
+that list any more**: the prompt tells the model in as many words that it is
+shown no wikis and must not emit one, and the engine derives the destination
+from the `owner_id` it did choose (see [Destination](#destination--derived-not-chosen)).
+The field survives on the Rust struct, and as the first arm of
+`derive_target_wiki`, only as a tolerant fallback for something that still
+emits one — never as the ordinary route.
 A turn that states several things ("Vivo a Bologna
 e lavoro da remoto per AcmeCorp") yields several extractions; a turn
 that states one thing yields a **one-element** array; a turn with
@@ -1430,8 +1436,10 @@ or single-fact:
   break the `.md`-page convention every reader walks and stay hidden from
   a `.md`-only `wiki_read`) and the hard `internal_error` a non-safe
   page would otherwise raise are prevented by the same pass. The
-  classifier prompt lists wikis but never page names, so
-  canonicalisation cannot fight a name the model copied from disk.
+  classifier prompt shows **neither wikis nor page names** — the one
+  exception being the `list_pages` inventory, whose entries are exact names
+  to be copied — so canonicalisation is fighting a name the model *coined*,
+  never one it read off disk.
 - `owner_id` ⇒ `user:<sender>`.
 - `body` ⇒ for the legacy single unit, falls back to raw `request.text`
   when the model omits it; a multi-fact extraction **must** carry its
@@ -1439,7 +1447,7 @@ or single-fact:
   under every fact.
 - The classifier is **prose-only**: there are no `wiki_type` / `fields` /
   `purpose` fields and no route-or-create step — every fact files as prose
-  to its `target_wiki_id`.
+  into the wiki `derive_target_wiki` resolves from its `owner_id`.
 
 ## ACL projection
 

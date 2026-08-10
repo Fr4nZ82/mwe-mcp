@@ -5348,9 +5348,6 @@ mod tests {
         );
     }
 
-    /// The conciliatore output schema omits `NewPage::style`, so a parsed
-    /// `accepted_new` item comes back with `style: None`. The backfill must
-    /// re-attach the ingest-proposed style from the original proposal, or a
     /// The Cartografo groups by wiki FIRST and chunks second, so a batch
     /// never straddles two wikis. The other order — chunk the globally
     /// sorted list, then hope — is what shipped before and is what makes
@@ -5440,6 +5437,9 @@ mod tests {
         );
     }
 
+    /// The conciliatore output schema omits `NewPage::style`, so a parsed
+    /// `accepted_new` item comes back with `style: None`. The backfill must
+    /// re-attach the ingest-proposed style from the original proposal, or a
     /// `lista` page would be silently demoted to full-prose compilation.
     #[tokio::test]
     async fn conciliation_preserves_ingest_proposed_style() {

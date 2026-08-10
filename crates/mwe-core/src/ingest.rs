@@ -1159,8 +1159,10 @@ enum CapturePlanError {
 /// result to pass [`is_safe_page_path`]; anything that still fails
 /// (empty segment, traversal) falls back to the wiki's default page
 /// (the buffer, `notes.md`) so a normal message can never crash ingest. The
-/// classifier prompt lists wikis but never page names, so canonicalising
-/// here cannot fight a name the model copied from disk; a hand-authored
+/// classifier prompt shows neither wikis nor page names — the one exception
+/// being the `list_pages` inventory, whose entries are exact names to be
+/// copied — so canonicalising here is fighting a name the model **coined**,
+/// never one it read off disk; a hand-authored
 /// hyphenated page stays readable (`is_safe_page_path` still admits
 /// `-`) but ingest will not target it.
 pub(crate) fn normalize_capture_page(raw: Option<&str>, default: &Path) -> PathBuf {
