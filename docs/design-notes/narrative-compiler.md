@@ -206,13 +206,26 @@ the model weighs; no ownership or count gate exists in Rust:
   content** into multiple concept leaves (the seams are its judgment —
   sub-topic, period, aspect); splitting a grown page is normal maintenance,
   not an error. Mass is the signal; the split verdict is the model's.
-- **Container shape, per page.** A concept-page line whose slug other pages
-  parent under carries `children: N` (registry `parent_hub` back-references,
-  computed in `describe_concepts`). The prompt's **container rule** reads
-  it: a page with children functions as a hub — facts go on the matching
-  child or a proposed new child leaf, never on the container itself, even
-  when its line still says `concept_leaf` (that is a fact-bearing container
-  being drained so the assembly can settle it into its real hub role).
+There is **no container signal**, and its absence is the design. A `children: N`
+count and a matching *container rule* lived here until 2026-08-10, six days
+after the ruling that **a container is a wiki** and stopped anything
+minting a container page. What survived the ruling was the half that told the
+model how to *treat* one — including, verbatim, "a page whose facts are being
+re-homed so it can settle into its real hub role", the deleted mechanism
+described in full. Worse, the count could only ever fire on an error: it
+back-referenced `parent_hub` across **registry** entries, foundation pages are
+not registry entries, so a correctly-parented leaf contributed nothing and the
+number appeared only when a leaf had been parented under another leaf — which
+the prompt forbids two paragraphs below. The rule then told the model to treat
+that malformed page as a legitimate hub and keep filling it.
+
+`planner::vet_proposal` now enforces what the prompt states instead of
+describing the breakage: every proposal is filed as a `concept_leaf`, and a
+`parent_hub` that is not a foundation page **of the batch's wiki** is dropped
+(the page is kept — its facts still need a home, and `resolve_page_wiki` then
+homes it where its facts are rather than following an invented parent into a
+foreign wiki). A negative test asserts the prompt no longer carries either the
+section or the signal.
 
 `build_wiki_plan` computes both signals (mass from the previous plan's
 carried-over placements; scopes only when the Cartografo actually runs),

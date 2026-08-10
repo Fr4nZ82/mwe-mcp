@@ -29,6 +29,8 @@
 //! smart-wikis.md); this primitive is for
 //! **standard** wikis.
 
+use std::collections::BTreeSet;
+
 use serde_json::json;
 use sqlx::SqlitePool;
 
@@ -39,12 +41,56 @@ use crate::proposals::{self, EmitParams, ProposalsError, kind};
 use crate::types::{Principal, WikiId};
 use crate::wiki::{WikiError, WikiTree};
 
-/// Cross-wiki evacuations always land on the destination wiki's `index.md`
-/// (the compilation plan keys pages by bare slug forest-wide, so a named page
-/// could collide; the destination re-homes it on its next compile). Mirrors
-/// the agentic single-fact move. Shared with the whole-wiki evacuation
+/// Cross-wiki evacuations land on the destination wiki's **buffer**
+/// ([`crate::wiki::NOTES_FILENAME`]) — the same page the four other cross-wiki
+/// paths use (REM's refile confirmer and recall repair, `comment_apply`, the
+/// agentic single-fact move). The plan keys pages by bare slug forest-wide, so
+/// only the reserved per-wiki foundation names are collision-safe.
+///
+/// It used to be `index.md`, and that was a defect rather than a choice: the
+/// map holds no facts, no reader may open it, and
+/// [`crate::planner::plan_slug_for_page`] maps the stem `index` to the **card's**
+/// plan key — so a deleted page's facts were filed onto somebody's identity
+/// card, the one page that carries a single subject by design and is served
+/// whole into every turn. The constant's own comment claimed it mirrored the
+/// agentic move, which had always used the buffer and explicitly refused the
+/// map.
+///
+/// Shared with the whole-wiki evacuation
 /// ([`crate::wiki_delete::delete_wiki_subtree`] in `SenderKeyed` mode).
-pub(crate) const EVACUATION_DEST_PAGE: &str = "index.md";
+pub(crate) const EVACUATION_DEST_PAGE: &str = crate::wiki::NOTES_FILENAME;
+
+/// Nominate a destination wiki's buffer for **placement re-open**, so the next
+/// strong pass re-judges the facts an evacuation just parked there.
+///
+/// The buffer is the right landing pad and the wrong resting place: a fact that
+/// settles there is not re-judged by the hourly build (`reopen_consumable` is
+/// deliberately the strong pass's alone, after a light build undid a considered
+/// cross-wiki move within three hours on 2026-07-04), so without this an
+/// evacuated fact waits for REM's mass floor to notice the page grew. Parking
+/// the buffer hands those facts to the nightly Cartografo instead, with the
+/// receipt that pass leaves.
+///
+/// Best-effort: a plan that cannot be read or written costs the re-judgement,
+/// never the evacuation — the facts are already safely re-homed by the time
+/// this runs.
+fn nominate_buffers_for_reopen(tree: &WikiTree, dest_wikis: &BTreeSet<String>) {
+    if dest_wikis.is_empty() {
+        return;
+    }
+    let slugs: Vec<String> = dest_wikis
+        .iter()
+        .map(|w| crate::planner::plan_slug_for_page(w, EVACUATION_DEST_PAGE))
+        .collect();
+    match crate::planner::park_bridge_signals(tree, &[], &slugs) {
+        Ok(n) if n > 0 => tracing::info!(
+            parked = n,
+            "evacuation: destination buffers nominated for placement re-open"
+        ),
+        Ok(_) => {},
+        Err(e) => tracing::warn!(error = %e, "evacuation: re-open nomination failed"),
+    }
+}
 
 /// Failure of a page-level operation.
 #[derive(Debug, thiserror::Error)]
@@ -143,6 +189,9 @@ pub async fn delete_page_direct(
     // Perform each op now, collecting its reversible record into one bundle.
     let mut ops: Vec<BundleOp> = Vec::new();
     let mut out = PageDeletionOutcome::default();
+    // The wikis this deletion pushed facts into, so their buffers can be
+    // nominated for re-placement once — not once per fact.
+    let mut evacuated_to: BTreeSet<String> = BTreeSet::new();
     for row in &rows {
         // The principal responsible for the fact: its sender (provenance) when
         // materialized, else its owner (subject) — the sender-gone fallback.
@@ -180,11 +229,13 @@ pub async fn delete_page_direct(
                     Some(reason),
                 )
                 .await?;
+                evacuated_to.insert(dest.clone());
                 ops.push(BundleOp::Refile { spec });
                 out.facts_evacuated += 1;
             },
         }
     }
+    nominate_buffers_for_reopen(tree, &evacuated_to);
 
     // No active facts → nothing to wrap; the husk GC drops the empty page.
     if ops.is_empty() {

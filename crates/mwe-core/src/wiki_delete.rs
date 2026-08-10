@@ -297,6 +297,14 @@ pub async fn delete_wiki_subtree(
                                 Some(DELETE_REASON),
                             )
                             .await?;
+                            // The DESTINATION's buffer, not the source page:
+                            // the refile engine has already re-homed the fact
+                            // onto that node, so it is the only slug whose
+                            // re-open can still free it.
+                            reopen_slugs.push(planner::plan_slug_for_page(
+                                &dest,
+                                page::EVACUATION_DEST_PAGE,
+                            ));
                             facts_evacuated += 1;
                         },
                     }
@@ -310,6 +318,8 @@ pub async fn delete_wiki_subtree(
     // would be undone by those very writes. A missing plan is a no-op —
     // there is nothing to re-open into, and the first build will classify
     // these facts as new anyway.
+    reopen_slugs.sort();
+    reopen_slugs.dedup();
     if !reopen_slugs.is_empty()
         && let Err(e) = planner::park_bridge_signals(tree, &[], &reopen_slugs)
     {

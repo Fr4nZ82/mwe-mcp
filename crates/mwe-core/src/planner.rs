@@ -2108,6 +2108,54 @@ pub async fn subject_scopes_for(
     Ok(scopes)
 }
 
+/// Hold a proposed page to the two rules the prompt states and nothing
+/// enforced — **a container is a wiki** (founder, 2026-08-04).
+///
+/// 1. **Every proposal is a `concept_leaf`.** `PageType` still deserialises
+///    `concept_hub` so a plan written before that date loads, so a model that
+///    emits one was accepted and a retired page type came back into a fresh
+///    corpus.
+/// 2. **`parent_hub` is a foundation page of this wiki**, or nothing. A page
+///    parented under another *page* is exactly the container the ruling
+///    abolished, and it used to arrive by two routes at once: nobody checked,
+///    and the prompt's own container rule then told the model to treat the
+///    malformed page as a legitimate hub and keep filling it. Dropping the
+///    bad parent is the right correction rather than dropping the page — the
+///    facts still need a home, and `resolve_page_wiki` then homes it where
+///    its facts are instead of following an invented parent into a foreign
+///    wiki.
+///
+/// Corrected, not refused: a rejected proposal costs the batch a page its
+/// facts were meant to have, and the model has no second chance to fix it.
+fn vet_proposal(mut np: NewPage, foundation: &BTreeMap<String, PagePlan>, wiki: &str) -> NewPage {
+    if np.page_type != PageType::ConceptLeaf {
+        tracing::warn!(
+            slug = %np.slug,
+            proposed = page_type_tag(np.page_type),
+            "cartografo: proposed a page type it may not create — filed as a concept_leaf"
+        );
+        np.page_type = PageType::ConceptLeaf;
+    }
+    if let Some(hub) = &np.parent_hub {
+        let hub = slugify(hub);
+        let is_local_foundation = foundation
+            .get(&hub)
+            .is_some_and(|p| p.wiki_id == wiki && p.page_type.is_foundation());
+        if is_local_foundation {
+            np.parent_hub = Some(hub);
+        } else {
+            tracing::warn!(
+                slug = %np.slug,
+                parent_hub = %hub,
+                wiki,
+                "cartografo: parent_hub is not a foundation page of this wiki — dropped"
+            );
+            np.parent_hub = None;
+        }
+    }
+    np
+}
+
 /// Cut `facts` into the Cartografo's units of work: **grouped by source
 /// wiki first**, chunked to [`CARTOGRAFO_BATCH`] second.
 ///
@@ -2268,7 +2316,9 @@ pub async fn classify_facts(
             let slug = slugify(&np.slug);
             if !slug.is_empty() && known.insert(slug.clone()) {
                 proposal_wikis.insert(slug.clone(), wiki.to_owned());
-                merged.new_pages.push(NewPage { slug, ..np });
+                merged
+                    .new_pages
+                    .push(vet_proposal(NewPage { slug, ..np }, foundation, wiki));
             }
         }
     }
@@ -3269,52 +3319,29 @@ fn describe_concepts(
     this_run: &[&NewPage],
     mass: &BTreeMap<String, usize>,
 ) -> String {
-    // The container signal, sibling of the fact-mass one: how many pages
-    // parent under each slug. A page with children functions as a hub — the
-    // prompt tells the model not to pile facts onto it; the number only
-    // makes the shape visible.
-    let mut children: BTreeMap<&str, usize> = BTreeMap::new();
-    for e in registry.entries.values() {
-        if let Some(h) = &e.parent_hub {
-            *children.entry(h.as_str()).or_default() += 1;
-        }
-    }
-    for np in this_run {
-        if let Some(h) = &np.parent_hub {
-            *children.entry(h.as_str()).or_default() += 1;
-        }
-    }
-    let children_of = |slug: &str| -> String {
-        children
-            .get(slug)
-            .map(|n| format!(" | children: {n}"))
-            .unwrap_or_default()
-    };
     let mut lines: Vec<String> = registry
         .entries
         .values()
         .filter(|e| e.wiki_id == wiki)
         .map(|e| {
             format!(
-                "- [{}] {} — {} | {} | facts: {}{}",
+                "- [{}] {} — {} | {} | facts: {}",
                 page_type_tag(e.page_type),
                 e.slug,
                 e.title,
                 e.description,
                 mass_of(mass, &e.slug),
-                children_of(&e.slug),
             )
         })
         .collect();
     for np in this_run {
         lines.push(format!(
-            "- [{}] {} — {} | {} | facts: {}{} (proposed this run)",
+            "- [{}] {} — {} | {} | facts: {} (proposed this run)",
             page_type_tag(np.page_type),
             np.slug,
             np.title,
             np.description,
             mass_of(mass, &np.slug),
-            children_of(&np.slug),
         ));
     }
     if lines.is_empty() {
@@ -5199,8 +5226,8 @@ mod tests {
         assert!(f.contains("- [person] alice — Alice (parent_hub: —) | facts: 7"));
         let c = describe_concepts(&registry, "alice", &[], &mass);
         assert!(
-            c.contains("dossier — Dossier | d | facts: 51 | children: 1"),
-            "a parented-under page carries the children signal"
+            c.contains("dossier — Dossier | d | facts: 51"),
+            "a page line carries its fact mass"
         );
         assert!(
             c.contains("dossier_terapie — Terapie | t | facts: 0\n")
@@ -5506,13 +5533,87 @@ mod tests {
             BUNDLED_CARTOGRAFO_MD.contains("normal maintenance, not an error"),
             "splitting framed as routine maintenance"
         );
+        // The negative half, and it is the point: a container is a WIKI
+        // (founder, 2026-08-04). The prompt kept a CONTAINER PAGES section for
+        // six days after nothing could mint one — describing, in its own
+        // words, "a page whose facts are being re-homed so it can settle into
+        // its real hub role", the mechanism that ruling deleted. Asserting its
+        // absence is what stops it coming back the next time someone reads the
+        // old wording and takes it for the design.
         assert!(
-            BUNDLED_CARTOGRAFO_MD.contains("CONTAINER PAGES"),
-            "container-page rule present"
+            !BUNDLED_CARTOGRAFO_MD.contains("CONTAINER PAGES"),
+            "the container-page rule is gone: a container is a wiki"
         );
         assert!(
-            BUNDLED_CARTOGRAFO_MD.contains("children: N"),
-            "prompt explains the children tag"
+            !BUNDLED_CARTOGRAFO_MD.contains("children:"),
+            "no children signal: it could only ever count a parent_hub the rules forbid"
+        );
+    }
+
+    /// A proposal is held to the two rules the prompt states and nothing used
+    /// to enforce: it is always a leaf, and its parent is a foundation page of
+    /// its own wiki or nothing at all.
+    ///
+    /// Both malformed shapes are the abolished container arriving by the back
+    /// door — one as a page type that may no longer be minted, the other as a
+    /// page parented under a page.
+    #[test]
+    fn a_proposal_may_not_smuggle_a_container_back_in() {
+        let mut foundation = BTreeMap::new();
+        foundation.insert("alice".to_owned(), person("alice"));
+        foundation.insert("bob".to_owned(), person("bob"));
+        let proposal = |pt, hub: Option<&str>| NewPage {
+            slug: "cucina".to_owned(),
+            title: "Cucina".to_owned(),
+            description: "d".to_owned(),
+            style: None,
+            page_type: pt,
+            parent_hub: hub.map(str::to_owned),
+        };
+
+        let hub = vet_proposal(
+            proposal(PageType::ConceptHub, Some("alice")),
+            &foundation,
+            "alice",
+        );
+        assert_eq!(
+            hub.page_type,
+            PageType::ConceptLeaf,
+            "a retired page type is filed as a leaf, never accepted"
+        );
+
+        // Parented under another PAGE — the container itself.
+        let under_page = vet_proposal(
+            proposal(PageType::ConceptLeaf, Some("dossier")),
+            &foundation,
+            "alice",
+        );
+        assert_eq!(
+            under_page.parent_hub, None,
+            "a parent that is not a foundation page is dropped, and the page kept"
+        );
+
+        // Parented under ANOTHER WIKI's card: dropped too, or `resolve_page_wiki`
+        // would follow the invented parent and home the page in Bob's wiki.
+        let foreign = vet_proposal(
+            proposal(PageType::ConceptLeaf, Some("bob")),
+            &foundation,
+            "alice",
+        );
+        assert_eq!(
+            foreign.parent_hub, None,
+            "a foreign foundation page is not a parent either"
+        );
+
+        let good = vet_proposal(
+            proposal(PageType::ConceptLeaf, Some("alice")),
+            &foundation,
+            "alice",
+        );
+        assert_eq!(
+            good.parent_hub.as_deref(),
+            Some("alice"),
+            "the legitimate parent survives"
         );
     }
 
