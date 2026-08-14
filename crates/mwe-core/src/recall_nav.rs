@@ -392,8 +392,8 @@ pub const BUNDLED_NAVIGATOR_PROMPT_MD: &str = include_str!("../prompts/navigator
 /// an operator override at `<workdir>/prompts/query-seeds.md` wins.
 pub const BUNDLED_QUERY_SEEDS_PROMPT_MD: &str = include_str!("../prompts/query-seeds.md");
 
-/// True when a wiki-relative page path is the wiki's map
-/// ([`wiki::INDEX_FILENAME`]).
+/// True when a wiki-relative page path is the wiki's map — the one rule,
+/// [`wiki::names_map_page`], which `wiki_read` asks too.
 ///
 /// Founder's ruling, 2026-08-03: *«la radice della wiki dovrebbe servire solo
 /// al rem e all'ingest come mappa per dove mettere i fatti e non dovrebbe
@@ -402,8 +402,7 @@ pub const BUNDLED_QUERY_SEEDS_PROMPT_MD: &str = include_str!("../prompts/query-s
 /// not to be read is filtered on the offer side and refused centrally in
 /// [`open_target`], so no route can reach it.
 fn is_root_page_path(page: &Path) -> bool {
-    page.file_name()
-        .is_some_and(|n| n == std::ffi::OsStr::new(wiki::INDEX_FILENAME))
+    wiki::names_map_page(page)
 }
 
 /// True when a page may never be a navigation destination: the wiki's map

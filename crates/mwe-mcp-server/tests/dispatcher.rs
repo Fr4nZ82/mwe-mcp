@@ -387,14 +387,19 @@ async fn structure_proposal_list_removed_returns_not_found() {
 #[tokio::test]
 async fn wiki_read_returns_not_found_for_unknown_wiki() {
     let (state, identity, _dir) = fixture(false, None).await;
-    let err = call(&state, &identity, "wiki_read", json!({"wiki_id": "nope"}))
-        .await
-        .expect_err("must reject");
+    let err = call(
+        &state,
+        &identity,
+        "wiki_read",
+        json!({"wiki_id": "nope", "path": "notes.md"}),
+    )
+    .await
+    .expect_err("must reject");
     assert!(err.contains("not_found"), "{err}");
 }
 
 /// End-to-end ACL projection through `wiki_read`. Three-region page on
-/// `wikis/alice/index.md`: global → owner=user:alice → allow=group:famiglia.
+/// `wikis/alice/salute.md`: global → owner=user:alice → allow=group:famiglia.
 /// `alice` (member of `famiglia`) sees everything; `bob` (also in
 /// `famiglia`) sees global + the group-allowed region but not alice's
 /// owner-only region; `carol` (no group) sees only the global region.
@@ -445,7 +450,9 @@ async fn wiki_read_projects_acl_per_sender() {
 
     // Plant a three-region wiki on disk. `wikis/alice` already exists
     // implicitly from `WikiTree::open`; create the `_meta.md` and the
-    // `index.md` with three markers carrying distinct owners.
+    // A memory page with three markers carrying distinct owners. NOT the
+    // map: `wiki_read` refuses `index.md` — it holds no facts, only the
+    // wiki's own structure.
     let wiki_dir = dir.path().join("wikis").join("alice");
     std::fs::create_dir_all(&wiki_dir).expect("mkdir alice");
     std::fs::write(
@@ -466,7 +473,7 @@ async fn wiki_read_projects_acl_per_sender() {
                 {{allow=group:famiglia f=01900000-0000-7000-8000-000000000003}}\n\
                 Shared note for the family group.\n\
                 {{/}}\n";
-    std::fs::write(wiki_dir.join("index.md"), body).expect("write index.md");
+    std::fs::write(wiki_dir.join("salute.md"), body).expect("write salute.md");
 
     // Re-open the tree so the new wiki is picked up.
     let tree = WikiTree::open(dir.path()).expect("reopen");
@@ -477,7 +484,7 @@ async fn wiki_read_projects_acl_per_sender() {
         &state,
         &alice_identity,
         "wiki_read",
-        json!({"wiki_id": "alice"}),
+        json!({"wiki_id": "alice", "path": "salute.md"}),
     )
     .await
     .expect("alice wiki_read");
@@ -501,7 +508,7 @@ async fn wiki_read_projects_acl_per_sender() {
         &state,
         &bob_identity,
         "wiki_read",
-        json!({"wiki_id": "alice"}),
+        json!({"wiki_id": "alice", "path": "salute.md"}),
     )
     .await
     .expect("bob wiki_read");
@@ -523,7 +530,7 @@ async fn wiki_read_projects_acl_per_sender() {
         &state,
         &carol_identity,
         "wiki_read",
-        json!({"wiki_id": "alice"}),
+        json!({"wiki_id": "alice", "path": "salute.md"}),
     )
     .await
     .expect("carol wiki_read");
@@ -536,8 +543,8 @@ async fn wiki_read_projects_acl_per_sender() {
     assert_eq!(redacted_occurrences, 2);
 }
 
-/// `wiki_read` serves an arbitrary page via `path` (default `index.md`),
-/// projecting the ACL of *that* page — and rejects unsafe / missing pages.
+/// `wiki_read` serves the page named by `path`, projecting the ACL of *that*
+/// page — and rejects unsafe / missing pages, an omitted `path`, and the map.
 #[tokio::test]
 async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
     let (state, identity, dir) = fixture(false, None).await;
@@ -565,17 +572,29 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
     let tree = WikiTree::open(dir.path()).expect("reopen");
     let state = McpState { tree, ..state };
 
-    // Default → index.md.
-    let out = call(&state, &identity, "wiki_read", json!({"wiki_id": "alice"}))
+    // No default page: `path` is required. It used to default to `index.md`,
+    // so the ADVERTISED default of the read tool handed back the wiki's map —
+    // the sub-wiki list and every page as a link, i.e. the catalogue of wikis
+    // the read side is not supposed to have.
+    let err = call(&state, &identity, "wiki_read", json!({"wiki_id": "alice"}))
         .await
-        .expect("default read");
-    assert_eq!(out["page"], json!("index.md"));
+        .expect_err("no default page");
     assert!(
-        out["content_rendered_for_sender"]
-            .as_str()
-            .unwrap()
-            .contains("Landing page.")
+        err.contains("invalid_input") && err.contains("path"),
+        "{err}"
     );
+
+    // And naming the map explicitly is refused too — one rule, whichever
+    // route asks (`wiki::names_map_page`, the same one the navigator uses).
+    let err = call(
+        &state,
+        &identity,
+        "wiki_read",
+        json!({"wiki_id": "alice", "path": "index.md"}),
+    )
+    .await
+    .expect_err("the map is not a memory page");
+    assert!(err.contains("not_found") && err.contains("map"), "{err}");
 
     // The owner (alice) reads the subpage in full.
     let out = call(

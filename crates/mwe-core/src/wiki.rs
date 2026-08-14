@@ -239,6 +239,28 @@ pub fn names_reserved_page(page: &Path) -> bool {
         .is_some_and(|stem| is_reserved_page_stem(&stem.to_ascii_lowercase()))
 }
 
+/// True when a wiki-relative page path names the wiki's **map**
+/// ([`INDEX_FILENAME`]).
+///
+/// The map is the engine's own instrument — where REM and the ingest
+/// placement look up where a fact goes. It holds no facts, and what it does
+/// hold is structure: the wiki's sub-wikis and every one of its pages as a
+/// `[[wikilink]]`. Founder's ruling, 2026-08-03: *«la radice della wiki
+/// dovrebbe servire solo al rem e all'ingest come mappa per dove mettere i
+/// fatti e non dovrebbe neanche essere presa per nulla dal recall»*, and
+/// 2026-08-14 on the read side generally: *«la struttura va tolta dal
+/// messaggio di risposta al consumer, al consumer interessa solo
+/// l'informazione relativamente al messaggio che ha inviato l'utente»*.
+///
+/// One rule, asked by every route that could reach it: the navigator's offer
+/// filter and its central `open_target` refusal, and `wiki_read`, which used
+/// to serve the map as its **advertised default**.
+#[must_use]
+pub fn names_map_page(page: &Path) -> bool {
+    page.file_name()
+        .is_some_and(|n| n == std::ffi::OsStr::new(INDEX_FILENAME))
+}
+
 /// The owner's reserved **project diary** — one line per project per day,
 /// saying what happened.
 ///

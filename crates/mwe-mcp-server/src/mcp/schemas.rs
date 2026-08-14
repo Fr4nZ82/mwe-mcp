@@ -248,15 +248,15 @@ fn events_ack() -> Tool {
 fn wiki_read() -> Tool {
     read_only(materialize(
         "wiki_read",
-        "Read the rendered content of a **specific page** of a wiki for the given sender, with ACL applied. `path` selects the page relative to the wiki directory (default `index.md`, e.g. `recipes/pasta.md`) and must be a safe relative path; an unknown page is `not_found`. Returns `content_rendered_for_sender` plus `redacted_count`, behind the wiki-level visibility gate. For a **standard** wiki, marked regions are redacted per the per-fragment ACL while prose passes; a **smart** wiki is markerless, so the wiki-level gate alone governs and the page passes whole. The `format` and `include_archived` arguments are accepted but not yet honored.",
+        "Read the rendered content of a **specific page** of a wiki for the given sender, with ACL applied. `path` is **required** — name the page you want; there is no default, and `index.md` (the wiki's map) is refused, because it holds no facts and only describes the wiki's own structure. A page path comes from a `wiki_search` hit or a `wiki_navigate` fragment. Must be a safe relative path; an unknown page is `not_found`. Returns `content_rendered_for_sender` plus `redacted_count`, behind the wiki-level visibility gate. For a **standard** wiki, marked regions are redacted per the per-fragment ACL while prose passes; a **smart** wiki is markerless, so the wiki-level gate alone governs and the page passes whole. The `format` and `include_archived` arguments are accepted but not yet honored.",
         json!({
             "type": "object",
-            "required": ["wiki_id"],
+            "required": ["wiki_id", "path"],
             "additionalProperties": false,
             "properties": {
                 "wiki_id": { "type": "string" },
                 "sender_id": { "type": "string" },
-                "path": { "type": "string", "description": "Page path relative to the wiki directory (default `index.md`). Safe relative paths only (`[A-Za-z0-9._-]` components, no traversal)." },
+                "path": { "type": "string", "description": "Page path relative to the wiki directory, e.g. `recipes/pasta.md`. Required; never `index.md`. Safe relative paths only (`[A-Za-z0-9._-]` components, no traversal)." },
                 "include_archived": { "type": "boolean", "default": false },
                 "format": { "type": "string", "enum": ["markdown", "json_blocks"], "default": "markdown" }
             }

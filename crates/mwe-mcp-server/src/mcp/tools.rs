@@ -821,7 +821,8 @@ async fn require_consumer_registered(state: &McpState, consumer_id: &str) -> Res
 struct WikiReadArgs {
     wiki_id: String,
     sender_id: Option<String>,
-    /// Page path relative to the wiki directory (default `index.md`).
+    /// Page path relative to the wiki directory. **Required**, and never the
+    /// wiki's map — see [`call_wiki_read`].
     /// Validated by [`mwe_core::wiki::is_safe_page_path`].
     #[serde(default)]
     path: Option<String>,
@@ -840,15 +841,50 @@ pub(super) async fn call_wiki_read(
     forbid_sender_mismatch(identity, args.sender_id.as_deref())?;
     let _ = args.include_archived; // accepted, not yet honored (archive surface)
     let _ = args.format;
-    // Page selection: default `index.md`, any safe relative path otherwise.
-    // The body and the per-fact ACL map MUST resolve to the *same* page —
-    // reading page X while loading another page's ACL would be a leak.
-    let page_rel = args.path.as_deref().unwrap_or("index.md");
+    // Page selection. The body and the per-fact ACL map MUST resolve to the
+    // *same* page — reading page X while loading another page's ACL would be
+    // a leak.
+    //
+    // **`path` is required, and the map is refused.** It used to default to
+    // `index.md`, which is the wiki's map: no facts, and its whole content is
+    // structure — the sub-wiki list and every page as a `[[wikilink]]`. So the
+    // ADVERTISED default of the read tool handed a consumer the catalogue of
+    // wikis, which is the thing the 2026-08-04 ruling deleted, and a tool
+    // description is read by a model at runtime, so it was an instruction to
+    // ask for it. Founder, 2026-08-14: *«la struttura va tolta dal messaggio
+    // di risposta al consumer, al consumer interessa solo l'informazione
+    // relativamente al messaggio che ha inviato l'utente»*.
+    //
+    // Refusing costs the caller nothing: every page path a consumer
+    // legitimately holds came from a `wiki_search` hit or a `wiki_navigate`
+    // fragment, both of which name real pages.
+    let Some(page_rel) = args
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    else {
+        return Err(invalid_input(
+            "path: required — name the page to read (a `wiki_search` hit or a \
+             `wiki_navigate` fragment carries one). There is no default page: \
+             the wiki's map is not memory."
+                .to_owned(),
+        ));
+    };
     let page = std::path::Path::new(page_rel);
     if !mwe_core::wiki::is_safe_page_path(page) {
         return Err(invalid_input(format!(
             "path: unsafe page path `{page_rel}`"
         )));
+    }
+    if mwe_core::wiki::names_map_page(page) {
+        return Err(ToolError::new(
+            ToolErrorClass::NotFound,
+            format!(
+                "`{page_rel}` is the wiki's map, not a memory page: it holds no facts, \
+                 only this wiki's structure. Name a page instead."
+            ),
+        ));
     }
     let wiki_id =
         WikiId::parse(&args.wiki_id).map_err(|e| invalid_input(format!("wiki_id: {e}")))?;
@@ -939,12 +975,22 @@ pub(super) async fn call_wiki_read(
         // `> [!redacted] This entire page is private.` when the collapse
         // fires. The detection lives inside `render_for_sender`.
         "redacted_count": rendered.blocks_redacted,
-        "children": meta.children.iter().map(|c| json!({
-            "wiki_id": c.wiki_id,
-            "slug": c.slug,
-            "wiki_type": c.wiki_type,
-        })).collect::<Vec<_>>(),
-        "parent_wiki_id": meta.parent_wiki_id.as_ref().map(|p| p.as_str().to_owned()),
+        // No `children`, no `parent_wiki_id`. The response used to ship the
+        // wiki tree straight out of `_meta.md` on every read, so a reader who
+        // legitimately reached one page also learned that this wiki has
+        // `alice-lavoro`, `alice-salute`, `alice-terapia` beside it — names
+        // that say plenty on their own, about content that reader may not be
+        // able to open at all.
+        //
+        // And the fix is NOT to filter that list: there is no permission on a
+        // wiki to filter it by. Read access is judged per FACT
+        // (`owner ∪ allow ∪ sender`); what looks like a wiki-level gate
+        // (`wiki_visible_to`) is that same judgement derived — "may this
+        // reader see at least one fact in here". The structure simply has no
+        // business in the answer. Founder, 2026-08-14: *«al consumer
+        // interessa solo l'informazione relativamente al messaggio che ha
+        // inviato l'utente»*. The engine's own steps keep using the tree
+        // freely — they are not a reply to anyone.
     }))
 }
 

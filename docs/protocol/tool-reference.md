@@ -498,8 +498,19 @@ through `wiki_ingest_message`.
 
 ### `wiki_read` *(read-only)*
 
-Read a specific page of a wiki (default `index.md`), with ACL redaction applied
-for the sender. See `redaction-policy.md`.
+Read a **named** page of a wiki, with ACL redaction applied for the sender.
+See `redaction-policy.md`.
+
+There is **no default page and no way to reach the map**. `path` is required,
+and `index.md` is refused (`404`, `wiki::names_map_page` — the same rule the
+navigator asks). The map holds no facts: its content is the wiki's own
+structure, the sub-wiki list plus every page as a `[[wikilink]]`. It used to be
+the advertised default, so the read tool's own description told a consumer
+model to ask for the catalogue of wikis — the thing the 2026-08-04 ruling
+deleted. Founder, 2026-08-14: *«la struttura va tolta dal messaggio di risposta
+al consumer, al consumer interessa solo l'informazione relativamente al
+messaggio che ha inviato l'utente»*. A page path a consumer legitimately holds
+came from a `wiki_search` hit or a `wiki_navigate` fragment.
 
 **Input**
 
@@ -507,7 +518,7 @@ for the sender. See `redaction-policy.md`.
 |---|---|---|---|
 | `wiki_id` | string | yes | Opaque id. |
 | `sender_id` | string | no | Validated against the token. |
-| `path` | string | no (default `index.md`) | Page path relative to the wiki dir (e.g. `recipes/pasta.md`). `is_safe_page_path`-validated (bad → `400 invalid_input`); unknown page → `404 not_found`. The body and the per-fact ACL map resolve to the *same* page. |
+| `path` | string | **yes** | Page path relative to the wiki dir (e.g. `recipes/pasta.md`). Omitted → `400 invalid_input`; `index.md` → `404 not_found` (the map is not memory); `is_safe_page_path`-validated (bad → `400 invalid_input`); unknown page → `404 not_found`. The body and the per-fact ACL map resolve to the *same* page. |
 | `include_archived` | boolean | no (default `false`) | **Accepted but not honoured** — the archive surface is not yet implemented. |
 | `format` | enum `markdown` \| `json_blocks` | no (default `markdown`) | **Accepted but not honoured** — the floor always returns continuous-text markdown. |
 
@@ -516,16 +527,26 @@ for the sender. See `redaction-policy.md`.
 ```jsonc
 {
   "wiki_id": "alice-tecnica",
-  "page": "index.md",                  // the page actually served
+  "page": "recipes/pasta.md",          // the page actually served
   "title": "…",
   "wiki_type": "wiki-tech",
   "owner": "user:alice",               // resolved scope principal (or "inherit")
   "content_rendered_for_sender": "…",  // page BODY (testata stripped) with redacted regions collapsed to a callout
-  "redacted_count": 0,                 // number of regions hidden for this sender
-  "children": [ { "wiki_id": "…", "slug": "…", "wiki_type": "…" } ],
-  "parent_wiki_id": "…"
+  "redacted_count": 0                  // number of regions hidden for this sender
 }
 ```
+
+**No `children`, no `parent_wiki_id`.** They shipped straight out of `_meta.md`
+on every read until 2026-08-14, so a reader who reached one page also learned
+that this wiki has `alice-lavoro`, `alice-salute`, `alice-terapia` beside it —
+names that say plenty on their own, about content that reader may not be able
+to open. The fix is **not** to filter that list: there is no permission on a
+wiki to filter it by. Read access is judged per **fact**
+(`owner ∪ allow ∪ sender`); what looks like a wiki-level gate
+(`wiki_visible_to`) is that same judgement derived — *may this reader see at
+least one fact in here*. The structure has no business in the answer. The
+engine's own steps keep using the wiki tree freely: they are not a reply to
+anyone.
 
 **Errors**: `400 invalid_input` (bad `wiki_id`), `404 not_found`,
 `403 sender_token_mismatch`.
