@@ -87,3 +87,6 @@ __pycache__/
 
 # local credential for the ingest_replay harness — never commit
 .ct
+
+# Piano di riallineamento — documento di lavoro in italiano, non superficie di prodotto
+/RIALLINEAMENTO.md
