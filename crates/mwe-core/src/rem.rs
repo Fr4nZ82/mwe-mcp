@@ -1786,30 +1786,29 @@ pub struct MissingRail {
 /// **together** by the walk, with no `[[wikilink]]` between them.
 ///
 /// Deterministic, read-only, **no model call** — the structural half of
-/// [62](../../../planning/62_rem-rumination.md)'s lever 2. It nominates; a
-/// confirmer decides whether the pair is genuinely related or merely
-/// co-occurring, and only then is a rail authored with a receipt.
+/// [62](../../../planning/62_rem-rumination.md)'s lever 2.
+///
+/// ⚠️ **Nominates into nothing.** Nothing calls this outside its own unit
+/// tests: `run_cycle` does not, no confirmer exists, and no code authors a
+/// rail from a co-open pair. The link concern it was built for was answered
+/// a different way on 2026-08-09, in the Cronista prompt, with
+/// unreachability as the criterion. Wire it or delete it — do not read it
+/// as a live pass.
 ///
 /// Founder, 2026-08-04: *«è dal lavoro del REM che si conta la bontà della
 /// memoria, perché i link che il navigatore segue alla fine li ha decisi il
-/// REM»*. Measured on production the same day: of the pairs co-opened **≥3
-/// times, 77 % have no link**; at ≥10 co-opens it is 81 %. The pairs are not
-/// noise — `documenti`+`fisco_2026` (35 turns), `automobili`+
-/// `finanziamento_auto` (32), and two cars of the same household that do not
-/// know about each other (22).
+/// REM»*.
 ///
 /// **A link counts only if it is written on the page**, read with the same
 /// extractor the funnel uses ([`crate::recall::extract_wikilinks`]).
 ///
-/// The plan's `link_graph` was the obvious source — symmetric, slug-keyed,
+/// The plan's `link_graph` is the obvious source — symmetric, slug-keyed,
 /// and the graph the compiler writes rails *from* — and it is the wrong one.
-/// Measured on the corpus 2026-08-04: **111 of the 334 links the plan
-/// declares (33 %) never reached the page text.** The compiler hands them to
-/// the writing model as *recommended*, and a model that does not weave one in
-/// leaves no link behind. The navigator harvests rails from the **prose**, so
-/// a pair the plan calls linked can be a pair the reader can never travel
-/// between — and trusting the plan would have hidden a third of the real
-/// gaps, silently and in the flattering direction.
+/// The compiler hands those links to the writing model as *recommended*, and
+/// a model that does not weave one in leaves no link behind. The navigator
+/// harvests rails from the **prose**, so a pair the plan calls linked can be
+/// a pair the reader can never travel between: trusting the plan would hide
+/// real gaps, silently and in the flattering direction.
 ///
 /// `recall_log` stores workdir-relative page paths, so the plan's pages are
 /// resolved to those paths through the tree to key the two together.
@@ -4332,10 +4331,26 @@ async fn run_contradiction_sweep(
         if seeds.is_empty() {
             continue;
         }
+        // Still in force: an open horizon, OR a horizon that has not passed
+        // yet.
+        //
+        // A dated satellite is the whole point of this sub-job — the cancelled
+        // trip's itinerary days, which `ingest.md` tells the classifier to give
+        // a concrete `valid_to` ("a dated commitment or deadline ends at its
+        // own time"). Requiring `valid_to IS NULL` made this pass and the
+        // due-soon slot (`find_due_between`, which requires `valid_to IS NOT
+        // NULL`) disjoint by construction: the one class of fact that keeps
+        // firing after its event is cancelled was the one class this sweep
+        // could never nominate. Already-expired rows stay out — closing what
+        // has already lapsed spends a confirmer call to change nothing.
         let open_rows: Vec<FactIndexRow> = find_active_in_family(pool, scope)
             .await?
             .into_iter()
-            .filter(|r| r.valid_to.is_none())
+            .filter(|r| {
+                r.valid_to.as_deref().is_none_or(|t| {
+                    chrono::DateTime::parse_from_rfc3339(t).is_ok_and(|ts| ts.to_utc() > now)
+                })
+            })
             .collect();
         for seed in seeds {
             // Candidate-pool hygiene — structural perimeter, never a
@@ -4524,12 +4539,26 @@ async fn judge_contradiction_case(
         None,
     )
     .await?;
-    // The invalidation instant: the seed's own closure time when it has
-    // one, else tonight — the satellites fall when the event fell.
+    // The invalidation instant: when the seed was CONTRADICTED — not when it
+    // was once due to end.
+    //
+    // `fact_index::mark_superseded` writes `valid_to = COALESCE(valid_to, ?)`,
+    // so a seed that already carried its own future expiry KEEPS it. Anchoring
+    // a satellite to that horizon stamps the satellite with a future
+    // `valid_to`, and `find_due_between` matches on exactly that — which would
+    // push the just-cancelled satellite INTO the due-soon slot the closure
+    // exists to get it out of. `superseded_at` is the moment it fell; a
+    // horizon still ahead of us never is.
+    let now = chrono::Utc::now();
     let seed_closed_at = seed
-        .valid_to
+        .superseded_at
         .clone()
-        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        .or_else(|| {
+            seed.valid_to.clone().filter(|t| {
+                chrono::DateTime::parse_from_rfc3339(t).is_ok_and(|ts| ts.to_utc() <= now)
+            })
+        })
+        .unwrap_or_else(|| now.to_rfc3339());
     let mut applied: Vec<promote::AppliedClosure> = Vec::new();
     for item in &decision.invalidated {
         let Some(target) = candidates
@@ -10564,6 +10593,123 @@ mod tests {
             .unwrap()
             .expect("seed");
         assert_eq!(row.valid_to, seed.valid_to);
+        drop(dir);
+    }
+
+    /// The cancelled dated event, end to end — the case the sub-job was
+    /// written for and could not reach.
+    ///
+    /// Both the seed and its satellite carry a **future** `valid_to`, which is
+    /// what `ingest.md` tells the classifier to give a dated commitment. Two
+    /// things had to change for this to work: the candidate pool no longer
+    /// requires an open horizon (it required `valid_to IS NULL`, which made it
+    /// disjoint from the due-soon slot's `valid_to IS NOT NULL` — the sweep
+    /// could never see the facts that keep firing), and the closure anchors on
+    /// the seed's `superseded_at` rather than its surviving future horizon
+    /// (`mark_superseded` COALESCEs, so a dated seed keeps its own date, and
+    /// stamping the satellite with it would file the satellite straight back
+    /// into the due-soon window).
+    #[tokio::test]
+    async fn contradiction_sweep_closes_a_dated_satellite_before_its_own_date() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let future = (Utc::now() + chrono::Duration::days(30)).to_rfc3339();
+        let dated = |body: &'static str| {
+            let tree = &tree;
+            let pool = &pool;
+            let future = future.clone();
+            async move {
+                capture::wiki_capture(
+                    tree,
+                    pool,
+                    fake_embedder(),
+                    CaptureRequest {
+                        authored_refs: Vec::new(),
+                        wiki_id: WikiId::parse("alice").unwrap(),
+                        page: PathBuf::from("index.md"),
+                        body: body.to_owned(),
+                        owner: Principal::User("alice".to_owned()),
+                        allow: Vec::new(),
+                        sender: None,
+                        fact_type: None,
+                        topics: Vec::new(),
+                        dedup_threshold: Some(0.999),
+                        valid_from: None,
+                        valid_to: Some(future),
+                        style: None,
+                        page_description: None,
+                        salience: None,
+                    },
+                )
+                .await
+                .expect("plant")
+                .fact_id
+            }
+        };
+        let departure = dated("Partenza per Parigi il 15 giugno").await;
+        let satellite = dated("Itinerario giorno 1: Louvre").await;
+        let cancellation = plant_fact(
+            &tree,
+            &pool,
+            "alice",
+            "Il viaggio a Parigi è annullato",
+            "alice",
+        )
+        .await;
+        fact_index::mark_superseded(&pool, &departure, &cancellation)
+            .await
+            .expect("supersede");
+        // The seed kept its own future horizon — COALESCE, not overwrite.
+        let seed = fact_index::find_by_id(&pool, &departure)
+            .await
+            .unwrap()
+            .expect("seed");
+        assert_eq!(
+            seed.valid_to.as_deref(),
+            Some(future.as_str()),
+            "the seed's original date survives the supersede"
+        );
+
+        let resp = format!(
+            "{{\"invalidated\":[{{\"target\":\"{}\",\"valid_to\":null}}]}}",
+            satellite.as_str()
+        );
+        let llm = FakeLlmBackend::new("confirmer", &resp);
+        let index = load_smart_wiki_index(&tree).expect("index");
+        let report = run_contradiction_sweep(
+            &pool,
+            &tree,
+            &llm,
+            "cycle-test",
+            Utc::now(),
+            &RemPolicy::default(),
+            &index,
+        )
+        .await
+        .expect("sweep");
+
+        assert_eq!(
+            report.closed,
+            vec![satellite.as_str().to_owned()],
+            "a dated satellite can be nominated at all"
+        );
+        let row = fact_index::find_by_id(&pool, &satellite)
+            .await
+            .unwrap()
+            .expect("row");
+        let closed_at = row.valid_to.as_deref().expect("the satellite fell");
+        assert_ne!(
+            closed_at, future,
+            "and it does not inherit the trip's own date — that would put it \
+             back in the due-soon slot as an imminent commitment"
+        );
+        assert!(
+            DateTime::parse_from_rfc3339(closed_at)
+                .expect("rfc3339")
+                .to_utc()
+                <= Utc::now(),
+            "it fell when the trip was cancelled, which is in the past"
+        );
         drop(dir);
     }
 

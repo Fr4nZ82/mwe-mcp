@@ -803,10 +803,22 @@ with the global view.
    `policy.closure_sweep_window`), pooled per
    [family line](#family-scope--the-consolidation-passes-unit-leva-2)
    (non-smart only).
-2. **Nomination** (no LLM): the seed's most similar **open** facts of
-   the same family line (embedding cosine, top 5 — a contradiction
-   landing in the parent wiki can fell its satellites in the sub-wiki
-   and vice versa). Two structural fences on the candidate pool (never a
+2. **Nomination** (no LLM): the seed's most similar **still-in-force**
+   facts of the same family line (embedding cosine, top 5 — a
+   contradiction landing in the parent wiki can fell its satellites in the
+   sub-wiki and vice versa). *In force* means an open horizon **or a
+   horizon that has not passed yet**: the satellites this sub-job exists
+   for are dated — an itinerary day is a dated commitment, and
+   [`ingest.md`](../../crates/mwe-core/prompts/ingest.md) tells the
+   classifier to give it a concrete `valid_to`. A pool restricted to
+   `valid_to IS NULL` would be disjoint from the due-soon slot, whose
+   storage primitive
+   ([`fact_index::find_due_between`](../../crates/mwe-core/src/fact_index.rs))
+   requires `valid_to IS NOT NULL` — the one class of fact that keeps
+   firing after its event is cancelled would be the one class the sweep
+   could never nominate. Already-lapsed rows stay out: closing what has
+   expired spends a confirmer call to change nothing. Two structural
+   fences on the candidate pool (never a
    semantic gate — the cluster judgment stays the LLM's): the seed's
    whole **successor lineage** (`superseded_by` walked transitively) is
    off-limits — a fact revised twice is otherwise nominatable as a
@@ -829,9 +841,14 @@ with the global view.
    The **cluster definition is the LLM's judgment** — same page, same
    topics, none of it is hardcoded.
 4. **Execution** (act-first): confirmed satellites close as
-   `contradicted` with `valid_to` anchored to the **seed's own closure
-   instant** (the moment the event fell — which also drops them out of
-   the due-soon slot) and `successor_fact_id` inherited from the
+   `contradicted` with `valid_to` anchored to the **instant the seed was
+   contradicted** — its `superseded_at`, not its surviving horizon.
+   `fact_index::mark_superseded` writes `valid_to = COALESCE(valid_to, ?)`,
+   so a dated seed keeps its own future date; anchoring a satellite to
+   *that* would stamp it with a future `valid_to` and file it straight
+   back into the due-soon slot the closure exists to get it out of. A seed
+   with no `superseded_at` falls back to its `valid_to` when that is
+   already past, else to tonight. `successor_fact_id` is inherited from the
    **seed's superseding fact** when it has one (the satellites fell with
    the seed, so they point at the same replacement — the
    [succession pointer](narrative-compiler.md#the-succession-pointer--one-hop-from-the-obituary-to-todays-truth);
