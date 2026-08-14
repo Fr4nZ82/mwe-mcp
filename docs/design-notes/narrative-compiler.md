@@ -156,14 +156,21 @@ the registry plus any proposed earlier this run) so the model **reuses**
 an existing page rather than minting a duplicate.
 
 **The batch's wiki is also the whole page list** (`describe_foundation`,
-`describe_concepts`, both filtered on `wiki_id`). Nothing is lost by that: a
-fact's wiki was settled at capture by
-[`derive_target_wiki`](../../crates/mwe-core/src/ingest.rs) — a group's fact
-lands in the group's wiki, a user's in theirs — so the structure that should
-receive it is the one it is already in, and the forest-wide list this replaced
-offered nothing but a way to file a fact onto another user's card, which the
-identity-page discipline below then spends a paragraph forbidding. It also
-bounds a list that had no ceiling: the pages of one wiki, not of the memory.
+`describe_concepts`, both filtered on `wiki_id`). A fact's wiki was settled at
+capture by [`derive_target_wiki`](../../crates/mwe-core/src/ingest.rs) — a
+group's fact lands in the group's wiki, a user's in theirs — so the wiki whose
+structure is offered is the one the fact is already in. It also bounds a list
+that had no ceiling: the pages of one wiki, not of the memory.
+
+> ⚠️ **This scoping is an open question, not a rule.** It reads as a fence
+> around *where a fact may live*, and there is no such fence: a fact is free to
+> live in any wiki, and the engine moving one there because the prose reads
+> better is its judgment, not damage (founder, 2026-08-10 — the compiler
+> upholds exactly that with `move_to_wiki`, and REM has a whole cross-wiki
+> refile sweep). What the scoping actually costs is that a fact can never be
+> re-homed by this stage once it has landed, since the only pages ever offered
+> are its own wiki's. The redesign has to keep two things that are real: the
+> language directive resolves per wiki, and a page name is unique forest-wide.
 
 The rest of the forest survives in one line, as **`{taken_slugs}`** — bare page
 names, no titles, no descriptions
@@ -310,8 +317,8 @@ empty falls through to the same orphan fallback, never a page named "index".
 strong-model call **per prospective wiki** that folds
 **semantically-duplicate proposed pages** into existing ones. The
 Cartografo, working batch by batch, cannot see the whole proposed set at
-once; the Conciliatore does — it gets that wiki's foundation + registry pages
-and every page proposed this run for that wiki, and returns a `redirects` map
+once; the Conciliatore does — it gets that wiki's **concept** pages and every
+page proposed this run for that wiki, and returns a `redirects` map
 (`proposed_slug → existing_slug`) plus the genuinely-new `accepted_new`
 list.
 
@@ -321,15 +328,39 @@ applies one stage later); a proposal no assignment claims rides its own
 group and is homed or dropped by the plan builder as before. The split is
 what gives the stage a language: it picks which title and description
 survive a merge, and those are read by a person. **What each call sees
-narrows with it** — `describe_existing` is rendered per group, scoped to that
-group's wiki, because a redirect *is* a merge: folding a proposal into a page
-of another wiki would move this wiki's facts there. The homeless bucket (a
+narrows with it** — `describe_existing` is rendered per group and scoped to
+that group's wiki. The homeless bucket (a
 proposal no assignment claims) has no wiki to be scoped to, so it keeps the
 forest-wide view and the plan builder decides its home as before. The
 prompt
 ([`crates/mwe-core/prompts/conciliatore.md`](../../crates/mwe-core/prompts/conciliatore.md))
 carries a **redirect bias**: when in doubt, consolidate — fewer
 well-populated pages beat many scattered ones.
+
+**Foundation pages are never offered and never accepted as merge targets.** A
+card holds who a subject is and a buffer is where a fact waits until it has a
+home; neither is a topic a page can become part of. They used to be rendered
+*first* in the list, the buffer node wearing its wiki's own title and scope as
+its description, under that same redirect bias.
+
+**Nothing the stage returns is trusted.** `vet_accepted` and `vet_redirects`
+run over both halves of its output before either reaches the plan or the
+concept registry, because the model is asked to re-emit `slug` / `page_type` /
+`parent_hub` as free-form JSON while it decides merges:
+
+| what comes back | what happens |
+|---|---|
+| redirect onto a slug that is neither an existing concept page nor a page accepted this run | dropped — the plan builder's fallback would otherwise mint a blank, style-less page under that name, turning *merge into X* into *create an empty X* |
+| redirect onto a foundation page, or onto itself | dropped |
+| accepted page named `index` / `rules` / `projects` / `profile` / `notes` | dropped — it would compile onto the file the wiki's card or buffer already owns |
+| accepted page of any other `page_type` | filed as a `concept_leaf` — *a container is a wiki* |
+| `parent_hub` naming no foundation page | cleared, and `resolve_page_wiki` homes the page by its facts |
+
+A dropped redirect loses nothing: the proposal stays its own page and the next
+cycle can still merge it correctly. The `parent_hub` check is deliberately
+weaker than `vet_proposal`'s, which also demands the hub belong to *this* wiki
+— a fact is free to live in any wiki, so what has to hold here is only that the
+hub exists.
 
 The conciliatore's output schema carries no writing `style`, so the code
 re-attaches each accepted page's ingest-proposed style from the original
@@ -381,7 +412,13 @@ materialises the final plan deterministically, top to bottom:
    through the redirect map. An assignment whose `fact_id` no longer exists
    (superseded since classification) is skipped; an assignment to a page
    that does not exist mints a `concept_leaf` on the fly so the fact still
-   has a home.
+   has a home — **except when the name is a reserved stem** (`index`,
+   `rules`, `projects`, `profile`, `notes`). The foundation nodes are keyed by
+   `plan_slug_for_page` — a wiki's card takes the wiki's own slug, its buffer
+   takes `<wiki>__notes` — so a bare `notes` misses the lookup and would mint a
+   *second* plan page writing `notes.md` in that same wiki. The assignment is
+   dropped instead and the fact falls to the orphan pass, which has a real page
+   for it.
 4. **Orphan fallback** for any fact left unassigned — see the fix below.
 5. **Style heal** for style-less registry entries: the Conciliatore's
    style backfill protects only pages accepted this run, so an entry that

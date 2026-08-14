@@ -1,8 +1,8 @@
 ---
 name: conciliatore
 description: planner stage 1.5 — folds semantically-duplicate proposed concept pages into existing ones (dedup with redirect bias)
-version: 1.5
-default_version_at_bootstrap: v1.5
+version: 1.6
+default_version_at_bootstrap: v1.6
 ---
 
 # Prompt: conciliatore
@@ -22,17 +22,32 @@ The system prompt for the **Conciliatore** (planner stage 1.5,
   `rem_dedup_semantic` / revisor slot (the low binary-classifier tier); the
   **light** dream uses the cheap **ingest tier**, falling back to the revisor
   slot when no ingest slot is configured. `temperature` low, JSON output.
-- **Placeholders**: `{existing_pages}` (the foundation + registry pages **of
-  the group's wiki** — a redirect is a merge, so folding a proposal into
-  another wiki's page would move this wiki's facts there; the homeless bucket,
-  a proposal no assignment claims, keeps the forest-wide view),
-  `{new_pages}` (every page proposed this run — from the Cartografo in the full
-  cadence, or the ingest-placement blueprint in the light dream).
+- **Placeholders**: `{existing_pages}` (the **concept** pages of the group's
+  wiki — foundation pages are not merge targets and are not listed, see the
+  vetting below; the homeless bucket, a proposal no assignment claims, keeps the
+  forest-wide view), `{new_pages}` (every page proposed this run — from the
+  Cartografo in the full cadence, or the ingest-placement blueprint in the light
+  dream).
 - **Output**: one strict JSON object —
   `{ "redirects": { "<proposed>": "<existing>" }, "accepted_new": [...] }` —
   parsed into `crate::planner::ConciliatorResult`. On parse failure the planner
   falls back to accepting ALL proposed pages with no merges (conservative: never
   loses a page, may leave a near-duplicate the next cycle can still merge).
+- **Vetted, not trusted** (`planner::vet_redirects` / `planner::vet_accepted`,
+  both run before either half reaches the plan or the concept registry):
+  - a redirect whose target is neither an existing concept page nor a page
+    accepted this same run is **dropped** — the plan builder would otherwise
+    mint a blank page under that name, turning *merge into X* into *create an
+    empty X*, style and all;
+  - a redirect onto a foundation page (`profile.md`, `notes.md`) is **dropped**;
+  - an accepted page whose slug is a reserved name (`index`, `rules`,
+    `projects`, `profile`, `notes`) is **dropped** — it would compile onto the
+    file the wiki's card or buffer already owns;
+  - an accepted page of any type other than `concept_leaf` is filed as one, and
+    a `parent_hub` naming no foundation page is cleared.
+
+  A dropped redirect is not a lost page: the proposal stays its own page and the
+  next cycle can still merge it correctly.
 
 ## System prompt
 
@@ -58,6 +73,8 @@ RULES:
 - Specific pages like "health_routine_alice" vs "health_emergencies_bob" are DIFFERENT (different person, different aspect) → keep BOTH in accepted_new.
 - An open-items list and its registry/log twin — "shopping" vs "shopping_log", "films_to_watch" vs "films_watched" — are DIFFERENT pages with different purposes (what is still open vs what was consumed) → keep BOTH; the redirect bias does NOT apply to this pair.
 - REDIRECT BIAS: when in doubt, prefer the redirect (consolidation). Fewer well-populated pages beat many scattered ones.
+- A redirect target MUST be one of the pages under EXISTING PAGES, or a page you are keeping in "accepted_new" this same run. A name you invent is not a destination: such a redirect is discarded and the proposed page stays separate, so you lose the very consolidation you were after.
+- NEVER redirect onto a person's or a group's identity card, nor onto a wiki's notes page. They are not topics: a card holds who someone is, and the notes page is where a fact waits until it has a home. They are not listed above, and naming one anyway is discarded.
 
 OUTPUT — one strict JSON object, no prose around it:
 {

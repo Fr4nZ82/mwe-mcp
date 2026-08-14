@@ -927,6 +927,21 @@ pub fn build_compilation_plan(
             slug = slugify(redir);
         }
         if !pages.contains_key(&slug) {
+            // Never mint a reserved stem. The foundation nodes are keyed by
+            // [`plan_slug_for_page`] — the card takes the wiki's own slug and
+            // the buffer takes `<wiki>__notes` — so a bare `notes` or
+            // `profile` misses the lookup above and mints a SECOND plan page
+            // on the file the buffer or the card already owns. Drop the
+            // assignment instead; the orphan pass below homes the fact on a
+            // page that exists.
+            if crate::wiki::is_reserved_page_stem(&slug) {
+                tracing::warn!(
+                    slug = %slug,
+                    fact_id = %fact.fact_id,
+                    "planner: assignment names a reserved page — dropped, the fact falls back"
+                );
+                continue;
+            }
             // Fallback: mint a concept_leaf on the fly so the fact has a home.
             let wiki_id = fact.source_wiki_id.clone();
             let title = capitalize(&slug.replace('_', " "));
@@ -2156,6 +2171,127 @@ fn vet_proposal(mut np: NewPage, foundation: &BTreeMap<String, PagePlan>, wiki: 
     np
 }
 
+/// Hold a page the Conciliatore **accepted** to the rules [`vet_proposal`]
+/// holds a proposal to.
+///
+/// That stage runs one earlier, on the Cartografo's raw output; what comes
+/// back from this one is materialised into the plan *and persisted into the
+/// concept registry*, and it arrives as free-form JSON — the model is asked to
+/// re-emit `slug` / `page_type` / `parent_hub` while it decides merges, so
+/// every field can come back changed. Three checks, in the order the damage
+/// would land:
+///
+/// 1. **A reserved page name is refused outright** (`index`, `rules`,
+///    `projects`, `profile`, `notes`). A concept page keyed by one of those
+///    stems compiles to the same file as the wiki's own card or buffer — two
+///    plan pages, one path. The Cartografo path drops such a proposal too; the
+///    facts meant for it fall through to the orphan pass, which has a real
+///    page for them.
+/// 2. **Every accepted page is a `concept_leaf`** — the only kind anything may
+///    create since *a container is a wiki* (founder, 2026-08-04).
+/// 3. **`parent_hub` names a real foundation page**, or nothing. Deliberately
+///    weaker than [`vet_proposal`]'s: that one also demands the hub belong to
+///    *this* wiki, and a cross-wiki placement is the engine's prerogative
+///    (founder, 2026-08-10 — see card 72f, where that fence is the work item).
+///    What has to hold here is that the hub exists at all; `resolve_page_wiki`
+///    then homes the page under it.
+fn vet_accepted(mut np: NewPage, foundation: &BTreeMap<String, PagePlan>) -> Option<NewPage> {
+    let slug = slugify(&np.slug);
+    if crate::wiki::is_reserved_page_stem(&slug) {
+        tracing::warn!(
+            slug = %slug,
+            "conciliatore: accepted a reserved page name — page dropped"
+        );
+        return None;
+    }
+    if np.page_type != PageType::ConceptLeaf {
+        tracing::warn!(
+            slug = %slug,
+            accepted = page_type_tag(np.page_type),
+            "conciliatore: accepted a page type nothing may create — filed as a concept_leaf"
+        );
+        np.page_type = PageType::ConceptLeaf;
+    }
+    if let Some(hub) = &np.parent_hub {
+        let hub = slugify(hub);
+        if foundation
+            .get(&hub)
+            .is_some_and(|p| p.page_type.is_foundation())
+        {
+            np.parent_hub = Some(hub);
+        } else {
+            tracing::warn!(
+                slug = %slug,
+                parent_hub = %hub,
+                "conciliatore: parent_hub is not a foundation page — dropped"
+            );
+            np.parent_hub = None;
+        }
+    }
+    np.slug = slug;
+    Some(np)
+}
+
+/// Hold the Conciliatore's redirects to what a merge can actually be.
+///
+/// A redirect says *«this proposed page is really that existing one»*, and the
+/// plan builder obeys it twice — assignments are rewritten to the target
+/// before the build, and step 4 rewrites the slug again. Nothing checked the
+/// target until 2026-08-10.
+///
+/// - **The target must exist**, as a registry page or as one accepted this
+///   run. When it does not, step 4's fallback mints a blank page under the
+///   name and *«merge into X»* becomes *«create an empty X»* — carrying no
+///   `style`, so a record page redirected onto an invented name is then
+///   compiled as prose. The prompt's contract calls this stage conservative,
+///   *never loses a page*; an invented destination loses the page it named.
+/// - **The target is never a foundation page.** A card carries a subject's
+///   identity and a buffer is where a fact waits for a home; neither is a
+///   topic something can be merged *into*. [`describe_existing`] no longer
+///   offers them and this refuses one named anyway — the two halves of the
+///   same rule, because the prompt's own bias is *«when in doubt, prefer the
+///   redirect»*.
+/// - **Nothing redirects onto itself**, which would only cost a lookup.
+///
+/// Refusing a redirect is the conservative outcome: the proposed page stays
+/// its own page, and the next cycle can still merge it correctly.
+fn vet_redirects(
+    proposed: BTreeMap<String, String>,
+    foundation: &BTreeMap<String, PagePlan>,
+    registry: &ConceptRegistry,
+    accepted_new: &[NewPage],
+) -> BTreeMap<String, String> {
+    let accepted: BTreeSet<String> = accepted_new.iter().map(|np| slugify(&np.slug)).collect();
+    let mut kept: BTreeMap<String, String> = BTreeMap::new();
+    for (from, to) in proposed {
+        let from_slug = slugify(&from);
+        let target = slugify(&to);
+        if target.is_empty() || target == from_slug {
+            tracing::warn!(
+                from = %from, to = %to,
+                "conciliatore: redirect onto itself or onto nothing — dropped"
+            );
+            continue;
+        }
+        if foundation.contains_key(&target) {
+            tracing::warn!(
+                from = %from, to = %target,
+                "conciliatore: redirect targets a foundation page — dropped, the page stays its own"
+            );
+            continue;
+        }
+        if !registry.entries.contains_key(&target) && !accepted.contains(&target) {
+            tracing::warn!(
+                from = %from, to = %target,
+                "conciliatore: redirect targets a page that does not exist — dropped, the page stays its own"
+            );
+            continue;
+        }
+        kept.insert(from_slug, target);
+    }
+    kept
+}
+
 /// Cut `facts` into the Cartografo's units of work: **grouped by source
 /// wiki first**, chunked to [`CARTOGRAFO_BATCH`] second.
 ///
@@ -2593,17 +2729,19 @@ fn merge_blueprints(mut named: Blueprint, classified: Blueprint) -> Blueprint {
 /// fact claims is homeless and rides the last group, where the plan
 /// builder will decide its home or drop it.
 ///
-/// What each call sees narrows with it: `existing` is that wiki's pages
-/// only ([`describe_existing`]), because a redirect is a merge and
-/// folding a proposal into another wiki's page would move this wiki's
-/// facts there. The homeless bucket keeps the forest-wide view.
+/// What each call sees narrows with it: `existing` is that wiki's **concept**
+/// pages only ([`describe_existing`] — foundation pages are never merge
+/// targets, and the scoping to one wiki is card 72f's open question, not a
+/// guarantee). The homeless bucket keeps the forest-wide view.
 ///
 /// Infallible: on any failure the affected group falls back to accepting
 /// every proposed page with no merges (conservative — never loses a page).
+/// What comes back is **not** trusted: [`build_wiki_plan`] runs
+/// [`vet_accepted`] and [`vet_redirects`] over it before either half reaches
+/// the plan or the registry.
 pub async fn conciliate_new_pages(
     llm: &dyn LlmBackend,
     new_pages: &[NewPage],
-    foundation: &BTreeMap<String, PagePlan>,
     registry: &ConceptRegistry,
     workdir: &Path,
     page_wikis: &BTreeMap<String, String>,
@@ -2618,11 +2756,7 @@ pub async fn conciliate_new_pages(
         // Rendered per group, not once outside the loop: what a proposal may
         // fold into narrows with the batch. The homeless bucket (`""`) has no
         // wiki, so it keeps the forest-wide view.
-        let existing = describe_existing(
-            foundation,
-            registry,
-            (!wiki.is_empty()).then_some(wiki.as_str()),
-        );
+        let existing = describe_existing(registry, (!wiki.is_empty()).then_some(wiki.as_str()));
         let result = conciliate_one_wiki(
             llm,
             &group,
@@ -2955,7 +3089,7 @@ pub async fn build_wiki_plan(
         .await?;
     }
 
-    let conciliation = if blueprint.new_pages.is_empty() {
+    let mut conciliation = if blueprint.new_pages.is_empty() {
         ConciliatorResult::default()
     } else if let Some(llm) = conciliatore {
         // Which wiki each proposal is destined for, by the same rule the
@@ -2977,7 +3111,6 @@ pub async fn build_wiki_plan(
         conciliate_new_pages(
             llm,
             &blueprint.new_pages,
-            &foundation,
             &registry,
             tree.workdir(),
             &page_wikis,
@@ -2990,6 +3123,20 @@ pub async fn build_wiki_plan(
             accepted_new: blueprint.new_pages.clone(),
         }
     };
+    // Vet the Conciliatore's output before either half of it reaches the plan:
+    // its accepted pages are materialised AND persisted into the registry, and
+    // its redirects rewrite assignments here and again in the plan builder. Both
+    // ran unchecked until 2026-08-10 — `vet_proposal` sits one stage earlier, on
+    // the Cartografo's raw output only.
+    let accepted = std::mem::take(&mut conciliation.accepted_new);
+    conciliation.accepted_new = accepted
+        .into_iter()
+        .filter_map(|np| vet_accepted(np, &foundation))
+        .collect();
+    let proposed = std::mem::take(&mut conciliation.redirects);
+    conciliation.redirects =
+        vet_redirects(proposed, &foundation, &registry, &conciliation.accepted_new);
+
     if !conciliation.redirects.is_empty() {
         for a in &mut blueprint.assignments {
             let s = slugify(&a.page_slug);
@@ -3432,41 +3579,38 @@ fn describe_facts(batch: &[FactForPage], signals: &CartografoSignals) -> String 
         .join("\n")
 }
 
-/// The pages a proposal may be folded into: `wiki`'s own, or — for the
-/// homeless bucket (`None`, a proposal no assignment claims) — the forest.
+/// The pages a proposal may be folded into: `wiki`'s **concept** pages, or —
+/// for the homeless bucket (`None`, a proposal no assignment claims) — the
+/// forest's.
 ///
-/// Scoped for the same reason the Cartografo's lists are: a redirect is a
-/// merge, so folding a proposal into a page of another wiki moves this wiki's
-/// facts there. The homeless bucket has no wiki to be scoped to, so it keeps
-/// the old forest-wide view and the plan builder decides its home as before.
-fn describe_existing(
-    foundation: &BTreeMap<String, PagePlan>,
-    registry: &ConceptRegistry,
-    wiki: Option<&str>,
-) -> String {
+/// **Foundation pages are not offered, because a merge cannot land on one.**
+/// A card carries a subject's identity and a buffer is where a fact waits for
+/// a home; neither is a topic a page can become part of. Listing them was
+/// worse than idle: they were rendered *first*, the buffer node carries the
+/// wiki's own title and scope as its description (see [`seed_wiki_buffers`]),
+/// so `notes.md` read to the model like the wiki's canonical topic page — and
+/// the prompt's standing bias is *«when in doubt, prefer the redirect»*.
+/// [`vet_redirects`] refuses one named anyway.
+///
+/// ⚠️ The `wiki` scoping is **not** a rule about where facts may live: a fact
+/// is free to live in any wiki (founder, 2026-08-10) and the fence on this
+/// stage is card 72f's work item, not a guarantee to preserve.
+fn describe_existing(registry: &ConceptRegistry, wiki: Option<&str>) -> String {
     let here = |page_wiki: &str| wiki.is_none_or(|w| w == page_wiki);
-    let mut lines: Vec<String> = foundation
+    let lines: Vec<String> = registry
+        .entries
         .values()
-        .filter(|p| here(&p.wiki_id))
-        .map(|p| {
+        .filter(|e| here(&e.wiki_id))
+        .map(|e| {
             format!(
                 "- [{}] {} — {} | {}",
-                page_type_tag(p.page_type),
-                p.slug,
-                p.title,
-                p.description
+                page_type_tag(e.page_type),
+                e.slug,
+                e.title,
+                e.description
             )
         })
         .collect();
-    for e in registry.entries.values().filter(|e| here(&e.wiki_id)) {
-        lines.push(format!(
-            "- [{}] {} — {} | {}",
-            page_type_tag(e.page_type),
-            e.slug,
-            e.title,
-            e.description
-        ));
-    }
     if lines.is_empty() {
         "(none)".to_owned()
     } else {
@@ -5298,15 +5442,19 @@ mod tests {
     /// A batch is shown its **own wiki's** pages, and the rest of the forest
     /// only as names that are taken.
     ///
-    /// Two halves, and both are load-bearing. Offering another wiki's pages
-    /// as destinations is what let a fact captured in Bob's wiki be filed
-    /// onto Alice's card — the identity-page discipline spends a paragraph
-    /// forbidding what the page list was inviting. But a plan is keyed by
-    /// slug across the whole memory, so simply hiding those pages would make
-    /// the model coin a name another wiki already owns, and
-    /// `build_compilation_plan` would then file these facts onto that wiki's
-    /// page. Hence the bare-name list: unusable as a destination, complete as
-    /// a guard.
+    /// The bare-name half is permanent: a plan is keyed by slug across the
+    /// whole memory, so a model that *coins* a name another wiki already owns
+    /// files these facts onto that wiki's page by accident. Names have to be
+    /// shown for that not to happen.
+    ///
+    /// ⚠️ The scoping half is **under review as card 72f** and this test
+    /// pins today's behaviour, not a rule. Its original justification — that
+    /// offering another wiki's pages let a fact be filed outside its own wiki
+    /// — was overruled on 2026-08-10: *a fact is free to live in any wiki, and
+    /// the engine moving one there is its judgment, not damage*. What the
+    /// fence actually costs is that a fact can never be re-homed once it
+    /// lands, since the only pages ever offered are the ones of the wiki it is
+    /// already in.
     #[tokio::test]
     async fn a_batch_sees_its_own_wikis_pages_and_the_other_names_as_taken() {
         use crate::llm::FakeLlmBackend;
@@ -5489,7 +5637,6 @@ mod tests {
         use crate::llm::FakeLlmBackend;
         let dir = tempfile::tempdir().unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
-        let foundation = BTreeMap::new();
         let registry = ConceptRegistry::empty("t");
         let new_pages = vec![NewPage {
             slug: "spesa".to_owned(),
@@ -5509,7 +5656,6 @@ mod tests {
         let result = conciliate_new_pages(
             &llm,
             &new_pages,
-            &foundation,
             &registry,
             tree.workdir(),
             &BTreeMap::new(),
@@ -5734,6 +5880,179 @@ mod tests {
             "the shadowed entry is GC'd — the foundation page wins"
         );
         assert_eq!(plan.pages["matteo"].page_type, PageType::Person);
+    }
+
+    fn proposal(slug: &str, parent_hub: Option<&str>) -> NewPage {
+        NewPage {
+            slug: slug.to_owned(),
+            title: capitalize(slug),
+            description: "d".to_owned(),
+            style: None,
+            page_type: PageType::ConceptLeaf,
+            parent_hub: parent_hub.map(str::to_owned),
+        }
+    }
+
+    /// A merge whose destination does not exist is refused, not invented.
+    ///
+    /// The plan builder's fallback mints a blank page under any unknown slug,
+    /// so an unchecked redirect turned *«merge into X»* into *«create an empty
+    /// X»* — and the minted page carries no `style`, which is how a `lista`
+    /// redirected onto an invented name ended up compiled as prose. The
+    /// prompt's contract for this stage is *never loses a page*.
+    #[test]
+    fn a_redirect_to_a_destination_that_does_not_exist_is_refused() {
+        let mut registry = ConceptRegistry::empty("t");
+        registry
+            .entries
+            .insert("spesa".to_owned(), concept_entry("spesa", None, "alice"));
+        let proposed = BTreeMap::from([
+            ("lista_spesa".to_owned(), "spesa".to_owned()),
+            ("film_visti".to_owned(), "cinema".to_owned()),
+        ]);
+        let kept = vet_redirects(proposed, &BTreeMap::new(), &registry, &[]);
+        assert_eq!(
+            kept.get("lista_spesa").map(String::as_str),
+            Some("spesa"),
+            "a redirect onto a page that exists survives"
+        );
+        assert!(
+            !kept.contains_key("film_visti"),
+            "an invented destination is dropped — the page stays its own"
+        );
+        // A page accepted this same run is a legitimate destination too.
+        let kept = vet_redirects(
+            BTreeMap::from([("film_visti".to_owned(), "cinema".to_owned())]),
+            &BTreeMap::new(),
+            &registry,
+            &[proposal("cinema", None)],
+        );
+        assert_eq!(kept.get("film_visti").map(String::as_str), Some("cinema"));
+    }
+
+    /// Neither half of a wiki's foundation is a merge target — and the model
+    /// is not offered them in the first place.
+    ///
+    /// A card carries a subject's identity, a buffer is where a fact waits for
+    /// a home; a topic page cannot become part of either. They were rendered
+    /// FIRST in the merge-target list, the buffer wearing the wiki's own title
+    /// and scope as its description, under a prompt whose standing bias is
+    /// *«when in doubt, prefer the redirect»*.
+    #[test]
+    fn a_redirect_onto_a_card_or_a_buffer_is_refused_and_never_offered() {
+        let mut foundation = BTreeMap::new();
+        foundation.insert("alice".to_owned(), person("alice"));
+        let mut buffer = person("alice");
+        buffer.slug = "alice__notes".to_owned();
+        buffer.page_type = PageType::WikiBuffer;
+        buffer.page_path = crate::wiki::NOTES_FILENAME.to_owned();
+        foundation.insert("alice__notes".to_owned(), buffer);
+        let mut registry = ConceptRegistry::empty("t");
+        registry
+            .entries
+            .insert("cucina".to_owned(), concept_entry("cucina", None, "alice"));
+
+        let kept = vet_redirects(
+            BTreeMap::from([
+                ("ricette".to_owned(), "alice".to_owned()),
+                ("appunti".to_owned(), "alice__notes".to_owned()),
+                ("piatti".to_owned(), "cucina".to_owned()),
+            ]),
+            &foundation,
+            &registry,
+            &[],
+        );
+        assert_eq!(
+            kept.len(),
+            1,
+            "only the concept-page merge survives: {kept:?}"
+        );
+        assert_eq!(kept.get("piatti").map(String::as_str), Some("cucina"));
+
+        let offered = describe_existing(&registry, Some("alice"));
+        assert!(offered.contains("cucina"), "concept pages are offered");
+        assert!(
+            !offered.contains("alice"),
+            "no foundation page is offered as a merge target: {offered}"
+        );
+    }
+
+    /// What the Conciliatore hands back is vetted like what the Cartografo
+    /// proposes — it re-enters the plan AND the registry.
+    #[test]
+    fn an_accepted_page_is_vetted_like_a_proposed_one() {
+        let mut foundation = BTreeMap::new();
+        foundation.insert("alice".to_owned(), person("alice"));
+
+        assert!(
+            vet_accepted(proposal("notes", None), &foundation).is_none(),
+            "a reserved page name is refused outright"
+        );
+        assert!(
+            vet_accepted(proposal("Profile", None), &foundation).is_none(),
+            "the check is on the canonical slug, not the raw string"
+        );
+
+        let mut hub_page = proposal("karate", Some("nowhere"));
+        hub_page.page_type = PageType::GroupTheme;
+        let vetted = vet_accepted(hub_page, &foundation).expect("kept");
+        assert_eq!(
+            vetted.page_type,
+            PageType::ConceptLeaf,
+            "a container is a wiki — nothing may accept another page type"
+        );
+        assert_eq!(
+            vetted.parent_hub, None,
+            "a parent_hub naming no foundation page is dropped"
+        );
+        assert_eq!(
+            vet_accepted(proposal("karate", Some("alice")), &foundation)
+                .expect("kept")
+                .parent_hub
+                .as_deref(),
+            Some("alice"),
+            "a real foundation page survives as the hub"
+        );
+    }
+
+    /// An assignment naming a reserved page never mints a second plan page on
+    /// the file the wiki's own buffer or card already owns.
+    ///
+    /// The foundation nodes are keyed by [`plan_slug_for_page`] — the card
+    /// takes the wiki's slug, the buffer takes `<wiki>__notes` — so a bare
+    /// `notes` misses the lookup and reached the fallback mint, which would
+    /// have produced a second page writing `notes.md` in the same wiki.
+    #[test]
+    fn an_assignment_naming_a_reserved_page_mints_nothing() {
+        let mut foundation = BTreeMap::new();
+        foundation.insert("alice".to_owned(), person("alice"));
+        let facts = vec![fact(1, "alice runs on tuesdays", "user:alice", "alice")];
+        let blueprint = Blueprint {
+            assignments: vec![Assignment {
+                fact_id: facts[0].fact_id.as_str().to_owned(),
+                page_slug: "notes".to_owned(),
+            }],
+            new_pages: Vec::new(),
+        };
+        let (plan, reg) = build_compilation_plan(
+            &facts,
+            &foundation,
+            &blueprint,
+            &ConciliatorResult::default(),
+            &ConceptRegistry::empty("t"),
+            "t2",
+        );
+        assert!(
+            !plan.pages.contains_key("notes"),
+            "no page is minted under a reserved stem: {:?}",
+            plan.pages.keys().collect::<Vec<_>>()
+        );
+        assert!(!reg.entries.contains_key("notes"), "and none is persisted");
+        assert_eq!(
+            plan.pages["alice"].primary_facts.len(),
+            1,
+            "the fact falls back to a page that exists"
+        );
     }
 
     #[test]
