@@ -2314,6 +2314,22 @@ pub async fn classify_facts(
         merged.assignments.extend(bp.assignments);
         for np in bp.new_pages {
             let slug = slugify(&np.slug);
+            // A coined name is never one of the reserved pages. `placement_slug`
+            // has always refused them for a page the *user* named; a
+            // `concept_leaf` the Cartografo invents took `slugify` alone, so a
+            // page called `projects` or `rules` would have been materialised
+            // straight over that wiki's channel page — and
+            // `compiler::sweep_orphan_page_files` exempts `index.md` and
+            // `rules.md` but not `projects.md`, so the signposts were the ones
+            // with no floor under them.
+            if crate::wiki::is_reserved_page_stem(&slug) {
+                tracing::warn!(
+                    slug = %slug,
+                    wiki,
+                    "cartografo: proposed a reserved page name — proposal dropped"
+                );
+                continue;
+            }
             if !slug.is_empty() && known.insert(slug.clone()) {
                 proposal_wikis.insert(slug.clone(), wiki.to_owned());
                 merged

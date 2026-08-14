@@ -530,7 +530,7 @@ A fact you emit about yourself on your own turn needs no destination either — 
 - **The list is genuinely new** → propose a plain page name from the turn's own subject and describe it in `page_description`, under the conservative rule in Part 4.
 - **The extraction is not `lista`** → `list_pages` says nothing about it, and you name no page at all (Part 4).
 
-Never name one of the reserved pages (`index.md`, `profile.md`, `notes.md`, `rules.md`, `projects.md`); a capture aimed at one is not filed there.
+Never name one of the reserved pages (`index.md`, `profile.md`, `notes.md`, `rules.md`, `projects.md`). The engine enforces this rather than trusting it: a capture that names one is routed to the wiki's buffer instead, and the placement pass settles it later. Naming one therefore costs you the page you wanted, and costs the user nothing — the fact is still kept.
 
 ## `fact_type` — closed enum, semantic hint for dedup and recall (per extraction)
 

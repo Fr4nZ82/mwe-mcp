@@ -2212,7 +2212,24 @@ async fn process_job(
                 );
                 fact_owner_fallback.clone()
             };
-            let page = normalize_capture_page(cand.target_page.as_deref(), Path::new("index.md"));
+            // Same guard as the live capture path, on the same class of name:
+            // one the extractor coined. The buffer is the fallback, not the
+            // map — a fact landing on `index.md` lands on the one page no
+            // reader may open.
+            let coined = normalize_capture_page(
+                cand.target_page.as_deref(),
+                Path::new(crate::wiki::NOTES_FILENAME),
+            );
+            let page = if crate::wiki::names_reserved_page(&coined) {
+                tracing::warn!(
+                    job_id = job.job_id,
+                    page = %coined.display(),
+                    "document: extracted fact named a reserved page — routed to the buffer instead"
+                );
+                PathBuf::from(crate::wiki::NOTES_FILENAME)
+            } else {
+                coined
+            };
             let body = cand.body.trim().to_owned();
             // Reverse-channel snapshot before `body` moves into the
             // request: a user-owned fact whose owner is not the uploader

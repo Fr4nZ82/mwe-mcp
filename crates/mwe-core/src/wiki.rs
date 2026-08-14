@@ -212,6 +212,33 @@ pub fn is_reserved_page_stem(stem: &str) -> bool {
     matches!(stem, "index" | "rules" | "projects" | "profile" | "notes")
 }
 
+/// True when `page` — a **model-coined** page name — names a reserved page.
+///
+/// The path-shaped twin of [`is_reserved_page_stem`], and the guard the
+/// sentence *«a capture aimed at one is not filed there»* refers to. That
+/// sentence has been in the ingest prompt for weeks and, until 2026-08-10,
+/// nothing enforced it: `is_reserved_page_stem` had two callers and both sat
+/// on paths where the name had already been discarded for other reasons, so
+/// the promise was made to the model and kept by nobody.
+///
+/// **Every place a model names a page calls this**, and there are four: the
+/// live capture path (`ingest::validate_capture_plan`), the document
+/// extractor's per-fact target and its per-segment plan
+/// (`crate::document`), the Cartografo's coined slug
+/// (`planner::new_page_to_plan`), and REM's split target
+/// (`rem::run_auto_promote`). Each falls back to the wiki's **buffer** — the
+/// designed holding place a placement settles from — never to the map.
+///
+/// Only the *last* segment is judged: `spesa/notes.md` is a page inside a
+/// folder, not the wiki's buffer. Case- and extension-insensitive, because a
+/// coined name is a guess at a spelling.
+#[must_use]
+pub fn names_reserved_page(page: &Path) -> bool {
+    page.file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|stem| is_reserved_page_stem(&stem.to_ascii_lowercase()))
+}
+
 /// The owner's reserved **project diary** — one line per project per day,
 /// saying what happened.
 ///
@@ -2215,6 +2242,30 @@ pub(crate) fn fs_distinguishes_case(dir: &Path) -> bool {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    // ---------- reserved page names ----------
+
+    /// All five, however a model spells them, and only in the last segment.
+    #[test]
+    fn names_reserved_page_covers_the_five_and_only_the_last_segment() {
+        for stem in ["index", "rules", "projects", "profile", "notes"] {
+            assert!(
+                names_reserved_page(Path::new(&format!("{stem}.md"))),
+                "{stem}.md is reserved"
+            );
+            assert!(
+                names_reserved_page(Path::new(&format!("{}.MD", stem.to_uppercase()))),
+                "a coined name is a guess at a spelling: {stem}"
+            );
+        }
+        // A page inside a folder called after a reserved name is a page.
+        assert!(!names_reserved_page(Path::new("notes/spesa.md")));
+        // …but the wiki's own buffer is, wherever it is addressed from.
+        assert!(names_reserved_page(Path::new("spesa/notes.md")));
+        assert!(!names_reserved_page(Path::new("lista_spesa.md")));
+        assert!(!names_reserved_page(Path::new("indexing.md")));
+        assert!(!names_reserved_page(Path::new("")));
+    }
 
     // ---------- MarkdownDoc ----------
 

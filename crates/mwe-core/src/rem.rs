@@ -2188,6 +2188,21 @@ async fn run_auto_promote(
                 ));
                 continue;
             }
+            // Third and last of the model-coined page names. `index.md` and
+            // `rules.md` survive `slugify` unchanged, and this variant's
+            // validator checks only traversal and "differs from the source" —
+            // the sibling variants refuse them (`apply_page_merge` on either
+            // side, `apply_file_to_subwiki` for a map), this one never did. A
+            // split has no fallback page to fall through to, so the split is
+            // simply skipped: the facts stay where they are and the next cycle
+            // asks again.
+            if crate::wiki::is_reserved_page_stem(&target_slug) {
+                report.errors.push(format!(
+                    "auto_promote: split target for {source_page_rel} named the reserved page \
+                     {target_slug}.md — skipped",
+                ));
+                continue;
+            }
             let recommended_target = format!("{target_slug}.md");
             let op_id = wal::begin_rem_op(
                 pool,

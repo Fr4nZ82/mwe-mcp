@@ -1467,7 +1467,17 @@ or single-fact:
   REM auto-promote target shares the same chokepoint
   ([rem-cycle.md](rem-cycle.md)) — and anything that still fails
   `is_safe_page_path` (a traversal-laden name, a segment that slugifies
-  to nothing) falls back to `policy.default_page` (`notes.md`, the buffer page). One
+  to nothing) falls back to `policy.default_page` (`notes.md`, the buffer page).
+  **A name that survives canonicalisation but is one of the five reserved pages
+  falls back too** ([`wiki::names_reserved_page`](../../crates/mwe-core/src/wiki.rs)):
+  the prompt promises *«a capture aimed at one is not filed there»*, and until
+  2026-08-10 nothing kept that promise — `is_reserved_page_stem` had two
+  callers and both sat on paths where the name had already been discarded for
+  other reasons. Every place a **model** names a page now asks the same
+  question: this one, the document extractor's per-fact target, the
+  Cartografo's coined `concept_leaf` slug (dropped outright — its facts
+  orphan-fallback), and REM's split target (the split is skipped; there is no
+  fallback page for a split, and the next cycle asks again). One
   topic therefore always lands on one page even when the model spells it
   differently across turns (`lista-spesa` / `Lista della Spesa` /
   `lista_spesa` → `lista_spesa.md`); extension-less page files (which

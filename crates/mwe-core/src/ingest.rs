@@ -1356,7 +1356,20 @@ fn validate_capture_plan(
         .is_some_and(|s| s.trim().eq_ignore_ascii_case("lista"));
     let names_its_page = list_shaped || unit.requested_container;
     let page = if names_its_page {
-        normalize_capture_page(unit.target_page, &policy.default_page)
+        let coined = normalize_capture_page(unit.target_page, &policy.default_page);
+        // The guarantee the prompt makes — «a capture aimed at a reserved page
+        // is not filed there» — enforced, not asked for. A model that names
+        // `rules.md` or `index.md` gets the buffer instead, and the placement
+        // pass settles it like any other unplaced prose.
+        if wiki::names_reserved_page(&coined) {
+            tracing::warn!(
+                page = %coined.display(),
+                "ingest: capture named a reserved page — routed to the buffer instead"
+            );
+            policy.default_page.clone()
+        } else {
+            coined
+        }
     } else {
         policy.default_page.clone()
     };
@@ -8128,6 +8141,59 @@ mod tests {
     /// classifier is shown no wikis and is told not to emit one. The
     /// destination comes from the subject, and a fact with no stated subject
     /// is the sender's own.
+    #[test]
+    fn validate_capture_plan_refuses_a_reserved_page_name() {
+        // The prompt has promised this for weeks — «a capture aimed at a
+        // reserved page is not filed there» — and nothing enforced it: the
+        // predicate that would have had two callers, both on paths where the
+        // name was already gone. A list-shaped unit is the case that reaches
+        // disk inside the turn, so it is the one that had to be closed.
+        let plan = LlmIngestPlan {
+            intent: "capture".into(),
+            suggested_seed: None,
+            target_wiki_id: Some("alice".into()),
+            target_page: Some("rules.md".into()),
+            owner_id: None,
+            allow_ids: Vec::new(),
+            fact_type: None,
+            valid_from: None,
+            valid_to: None,
+            style: Some("lista".into()),
+            page_description: None,
+            salience: None,
+            requested_container: false,
+            engine_rule: false,
+            behaviour_rule: false,
+            behaviour_scope: None,
+            topics: Vec::new(),
+            body: Some("comprare il latte".into()),
+            needs_disambig: false,
+            needs_project_docs: false,
+            disambig_candidates: Vec::new(),
+            supersede_target: None,
+            extractions: Vec::new(),
+            closures: Vec::new(),
+            closure_topics: Vec::new(),
+            validity_edits: Vec::new(),
+            acl_changes: Vec::new(),
+        };
+        let request = req("comprare il latte", "alice");
+        let policy = IngestPolicy::default();
+        let available = vec![sample_available("alice")];
+        let cap =
+            validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
+                .expect("the capture is filed, just not there");
+        assert_eq!(
+            cap.page, policy.default_page,
+            "a capture that names a reserved page lands in the buffer, and the placement \
+             pass settles it like any other unplaced prose"
+        );
+        assert_eq!(
+            cap.body, "comprare il latte",
+            "and the fact itself is never the thing thrown away"
+        );
+    }
+
     #[test]
     fn validate_capture_plan_derives_the_wiki_from_the_sender() {
         let plan = LlmIngestPlan {
