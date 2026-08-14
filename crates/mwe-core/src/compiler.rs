@@ -2027,8 +2027,19 @@ impl PageIndex {
     }
 
     /// The ranked slice, or — when the page being written has no card vector
-    /// of its own — its own wiki's pages, which is where its links most often
-    /// go and needs no arithmetic at all.
+    /// of its own — its own wiki's **biggest** pages, which is where its links
+    /// most often go and needs no arithmetic at all.
+    ///
+    /// The fallback arm is not the rare one: it is taken by every page created
+    /// in the run being compiled, and by every page after an embedder failure
+    /// — so the pages most in need of good links were the ones taking it. It
+    /// used to `take(40)` straight off the plan's `BTreeMap`, i.e.
+    /// alphabetically, which re-introduced inside this function the exact
+    /// ordering the function exists to abolish. Fact mass is the signal that
+    /// survives with no vector at all: a page carrying fifty facts is a
+    /// likelier destination than an empty one, and it is *importance*, which
+    /// is the axis the founder allowed where similarity is unavailable
+    /// (2026-08-09).
     fn selection_lines<'p>(
         plan: &'p CompilationPlan,
         page: &PagePlan,
@@ -2040,11 +2051,15 @@ impl PageIndex {
         // and where a list is cut, the order IS the selection.
         let picked: Vec<&'p PagePlan> = vectors.get(&page.slug).map_or_else(
             || {
-                plan.pages
+                let mut mine: Vec<&'p PagePlan> = plan
+                    .pages
                     .values()
                     .filter(|p| p.wiki_id == page.wiki_id && p.slug != page.slug)
-                    .take(CARD_INDEX_SELECTION_PAGES)
-                    .collect()
+                    .collect();
+                // Biggest first; the plan's own order breaks ties, so the same
+                // plan always yields the same slice.
+                mine.sort_by_key(|p| std::cmp::Reverse(p.primary_facts.len()));
+                mine.into_iter().take(CARD_INDEX_SELECTION_PAGES).collect()
             },
             |mine| {
                 let mut scored: Vec<(f32, &PagePlan)> = plan

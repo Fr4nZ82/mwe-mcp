@@ -236,10 +236,18 @@ halves of the write path: `fact_index` for the lists already on disk, and
 promoted yet. Serving only the first is exactly the gap that splits a list
 when two items are added inside one light-dream interval. Entries are
 deduplicated per page, ACL-filtered by the query (the three-axis
-`readable_by` predicate, shared with recall), capped at
-`max_list_pages_in_prompt`, and rendered as a page name plus the `holds`
-line recorded when the page was proposed — **never** the wiki it lives in,
-which stays the engine's business.
+`readable_by` predicate, shared with recall), ordered **most recently
+touched first**, capped at `max_list_pages_in_prompt`, and rendered as a page
+name plus the `holds` line recorded when the page was proposed — **never**
+the wiki it lives in, which stays the engine's business.
+
+**The order is the selection**, because this list is cut. It used to come off
+a `BTreeMap<(wiki_id, page)>`, so the cut fell alphabetically and a sender
+whose readable wikis sort late lost their lists first. Recency is the axis and
+not the turn's text: a per-turn ranking here was built and backed out the same
+day — *«è un cerotto su un guasto che sta a monte»* — because the fault it was
+patching was upstream. A list somebody wrote to this morning is the one *«add
+it to the shopping list»* means.
 
 **That cap and the product limit are two different things** (founder,
 2026-08-09). `max_list_pages_in_prompt` is a *scalability* cap on what one
@@ -1631,10 +1639,15 @@ The orchestrator fetches the pairs with
 [`enrollment::groups_with_scope_for`](../../crates/mwe-core/src/enrollment.rs)
 — the scope-carrying sibling of `groups_for` — in a single round-trip,
 and derives the bare-id [`SenderContext::sender_groups`] (used by the
-ACL paths) from the same result. The number of groups is capped at
-`policy.max_groups_in_prompt` (default 8) and each scope is truncated to
-`policy.max_group_scope_chars` (default 1000 — sized to keep the scope's
-exclusion clause, which is what teaches the model *not* to over-share).
+ACL paths) from the same result. **Every group is rendered** — the product
+limit is enforced where a group is created (`MAX_GROUPS_PER_USER`, 8), never
+by cutting the list when the prompt is built (founder, 2026-08-09) — and each
+scope is truncated to `policy.max_group_scope_chars` (default 1000 — sized to
+keep the scope's exclusion clause, which is what teaches the model *not* to
+over-share). The cut this replaced was worse than redundant: the builtin
+`global` row is appended to every sender and is not counted by that refusal,
+so a user in the maximum legal 8 groups always lost the one that sorted last,
+and the fact that belonged to its domain was filed private instead.
 A sender in no groups renders `sender_groups:\n  (none)`.
 
 The `owner_id` instructions in the bundled prompt body tell the model to
@@ -2053,9 +2066,12 @@ to a canonical `user_id` through this roster (matching id or any alias)
 and set `owner_id: "user:bob"` — **only** when that person appears in
 `known_users`. A reference to someone not enrolled stays under
 `user:<sender>` (a note the sender holds about a stranger), so the model
-can never mint an `owner_id` for a principal that does not exist. The
-roster is capped at `policy.max_users_in_prompt` (default 24, alphabetical
-by id) to bound the context budget on large deployments.
+can never mint an `owner_id` for a principal that does not exist. **The
+roster is not cut**: `MAX_ENROLLED_USERS` (24) refuses the 25th user at
+enrolment, which is where a product limit belongs. The alphabetical cut this
+replaced hid whoever sorts late, and losing a person from the roster does not
+lose the fact — it files the fact about them under the sender, a wrong answer
+that looks like a right one.
 
 Resolution is strictly **one-way**: it maps names and aliases the sender
 actually wrote onto roster entries, never the reverse. The prompt's
@@ -2181,10 +2197,8 @@ signature stays stable as the policy grows:
 | `dedup_threshold` | `recall::DEFAULT_DEDUP_THRESHOLD` (0.85) | Mirrors capture's default — a turn that paraphrases an existing fact should be deduped. |
 | `max_recent_messages` | 16 | The "keepTurns×2" sliding window — wide enough for coreference and the classifier's multi-fact split. The consumer owns the transcript and supplies the window via `IngestRequest.recent_messages`; this caps how much of it the prompt carries. |
 | `max_recent_message_chars` | 280 | One tweet-length per turn keeps the prompt compact. |
-| `max_list_pages_in_prompt` | 32 | Lists are few by nature; this bounds a pathological corpus, not an ordinary one. Past the cap a turn adding to a dropped list proposes a fresh name instead. |
-| `max_groups_in_prompt` | 8 | Cap on the `sender_groups` entries injected for group-scope routing; a sender in more groups gets the first 8 (alphabetical). |
+| `max_list_pages_in_prompt` | 32 | Lists are few by nature; this bounds a pathological corpus, not an ordinary one. The inventory is ordered newest-touched first, so past the cap the list dropped is the one nobody has written to in longest. |
 | `max_group_scope_chars` | 1000 | Per-group `scope` truncation — large enough to keep the scope's exclusion clause, bounded so a pathological scope can't blow the prompt budget. |
-| `max_users_in_prompt` | 24 | Cap on the `known_users` roster injected for cross-user attribution; a deployment with more enrolled users gets the first 24 (alphabetical by id). |
 | `default_page` | `notes.md` | The **buffer page** — where a fact lands when no page fits. Never the wiki's `index.md`: that page is the wiki's map (*where does a fact belong*), it holds no facts, and the read path never opens it. REM's reorg sweep drains `notes.md` onto real pages. |
 | `fallback_suggested_seed` | `"I've noted that."` | English placeholder; operator-overridable per deployment. |
 | `structural_suggested_seed` | `"This looks like a structural change — open the dashboard to continue."` | Same. |
@@ -2299,7 +2313,7 @@ self-healing on the next turn.)
   list + current message rendered, long recent message truncated with
   `…` sentinel, oldest messages dropped at policy cap, `sender_groups` +
   scope rendered with the no-scope placeholder, `(none)` when the sender
-  has no groups, group count capped at `max_groups_in_prompt`, recall
+  has no groups, every group rendered including the builtin `global`, recall
   `fact_id` emitted, and the `known_users` block — rendered with
   aliases and the `(none)` placeholder when the roster is empty.
 - **Snippet formatting**: 1 test (`(wiki_id) text` join).

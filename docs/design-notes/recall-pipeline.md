@@ -635,12 +635,19 @@ covering two of a two-person question scores ×1.15, three ×1.30:
 
 - **The turn's subjects** come from [`turn_subjects`]: the speaker when the
   first person puts them *in* the question, plus every enrolled person the
-  turn names. A match against the enrolled roster and its aliases — a set
-  lookup, **no model call** — on whole words, so `bobby` never answers for
-  `bob`. The first-person list deliberately excludes unstressed clitics:
-  in *"**mi** ricordi che macchina ha X?"* the speaker is the **addressee**,
-  not a subject, and admitting them would pull their unrelated facts into a
-  question about somebody else.
+  turn names, **in the order the turn names them**. A match against the
+  enrolled roster and its aliases — a set lookup, **no model call** — on whole
+  words, so `bobby` never answers for `bob`. Order matters downstream:
+  the identity cards are served from this list and cut at
+  `max_mentioned_cards` (2), so an alphabetical order would drop the same
+  person on every turn regardless of which one the question was built around.
+  The first-person list deliberately excludes unstressed clitics: in *"**mi**
+  ricordi che macchina ha X?"* the speaker is the **addressee**, not a
+  subject, and admitting them would pull their unrelated facts into a question
+  about somebody else. The English `I` is matched **with its case**, because
+  lowercased it is the Italian plural article — *«quali sono **i** piatti
+  preferiti di X?»* — which used to make the asker a subject of every such
+  turn.
 - **A fact's people** come from governance *and* content together —
   `owner`/`allow`/`sender` say who may read it, text and topics say who it
   names. Neither alone is aboutness: the measured answer is owned by one
@@ -1470,8 +1477,10 @@ table is the larger and the more regenerable of the two.
   dedup entirely.
 - Subject coverage, in [`recall`](../../crates/mwe-core/src/recall.rs): 6 —
   `turn_subjects` admits the speaker when the first person puts them in the
-  question and leaves them out when they are only addressed; an alias
-  matches but a substring never does; coverage is free below two subjects;
+  question and leaves them out when they are only addressed; the subjects come
+  back in mention order; the Italian article `i` is not the English pronoun;
+  an alias matches but a substring never does; coverage is free below two
+  subjects;
   a fact covering both subjects overtakes a closer one covering one; and
   the signal reorders without ever removing.
 - Link grammar: `recall.rs` pins `extract_wikilinks` (page hops kept,

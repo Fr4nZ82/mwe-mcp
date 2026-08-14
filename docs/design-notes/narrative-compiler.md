@@ -899,9 +899,12 @@ leaf, fed:
   listed. The compiler has **no embedder and does not grow one**: cards are
   embedded by `reindex::refresh_one_card`, and a card with no vector simply
   does not rank. A page with no vector of its own (new this run, no
-  description, an embedder that failed) falls back to its own wiki's pages.
-  The slice is rendered **nearest first**, never re-sorted by slug: where a
-  list is cut, the order is the selection;
+  description, an embedder that failed) falls back to its own wiki's pages
+  **ordered by fact mass, biggest first** — that arm is taken by every page
+  created in the run being compiled, so leaving it on the plan's slug order
+  handed an alphabetical slice to exactly the pages most in need of good
+  links. The slice is rendered **nearest first**, never re-sorted by slug:
+  where a list is cut, the order is the selection;
 - the recommended outgoing `[[wikilinks]]` from the plan's link graph;
 - the wiki's prose tone (`resolve_tone`, cached per wiki within a run): the
   `is_agent` marker first — an agent's own wiki is its **autobiography**, so

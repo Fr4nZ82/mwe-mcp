@@ -2466,8 +2466,26 @@ pub struct ListPage {
     pub description: Option<String>,
 }
 
+/// `(wiki, page)` → the first description seen and the latest timestamp — the
+/// working set [`list_pages_readable_by`] ranks its answer from.
+type ListPageAccumulator = std::collections::BTreeMap<(String, String), (Option<String>, String)>;
+
 /// Every `lista`-style page the reader may add to — promoted and still
-/// pending alike, deduplicated, oldest wiki first.
+/// pending alike, deduplicated, **most recently touched first**.
+///
+/// The order is the selection, because this list is cut. It used to come off
+/// a `BTreeMap<(wiki_id, page)>`, so the cut fell alphabetically and a
+/// sender whose readable wikis sort late lost their lists first — the exact
+/// shape the founder ruled out on 2026-08-09, and the costliest place to have
+/// it: a list the classifier cannot see is a list the turn mints a second copy
+/// of, live, in front of the user.
+///
+/// Recency is the right axis rather than the turn's text (a per-turn ranking
+/// here was built and backed out the same day — *«è un cerotto su un guasto
+/// che sta a monte»*). A list somebody wrote to this morning is the one
+/// *«add it to the shopping list»* means; a list untouched for months is the
+/// one that can be dropped without inventing a duplicate. Ties fall back to
+/// `(wiki_id, page)` so the result is stable for a given corpus.
 ///
 /// Both halves are needed and neither is redundant: `fact_index` holds the
 /// lists that already exist on disk, and `capture_buffer` holds a list
@@ -2497,17 +2515,17 @@ pub async fn list_pages_readable_by(
     // not yet. Both are selected and resolved in Rust — SQLite has no
     // basename, and the precedence is a judgement, not a string operation.
     let sql = format!(
-        "SELECT wiki_id, source_path, target_page, page_description \
+        "SELECT wiki_id, source_path, target_page, page_description, updated_at \
            FROM fact_index \
           WHERE style = 'lista' AND superseded_at IS NULL AND deleted_at IS NULL \
             AND {acl_facts} \
           UNION ALL \
-         SELECT wiki_id, '', target_page, page_description \
+         SELECT wiki_id, '', target_page, page_description, captured_at \
            FROM capture_buffer \
           WHERE style = 'lista' AND status = 'buffered' \
             AND {acl_buffer}"
     );
-    let mut q = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(&sql);
+    let mut q = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, String)>(&sql);
     for _ in 0..6 {
         for p in principals {
             q = q.bind(p.clone());
@@ -2516,23 +2534,30 @@ pub async fn list_pages_readable_by(
     let rows = q.fetch_all(pool).await?;
 
     // Deduplicate on (wiki, page). A list is one page however many facts sit
-    // on it, and the first non-empty description wins — a page whose
-    // description was only ever proposed on a later item still gets one.
-    let mut seen: std::collections::BTreeMap<(String, String), Option<String>> =
-        std::collections::BTreeMap::new();
-    for (wiki_id, source_path, target_page, description) in rows {
+    // on it: the first non-empty description wins — a page whose description
+    // was only ever proposed on a later item still gets one — and the LATEST
+    // timestamp wins, because a list is as recent as its most recent item.
+    // Timestamps are RFC-3339 from one clock, so they compare as strings.
+    let mut seen: ListPageAccumulator = std::collections::BTreeMap::new();
+    for (wiki_id, source_path, target_page, description, touched_at) in rows {
         let Some(page) = list_page_name(&source_path, target_page.as_deref()) else {
             continue;
         };
         let entry = seen.entry((wiki_id, page)).or_default();
-        if entry.is_none() {
-            *entry = description.filter(|d| !d.trim().is_empty());
+        if entry.0.is_none() {
+            entry.0 = description.filter(|d| !d.trim().is_empty());
+        }
+        if touched_at > entry.1 {
+            entry.1 = touched_at;
         }
     }
-    Ok(seen
+    // Newest first; the map's own (wiki, page) order breaks ties.
+    let mut ranked: Vec<_> = seen.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+    Ok(ranked
         .into_iter()
         .take(cap)
-        .map(|((wiki_id, page), description)| ListPage {
+        .map(|((wiki_id, page), (description, _))| ListPage {
             wiki_id,
             page,
             description,
@@ -3052,6 +3077,51 @@ mod tests {
         let hers = list_pages_readable_by(&pool, &carol, 32).await.unwrap();
         assert_eq!(hers.len(), 1, "{hers:?}");
         assert_eq!(hers[0].page, "da_leggere.md");
+    }
+
+    /// The inventory comes back newest-touched first, so the cut drops the
+    /// list nobody has written to in longest.
+    ///
+    /// It used to come straight off a `BTreeMap<(wiki_id, page)>`, so the cut
+    /// fell alphabetically: a sender whose readable wikis sort late lost their
+    /// lists first, on every turn — and a list the classifier cannot see is a
+    /// list the turn mints a second copy of, live, in front of the user.
+    #[tokio::test]
+    async fn list_inventory_ranks_by_recency_so_the_cut_drops_the_stalest() {
+        let pool = make_pool().await;
+        let plant = async |id: &str, wiki: &str, page: &str, at: &str| {
+            let mut f = sample_new_fact(id, wiki, "user:bob", "x");
+            f.source_path = format!("wikis/{wiki}/{page}");
+            f.style = Some("lista".to_owned());
+            f.owner_id = "user:bob".parse().unwrap();
+            f.sender_id = Some("user:bob".parse().unwrap());
+            insert_if_absent(&pool, &f).await.unwrap();
+            sqlx::query("UPDATE fact_index SET updated_at = ? WHERE fact_id = ?")
+                .bind(at)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        };
+        // `alfa` sorts first and is the stalest; `zulu` sorts last and is the
+        // one somebody wrote to this morning.
+        plant(SAMPLE_UUID_V7_1, "bob", "alfa.md", "2026-01-01T00:00:00Z").await;
+        plant(SAMPLE_UUID_V7_2, "bob", "mike.md", "2026-06-01T00:00:00Z").await;
+        plant(SAMPLE_UUID_V7_3, "bob", "zulu.md", "2026-08-14T09:00:00Z").await;
+
+        let bob = crate::acl::reader_principals("bob", &[]);
+        let pages = list_pages_readable_by(&pool, &bob, 32).await.unwrap();
+        assert_eq!(
+            pages.iter().map(|p| p.page.as_str()).collect::<Vec<_>>(),
+            vec!["zulu.md", "mike.md", "alfa.md"],
+            "most recently touched first"
+        );
+        let cut = list_pages_readable_by(&pool, &bob, 1).await.unwrap();
+        assert_eq!(
+            cut.iter().map(|p| p.page.as_str()).collect::<Vec<_>>(),
+            vec!["zulu.md"],
+            "and a cut keeps the live one, not the alphabetically lucky one"
+        );
     }
 
     /// A list created minutes ago is still in the buffer, and its fact's

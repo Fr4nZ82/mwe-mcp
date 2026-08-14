@@ -3090,7 +3090,6 @@ fn slug_kinship(a: &str, b: &str) -> bool {
 fn merge_candidates(
     plan: &CompilationPlan,
     duplicate_prose: &[(String, String, f32)],
-    cap: usize,
     family: &BTreeMap<String, String>,
 ) -> Vec<(String, String, String)> {
     fn eligible<'p>(plan: &'p CompilationPlan, slug: &str) -> Option<&'p PagePlan> {
@@ -3116,14 +3115,27 @@ fn merge_candidates(
             out.push((x.to_owned(), y.to_owned(), signal));
         }
     };
-    for (a, b, score) in duplicate_prose {
+    // Strongest signal first, and the whole list comes back: the caller
+    // spends its budget on pairs that actually reach a judgement.
+    //
+    // The prose pairs lead, ranked by how much text they share — that is a
+    // measured overlap, where kinship is only a name resembling a name. Both
+    // used to arrive in the plan's `BTreeMap` order, i.e. by slug, and the
+    // budget was then cut off the front of an alphabetical list.
+    let mut prose: Vec<&(String, String, f32)> = duplicate_prose.iter().collect();
+    prose.sort_by(|a, b| b.2.total_cmp(&a.2));
+    for (a, b, score) in prose {
         consider(a, b, format!("duplicate prose, jaccard {score:.2}"));
     }
-    let leaves: Vec<&PagePlan> = plan
+    // Heaviest pages first among the kin pairs: a pair carrying a hundred
+    // facts between them is a bigger duplication than a pair carrying three,
+    // and mass is the signal available without a second measurement.
+    let mut leaves: Vec<&PagePlan> = plan
         .pages
         .values()
         .filter(|p| p.page_type == PageType::ConceptLeaf && !p.primary_facts.is_empty())
         .collect();
+    leaves.sort_by_key(|p| std::cmp::Reverse(p.primary_facts.len()));
     for (i, p) in leaves.iter().enumerate() {
         for q in leaves.iter().skip(i + 1) {
             if same_family(&p.wiki_id, &q.wiki_id) && slug_kinship(&p.slug, &q.slug) {
@@ -3131,7 +3143,6 @@ fn merge_candidates(
             }
         }
     }
-    out.truncate(cap);
     out
 }
 
@@ -3139,15 +3150,45 @@ fn merge_candidates(
 /// orientation). An `applied` row means the merge is done or inside its
 /// revert window; a `reverted` row is the **operator's standing veto** —
 /// either way the pair is not re-judged.
-async fn merge_already_judged(pool: &SqlitePool, page_a: &str, page_b: &str) -> Result<bool> {
+///
+/// **Matched as whole JSON values, with the wiki, in one orientation or the
+/// other.** The predicate used to be two unanchored `LIKE '%<page>%'` over
+/// the whole context blob with no wiki at all, so any page name that is a
+/// substring of another silently inherited its verdict — once
+/// `lista_spesa.md` + `dispensa.md` had been judged anywhere on the machine,
+/// `spesa.md` + `dispensa.md` counted as judged, in every wiki, forever.
+/// A veto is meant to be an operator's decision about two specific pages;
+/// spreading it by substring makes it a decision about names nobody chose.
+async fn merge_already_judged(
+    pool: &SqlitePool,
+    wiki_a: &str,
+    page_a: &str,
+    wiki_b: &str,
+    page_b: &str,
+) -> Result<bool> {
+    // The context is a compact JSON object, so a `"key":"value"` fragment
+    // matches the whole value and nothing longer. One LIKE per key keeps this
+    // independent of the object's key order.
+    let field = |key: &str, value: &str| format!("%\"{key}\":\"{value}\"%");
     let n: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM structure_proposals
           WHERE kind = 'wiki_promote'
-            AND context LIKE '%page_merge%'
-            AND context LIKE ? AND context LIKE ?",
+            AND context LIKE '%\"variant\":\"page_merge\"%'
+            AND (
+                 (context LIKE ? AND context LIKE ? AND context LIKE ? AND context LIKE ?)
+              OR (context LIKE ? AND context LIKE ? AND context LIKE ? AND context LIKE ?)
+            )",
     )
-    .bind(format!("%{page_a}%"))
-    .bind(format!("%{page_b}%"))
+    // Orientation 1 — a was the husk, b the survivor.
+    .bind(field("source_wiki_id", wiki_a))
+    .bind(field("source_page", page_a))
+    .bind(field("target_wiki_id", wiki_b))
+    .bind(field("recommended_target_page", page_b))
+    // Orientation 2 — the other way round.
+    .bind(field("source_wiki_id", wiki_b))
+    .bind(field("source_page", page_b))
+    .bind(field("target_wiki_id", wiki_a))
+    .bind(field("recommended_target_page", page_a))
     .fetch_one(pool)
     .await?;
     Ok(n > 0)
@@ -3265,14 +3306,25 @@ async fn run_page_merge(
     let scopes = family_scopes(tree, smart_wiki_index)?;
     let agent_family = agent_families(&scopes);
     let family = family_roots(&scopes);
-    for (slug_a, slug_b, signal) in
-        merge_candidates(&plan, &duplicate_prose, policy.page_merge_cap, &family)
-    {
+    // The budget counts pairs that reach a JUDGEMENT, not pairs that reach
+    // the loop. It used to be applied inside `merge_candidates`, before the
+    // already-judged and settled filters ran, so a handful of pairs the
+    // operator had already vetoed filled it, were skipped without a call, and
+    // every mergeable pair behind them went unjudged on that night and every
+    // night after — while the report said `candidates_examined: 0` and raised
+    // no error.
+    let mut budget = policy.page_merge_cap;
+    for (slug_a, slug_b, signal) in merge_candidates(&plan, &duplicate_prose, &family) {
+        if budget == 0 {
+            break;
+        }
         // Both slugs come from `merge_candidates`, so the lookups hold.
         let (Some(pa), Some(pb)) = (plan.pages.get(&slug_a), plan.pages.get(&slug_b)) else {
             continue;
         };
-        if merge_already_judged(pool, &pa.page_path, &pb.page_path).await? {
+        if merge_already_judged(pool, &pa.wiki_id, &pa.page_path, &pb.wiki_id, &pb.page_path)
+            .await?
+        {
             report.skipped_judged += 1;
             continue;
         }
@@ -3285,6 +3337,7 @@ async fn run_page_merge(
         if rem_verdicts::is_settled(pool, rem_verdicts::kind::PAGE_MERGE, &memo_key).await? {
             continue;
         }
+        budget -= 1;
         report.candidates_examined += 1;
         let resp = llm
             .complete(
@@ -7825,9 +7878,17 @@ mod tests {
 
         // The pair is now judged: also the standing veto after a revert.
         assert!(
-            merge_already_judged(&pool, "viaggi.md", "viaggi_parigi.md")
+            merge_already_judged(&pool, "alice", "viaggi.md", "alice", "viaggi_parigi.md")
                 .await
                 .unwrap()
+        );
+        // …and only that pair: the veto is about two pages, not about every
+        // page whose name contains one of theirs.
+        assert!(
+            !merge_already_judged(&pool, "alice", "viaggi.md", "alice", "parigi.md")
+                .await
+                .unwrap(),
+            "a page whose name is a substring of the judged one is not judged"
         );
         drop(dir);
     }
@@ -7964,7 +8025,7 @@ mod tests {
         .into_iter()
         .map(|(a, b)| (a.to_owned(), b.to_owned()))
         .collect();
-        let got = merge_candidates(&plan, &[], 10, &family);
+        let got = merge_candidates(&plan, &[], &family);
         let pairs: Vec<(&str, &str)> = got
             .iter()
             .map(|(a, b, _)| (a.as_str(), b.as_str()))
@@ -7990,8 +8051,18 @@ mod tests {
                 .any(|(a, b)| *a == "viaggi_vuota" || *b == "viaggi_vuota"),
             "factless pages are not candidates: {pairs:?}"
         );
-        // The cap bounds the confirmation spend.
-        assert_eq!(merge_candidates(&plan, &[], 1, &family).len(), 1);
+        // No cap here any more: the whole list comes back and the caller
+        // spends its budget on the pairs that reach a judgement, so a handful
+        // of already-vetoed pairs can no longer consume the night's spend
+        // without a single call being made.
+        let all = merge_candidates(&plan, &[], &family);
+        let mass = |slug: &str| plan.pages[slug].primary_facts.len();
+        let heaviest_pair_mass = mass(&all[0].0) + mass(&all[0].1);
+        assert!(
+            all.iter()
+                .all(|(a, b, _)| mass(a) + mass(b) <= heaviest_pair_mass),
+            "the heaviest kin pair leads: {all:?}"
+        );
     }
 
     /// Pages opened together enough times, with no rail, are nominated —

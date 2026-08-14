@@ -575,9 +575,21 @@ per cycle:
    **page-name kinship** (a shared long slug token, `viaggi` /
    `viaggi_parigi_2026`, or a long common prefix, `presenze` /
    `presenza`). Nomination needs the persisted compilation plan; before
-   the first compile the sub-job is a no-op. Capped at
-   `policy.page_merge_cap` pairs per cycle (default 3, `0` disables) — a
-   **resource** cap on confirmation spend, not a semantic gate.
+   the first compile the sub-job is a no-op. **Strongest signal first**: the
+   prose pairs lead, ranked by how much text they share (a measured overlap,
+   where kinship is only a name resembling a name), then the kin pairs by the
+   combined fact mass of the two pages.
+
+   `policy.page_merge_cap` (default 3, `0` disables) is a **resource** cap on
+   confirmation spend, not a semantic gate — and it now counts the pairs that
+   reach a **judgement**. Applied at nomination it was spent by pairs the
+   already-judged and settled filters then skipped without a call, so a
+   handful of settled pairs starved every mergeable pair behind them, on that
+   night and every night after, while the report said
+   `candidates_examined: 0` and raised no error. The already-judged check also
+   matches whole JSON values with the wiki, in either orientation: as two
+   unanchored substrings it spread one operator veto to every page whose name
+   contained one of the judged names, in any wiki, forever.
 2. **Confirm** (the mandatory LLM call — a name resemblance is *never*
    sufficient): the `rem_dedup_semantic` slot judges the pair through the
    [`rem-merge` prompt](../../crates/mwe-core/prompts/rem-merge.md) — both

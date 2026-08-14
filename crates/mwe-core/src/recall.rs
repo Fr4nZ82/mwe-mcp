@@ -261,8 +261,24 @@ pub const SUBJECT_COVERAGE_UPLIFT: f32 = 0.15;
 const FIRST_PERSON: &[&str] = &[
     // Italian: subject pronoun, tonic object, possessives.
     "io", "me", "mio", "mia", "miei", "mie", // English.
-    "i", "my", "mine", "myself",
+    "my", "mine", "myself",
 ];
+
+/// The one first-person form that must be matched **with its case**.
+///
+/// English `I` and Italian `i` are the same token once lowercased, and `i`
+/// is the Italian masculine plural article — *«quali sono **i** piatti
+/// preferiti di bob?»*. Listed among the lowercase forms it put the
+/// SPEAKER among the subjects of ordinary Italian turns, which is the one
+/// thing [`FIRST_PERSON`]'s exclusions exist to prevent: it armed the
+/// two-subject path, ran the per-row mention scan, and up-ranked every fact
+/// naming the asker in a question about somebody else.
+///
+/// The trade is deliberate and one-sided: a lowercase English *«i like
+/// tea»* stops putting the speaker in, which costs a ranking nudge on a
+/// turn that is already about them, while the article fires on a large
+/// share of Italian turns.
+const FIRST_PERSON_CASED: &str = "I";
 
 /// Lowercased word tokens — the unit every name match works on, so none
 /// ever fires on a substring (`bobby` must not answer for `bob`).
@@ -281,29 +297,54 @@ fn names_of(user: &EnrolledUserLite) -> Vec<String> {
 }
 
 /// The people a turn is **about**: the speaker when the first person puts
-/// them in the question, plus every enrolled person the turn names.
+/// them in the question, plus every enrolled person the turn names —
+/// **in the order the turn names them**.
 ///
 /// A match against the roster, not a judgement — the enrolled identities
 /// are a short known list, so this costs a set lookup and **no model
 /// call**. The speaker's own identity is deterministic and free: the
 /// engine has it before it reads the turn.
+///
+/// The order is not cosmetic. This list is **cut** where the identity cards
+/// are served ([`IngestPolicy::max_mentioned_cards`], 2), and it used to come
+/// off a `BTreeSet`, so a turn naming three people served the two whose ids
+/// sort first — *«cosa preparo per Carol e Bob?»* would drop whoever
+/// loses the alphabet, on every turn, forever. Mention order says which
+/// person the question is built around, and where a list is cut the order IS
+/// the selection (founder, 2026-08-09).
 #[must_use]
-pub fn turn_subjects(
-    query: &str,
-    sender_id: &str,
-    roster: &[EnrolledUserLite],
-) -> std::collections::BTreeSet<String> {
-    let w = word_set(query);
-    let mut subjects = std::collections::BTreeSet::new();
-    if FIRST_PERSON.iter().any(|p| w.contains(*p)) {
-        subjects.insert(sender_id.to_lowercase());
+pub fn turn_subjects(query: &str, sender_id: &str, roster: &[EnrolledUserLite]) -> Vec<String> {
+    let raw: Vec<&str> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let lower: Vec<String> = raw.iter().map(|w| w.to_lowercase()).collect();
+    let at = |name: &str| lower.iter().position(|w| w == name);
+    let mut found: Vec<(usize, String)> = Vec::new();
+    let first_person = raw
+        .iter()
+        .position(|w| *w == FIRST_PERSON_CASED)
+        .into_iter()
+        .chain(FIRST_PERSON.iter().filter_map(|p| at(p)))
+        .min();
+    if let Some(pos) = first_person {
+        found.push((pos, sender_id.to_lowercase()));
     }
     for u in roster {
-        if names_of(u).iter().any(|n| w.contains(n)) {
-            subjects.insert(u.user_id.to_lowercase());
+        if let Some(pos) = names_of(u).iter().filter_map(|n| at(n)).min() {
+            found.push((pos, u.user_id.to_lowercase()));
         }
     }
-    subjects
+    // Earliest mention first; a subject named twice, or named and also the
+    // speaker, keeps its earliest position and appears once.
+    found.sort_by_key(|(pos, _)| *pos);
+    let mut out: Vec<String> = Vec::with_capacity(found.len());
+    for (_, id) in found {
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
 }
 
 /// The people a fact is **about** — governance and content together,
@@ -349,13 +390,18 @@ fn fact_mentions(
 /// name two people, and the other 139 pay one comparison.
 fn coverage_multiplier(
     row: &FactIndexRow,
-    subjects: &std::collections::BTreeSet<String>,
+    subjects: &[String],
     roster: &[EnrolledUserLite],
 ) -> f32 {
     if subjects.len() < 2 {
         return 1.0;
     }
-    let covered = fact_mentions(row, roster).intersection(subjects).count();
+    // Order carries no meaning here — this is the ranking half, and the
+    // subject list is roster-bounded, so a scan is a set lookup.
+    let covered = fact_mentions(row, roster)
+        .iter()
+        .filter(|m| subjects.contains(m))
+        .count();
     // The count is bounded by the enrolled roster, so the cast is exact.
     #[allow(clippy::cast_precision_loss, reason = "roster-bounded, far below 2^23")]
     let extra = covered.saturating_sub(1) as f32;
@@ -723,7 +769,7 @@ fn score_and_filter(
     candidates: Vec<FactIndexRow>,
     sender: &SenderContext,
     top_k: usize,
-    subjects: &std::collections::BTreeSet<String>,
+    subjects: &[String],
     roster: &[EnrolledUserLite],
 ) -> Vec<RecallHit> {
     // The down-rank anchors on the engine wall-clock. (A backlog replay
@@ -2351,7 +2397,6 @@ pub fn extract_wikilink_wiki_ids(body: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
 
     // ---------- normalise ----------
 
@@ -3004,7 +3049,7 @@ mod tests {
             vec![row3, row1.clone(), row2.clone()],
             &SenderContext::anonymous(),
             2,
-            &BTreeSet::new(),
+            &[],
             &[],
         );
         assert_eq!(hits.len(), 2);
@@ -3031,8 +3076,11 @@ mod tests {
     #[test]
     fn turn_subjects_puts_the_speaker_in_when_the_first_person_does() {
         let s = turn_subjects("what music do bob and I like?", "alice", &roster());
-        assert!(s.contains("alice"), "{s:?}");
-        assert!(s.contains("bob"), "{s:?}");
+        assert_eq!(
+            s,
+            vec!["bob", "alice"],
+            "in the order the turn names them: {s:?}"
+        );
     }
 
     /// The exclusion that keeps this signal honest: an unstressed clitic
@@ -3041,13 +3089,52 @@ mod tests {
     #[test]
     fn turn_subjects_leaves_the_speaker_out_when_they_are_only_addressed() {
         let s = turn_subjects("mi ricordi che macchina ha bob?", "alice", &roster());
-        assert_eq!(s.iter().collect::<Vec<_>>(), vec!["bob"], "{s:?}");
+        assert_eq!(s, vec!["bob"], "{s:?}");
+    }
+
+    /// Mention order, because this list is cut at two where the cards are
+    /// served: an alphabetical order would drop the same person on every
+    /// turn, whichever one the question was built around.
+    #[test]
+    fn turn_subjects_come_back_in_the_order_the_turn_names_them() {
+        let roster = vec![person("alice", &[]), person("bob", &[]), person("zoe", &[])];
+        assert_eq!(
+            turn_subjects("cosa preparo per zoe e bob?", "carla", &roster),
+            vec!["zoe", "bob"],
+            "the question is built around zoe"
+        );
+        assert_eq!(
+            turn_subjects("cosa preparo per bob e zoe?", "carla", &roster),
+            vec!["bob", "zoe"],
+            "and the same names in the other order come back in that order"
+        );
+    }
+
+    /// `i` is the Italian plural article, not the English pronoun.
+    ///
+    /// Lowercased together they were the same token, so *«quali sono i piatti
+    /// preferiti di bob?»* put the asker among the subjects of a question
+    /// about somebody else — arming the two-subject path and up-ranking every
+    /// fact that names them.
+    #[test]
+    fn the_italian_article_i_does_not_make_the_asker_a_subject() {
+        let roster = vec![person("alice", &[]), person("bob", &[])];
+        assert_eq!(
+            turn_subjects("quali sono i piatti preferiti di bob?", "alice", &roster),
+            vec!["bob"],
+            "the article is not the speaker"
+        );
+        assert_eq!(
+            turn_subjects("what do bob and I cook?", "alice", &roster),
+            vec!["bob", "alice"],
+            "the capitalised English pronoun still does"
+        );
     }
 
     #[test]
     fn turn_subjects_matches_an_alias_but_never_a_substring() {
         let by_alias = turn_subjects("is bobby coming?", "alice", &roster());
-        assert!(by_alias.contains("bob"), "{by_alias:?}");
+        assert_eq!(by_alias, vec!["bob"], "{by_alias:?}");
         let substring = turn_subjects("bobsleigh practice", "alice", &roster());
         assert!(substring.is_empty(), "{substring:?}");
     }
@@ -3061,11 +3148,9 @@ mod tests {
             "bob and alice went out",
         );
         row.topics = vec!["bob".to_owned()];
-        let one: BTreeSet<String> = std::iter::once("bob".to_owned()).collect();
+        let one = vec!["bob".to_owned()];
         assert!((coverage_multiplier(&row, &one, &roster()) - 1.0).abs() < f32::EPSILON);
-        assert!(
-            (coverage_multiplier(&row, &BTreeSet::new(), &roster()) - 1.0).abs() < f32::EPSILON
-        );
+        assert!((coverage_multiplier(&row, &[], &roster()) - 1.0).abs() < f32::EPSILON);
     }
 
     /// The measured case in miniature: a fact naming BOTH people of a
@@ -3090,8 +3175,7 @@ mod tests {
         both.embedding = vec![0.95, 0.31]; // the worse cosine
         both.topics = vec!["bob".to_owned()];
 
-        let subjects: BTreeSet<String> =
-            ["alice".to_owned(), "bob".to_owned()].into_iter().collect();
+        let subjects = vec!["alice".to_owned(), "bob".to_owned()];
         let sender = SenderContext {
             sender_id: "alice".to_owned(),
             sender_groups: vec![],
@@ -3103,7 +3187,7 @@ mod tests {
             vec![single.clone(), both.clone()],
             &sender,
             2,
-            &BTreeSet::new(),
+            &[],
             &roster(),
         );
         assert_eq!(
@@ -3145,8 +3229,7 @@ mod tests {
             "alice and bob together",
         );
         covered.embedding = vec![0.9, 0.44];
-        let subjects: BTreeSet<String> =
-            ["alice".to_owned(), "bob".to_owned()].into_iter().collect();
+        let subjects = vec!["alice".to_owned(), "bob".to_owned()];
         let out = score_and_filter(
             &query,
             vec![uncovered, covered],
@@ -3181,7 +3264,7 @@ mod tests {
             vec![row_public.clone(), row_private],
             &bob,
             10,
-            &BTreeSet::new(),
+            &[],
             &[],
         );
         assert_eq!(hits.len(), 1, "private row must drop out");
@@ -3191,14 +3274,7 @@ mod tests {
     #[test]
     fn score_and_filter_empty_input_returns_empty() {
         let q = vec![1.0_f32, 0.0];
-        let out = score_and_filter(
-            &q,
-            Vec::new(),
-            &SenderContext::anonymous(),
-            5,
-            &BTreeSet::new(),
-            &[],
-        );
+        let out = score_and_filter(&q, Vec::new(), &SenderContext::anonymous(), 5, &[], &[]);
         assert!(out.is_empty());
     }
 

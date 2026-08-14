@@ -462,22 +462,12 @@ pub struct IngestPolicy {
     /// list proposes a fresh name instead — the cost of raising it is prompt
     /// weight on every turn. See [`fact_index::list_pages_readable_by`].
     pub max_list_pages_in_prompt: usize,
-    /// Cap on the groups enumerated in the prompt's `sender_groups`
-    /// section (scope routing). A sender in more groups than this
-    /// gets the first `max_groups_in_prompt` (alphabetical by id);
-    /// keeps the context budget bounded on the hot 9B workhorse path.
-    pub max_groups_in_prompt: usize,
     /// Per-group character cap on the `scope` prose injected into the
     /// `sender_groups` section. Sized to fit a rich scope — including
     /// its exclusion clause ("NOT: personal facts …"), which is what
     /// teaches the classifier *not* to over-share — without letting a
     /// pathological scope blow the prompt budget.
     pub max_group_scope_chars: usize,
-    /// Cap on the enrolled users enumerated in the prompt's `known_users`
-    /// section (cross-user attribution). Bounds the roster the classifier
-    /// sees on large deployments; the first `max_users_in_prompt` (alphabetical
-    /// by id) are injected.
-    pub max_users_in_prompt: usize,
     /// Character cap on the sender's `rules.md` policy injected into the
     /// prompt's `sender_rules` section. Bounds a pathological
     /// hand-edited policy from blowing the prompt budget; a normal policy
@@ -586,9 +576,7 @@ impl Default for IngestPolicy {
             max_recent_messages: 16,
             max_recent_message_chars: 280,
             max_list_pages_in_prompt: 32,
-            max_groups_in_prompt: 8,
             max_group_scope_chars: 1_000,
-            max_users_in_prompt: 24,
             max_sender_rules_chars: 1_500,
             max_agent_identity_chars: 900,
             max_agent_history_chars: 1_400,
@@ -3653,14 +3641,15 @@ fn build_prompt(
     if sender_groups.is_empty() {
         out.push_str("  (none)\n");
     } else {
-        // Same class as the roster above: a product limit, to be enforced when
-        // a user is added to their ninth group. Audible until then.
-        warn_if_capped(
-            "sender_groups",
-            sender_groups.len(),
-            policy.max_groups_in_prompt,
-        );
-        for (id, scope) in sender_groups.iter().take(policy.max_groups_in_prompt) {
+        // NOT cut. `MAX_GROUPS_PER_USER` refuses the ninth group where it is
+        // created (`enrollment::mirror_to_db`, 2026-08-09), and a product
+        // limit is enforced there, "never by cutting the list when the prompt
+        // is built" (founder). The cut this replaced was worse than
+        // redundant: the builtin `global` row is appended to every sender and
+        // is not counted by that refusal, so a user in the maximum legal 8
+        // groups lost one on every turn — the one that sorted last, silently,
+        // and with it the group domain that fact should have been routed to.
+        for (id, scope) in sender_groups {
             out.push_str("  - id: ");
             out.push_str(id);
             out.push_str("\n    scope: ");
@@ -3702,13 +3691,13 @@ fn build_prompt(
     if known_users.is_empty() {
         out.push_str("  (none)\n");
     } else {
-        // These three caps are PRODUCT limits, not scalability ones (founder,
-        // 2026-08-09): the right enforcement is a refusal when the 25th user
-        // is enrolled, not a silent cut here. Until that exists the cut at
-        // least stops being silent — an alphabetical truncation hides whoever
-        // sorts late, and the fact is then filed under the sender instead.
-        warn_if_capped("known_users", known_users.len(), policy.max_users_in_prompt);
-        for u in known_users.iter().take(policy.max_users_in_prompt) {
+        // NOT cut, for the same reason as `sender_groups` above:
+        // `MAX_ENROLLED_USERS` refuses the 25th user at enrolment. The cut
+        // here was alphabetical, so it hid whoever sorts late — and losing a
+        // person from this roster does not lose the fact, it files the fact
+        // about them under the sender instead, which is a wrong answer that
+        // looks like a right one.
+        for u in known_users {
             out.push_str("  - id: ");
             out.push_str(&u.user_id);
             if !u.aliases.is_empty() {
@@ -6068,11 +6057,15 @@ pub async fn wiki_ingest_message(
     // an empty inventory — a turn that cannot read it still captures, it just
     // proposes a fresh name.
     // Fetched UNCAPPED: the store's job is to say what this sender may read,
-    // the prompt's job is to decide what fits. Capping here meant capping in
-    // `(wiki_id, page)` order — alphabetically — so the shopping list of a
-    // wiki whose id sorts late was simply absent, and the classifier, seeing
-    // no such list, minted a second one live in front of the user.
-    // `build_prompt` now applies the cap with the turn's text in hand.
+    // the prompt's job is to decide what fits. What makes the cut safe is the
+    // ORDER the store returns — most recently touched first — so the 33rd
+    // list `build_prompt` drops is the one nobody has written to in longest,
+    // not the one whose wiki id sorts late.
+    //
+    // ⚠️ This comment used to claim the cap moved here "with the turn's text
+    // in hand". That ranking was built and backed out the same day — the
+    // founder's own correction, *«è un cerotto su un guasto che sta a
+    // monte»* — and the sentence outlived it by five days.
     let list_pages = match fact_index::list_pages_readable_by(
         pool,
         &crate::acl::reader_principals(&sender_ctx.sender_id, &sender_ctx.sender_groups),
@@ -9174,18 +9167,25 @@ mod tests {
         assert!(prompt.contains("sender_groups:\n  (none)"));
     }
 
-    /// The number of groups injected is bounded by policy so a sender in
-    /// many groups cannot blow the workhorse context budget.
+    /// Every group the sender is in reaches the prompt — the roster is not
+    /// cut here, and the builtin `global` row costs nobody a real group.
+    ///
+    /// `MAX_GROUPS_PER_USER` refuses the ninth group where a group is
+    /// created, and a product limit is enforced there, never by cutting the
+    /// list when the prompt is built (founder, 2026-08-09). The cut this
+    /// replaced was worse than redundant: `global` is appended to every
+    /// sender and is not counted by that refusal, so a user in the maximum
+    /// legal 8 groups always lost the one that sorted last — and the fact
+    /// that should have been routed to that group's domain was filed private
+    /// instead.
     #[test]
-    fn build_prompt_caps_sender_groups_at_policy() {
+    fn build_prompt_shows_every_group_including_the_builtin() {
         let request = req("now", "alice");
-        let policy = IngestPolicy {
-            max_groups_in_prompt: 2,
-            ..IngestPolicy::default()
-        };
-        let groups: Vec<(String, Option<String>)> = (0..5)
+        let mut groups: Vec<(String, Option<String>)> = (0..enrollment::MAX_GROUPS_PER_USER)
             .map(|i| (format!("g{i}"), Some(format!("scope {i}"))))
             .collect();
+        // The builtin, exactly as the caller appends it: one row past the cap.
+        groups.push(("global".to_owned(), None));
         let prompt = build_prompt(
             &request,
             &[],
@@ -9195,11 +9195,14 @@ mod tests {
             None,
             None,
             now_fixture(),
-            &policy,
+            &IngestPolicy::default(),
         );
-        assert!(prompt.contains("- id: g0"));
-        assert!(prompt.contains("- id: g1"));
-        assert!(!prompt.contains("- id: g2"));
+        for (id, _) in &groups {
+            assert!(
+                prompt.contains(&format!("- id: {id}")),
+                "{id} reached the prompt: {prompt}"
+            );
+        }
     }
 
     #[test]
