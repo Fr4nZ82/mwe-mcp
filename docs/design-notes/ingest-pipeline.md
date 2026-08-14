@@ -2217,7 +2217,7 @@ signature stays stable as the policy grows:
 
 | Knob | Default | Why |
 |---|---|---|
-| `recall_top_k` | 5 | Enough context for the LLM, small enough not to blow the prompt budget. |
+| `recall_top_k` | 10 | Enough context for the LLM, small enough not to blow the prompt budget. It also sizes the navigator's **fan** (the flat hits' home pages seed the entry points), so it is not only a block-size knob — see [recall-pipeline.md](recall-pipeline.md). |
 | `dedup_threshold` | `recall::DEFAULT_DEDUP_THRESHOLD` (0.85) | Mirrors capture's default — a turn that paraphrases an existing fact should be deduped. |
 | `max_recent_messages` | 16 | The "keepTurns×2" sliding window — wide enough for coreference and the classifier's multi-fact split. The consumer owns the transcript and supplies the window via `IngestRequest.recent_messages`; this caps how much of it the prompt carries. |
 | `max_recent_message_chars` | 280 | One tweet-length per turn keeps the prompt compact. |
