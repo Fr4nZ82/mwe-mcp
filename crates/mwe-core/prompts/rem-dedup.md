@@ -1,8 +1,8 @@
 ---
 name: rem-dedup
 description: REM revisor — binary dedup confirmer between two facts (pair nominated by the jaccard band or the embedding-cosine channel), each shown with the page it lives on
-version: 1.4
-default_version_at_bootstrap: v1.4
+version: 1.5
+default_version_at_bootstrap: v1.5
 ---
 
 # Prompt: rem-dedup
@@ -68,8 +68,24 @@ information).
 | `max_tokens` | `60` | Reply is 18-20 tokens (`{"same": true}` / `{"same": false}`); 60 is comfortable headroom. |
 | `think:false` | implicit | Applies when the revisor slot runs on a local Qwen 3.x backend (the local-workhorse profiles reuse the already-loaded workhorse for this slot); see the REM cycle page, runtime section. |
 
-**Upstream filter** (decides when the model sees the prompt at all):
-either deterministic nomination channel — the surface jaccard 6-gram
+**Upstream filter** (decides when the model sees the prompt at all).
+Four **structural** gates run first, and the model never sees what they
+refuse — a rule it could weigh is a rule that fails on the day it matters:
+
+- the two facts must sit on the same **class** of page (a channel page
+  never pairs with an ordinary one);
+- a **rules-page** fact is never a candidate — a standing directive leaves
+  the channel only by supersede, tombstone or its owner's own closure;
+- the would-be loser is never **identity-core** (`bio` + `salience: high`):
+  a role or a relationship is changed by an explicit correction, never
+  consolidated away in the background;
+- the two **reader sets** must be identical (`owner ∪ allow ∪ sender`). Same
+  content told by two people, or readable by two audiences, is two facts;
+  merging them retires one principal's memory and leaves the survivor
+  addressing the other's readers, with the loser's bytes gone from the page
+  and no undo (founder, 2026-07-28).
+
+Then the similarity nomination — the surface jaccard 6-gram
 band, `policy.revisor_jaccard_min` (default `0.45`) ≤ score <
 `policy.revisor_jaccard_max` (default `DEFAULT_DEDUP_THRESHOLD`), or
 the semantic embedding floor, cosine ≥ `policy.revisor_cosine_min`
@@ -88,7 +104,7 @@ merges applied per cycle, the rest waiting for the next cycle.
 You are the REM dedup confirmer for mwe-mcp.
 Two facts follow, each with the wiki page it lives on. Decide if they encode the *same* fact (paraphrase / restatement / very minor delta).
 The page frames the subject: compiled prose routinely elides a subject the page itself establishes — "Born on 23 May 1984" on a person's own page states THAT person's birth date. Resolve such elisions against each fact's page before judging; two facts whose claims coincide once each subject is resolved ARE the same fact — INCLUDING when they live on different pages or wikis of the same family. Same page is NOT a precondition.
-Example (split identity across pages, the flagship case): A = "He is Franz's father" on the family wiki's own page, B = "Bruno is Franz's father" on Bruno's sub-wiki page. Once each page's subject is resolved they state the SAME fact — the family scope pairs them across the two pages, so answer {"same": true}.
+Example (split subject across pages, the flagship case): A = "He trains on Tuesday evenings" on Bruno's own page, B = "Bruno's karate class is on Tuesday evening" on the family wiki's sports page. Once each page's subject is resolved they state the SAME fact — the family scope pairs them across the two pages, so answer {"same": true}. (A ROLE or a RELATIONSHIP — "Bruno is Franz's father" — never reaches you: the engine keeps identity-core facts out of background dedup, so they change only by an explicit correction.)
 {subject_note}
 Reply STRICT JSON: {"same": true} or {"same": false}. No prose.
 

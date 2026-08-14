@@ -1698,8 +1698,16 @@ per-message.
 sender's identity wiki, read the page's free prose — fact regions
 stripped, so a user-global behaviour rule is never injected as policy or
 twice; absent/unreadable/no prose → `None`) and
-`build_prompt` injects it as a `sender_rules:` section (truncated to
-`policy.max_sender_rules_chars`, default 1500; `(none)` when absent). The
+`build_prompt` injects it as a `sender_rules:` section **whole**; `(none)`
+when absent. Not truncated, and that is the point: the prompt calls this the
+sender's policy *«in full»*, under the standing rule that a slot may act
+against a set it is shown COMPLETE and never against a sample — and this is
+the block that carries governance. It used to be cut at
+`policy.max_sender_rules_chars` (1500), mid-word, with nothing logged: a user
+whose `rules.md` had grown past it, and whose last line was *«i fatti sulla
+mia salute restano privati»*, had that rule dropped while the prompt told the
+model it had seen everything. The number survives as the point where an
+unusually long policy is worth a `warn!`, since it costs every turn. The
 bundled prompt body tells the model to **honour the privacy/sharing rules
 when it assigns each fact's `owner_id`/`allow_ids`** — an explicit user
 rule ("keep health private", "always share X with the family")

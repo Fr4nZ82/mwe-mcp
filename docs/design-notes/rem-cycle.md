@@ -267,6 +267,16 @@ For each **family line** ([family scope](#family-scope--the-consolidation-passes
    channel invariant, not a semantic gate — same-page pairs still go to
    the LLM.
 
+   **And never when the side that would lose is identity-core** (`bio` +
+   `salience: high` — a role, a relationship,
+   [`FactIndexRow::is_identity_core`](../../crates/mwe-core/src/fact_index.rs)).
+   Background dedup does not retire what the owner's always-on identity core
+   is made of: *«Frodo is Galadriel's partner»* changes by an explicit
+   correction or not at all. Same shape as the two fences above — structural,
+   ahead of the model. It also means the flagship worked example the prompt
+   used to teach (two spellings of a parent relationship) could never reach
+   the model at all; the prompt now teaches a case that can.
+
    🚨 **And nominable only when both sides have the same AUDIENCE.** Same
    content is **not** the same fact: a claim that reached two people by two
    private routes, each holding it privately, is two facts. Merging them
@@ -407,8 +417,12 @@ whole wiki (not one per page):
    size is not this rung's business.
 3. Ask the `rem_promotions` LLM (`rem-page-grouping` prompt) with the
    page **inventory** — name, active-fact count, and up to two verbatim
-   excerpts per page — plus the existing sub-wikis and their `_meta`
-   summaries. The inventory deliberately carries excerpts rather than the
+   excerpts per page — plus the existing sub-wikis, their `_meta`
+   summaries and their own page counts. **Both counts exclude the map**,
+   so the two numbers the model is asked to weigh against each other are
+   the same measurement: the child count used to include each sub-wiki's
+   `index.md` while the parent's never did, so every child read one page
+   larger than it was, against a floor. The inventory deliberately carries excerpts rather than the
    stored `page_description`: that field is written per fact at routing
    time and drifts (in a live corpus it routinely describes a
    neighbouring page, and mixes languages), and a wrong label is worse
@@ -989,14 +1003,24 @@ later.
    [`rem-dates`](../../crates/mwe-core/prompts/rem-dates.md) prompt
    receives the flagged facts — oldest first, capped by
    `policy.date_normalize_cap` (default 16; `0` disables) — each with
-   its own capture instant, and resolves every relative phrase against
-   **that fact's** date, never against tonight. The anchor fed per fact
-   is the **semantic** capture instant: `valid_from` (the stored
-   projection of the turn's `occurred_at` clock) when present,
-   `created_at` only as fallback — a replayed or backfilled fact
-   resolves "oggi" against the day it was *uttered*, not the wall-clock
-   day its row was inserted. Everything else in the
-   text must stay identical; omitting a fact is always safe.
+   the instant it was **said**, and resolves every relative phrase
+   against *that* date, never against tonight. The anchor is the
+   **earlier** of the row's two clocks, because neither alone is right:
+   `created_at` is the write instant — correct live, and on a replay it
+   is the replay run's own wall clock; `valid_from` is the semantic
+   clock ingest deduces against `occurred_at` — correct on a replay, and
+   wrong when the classifier stamped a real **future** start (*«da
+   luglio lavoro a Milano»*), which the engine defines as the start of
+   holding rather than the moment of speaking. Taking `valid_from`
+   outright, which this pass did while calling it "the capture instant",
+   resolved a future-dated fact's *«oggi»* against a day that had not
+   happened yet. Everything else in the text must stay identical;
+   omitting a fact is always safe.
+
+   The batch reaching one call is cut to **one wiki** — this pass rewrites
+   text a person reads, so the language directive has to be true for every
+   item in it — while `date_normalize_cap` is the per-cycle budget over the
+   whole flagged set.
 3. **Apply**: each accepted rewrite (batch-membership checked, marker
    characters refused, no-op skipped) is re-embedded and written
    in place via `fact_index::update_region` — offsets kept, ACL

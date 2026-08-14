@@ -17,8 +17,9 @@ the bundled default embedded by `include_str!` is the floor; an override at
 
 - **Call site**: `crates/mwe-core/src/recall_nav.rs::extract_query_seeds` —
   the `wiki_navigate` tool's seed cascade, fallback **B**: used when the caller
-  supplies no explicit `topics`/`owners` (**C**), and before degrading to
-  principal + RAG seeds only (**A**). One completion per `wiki_navigate` call,
+  supplies no explicit `topics`/`owners` (**C**), and before degrading to the
+  flat RAG hits alone (**A**, journalled as `rag_only`) — the `Principal`
+  seed family that rung was named after was deleted on 2026-08-03. One completion per `wiki_navigate` call,
   not one per hop. Ingest gets these seeds from its classifier; the standalone
   search tool has no classifier in the loop, so this is a small dedicated
   extraction, not the heavy ingest classifier.

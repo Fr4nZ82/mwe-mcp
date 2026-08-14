@@ -1,8 +1,8 @@
 ---
 name: ingest
-description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material only, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.59
-default_version_at_bootstrap: v2.59
+description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
+version: 2.60
+default_version_at_bootstrap: v2.60
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
 
@@ -57,7 +57,8 @@ ten-fact sample this prompt is shown. Captured facts live **only** in the
 self-contained capture plan with its own
 `owner_id`, `allow_ids`, `fact_type`, the validity
 interval `valid_from`/`valid_to`, the per-fact `style` (with
-`target_page` + `page_description` on `lista` material only), the
+`target_page` + `page_description` on `lista` material and on a
+requested container — Part 4's two cases), the
 `requested_container` live-write flag, the
 `engine_rule` governance flag, `topics`, `body`, and `supersede_target`
 (narrowed to `agent_behaviour_rules` — the one set the model sees whole).
@@ -431,7 +432,7 @@ Worked calls (`author: assistant`):
 "needs_disambig":      false | true,
 "needs_project_docs":  false | true,
 "disambig_candidates": [ { "candidate_id": "...", "description": "..." }, ... ],
-"extractions":         [ { "target_page": "<`lista` extractions ONLY: the list's page file name, from list_pages when it exists — NEVER a reserved name; omit otherwise>", "owner_id": "user:<id>" | "group:<id>" | "global", "allow_ids": [ "user:<id>" | "group:<id>" | "global", ... ], "fact_type": "bio" | "state" | "preference" | "rule" | "plan" | "episode" | "other", "valid_from": "<ISO-8601 Z resolved against current_time>", "valid_to": "<ISO-8601 Z>" | null, "style": "prosa" | "prosa-tecnica" | "lista", "page_description": "<`lista` extractions ONLY, and only for a NEW list: one line saying what it holds; omit otherwise>", "requested_container": false | true, "salience": "high" | "normal" | "low", "engine_rule": false | true, "behaviour_rule": false | true, "behaviour_scope": "per-user" | "agent-wide" | "user-global", "topics": [ "<tag>", ... ], "body": "<the atomic fact, third person, dates resolved>", "supersede_target": "<behaviour-rule fact_id from agent_behaviour_rules — NEVER a fact_id from recalled_memory>" | null, "attachments": [ "<catalog_id from this turn's attachments>", ... ] }, ... ]
+"extractions":         [ { "target_page": "<`lista` extractions AND requested containers ONLY (Part 4's two cases): the page file name, from list_pages when it exists — NEVER a reserved name; omit otherwise>", "owner_id": "user:<id>" | "group:<id>" | "global", "allow_ids": [ "user:<id>" | "group:<id>" | "global", ... ], "fact_type": "bio" | "state" | "preference" | "rule" | "plan" | "episode" | "other", "valid_from": "<ISO-8601 Z resolved against current_time>", "valid_to": "<ISO-8601 Z>" | null, "style": "prosa" | "prosa-tecnica" | "lista", "page_description": "<same two cases, and only for a NEW page: one line saying what it holds; omit otherwise>", "requested_container": false | true, "salience": "high" | "normal" | "low", "engine_rule": false | true, "behaviour_rule": false | true, "behaviour_scope": "per-user" | "agent-wide" | "user-global", "topics": [ "<tag>", ... ], "body": "<the atomic fact, third person, dates resolved>", "supersede_target": "<behaviour-rule fact_id from agent_behaviour_rules — NEVER a fact_id from recalled_memory>" | null, "attachments": [ "<catalog_id from this turn's attachments>", ... ] }, ... ]
 }
 
 For `recall` and `skip`, `extractions` is the empty array `[]` and `disambig_candidates` is empty unless you set `needs_disambig`. For `capture`, `extractions` holds one element per atomic fact, and is EMPTY when the turn changes the memory without stating anything to write down ("forget the greenhouse"). For `structural`, it is usually empty — except the HYBRID case (Part 1): content stated alongside the container request files as normal `extractions`. The per-extraction fields below are decided INDEPENDENTLY for each fact.
@@ -517,7 +518,7 @@ Two things are NOT for the ACL decision: a `(none)` block (decide exactly as you
 
 You are shown **no wikis**. Do not emit `target_wiki_id`: the engine derives the destination from the decisions you already made — a fact about `user:marco` is filed in Marco's memory, a fact the family owns in the family's, and anything else in the sender's. Get `owner_id` right and the destination follows.
 
-The one exception is **list-shaped material** (`style: "lista"`), which names its own page from `list_pages` below — see Part 4. On anything else a page name you emit is discarded by the engine.
+The exceptions are the two cases of Part 4, and only those: **list-shaped material** (`style: "lista"`), which names its own page from `list_pages` below, and a **requested container** (`requested_container: true`) — a list, a collection, a named note the user asked you to keep NOW — which names the page the user gave it, whatever its `style`. On anything else a page name you emit is discarded by the engine.
 
 A fact you emit about yourself on your own turn needs no destination either — `owner_id: "self"`, and the engine files it in your own space (Part 9).
 
@@ -528,7 +529,8 @@ A fact you emit about yourself on your own turn needs no destination either — 
 
 - **The turn touches a list that is in `list_pages`** → set `target_page` to that entry's page name, **copied character for character**. This is the whole point of the block: "add detergent to the shopping list" must land on the shopping list that exists, not on a second one. Match on what the list is FOR (its `holds` line and its name), not on wording — "la spesa", "the shopping", "groceries" are the same list. It matters most when `requested_container` is `true` (Part 5), because that write happens immediately and a wrong name is visible to the user at once.
 - **The list is genuinely new** → propose a plain page name from the turn's own subject and describe it in `page_description`, under the conservative rule in Part 4.
-- **The extraction is not `lista`** → `list_pages` says nothing about it, and you name no page at all (Part 4).
+- **The extraction is a requested container that is not `lista`** → `list_pages` has nothing to offer (it lists only `lista` pages), and you name the page the user gave it, from the turn itself.
+- **The extraction is neither** → `list_pages` says nothing about it, and you name no page at all (Part 4).
 
 Never name one of the reserved pages (`index.md`, `profile.md`, `notes.md`, `rules.md`, `projects.md`). The engine enforces this rather than trusting it: a capture that names one is routed to the wiki's buffer instead, and the placement pass settles it later. Naming one therefore costs you the page you wanted, and costs the user nothing — the fact is still kept.
 

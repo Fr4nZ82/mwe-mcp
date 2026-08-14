@@ -1186,7 +1186,7 @@ async fn navigate_seeds(
         )
         .await;
         let mode = if topics.is_empty() && owners.is_empty() {
-            "principal_rag_only"
+            "rag_only"
         } else {
             "query_extraction"
         };
@@ -1380,7 +1380,7 @@ async fn run_navigate_funnel(
             entries: Vec::new(),
             navigated: mwe_core::recall_nav::NavigationOutcome::default(),
             navigator_available: false,
-            seed_mode: "principal_rag_only",
+            seed_mode: "rag_only",
             seed_topics: Vec::new(),
             seed_owners: Vec::new(),
         });

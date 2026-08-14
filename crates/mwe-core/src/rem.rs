@@ -2908,6 +2908,11 @@ fn grouping_existing_wikis(children: &[&wiki::DiscoveredWiki]) -> String {
             .get(serde_yaml::Value::from("summary"))
             .and_then(serde_yaml::Value::as_str)
             .unwrap_or("");
+        // Topic pages, on the same definition the parent's own count uses —
+        // the map is not one. Counting `index.md` here inflated every child
+        // by one against a parent number that excludes it, and the model is
+        // asked to weigh the two side by side when it chooses between filing
+        // into a sub-wiki and founding another.
         let pages = std::fs::read_dir(&c.abs_dir).map_or(0, |rd| {
             rd.filter_map(std::result::Result::ok)
                 .filter(|e| {
@@ -2917,6 +2922,7 @@ fn grouping_existing_wikis(children: &[&wiki::DiscoveredWiki]) -> String {
                         .extension()
                         .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
                         && name != "_meta.md"
+                        && name != wiki::INDEX_FILENAME
                 })
                 .count()
         });
@@ -5638,10 +5644,26 @@ async fn run_date_normalizer(
             .iter()
             .enumerate()
             .map(|(i, f)| {
-                // The "captured_at" the prompt promises: the semantic capture
-                // instant, i.e. `valid_from` when stamped (deduced against the
-                // turn's `occurred_at` clock at ingest), `created_at` otherwise.
-                let anchor = f.valid_from.as_deref().unwrap_or(&f.created_at);
+                // When "today" was said — the EARLIER of the two clocks the
+                // row carries, which is right in all four cases and neither
+                // one alone is.
+                //
+                // `created_at` is the row's write instant: correct live, and
+                // wrong on a replay, where it is the replay run's wall clock
+                // rather than the turn's. `valid_from` is the semantic clock
+                // ingest deduces against `occurred_at`: correct on a replay,
+                // and wrong when the classifier stamped a real FUTURE start
+                // («da luglio lavoro a Milano»), because the engine defines
+                // that field as the start of holding, not as the moment of
+                // speaking. Taking `valid_from` outright — which the code did
+                // while calling it "the capture instant" — resolved a
+                // future-dated fact's "today" against a day that had not
+                // happened yet. The earlier of the two is the moment the
+                // sentence existed in both worlds.
+                let anchor = match f.valid_from.as_deref() {
+                    Some(vf) if vf < f.created_at.as_str() => vf,
+                    _ => f.created_at.as_str(),
+                };
                 format!(
                     "{}. {} · {} · {}",
                     i + 1,

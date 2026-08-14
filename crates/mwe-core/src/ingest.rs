@@ -3690,10 +3690,28 @@ fn build_prompt(
     // decides each fact's `owner_id`/`allow_ids` (e.g. "keep health private" →
     // owner-only), and surfaces the behaviour rules to the consumer. Absent →
     // "(none)": decide ACL as before. No hard gate — an aid to the decision.
+    //
+    // **Rendered whole.** The prompt calls this the sender's policy «in full»,
+    // under the standing rule that a slot may act against a set it is shown
+    // COMPLETE and never against a sample — and this is the block that carries
+    // governance. It used to be cut at `max_sender_rules_chars`, mid-word,
+    // with no warning logged: a user whose `rules.md` had grown past 1 500
+    // characters, and whose last line was *«i fatti sulla mia salute restano
+    // privati»*, had that rule silently dropped while the prompt told the
+    // model it had seen everything. A rules file is written by a person and is
+    // short; the number stays as the point where an unusual one is worth
+    // saying out loud.
     out.push_str("\nsender_rules:\n");
     match sender_rules.map(str::trim).filter(|s| !s.is_empty()) {
         Some(rules) => {
-            out.push_str(&truncate(rules, policy.max_sender_rules_chars));
+            if rules.chars().count() > policy.max_sender_rules_chars {
+                tracing::warn!(
+                    chars = rules.chars().count(),
+                    expected_under = policy.max_sender_rules_chars,
+                    "ingest: sender rules are unusually long — shown in full, but they cost every turn"
+                );
+            }
+            out.push_str(rules);
             out.push('\n');
         },
         None => out.push_str("  (none)\n"),
@@ -9114,9 +9132,17 @@ mod tests {
         assert!(with.contains("sender_rules:"));
         assert!(with.contains("keep anything about my health private"));
 
-        // An over-long policy is truncated to the budget (ellipsis sentinel).
-        let long = "x".repeat(policy.max_sender_rules_chars + 50);
-        let trimmed = build_prompt(
+        // An over-long policy is shown WHOLE. The prompt calls this block the
+        // sender's policy «in full», under the rule that a slot may act
+        // against a set it is shown complete and never against a sample — and
+        // this is the block that carries governance. Cutting it dropped the
+        // last rule of anyone whose `rules.md` had grown, silently, while the
+        // prompt asserted they had seen everything.
+        let long = format!(
+            "{}\ni fatti sulla mia salute restano privati",
+            "x".repeat(policy.max_sender_rules_chars + 50)
+        );
+        let whole = build_prompt(
             &request,
             &[],
             &[],
@@ -9128,9 +9154,10 @@ mod tests {
             &policy,
         );
         assert!(
-            trimmed.contains('…'),
-            "over-long sender_rules must be truncated; prompt was:\n{trimmed}"
+            whole.contains("i fatti sulla mia salute restano privati"),
+            "the last rule of a long policy still reaches the model:\n{whole}"
         );
+        assert!(!whole.contains('…'), "and nothing is cut mid-word: {whole}");
     }
 
     /// The known-users roster is injected with id + aliases so the

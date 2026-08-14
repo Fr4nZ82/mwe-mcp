@@ -1,8 +1,8 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.27
-default_version_at_bootstrap: v1.27
+version: 1.28
+default_version_at_bootstrap: v1.28
 ---
 
 # Prompt: cronista
@@ -217,7 +217,7 @@ DESCRIPTION — the page's card, and the reason anyone ever arrives here:
 - What the recall navigator sees of this page is its NAME, a handful of keywords, and THIS LINE. It never sees the prose above. It reads the line and decides whether to open the page — so the card is not a summary for someone who has read the page, it is an offer to someone who has not.
 - Do not spend the line repeating the page name. Say what is INSIDE.
 - Orient at TOPIC level: what the page HOLDS, never what a specific claim SAYS. A card that reports the latest news ages into a lie; a card that names the page's subject stays true while the page grows.
-- Make it DISTINGUISH. You were given every other page's card in the list above. If your line would sit just as well on one of those pages, it is not a card yet.
+- Make it DISTINGUISH. The cards in OTHER PAGES are what you have to distinguish yourself from — every page of the memory, or the ones nearest yours; either way, if your line would sit just as well on one of those pages, it is not a card yet.
   WEAK:   "Notes and information about Frodo." — true of forty pages
   STRONG: "Frodo's medical appointments and prescriptions, and the clinics that keep his records."
 - Use the words SOMEONE LOOKING would use: the concrete nouns, the proper names, the activity — not the category. "coeliac diet, lactose, which recipes work" finds the page; "health matters" does not.
