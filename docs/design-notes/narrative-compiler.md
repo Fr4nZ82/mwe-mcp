@@ -155,34 +155,75 @@ is handed the foundation pages and the existing concept pages (from
 the registry plus any proposed earlier this run) so the model **reuses**
 an existing page rather than minting a duplicate.
 
-**The batch's wiki is also the whole page list** (`describe_foundation`,
-`describe_concepts`, both filtered on `wiki_id`). A fact's wiki was settled at
-capture by [`derive_target_wiki`](../../crates/mwe-core/src/ingest.rs) — a
-group's fact lands in the group's wiki, a user's in theirs — so the wiki whose
-structure is offered is the one the fact is already in. It also bounds a list
-that had no ceiling: the pages of one wiki, not of the memory.
+**The batch is one wiki; the page list is the whole forest.** A fact is free to
+live in any wiki, and the engine putting one where the prose reads better is
+its judgment, not damage (founder, 2026-08-10 — the compiler upholds exactly
+that with `move_to_wiki`, and REM has a whole cross-wiki refile sweep). Read
+permission is judged per fact on `owner ∪ allow ∪ sender`, never on the
+container, so a placement exposes nothing and hides nothing. **The page list is
+therefore the entire mechanism**: a page the model is not shown is a page a
+fact can never reach, and a list scoped to the batch's own wiki meant a fact
+could never be re-homed once it landed.
 
-> ⚠️ **This scoping is an open question, not a rule.** It reads as a fence
-> around *where a fact may live*, and there is no such fence: a fact is free to
-> live in any wiki, and the engine moving one there because the prose reads
-> better is its judgment, not damage (founder, 2026-08-10 — the compiler
-> upholds exactly that with `move_to_wiki`, and REM has a whole cross-wiki
-> refile sweep). What the scoping actually costs is that a fact can never be
-> re-homed by this stage once it has landed, since the only pages ever offered
-> are its own wiki's. The redesign has to keep two things that are real: the
-> language directive resolves per wiki, and a page name is unique forest-wide.
+- `describe_foundation` — the batch's wiki's foundation pages, then **every
+  other wiki's identity card**. Not foreign buffers: a buffer is where a fact
+  of *that* wiki waits for a home, and parking a fact in somebody else's inbox
+  is not a placement. Cards are capped by the product limits (24 users, 8
+  groups), so this half never grows with the memory.
+- `describe_concepts` — the batch's own wiki's concept pages first and never
+  cut, then the rest of the forest's. Each foreign line carries `wiki: <id>`,
+  because choosing a page is choosing a place and a slug alone does not say
+  which.
 
-The rest of the forest survives in one line, as **`{taken_slugs}`** — bare page
-names, no titles, no descriptions
-([`describe_taken_slugs`](../../crates/mwe-core/src/planner.rs)). That half is
-load-bearing in the other direction: a plan is keyed by slug across the whole
-forest (`CompilationPlan::pages`), so a name is unique memory-wide, and a batch
-that coined a slug another wiki already owns would have its facts filed onto
-that wiki's page by step 4 of the Architetto — a page nobody chose. The list is
-**never truncated** and therefore carries no ordering rule: a collision guard
-with a gap answers "free" for a taken name. It grows with the number of pages
-in the *other* wikis, at a few tokens each instead of the thirty a described
-page line costs.
+The scoping this replaced was justified as a correctness property — a fact's
+wiki is settled at capture by
+[`derive_target_wiki`](../../crates/mwe-core/src/ingest.rs), so the structure
+that should receive it is the one it is in. Capture decides where a fact
+*starts*. The half that stayed true is that the identity-page discipline
+governs which card may hold a fact, and that is enforced per fact by the
+`identity_pages=` tag, not by the page list — fencing the list did not uphold
+the discipline, it made the discipline's own instruction (*«home it on the
+subject's own pages instead»*) impossible to follow, because the subject's card
+lives in the subject's wiki.
+
+**What one wiki per batch still buys is the language.** The pages a batch
+*coins* are homed by `resolve_page_wiki` in its own facts' wiki, so `{locale}`
+is the right answer for every title and description the call writes; a page it
+merely *chooses* was titled by whoever coined it, in that wiki's language, and
+this stage does not rewrite it. Hence the rule that closes the loop: **a fact
+may be assigned to any page in the forest, and a new page is born in the
+batch's own wiki** — `vet_proposal` still requires `parent_hub` to be a
+foundation page of this wiki, no longer as a fence but because that is where
+the proposed page will live.
+
+**The ceiling.** The described list is complete while the memory fits one call
+and cut when it does not (`FOREST_PAGE_CEILING`, 400 pages — the twin of the
+Cronista's `CARD_INDEX_CACHE_CEILING_PAGES`). Below it the list is *identical
+for every batch of the run*, so it rides the prompt's cached prefix and
+completeness is also the cheap answer. Above it the batch's own wiki stays
+whole and the rest of the forest is cut to the `FOREIGN_SELECTION_PAGES` (40)
+nearest by page-card similarity, **nearest first and never re-sorted by slug**
+— where a list is cut the order IS the selection. Ranking uses each foreign
+page's *best* similarity to any of the asking wiki's own cards rather than to
+their average: a user's wiki spans unrelated subjects and a centroid over them
+is a point about none of them. The planner has no embedder and does not grow
+one; cards are embedded by the reindex pipeline, so a page whose card never
+embedded does not rank — smaller offer, never a wrong one
+(`planner::foreign_page_offers`).
+
+**`{taken_slugs}` keeps one of its two jobs** — bare page names, no titles, no
+descriptions ([`describe_taken_slugs`](../../crates/mwe-core/src/planner.rs)).
+It is no longer *«the other wikis' pages, which you may neither read nor file
+into»*: those are described above now and choosing one is legitimate. What
+survives is the collision half, and it survives intact. A plan is keyed by slug
+across the whole forest (`CompilationPlan::pages`), so a name is unique
+memory-wide, and a batch that **coined** a slug another wiki owns would have
+its facts filed onto that page by step 4 of the Architetto — a destination
+nobody chose. *Choosing* a page is a judgement; colliding with its name is an
+accident. So the list holds exactly what the described lists leave out: the
+foreign buffers, and past the ceiling the foreign pages the selection dropped.
+It is **never truncated** and therefore carries no ordering rule: a collision
+guard with a gap answers "free" for a taken name.
 
 The engine enriches that context with **structural signals**
 ([`CartografoSignals`](../../crates/mwe-core/src/planner.rs)) — information
@@ -233,6 +274,15 @@ describing the breakage: every proposal is filed as a `concept_leaf`, and a
 homes it where its facts are rather than following an invented parent into a
 foreign wiki). A negative test asserts the prompt no longer carries either the
 section or the signal.
+
+The *«of the batch's wiki»* half survived the un-fencing above, with a
+different reason behind it. It is not a rule about where a fact may live — a
+fact may be assigned to any page in the forest. It is what proposing a page
+means: a new page is born where its facts are, this batch's facts are this
+wiki's, so a hub in another wiki would be a parent the page does not live
+under. `vet_accepted` asks only that the hub exist, because by the time the
+Conciliatore runs a proposal may have been merged into a page already homed
+elsewhere.
 
 `build_wiki_plan` computes both signals (mass from the previous plan's
 carried-over placements; scopes only when the Cartografo actually runs),
@@ -317,21 +367,25 @@ empty falls through to the same orphan fallback, never a page named "index".
 strong-model call **per prospective wiki** that folds
 **semantically-duplicate proposed pages** into existing ones. The
 Cartografo, working batch by batch, cannot see the whole proposed set at
-once; the Conciliatore does — it gets that wiki's **concept** pages and every
-page proposed this run for that wiki, and returns a `redirects` map
-(`proposed_slug → existing_slug`) plus the genuinely-new `accepted_new`
-list.
+once; the Conciliatore does — it gets the memory's **concept** pages, that
+wiki's first, and every page proposed this run for that wiki, and returns a
+`redirects` map (`proposed_slug → existing_slug`) plus the genuinely-new
+`accepted_new` list.
 
 A proposal's prospective wiki is the source wiki of the first fact
 assigned to it (`conciliatore_groups`, the same rule `slug_source_wiki`
 applies one stage later); a proposal no assignment claims rides its own
 group and is homed or dropped by the plan builder as before. The split is
 what gives the stage a language: it picks which title and description
-survive a merge, and those are read by a person. **What each call sees
-narrows with it** — `describe_existing` is rendered per group and scoped to
-that group's wiki. The homeless bucket (a
-proposal no assignment claims) has no wiki to be scoped to, so it keeps the
-forest-wide view and the plan builder decides its home as before. The
+survive a merge, and those are read by a person. **The group's wiki decides
+the order and the cut, not the membership** — `describe_existing` leads with
+that wiki's pages and then offers the rest of the forest (the same ceiling and
+the same nearest-first selection the Cartografo gets). Its old scoping was
+justified as *«a redirect is a merge, so folding a proposal into another
+wiki's page would move this wiki's facts there»*: true, and not a reason —
+moving them there is legitimate, and a duplicate does not stop being one by
+sitting in another wiki. The homeless bucket (a proposal no assignment claims)
+has no wiki to order by and takes the forest as it comes. The
 prompt
 ([`crates/mwe-core/prompts/conciliatore.md`](../../crates/mwe-core/prompts/conciliatore.md))
 carries a **redirect bias**: when in doubt, consolidate — fewer

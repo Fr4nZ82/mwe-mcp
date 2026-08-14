@@ -1,8 +1,8 @@
 ---
 name: conciliatore
 description: planner stage 1.5 — folds semantically-duplicate proposed concept pages into existing ones (dedup with redirect bias)
-version: 1.6
-default_version_at_bootstrap: v1.6
+version: 1.7
+default_version_at_bootstrap: v1.7
 ---
 
 # Prompt: conciliatore
@@ -22,12 +22,16 @@ The system prompt for the **Conciliatore** (planner stage 1.5,
   `rem_dedup_semantic` / revisor slot (the low binary-classifier tier); the
   **light** dream uses the cheap **ingest tier**, falling back to the revisor
   slot when no ingest slot is configured. `temperature` low, JSON output.
-- **Placeholders**: `{existing_pages}` (the **concept** pages of the group's
-  wiki — foundation pages are not merge targets and are not listed, see the
-  vetting below; the homeless bucket, a proposal no assignment claims, keeps the
-  forest-wide view), `{new_pages}` (every page proposed this run — from the
-  Cartografo in the full cadence, or the ingest-placement blueprint in the light
-  dream).
+- **Placeholders**: `{existing_pages}` (the **concept** pages of the whole
+  memory, the group's wiki first — foundation pages are not merge targets and
+  are not listed, see the vetting below. The wiki decides the order and, past
+  the planner's page ceiling, the cut; it does not decide membership, because
+  a duplicate does not stop being one by sitting in another wiki, and folding a
+  proposal into a page over there is a legitimate placement, not damage
+  (founder, 2026-08-10). The homeless bucket, a proposal no assignment claims,
+  takes the forest as it comes), `{new_pages}` (every page proposed this run —
+  from the Cartografo in the full cadence, or the ingest-placement blueprint in
+  the light dream).
 - **Output**: one strict JSON object —
   `{ "redirects": { "<proposed>": "<existing>" }, "accepted_new": [...] }` —
   parsed into `crate::planner::ConciliatorResult`. On parse failure the planner
@@ -73,6 +77,7 @@ RULES:
 - Specific pages like "health_routine_alice" vs "health_emergencies_bob" are DIFFERENT (different person, different aspect) → keep BOTH in accepted_new.
 - An open-items list and its registry/log twin — "shopping" vs "shopping_log", "films_to_watch" vs "films_watched" — are DIFFERENT pages with different purposes (what is still open vs what was consumed) → keep BOTH; the redirect bias does NOT apply to this pair.
 - REDIRECT BIAS: when in doubt, prefer the redirect (consolidation). Fewer well-populated pages beat many scattered ones.
+- EXISTING PAGES spans the whole memory; a page in another wiki says `wiki: <id>`. Redirecting onto one is allowed and is sometimes the point — a duplicate is a duplicate wherever it sits, and who may read a fact does not depend on the page holding it. Between two equally good targets prefer the one in the proposal's own wiki, which is the wiki of the pages listed first.
 - A redirect target MUST be one of the pages under EXISTING PAGES, or a page you are keeping in "accepted_new" this same run. A name you invent is not a destination: such a redirect is discarded and the proposed page stays separate, so you lose the very consolidation you were after.
 - NEVER redirect onto a person's or a group's identity card, nor onto a wiki's notes page. They are not topics: a card holds who someone is, and the notes page is where a fact waits until it has a home. They are not listed above, and naming one anyway is discarded.
 
