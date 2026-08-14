@@ -799,6 +799,43 @@ pub async fn set_acl(
     Ok(Some(prev))
 }
 
+/// Replace **only** a fact's `allow_ids`, leaving `owner_id` and `sender_id`
+/// untouched, and bump `updated_at`.
+///
+/// The write half of a **supersede**, and deliberately narrower than
+/// [`set_acl`]. A supersede carries the retired fact's audience onto its
+/// successor — the allow list is the audience; the owner is not. Carrying the
+/// owner across would silently re-assign the successor: when Alice retires a
+/// fact of her own by stating one about Bob, the successor is born owned by
+/// Bob, and a reader set is `owner ∪ allow ∪ sender` — so overwriting the
+/// owner with Alice's principal takes the fact about Bob away from Bob.
+///
+/// Returns `false` when `fact_id` has no active row (unknown or tombstoned),
+/// so the caller can fall through to the capture buffer.
+///
+/// # Errors
+///
+/// `sqlx::Error` + JSON serialization failures on `allow_ids`.
+pub async fn inherit_allow(
+    pool: &SqlitePool,
+    fact_id: &FactId,
+    allow: &[Principal],
+) -> Result<bool> {
+    let allow_json = principals_to_json(allow)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let res = sqlx::query(
+        "UPDATE fact_index
+            SET allow_ids = ?, updated_at = ?
+          WHERE fact_id = ? AND deleted_at IS NULL",
+    )
+    .bind(&allow_json)
+    .bind(&now)
+    .bind(fact_id.as_str())
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
 /// Restore a fact's ACL columns from a [`PrevAcl`] snapshot — the revert
 /// half of the acl-change verb.
 ///

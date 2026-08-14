@@ -193,7 +193,16 @@ pub const CLOSED_WINDOW_DOWNRANK: f32 = 0.8;
 /// `true` when `valid_to` is set and not after `now` — the window has
 /// closed. A missing or unparseable bound counts as **open** (the
 /// conservative side: never down-rank on bad data).
-fn window_closed_at(valid_to: Option<&str>, now: &chrono::DateTime<chrono::Utc>) -> bool {
+///
+/// The one predicate for "is this fact still standing", shared with the
+/// ingest reconciliation stage's candidate rendering
+/// (`ingest::reconcile_candidate_line`): a horizon still ahead of us is an
+/// **open** fact with a deadline, and anything that decides on the field's
+/// presence alone gets every dated commitment wrong.
+pub(crate) fn window_closed_at(
+    valid_to: Option<&str>,
+    now: &chrono::DateTime<chrono::Utc>,
+) -> bool {
     valid_to
         .and_then(|vt| chrono::DateTime::parse_from_rfc3339(vt).ok())
         .is_some_and(|vt| vt <= *now)

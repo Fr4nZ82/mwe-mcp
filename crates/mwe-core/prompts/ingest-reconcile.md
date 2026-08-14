@@ -23,9 +23,14 @@ The system prompt for the **reconciliation stage**
   silently, by omission, and compounds. The founder's rule: *a slot may
   reconcile against a set it is shown COMPLETE, never against a sample.*
 - **Candidates**: the union, deduplicated by `fact_id`, of (1) the turn's flat
-  recall hits, (2) the facts this turn just filed, (3) **every** readable fact
-  on the pages the navigator opened (`recall::facts_on_pages` — complete per
-  page, not ranked). Skipped entirely when that union is empty.
+  recall hits, (2) **every** readable fact on the pages the navigator opened
+  (`recall::facts_on_pages` — complete per page, not ranked), and (3) the
+  still-**buffered** captures, re-fetched here with **no** already-in-context
+  suppression: that suppression stops the recall *block* saying a thing twice,
+  and must never hide a candidate from a verb that acts on it. Skipped entirely
+  when the union is empty. *The facts this turn just filed are NOT candidates —
+  they are the separate `{new_facts}` block below, and they are legal only as a
+  `successor`.*
 - **Model**: the `ingest` slot (the same cheap tier as the classifier).
 - **Placeholders**: `{message}` (the user's verbatim message), `{current_time}`
   (the turn's semantic clock — `occurred_at` when replayed), `{candidates}`
@@ -62,7 +67,7 @@ Rules that hold for all four:
 - This is a PRECISION instrument. Act only on a candidate whose text plainly matches what the message says. When nothing matches, return empty arrays — changing nothing is always safe, because a missed reconciliation is recoverable on a later turn while a wrong one has already forgotten or exposed the wrong thing.
 - Never act on a candidate because it is merely related, on the same page, or about the same person.
 - `target` must be copied EXACTLY from a candidate's fact_id. Never invent or alter an id.
-- A candidate whose validity already shows a closed window needs no second closure — skip it.
+- A candidate whose validity already shows a closed window needs no second closure — skip it. Read the line as written: `open, due <date>` is an **open** fact carrying a deadline, and it is the most likely thing a message closes ("I bought the milk"). Only `closed <date>` is already settled.
 - One candidate gets at most one verb. A supersede already retires the old fact, so never close it as well.
 - Say nothing about facts that are simply still true. Most turns change nothing, and empty arrays are the correct answer for them.
 

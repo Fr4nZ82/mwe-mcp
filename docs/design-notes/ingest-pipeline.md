@@ -761,19 +761,31 @@ unchanged, alongside it.
 ### Supersede, and the half that must not be lost
 
 A supersede is a **content update, not a sharing change**: the new fact
-**inherits the superseded fact's audience**. The reconciler can tell that a
+**inherits the superseded fact's allow list**. The reconciler can tell that a
 claim was restated; it must never be relied on to restate who may read it,
 because a restatement that quietly drops the allow list re-privatises a shared
 fact and nothing anywhere says so — invisible to everyone, its owner included.
 
+**The allow list, and nothing else.** The successor keeps its own `owner_id`
+and its own `sender_id` — a supersede is not a change of ownership either.
+Alice retiring *"Alice is at the dentist Thursday"* by saying *"it is Bob who
+goes"* mints a fact **owned by Bob**, and a reader set is
+`owner ∪ allow ∪ sender`: carrying Alice's ownership onto it would take the
+fact about Bob away from Bob, at the moment Alice was trying to tell him. Where
+the subject does not change — a restated wifi password — the owner was already
+the same, which is what made this invisible.
+
 The classifier used to do this inheritance *before* writing the new fact, which
 was free. Deciding the supersede **after** the successor exists makes it a
 **second write**, against whichever store holds it —
-[`fact_index::set_acl`](../../crates/mwe-core/src/fact_index.rs) for a live
-write, [`capture_buffer::set_acl`](../../crates/mwe-core/src/capture_buffer.rs)
+[`fact_index::inherit_allow`](../../crates/mwe-core/src/fact_index.rs) for a
+live write,
+[`capture_buffer::inherit_allow`](../../crates/mwe-core/src/capture_buffer.rs)
 for one still buffered, probed in that order because the `fact_id` is stable
-across promotion. That second write is the price of asking the question where
-it can be answered honestly.
+across promotion. Both touch `allow_ids` alone; the broader
+[`fact_index::set_acl`](../../crates/mwe-core/src/fact_index.rs), which
+replaces all three ACL columns, stays the acl-change verb's writer. That second
+write is the price of asking the question where it can be answered honestly.
 
 **Audience first, then the weld**, and the order fails in the recoverable
 direction: a failed inheritance leaves the old fact open beside the new one,
@@ -784,9 +796,13 @@ Three guards in `vet_supersede`, each refusing rather than guessing — the
 target must be one of the candidates the stage was shown (a hallucinated id
 retires nothing), the successor must be one of the facts **this turn filed**
 (so a fact is never welded to something that does not exist, or to itself), and
-the sender must **own** the target. That last is the same rule the two sibling
-verbs apply: reading a fact is not authority over it, and a supersede rewrites
-both its validity and its successor pointer. The orchestrator therefore keeps
+the sender must **own** the target — through
+[`acl::sender_owns`](../../crates/mwe-core/src/acl.rs), so a member of an
+owning **group** counts as the owner. That last is the same call the two
+sibling verbs make: reading a fact is not authority over it, and a supersede
+rewrites both its validity and its successor pointer. (A bare principal
+comparison would have refused every group-owned fact from everybody, always —
+the family calendar readable and never correctable.) The orchestrator therefore keeps
 **every** id the turn filed (`turn_facts`) — `capture_id` retains only the
 first, as the turn's anchor for the wire, and a successor must be nameable
 before it can inherit anything.
@@ -819,7 +835,15 @@ turn where the engine has actually *read* the memory. Its candidate set is the
 
 1. the flat recall hits (the classifier's own window),
 2. the fresh buffered captures — a fact captured this morning is on no page, so
-   the navigator cannot reach it by construction,
+   the navigator cannot reach it by construction — **re-fetched here with the
+   already-in-context suppression turned off**. That suppression exists to stop
+   the recall *block* showing the agent a claim extracted from a message it is
+   already reading; it must never hide a candidate from a verb that **acts** on
+   it, which is the same reasoning `confirm_topic_closures` writes down for the
+   closure pass. Leg (1) arrives already filtered by it, so without the
+   re-fetch a claim made two turns ago — whose message is still in the window —
+   was invisible to the stage, and that is exactly the claim a correction
+   arriving now corrects,
 3. **the active facts on the pages the navigator opened.** `NavigatedFragment`
    carries `wiki_id` + `page`, and `fact_index` is indexed on `source_path`
    (`idx_fact_path`), so this is one cheap indexed read, not a second search.
@@ -844,10 +868,14 @@ dropped here is a fact that quietly cannot be closed. Pinned by
 
 **How the legs are assembled**, in `ingest::reconcile_candidates`: the flat
 hits first, because they are ranked by relevance to *this* message, then the
-page-scoped facts, because they are complete rather than ranked. Deduplicated
-by `fact_id`, capped at `RECONCILE_CANDIDATE_CAP` (120) — so if the cap ever
-bites it takes from the tail of the structural leg rather than from the head of
-the relevant one.
+page-scoped facts, because they are complete rather than ranked, then the
+buffered ones. Deduplicated by `fact_id`, capped at `RECONCILE_CANDIDATE_CAP`
+(120) — so if the cap ever bites it takes from the tail rather than from the
+head of the relevant leg.
+
+**The facts this turn just filed are not candidates.** They ride separately, as
+the `{new_facts}` block, and are legal only as a supersede's `successor` — a
+turn must never retire what it wrote this same turn.
 
 **Within the page leg the order is NEWEST FIRST, across all opened pages
 together** (`recall::facts_on_pages`). The cap decides what the stage never
@@ -881,6 +909,16 @@ supersedes, whose dates it corrects, whose sharing it changes. The prompt shape
 already exists — `prompts/ingest-closures.md` takes `{message}`,
 `{current_time}` and a `{candidates}` list rendered as `id · validity · text`;
 the stage generalises it from closures to all four.
+
+**Validity is rendered against the turn's clock, never off the field.** A
+candidate line reads `open`, `open since <d>`, `open, due <d>` or
+`closed <d>`, decided by `recall::window_closed_at` — the same predicate the
+read side uses. The distinction is load-bearing: the prompt tells the model to
+skip a candidate that is already closed, and the classifier stamps a `valid_to`
+on **every** dated commitment, so calling a fact closed because it *has* a
+horizon told the stage to ignore precisely the class it exists for. *«devo
+comprare il latte entro venerdì»* is open until Friday, and *«l'ho comprato»*
+arrives before Friday or it is not a closure.
 
 **The one thing that must be carried over.** Today a superseding fact
 **inherits the superseded fact's `allow`** before it is written, because "the

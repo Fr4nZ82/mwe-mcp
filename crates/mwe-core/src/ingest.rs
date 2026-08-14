@@ -1995,34 +1995,6 @@ struct LlmSupersede {
     successor: Option<String>,
 }
 
-/// Apply the reconciler's supersedes: weld each new fact to the one it
-/// replaces, **audience first**.
-///
-/// The order is the whole point. A supersede is a **content update, not a
-/// sharing change**: the new fact INHERITS the superseded fact's audience.
-/// The reconciler can tell that a claim was restated; it must never be relied
-/// on to restate who may read it, because a re-statement that quietly drops
-/// the allow list re-privatises a shared fact and nothing anywhere says so.
-/// The classifier used to do this inheritance *before* writing the new fact,
-/// which was free; deciding the supersede after the write makes it a second
-/// write, and that is the cost of asking the question where it can be answered
-/// honestly.
-///
-/// Three guards, each refusing rather than guessing:
-/// - the **target** must be one of the candidates the stage was shown, so a
-///   hallucinated id retires nothing;
-/// - the **successor** must be one of the facts this turn actually filed, so
-///   a fact can never be welded to something that does not exist or to itself;
-/// - the sender must **own** the target — the same rule its two siblings
-///   (`apply_plan_validity_edits`, `apply_plan_acl_changes`) apply. Reading a
-///   fact is not authority over it, and a supersede rewrites both its validity
-///   and its successor pointer.
-///
-/// The current sender is stripped from the inherited list, mirroring
-/// `validate_capture_plan`'s `SenderRedundantInAllow` guard. Every step is
-/// soft: a refused or failed supersede is logged and skipped, never fatal.
-///
-/// Returns how many were applied.
 /// Vet one requested supersede, refusing rather than guessing.
 ///
 /// Three guards, and each one answers a different way of being wrong:
@@ -2030,15 +2002,18 @@ struct LlmSupersede {
 ///   hallucinated id retires nothing;
 /// - the **successor** must be one of the facts this turn actually filed, so a
 ///   fact can never be welded to something that does not exist, or to itself;
-/// - the sender must **own** the target — the same rule its two siblings
-///   (`apply_plan_validity_edits`, `apply_plan_acl_changes`) apply. Reading a
-///   fact is not authority over it, and a supersede rewrites both its validity
-///   and its successor pointer.
+/// - the sender must **own** the target, through
+///   [`crate::acl::sender_owns`] — the same call its two siblings
+///   (`apply_plan_validity_edits`, `apply_plan_acl_changes`) make, so a member
+///   of an owning group counts as the owner. Reading a fact is not authority
+///   over it, and a supersede rewrites both its validity and its successor
+///   pointer.
 fn vet_supersede<'a>(
     s: &LlmSupersede,
     candidates: &'a [RecallHit],
     turn_facts: &[(FactId, String)],
-    sender: &Principal,
+    sender_id: &str,
+    sender_groups: &[String],
 ) -> Option<(FactId, FactId, &'a RecallHit)> {
     let (Some(target_raw), Some(successor_raw)) = (s.target.as_deref(), s.successor.as_deref())
     else {
@@ -2069,7 +2044,7 @@ fn vet_supersede<'a>(
         );
         return None;
     }
-    if prev.owner_id != *sender {
+    if !crate::acl::sender_owns(&prev.owner_id, sender_id, sender_groups) {
         tracing::warn!(
             target = target_raw,
             owner = %prev.owner_id,
@@ -2083,21 +2058,20 @@ fn vet_supersede<'a>(
 /// Carry the superseded fact's audience onto its successor, wherever the
 /// successor currently lives.
 ///
-/// The fact store is probed first; `Ok(None)` there means the successor is
-/// still a buffered capture, and since the id is stable across promotion the
-/// buffer row is the one to correct. Returns whether the audience landed.
-async fn inherit_audience(
-    pool: &SqlitePool,
-    successor: &FactId,
-    owner: &Principal,
-    allow: &[Principal],
-    sender: &Principal,
-) -> bool {
-    match fact_index::set_acl(pool, successor, owner, allow, Some(sender)).await {
-        Ok(Some(_)) => true,
-        Ok(None) => matches!(
-            capture_buffer::set_acl(pool, successor, owner, allow, Some(sender)).await,
-            Ok(Some(_))
+/// The fact store is probed first; `false` there means the successor is still
+/// a buffered capture, and since the id is stable across promotion the buffer
+/// row is the one to correct. Returns whether the audience landed.
+///
+/// **The allow list only.** The successor keeps its own `owner_id` and its own
+/// `sender_id`: a supersede replaces what a fact says, never whose fact it is.
+/// See [`fact_index::inherit_allow`] for what carrying the owner across would
+/// cost — it is the case where a fact about Bob ends up unreadable by Bob.
+async fn inherit_audience(pool: &SqlitePool, successor: &FactId, allow: &[Principal]) -> bool {
+    match fact_index::inherit_allow(pool, successor, allow).await {
+        Ok(true) => true,
+        Ok(false) => matches!(
+            capture_buffer::inherit_allow(pool, successor, allow).await,
+            Ok(true)
         ),
         Err(err) => {
             tracing::warn!(error = %err, "ingest: supersede audience inheritance failed");
@@ -2110,7 +2084,7 @@ async fn inherit_audience(
 /// replaces, **audience first**.
 ///
 /// The order is the whole point. A supersede is a **content update, not a
-/// sharing change**: the new fact INHERITS the superseded fact's audience.
+/// sharing change**: the new fact INHERITS the superseded fact's allow list.
 /// The reconciler can tell that a claim was restated; it must never be relied
 /// on to restate who may read it, because a re-statement that quietly drops
 /// the allow list re-privatises a shared fact and nothing anywhere says so.
@@ -2118,6 +2092,15 @@ async fn inherit_audience(
 /// which was free; deciding the supersede after the write makes it a second
 /// write, and that is the price of asking the question where it can be
 /// answered honestly.
+///
+/// **The allow list, and nothing else.** The successor keeps its own owner and
+/// its own sender: a supersede is not a change of ownership either. Alice
+/// retiring "Alice is at the dentist Thursday" by saying "it is Bob who goes"
+/// mints a fact owned by Bob — and a reader set is `owner ∪ allow ∪ sender`,
+/// so carrying Alice's ownership across would take the fact about Bob away
+/// from Bob while Alice was trying to tell him. Where the subject does not
+/// change (a restated wifi password) the owner was already the same, which is
+/// why this was invisible.
 ///
 /// Inheriting before welding also fails in the recoverable direction: a failed
 /// inheritance leaves the old fact open beside the new one, which is visibly
@@ -2136,11 +2119,20 @@ async fn apply_reconciled_supersedes(
     request: &IngestRequest,
 ) -> usize {
     let sender = Principal::User(request.sender_id.clone());
+    // Resolve the sender's groups once so the owner gate can admit a
+    // member of an owning group, not just the owning user.
+    let sender_groups = enrollment::groups_for(pool, &request.sender_id)
+        .await
+        .unwrap_or_default();
     let mut applied = 0usize;
     for s in supersedes {
-        let Some((target_id, successor_id, prev)) =
-            vet_supersede(s, candidates, turn_facts, &sender)
-        else {
+        let Some((target_id, successor_id, prev)) = vet_supersede(
+            s,
+            candidates,
+            turn_facts,
+            request.sender_id.as_str(),
+            &sender_groups,
+        ) else {
             continue;
         };
         let inherited: Vec<Principal> = prev
@@ -2149,31 +2141,76 @@ async fn apply_reconciled_supersedes(
             .filter(|p| **p != sender)
             .cloned()
             .collect();
-        if !inherit_audience(pool, &successor_id, &prev.owner_id, &inherited, &sender).await {
+        if !inherit_audience(pool, &successor_id, &inherited).await {
             tracing::warn!(
                 successor = successor_id.as_str(),
                 "ingest: supersede successor not found in either store — not superseding"
             );
             continue;
         }
-        match fact_index::mark_superseded(pool, &target_id, &successor_id).await {
-            Ok(n) if n > 0 => {
-                applied += 1;
-                tracing::info!(
-                    target = target_id.as_str(),
-                    successor = successor_id.as_str(),
-                    inherited = inherited.len(),
-                    "ingest: reconcile superseded a fact, audience carried over"
-                );
-            },
-            Ok(_) => tracing::warn!(
+        if weld_supersede(pool, &target_id, &successor_id).await {
+            applied += 1;
+            tracing::info!(
                 target = target_id.as_str(),
-                "ingest: reconcile supersede target already closed — nothing to do"
-            ),
-            Err(err) => tracing::warn!(error = %err, "ingest: reconcile supersede write failed"),
+                successor = successor_id.as_str(),
+                inherited = inherited.len(),
+                "ingest: reconcile superseded a fact, audience carried over"
+            );
+        } else {
+            tracing::warn!(
+                target = target_id.as_str(),
+                "ingest: reconcile supersede target is in neither store as a live row — nothing to do"
+            );
         }
     }
     applied
+}
+
+/// Retire the superseded fact, wherever it lives.
+///
+/// The fact store is the normal case. `0` rows there means one of two things,
+/// and the second one used to be silently mistaken for the first: the target
+/// is already closed, **or** it was never promoted and is still a buffered
+/// capture — `mark_superseded`'s `WHERE fact_id = ?` matches no buffer row, so
+/// the applier reported *«already closed»* for a retirement that had not
+/// happened. On the same-day flow (a claim captured this morning, corrected
+/// this afternoon, before the light dream ran) that is every supersede.
+///
+/// The buffered half closes the **staged** window with the same
+/// `contradicted` reason, exactly as the closure verb's buffered half does
+/// ([`capture_buffer::close_validity`]); promotion then carries the closed
+/// window onto the fact. No successor pointer is staged, by the same standing
+/// rule that applies to closures — the buffer stages none, and the id is
+/// stable across promotion.
+///
+/// Returns whether a live row was actually retired. Soft on both stores, like
+/// [`inherit_audience`]: a failed write is logged and the supersede is skipped,
+/// never fatal to the turn.
+async fn weld_supersede(pool: &SqlitePool, target: &FactId, successor: &FactId) -> bool {
+    match fact_index::mark_superseded(pool, target, successor).await {
+        Ok(n) if n > 0 => return true,
+        Ok(_) => {},
+        Err(err) => {
+            tracing::warn!(error = %err, "ingest: supersede weld failed on the fact store");
+            return false;
+        },
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    match capture_buffer::close_validity(pool, target, &now, fact_index::decay::CONTRADICTED).await
+    {
+        Ok(Some(_)) => {
+            tracing::info!(
+                target = target.as_str(),
+                "ingest: supersede target was still buffered — staged window closed instead"
+            );
+            true
+        },
+        Ok(None) => false,
+        Err(err) => {
+            tracing::warn!(error = %err, "ingest: supersede weld failed on the capture buffer");
+            false
+        },
+    }
 }
 
 /// Render one candidate as the stage's prompt sees it:
@@ -2182,9 +2219,21 @@ async fn apply_reconciled_supersedes(
 /// The audience is rendered because `acl_changes` REPLACES the allow list:
 /// a model asked to add the family to a fact has to be shown who is already
 /// on it, or "share it with the family too" silently drops everyone else.
-fn reconcile_candidate_line(h: &RecallHit) -> String {
+///
+/// **The validity is decided against the turn's clock, never by the presence
+/// of a `valid_to`.** A horizon still ahead of us is an OPEN fact with a
+/// deadline, and the prompt tells the model to leave closed candidates alone:
+/// reading "closed" off the field alone hid exactly the class this stage was
+/// built for, because the classifier stamps a `valid_to` on **every** dated
+/// commitment. *«devo comprare il latte entro venerdì»* … *«l'ho comprato»*
+/// rendered the candidate `closed <friday>`, the model obeyed its own rule,
+/// and nothing closed. Same predicate the read side uses
+/// ([`crate::recall::window_closed_at`]).
+fn reconcile_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) -> String {
     let validity = match (h.valid_from.as_deref(), h.valid_to.as_deref()) {
-        (_, Some(to)) => format!("closed {to}"),
+        (_, Some(to)) if recall::window_closed_at(Some(to), now) => format!("closed {to}"),
+        (Some(from), Some(to)) => format!("open since {from}, due {to}"),
+        (None, Some(to)) => format!("open, due {to}"),
         (Some(from), None) => format!("open since {from}"),
         (None, None) => "open".to_owned(),
     };
@@ -2214,11 +2263,23 @@ fn reconcile_candidate_line(h: &RecallHit) -> String {
 /// because they are complete rather than ranked, so if the cap ever bites it
 /// takes from the tail of the structural leg rather than from the head of the
 /// relevant one.
+///
+/// **The buffered leg is re-fetched with NO already-in-context suppression**,
+/// the same call `confirm_topic_closures` makes and for the same stated
+/// reason: that suppression exists to stop the recall *block* saying a thing
+/// twice, and it must never hide a candidate from a verb that acts on it. The
+/// flat hits arrive already filtered by it — so a claim the user made two
+/// turns ago, whose message is still in the window, was invisible here, which
+/// is precisely the claim a correction arriving now is correcting. Costs one
+/// extra embed of the message; the buffered rows carry staged vectors.
 async fn reconcile_candidates(
     pool: &SqlitePool,
+    embedder: &Arc<dyn Embedder>,
+    query: &str,
     flat: &[RecallHit],
     nav_paths: &[String],
     sender_ctx: &SenderContext,
+    fresh_top_k: usize,
 ) -> Vec<RecallHit> {
     let mut out: Vec<RecallHit> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -2240,6 +2301,27 @@ async fn reconcile_candidates(
             // than reconciling against nothing only if the turn then claims
             // completeness, and it never does.
             tracing::warn!(error = %err, "ingest: page-scoped candidates unavailable — reconciling on the flat hits alone");
+        },
+    }
+    match recall::recall_fresh_captures(
+        pool,
+        embedder.as_ref(),
+        query,
+        sender_ctx,
+        fresh_top_k,
+        &std::collections::HashSet::new(),
+    )
+    .await
+    {
+        Ok(hits) => {
+            for h in hits {
+                if seen.insert(h.fact_id.as_str().to_owned()) {
+                    out.push(h);
+                }
+            }
+        },
+        Err(err) => {
+            tracing::warn!(error = %err, "ingest: buffered candidates unavailable — reconciling without the fresh leg");
         },
     }
     out.truncate(RECONCILE_CANDIDATE_CAP);
@@ -2278,7 +2360,7 @@ async fn reconcile_after_reading(
     }
     let lines = candidates
         .iter()
-        .map(reconcile_candidate_line)
+        .map(|h| reconcile_candidate_line(h, &turn_now))
         .collect::<Vec<_>>()
         .join("\n");
     let turn_time = format!("{} ({})", turn_now.to_rfc3339(), turn_now.format("%A"));
@@ -7062,7 +7144,16 @@ pub async fn wiki_ingest_message(
             .as_ref()
             .map(|t| t.page_paths.clone())
             .unwrap_or_default();
-        let candidates = reconcile_candidates(pool, &recall_hits, &nav_paths, &sender_ctx).await;
+        let candidates = reconcile_candidates(
+            pool,
+            &embedder,
+            &request.text,
+            &recall_hits,
+            &nav_paths,
+            &sender_ctx,
+            policy.recall_fresh_top_k,
+        )
+        .await;
         let decision =
             reconcile_after_reading(tree, llm, &request, turn_now, &candidates, &turn_facts).await;
         if !decision.is_empty() {
@@ -12629,6 +12720,426 @@ mod tests {
             retired.superseded_by.as_ref(),
             Some(&new.fact_id),
             "and the old one is welded to its successor"
+        );
+        drop(dir);
+    }
+
+    /// A deadline still ahead of us is rendered **open**, not «closed».
+    ///
+    /// The stage's prompt tells the model to leave closed candidates alone, and
+    /// the classifier stamps a `valid_to` on every dated commitment — so
+    /// deciding "closed" on the field's presence told the reconciler to ignore
+    /// exactly the class it exists for. *«devo comprare il latte entro
+    /// venerdì»* is open until Friday, and the closure gesture arrives before
+    /// Friday or it would not be a closure.
+    #[tokio::test]
+    async fn a_deadline_still_ahead_is_rendered_open_to_the_reconciler() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let now = chrono::Utc::now();
+        let plant = |body: &'static str, valid_to: Option<String>| {
+            let tree = &tree;
+            let pool = &pool;
+            async move {
+                capture::wiki_capture(
+                    tree,
+                    pool,
+                    fake_embedder(),
+                    CaptureRequest {
+                        authored_refs: Vec::new(),
+                        wiki_id: WikiId::parse("alice").unwrap(),
+                        page: PathBuf::from("notes.md"),
+                        body: body.into(),
+                        owner: Principal::User("alice".into()),
+                        allow: Vec::new(),
+                        sender: None,
+                        fact_type: Some("plan".into()),
+                        topics: vec!["spesa".into()],
+                        dedup_threshold: Some(1.01),
+                        valid_from: None,
+                        valid_to,
+                        style: None,
+                        page_description: None,
+                        salience: None,
+                    },
+                )
+                .await
+                .expect("plant")
+                .fact_id
+            }
+        };
+        let due_friday = plant(
+            "comprare il latte entro venerdì",
+            Some((now + chrono::Duration::days(3)).to_rfc3339()),
+        )
+        .await;
+        let long_over = plant(
+            "il pacco è arrivato",
+            Some((now - chrono::Duration::days(3)).to_rfc3339()),
+        )
+        .await;
+
+        let line_of = |id: &FactId| {
+            let pool = &pool;
+            let id = id.clone();
+            async move {
+                let row = fact_index::find_by_id(pool, &id)
+                    .await
+                    .unwrap()
+                    .expect("row");
+                reconcile_candidate_line(&recall::RecallHit::from_row(row, 1.0), &now)
+            }
+        };
+        let open_line = line_of(&due_friday).await;
+        assert!(
+            open_line.contains("open") && !open_line.contains("closed"),
+            "a deadline in three days is an OPEN fact with a due date: {open_line}"
+        );
+        assert!(
+            open_line.contains("due "),
+            "and the model is still shown the deadline: {open_line}"
+        );
+        assert!(
+            line_of(&long_over).await.contains("closed"),
+            "a horizon already passed stays closed"
+        );
+        drop(dir);
+    }
+
+    /// The candidate set carries a buffered capture the recall block suppressed.
+    ///
+    /// `already_in_context` stops the recall *block* showing the agent a claim
+    /// extracted from a message it is already reading. The reconciliation stage
+    /// is a different question — *does this message close one of these?* — and
+    /// a claim made two turns ago, whose message is still in the window, is
+    /// precisely what a correction arriving now corrects. Same reasoning
+    /// `confirm_topic_closures` already writes down.
+    #[tokio::test]
+    async fn the_reconciler_sees_a_capture_the_recall_block_suppressed() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let origin = "Ho comprato il latte al Conad.";
+        capture_buffer::buffer_capture_staged(
+            &tree,
+            &pool,
+            CaptureRequest {
+                authored_refs: Vec::new(),
+                wiki_id: WikiId::parse("alice").unwrap(),
+                page: PathBuf::from("notes.md"),
+                body: "alice ha comprato il latte".into(),
+                owner: Principal::User("alice".into()),
+                allow: Vec::new(),
+                sender: None,
+                fact_type: Some("episode".into()),
+                topics: vec!["spesa".into()],
+                dedup_threshold: None,
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                page_description: None,
+                salience: None,
+            },
+            None,
+            capture_buffer::BufferStaging {
+                embedding: None,
+                origin_message_hash: Some(capture_buffer::origin_fingerprint(origin)),
+            },
+        )
+        .await
+        .expect("buffer");
+
+        // The recall block filtered it out — its message is on screen.
+        let mut in_context = std::collections::HashSet::new();
+        in_context.insert(capture_buffer::origin_fingerprint(origin));
+        let flat = recall::recall_fresh_captures(
+            &pool,
+            fake_embedder().as_ref(),
+            "il latte",
+            &SenderContext::user("alice"),
+            10,
+            &in_context,
+        )
+        .await
+        .expect("fresh");
+        assert!(
+            flat.is_empty(),
+            "the recall block is right to suppress it: {flat:?}"
+        );
+
+        let candidates = reconcile_candidates(
+            &pool,
+            &fake_embedder(),
+            "il latte",
+            &flat,
+            &[],
+            &SenderContext::user("alice"),
+            10,
+        )
+        .await;
+        assert!(
+            candidates.iter().any(|c| c.text.contains("latte")),
+            "the stage that acts on it still sees it: {candidates:?}"
+        );
+        drop(dir);
+    }
+
+    /// A supersede whose target never reached the fact store still retires it.
+    ///
+    /// The same-day flow: a claim captured this morning, corrected this
+    /// afternoon, before the light dream promoted anything.
+    /// `fact_index::mark_superseded` matches no buffer row, so this used to
+    /// touch nothing and log *«already closed»* — a retirement an operator
+    /// would read as done.
+    #[tokio::test]
+    async fn a_supersede_retires_a_target_that_is_still_buffered() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let buffered = capture_buffer::buffer_capture(
+            &tree,
+            &pool,
+            CaptureRequest {
+                authored_refs: Vec::new(),
+                wiki_id: WikiId::parse("alice").unwrap(),
+                page: PathBuf::from("notes.md"),
+                body: "la riunione è giovedì".into(),
+                owner: Principal::User("alice".into()),
+                allow: Vec::new(),
+                sender: None,
+                fact_type: Some("plan".into()),
+                topics: vec!["lavoro".into()],
+                dedup_threshold: None,
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                page_description: None,
+                salience: None,
+            },
+            None,
+        )
+        .await
+        .expect("buffer")
+        .capture_id;
+        let successor = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d77").unwrap();
+
+        assert!(
+            weld_supersede(&pool, &buffered, &successor).await,
+            "the buffered target is retired, not reported as already closed"
+        );
+        let row = capture_buffer::find_all_buffered(&pool, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|c| c.capture_id == buffered)
+            .expect("still buffered, with a closed staged window");
+        assert!(
+            row.valid_to.is_some(),
+            "its staged window closed, and promotion carries that onto the fact"
+        );
+        assert_eq!(
+            row.decay_reason.as_deref(),
+            Some(fact_index::decay::CONTRADICTED)
+        );
+        assert!(
+            !weld_supersede(&pool, &successor, &successor).await,
+            "and a target in neither store is honestly reported as nothing done"
+        );
+        drop(dir);
+    }
+
+    /// A fact owned by a GROUP can be corrected by a member of that group.
+    ///
+    /// The gate asks `acl::sender_owns`, not `owner == sender`: a principal
+    /// comparison can never match `Group("famiglia")` against `User("alice")`,
+    /// so the plain equality this used to do refused every group-owned fact,
+    /// from everybody, always — the family calendar could be read and never
+    /// corrected. Its two siblings (`apply_plan_validity_edits`,
+    /// `apply_plan_acl_changes`) already asked the right question.
+    #[tokio::test]
+    async fn a_member_may_supersede_a_fact_owned_by_their_group() {
+        let (dir, tree, pool) = setup_workdir().await;
+        sqlx::query("INSERT INTO enrollment_groups (group_id, members) VALUES (?, ?)")
+            .bind("famiglia")
+            .bind(r#"["alice"]"#)
+            .execute(&pool)
+            .await
+            .expect("enrol alice in famiglia");
+        let plant = |body: &'static str, owner: Principal| {
+            let tree = &tree;
+            let pool = &pool;
+            async move {
+                capture::wiki_capture(
+                    tree,
+                    pool,
+                    fake_embedder(),
+                    CaptureRequest {
+                        authored_refs: Vec::new(),
+                        wiki_id: WikiId::parse("alice").unwrap(),
+                        page: PathBuf::from("notes.md"),
+                        body: body.into(),
+                        owner,
+                        allow: Vec::new(),
+                        sender: None,
+                        fact_type: Some("bio".into()),
+                        topics: vec!["casa".into()],
+                        dedup_threshold: Some(1.01),
+                        valid_from: None,
+                        valid_to: None,
+                        style: None,
+                        page_description: None,
+                        salience: None,
+                    },
+                )
+                .await
+                .expect("plant")
+            }
+        };
+        let old = plant(
+            "la casa al mare si apre a giugno",
+            Principal::Group("famiglia".into()),
+        )
+        .await;
+        let new = plant(
+            "la casa al mare si apre a luglio",
+            Principal::Group("famiglia".into()),
+        )
+        .await;
+        let candidates = vec![recall::RecallHit::from_row(
+            fact_index::find_by_id(&pool, &old.fact_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            1.0,
+        )];
+
+        let applied = apply_reconciled_supersedes(
+            &pool,
+            &[LlmSupersede {
+                target: Some(old.fact_id.as_str().to_owned()),
+                successor: Some(new.fact_id.as_str().to_owned()),
+            }],
+            &candidates,
+            &[(
+                new.fact_id.clone(),
+                "la casa al mare si apre a luglio".to_owned(),
+            )],
+            &req("la casa al mare quest'anno si apre a luglio", "alice"),
+        )
+        .await;
+        assert_eq!(
+            applied, 1,
+            "a member of the owning group may correct the group's fact"
+        );
+        assert_eq!(
+            fact_index::find_by_id(&pool, &old.fact_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .superseded_by
+                .as_ref(),
+            Some(&new.fact_id),
+            "and the old one is welded to its successor"
+        );
+        drop(dir);
+    }
+
+    /// A supersede carries the retired fact's ALLOW LIST — not its owner.
+    ///
+    /// Alice retires a fact of her own by stating one about Bob. The successor
+    /// is born owned by Bob, and a reader set is `owner ∪ allow ∪ sender`:
+    /// overwriting its owner with Alice's principal would hand Bob's fact to
+    /// Alice alone, taking it from the one person the sentence is about — the
+    /// opposite of what the inheritance exists to protect.
+    #[tokio::test]
+    async fn a_supersede_leaves_the_successor_its_own_owner() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let plant = |body: &'static str, owner: Principal, allow: Vec<Principal>| {
+            let tree = &tree;
+            let pool = &pool;
+            async move {
+                capture::wiki_capture(
+                    tree,
+                    pool,
+                    fake_embedder(),
+                    CaptureRequest {
+                        authored_refs: Vec::new(),
+                        wiki_id: WikiId::parse("alice").unwrap(),
+                        page: PathBuf::from("notes.md"),
+                        body: body.into(),
+                        owner,
+                        allow,
+                        sender: Some(Principal::User("alice".into())),
+                        fact_type: Some("evento".into()),
+                        topics: vec!["salute".into()],
+                        dedup_threshold: Some(1.01),
+                        valid_from: None,
+                        valid_to: None,
+                        style: None,
+                        page_description: None,
+                        salience: None,
+                    },
+                )
+                .await
+                .expect("plant")
+            }
+        };
+        // Alice's own, private. Then the correction: it is Bob who goes.
+        let old = plant(
+            "alice ha il dentista giovedì",
+            Principal::User("alice".into()),
+            Vec::new(),
+        )
+        .await;
+        let new = plant(
+            "bob ha il dentista giovedì",
+            Principal::User("bob".into()),
+            Vec::new(),
+        )
+        .await;
+        let candidates = vec![recall::RecallHit::from_row(
+            fact_index::find_by_id(&pool, &old.fact_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            1.0,
+        )];
+
+        let applied = apply_reconciled_supersedes(
+            &pool,
+            &[LlmSupersede {
+                target: Some(old.fact_id.as_str().to_owned()),
+                successor: Some(new.fact_id.as_str().to_owned()),
+            }],
+            &candidates,
+            &[(new.fact_id.clone(), "bob ha il dentista giovedì".to_owned())],
+            &req("veramente dal dentista giovedì ci va bob", "alice"),
+        )
+        .await;
+        assert_eq!(applied, 1, "the supersede applied");
+
+        let successor = fact_index::find_by_id(&pool, &new.fact_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            successor.owner_id,
+            Principal::User("bob".into()),
+            "the fact about Bob stays Bob's — a supersede replaces what a fact \
+             says, never whose it is"
+        );
+        assert_eq!(
+            successor.sender_id,
+            Some(Principal::User("alice".into())),
+            "and it keeps the sender it was filed with"
+        );
+        let readers = crate::acl::reader_set(
+            &successor.owner_id,
+            &successor.allow_ids,
+            successor.sender_id.as_ref(),
+        );
+        assert!(
+            readers.contains("user:bob"),
+            "Bob can read the fact about Bob — the case the old inheritance broke"
+        );
+        assert!(
+            readers.contains("user:alice"),
+            "and Alice, who said it, still sees what she corrected"
         );
         drop(dir);
     }

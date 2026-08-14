@@ -903,6 +903,36 @@ pub async fn set_acl(
     }))
 }
 
+/// Replace **only** a buffered capture's `allow_ids`.
+///
+/// `owner_id` and `sender_id` are left untouched — the buffered twin of
+/// [`crate::fact_index::inherit_allow`], for a successor the promoter has not
+/// moved into the fact store yet. The capture id is stable across promotion,
+/// so correcting the buffer row is correcting the fact.
+///
+/// Returns `false` when the capture is unknown or no longer `buffered`.
+///
+/// # Errors
+///
+/// `sqlx::Error` + JSON serialization failures on `allow_ids`.
+pub async fn inherit_allow(
+    pool: &SqlitePool,
+    capture_id: &FactId,
+    allow: &[Principal],
+) -> Result<bool> {
+    let allow_json = crate::fact_index::principals_to_json(allow)?;
+    let res = sqlx::query(
+        "UPDATE capture_buffer
+            SET allow_ids = ?
+          WHERE capture_id = ? AND status = 'buffered'",
+    )
+    .bind(&allow_json)
+    .bind(capture_id.as_str())
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
 /// Restore a buffered capture's ACL columns from a
 /// [`crate::fact_index::PrevAcl`] snapshot — the revert half of
 /// [`set_acl`].
