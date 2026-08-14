@@ -88,7 +88,7 @@ memory and instructions never share a field.
 | `PEOPLE THIS TURN NAMES` | the same card, for each **other** enrolled person the turn names — gated by `recall::turn_subjects` (a word match on the roster, no model call), projected for the *reader*, and silent when a card's every fact is private to its subject | `max_mentioned_cards` (`2`), each under `max_sender_identity_chars` |
 | `YOUR RECENT HISTORY WITH THIS USER` | the agent's own log of what it has done with this person | `max_agent_history_chars` (`1 400`) |
 | `RELEVANT MEMORY` | the flat hit-list — promoted facts, then `Recent (not yet consolidated):` for the fresh slot, then `Project documentation` for the docs slot; deduplicated against the navigated pages | `recall_top_k`, `recall_fresh_top_k`, the docs slot's own budget, and — for the **promoted half only** — `relevance_floor` |
-| `NAVIGATED PAGES` | sender-projected prose the funnel collected | `char_budget`, and the walk's own stop reason |
+| `NAVIGATED PAGES` | sender-projected prose the funnel collected; a page the budget cut ends with an explicit *«this page is longer»* line, per page rather than per run | `char_budget`, and the walk's own stop reason |
 | `UPCOMING` | facts whose validity window closes inside the horizon | `due_soon_top_k`, `due_soon_horizon_hours` |
 
 An empty section is omitted, and a turn where every section is empty carries no

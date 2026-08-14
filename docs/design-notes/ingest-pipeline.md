@@ -194,6 +194,12 @@ destination instead, in four descending preferences:
    the `list_pages` inventory takes that page's own wiki. This is the one
    route by which a turn still files into a wiki that is not its owner's,
    and it fires exactly when the user pointed at the list themselves.
+   **Matched on the name AND the owner's wiki**, falling back to the name
+   alone: the inventory spans every wiki the sender may read, so `spesa.md`
+   can name Alice's shopping list and the family's at once, and a file name
+   is not an address. Matching the name alone handed *«aggiungi il detersivo
+   alla lista della spesa di famiglia»* — which arrives with
+   `owner_id: group:famiglia` — to whichever wiki the inventory listed first.
 3. **The subject's own wiki.** An identity wiki's id *is* its principal's
    id, so `user:marco` → `marco` and `group:famiglia` → `famiglia`. The
    ordinary path.
@@ -698,8 +704,13 @@ valid supersede target, else `wiki_capture`. Every fact files as prose; there
 is no structured route-or-create step.
 
 The failure contract is split by plan shape. A **legacy single-fact**
-plan keeps the old "one bad plan demotes the whole turn to skip"
-behaviour — an invalid plan, an unresolvable supersede target, or a
+plan — one the model emitted with a top-level `body`, and *only* a `body`:
+a stray `target_wiki_id` on its own no longer arms this shape, because the
+unit it synthesises carries nothing to file and the raw-message fallback
+then resolves that to the whole message, so a gesture turn (*«forget what I
+told you about the greenhouse»*, `extractions: []` by design) filed one fact
+whose body was that sentence — keeps the old "one bad plan demotes the whole
+turn to skip" behaviour — an invalid plan, an unresolvable supersede target, or a
 supersede target that vanished after recall returns the fallback skip. A
 **multi-fact** plan is more forgiving: a bad extraction is logged and
 **skipped**, and the remaining valid facts are still filed. Either way,
@@ -1367,7 +1378,12 @@ places adjacent to this block (the hermes bridge leads with it).
    active facts (`fact_index::latest_page_activity`; recall-counter
    bumps never move it) — so the model can weigh how current the prose
    is without dashboard inspection. Best-effort: a lookup failure drops
-   the annotation, never the fragment.
+   the annotation, never the fragment. A fragment the character budget cut
+   short ends with an explicit *«this page is longer»* line — per page, not
+   per run: the outcome-wide `truncated` flag says a page somewhere was cut
+   and the consumer is handed the pages one after another with no way to
+   tell which, so a list page arriving cut at an arbitrary character read as
+   a complete list.
    This is the [recall-as-navigation](recall-pipeline.md#entry-point-gathering--recall_nav-navigation-phase-1)
    runtime path: `recall_nav::gather_entry_points` builds the seed fan and
    `recall_nav::navigate` runs the funnel. The reserved `rules.md` policy

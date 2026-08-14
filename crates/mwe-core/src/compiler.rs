@@ -886,7 +886,7 @@ fn card_over_budget(page: &PagePlan, contents: &str) -> Option<usize> {
     if page_kind(page) != "identity_card" {
         return None;
     }
-    let chars = contents.chars().count();
+    let chars = served_chars(contents);
     if chars <= IDENTITY_CARD_CEILING_CHARS {
         return None;
     }
@@ -898,6 +898,44 @@ fn card_over_budget(page: &PagePlan, contents: &str) -> Option<usize> {
         "compiler: identity card is over its ceiling and will be cut when served"
     );
     Some(chars)
+}
+
+/// How many characters of a compiled page a reader is actually **served** —
+/// the quantity [`IDENTITY_CARD_CEILING_CHARS`] is a ceiling on.
+///
+/// The file on disk is not that quantity, and the gap is not small: the YAML
+/// testata, a `{{f=<uuid>}}…{{/}}` marker pair around **every** fact (~47
+/// characters each) and full `[[wiki/page|alias]]` link syntax are all
+/// machinery the read path resolves away before the prose reaches a turn
+/// (`ingest::identity_card` measures `plain_wikilinks` over the projected
+/// page). Measuring the file made a 25-fact card that sits comfortably inside
+/// its authored budget report as over it on **every compile** — and a warning
+/// that fires routinely is a warning nobody reads on the day it is true.
+///
+/// This is the upper bound of what any reader gets: per-reader redaction only
+/// removes more. Which is the right side to be on for a warning that says the
+/// card *will* be cut.
+fn served_chars(contents: &str) -> usize {
+    let body = crate::wiki::MarkdownDoc::parse(contents)
+        .map_or_else(|| contents.to_owned(), |doc| doc.body);
+    // Drop every `{{…}}` run: the fact markers are the only thing that shape
+    // appears in on a compiled page, and an unclosed one is machinery too.
+    let mut without_markers = String::with_capacity(body.len());
+    let mut rest = body.as_str();
+    while let Some(open) = rest.find("{{") {
+        without_markers.push_str(&rest[..open]);
+        let after = &rest[open + 2..];
+        let Some(close) = after.find("}}") else {
+            rest = "";
+            break;
+        };
+        rest = &after[close + 2..];
+    }
+    without_markers.push_str(rest);
+    crate::ingest::plain_wikilinks(&without_markers)
+        .trim()
+        .chars()
+        .count()
 }
 
 /// Output budget for one Cronista page rewrite — scales with the page's
@@ -2504,6 +2542,36 @@ mod tests {
         assert_eq!(
             IDENTITY_CARD_CEILING_CHARS,
             crate::ingest::IngestPolicy::default().max_sender_identity_chars
+        );
+    }
+
+    /// …and it is measured on the same quantity, not on the file.
+    ///
+    /// The testata, the `{{f=…}}` marker pair around every fact and the link
+    /// syntax are machinery the read path resolves away. Counting them made a
+    /// card that sits inside its authored budget report as over it on every
+    /// compile, and a warning that fires routinely is one nobody reads on the
+    /// day it is true.
+    #[test]
+    fn the_card_budget_measures_what_is_served_not_what_is_on_disk() {
+        let uuid = "018f1234-5678-7abc-9def-0123456789ab";
+        let file = format!(
+            "---\ntitle: Alice\ntopics: [salute, casa]\nwiki_id: alice\n---\n\n\
+             # Alice\n\n{{{{f={uuid}}}}}Alice cura l'orto{{{{/}}}} \
+             insieme a [[famiglia/giardino|suo marito]].\n"
+        );
+        let served = served_chars(&file);
+        assert_eq!(
+            served,
+            "# Alice\n\nAlice cura l'orto insieme a suo marito."
+                .chars()
+                .count(),
+            "the testata, the markers and the link syntax are not served"
+        );
+        assert!(
+            served < file.chars().count() / 2,
+            "and the gap is not small: {served} of {}",
+            file.chars().count()
         );
     }
 

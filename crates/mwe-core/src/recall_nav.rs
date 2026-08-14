@@ -493,6 +493,16 @@ pub struct NavigatedFragment {
     /// Sender-projected prose ([`render_for_sender`] applied — never raw
     /// markers), truncated to the remaining character budget.
     pub text: String,
+    /// `true` when the budget cut THIS page short.
+    ///
+    /// Per fragment, not per run, because that is the granularity the reader
+    /// needs: the outcome-wide [`NavigationOutcome::truncated`] says a page
+    /// somewhere was cut, and the consumer is handed the pages one after
+    /// another with no way to tell which. A list page arriving cut at an
+    /// arbitrary character reads as a complete list — the failure the
+    /// founder's 2026-08-09 rule names for the list inventory, here on the
+    /// page itself.
+    pub truncated: bool,
 }
 
 /// Outcome of [`navigate`]. Possibly partial: an LLM failure mid-funnel
@@ -1253,6 +1263,7 @@ async fn open_target(
         wiki_id: cand.wiki_id.clone(),
         page,
         text,
+        truncated: cut,
     });
     Ok(Some(discoveries))
 }

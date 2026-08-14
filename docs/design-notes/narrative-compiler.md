@@ -123,6 +123,15 @@ deliberately the same number as `IngestPolicy::max_sender_identity_chars`,
 pinned by a test: a card written inside its authored bound must never be
 cut when it is served.
 
+**And it is measured on the same quantity, not on the file** (`served_chars`).
+The YAML testata, the `{{f=…}}` marker pair wrapped around *every* fact
+(~47 characters each) and full `[[wiki/page|alias]]` link syntax are all
+machinery the read path resolves away before the prose reaches a turn. Counted
+in, they made a card comfortably inside its authored budget report as over it
+on every compile — and a warning that fires routinely is one nobody reads on
+the day it is true. What is measured is the upper bound of what any reader is
+served: per-reader redaction only removes more.
+
 Foundation pages are **never garbage-collected**
 ([`PageType::is_foundation`](../../crates/mwe-core/src/planner.rs)) — an
 enrolled user always has a card even with zero facts, and a buffer

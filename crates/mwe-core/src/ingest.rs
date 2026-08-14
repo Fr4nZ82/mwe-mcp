@@ -1022,9 +1022,19 @@ impl LlmIngestPlan {
                 .collect();
         }
         // Legacy single-fact shape: synthesise one unit from the top-level
-        // `body` / `target_wiki_id` fields when the model emitted them (the
-        // prompt always emits `extractions`; this keeps older plans working).
-        if self.body.is_some() || self.target_wiki_id.is_some() {
+        // fields when the model emitted a `body` (the prompt always emits
+        // `extractions`; this keeps older plans working).
+        //
+        // **The `body` is the trigger, and only the body.** A stray
+        // `target_wiki_id` used to arm this arm on its own — and the unit it
+        // synthesised has no body, which `validate_capture_plan` then resolves
+        // to `request.text` under `allow_message_fallback`. So a gesture turn
+        // whose `extractions` are empty BY DESIGN — *«forget what I told you
+        // about the greenhouse»* — filed one fact whose body was that
+        // sentence, purely because the cheap model also echoed a key the
+        // prompt forbids. A destination with nothing to put at it is not a
+        // capture.
+        if self.body.is_some() {
             return vec![CaptureUnit {
                 target_wiki_id: self.target_wiki_id.as_deref(),
                 target_page: self.target_page.as_deref(),
@@ -1197,6 +1207,9 @@ fn owner_is_the_wikis_own_principal(owner: &Principal, wiki_id: &str) -> bool {
 ///    list" names a page from the inventory, and that page's own wiki is the
 ///    answer — this is the one route by which a capture still reaches a topic
 ///    wiki from a turn, and it is exactly the case where the user said so.
+///    **Matched on the name AND the owner's wiki**, falling back to the name
+///    alone: two wikis may both hold a `spesa.md`, and the file name does not
+///    say which one the turn meant while the resolved `owner_id` does.
 /// 3. **The subject's own wiki.** An identity wiki's id IS its principal's id,
 ///    so a fact about `user:marco` belongs in `marco` and a fact the family
 ///    owns belongs in `family`. This is the ordinary path.
@@ -1224,18 +1237,29 @@ fn derive_target_wiki(
     if let Some(explicit) = unit.target_wiki_id.and_then(known) {
         return Some(explicit);
     }
+    let home = match owner {
+        Principal::User(id) | Principal::Group(id) => id.as_str(),
+    };
     if let Some(name) = honoured_page
         .map(Path::new)
         .and_then(Path::file_name)
         .and_then(std::ffi::OsStr::to_str)
-        && let Some(hit) = list_pages.iter().find(|l| l.page == name)
+        // A file name is not an address. The inventory spans every wiki the
+        // sender may read, so `spesa.md` can name Alice's shopping list AND
+        // the family's — and matching on the name alone handed the turn
+        // whichever one the inventory happened to list first. The OWNER the
+        // classifier already resolved is the tiebreak that was sitting right
+        // here unused: *«aggiungi il detersivo alla lista della spesa di
+        // famiglia»* arrives with `owner_id: group:famiglia` and used to be
+        // filed in `alice` because `a` sorts before `f`.
+        && let Some(hit) = list_pages
+            .iter()
+            .find(|l| l.page == name && l.wiki_id == home)
+            .or_else(|| list_pages.iter().find(|l| l.page == name))
         && let Some(id) = known(&hit.wiki_id)
     {
         return Some(id);
     }
-    let home = match owner {
-        Principal::User(id) | Principal::Group(id) => id.as_str(),
-    };
     known(home).or_else(|| known(&request.sender_id))
 }
 
@@ -5129,7 +5153,7 @@ async fn identity_card(
 ///
 /// Injection only. On disk the links stay: they are the navigator's rails, and
 /// the REM rewiring pass exists to *add* them, not to remove them.
-fn plain_wikilinks(text: &str) -> String {
+pub(crate) fn plain_wikilinks(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(open) = rest.find("[[") {
@@ -5561,6 +5585,13 @@ async fn navigated_tail(
             }
         }
         let _ = write!(out, ")\n{}", f.text.trim_end());
+        // A page the budget cut says so, on the page. Without it a list page
+        // arrives ending at an arbitrary character and reads as a complete
+        // list — the reader has no way to know it is looking at part of one,
+        // and neither does the agent answering from it.
+        if f.truncated {
+            out.push_str("\n[… this page is longer — the rest did not fit this turn]");
+        }
     }
     Some(NavigatedTail {
         section: Some(out),
@@ -8104,10 +8135,41 @@ mod tests {
             derive(Some("nowhere"), None, user("bob")).as_deref(),
             Some("bob")
         );
-        // 2 — the list the turn names carries its own wiki, beating the owner.
+        // 2 — the list the turn names carries its own wiki, beating the owner
+        // when no list of the owner's own wiki answers to that name.
         assert_eq!(
             derive(None, Some("spesa.md"), Principal::Group("famiglia".into())).as_deref(),
             Some("casa")
+        );
+        // …but a file name is not an address. When two wikis both hold a
+        // `spesa.md`, the owner the classifier resolved decides which one the
+        // turn meant — matching on the name alone handed «aggiungi il
+        // detersivo alla lista della spesa DI FAMIGLIA» to whichever wiki the
+        // inventory listed first.
+        let shared = [
+            fact_index::ListPage {
+                wiki_id: "casa".into(),
+                page: "spesa.md".into(),
+                description: None,
+            },
+            fact_index::ListPage {
+                wiki_id: "famiglia".into(),
+                page: "spesa.md".into(),
+                description: None,
+            },
+        ];
+        assert_eq!(
+            derive_target_wiki(
+                &unit(None, Some("spesa.md")),
+                &request,
+                &Principal::Group("famiglia".into()),
+                Some("spesa.md"),
+                &available,
+                &shared,
+            )
+            .as_deref(),
+            Some("famiglia"),
+            "the owner's own list wins over a namesake in another wiki"
         );
         // A page that is not a known list is just a page: the owner decides.
         assert_eq!(
@@ -8340,7 +8402,7 @@ mod tests {
             behaviour_rule: false,
             behaviour_scope: None,
             topics: Vec::new(),
-            body: None,
+            body: Some("alice prefers tea".into()),
             needs_disambig: false,
             needs_project_docs: false,
             disambig_candidates: Vec::new(),
@@ -8358,6 +8420,32 @@ mod tests {
             validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
                 .expect_err("bad principal");
         assert!(matches!(err, CapturePlanError::BadPrincipal(_)));
+    }
+
+    /// A destination with nothing to put at it is not a capture.
+    ///
+    /// The legacy single-fact arm used to fire on `body` OR `target_wiki_id`,
+    /// and the unit it synthesised carries no body — which
+    /// `validate_capture_plan` then resolves to the whole message under
+    /// `allow_message_fallback`. So a gesture turn whose `extractions` are
+    /// empty by design (*«forget what I told you about the greenhouse»*) filed
+    /// one fact whose body was that sentence, purely because the cheap model
+    /// also echoed a key the prompt forbids it to emit.
+    #[test]
+    fn a_stray_target_wiki_id_alone_captures_nothing() {
+        let mut plan = plan_with_supersede(None);
+        plan.body = None;
+        plan.target_wiki_id = Some("alice".into());
+        assert!(
+            plan.capture_units().is_empty(),
+            "no body, no capture — the gesture stays a gesture"
+        );
+        plan.body = Some("alice prefers tea now".into());
+        assert_eq!(
+            plan.capture_units().len(),
+            1,
+            "the legacy shape still works when it carries what it is filing"
+        );
     }
 
     /// A `target_wiki_id` that names nothing on disk is IGNORED, not fatal.
