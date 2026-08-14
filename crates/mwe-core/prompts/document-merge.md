@@ -17,6 +17,12 @@ The system prompt for the document-ingest **reduce** phase
   multi-member cluster (clusters come from a deterministic
   embedding-cosine prefilter at `merge_threshold`; singletons never spend
   a call).
+- **A cluster is always one audience.** The prefilter refuses to join two
+  candidates whose reader sets differ, before you see them, so the members
+  you are given are readable by exactly the same people. This is why the
+  re-stamp below is safe, and it is not your judgement to make: if two
+  sentences say the same thing to different people, they never arrive here
+  together.
 - **Model**: the `ingest` slot, `temperature 0.1`, `max_tokens 4096`.
 - **Input** (assembled in code): the numbered candidate bodies.
 - **Output**: one strict JSON object (Rust binding `CandidateFact`); the

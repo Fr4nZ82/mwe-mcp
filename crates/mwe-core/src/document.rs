@@ -17,6 +17,7 @@
 //! classify → segment → anchor → extract (map, per segment) →
 //! conciliate (reduce) → file (capture buffer) → notice.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1624,9 +1625,23 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     dot / (na * nb)
 }
 
-/// Greedy single-link clustering by embedding cosine — the deterministic
-/// prefilter; only multi-member clusters spend an LLM merge call.
-fn cluster_by_similarity(embeddings: &[Vec<f32>], threshold: f32) -> Vec<Vec<usize>> {
+/// Greedy clustering by embedding cosine, **within one audience** — the
+/// deterministic prefilter; only multi-member clusters spend an LLM merge call.
+///
+/// `readers[i]` is candidate `i`'s resolved reader set. Two candidates never
+/// join unless theirs are identical: same content is not the same fact when it
+/// was told by different people or is readable by different people, and a
+/// merge here has no undo — the losing members are dropped before they ever
+/// reach the capture buffer, so there is no tombstone to revert (founder,
+/// 2026-07-28). The nightly merge got this gate on 2026-08-05
+/// ([`crate::rem`]'s `reader_sets_differ`); this is the same rule on the
+/// document path, structural and ahead of the model for the same reason: a
+/// rule the model could weigh is a rule that fails on the day it matters.
+fn cluster_by_similarity(
+    embeddings: &[Vec<f32>],
+    readers: &[BTreeSet<String>],
+    threshold: f32,
+) -> Vec<Vec<usize>> {
     let mut assigned = vec![false; embeddings.len()];
     let mut clusters: Vec<Vec<usize>> = Vec::new();
     for i in 0..embeddings.len() {
@@ -1636,7 +1651,12 @@ fn cluster_by_similarity(embeddings: &[Vec<f32>], threshold: f32) -> Vec<Vec<usi
         assigned[i] = true;
         let mut cluster = vec![i];
         for (j, done) in assigned.iter_mut().enumerate().skip(i + 1) {
-            if !*done && cosine(&embeddings[i], &embeddings[j]) >= threshold {
+            // Every member is compared against the seed `i`, so an equal
+            // reader set here makes the whole cluster one audience.
+            if !*done
+                && readers.get(i) == readers.get(j)
+                && cosine(&embeddings[i], &embeddings[j]) >= threshold
+            {
                 *done = true;
                 cluster.push(j);
             }
@@ -1646,6 +1666,18 @@ fn cluster_by_similarity(embeddings: &[Vec<f32>], threshold: f32) -> Vec<Vec<usi
     clusters
 }
 
+/// Resolve the reader set a candidate would be filed with, under the same
+/// rules the file phase applies: [`candidate_acl`] for owner + allow, and the
+/// job's uploader as sender.
+fn candidate_readers(
+    cand: &CandidateFact,
+    fallback_owner: &Principal,
+    sender: Option<&Principal>,
+) -> BTreeSet<String> {
+    let (owner, allow) = candidate_acl(cand, fallback_owner);
+    crate::acl::reader_set(&owner, &allow, sender)
+}
+
 async fn reduce_candidates(
     llm: &dyn LlmBackend,
     embedder: &Arc<dyn Embedder>,
@@ -1653,13 +1685,19 @@ async fn reduce_candidates(
     policy: &DocumentPolicy,
     candidates: Vec<CandidateFact>,
     language_directive: &str,
+    fallback_owner: &Principal,
+    sender: Option<&Principal>,
 ) -> Result<Vec<CandidateFact>> {
     if candidates.len() < 2 {
         return Ok(candidates);
     }
     let bodies: Vec<String> = candidates.iter().map(|c| c.body.clone()).collect();
     let embeddings = embedder.embed_batch(&bodies).await?;
-    let clusters = cluster_by_similarity(&embeddings, policy.merge_threshold);
+    let readers: Vec<BTreeSet<String>> = candidates
+        .iter()
+        .map(|c| candidate_readers(c, fallback_owner, sender))
+        .collect();
+    let clusters = cluster_by_similarity(&embeddings, &readers, policy.merge_threshold);
     let mut out = Vec::with_capacity(clusters.len());
     for cluster in clusters {
         if cluster.len() == 1 {
@@ -2109,6 +2147,10 @@ async fn process_job(
                     candidates.append(&mut facts);
                 }
             }
+            // The audience gate needs the same fallback owner the file phase
+            // uses, so a candidate is clustered under the reader set it will
+            // actually be filed with.
+            let reduce_owner_fallback = sender.clone().unwrap_or_else(|| owner.clone());
             let reduced = reduce_candidates(
                 llm,
                 embedder,
@@ -2116,6 +2158,8 @@ async fn process_job(
                 policy,
                 candidates,
                 &language_directive,
+                &reduce_owner_fallback,
+                sender.as_ref(),
             )
             .await?;
             let json = serde_json::to_string(&reduced)
@@ -2693,13 +2737,41 @@ mod tests {
         assert_eq!(block_timestamp("frodo: ciao", None), None);
     }
 
+    /// One reader set for everybody, so only the vectors decide.
+    fn one_audience(n: usize) -> Vec<BTreeSet<String>> {
+        vec![BTreeSet::from(["user:frodo".to_owned()]); n]
+    }
+
     #[test]
     fn clustering_groups_identical_vectors() {
         let e = vec![vec![1.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
-        let clusters = cluster_by_similarity(&e, 0.9);
+        let clusters = cluster_by_similarity(&e, &one_audience(3), 0.9);
         assert_eq!(clusters.len(), 2);
         assert_eq!(clusters[0], vec![0, 1]);
         assert_eq!(clusters[1], vec![2]);
+    }
+
+    /// Identical vectors, different readers — never one fact.
+    ///
+    /// Two people telling the engine the same sentence, each privately, is two
+    /// memories: folding them retires one principal's and leaves the survivor
+    /// addressing the other's readers, with no tombstone to undo it because
+    /// the loser is dropped before it reaches the buffer.
+    #[test]
+    fn clustering_never_joins_across_audiences() {
+        let e = vec![vec![1.0, 0.0], vec![1.0, 0.0], vec![1.0, 0.0]];
+        let readers = vec![
+            BTreeSet::from(["user:frodo".to_owned()]),
+            BTreeSet::from(["user:sam".to_owned()]),
+            // Same owner as the first, but shared with the team.
+            BTreeSet::from(["user:frodo".to_owned(), "group:team".to_owned()]),
+        ];
+        let clusters = cluster_by_similarity(&e, &readers, 0.9);
+        assert_eq!(
+            clusters,
+            vec![vec![0], vec![1], vec![2]],
+            "same content, three audiences, three facts"
+        );
     }
 
     #[tokio::test]
@@ -3082,6 +3154,7 @@ mod tests {
             body: "Gimli si occupa della prenotazione del viaggio.".into(),
             ..first.clone()
         };
+        let uploader = Principal::User("gimli".into());
         let out = reduce_candidates(
             &llm,
             &embedder,
@@ -3089,6 +3162,8 @@ mod tests {
             &policy(),
             vec![first, second],
             "LANGUAGE-DIRECTIVE",
+            &uploader,
+            Some(&uploader),
         )
         .await
         .expect("reduce");

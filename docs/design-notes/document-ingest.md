@@ -169,6 +169,16 @@ on the **`ingest` LLM slot** (workhorse tier — same slot, no new config).
    testata seeds — re-stamped unconditionally from the first cluster
    member in code: the merge model returns only the body, and anything it
    emits beyond it is discarded).
+   **A cluster is always one audience.** The prefilter refuses to join two
+   candidates whose reader sets differ (`acl::reader_set` over the ACL each
+   would be filed with, resolved by the same `candidate_acl` the file phase
+   uses) — the same structural gate the
+   [nightly merge](rem-cycle.md#revisor--conciliatore-sub-job) got, and for the
+   same reason: same content is not the same fact when it is readable by
+   different people, and here the losing members are dropped before they
+   reach the buffer, so unlike the nightly merge there is no tombstone to
+   revert. It is what makes the re-stamp above safe, and it is deliberately
+   not the model's judgement — the members never arrive together.
 6. **File** — reduced facts land in the **capture buffer**
    ([narrative buffer](narrative-buffer.md)) with
    `source_kind = "document"` and `source_ref` = the catalog id / url
