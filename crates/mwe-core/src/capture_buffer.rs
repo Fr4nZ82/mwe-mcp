@@ -547,8 +547,12 @@ pub async fn count_buffered(pool: &SqlitePool) -> Result<i64> {
     Ok(n)
 }
 
-/// Every buffered capture across all wikis, oldest first (capped). The light
-/// dream's global drain query — one pass per cycle rather than per wiki.
+/// Every buffered capture across all wikis, **oldest first** (capped). The
+/// light dream's global drain query — one pass per cycle rather than per wiki.
+///
+/// Oldest-first is the *drain's* order and only the drain's: a queue is served
+/// from the front. Anything that **reads** the buffer to answer a question
+/// about now wants [`find_recent_buffered`] instead — see the note there.
 ///
 /// # Errors
 ///
@@ -556,6 +560,33 @@ pub async fn count_buffered(pool: &SqlitePool) -> Result<i64> {
 pub async fn find_all_buffered(pool: &SqlitePool, limit: i64) -> Result<Vec<BufferedCapture>> {
     let rows: Vec<BufferRow> = sqlx::query_as(&format!(
         "{SELECT_COLS} WHERE status = 'buffered' ORDER BY captured_at, capture_id LIMIT ?"
+    ))
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(decode).collect()
+}
+
+/// Every buffered capture across all wikis, **newest first** (capped) — the
+/// read side's selection query.
+///
+/// The twin of [`find_all_buffered`], and the difference is the whole point.
+/// Where a cut list is shown to a model or an operator, **the order IS the
+/// selection** (founder, 2026-08-09), so it has to be the axis the reader
+/// cares about. Everything that reads this table reads it to answer *what was
+/// just said and is not on a page yet* — the recall bridge, the reconciliation
+/// stage, the dashboard's consolidating list. Serving those from the drain's
+/// oldest-first order threw away exactly the rows they exist for, and only
+/// once the buffer grew past the cap: invisible on a quiet deployment, wrong
+/// on a busy one, and wrong hardest when the light dream is lagging — which is
+/// precisely when the buffer matters most.
+///
+/// # Errors
+///
+/// DB or decode errors.
+pub async fn find_recent_buffered(pool: &SqlitePool, limit: i64) -> Result<Vec<BufferedCapture>> {
+    let rows: Vec<BufferRow> = sqlx::query_as(&format!(
+        "{SELECT_COLS} WHERE status = 'buffered' ORDER BY captured_at DESC, capture_id DESC LIMIT ?"
     ))
     .bind(limit)
     .fetch_all(pool)

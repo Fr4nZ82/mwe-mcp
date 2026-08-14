@@ -66,6 +66,21 @@ pub const DEFAULT_DEDUP_THRESHOLD: f32 = 0.85;
 /// capture time, store the vector — option C) is a tracked follow-up.
 const FRESH_CANDIDATE_CAP: i64 = 32;
 
+/// How many buffered rows the fresh slot **scans** before the ACL filter runs.
+///
+/// Wider than [`FRESH_CANDIDATE_CAP`] on purpose. The cap bounds how many
+/// captures get *embedded*; this bounds how many get *looked at*, and the two
+/// must not be the same number, because the ACL filter runs in Rust
+/// ([`can_read`] is the single judge of who may read what, and duplicating it
+/// in SQL is how the two drift apart). With one number, a cut of 32 taken
+/// before the filter let one busy sender's backlog empty another reader's
+/// bridge entirely — they never reached the filter to be rejected, they simply
+/// used up the window. The scan is newest-first, so what a wide window buys is
+/// the *recent* rows of everyone rather than all of one.
+///
+/// It still bites in principle, and says so in the log when it does.
+const FRESH_SCAN_CAP: i64 = 256;
+
 /// Tokenize `text` into a set of character n-grams (window = `n`).
 ///
 /// Behaviour:
@@ -1807,7 +1822,9 @@ pub async fn wiki_buffered_full_for(
 ) -> RecallResult<Vec<BufferedCapture>> {
     let candidates = match filters.wiki_id.as_deref() {
         Some(wiki_id) => capture_buffer::find_buffered_in_wiki(pool, wiki_id).await?,
-        None => capture_buffer::find_all_buffered(pool, FRESH_CANDIDATE_CAP).await?,
+        // Newest first: this is the "consolidating" list, and if it is cut the
+        // operator wants what just landed, not the oldest stuck rows.
+        None => capture_buffer::find_recent_buffered(pool, FRESH_SCAN_CAP).await?,
     };
     let visible: Vec<BufferedCapture> = candidates
         .into_iter()
@@ -1936,14 +1953,27 @@ pub async fn recall_fresh_captures<S: std::hash::BuildHasher + Sync>(
     if fresh_top_k == 0 {
         return Ok(Vec::new());
     }
-    let candidates = capture_buffer::find_all_buffered(pool, FRESH_CANDIDATE_CAP).await?;
+    // Newest first, and a scan window wider than the embed cap — this slot's
+    // whole job is the claim just made and not yet on a page. See
+    // [`FRESH_SCAN_CAP`] for why the two numbers differ.
+    let candidates = capture_buffer::find_recent_buffered(pool, FRESH_SCAN_CAP).await?;
     if candidates.is_empty() {
         return Ok(Vec::new());
+    }
+    if i64::try_from(candidates.len()).unwrap_or(i64::MAX) >= FRESH_SCAN_CAP {
+        tracing::warn!(
+            scan_cap = FRESH_SCAN_CAP,
+            "recall: fresh-capture scan window is full — buffered captures older than the \
+             newest {FRESH_SCAN_CAP} are not offered this turn"
+        );
     }
     let q_emb = embedder.embed(query).await?;
     let mut scored: Vec<(f32, BufferedCapture)> = Vec::new();
     let mut suppressed = 0_usize;
     for cap in candidates {
+        if scored.len() >= usize::try_from(FRESH_CANDIDATE_CAP).unwrap_or(usize::MAX) {
+            break;
+        }
         if !buffered_visible_to(&cap, sender) {
             continue;
         }
@@ -2560,6 +2590,83 @@ mod tests {
     }
 
     // ---------- recall_fresh_captures (mid-range bridge) ----------
+
+    /// The bridge offers the claim just made, not the oldest one still queued.
+    ///
+    /// The slot exists for the fact captured minutes ago that no page carries
+    /// yet. It reused the light dream's **drain** query — oldest first — so
+    /// once the buffer held more rows than the cap, the newest capture was the
+    /// one thrown away: invisible while the light dream keeps up, wrong exactly
+    /// when it is lagging, which is when the buffer matters most.
+    #[tokio::test]
+    async fn the_fresh_slot_offers_the_newest_captures_not_the_oldest() {
+        use crate::capture::CaptureRequest;
+        use crate::capture_buffer::buffer_capture;
+        use crate::types::WikiId;
+        use crate::wiki::WikiTree;
+        use std::path::PathBuf;
+
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(&wikis).unwrap();
+        let d = wikis.join("alice");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("_meta.md"),
+            "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: alice\nacl_default: 'user:alice'\n---\n",
+        )
+        .unwrap();
+        std::fs::write(d.join("index.md"), "# index\n").unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+
+        let mk = |body: String| CaptureRequest {
+            authored_refs: Vec::new(),
+            wiki_id: WikiId::parse("alice").unwrap(),
+            page: PathBuf::from("index.md"),
+            body,
+            owner: "user:alice".parse::<Principal>().unwrap(),
+            allow: Vec::new(),
+            sender: None,
+            fact_type: Some("episode".into()),
+            topics: vec!["varie".into()],
+            dedup_threshold: None,
+            valid_from: None,
+            valid_to: None,
+            style: None,
+            page_description: None,
+            salience: None,
+        };
+        // More pending rows than the embed cap, oldest written first.
+        let total = usize::try_from(FRESH_CANDIDATE_CAP).unwrap() + 4;
+        for n in 0..total {
+            buffer_capture(&tree, &pool, mk(format!("nota numero {n}")), None)
+                .await
+                .expect("buffer");
+        }
+
+        let hits = recall_fresh_captures(
+            &pool,
+            embedder_default().as_ref(),
+            "nota",
+            &SenderContext::user("alice"),
+            usize::try_from(FRESH_CANDIDATE_CAP).unwrap(),
+            &HashSet::new(),
+        )
+        .await
+        .expect("fresh");
+        let texts: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
+        let last = format!("nota numero {}", total - 1);
+        assert!(
+            texts.iter().any(|t| t.contains(&last)),
+            "the most recent capture is offered: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("nota numero 0")),
+            "and the oldest is the one the cap drops, not the newest: {texts:?}"
+        );
+        drop(dir);
+    }
 
     /// The fresh slot must not restate, as an extracted fact, something the
     /// agent is already reading in the message that produced it — and must

@@ -209,7 +209,8 @@ changed only with a new measurement (`mwe-core::recall`, `mwe-core::recall_nav`)
 | `SUBJECT_COVERAGE_UPLIFT` | `0.15` | multiplies per turn-subject covered beyond the first |
 | `WEIGHT_TOPIC_PAGE` | `0.8` | classified-topic seeds |
 | `WEIGHT_SITUATIONAL_PAGE` | `0.5` | host-supplied situational seeds |
-| `FRESH_CANDIDATE_CAP` | `32` | how many pending buffered captures the fresh slot ranks per turn |
+| `FRESH_CANDIDATE_CAP` | `32` | how many pending buffered captures the fresh slot **embeds** per turn |
+| `FRESH_SCAN_CAP` | `256` | how many it **scans** (newest first) before the ACL filter — wider on purpose, see [The mid-range bridge](#the-mid-range-bridge--the-fresh-slot) |
 
 ## The two corpora
 
@@ -535,7 +536,7 @@ it. A turn that *names* its project comes through
 | `wiki_facts_for` | constant `1.0` | post-fetch | ✗ (audit/list view) | structured SQL query |
 | `wiki_recall` | delegates to `wiki_search` today | inherited | ✓ inherited | semantic recall the LLM ingest uses (stable call site) |
 | `wiki_multi_hop_facts` | seed-fact + per-hop `wiki_search` | inherited | ✓ inherited | early multi-hop link resolution; lives in [`recall.rs`](../../crates/mwe-core/src/recall.rs) and returns a `MultiHopOutcome`. Exported and tested, but the agentic chat and `wiki_ingest_message` do not call it yet, pending the cap-10-hop traversal protection that gates the consumer hookup (see [What is intentionally out of scope](#what-is-intentionally-out-of-scope)). |
-| `recall_fresh_captures` | cosine over the buffered captures' **staged** vectors (recomputed only when a row has none) | post-fetch via `buffered_visible_to` → [`acl::can_read`] | ✗ (not `fact_index` rows yet) | mid-range "fresh" slot — un-promoted captures, minus any whose originating message the turn is already showing; **ingest path only** (see [The mid-range bridge](#the-mid-range-bridge--the-fresh-slot)) |
+| `recall_fresh_captures` | cosine over the buffered captures' **staged** vectors (recomputed only when a row has none), scanned newest first | post-fetch via `buffered_visible_to` → [`acl::can_read`] | ✗ (not `fact_index` rows yet) | mid-range "fresh" slot — un-promoted captures, minus any whose originating message the turn is already showing; **ingest path only** (see [The mid-range bridge](#the-mid-range-bridge--the-fresh-slot)) |
 | `recall_due_soon` | constant `1.0`, ordered by `valid_to` imminence | post-fetch | ✗ (mechanical time-driven pull — counting it would inflate recency without semantic re-use) | the **due-soon slot**: facts whose validity window closes/fires inside `[now, now + horizon]`, most imminent first — a dated commitment surfaces even when nothing in the turn resembles it. Backed by `fact_index::find_due_between`; `now` is caller-supplied (one clock per turn), the horizon is an operator setting (recall-settings panel); the window reads `valid_to`, which stays the only stored firing time — a separate `remind_at` column was considered for reminder delivery and declined, because a `valid_to` on a day boundary means "a date, no hour stated" and the hour is then a delivery-side policy, not a per-fact datum. Wired into the ingest turn as the recall block's `UPCOMING` slot — pulled on **every** LLM-routed turn (time-driven, no LLM cost), see [ingest-pipeline.md](ingest-pipeline.md#the-recall-block--recalled-memory-the-rules-field-is-separate). |
 
 ### The relevance floor — a fourth gate, but on rendering, not on recall
@@ -727,13 +728,32 @@ topic recall — the **mid-range gap**: a claim said a few turns ago, already ou
 of the consumer's recent window but not yet a durable fact.
 
 `recall_fresh_captures` closes it. It fetches the pending buffered captures
-([`capture_buffer::find_all_buffered`](../../crates/mwe-core/src/capture_buffer.rs),
-capped at `FRESH_CANDIDATE_CAP`), ACL-filters each via `buffered_visible_to`,
-cosine-ranks them against the query using the **vector staged when the claim
-was buffered**, and returns the top `recall_fresh_top_k` as `RecallHit`s
-flagged `fresh: true`. No `fact_index` row exists yet, so it does **not** bump
-recall counters and the hits carry no published-page offsets
-(`region_start`/`region_end` are `None`).
+**newest first**
+([`capture_buffer::find_recent_buffered`](../../crates/mwe-core/src/capture_buffer.rs)),
+ACL-filters each via `buffered_visible_to`, cosine-ranks them against the query
+using the **vector staged when the claim was buffered**, and returns the top
+`recall_fresh_top_k` as `RecallHit`s flagged `fresh: true`. No `fact_index` row
+exists yet, so it does **not** bump recall counters and the hits carry no
+published-page offsets (`region_start`/`region_end` are `None`).
+
+**Newest first, and two caps rather than one.** The slot used to reuse the
+light dream's *drain* query — oldest first, because a queue is served from the
+front — and cut it at `FRESH_CANDIDATE_CAP`. That is the wrong axis for a slot
+whose entire subject is *the claim just made*: once the buffer held more rows
+than the cap, the newest capture was the one thrown away, and it stayed correct
+only while the dream kept up. Now `FRESH_SCAN_CAP` (256) bounds how many rows
+are **looked at** and `FRESH_CANDIDATE_CAP` (32) bounds how many are
+**embedded**. The two must differ, because the ACL filter runs in Rust —
+[`acl::can_read`] is the single judge of who may read what, and duplicating it
+in SQL is how the two drift — so a single cut taken before the filter let one
+busy sender's backlog use up another reader's whole window without a single row
+ever reaching the filter to be rejected. The scan window still bites in
+principle, and logs when it does.
+
+The same query serves the reconciliation stage's buffered leg
+([ingest-pipeline.md](ingest-pipeline.md)) and the dashboard's *consolidating*
+list, for the same reason: wherever a cut list is shown, the order is the
+selection.
 
 **The vector is stored, not recomputed** (2026-08-05). The slot used to embed
 every visible pending capture on every conversational turn — up to
