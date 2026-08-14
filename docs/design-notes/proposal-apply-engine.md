@@ -448,6 +448,17 @@ field in `answers` (default `paragraph_to_file`):
   parent's own `index.md`, a page with no active fact, and a page whose
   markers on disk disagree with `fact_index`. The **page-count floor**
   lives in the REM caller (`auto_promote_group_min_pages`), not here.
+
+  Its **revert** (and `file_to_subwiki`'s) may find more in the newborn
+  directory than the receipt put there, and that is not a defect of the wiki:
+  `planner::seed_wiki_buffers` gives every non-smart wiki a buffer node on
+  `notes.md`, and a wiki born by promotion is force-dirtied at birth, so the
+  next hourly compile writes one. `compiler_seeded_pages` accounts for the
+  reserved pages the compiler owns — while they carry **no facts**, the rule
+  `index.md` always had, since the revert would have nowhere to put a fact
+  that landed on one. Listing only the receipt's own files closed the undo
+  window one compile after the promotion: regroup at 03:00, compile at 04:00,
+  click Undo at 09:00 → refused, on a wiki nobody had touched.
 - **`pages_move_wiki`** — the same move into a sub-wiki that **already
   exists**. No floor: the home is there. The target must be a child of
   the source wiki — regrouping rearranges a wiki's own subtree, it never
@@ -505,12 +516,18 @@ nothing changes pages — the validity fields are part of the page
 fingerprint, so the closure (and its revert) recompiles exactly the
 touched page on the next dream.
 
-**A page that crosses a wiki line also takes its inbound links with it.**
+**A page that changes address also takes its inbound links with it.**
 Every such variant closes with a corpus pass (`retarget_links_after_move`)
-that swaps the **wiki half** of any `[[old_wiki/page]]` still naming it,
-keeping everything after the first `/` byte-for-byte so a `.md` suffix or
-an `|display` alias survives, and repairing the byte offsets of each
-rewritten file immediately after. A bare `[[wiki_id]]` names the wiki and
+that rewrites any `[[old_wiki/page]]` still naming it, and repairs the byte
+offsets of each rewritten file immediately after. When only the wiki changed
+only the **wiki half** is swapped, everything after the first `/` kept
+byte-for-byte so a `.md` suffix or an `|display` alias survives. **A page
+merge changes the page name too** — the husk's address stops existing
+altogether — so there the address is rebuilt, carrying the suffix and the
+alias across; `page_merge` was for a long time the one wiki-crossing variant
+that skipped this pass entirely, while this page said every one of them makes
+it, so every `[[bruno/salute]]` written elsewhere became a dead rail the
+moment the husk was deleted. A bare `[[wiki_id]]` names the wiki and
 is never touched by a page move. Not cosmetic: an inbound link somebody
 wrote is one of only three ways to reach a page at all — beside a fact hit
 and a match on the page's own card — so a link left behind strands its

@@ -1166,27 +1166,58 @@ struct MovedPageAddress {
     old_wiki_id: String,
     new_wiki_id: String,
     page: String,
+    /// The page stem at the NEW address. Equal to `page` for a move that
+    /// only changed wiki; different when the page was merged into another.
+    new_page: String,
 }
 
 impl MovedPageAddress {
-    fn new(old_wiki_id: &str, new_wiki_id: &str, page: &std::path::Path) -> Self {
+    fn stem(page: &std::path::Path) -> String {
         let page = page.to_string_lossy().replace('\\', "/");
+        page.strip_suffix(".md").unwrap_or(&page).to_owned()
+    }
+
+    /// A page that changed wiki and kept its name.
+    fn new(old_wiki_id: &str, new_wiki_id: &str, page: &std::path::Path) -> Self {
+        let page = Self::stem(page);
         Self {
             old_wiki_id: old_wiki_id.to_owned(),
             new_wiki_id: new_wiki_id.to_owned(),
-            page: page.strip_suffix(".md").unwrap_or(&page).to_owned(),
+            new_page: page.clone(),
+            page,
+        }
+    }
+
+    /// A page that became **another page** — the merge case, where the old
+    /// address stops existing entirely.
+    fn renamed(
+        old_wiki_id: &str,
+        old_page: &std::path::Path,
+        new_wiki_id: &str,
+        new_page: &std::path::Path,
+    ) -> Self {
+        Self {
+            old_wiki_id: old_wiki_id.to_owned(),
+            new_wiki_id: new_wiki_id.to_owned(),
+            page: Self::stem(old_page),
+            new_page: Self::stem(new_page),
         }
     }
 }
 
 /// Rewrite one body's wikilinks that still name a moved page at its **old**
-/// wiki, returning the new body when anything changed.
+/// address, returning the new body when anything changed.
 ///
-/// Only the wiki half of `[[wiki_id/page]]` is swapped; everything after the
-/// first `/` is kept byte-for-byte, so a `.md` suffix, an odd spacing or an
-/// `|display` alias survives untouched — this repairs an address, it does not
-/// restyle a link. A **bare** `[[wiki_id]]` names the wiki, not a page, and is
-/// never touched by a page move.
+/// When only the wiki changed, only the wiki half of `[[wiki_id/page]]` is
+/// swapped and everything after the first `/` is kept byte-for-byte, so a
+/// `.md` suffix, an odd spacing or an `|display` alias survives untouched —
+/// this repairs an address, it does not restyle a link. When the **page name**
+/// changed too (a merge: the old page stops existing), the address has to be
+/// rebuilt, and only the `.md` suffix and the `|display` alias are carried
+/// across; there is no old spelling left to preserve.
+///
+/// A **bare** `[[wiki_id]]` names the wiki, not a page, and is never touched
+/// by a page move.
 fn retarget_wikilinks(body: &str, moves: &[MovedPageAddress]) -> Option<String> {
     let bytes = body.as_bytes();
     let mut out = String::with_capacity(body.len());
@@ -1216,7 +1247,24 @@ fn retarget_wikilinks(body: &str, moves: &[MovedPageAddress]) -> Option<String> 
             {
                 out.push_str(&body[pos..inner_start]);
                 out.push_str(&m.new_wiki_id);
-                out.push_str(&inner[head.find('/').unwrap_or(0)..]);
+                if m.new_page == m.page {
+                    // Pure address repair: everything after the wiki is the
+                    // author's bytes, and they still describe the page.
+                    out.push_str(&inner[head.find('/').unwrap_or(0)..]);
+                } else {
+                    out.push('/');
+                    out.push_str(&m.new_page);
+                    // `page` is `rest` with the suffix already stripped above,
+                    // so the length difference is the suffix.
+                    if page.len() != rest.len() {
+                        out.push_str(".md");
+                    }
+                    // `|display` is what the author wanted the reader to see,
+                    // and a merge does not change what the sentence meant.
+                    if let Some(alias) = inner.get(head.len()..) {
+                        out.push_str(alias);
+                    }
+                }
                 pos = inner_end;
                 changed = true;
             }
@@ -1630,6 +1678,26 @@ async fn apply_page_merge(
             new_region_end: i64::try_from(off.1).unwrap_or(i64::MAX),
         });
     }
+
+    // Every `[[husk]]` written elsewhere now points at a file that does not
+    // exist. This is the one wiki-crossing variant that never did this, while
+    // the module doc above promised that every one of them does — and since
+    // the directory listing was retired a page is reachable by exactly three
+    // routes (a fact hit, its own card, an authored link), so a dead rail is
+    // a third of a page's reachability gone. The rename half of
+    // `MovedPageAddress` exists for this call: unlike a move, the husk's
+    // address stops existing altogether.
+    retarget_links_after_move(
+        pool,
+        tree,
+        &[MovedPageAddress::renamed(
+            &ctx.source_wiki_id,
+            &source_page_path,
+            &target_wiki_str,
+            &target_page_path,
+        )],
+    )
+    .await;
 
     // Plan-sync seam: the survivor gains the facts (seeded in ITS wiki —
     // family-scope merges may cross the line), the husk leaves the plan +
@@ -2231,42 +2299,21 @@ async fn revert_file_to_subwiki(
         .locate(&parent_wiki_id)
         .map_err(|e| RevertError::HandlerData(format!("parent wiki not found: {e}")))?;
     let new_wiki_dir = parent_handle.abs_dir().join(&spec.new_wiki_slug);
-    let new_meta_abs = new_wiki_dir.join("_meta.md");
-    let new_index_abs = new_wiki_dir.join("index.md");
     // The page the receipt carried: its own name today, `index.md` for a
     // receipt from before the map rule. Everything downstream — the
     // pristine check, the marker check, the teardown and the plan slug —
     // reads it from here, so one revert undoes either era.
     let carried_page = carried_page_of(&spec).to_owned();
-    let carried_is_index = carried_page == wiki::INDEX_FILENAME;
     let carried_abs = new_wiki_dir.join(&carried_page);
     let source_abs = parent_handle.abs_dir().join(&source_page_path);
     let source_rel = wiki::workdir_relative_source_path(tree.workdir(), &source_abs);
     let carried_rel = wiki::workdir_relative_source_path(tree.workdir(), &carried_abs);
 
-    // 1. Sub-wiki dir is pristine: exactly what the apply made.
-    let entries: Vec<PathBuf> = std::fs::read_dir(&new_wiki_dir)
-        .map_err(|e| {
-            RevertError::HandlerIo(format!("read {dir}: {e}", dir = new_wiki_dir.display()))
-        })?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .collect();
-    let mut names: Vec<String> = entries
-        .iter()
-        .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_owned))
-        .collect();
-    names.sort();
-    let mut expected_names = vec!["_meta.md".to_owned(), wiki::INDEX_FILENAME.to_owned()];
-    if !carried_is_index {
-        expected_names.push(carried_page.clone());
-    }
-    expected_names.sort();
-    if names != expected_names {
-        return Err(RevertError::HandlerData(format!(
-            "sub-wiki {dir} holds {names:?}, the receipt made {expected_names:?} — refusing to delete; clean up manually",
-            dir = new_wiki_dir.display(),
-        )));
-    }
+    // 1. Sub-wiki dir holds what the apply made, plus at most the reserved
+    //    pages the compiler seeds on its own schedule — and none of those may
+    //    carry a fact.
+    let from_the_receipt: HashSet<&str> = std::iter::once(carried_page.as_str()).collect();
+    compiler_seeded_pages(&new_wiki_dir, &from_the_receipt)?;
 
     // 2. Marker set on the carried page matches the spec.
     let carried_bytes = std::fs::read_to_string(&carried_abs)
@@ -2328,16 +2375,12 @@ async fn revert_file_to_subwiki(
         }
     }
 
-    // Tear down the now-orphan sub-wiki directory.
-    std::fs::remove_file(&new_meta_abs)
-        .map_err(|e| RevertError::HandlerIo(format!("remove _meta.md: {e}")))?;
-    if !carried_is_index {
-        std::fs::remove_file(&carried_abs)
-            .map_err(|e| RevertError::HandlerIo(format!("remove {carried_page}: {e}")))?;
-    }
-    std::fs::remove_file(&new_index_abs)
-        .map_err(|e| RevertError::HandlerIo(format!("remove index.md: {e}")))?;
-    std::fs::remove_dir(&new_wiki_dir).map_err(|e| {
+    // Tear down the now-orphan sub-wiki directory. Whole, like the sibling
+    // revert does: guard 1 has already established that everything inside is
+    // either the receipt's or a fact-free page the compiler seeded, and
+    // naming the files one by one is what made a seeded `notes.md` an error
+    // rather than a cleanup.
+    std::fs::remove_dir_all(&new_wiki_dir).map_err(|e| {
         RevertError::HandlerIo(format!(
             "remove sub-wiki dir {dir}: {e}",
             dir = new_wiki_dir.display()
@@ -2812,6 +2855,73 @@ fn subwiki_meta_extra(context: &Value) -> serde_yaml::Mapping {
     extra
 }
 
+/// Split a newborn sub-wiki's directory listing into what the receipt made
+/// and what **the compiler** added afterwards, refusing when either grew a
+/// fact the revert would have nowhere to put.
+///
+/// The reserved pages are the compiler's to seed on its own schedule:
+/// `planner::seed_wiki_buffers` gives every non-smart wiki a buffer node on
+/// `notes.md`, and a wiki born by promotion is force-dirtied at birth — so the
+/// **next hourly compile** writes `notes.md` into it. A guard that lists the
+/// receipt's own files and nothing else therefore refused every revert from
+/// one compile after the promotion: regroup at 03:00, compile at 04:00, click
+/// Undo at 09:00 → refused, on a wiki nobody had touched. The undo window is
+/// measured in days and it was closing in an hour.
+///
+/// They are disposable in exactly the way `index.md` already was — *while*
+/// they carry no facts of their own. One that does means the wiki started a
+/// life the revert cannot undo, and refusing is right.
+///
+/// Returns the names that are safe to remove with the directory; `Err` when
+/// something arrived that is neither the receipt's nor the compiler's, or when
+/// a compiler page grew facts.
+fn compiler_seeded_pages(
+    dir: &std::path::Path,
+    from_the_receipt: &HashSet<&str>,
+) -> Result<Vec<String>, RevertError> {
+    let mut seeded = Vec::new();
+    let mut unexpected: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| RevertError::HandlerIo(format!("read {d}: {e}", d = dir.display())))?
+    {
+        let name = entry
+            .map_err(|e| RevertError::HandlerIo(format!("read dir entry: {e}")))?
+            .file_name()
+            .to_string_lossy()
+            .into_owned();
+        if name == "_meta.md" || from_the_receipt.contains(name.as_str()) {
+            continue;
+        }
+        if wiki::names_reserved_page(std::path::Path::new(&name)) {
+            let abs = dir.join(&name);
+            let bytes = std::fs::read_to_string(&abs)
+                .map_err(|e| RevertError::HandlerIo(format!("read {p}: {e}", p = abs.display())))?;
+            let facts = marker_set(&bytes);
+            if !facts.is_empty() {
+                return Err(RevertError::HandlerData(format!(
+                    "sub-wiki {d} has {n} fact(s) on its own {name} — reverting would strand \
+                     them; dissolve it by hand instead",
+                    d = dir.display(),
+                    n = facts.len(),
+                )));
+            }
+            seeded.push(name);
+            continue;
+        }
+        unexpected.push(name);
+    }
+    if !unexpected.is_empty() {
+        unexpected.sort();
+        return Err(RevertError::HandlerData(format!(
+            "sub-wiki {d} grew entries {unexpected:?} since it was created — refusing to delete \
+             it; dissolve it by hand instead",
+            d = dir.display(),
+        )));
+    }
+    seeded.sort();
+    Ok(seeded)
+}
+
 /// Revert a `pages_to_subwiki` promotion: every carried page goes back
 /// to the parent under its old name and the newborn wiki is removed.
 ///
@@ -2853,43 +2963,12 @@ async fn revert_pages_to_subwiki(
         .map_err(|e| RevertError::HandlerData(format!("parent wiki not found: {e}")))?;
     let wiki_dir = parent_handle.abs_dir().join(&spec.new_wiki_slug);
 
-    // 1. Nothing in the directory beyond _meta.md, index.md, and the
-    //    pages we carried in.
+    // 1 + 2. Nothing in the directory beyond `_meta.md`, the pages the
+    //        receipt carried, and the reserved pages the compiler seeds on
+    //        its own schedule — and none of those seeded pages may carry a
+    //        fact, which is the rule `index.md` always had.
     let carried: HashSet<&str> = spec.pages.iter().map(|p| p.page.as_str()).collect();
-    let mut unexpected: Vec<String> = Vec::new();
-    for entry in std::fs::read_dir(&wiki_dir)
-        .map_err(|e| RevertError::HandlerIo(format!("read {dir}: {e}", dir = wiki_dir.display())))?
-    {
-        let entry = entry
-            .map_err(|e| RevertError::HandlerIo(format!("read dir entry: {e}")))?
-            .file_name();
-        let name = entry.to_string_lossy().into_owned();
-        if name != "_meta.md" && name != "index.md" && !carried.contains(name.as_str()) {
-            unexpected.push(name);
-        }
-    }
-    if !unexpected.is_empty() {
-        unexpected.sort();
-        return Err(RevertError::HandlerData(format!(
-            "sub-wiki {dir} grew entries {unexpected:?} since it was created — \
-             refusing to delete it; dissolve it by hand instead",
-            dir = wiki_dir.display(),
-        )));
-    }
-
-    // 2. The front page must hold no facts of its own.
-    let index_abs = wiki_dir.join("index.md");
-    let index_bytes = std::fs::read_to_string(&index_abs)
-        .map_err(|e| RevertError::HandlerIo(format!("read {}: {e}", index_abs.display())))?;
-    let index_facts = marker_set(&index_bytes);
-    if !index_facts.is_empty() {
-        return Err(RevertError::HandlerData(format!(
-            "sub-wiki {dir} has {n} fact(s) on its own index.md — reverting would strand them; \
-             dissolve it by hand instead",
-            dir = wiki_dir.display(),
-            n = index_facts.len(),
-        )));
-    }
+    compiler_seeded_pages(&wiki_dir, &carried)?;
 
     // 3 + 4. Per-page guards, all of them before any write.
     let mut restores: Vec<(PathBuf, PathBuf, &GroupedPage)> = Vec::with_capacity(spec.pages.len());
@@ -5459,6 +5538,8 @@ mod tests {
         }
     }
 
+    /// A page that appeared after the apply means the wiki started a life of
+    /// its own — refuse. The compiler's own seeding does not count as one.
     #[tokio::test]
     async fn revert_file_to_subwiki_refuses_when_subwiki_has_extra_file() {
         let (_dir, tree, pool) = setup().await;
@@ -5473,16 +5554,17 @@ mod tests {
         let spec = apply_wiki_promote(&pool, &tree, &ctx, &ans)
             .await
             .expect("apply");
+        let dir = tree.wikis_dir().join("alice").join("giardinaggio");
 
-        // Simulate user adding a page to the new sub-wiki between apply and revert.
-        std::fs::write(
-            tree.wikis_dir()
-                .join("alice")
-                .join("giardinaggio")
-                .join("notes.md"),
-            "user edits\n",
-        )
-        .unwrap();
+        // The compiler seeds `notes.md` into every non-smart wiki, and a wiki
+        // born by promotion is force-dirtied at birth — so the next hourly
+        // compile writes one. That must NOT close the undo window: regroup at
+        // 03:00, compile at 04:00, click Undo at 09:00 used to be refused on
+        // a wiki nobody had touched.
+        std::fs::write(dir.join("notes.md"), "# Note\n").unwrap();
+
+        // A page nobody's schedule explains is the real signal.
+        std::fs::write(dir.join("potatura.md"), "user edits\n").unwrap();
 
         let err = revert_wiki_promote(&pool, &tree, &spec)
             .await
@@ -5491,19 +5573,23 @@ mod tests {
             RevertError::HandlerData(msg) => {
                 assert!(msg.contains("refusing to delete"), "{msg}");
                 assert!(
-                    msg.contains("notes.md"),
-                    "the refusal names what it found: {msg}"
+                    msg.contains("potatura.md") && !msg.contains("notes.md"),
+                    "the refusal names the page that is unaccounted for, not the seeded one: {msg}"
                 );
             },
             other => panic!("unexpected: {other:?}"),
         }
-        // Sub-wiki dir + the user's extra file still there.
+        assert!(dir.join("potatura.md").exists(), "nothing was torn down");
+
+        // With only the seeded page there, the revert goes through and takes
+        // it with the directory.
+        std::fs::remove_file(dir.join("potatura.md")).unwrap();
+        revert_wiki_promote(&pool, &tree, &spec)
+            .await
+            .expect("a compiler-seeded page does not block the undo");
         assert!(
-            tree.wikis_dir()
-                .join("alice")
-                .join("giardinaggio")
-                .join("notes.md")
-                .exists()
+            !dir.exists(),
+            "the newborn wiki is gone, seeded page and all"
         );
     }
 
@@ -6017,6 +6103,41 @@ Un'altra pagina: [[alice/potatura]].
         // Nothing to do ⇒ no rewrite at all, so no file is touched and no
         // offset is disturbed for a page that merely mentions a stranger.
         assert!(retarget_wikilinks("solo [[bob/orto]] qui", &moves).is_none());
+    }
+
+    /// A merge renames the page as well as re-addressing it — the husk's
+    /// address stops existing, so a link that still names it is a dead rail,
+    /// and since the directory listing was retired an authored link is one of
+    /// only three ways a page is reachable at all.
+    #[test]
+    fn retarget_wikilinks_follows_a_page_that_was_merged_into_another() {
+        let moves = vec![MovedPageAddress::renamed(
+            "bruno",
+            std::path::Path::new("salute.md"),
+            "famiglia",
+            std::path::Path::new("salute_famiglia.md"),
+        )];
+        let body = "\
+Vedi [[bruno/salute]] per il resto.
+Con alias: [[bruno/salute|la sua salute]].
+Con suffisso: [[bruno/salute.md]].
+Un'altra pagina: [[bruno/orto]].
+";
+        let out = retarget_wikilinks(body, &moves).expect("something changed");
+        assert!(out.contains("[[famiglia/salute_famiglia]]"), "{out}");
+        assert!(
+            out.contains("[[famiglia/salute_famiglia|la sua salute]]"),
+            "what the author wanted the reader to see is not the address: {out}"
+        );
+        assert!(
+            out.contains("[[famiglia/salute_famiglia.md]]"),
+            "the suffix survives: {out}"
+        );
+        assert!(
+            out.contains("[[bruno/orto]]"),
+            "a page that did not move is untouched: {out}"
+        );
+        assert_eq!(out.matches("bruno/salute").count(), 0);
     }
 
     /// The whole point, end to end: a page in the wiki left behind still
