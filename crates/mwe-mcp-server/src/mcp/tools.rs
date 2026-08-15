@@ -984,7 +984,7 @@ pub(super) async fn call_wiki_read(
         //
         // And the fix is NOT to filter that list: there is no permission on a
         // wiki to filter it by. Read access is judged per FACT
-        // (`owner ∪ allow ∪ sender`); what looks like a wiki-level gate
+        // (`subject ∪ allow ∪ sender`); what looks like a wiki-level gate
         // (`wiki_visible_to`) is that same judgement derived — "may this
         // reader see at least one fact in here". The structure simply has no
         // business in the answer. Founder, 2026-08-14: *«al consumer

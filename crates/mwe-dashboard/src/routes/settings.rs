@@ -218,7 +218,7 @@ fn reveal_section(reveal_on: bool, locked: bool) -> Markup {
                 "When on, the whole dashboard bypasses the per-user ACL projection: "
                 "wiki pages show every fragment (highlighted), the "
                 a href="/dashboard/facts" { "facts table" }
-                " lists every user's facts, so the owner-or-admin ACL / validity / "
+                " lists every user's facts, so the subject-or-admin ACL / validity / "
                 "delete actions reach them, and the "
                 a href="/dashboard/recall-traces" { "recall traces" }
                 " journal widens from your own recalls to everybody's. It never "

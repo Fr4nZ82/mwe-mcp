@@ -3,11 +3,11 @@
 //! `POST /dashboard/facts/:fact_id/acl` and `.../validity`.
 //!
 //! These replaced the old unapplyable ACL/validity chat-bridge: they hit
-//! the engine directly (owner-or-admin gated, standard-wikis only),
+//! the engine directly (subject-or-admin gated, standard-wikis only),
 //! mint a born-applied `wiki_promote` receipt, and 303-redirect the
 //! operator onto that revertible receipt.
 //!
-//! The owner-or-admin gate's pure logic is unit-tested inside
+//! The subject-or-admin gate's pure logic is unit-tested inside
 //! `routes::facts`; here we drive the routes end-to-end against a
 //! populated DB + tempdir wiki tree to assert: the engine effect (the
 //! ACL / validity column moved), the receipt row exists, the redirect
@@ -57,7 +57,7 @@ async fn make_app_with_memory() -> (Router, SqlitePool, WikiTree, tempfile::Temp
 }
 
 /// Setup as the admin "alice", whose identity wiki `alice` owns the
-/// captured facts (so owner-or-admin always passes for these fixtures).
+/// captured facts (so subject-or-admin always passes for these fixtures).
 async fn login_as_admin(app: &Router) -> String {
     let response = send(
         app,
@@ -539,7 +539,7 @@ async fn capture_fact_owned(
 }
 
 /// `/facts` is ACL-projected: an admin sees another user's private fact
-/// only with the reveal cookie set (the lens that makes the owner-or-admin
+/// only with the reveal cookie set (the lens that makes the subject-or-admin
 /// actions reach it). Without reveal it is filtered out.
 #[tokio::test]
 async fn facts_list_hides_other_users_facts_until_admin_reveal() {

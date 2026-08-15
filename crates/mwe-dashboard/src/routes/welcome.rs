@@ -392,7 +392,7 @@ async fn fetch_email_for(state: &DashboardState, sender_id: &str) -> Result<Opti
 /// themselves ("these are public facts about me, anyone can see them").
 ///
 /// Rationale. The earlier draft of this primer mentioned
-/// `owner_id: "global"` verbatim inside backticks, hoping the LLM
+/// `subject_id: "global"` verbatim inside backticks, hoping the LLM
 /// would propagate the keyword to its JSON plan. In practice Qwen 3.5
 /// 9B Q8 ALSO copied "global" into `target_wiki_id`, hallucinating a
 /// wiki by that name and crashing the capture pipeline. The fix
@@ -400,7 +400,7 @@ async fn fetch_email_for(state: &DashboardState, sender_id: &str) -> Result<Opti
 /// consumers speak natural language only; the ingest LLM and its
 /// system prompt translate that into the JSON plan. "Public" is the
 /// VISIBILITY axis: the system prompt maps this plain-italian "public"
-/// signal to `allow_ids: ["global"]` while `owner_id` stays the subject
+/// signal to `allow_ids: ["global"]` while `subject_id` stays the subject
 /// (the user filling the primer) — the fact is *about me* and *visible
 /// to all*, not *owned by everyone*. A plain-italian "public" signal,
 /// next to the "prefer the sender's own wiki" rule, is enough.
@@ -1003,13 +1003,13 @@ mod tests {
         let msg = compose_ingest_message(Some("franz@example.com"), &form);
         // The primer prefix appears at index 0 and tells the LLM in
         // natural italian that the facts that follow are public — no
-        // backticks, no JSON field names, no "owner_id" jargon. The
+        // backticks, no JSON field names, no "subject_id" jargon. The
         // ingest system prompt maps "public" → `allow_ids: ["global"]`
-        // (owner stays the subject), so we stay on the consumer-facing
+        // (the subject axis is unchanged), so we stay on the consumer-facing
         // side of the contract.
         assert!(msg.starts_with(PUBLIC_PROFILE_PRIMER_PREFIX), "{msg}");
         assert!(
-            !msg.contains("`owner_id"),
+            !msg.contains("`subject_id"),
             "primer must not leak JSON field names: {msg}"
         );
         assert!(

@@ -135,7 +135,7 @@ pub const CAPTURES_FILENAME: &str = "_captures.md";
 /// A **user-facing** page (no underscore, unlike the `_meta`/`_captures`
 /// plumbing) seeded with a default at actor-wiki creation. It holds the user's
 /// standing policy in natural language — privacy/ACL rules the ingest honours
-/// when it assigns the per-fact ACL (`owner` / `allow`), and behaviour rules
+/// when it assigns the per-fact ACL (`subject` / `allow`), and behaviour rules
 /// every consumer is shown. Its privacy/governance directives are raw prose
 /// (read whole by `ingest::sender_rules`, never `fact_index` rows); the
 /// behaviour-rule channel additionally writes `{{f=…}}` **behaviour-rule fact
@@ -151,7 +151,7 @@ pub const CAPTURES_FILENAME: &str = "_captures.md";
 /// behaviour rule keeps living here and `recall_behaviour_rules` keeps
 /// finding it, and `rules.md` survives the compile/REM cycle untouched. A
 /// rule leaves the channel only via supersede, tombstone, or a closed
-/// validity window — its owner's explicit closure, never collateral (the
+/// validity window — its subject's explicit closure, never collateral (the
 /// channel filters validity at read time).
 pub const RULES_FILENAME: &str = "rules.md";
 
@@ -201,7 +201,7 @@ pub const PROJECTS_FILENAME: &str = "projects.md";
 /// nodes the planner owns), and the two deterministic channels
 /// ([`RULES_FILENAME`] / [`PROJECTS_FILENAME`], written by their own code
 /// paths). A capture that names one is not filed there — it falls through to
-/// the deterministic home its owner and salience choose.
+/// the deterministic home its subject and salience choose.
 ///
 /// One list, read by both sides of that decision: the planner's placement
 /// flattener and the ingest list-page inventory

@@ -18,7 +18,7 @@
 //! - everything else → [`compile_leaf_page`] (Il Cronista, **strong** model):
 //!   the page's own facts woven into prose, each claim wrapped in a
 //!   bare `{{f=<fact_id>}}…{{/}}` runtime ACL marker (the full
-//!   `{{owner=… allow=… sender=…}}` form is export-only), other pages
+//!   `{{subject=… allow=… sender=…}}` form is export-only), other pages
 //!   reachable only by `[[wikilink]]`.
 //!
 //! ## Degraded mode — no page stays frozen
@@ -2666,7 +2666,7 @@ mod tests {
         let mut public = ffp(1, "La biblioteca apre alle 9.");
         public.subject = Principal::global();
         let restricted = ffp(2, "Alice ha un appuntamento in ospedale.");
-        // ffp defaults to owner=user:alice, allow=[], sender=None.
+        // ffp defaults to subject=user:alice, allow=[], sender=None.
         let mut shared = ffp(3, "Nota di famiglia su Gollum.");
         shared.subject = "user:gollum".parse::<Principal>().unwrap();
         shared.allow = vec!["group:famiglia".parse::<Principal>().unwrap()];
@@ -3333,7 +3333,7 @@ mod tests {
         // (the ACL gates from the DB by key, not from inline attributes).
         assert!(page.contains("- {{f="), "bullet record + marker: {page}");
         assert!(
-            !page.contains("subject=") && !page.contains("subject=") && !page.contains("owner="),
+            !page.contains("subject=") && !page.contains("owner="),
             "no inline ACL on disk: {page}"
         );
         assert!(page.contains("latte{{/}}"), "latte record present: {page}");

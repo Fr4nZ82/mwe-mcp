@@ -397,7 +397,7 @@ async fn delete(
     // 23d: reassign any fact whose `sender` is this group (e.g. one a prior 23d
     // pass auto-attributed to the collective) to its wiki's scope principal, so
     // no active fact points at a vanished sender (the sender-scrub invariant —
-    // docs/concepts/identity-and-acl.md). Owner/allow that
+    // docs/concepts/identity-and-acl.md). Subject/allow that
     // name this group are out of 23d's scope (sender only). Best-effort — a
     // failure (or absent memory handles) is logged, never blocks the delete.
     if let Some(memory) = state.memory.as_ref() {

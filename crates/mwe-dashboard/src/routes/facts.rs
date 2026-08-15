@@ -18,7 +18,7 @@
 //!   supersede, which still rides the **form-to-chat bridge** (the chat
 //!   agentic loop takes the supersede through its cascade-aware machinery
 //!   under a HARD RULE explicit confirmation).
-//! - `POST /dashboard/facts/:fact_id/acl` — structured ACL change. Owner
+//! - `POST /dashboard/facts/:fact_id/acl` — structured ACL change. Subject
 //!   -or-admin gated, refused on smart wikis (those carry wiki-level ACL,
 //!   not per-fragment — see
 //!   smart-wikis). Calls
@@ -27,7 +27,7 @@
 //!   receipt's open-in-chat page so the operator lands on the revertible
 //!   receipt.
 //! - `POST /dashboard/facts/:fact_id/validity` — structured validity edit
-//!   (`valid_from` / `valid_to`). **Owner-or-admin** gated (validity is the
+//!   (`valid_from` / `valid_to`). **Subject-or-admin** gated (validity is the
 //!   subject's *update* of a fact about themselves — the write-authority
 //!   model, [identity and ACL](../../../../docs/concepts/identity-and-acl.md)),
 //!   the same subject axis as the ACL action; same standard-wiki gate + paper
@@ -770,7 +770,7 @@ async fn acl_submit(
 }
 
 /// `POST /dashboard/facts/:fact_id/validity` — structured, engine-direct
-/// per-fragment validity edit. **Owner-or-admin** gated (validity is the
+/// per-fragment validity edit. **Subject-or-admin** gated (validity is the
 /// subject's *update* of a fact about themselves — the write-authority model,
 /// [identity and ACL](../../../../docs/concepts/identity-and-acl.md)), the
 /// same subject axis as [`acl_submit`]; same standard-wiki gate + paper trail.
@@ -1889,7 +1889,7 @@ fn structured_actions_section(
         .map(Principal::to_string)
         .collect::<Vec<_>>()
         .join(", ");
-    let owner_current = row.subject_id.to_string();
+    let subject_current = row.subject_id.to_string();
     let valid_from_current = row.valid_from.as_deref().unwrap_or("");
     let valid_to_current = row.valid_to.as_deref().unwrap_or("");
     html! {
@@ -1924,7 +1924,7 @@ fn structured_actions_section(
                         p {
                             label for="acl-subject" { code { "subject" } }
                             input id="acl-subject" type="text" name="subject"
-                                value=(owner_current)
+                                value=(subject_current)
                                 placeholder="e.g. user:alice or group:famiglia or global";
                         }
                         p {

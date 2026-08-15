@@ -48,7 +48,7 @@
 //!
 //! ## Subject-of-last-resort semantics
 //!
-//! A region whose marker carries no explicit `owner=` (and which `db_acl`
+//! A region whose marker carries no explicit `subject=` (and which `db_acl`
 //! does not cover) falls back to its own captured **`sender`** — its
 //! provenance, never the wiki's scope principal: a fact's ACL is the fact's,
 //! not the category's. A region with neither an inline subject nor a sender is
@@ -250,7 +250,7 @@ fn segment_fact_id(attrs: &RegionAttrs, db_acl: &FactAclMap) -> Option<FactId> {
 /// e.g. for text that never went through capture.
 ///
 /// `meta_acl_default` is retained for signature stability but is no longer
-/// consulted: a region with no inline `owner=` and not covered by `db_acl`
+/// consulted: a region with no inline `subject=` and not covered by `db_acl`
 /// now falls back to its own captured `sender` (and is left unreadable when it
 /// has neither) — never the wiki's scope principal. It still does **not**
 /// filter prose or standalone embeds — those always pass through (see module
@@ -474,7 +474,7 @@ fn is_inline_region(text: &str, start: usize, end: usize) -> bool {
 /// derived projection, not the source of truth). Otherwise the inline
 /// marker attributes gate the region.
 ///
-/// The subject of last resort for a region with **no inline `owner=`** is the
+/// The subject of last resort for a region with **no inline `subject=`** is the
 /// region's own `sender` (its captured provenance), NOT the wiki's scope
 /// principal — a fact's ACL is the fact's, never the category's. When the
 /// region has neither an inline subject nor a sender, `subject` stays `None` and
@@ -551,7 +551,7 @@ mod tests {
     /// to `UUIDv7`-format `fact_id`s).
     ///
     /// Region 3 carries `sender=user:alice` (its captured provenance — alice
-    /// authored it) but no explicit `owner=`: with the subject-of-last-resort now
+    /// authored it) but no explicit `subject=`: with the subject-of-last-resort now
     /// being the region's sender, alice reads it as its subject while a team
     /// member reads it via `allow=group:team`. An outsider sees neither.
     fn modello_memoria_5_input() -> String {
@@ -675,7 +675,7 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
     #[test]
     fn region_without_subject_falls_back_to_its_sender() {
         // Region has a fact_id and a `sender=user:alice` but NO explicit
-        // `owner=`. The subject-of-last-resort is the region's own sender (its
+        // `subject=`. The subject-of-last-resort is the region's own sender (its
         // captured provenance), NOT the wiki principal — so alice reads it as
         // its subject, bob does not. `meta_acl_default` (here a contrasting
         // `global`) is no longer consulted. Surrounding prose always passes.
@@ -705,7 +705,7 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
 
     #[test]
     fn region_without_subject_or_sender_is_unreadable_not_wiki_default() {
-        // A region with neither an inline `owner=` nor a `sender` is left
+        // A region with neither an inline `subject=` nor a `sender` is left
         // UNREADABLE — it is never rescued by the wiki's scope principal. Even
         // the wiki principal passed as `meta_acl_default` (here `user:alice`)
         // cannot read it: a fact's ACL is the fact's, not the category's.
@@ -1022,7 +1022,7 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         let out = render_for_sender(&input, &map, &Principal::global(), "bob", &[]);
         assert!(
             !out.text.contains("inline body"),
-            "inline owner=user:alice must still gate an unindexed region"
+            "an inline subject must still gate an unindexed region"
         );
         let out = render_for_sender(&input, &map, &Principal::global(), "alice", &[]);
         assert!(out.text.contains("inline body"));

@@ -616,7 +616,7 @@ fn load_sharing(state: &DashboardState, user: &SessionUser, id: &str) -> Result<
     let meta = wiki_get_meta(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
     // Sharing is the WIKI-LEVEL ACL surface, and that axis only exists for
     // smart wikis. A standard wiki governs reads per-fragment (each fact's own
-    // owner/allow in `fact_index`); a wiki-level reproject (`submit_sharing` →
+    // subject/allow in `fact_index`); a wiki-level reproject (`submit_sharing` →
     // `reproject_wiki_acl`) would flatten that granularity. Refuse for standard
     // wikis with a 404 — not even discoverable — the inverse of the raw
     // editor's `if meta.smart { NotFound }` guard. Gates both GET and POST,

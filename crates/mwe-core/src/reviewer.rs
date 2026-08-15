@@ -274,7 +274,7 @@ pub fn review(
                     let fid = attrs.fact_id.as_ref()?;
                     // A region is public — and so does NOT protect an owned
                     // fact — when the builtin global group appears in its
-                    // subject or allow set. (Inheritance, i.e. owner=None, is
+                    // subject or allow set. (Inheritance, i.e. subject=None, is
                     // treated as non-public: it can resolve to a non-global
                     // default.)
                     let public = attrs.acl.subject.as_ref().is_some_and(Principal::is_global)

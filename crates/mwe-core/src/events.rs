@@ -61,7 +61,7 @@ pub enum EventKind {
     /// payload carries the receipt `proposal_id` (the undo anchor), the
     /// `variant`, source → target, the `revert_deadline`, a
     /// `dashboard_path` for the undo surface, and — crucially —
-    /// `recipient_id`, the **affected user** (owner/sender of the
+    /// `recipient_id`, the **affected user** (subject/sender of the
     /// changed wiki), so a multi-user consumer agent knows whom to
     /// forward the notice to. The dashboard is the *undo* surface, not
     /// the notification surface: the notice reaches the causing agent
@@ -114,7 +114,7 @@ pub enum EventKind {
     RecallTuningProposed,
     /// Ingest filed a fact **owned by an enrolled human who was not the
     /// human of that turn** (or, on the document path, not the
-    /// uploader) — the delivery half of the subject-owner axiom: the
+    /// uploader) — the delivery half of the subject axiom: the
     /// beneficiary should be TOLD a fact was minted for them out of
     /// someone else's conversation, not discover it on their next
     /// recall. Batched per (beneficiary, ingest call): one event carries

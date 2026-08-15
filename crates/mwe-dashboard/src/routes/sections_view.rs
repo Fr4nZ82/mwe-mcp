@@ -231,7 +231,7 @@ fn render_index(
             a href="/dashboard/wiki/smart" { "smart wikis" }
             " — each page is cut into sections at its headings, and each "
             "section is what a search can match. These are not facts: they "
-            "carry no owner, no validity and no history, because they are "
+            "carry no subject, no validity and no history, because they are "
             "re-derived from the page every time it changes."
         }
         p.muted {

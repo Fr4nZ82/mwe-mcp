@@ -547,7 +547,7 @@ pub struct RecallHit {
     pub region_end: Option<i64>,
     /// Region body text (no markers).
     pub text: String,
-    /// Owner principal (the fact's SUBJECT).
+    /// The fact's SUBJECT principal.
     pub subject_id: Principal,
     /// Read-extension list (the visibility axis, additive to subject+sender).
     /// Surfaced so the classifier can SEE a recalled fact's current
@@ -2604,7 +2604,7 @@ mod tests {
 
     #[test]
     fn row_visible_to_cross_user_attribution() {
-        // Owner=alice, sender_of_region=bob — bob must be able to
+        // subject=alice, sender_of_region=bob — bob must be able to
         // read the region he himself authored on alice's wiki
         // (cross-user attribution invariant, see
         // [memory model](../../../docs/concepts/memory-model.md)).
@@ -4071,7 +4071,7 @@ mod tests {
         .await;
 
         let alice = SenderContext::user("alice");
-        let owner_hits = search_sections(
+        let subject_hits = search_sections(
             &pool,
             embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
             "q",
@@ -4080,7 +4080,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(owner_hits.len(), 2, "the subject reads both");
+        assert_eq!(subject_hits.len(), 2, "the subject reads both");
 
         let bob = SenderContext {
             sender_id: "bob".to_owned(),
@@ -5035,7 +5035,7 @@ mod tests {
         let pool = make_pool().await;
         let emb = vec![1.0, 0.0, 0.0, 0.0];
         let mut rows = Vec::new();
-        // Readable through the OWNER axis.
+        // Readable through the SUBJECT axis.
         insert_row(
             &mut rows,
             "018f1234-5678-7abc-9def-00000000a001",

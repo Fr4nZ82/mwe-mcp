@@ -247,7 +247,7 @@ pub fn is_public(subject: &Principal, allow: &[Principal], sender: Option<&Princ
 ///
 /// Distinct from `principal_matches` (read authority): the builtin `global`
 /// group grants read to everyone but subject authority to no one, so a world fact
-/// (`owner=global`) is not editable from chat. Subject authority is the sender being the
+/// (`subject=global`) is not editable from chat. Subject authority is the sender being the
 /// owning user, or a member of a non-global owning group.
 #[must_use]
 pub fn sender_is_subject(subject: &Principal, sender_id: &str, sender_groups: &[String]) -> bool {
@@ -439,11 +439,11 @@ mod tests {
         assert!(can_read(&acl, "carol", &[], None));
     }
 
-    // ---------- owner=None (region inherits acl_default) ----------
+    // ---------- subject=None (region inherits acl_default) ----------
 
     #[test]
     fn empty_acl_denies_unless_sender_attribution_matches() {
-        // owner=None and no allow → caller should have resolved
+        // subject=None and no allow → caller should have resolved
         // acl_default beforehand. If they didn't, the only escape is the
         // sender_of_region rule.
         let empty = Acl::default();
@@ -616,7 +616,7 @@ mod tests {
         // A member of the owning group; a non-member is refused.
         assert!(sender_is_subject(&team, "bob", &groups(&["team"])));
         assert!(!sender_is_subject(&team, "carol", &groups(&["other"])));
-        // A world fact (owner=global) is editable from chat by no one,
+        // A world fact (subject=global) is editable from chat by no one,
         // even though everyone can READ it.
         assert!(!sender_is_subject(&g, "alice", &groups(&["global"])));
         assert!(can_read(&acl_subject(g), "alice", &[], None));
@@ -712,7 +712,7 @@ mod tests {
     #[tokio::test]
     async fn audience_global_subject_is_empty_electorate() {
         let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
-        // A purely public fact (owner=global, no allow, no sender) has nobody
+        // A purely public fact (subject=global, no allow, no sender) has nobody
         // finite to poll.
         let aud = audience(&pool, &Principal::global(), &[], None)
             .await

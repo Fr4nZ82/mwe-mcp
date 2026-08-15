@@ -521,7 +521,7 @@ fn escape_attr(s: &str) -> String {
 
 /// The small superscript anchor for one fact-backed region: links to the
 /// fact's record (`/dashboard/facts/:id/edit` — canonical text,
-/// owner/sender, validity, provenance and the structured actions). The
+/// subject/sender, validity, provenance and the structured actions). The
 /// `FactId` charset (UUID: `[0-9a-f-]`) is HTML-attribute safe by
 /// construction. The target route gates on the same readability
 /// predicate that made this region visible, so the anchor never leads a

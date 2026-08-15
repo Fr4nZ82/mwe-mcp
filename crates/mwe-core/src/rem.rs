@@ -3873,7 +3873,7 @@ async fn judge_completion_case(
     Ok(Some((receipt.proposal_id, closed)))
 }
 
-/// Owner principal of the first closed target (the receipt addressee
+/// Subject principal of the first closed target (the receipt addressee
 /// follows the closed fact, as everywhere else).
 fn applied_subject(
     case: &CompletionCase<'_>,

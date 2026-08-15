@@ -796,13 +796,13 @@ struct LlmIngestPlan {
     /// project started in March"). Distinct from `closures`: a correction fixes the
     /// interval, it is not a completion/retraction (and never touches
     /// `decay_reason`). Targets must come from this turn's `recalled_memory`,
-    /// and only the fact's OWNER may edit it from chat.
+    /// and only the fact's SUBJECT may edit it from chat.
     #[serde(default)]
     validity_edits: Vec<LlmValidityEdit>,
     /// The acl-change half of the turn — existing facts whose SHARING this
     /// message changes ("make this memory visible to everyone", "share it with
     /// the family group"). Targets must come from this turn's
-    /// `recalled_memory`, and only the fact's OWNER may change it from chat.
+    /// `recalled_memory`, and only the fact's SUBJECT may change it from chat.
     #[serde(default)]
     acl_changes: Vec<LlmAclChange>,
 }
@@ -1188,7 +1188,7 @@ pub(crate) fn normalize_capture_page(raw: Option<&str>, default: &Path) -> PathB
 /// guard to tell "someone else's fact parked in the agent's space" (what the
 /// guard exists to stop) from "the agent's own fact, at home" (what the wiki is
 /// for).
-fn owner_is_the_wikis_own_principal(subject: &Principal, wiki_id: &str) -> bool {
+fn subject_is_the_wikis_own_principal(subject: &Principal, wiki_id: &str) -> bool {
     match subject {
         Principal::User(id) | Principal::Group(id) => id == wiki_id,
     }
@@ -1250,7 +1250,7 @@ fn derive_target_wiki(
         // A file name is not an address. The inventory spans every wiki the
         // sender may read, so `spesa.md` can name Alice's shopping list AND
         // the family's — and matching on the name alone handed the turn
-        // whichever one the inventory happened to list first. The OWNER the
+        // whichever one the inventory happened to list first. The SUBJECT the
         // classifier already resolved is the tiebreak that was sitting right
         // here unused: *«aggiungi il detersivo alla lista della spesa di
         // famiglia»* arrives with `subject_id: group:famiglia` and used to be
@@ -1422,7 +1422,7 @@ fn validate_capture_plan(
         .iter()
         .find(|w| w.wiki_id == target_wiki_str)
         .is_some_and(|w| w.is_agent)
-        && !owner_is_the_wikis_own_principal(&subject, target_wiki_str)
+        && !subject_is_the_wikis_own_principal(&subject, target_wiki_str)
     {
         let home = match &subject {
             Principal::User(id) | Principal::Group(id) => id.as_str(),
@@ -1947,9 +1947,9 @@ fn validate_closure<'a>(
             },
         });
     };
-    // Owner gate: a closure edits the target's validity, so only a subject
+    // Subject gate: a closure edits the target's validity, so only a subject
     // may close it (the owning user or a member of the owning group; a
-    // world fact, owner=global, is closable by no one from chat). Blocks
+    // world fact, subject=global, is closable by no one from chat). Blocks
     // the cross-user closure leak.
     if !crate::acl::sender_is_subject(&hit.subject_id, sender_id, sender_groups) {
         return Err(ClosurePlanError::NotSubject {
@@ -2122,10 +2122,10 @@ async fn inherit_audience(pool: &SqlitePool, successor: &FactId, allow: &[Princi
 /// answered honestly.
 ///
 /// **The allow list, and nothing else.** The successor keeps its own subject and
-/// its own sender: a supersede is not a change of ownership either. Alice
+/// its own sender: a supersede does not move the subject either. Alice
 /// retiring "Alice is at the dentist Thursday" by saying "it is Bob who goes"
 /// mints a fact owned by Bob — and a reader set is `subject ∪ allow ∪ sender`,
-/// so carrying Alice's ownership across would take the fact about Bob away
+/// so carrying Alice's subjecthood across would take the fact about Bob away
 /// from Bob while Alice was trying to tell him. Where the subject does not
 /// change (a restated wifi password) the subject was already the same, which is
 /// why this was invisible.
@@ -4282,7 +4282,7 @@ impl BehaviourScope {
 /// (roadmap 29c + 42), written LIVE (direct path) so it is in effect on the
 /// next turn.
 ///
-/// `scope` decides BOTH the home wiki and the ownership, which together decide
+/// `scope` decides BOTH the home wiki and the subject, which together decide
 /// reach (see [`recall_behaviour_rules`]):
 /// - [`BehaviourScope::PerUser`] → the CALLING AGENT's own wiki — resolved
 ///   from [`IngestRequest::consumer_id`] via
@@ -4336,13 +4336,13 @@ async fn capture_behaviour_rule(
     let Ok(wiki_id) = WikiId::parse(&target) else {
         return Ok(None);
     };
-    // Ownership IS the scope. PER-USER and USER-GLOBAL ⇒ owned by the USER who
-    // dictated it, so different users' rules are distinct facts (subject-scoped
-    // dedup never folds franz's into bilbo's) and recall pulls only the served
-    // user's own — the home wiki tells the two apart. AGENT-WIDE ⇒ owned by
-    // the AGENT itself: one policy for everyone, recalled for every user,
-    // deduped across the agent's own standing rules. Either way subject == the
-    // principal ⇒ no separate sender attribution.
+    // The SUBJECT is the scope. PER-USER and USER-GLOBAL ⇒ the subject is the
+    // USER who dictated it, so different users' rules are distinct facts
+    // (subject-scoped dedup never folds franz's into bilbo's) and recall pulls
+    // only the served user's own — the home wiki tells the two apart.
+    // AGENT-WIDE ⇒ the subject is the AGENT itself: one policy for everyone,
+    // recalled for every user, deduped across the agent's own standing rules.
+    // Either way subject == the principal ⇒ no separate sender attribution.
     let subject = match scope {
         BehaviourScope::PerUser | BehaviourScope::UserGlobal => Principal::User(sender.to_owned()),
         BehaviourScope::AgentWide => Principal::User(target.clone()),
@@ -4770,7 +4770,7 @@ async fn recall_agent_self(
     // (item 47-i6 / Finding F).
     let mut surfaced: Vec<FactId> = Vec::new();
     for row in rows {
-        // The agent's agent-wide behaviour-rules are owner=agent too, but they
+        // The agent's agent-wide behaviour-rules are subject=agent too, but they
         // are policy, not self-knowledge — they belong to the behaviour-rule
         // channel ([`recall_behaviour_rules`]), not the self-context block.
         // Keyed on the exact rules-page predicate (a `house_rules.md`-style
@@ -5477,8 +5477,8 @@ fn nav_seeds(plan: &LlmIngestPlan) -> NavSeeds {
                 topics.push(t.clone());
             }
         }
-        if let Some(owner_str) = unit.subject_id
-            && let Ok(p) = Principal::from_str(owner_str)
+        if let Some(subject_str) = unit.subject_id
+            && let Ok(p) = Principal::from_str(subject_str)
             && !subjects.contains(&p)
         {
             subjects.push(p);
@@ -6453,14 +6453,14 @@ pub async fn wiki_ingest_message(
                 // memory. GOVERNANCE (behaviour-rule scope from the addressee,
                 // prompt Part 7b — roadmap 29b + 42):
                 //  - PER-USER (addressed to the speaker, or a bare imperative)
-                //    is open to anyone — filed owner=user in the agent's wiki,
+                //    is open to anyone — filed subject=user in the agent's wiki,
                 //    recalled only for them on this agent.
                 //  - AGENT-WIDE (impersonal / universal) changes the agent for
-                //    EVERYONE → ADMIN-ONLY, filed owner=agent. A non-admin's
+                //    EVERYONE → ADMIN-ONLY, filed subject=agent. A non-admin's
                 //    agent-wide directive is refused (not filed); a one-shot
                 //    notice on the `rules` field tells the agent to decline.
                 //  - USER-GLOBAL (explicitly every-assistant) is open to
-                //    anyone — the user's own rule, filed owner=user in THEIR
+                //    anyone — the user's own rule, filed subject=user in THEIR
                 //    identity wiki, recalled by every consumer serving them.
                 // Written live so it takes effect next turn; revised in place
                 // when the user supersedes one the classifier was shown — but
@@ -6534,7 +6534,7 @@ pub async fn wiki_ingest_message(
                 }
 
                 // `subject_id: "self"` sentinel (prompt Part 9) → a fact the
-                // agent states about ITSELF, filed owner=agent in the agent's
+                // agent states about ITSELF, filed subject=agent in the agent's
                 // own wiki. Only meaningful on an assistant turn
                 // where the agent principal resolved (`agent_sender`); on any
                 // other turn it is a model slip — skip rather than mis-file. The
@@ -6551,7 +6551,7 @@ pub async fn wiki_ingest_message(
                 // deployment (2026-07-28). Both spellings route here now. No
                 // false positives: on a user turn `agent_sender` is `None`, so
                 // a user's fact ABOUT the agent is untouched, and on an
-                // assistant turn owner==the-speaking-agent IS the self case.
+                // assistant turn subject==the-speaking-agent IS the self case.
                 let self_subject = unit.subject_id.is_some_and(|raw| {
                     raw == "self"
                         || agent_sender.as_ref().is_some_and(|agent| {
@@ -6687,7 +6687,7 @@ pub async fn wiki_ingest_message(
                 // Sharing changes go through the explicit `acl_change` verb.
                 // Without this a re-statement silently re-privatizes a shared
                 // fact — the classifier can restate the content but must not be
-                // relied on to restate the ACL. Owner is already guaranteed
+                // relied on to restate the ACL. The subject is already guaranteed
                 // equal by `validate_supersede_target`; `sender` stays the
                 // current caller (the re-statement's own provenance). The
                 // current sender is stripped from the inherited list, mirroring
@@ -6946,11 +6946,11 @@ pub async fn wiki_ingest_message(
                 // assistant turn — the roadmap-27 flip touches only the
                 // fact's `sender` axis above).
                 if filed_fresh
-                    && let Principal::User(owner_uid) = &media_acl.0
-                    && owner_uid != &request.sender_id
+                    && let Principal::User(subject_uid) = &media_acl.0
+                    && subject_uid != &request.sender_id
                 {
                     beneficiary_notices
-                        .entry(owner_uid.clone())
+                        .entry(subject_uid.clone())
                         .or_default()
                         .push((this_id.clone(), notice_wiki, notice_body));
                 }
@@ -14010,7 +14010,9 @@ mod tests {
         );
         let index_md = std::fs::read_to_string(dir.path().join("wikis/alice/index.md")).unwrap();
         assert!(
-            !index_md.contains("{{owner=") && !index_md.contains("alice loves pasta"),
+            !index_md.contains("{{subject=")
+                && !index_md.contains("{{owner=")
+                && !index_md.contains("alice loves pasta"),
             "standard-wiki ingest must not write a marker or the claim into the page"
         );
         assert!(
@@ -14264,7 +14266,7 @@ mod tests {
     }
 
     /// The control: the SAME consumer binding on a normal user turn stamps NO
-    /// agent provenance. owner==sender (both the user) so the capture path
+    /// agent provenance. subject==sender (both the user) so the capture path
     /// normalises `sender_id` to `None` — exactly as today. The agent
     /// provenance is gated strictly on `author: assistant`; a consumer id alone
     /// never flips it (contrast the assistant-turn test, which yields

@@ -5,7 +5,7 @@
 //! dashboard bypass the per-sender ACL projection: memory-wiki pages
 //! render every fragment (highlighted) instead of `[redacted]`, and the
 //! [`crate::routes::facts`] table lists **every** user's facts so the
-//! owner-or-admin ACL / validity / delete actions become reachable on
+//! subject-or-admin ACL / validity / delete actions become reachable on
 //! them. It never touches the MCP tool surface (those always honour the
 //! ACL); it is gated server-side on the admin role — the cookie is only
 //! honoured when [`SessionUser::is_admin`] is true (see [`active`]), so a
@@ -180,7 +180,7 @@ pub fn checkbox(on: bool, locked: bool, return_to: &str) -> Markup {
                     onchange="this.form.submit()";
                 " Admin reveal — bypass ACL across the dashboard (wiki pages and "
                 "the facts table show every fragment / fact, including those "
-                "normally hidden, so the owner-or-admin fact actions reach them)"
+                "normally hidden, so the subject-or-admin fact actions reach them)"
             }
             noscript { " " button type="submit" { "Apply" } }
         }

@@ -277,7 +277,7 @@ pub const GLOBAL_GROUP_ID: &str = "global";
 /// The admin can override it from the dashboard. Frames `global` subject authority
 /// as WORLD facts, explicitly NOT as "a public personal fact" (that is the
 /// `allow` visibility axis), so the classifier does not collapse public
-/// profile facts onto `owner=global`.
+/// profile facts onto `subject=global`.
 pub const DEFAULT_GLOBAL_SCOPE: &str = "General, public-domain facts that are true for everyone and \
 belong to no single user or group (e.g. common knowledge, weather, public events). NOT for making a \
 personal fact public — that is visibility (put `global` in a fact's allow-list), not subject authority.";
@@ -419,7 +419,7 @@ pub async fn groups_with_scope_for(
     }
     // The builtin `global` group is surfaced to EVERY sender regardless of
     // membership, so the classifier always sees its (operator-editable)
-    // scope and routes genuine world facts to `owner=global`.
+    // scope and routes genuine world facts to `subject=global`.
     sqlx::query_as(
         "SELECT group_id, scope FROM enrollment_groups
          WHERE group_id = 'global'

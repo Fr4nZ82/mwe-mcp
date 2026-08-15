@@ -422,7 +422,7 @@ fn wiki_ingest_external() -> Tool {
                 "occurred_at": { "type": "string", "description": "The document's semantic clock (ISO-8601); relative dates inside the document resolve against it. Defaults to the catalog row's timestamp for media sources." },
                 "promote": { "type": "string", "enum": ["always", "never"], "description": "Inline sources only: forces (or forbids) verbatim source promotion. Absent = document-shaped inline text is auto-promoted to the media rail (content-addressed blob + catalog id) so extracted facts cite the preserved original; the response then carries `promoted_catalog_id`." },
                 "dry_run": { "type": "boolean", "default": false, "description": "Classify + segment synchronously, write nothing (reports `would_promote`)." },
-                "force": { "type": "boolean", "default": false, "description": "Bypass the (document, owner) idempotency check." }
+                "force": { "type": "boolean", "default": false, "description": "Bypass the (document, subject) idempotency check." }
             }
         }),
     )

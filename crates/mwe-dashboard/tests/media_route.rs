@@ -95,7 +95,7 @@ fn media_request(catalog_id: &str, cookie: &str) -> Request<Body> {
 }
 
 #[tokio::test]
-async fn owner_reads_outsider_denied_until_widened() {
+async fn subject_reads_outsider_denied_until_widened() {
     let (app, pool, _tree, dir) = make_app_with_memory().await;
     let alice = login_as_admin(&app).await;
     let bilbo = login_as_non_admin(&app, &alice).await;

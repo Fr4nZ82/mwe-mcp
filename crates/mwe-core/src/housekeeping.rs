@@ -12,7 +12,7 @@
 //! - **Stale refresh-token rows** — rotation and fresh connects prune
 //!   their own connection inline (see
 //!   [`crate::oauth_server::rotate_refresh_token`]), but rows revoked by
-//!   a dashboard disconnect or expired while idle have no inline owner.
+//!   a dashboard disconnect or expired while idle have no inline subject.
 //!   Per connection the newest stale row is **kept** while no active row
 //!   exists: the `consumers` table carries no wiki column, so that row is
 //!   the durable record binding the consumer to its smart wiki — the

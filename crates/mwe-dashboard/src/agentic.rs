@@ -54,7 +54,8 @@
 //!   the destination wiki's `index.md`). It reuses the same act-first engine
 //!   the REM cross-wiki refile sweep and the comment-apply `move` op use, so
 //!   the dashboard, the dream, and the chat all mint the same born-applied +
-//!   revertible receipt. Owner-or-admin gated; a smart source or destination
+//!   revertible receipt. Admin-only (a move is structure authority —
+//!   `enforce_move_admin`); a smart source or destination
 //!   is refused (smart wikis carry wiki-level governance). Write tool.
 
 use std::sync::Arc;
@@ -161,7 +162,7 @@ pub enum AgenticTool {
     /// cross-wiki move (which always lands on the destination wiki's
     /// `index.md` — the compilation plan keys pages by bare slug forest-wide,
     /// so a named cross-wiki page would collide; the dest wiki re-homes it on
-    /// its next compile). Owner-or-admin gated, standard-wikis only (a smart
+    /// its next compile). Admin-only (structure authority), standard-wikis only (a smart
     /// source or dest is refused), act-first + born-applied receipt. Write
     /// tool.
     WikiMoveFact,
@@ -679,7 +680,7 @@ fn request_forget_tool_descriptors() -> Vec<Tool> {
             WRITE TOOL. Use this when the user wants a fact about THEM (or about \
             a group they belong to) deleted but they did not write it — the fact's author keeps \
             their contribution unless the audience agrees. The signed-in user must be the fact's \
-            OWNER (the subject the fact is about) or a member of an owning group; if they are the \
+            SUBJECT (the person the fact is about) or a member of a group that is its subject; if they are the \
             fact's AUTHOR (sender) this tool refuses — use `wiki_forget` instead (they delete \
             their own directly). Propose-first: the fact STAYS active while the fact's audience \
             votes (`structure_proposal_vote`) — a NO majority blocks it, silence within the \

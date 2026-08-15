@@ -84,7 +84,7 @@ pub struct WikiDeleteReport {
     /// Number of fact rows tombstoned across the subtree (the deleter's own +
     /// homeless facts in `SenderKeyed` mode; **every** fact in `TombstoneAll`).
     pub facts_tombstoned: u64,
-    /// Number of foreign-authored facts evacuated to their senders' (or owners')
+    /// Number of foreign-authored facts evacuated to their senders' (or subjects')
     /// wikis. Non-zero only in `SenderKeyed` mode; always 0 for `TombstoneAll`.
     pub facts_evacuated: u64,
     /// Number of facts a `Dissolve` freed: moved to a live wiki with their
@@ -771,7 +771,7 @@ mod tests {
         let tree = WikiTree::open(dir.path()).unwrap();
         seed(&tree, "dossier", "wiki-tech");
         let tree = WikiTree::open(dir.path()).unwrap();
-        // Owner `ghost` has no wiki, and neither does the deleter: there is no
+        // Subject `ghost` has no wiki, and neither does the deleter: there is no
         // live home anywhere, so this is the one fact a dissolve cannot keep —
         // and it must be counted, never silently dropped.
         let fid =

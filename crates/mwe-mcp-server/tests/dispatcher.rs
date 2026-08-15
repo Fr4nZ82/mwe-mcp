@@ -399,7 +399,7 @@ async fn wiki_read_returns_not_found_for_unknown_wiki() {
 }
 
 /// End-to-end ACL projection through `wiki_read`. Three-region page on
-/// `wikis/alice/salute.md`: global → owner=user:alice → allow=group:famiglia.
+/// `wikis/alice/salute.md`: global → subject=user:alice → allow=group:famiglia.
 /// `alice` (member of `famiglia`) sees everything; `bob` (also in
 /// `famiglia`) sees global + the group-allowed region but not alice's
 /// subject-only region; `carol` (no group) sees only the global region.
@@ -450,7 +450,7 @@ async fn wiki_read_projects_acl_per_sender() {
 
     // Plant a three-region wiki on disk. `wikis/alice` already exists
     // implicitly from `WikiTree::open`; create the `_meta.md` and the
-    // A memory page with three markers carrying distinct owners. NOT the
+    // A memory page with three markers carrying distinct subjects. NOT the
     // map: `wiki_read` refuses `index.md` — it holds no facts, only the
     // wiki's own structure.
     let wiki_dir = dir.path().join("wikis").join("alice");
@@ -1788,7 +1788,7 @@ async fn wiki_forget_author_tombstones_own_fact() {
 #[tokio::test]
 async fn wiki_forget_non_author_subject_is_pointed_to_dashboard() {
     let (state, identity, _dir) = forget_fixture().await;
-    // owner=alice, sender=bob, allow=famiglia → alice is subject-not-author.
+    // subject=alice, sender=bob, allow=famiglia → alice is subject-not-author.
     let fid = insert_forget_fact(
         &state.pool,
         "02",
@@ -1820,7 +1820,7 @@ async fn wiki_forget_non_author_subject_is_pointed_to_dashboard() {
 #[tokio::test]
 async fn wiki_forget_unrelated_caller_is_refused() {
     let (state, base, _dir) = forget_fixture().await;
-    // owner=bob (a user, not a group), sender=carol → alice is in neither
+    // subject=bob (a user, not a group), sender=carol → alice is in neither
     // role. The fixture identity is already alice, but spell it out for clarity.
     let fid = insert_forget_fact(&state.pool, "03", "user:bob", &[], Some("user:carol")).await;
     let alice = IdentityProfile {
