@@ -267,7 +267,7 @@ fn wiki_read() -> Tool {
 fn wiki_search() -> Tool {
     read_only(materialize(
         "wiki_search",
-        "Semantic search over the **whole corpus the sender can read** (ACL-filtered), including other people's / other entities' pages they have access to. **Use this — not `recall_core_global`, which is owner-scoped — for anything about someone or something other than the caller** (a contact's birthday, a colleague's role). If a hit's snippet omits the exact fact, `wiki_read` the page it points to — the prose holds detail the snippet may miss. This is a **flat** top-K lookup; for a question that needs depth or to follow the structure across pages, use **`wiki_navigate`** instead (it returns these flat hits too). Returns top-K hits. The `scope` field `smart`: set to `true` to keep only smart-wiki hits, `false` to exclude them (matched on each wiki's `smart:` flag in its `_meta.md`). `wiki_types` is applied as a post-filter by resolving each hit's `wiki_type` from its `_meta.md`.",
+        "Semantic search over the **whole corpus the sender can read** (ACL-filtered), including other people's / other entities' pages they have access to. **Use this — not `recall_core_global`, which returns only facts whose subject is the caller — for anything about someone or something other than the caller** (a contact's birthday, a colleague's role). If a hit's snippet omits the exact fact, `wiki_read` the page it points to — the prose holds detail the snippet may miss. This is a **flat** top-K lookup; for a question that needs depth or to follow the structure across pages, use **`wiki_navigate`** instead (it returns these flat hits too). Returns top-K hits. The `scope` field `smart`: set to `true` to keep only smart-wiki hits, `false` to exclude them (matched on each wiki's `smart:` flag in its `_meta.md`). `wiki_types` is applied as a post-filter by resolving each hit's `wiki_type` from its `_meta.md`.",
         json!({
             "type": "object",
             "required": ["query"],
@@ -279,7 +279,8 @@ fn wiki_search() -> Tool {
                 "scope": {
                     "type": "object",
                     "properties": {
-                        "owner_ids": { "type": "array", "items": { "type": "string" } },
+                        "subject_ids": { "type": "array", "items": { "type": "string" }, "description": "Keep only facts whose SUBJECT — who the fact is about — is one of these principals (`user:<id>` / `group:<id>` / `global`). Not who wrote it (that is the sender) and not who may read it (that is the allow list)." },
+                        "owner_ids": { "type": "array", "items": { "type": "string" }, "description": "DEPRECATED spelling of `subject_ids`, still honoured. Prefer `subject_ids`: this axis is the fact's subject, never its author or its audience." },
                         "wiki_types": { "type": "array", "items": { "type": "string" } },
                         "smart": { "type": "boolean", "description": "Keep only hits whose per-wiki smart flag matches (true → smart wikis only, false → standard wikis only), read from each wiki's `smart:` flag in its `_meta.md`." },
                         "valid_at": { "type": "string", "description": "Dated query (ISO-8601 instant): keep only facts whose validity window contains this instant — 'what was true on June 4th?'. Without it, a closed window only down-ranks a hit, never hides it." },
@@ -294,7 +295,7 @@ fn wiki_search() -> Tool {
 fn wiki_navigate() -> Tool {
     read_only(materialize(
         "wiki_navigate",
-        "**Deep recall** over the whole corpus the sender can read (ACL-filtered): a navigator follows the wiki structure hop by hop — the path it takes to reach an answer becomes the answer's context. Returns `navigated` prose fragments, each with its `(wiki_id, page)` (the path), **plus** the flat top-K hits, so this is a **superset** of `wiki_search`. Costlier and slower than `wiki_search` (one LLM call per hop), so reach for it on a **question that needs depth or context** ('tell me everything about X', 'how does Y relate to Z'); use plain `wiki_search` for a quick one-line lookup. To steer it, pass `topics` (subjects to look up) and `owners` (the people/groups the query is about, as `user:<id>`/`group:<id>`) — you know them from the conversation; if you omit them the server extracts them from `query`. Smart wikis are not funnel-navigated (free markdown, not card/wikilink-structured) but their content still surfaces in the flat hits. If no navigator model is wired, `navigator_available` is `false` and only the flat hits come back.",
+        "**Deep recall** over the whole corpus the sender can read (ACL-filtered): a navigator follows the wiki structure hop by hop — the path it takes to reach an answer becomes the answer's context. Returns `navigated` prose fragments, each with its `(wiki_id, page)` (the path), **plus** the flat top-K hits, so this is a **superset** of `wiki_search`. Costlier and slower than `wiki_search` (one LLM call per hop), so reach for it on a **question that needs depth or context** ('tell me everything about X', 'how does Y relate to Z'); use plain `wiki_search` for a quick one-line lookup. To steer it, pass `topics` (themes to look up) and `subjects` (the people/groups the query is about, as `user:<id>`/`group:<id>`) — you know them from the conversation; if you omit them the server extracts them from `query`. Smart wikis are not funnel-navigated (free markdown, not card/wikilink-structured) but their content still surfaces in the flat hits. If no navigator model is wired, `navigator_available` is `false` and only the flat hits come back.",
         json!({
             "type": "object",
             "required": ["query"],
@@ -303,8 +304,9 @@ fn wiki_navigate() -> Tool {
                 "query": { "type": "string", "description": "What to recall, in natural language." },
                 "sender_id": { "type": "string", "description": "Optional override of the token's sender_id (must match)." },
                 "top_k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Cap on the flat hits returned (and the RAG seeds that feed the funnel)." },
-                "topics": { "type": "array", "items": { "type": "string" }, "description": "Optional. Salient subjects to look up (free text). Supplying these (or `owners`) skips server-side extraction." },
-                "owners": { "type": "array", "items": { "type": "string" }, "description": "Optional. Principals the query is about — `user:<id>` / `group:<id>`. Supplying them (or `topics`) skips server-side extraction. Naming a person here does not by itself open a door — pass their name in `topics` too if you want the pages that mention them matched." }
+                "topics": { "type": "array", "items": { "type": "string" }, "description": "Optional. Salient themes to look up (free text). Supplying these (or `subjects`) skips server-side extraction." },
+                "subjects": { "type": "array", "items": { "type": "string" }, "description": "Optional. Principals the query is about — `user:<id>` / `group:<id>`. Supplying them (or `topics`) skips server-side extraction. Naming a person here does not by itself open a door — pass their name in `topics` too if you want the pages that mention them matched." },
+                "owners": { "type": "array", "items": { "type": "string" }, "description": "DEPRECATED spelling of `subjects`, still honoured. Prefer `subjects`." }
             }
         }),
     ))
@@ -708,7 +710,7 @@ fn smart_bootstrap() -> Tool {
 fn recall_core_global() -> Tool {
     read_only(materialize(
         "recall_core_global",
-        "Canonical \"transversal recall\" wrapper around `wiki_search` (K family). Filters to the caller's own (`owner_user = user:<sender>`) wikis **and** excludes smart wikis (per-wiki smart flag) so project-bound memory does not leak into unrelated work — the contract documented in the bundled skill `core-globalmemory.md`. **Owner-scoped: it only ever searches the caller's OWN memory, so it returns nothing about other people or entities.** For a fact about someone/something other than the caller (a contact's birthday, a colleague's role, a shared address), use `wiki_search` instead. Smart-only.",
+        "Canonical \"transversal recall\" wrapper around `wiki_search` (K family). Filters to the facts whose SUBJECT is the caller (`subject_user = user:<sender>` — facts *about* them, wherever they are filed) **and** excludes smart wikis (per-wiki smart flag) so project-bound memory does not leak into unrelated work — the contract documented in the bundled skill `core-globalmemory.md`. **Subject-scoped: it only ever returns facts about the caller themselves, never about other people or entities — and note that this is a filter on the subject, not on which wiki a fact lives in.** For a fact about someone/something other than the caller (a contact's birthday, a colleague's role, a shared address), use `wiki_search` instead. Smart-only.",
         json!({
             "type": "object",
             "required": ["query"],

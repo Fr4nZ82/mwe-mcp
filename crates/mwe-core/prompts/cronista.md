@@ -31,9 +31,9 @@ The system prompt for **Il Cronista** (compiler stage 3,
   never narrated as the agent's own life; the closed set of values is legended
   in the body under TONE), `{primary_facts}` (this page's facts as a **numbered
   list** — `N. [TYPE] text`. The model never writes the ACL marker (so it is
-  not shown `fact_id`, and never copies owner/allow/sender into prose), but a
+  not shown `fact_id`, and never copies subject/allow/sender into prose), but a
   fact whose read audience is **narrower than public** now carries a trailing
-  `(audience: <names>)` hint naming its read-set (`owner ∪ allow ∪ sender`),
+  `(audience: <names>)` hint naming its read-set (`subject ∪ allow ∪ sender`),
   so the Cronista can keep a restricted fact's substance out of the page's
   default-visibility connective prose (see FACT TAGS + DESCRIPTION) — projected
   by `compiler::audience_hint`, never parsed back; a fact carrying a validity
@@ -70,7 +70,7 @@ The system prompt for **Il Cronista** (compiler stage 3,
   **fact tags** (N = the fact's number). The compiler **expands** those into the
   bare runtime `{{f=uuid}}…{{/}}` region markers — rendered by code from the
   known facts (the ACL lives in the `fact_index` columns and gates the region by
-  that key; the full `{{owner=… allow=… sender=… f=…}}` form is
+  that key; the full `{{subject=… allow=… sender=… f=…}}` form is
   export/interchange only), so the LLM cannot malform a marker the model never
   writes — and **backfills** any fact the model failed to tag (see
   `compile_leaf_page`).
@@ -174,7 +174,7 @@ FACT TAGS — the load-bearing part (read carefully):
 - Each fact under YOUR FACTS has a NUMBER. When you write the prose for fact N, WRAP exactly that fact's text in a tag:
     <fN>the prose for this fact</fN>
   Example: the prose for fact 3 → <f3>…the sentence(s) about it…</f3>. Open with `<fN>` and close with `</fN>`, using that fact's own number.
-- You do NOT write any ACL, owner, allow, sender, braces, or fact_id — the system renders the real marker around your `<fN>…</fN>` span. Your ONLY job is to mark which span of prose is which fact.
+- You do NOT write any ACL, subject, allow, sender, braces, or fact_id — the system renders the real marker around your `<fN>…</fN>` span. Your ONLY job is to mark which span of prose is which fact.
 - COMPLETENESS IS MANDATORY: every fact number under YOUR FACTS must appear once as a `<fN>…</fN>` tag in your `mergedBody` — no exceptions. Never merge two facts into one tag, drop a fact you judge redundant, or summarise several facts away. If a fact is hard to weave in, give it its own short sentence wrapped in its `<fN>` tag rather than leaving it out.
 - Do NOT nest tags. The connective prose BETWEEN tags (transitions, framing) stays untagged — it becomes the page's default-visibility narrative.
 - The untagged connective prose is read by ANYONE who opens the page, including people who cannot read every fact here. So it must reveal NOTHING about a RESTRICTED fact — one carrying an `(audience: …)` hint. Put a restricted fact's substance INSIDE its own `<fN>…</fN>` span (there the ACL marker redacts it per reader); in the surrounding untagged prose refer to it only in a way that discloses nothing — a plain transition, or the subject's [[wikilink]]. This is rule 2 applied WITHIN a page: a same-page fact you cannot show every reader is treated like another page's fact. A fact with NO `(audience: …)` hint is public — weave it freely.
@@ -225,7 +225,7 @@ DESCRIPTION — the page's card, and the reason anyone ever arrives here:
 - The card may be read by people who cannot read every fact on the page: never let the content of a RESTRICTED fact (one carrying an `(audience: …)` hint — its audience is narrower than public) surface in the description, not even as its theme.
 
 TONE — the page's voice, given on the PAGE line below:
-- `narrative-first-person-when-sender-equals-owner` — a person's own wiki: the usual voice, first person only where the person is speaking of themselves.
+- `narrative-first-person-when-sender-equals-subject` — a person's own wiki: the usual voice, first person only where the person is speaking of themselves.
 - `shared` — a group's wiki, written for the several people who read it. `telegraphic` — a hub. `narrative` — anything else.
 - `agent-autobiography-first-person` — the wiki belongs to an AI AGENT and its subject IS that agent: this page is a piece of its autobiography, not a dossier someone keeps on it. Write it in the FIRST PERSON ("ho aiutato…", "tendo a…"), never in the third ("l'agente ha aiutato…"), and never as a service log — these facts are its memory of what it did, learned and became, and of its relationship with each person it serves, so keep the person named and [[wikilinked]] while the subject of the sentence stays "io". Everything else on this page — the fact tags, the link grammar, the ACL discipline — is unchanged.
 

@@ -29,7 +29,7 @@ Telegram openclaw, anything — talks to mwe-mcp through a tiny surface:
   sender, recent_messages?)`**. This is the single channel of the
   conversational flow. It is always on, never optional. Internally the
   server's `ingest` LLM slot classifies intent, recalls context, picks
-  an owner/ACL, and composes the right sequence of `_internal.*` atomic
+  a subject/ACL, and composes the right sequence of `_internal.*` atomic
   writes — all in one round-trip that returns strict JSON (see
   [`ingest-pipeline.md`](../design-notes/ingest-pipeline.md)).
 - **For structural intent** — restructuring,
@@ -161,7 +161,7 @@ emits the *shape* instead):
 1. `_internal.wiki_recall(sender=user:miriam, recent_messages)` → nothing
    relevant (new request).
 2. Reads the `famiglia` group scope → recognizes "groceries" as a family
-   concern → **cross-user attribution**: `owner=group:famiglia` even
+   concern → **cross-user attribution**: `subject=group:famiglia` even
    though Miriam is the sender.
 3. **Placement**: `target_page = spesa.md`, **`style = lista`** (a list
    is a *writing style*, not a special wiki), a one-line `page_description`
@@ -171,20 +171,24 @@ emits the *shape* instead):
    promptly on `famiglia/spesa.md` rather than waiting on the nightly
    prose compile.
 4. A `lista` page holds **records, not prose**: the deterministic Record
-   Writer (no LLM) gives each fact one line, the ACL marker inline —
+   Writer (no LLM) gives each fact one line, wrapped in its own region
+   marker —
 
    ```markdown
-   - {{owner=group:famiglia sender=user:miriam f=018f…}}laundry detergent{{/}}
+   - {{subject=group:famiglia sender=user:miriam f=018f…}}laundry detergent{{/}}
    ```
 
-   (`sender=` appears because the sender differs from the owner — Miriam
-   recording *for* the family; it is omitted when they match.)
+   (Markers are spelled here, and everywhere below, in the
+   self-describing export form. What the writer puts on the page is the
+   bare `{{f=…}}` region key; the ACL sits in that fact's `fact_index`
+   row. `sender=` shows because the sender differs from the subject —
+   Miriam recording *for* the family.)
 
 ### What lands in the memory wiki
 
 | Wiki path *(internal — agent doesn't see it)* | Page testata | Region |
 |---|---|---|
-| `famiglia/spesa.md` | `style: lista` + a one-line `description` | `- {{owner=group:famiglia sender=user:miriam f=…}}laundry detergent{{/}}` |
+| `famiglia/spesa.md` | `style: lista` + a one-line `description` | `- {{subject=group:famiglia sender=user:miriam f=…}}laundry detergent{{/}}` |
 
 The item's **validity stays authoritative in `fact_index`** (`valid_to =
 null`): a record is read back verbatim, so the window is *not* re-rendered
@@ -239,8 +243,8 @@ sequenceDiagram
     U->>C: "remind me Tuesday 9:00 to call the dentist"
     C->>M: wiki_ingest_message(text, sender=user:bob, recent_messages=[…])
     M->>ML: classify intent + resolve the date against the injected current_time
-    Note over ML: intent=capture. There is no cron type.<br/>The classifier emits a FACT with a validity window:<br/>owner=user:bob, style=prosa-tecnica, fact_type=plan,<br/>valid_from=2026-05-19T09:00, valid_to=2026-05-19T09:00.<br/>bob's wiki is standard → staged in the buffer.
-    ML->>FS: _internal.buffer_capture(text="call the dentist", owner=user:bob,<br/>vf=2026-05-19T09:00, vt=2026-05-19T09:00, style=prosa-tecnica)
+    Note over ML: intent=capture. There is no cron type.<br/>The classifier emits a FACT with a validity window:<br/>subject=user:bob, style=prosa-tecnica, fact_type=plan,<br/>valid_from=2026-05-19T09:00, valid_to=2026-05-19T09:00.<br/>bob's wiki is standard → staged in the buffer.
+    ML->>FS: _internal.buffer_capture(text="call the dentist", subject=user:bob,<br/>vf=2026-05-19T09:00, vt=2026-05-19T09:00, style=prosa-tecnica)
     FS-->>ML: capture_id
     ML-->>M: { capture_id, intent_classified: "capture", suggested_seed: "Noted — Tuesday at 9:00." }
     M-->>C: same payload
@@ -260,7 +264,7 @@ There is **no lifecycle-cron participant** and **no `reminder_due` event**. The 
 
 | Wiki path | Region | Validity |
 |---|---|---|
-| `bob/index.md` (or an emerged `bob/appuntamenti.md`), compiled **prose** | `{{owner=user:bob f=…}}…call the dentist, Tuesday at 9…{{/}}` | `valid_from = valid_to = 2026-05-19T09:00`; the Cronista weaves the window into the sentence |
+| `bob/index.md` (or an emerged `bob/appuntamenti.md`), compiled **prose** | `{{subject=user:bob f=…}}…call the dentist, Tuesday at 9…{{/}}` | `valid_from = valid_to = 2026-05-19T09:00`; the Cronista weaves the window into the sentence |
 
 ### What does NOT land
 
@@ -311,18 +315,18 @@ at AcmeCorp now", sender=user:alice)`. The `ingest` slot:
 
 1. `_internal.wiki_recall(sender=user:alice, recent_messages)` → context.
 2. `_internal.users_resolve("Bob")` → matches `user:bob` (the only Bob).
-3. Decides cross-user attribution: `sender=user:alice`, `owner=user:bob`
+3. Decides cross-user attribution: `sender=user:alice`, `subject=user:bob`
    (the fact is *about* Bob, not *Alice's own*).
 4. Decides ACL: `allow=group:team` (Alice is in team, job info is a team
    concern).
 5. `_internal.wiki_capture(text="Bob now works at AcmeCorp.",
-   target_wiki_id="bob-lavoro", sender=user:alice, owner=user:bob,
+   target_wiki_id="bob-lavoro", sender=user:alice, subject=user:bob,
    fact_type=state, allow=["group:team"])`.
 
 Internally mwe-mcp writes into Bob's work page:
 
 ```text
-{{owner=user:bob sender=user:alice allow=group:team f=…}}
+{{subject=user:bob sender=user:alice allow=group:team f=…}}
 Bob now works at AcmeCorp.
 {{/}}
 ```
@@ -332,9 +336,9 @@ profile.", intent_classified: "capture" }`.
 
 **Bob recalls about himself** — `wiki_ingest_message(text="What do you
 know about my current job?", sender=user:bob)`. The `ingest` slot recalls
-the region (Bob is the owner, he sees everything in his wiki), composes a
-`context_snippet` with the fact + attribution, and returns the seed
-"You're at AcmeCorp (noted by Alice on May 17)."
+the region (Bob is its subject, and a subject always reads their own
+fact), composes a `context_snippet` with the fact + attribution, and
+returns the seed "You're at AcmeCorp (noted by Alice on May 17)."
 
 **Zoe recalls about Bob** — `wiki_ingest_message(text="Do you know where
 Bob works?", sender=user:zoe)`. The `ingest` slot's recall finds the
@@ -351,16 +355,16 @@ are in [`redaction-policy.md`](../design-notes/redaction-policy.md).
 
 | Wiki path | Region | ACL |
 |---|---|---|
-| `bob/lavoro.md` | `f=… owner=user:bob sender=user:alice allow=group:team` — *"Bob now works at AcmeCorp"* | Visible to Bob (owner), Alice (sender, guaranteed read), and every member of `team` |
+| `bob/lavoro.md` | `f=… subject=user:bob sender=user:alice allow=group:team` — *"Bob now works at AcmeCorp"* | Visible to Bob (the subject), Alice (sender, guaranteed read), and every member of `team` |
 
 ### The point
 
 Three principles converge here (their full treatment is in
 [`../concepts/identity-and-acl.md`](../concepts/identity-and-acl.md)):
 
-1. **Sender ⊥ Owner.** The fact lives in the *owner's* wiki (Bob), not
-   the sender's (Alice). The `ingest` slot picks the owner by the
-   **subject** of the fact, not by **who is speaking**.
+1. **Sender ⊥ Subject.** The fact lives in the *subject's* wiki (Bob),
+   not the sender's (Alice). The `ingest` slot picks the subject from
+   what the fact is **about**, not from **who is speaking**.
 2. **Guaranteed read for the sender.** Even though Alice isn't in
    `allow=`, the marker records `sender=user:alice`, and the `can_read`
    algorithm grants her read access to the region she authored.
@@ -638,12 +642,12 @@ sender=user:alice)` (token `vscode-alice-dev`). The `ingest` slot:
 - classifies `capture` (a structured decision);
 - resolves the target wiki `team-projects-myapp` (a group sub-wiki) from
   the project context;
-- decides `owner=group:team` (Alice says "team decision," team scope);
+- decides `subject=group:team` (Alice says "team decision," team scope);
 - `_internal.wiki_capture(text="Decision: Postgres for myapp, reason
   scaling", target_wiki_id="team-projects-myapp", sender=user:alice,
-  owner=group:team, fact_type=rule)`.
+  subject=group:team, fact_type=rule)`.
 
-Internally mwe-mcp writes `{{owner=group:team sender=user:alice f=…}}`
+Internally mwe-mcp writes `{{subject=group:team sender=user:alice f=…}}`
 into the team architecture page. Alice receives the seed: *"Decision
 noted in the team space (visible to the whole team)."*
 
@@ -655,7 +659,7 @@ Slack bot → `wiki_ingest_message(text="What storage are we using for
 myapp?", sender=user:bob, recent_messages=[…])` (token
 `slackbot-team-prod`). The `ingest` slot recalls the region;
 `can_read(region, sender=bob, sender_groups=[team])` is true (Bob is in
-team, the region is `owner=group:team`), and it returns the seed
+team, the region is `subject=group:team`), and it returns the seed
 "Postgres, decided by Alice on May 17. Reason: scaling past 100k users."
 The Slack bot posts the seed in the channel.
 
@@ -669,8 +673,8 @@ Slack bot → `wiki_ingest_message(text="…", sender=user:carlos)`. The
 recalls Alice's prior block, and composes
 `_internal.wiki_supersede(new_text="Decision: Postgres for myapp.
 Reasons: (1) scaling past 100k users, (2) Row-Level Security for future
-multi-tenant.", owner=group:team)`. Marker propagation records
-`sender=user:carlos` for audit; the owner stays `group:team`. The updated
+multi-tenant.", subject=group:team)`. Marker propagation records
+`sender=user:carlos` for audit; the subject stays `group:team`. The updated
 decision is now visible to the whole team.
 
 ### What makes this flow possible
@@ -685,8 +689,8 @@ decision is now visible to the whole team.
   `auto_applied` event, both consumers receive it via `events_poll`.
   Per-consumer ack tracking in the `wiki_events.acks` JSON map prevents
   premature GC.
-- **Block-level ACL**: Alice can write `owner=user:alice` (private)
-  regions from the same VSCode she uses for `owner=group:team` (shared)
+- **Block-level ACL**: Alice can write `subject=user:alice` (private)
+  regions from the same VSCode she uses for `subject=group:team` (shared)
   ones.
 
 ### What mwe-mcp does NOT do in this setup
@@ -750,11 +754,11 @@ property of a fact.
 ### 4. Cross-user attribution, present whenever it's needed
 
 Scenario 1 (Miriam adds to the family list): `sender=user:miriam`,
-`owner=group:famiglia`. Scenario 3 (Alice notes about Bob):
-`sender=user:alice`, `owner=user:bob`. Scenario 6 (Alice writes a team
-decision): `sender=user:alice`, `owner=group:team`.
+`subject=group:famiglia`. Scenario 3 (Alice notes about Bob):
+`sender=user:alice`, `subject=user:bob`. Scenario 6 (Alice writes a team
+decision): `sender=user:alice`, `subject=group:team`.
 
-The `ingest` slot decides the owner by the **content** (who the fact is
+The `ingest` slot decides the subject by the **content** (who the fact is
 *about*), not by **who is speaking**. The client agent doesn't manage
 this decision — it passes the raw message + `sender_id` to
 `wiki_ingest_message`. The `sender_id` is retained for audit + guaranteed

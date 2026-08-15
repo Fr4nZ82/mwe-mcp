@@ -603,7 +603,7 @@ const TURN_FIELDS: &[&str] = &["intent", "needs_disambig", "needs_project_docs"]
 const EXTRACTION_FIELDS: &[&str] = &[
     "target_wiki_id",
     "target_page",
-    "owner_id",
+    "subject_id",
     "allow_ids",
     "fact_type",
     "style",
@@ -625,26 +625,35 @@ const EXTRACTION_FIELDS: &[&str] = &[
 /// whether memory lands in the right place with the right audience.
 const CORE_TURN_FIELDS: &[&str] = &["intent"];
 
-/// Per-extraction half of the consequential subset. `owner_id` and
+/// Per-extraction half of the consequential subset. `subject_id` and
 /// `allow_ids` are **deliberately absent**: comparing them raw counts a
 /// change of *spelling* as a change of *decision*. Read access is
-/// `owner ∪ allow ∪ sender` — all three, none of them sufficient alone — so
+/// `subject ∪ allow ∪ sender` — all three, none of them sufficient alone — so
 /// the only honest comparison is the reader set those three produce
 /// together, which [`audience`] computes and [`core_agrees`] compares.
 const CORE_EXTRACTION_FIELDS: &[&str] = &["target_wiki_id"];
 
-/// The set of principals that can read a fact: `owner ∪ allow ∪ sender`,
+/// The set of principals that can read a fact: `subject ∪ allow ∪ sender`,
 /// per `acl::can_read`. Group principals are **not** expanded to their
 /// members — that needs the enrollment tables, and it is unnecessary here
 /// because both sides of a differential replay the *same* turn, so they
 /// share a sender and the same group definitions. What this does collapse
-/// is the dominant equivalence in production: `owner=group:g, allow=[]`
-/// and `owner=user:<sender>, allow=[group:g]` are the same audience, and
+/// is the dominant equivalence in production: `subject=group:g, allow=[]`
+/// and `subject=user:<sender>, allow=[group:g]` are the same audience, and
 /// raw-field comparison scored them as a disagreement.
 fn audience(extraction: &Value, sender: &str) -> Vec<String> {
     let mut set: BTreeSet<String> = BTreeSet::new();
-    if let Some(owner) = extraction.get("owner_id").and_then(Value::as_str) {
-        set.insert(owner.to_owned());
+    // The baseline side of a differential is the PREVIOUS prompt, pulled out of
+    // git — and before 2026-08-15 that prompt emitted `owner_id`. The comparison
+    // runs on the model's raw JSON, so the engine's `#[serde(alias)]` never applies
+    // here: without this fallback the baseline loses its subject axis entirely and
+    // the field tops the disagreement histogram on every capturing record.
+    if let Some(subject) = extraction
+        .get("subject_id")
+        .or_else(|| extraction.get("owner_id"))
+        .and_then(Value::as_str)
+    {
+        set.insert(subject.to_owned());
     }
     if let Some(allow) = extraction.get("allow_ids").and_then(Value::as_array) {
         set.extend(
@@ -701,6 +710,21 @@ const DEFAULT_EMPTY_LIST: &[&str] = &["allow_ids", "attachments"];
 
 /// Canonicalise one field before comparison: an absent field becomes its
 /// schema default, and set-valued fields lose their member order.
+/// Read one comparison field, honouring the pre-rename spelling.
+///
+/// A differential's baseline side is the PREVIOUS prompt pulled out of git, and
+/// before 2026-08-15 that prompt emitted `owner_id` where the current one emits
+/// `subject_id`. The comparison runs on the model's raw JSON, so the engine's
+/// `#[serde(alias)]` never reaches it: without this, the baseline reads Null on
+/// every capturing record and the rename alone tops the disagreement histogram.
+fn field_value<'a>(obj: &'a Value, field: &str) -> Option<&'a Value> {
+    obj.get(field).or_else(|| {
+        (field == "subject_id")
+            .then(|| obj.get("owner_id"))
+            .flatten()
+    })
+}
+
 fn normalised(field: &str, value: Option<&Value>) -> Value {
     let value = value.cloned().unwrap_or(Value::Null);
     if value.is_null() {
@@ -722,10 +746,10 @@ fn normalised(field: &str, value: Option<&Value>) -> Value {
 }
 
 /// Do the two plans agree on the consequential subset — intent, how many
-/// facts, and each fact's wiki / owner / audience?
+/// facts, and each fact's wiki / subject / audience?
 fn core_agrees(a: &Value, b: &Value, sender: &str) -> bool {
     for field in CORE_TURN_FIELDS {
-        if normalised(field, a.get(field)) != normalised(field, b.get(field)) {
+        if normalised(field, field_value(a, field)) != normalised(field, field_value(b, field)) {
             return false;
         }
     }
@@ -743,7 +767,9 @@ fn core_agrees(a: &Value, b: &Value, sender: &str) -> bool {
     }
     for (xa, xb) in ea.iter().zip(eb.iter()) {
         for field in CORE_EXTRACTION_FIELDS {
-            if normalised(field, xa.get(field)) != normalised(field, xb.get(field)) {
+            if normalised(field, field_value(xa, field))
+                != normalised(field, field_value(xb, field))
+            {
                 return false;
             }
         }
@@ -758,13 +784,17 @@ fn core_agrees(a: &Value, b: &Value, sender: &str) -> bool {
 fn disagreements(a: &Value, b: &Value, sender: &str) -> Vec<String> {
     let mut out = Vec::new();
     for field in TURN_FIELDS {
-        if normalised(field, a.get(field)) != normalised(field, b.get(field)) {
+        if normalised(field, field_value(a, field)) != normalised(field, field_value(b, field)) {
             out.push((*field).to_owned());
         }
     }
     for field in ARRAY_FIELDS {
-        let la = a.get(field).and_then(Value::as_array).map_or(0, Vec::len);
-        let lb = b.get(field).and_then(Value::as_array).map_or(0, Vec::len);
+        let la = field_value(a, field)
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        let lb = field_value(b, field)
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
         if la != lb {
             out.push(format!("{field}.len"));
         }
@@ -783,7 +813,9 @@ fn disagreements(a: &Value, b: &Value, sender: &str) -> Vec<String> {
             out.push(format!("extractions[{i}].AUDIENCE"));
         }
         for field in EXTRACTION_FIELDS {
-            if normalised(field, xa.get(field)) != normalised(field, xb.get(field)) {
+            if normalised(field, field_value(xa, field))
+                != normalised(field, field_value(xb, field))
+            {
                 out.push(format!("extractions[{i}].{field}"));
             }
         }
@@ -802,7 +834,7 @@ struct Tally {
     lossy: usize,
     /// Records agreeing on every compared field.
     identical: usize,
-    /// Records agreeing on intent + fact count + wiki/owner/audience.
+    /// Records agreeing on intent + fact count + wiki/subject/audience.
     core_same: usize,
     /// Records where at least one side captured something.
     capturing: usize,
@@ -920,7 +952,7 @@ fn compare(left: &Path, right: &Path) -> Result<(), String> {
             pct(identical, comparable)
         );
         println!(
-            "  SAME ROUTING+ACL    {core_same}/{comparable}  ({:.1}%)   intent, fact count, wiki, and the reader set (owner∪allow∪sender)",
+            "  SAME ROUTING+ACL    {core_same}/{comparable}  ({:.1}%)   intent, fact count, wiki, and the reader set (subject∪allow∪sender)",
             pct(core_same, comparable)
         );
         if capturing > 0 {

@@ -75,11 +75,11 @@ refuse — a rule it could weigh is a rule that fails on the day it matters:
 - the two facts must sit on the same **class** of page (a channel page
   never pairs with an ordinary one);
 - a **rules-page** fact is never a candidate — a standing directive leaves
-  the channel only by supersede, tombstone or its owner's own closure;
+  the channel only by supersede, tombstone or its subject's own closure;
 - the would-be loser is never **identity-core** (`bio` + `salience: high`):
   a role or a relationship is changed by an explicit correction, never
   consolidated away in the background;
-- the two **reader sets** must be identical (`owner ∪ allow ∪ sender`). Same
+- the two **reader sets** must be identical (`subject ∪ allow ∪ sender`). Same
   content told by two people, or readable by two audiences, is two facts;
   merging them retires one principal's memory and leaves the survivor
   addressing the other's readers, with the loser's bytes gone from the page

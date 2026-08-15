@@ -9,6 +9,71 @@ From 1.0, the public interface (the MCP tool surface, by family — see
 [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
 semver-governed surface — breaking changes are called out explicitly.
 
+## Unreleased
+
+### Changed
+
+- **BREAKING — the per-fragment ACL axis is named `subject`, after what it
+  actually holds.** The field that says *who or what a fact is about* had
+  been called `owner` since the first commit — one of the three that decide
+  who may read a fragment, beside `sender` (who reported it) and
+  `allow_ids` (the audience granted beyond the subject). The borrowed name
+  made it read as either of those, and it collided head-on with four
+  unrelated owners this codebase keeps on purpose: the principal a whole
+  wiki belongs to, the human an API token or a smart wiki is registered to,
+  POSIX file ownership, and Rust's own move semantics. Those four keep the
+  word. Only this axis moves, and it moves everywhere at once.
+
+  **On disk.** The self-describing region marker an export writes is now
+  `{{subject=… allow=… sender=… f=…}}`, and each wiki's capture journal
+  (`<wiki>/_captures.md`) writes `subject=` in its entry header. Both
+  readers accept `owner=` **permanently** — `subject=` wins where an entry
+  carries both — because the journal is what a `rm engine.db` rebuild
+  replays, and it holds entries written by every version a deployment has
+  ever run: a key that stopped parsing there would be silent data loss
+  rather than an error. Compiled pages are untouched by this either way; a
+  running server writes the bare `{{f=<uuid>}}` key and keeps the
+  governance in the index.
+
+  **In the database**, migration `0070` renames six columns and two
+  indexes: `fact_index.owner_id`, `capture_buffer.owner_id`,
+  `media_catalog.owner_id` and `document_jobs.owner_id` become
+  `subject_id`; `disclosure_audit.prev_owner_id` and `new_owner_id` become
+  `prev_subject_id` and `new_subject_id`; `idx_fact_owner` becomes
+  `idx_fact_subject` and `idx_media_sha256_owner` becomes
+  `idx_media_sha256_subject`. Hand-written SQL against the memory database
+  has to be updated — nothing else is required at upgrade.
+  `smart_wikis.owner_id` deliberately stays as it is: that one is a real
+  proprietor, and a separate axis, since a fact whose subject is
+  `user:franz` may perfectly well live in a wiki owned by
+  `group:famiglia`.
+
+  **On the MCP wire** every old spelling is still accepted and now
+  advertised as deprecated: `wiki_search`'s `scope` takes `subject_ids`
+  (`owner_ids` honoured), `wiki_navigate` takes `subjects` (`owners`
+  honoured). `recall_core_global` answers with
+  `filter_applied.subject_user` and repeats the same value under the old
+  `owner_user` key for **one release only** — read the new one. That filter
+  has always been a filter on the fact's subject, i.e. the facts *about*
+  the caller wherever they are filed, and never a filter on which wikis the
+  caller owns: a wiki you own can hold facts about other people, and this
+  tool does not return them.
+
+  **In the dashboard** the ACL form field is `subject` and the facts table
+  sorts on `subject_id`, with `owner` and `owner_id` still accepted, so an
+  old bookmark keeps sorting instead of erroring.
+
+  **In the structured logs this is a clean break, with no dual emission**:
+  the tracing field `owner=` on capture, media, ingest, document and
+  operator-edit events is now `subject=`. A saved query, alert or dashboard
+  panel matching `owner=` goes quiet at the deploy without failing, and one
+  spanning the deploy silently splits into two half-populated series.
+  Update them before upgrading — this is the one part of the rename that
+  cannot be caught by an accepted alias.
+
+  The bundled prompts and skills name the subject too, so the model is told
+  the same word the schema uses.
+
 ## 1.9.0 — 2026-08-02
 
 Recall was handing the model the wrong material and reaching the right page by

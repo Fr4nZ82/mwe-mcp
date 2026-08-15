@@ -2,7 +2,7 @@
 //! `disclosure_audit` — append-only log of per-fact ACL changes made from
 //! the consumer chat.
 //!
-//! The owner can broaden or narrow who reads their OWN fact straight from a
+//! The subject can broaden or narrow who reads their OWN fact straight from a
 //! conversation via the `acl_changes` ingest verb (ingest
 //! pipeline). Because that
 //! change is applied act-first, every change leaves an immutable row here:
@@ -23,7 +23,7 @@ use crate::types::{FactId, Principal};
 /// Record one applied ACL change as an immutable audit row.
 ///
 /// `prev` is the snapshot [`crate::fact_index::set_acl`] returned;
-/// `new_owner` / `new_allow` / `new_sender` are what was stamped; `actor_id`
+/// `new_subject` / `new_allow` / `new_sender` are what was stamped; `actor_id`
 /// is the raw session sender that made the change; `widening` is the
 /// disclosure signal from [`crate::acl::widens`].
 ///
@@ -40,7 +40,7 @@ pub async fn record(
     wiki_id: &str,
     actor_id: &str,
     prev: &PrevAcl,
-    new_owner: &Principal,
+    new_subject: &Principal,
     new_allow: &[Principal],
     new_sender: Option<&Principal>,
     widening: bool,
@@ -53,8 +53,8 @@ pub async fn record(
     let row: (i64,) = sqlx::query_as(
         "INSERT INTO disclosure_audit (
             fact_id, wiki_id, actor_id,
-            prev_owner_id, prev_allow_ids, prev_sender_id,
-            new_owner_id, new_allow_ids, new_sender_id,
+            prev_subject_id, prev_allow_ids, prev_sender_id,
+            new_subject_id, new_allow_ids, new_sender_id,
             widening, ts
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING audit_id",
@@ -62,10 +62,10 @@ pub async fn record(
     .bind(fact_id.as_str())
     .bind(wiki_id)
     .bind(actor_id)
-    .bind(prev.prev_owner_id.to_string())
+    .bind(prev.prev_subject_id.to_string())
     .bind(&prev_allow_json)
     .bind(prev.prev_sender_id.as_ref().map(ToString::to_string))
-    .bind(new_owner.to_string())
+    .bind(new_subject.to_string())
     .bind(&new_allow_json)
     .bind(new_sender.map(ToString::to_string))
     .bind(i64::from(widening))
@@ -117,7 +117,7 @@ mod tests {
         let pool = make_pool().await;
         let fact_id = FactId::parse("018f1234-5678-7abc-9def-0123456789ab").unwrap();
         let prev = PrevAcl {
-            prev_owner_id: "user:alice".parse().unwrap(),
+            prev_subject_id: "user:alice".parse().unwrap(),
             prev_allow_ids: vec![],
             prev_sender_id: None,
         };

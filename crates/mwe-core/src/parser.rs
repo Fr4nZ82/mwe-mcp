@@ -20,10 +20,14 @@
 //! - Otherwise the marker open declares a region; the parser then scans
 //!   forward for the next `{{/}}` (region nesting is not supported).
 //!
-//! Attributes inside the marker open: `owner=`, `allow=` (comma-separated
+//! Attributes inside the marker open: `subject=`, `allow=` (comma-separated
 //! list), `sender=`, `f=` (`UUIDv7`, see [`crate::types::FactId`]). Unknown
 //! attributes and malformed values trigger warnings but do not abort the
 //! region.
+//!
+//! `owner=` is a permanent read-only alias of `subject=` — the pre-rename
+//! spelling, still on every page and every export archive written before the
+//! rename. It is never emitted, and `subject=` wins if a region carries both.
 //!
 //! ## Scanner strategy
 //!
@@ -109,7 +113,7 @@ pub enum ParseWarningKind {
     InvalidFactId,
     /// Embed `catalog_id` did not parse as a [`CatalogId`].
     InvalidCatalogId,
-    /// Attribute key not in `{owner, allow, sender, f}`.
+    /// Attribute key not in `{subject, allow, sender, f}`.
     UnknownAttr,
     /// A `{{` that does not open a valid `{{embed=…}}` was found inside an
     /// open region — region nesting is not supported. The outer region is
@@ -400,6 +404,9 @@ fn find_from(haystack: &str, needle: &str, from: usize) -> Option<usize> {
 
 fn parse_attrs(spec: &str, marker_offset: usize, warnings: &mut Vec<ParseWarning>) -> RegionAttrs {
     let mut attrs = RegionAttrs::default();
+    // Whether the subject currently held came from the canonical `subject=`
+    // key rather than the legacy `owner=` alias — see the match arm below.
+    let mut subject_from_canonical_key = false;
     for clause in spec.split_ascii_whitespace() {
         let Some((key, val)) = clause.split_once('=') else {
             warnings.push(ParseWarning {
@@ -418,12 +425,32 @@ fn parse_attrs(spec: &str, marker_offset: usize, warnings: &mut Vec<ParseWarning
             continue;
         }
         match key {
-            "owner" => match val.parse::<Principal>() {
-                Ok(p) => attrs.acl.owner = Some(p),
+            // `owner=` is the pre-rename spelling of this axis and is read
+            // FOREVER, never written. It is on every page and every export
+            // tarball produced before the rename, and on every region a human
+            // hand-authored from the old documentation.
+            //
+            // Dropping it would not raise an error: an unknown key falls
+            // through to the warn-and-keep arm below, leaving the subject
+            // unset — and an unset subject is not a parse failure, it is a
+            // region that renders unreadable to everyone including the person
+            // it is about. A 200 response full of `[redacted]`.
+            "subject" | "owner" => match val.parse::<Principal>() {
+                Ok(p) => {
+                    // Both keys on one region: the canonical one wins whatever
+                    // the order, so a hand-edit with the old key cannot
+                    // overwrite what the engine itself wrote. Repeats of the
+                    // same key keep the historical last-wins.
+                    let canonical = key == "subject";
+                    if canonical || !subject_from_canonical_key {
+                        attrs.acl.subject = Some(p);
+                        subject_from_canonical_key = canonical;
+                    }
+                },
                 Err(e) => warnings.push(ParseWarning {
                     offset: marker_offset,
                     kind: ParseWarningKind::InvalidPrincipal,
-                    detail: format!("owner={val:?}: {e}"),
+                    detail: format!("{key}={val:?}: {e}"),
                 }),
             },
             "allow" => {
@@ -496,14 +523,14 @@ mod tests {
     // ---------- region happy paths ----------
 
     #[test]
-    fn single_region_with_owner_and_fact_id() {
-        let input = format!("{{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}body{{{{/}}}}");
+    fn single_region_with_subject_and_fact_id() {
+        let input = format!("{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body{{{{/}}}}");
         let out = parse(&input);
         assert!(out.warnings.is_empty(), "warnings: {:?}", out.warnings);
         assert_eq!(out.events.len(), 1);
         match &out.events[0] {
             ParseEvent::Region { attrs, body, .. } => {
-                assert_eq!(attrs.acl.owner, Some(Principal::User("alice".into())));
+                assert_eq!(attrs.acl.subject, Some(Principal::User("alice".into())));
                 assert!(attrs.acl.allow.is_empty());
                 assert_eq!(attrs.sender, None);
                 assert_eq!(attrs.fact_id.as_ref().unwrap().as_str(), SAMPLE_UUID_V7);
@@ -514,8 +541,57 @@ mod tests {
     }
 
     #[test]
+    fn a_region_carrying_both_keys_takes_the_canonical_one() {
+        // A page the engine wrote (subject=) that a human then hand-edited from
+        // the old documentation (owner=), or the reverse. Whichever order they
+        // land in, the canonical key wins — otherwise the value that survives
+        // would depend on where in the marker someone happened to type it.
+        for input in [
+            format!("{{{{subject=user:alice owner=user:bob f={SAMPLE_UUID_V7}}}}}b{{{{/}}}}"),
+            format!("{{{{owner=user:bob subject=user:alice f={SAMPLE_UUID_V7}}}}}b{{{{/}}}}"),
+        ] {
+            let out = parse(&input);
+            match &out.events[0] {
+                ParseEvent::Region { attrs, .. } => assert_eq!(
+                    attrs.acl.subject,
+                    Some(Principal::User("alice".into())),
+                    "canonical key must win in {input:?}"
+                ),
+                other => panic!("expected Region, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_legacy_owner_attribute_still_names_the_subject() {
+        // `owner=` is the pre-rename spelling of the subject axis, and it must
+        // keep parsing FOREVER. It is on every page written before the rename,
+        // inside every export tarball already on a user's disk, and in every
+        // hand-authored region.
+        //
+        // The failure this guards is invisible rather than loud: an attribute
+        // key the parser does not know falls through to the warn-and-keep arm,
+        // which leaves the subject unset — and an unset subject is not a parse
+        // error, it is a region that renders unreadable to everyone, including
+        // the person it is about. A 200 response full of `[redacted]`.
+        //
+        // The `owner=` in the input below is the whole point of the test. It is
+        // NOT a leftover to be swept: if a future pass rewrites it, delete the
+        // test rather than leave one that proves nothing.
+        let input = format!("{{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}body{{{{/}}}}");
+        let out = parse(&input);
+        assert!(out.warnings.is_empty(), "warnings: {:?}", out.warnings);
+        match &out.events[0] {
+            ParseEvent::Region { attrs, .. } => {
+                assert_eq!(attrs.acl.subject, Some(Principal::User("alice".into())));
+            },
+            other => panic!("expected Region, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn allow_comma_separated_list() {
-        let input = "{{owner=user:alice allow=user:bob,group:team}}x{{/}}";
+        let input = "{{subject=user:alice allow=user:bob,group:team}}x{{/}}";
         let out = parse(input);
         assert!(out.warnings.is_empty());
         match &out.events[0] {
@@ -534,12 +610,12 @@ mod tests {
 
     #[test]
     fn sender_attribute_records_cross_user_attribution() {
-        let input = "{{owner=user:gollum sender=user:galadriel allow=group:famiglia}}x{{/}}";
+        let input = "{{subject=user:gollum sender=user:galadriel allow=group:famiglia}}x{{/}}";
         let out = parse(input);
         assert!(out.warnings.is_empty());
         match &out.events[0] {
             ParseEvent::Region { attrs, .. } => {
-                assert_eq!(attrs.acl.owner, Some(Principal::User("gollum".into())));
+                assert_eq!(attrs.acl.subject, Some(Principal::User("gollum".into())));
                 assert_eq!(attrs.sender, Some(Principal::User("galadriel".into())));
                 assert_eq!(attrs.acl.allow, vec![Principal::Group("famiglia".into())]);
             },
@@ -548,9 +624,9 @@ mod tests {
     }
 
     #[test]
-    fn region_without_owner_leaves_owner_unset_for_render_fallback() {
-        // Region with only fact_id, no owner/allow. The parser leaves
-        // acl.owner None; at render time the owner-of-last-resort is the
+    fn region_without_subject_leaves_subject_unset_for_render_fallback() {
+        // Region with only fact_id, no subject/allow. The parser leaves
+        // acl.subject None; at render time the subject-of-last-resort is the
         // region's own sender (never the wiki principal), and a region with no
         // sender either stays unreadable.
         let input = format!("{{{{f={SAMPLE_UUID_V7}}}}}body{{{{/}}}}");
@@ -558,7 +634,7 @@ mod tests {
         assert!(out.warnings.is_empty());
         match &out.events[0] {
             ParseEvent::Region { attrs, .. } => {
-                assert_eq!(attrs.acl.owner, None);
+                assert_eq!(attrs.acl.subject, None);
                 assert!(attrs.acl.allow.is_empty());
                 assert!(attrs.fact_id.is_some());
             },
@@ -587,8 +663,8 @@ mod tests {
     #[test]
     fn multiple_regions_interleaved_with_prose() {
         let input = format!(
-            "Alice pesa {{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} al 10 maggio, \
-ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
+            "Alice pesa {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} al 10 maggio, \
+ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
         );
         let out = parse(&input);
         assert!(out.warnings.is_empty(), "warnings: {:?}", out.warnings);
@@ -599,19 +675,19 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
         assert!(matches!(out.events[2], ParseEvent::Prose { .. }));
         assert!(matches!(out.events[3], ParseEvent::Region { .. }));
         assert!(matches!(out.events[4], ParseEvent::Prose { .. }));
-        // Regions have the right owners.
+        // Regions have the right subjects.
         if let ParseEvent::Region { attrs, .. } = &out.events[1] {
-            assert_eq!(attrs.acl.owner, Some(Principal::User("alice".into())));
+            assert_eq!(attrs.acl.subject, Some(Principal::User("alice".into())));
         }
         if let ParseEvent::Region { attrs, .. } = &out.events[3] {
-            assert_eq!(attrs.acl.owner, Some(Principal::global()));
+            assert_eq!(attrs.acl.subject, Some(Principal::global()));
         }
     }
 
     #[test]
     fn back_to_back_regions_without_prose_between() {
         let input = format!(
-            "{{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}a{{{{/}}}}{{{{owner=global f={SAMPLE_UUID_V7}}}}}b{{{{/}}}}"
+            "{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}a{{{{/}}}}{{{{subject=global f={SAMPLE_UUID_V7}}}}}b{{{{/}}}}"
         );
         let out = parse(&input);
         assert!(out.warnings.is_empty());
@@ -652,47 +728,47 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
     // ---------- invalid attribute recovery ----------
 
     #[test]
-    fn owner_without_prefix_warns_but_keeps_region() {
-        let input = "{{owner=alice}}body{{/}}";
+    fn subject_without_prefix_warns_but_keeps_region() {
+        let input = "{{subject=alice}}body{{/}}";
         let out = parse(input);
         assert_eq!(out.warnings.len(), 1);
         assert_eq!(out.warnings[0].kind, ParseWarningKind::InvalidPrincipal);
-        // Region still emitted, just without an owner set.
+        // Region still emitted, just without a subject set.
         assert_eq!(out.events.len(), 1);
         if let ParseEvent::Region { attrs, body, .. } = &out.events[0] {
-            assert_eq!(attrs.acl.owner, None);
+            assert_eq!(attrs.acl.subject, None);
             assert_eq!(body, "body");
         }
     }
 
     #[test]
     fn unknown_attribute_warns_but_keeps_region() {
-        let input = "{{owner=user:alice nonsense=foo}}body{{/}}";
+        let input = "{{subject=user:alice nonsense=foo}}body{{/}}";
         let out = parse(input);
         assert_eq!(out.warnings.len(), 1);
         assert_eq!(out.warnings[0].kind, ParseWarningKind::UnknownAttr);
         assert_eq!(out.events.len(), 1);
         if let ParseEvent::Region { attrs, .. } = &out.events[0] {
-            assert_eq!(attrs.acl.owner, Some(Principal::User("alice".into())));
+            assert_eq!(attrs.acl.subject, Some(Principal::User("alice".into())));
         }
     }
 
     #[test]
     fn legacy_fact_id_format_warns_but_keeps_region() {
-        let input = "{{owner=user:alice f=f-2026-05-11-001}}body{{/}}";
+        let input = "{{subject=user:alice f=f-2026-05-11-001}}body{{/}}";
         let out = parse(input);
         assert_eq!(out.warnings.len(), 1);
         assert_eq!(out.warnings[0].kind, ParseWarningKind::InvalidFactId);
         if let ParseEvent::Region { attrs, .. } = &out.events[0] {
-            // Owner survives, fact_id is None because parse failed.
-            assert_eq!(attrs.acl.owner, Some(Principal::User("alice".into())));
+            // Subject survives, fact_id is None because parse failed.
+            assert_eq!(attrs.acl.subject, Some(Principal::User("alice".into())));
             assert!(attrs.fact_id.is_none());
         }
     }
 
     #[test]
     fn attribute_without_equals_warns_and_skips_clause() {
-        let input = "{{owner=user:alice noequals}}body{{/}}";
+        let input = "{{subject=user:alice noequals}}body{{/}}";
         let out = parse(input);
         assert_eq!(out.warnings.len(), 1);
         assert_eq!(out.warnings[0].kind, ParseWarningKind::InvalidAttr);
@@ -702,7 +778,7 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
 
     #[test]
     fn unclosed_open_marker_at_eof_warns() {
-        let input = "prose {{owner=user:alice";
+        let input = "prose {{subject=user:alice";
         let out = parse(input);
         assert_eq!(out.warnings.len(), 1);
         assert_eq!(out.warnings[0].kind, ParseWarningKind::UnclosedMarker);
@@ -722,7 +798,7 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
     #[test]
     fn marker_open_spanning_newline_is_unclosed() {
         // Marker open/close must be on a single line.
-        let input = "prose {{owner=\nuser:alice}}body{{/}}";
+        let input = "prose {{subject=\nuser:alice}}body{{/}}";
         let out = parse(input);
         assert!(
             out.warnings
@@ -733,7 +809,7 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
 
     #[test]
     fn unclosed_region_warns() {
-        let input = "{{owner=user:alice}}body without terminator";
+        let input = "{{subject=user:alice}}body without terminator";
         let out = parse(input);
         assert_eq!(out.warnings.len(), 1);
         assert_eq!(out.warnings[0].kind, ParseWarningKind::UnclosedRegion);
@@ -754,7 +830,7 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
 
     #[test]
     fn nested_region_warns_outer_kept_verbatim() {
-        let input = "{{owner=user:alice}}outer {{owner=user:bob}}inner{{/}} rest{{/}}";
+        let input = "{{subject=user:alice}}outer {{subject=user:bob}}inner{{/}} rest{{/}}";
         let out = parse(input);
         assert!(
             out.warnings
@@ -762,7 +838,7 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
                 .any(|w| w.kind == ParseWarningKind::NestedRegion)
         );
         // The outer region accepts the body verbatim, terminating at the
-        // FIRST `{{/}}` — so its body is `outer {{owner=user:bob}}inner`
+        // FIRST `{{/}}` — so its body is `outer {{subject=user:bob}}inner`
         // (no inner termination logic — nesting is unsupported).
         match &out.events[0] {
             ParseEvent::Region { body, .. } => {
@@ -777,7 +853,7 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
     #[test]
     fn embed_inside_region_is_legal_and_collected() {
         let input = format!(
-            "{{{{owner=user:gollum f={SAMPLE_UUID_V7}}}}}an 8 in maths \
+            "{{{{subject=user:gollum f={SAMPLE_UUID_V7}}}}}an 8 in maths \
 {{{{embed=c-2026-05-11-photo-001.jpg}}}}{{{{/}}}}"
         );
         let out = parse(&input);
@@ -796,7 +872,7 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
 
     #[test]
     fn multiple_embeds_inside_region_collected_in_order() {
-        let input = "{{owner=user:alice}}a {{embed=c-2026-05-10-photo-001.jpg}} b \
+        let input = "{{subject=user:alice}}a {{embed=c-2026-05-10-photo-001.jpg}} b \
 {{embed=c-2026-05-10-photo-002.png}} c{{/}}";
         let out = parse(input);
         assert!(out.warnings.is_empty(), "warnings: {:?}", out.warnings);
@@ -814,7 +890,7 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
 
     #[test]
     fn invalid_embed_inside_region_warns_invalid_catalog_id() {
-        let input = "{{owner=user:alice}}x {{embed=garbage}} y{{/}}";
+        let input = "{{subject=user:alice}}x {{embed=garbage}} y{{/}}";
         let out = parse(input);
         assert_eq!(out.warnings.len(), 1);
         assert_eq!(out.warnings[0].kind, ParseWarningKind::InvalidCatalogId);
@@ -830,10 +906,10 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
 
     #[test]
     fn embed_and_nested_marker_inside_region_each_classified() {
-        let input = "{{owner=user:alice}}x {{embed=c-2026-05-10-doc-001.pdf}} \
-{{owner=user:bob}}nested{{/}}";
+        let input = "{{subject=user:alice}}x {{embed=c-2026-05-10-doc-001.pdf}} \
+{{subject=user:bob}}nested{{/}}";
         let out = parse(input);
-        // One NestedRegion for the `{{owner=user:bob}}`, no warning for
+        // One NestedRegion for the `{{subject=user:bob}}`, no warning for
         // the valid embed.
         assert_eq!(out.warnings.len(), 1);
         assert_eq!(out.warnings[0].kind, ParseWarningKind::NestedRegion);
@@ -851,7 +927,7 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
     fn collect_embeds_finds_standalone_and_in_region() {
         let input = format!(
             "{{{{embed=c-2026-05-10-photo-001.jpg}}}} prose \
-{{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}body {{{{embed=c-2026-05-11-audio-001.m4a}}}}{{{{/}}}}"
+{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body {{{{embed=c-2026-05-11-audio-001.m4a}}}}{{{{/}}}}"
         );
         let ids: Vec<String> = collect_embeds(&input)
             .iter()
@@ -872,7 +948,7 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
 
     #[test]
     fn embed_only_markers_rejects_regions_braces_and_malformed() {
-        assert!(embed_only_markers("{{owner=user:alice}}x{{/}}").is_none());
+        assert!(embed_only_markers("{{subject=user:alice}}x{{/}}").is_none());
         assert!(embed_only_markers("stray }} braces").is_none());
         assert!(embed_only_markers("open {{ brace").is_none());
         assert!(embed_only_markers("{{embed=garbage}}").is_none());
@@ -884,10 +960,10 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
         let standalone = "sunset {{embed=c-2026-06-12-photo-001.jpg}} harbour";
         assert_eq!(strip_embed_markers(standalone), "sunset  harbour");
 
-        let in_region = "{{owner=user:alice}}body {{embed=c-2026-06-12-photo-001.jpg}} tail{{/}}";
+        let in_region = "{{subject=user:alice}}body {{embed=c-2026-06-12-photo-001.jpg}} tail{{/}}";
         assert_eq!(
             strip_embed_markers(in_region),
-            "{{owner=user:alice}}body  tail{{/}}"
+            "{{subject=user:alice}}body  tail{{/}}"
         );
 
         // Invalid embeds and plain text are untouched.
@@ -903,7 +979,7 @@ ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
     #[test]
     fn event_offsets_are_monotonic_and_in_bounds() {
         let input = format!(
-            "lead {{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}mid{{{{/}}}} trail \
+            "lead {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}mid{{{{/}}}} trail \
 {{{{embed=c-2026-05-10-foto-001.jpg}}}} tail"
         );
         let out = parse(&input);

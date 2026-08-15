@@ -7,9 +7,11 @@
 //! per-fact ACL lives in the `fact_index` columns. An exported page must
 //! stand alone *without* the engine DB next to it, so export rewrites
 //! every DB-known region to the **full marker form**
-//! (`{{owner=… allow=… sender=… f=…}}body{{/}}`) via
-//! [`crate::capture::render_full_marker`]. Because the parser accepts the
-//! full form as input forever, an exported archive re-imports losslessly.
+//! (`{{subject=… allow=… sender=… f=…}}body{{/}}`) via
+//! [`crate::capture::render_full_marker`]. The parser accepts that form as
+//! input forever, so an archive carries everything a reader needs — but
+//! note there is **no importer** anywhere in this workspace: an archive is
+//! read by hand or by another tool, never fed back in by mwe-mcp.
 //!
 //! Scope and policy:
 //!
@@ -226,7 +228,8 @@ struct MediaManifestEntry {
     kind: String,
     mime: String,
     size_bytes: i64,
-    owner: String,
+    #[serde(alias = "owner")]
+    subject: String,
     allow: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sender: Option<String>,
@@ -280,7 +283,7 @@ async fn append_referenced_media(
             kind: row.kind,
             mime: row.mime,
             size_bytes: row.size_bytes,
-            owner: row.owner_id.to_string(),
+            subject: row.subject_id.to_string(),
             allow: row.allow_ids.iter().map(ToString::to_string).collect(),
             sender: row.sender_id.as_ref().map(ToString::to_string),
             caption: row.caption,
@@ -326,7 +329,7 @@ fn rewrite_page_markers(raw: &str, acl_map: &FactAclMap) -> (String, usize, usiz
         out.push_str(&raw[last..*start]);
         out.push_str(&render_full_marker(
             fact_id,
-            &acl.owner,
+            &acl.subject,
             &acl.allow,
             acl.sender.as_ref(),
             &raw[*body_start..*body_end],
@@ -406,7 +409,7 @@ mod tests {
             wiki_id: WikiId::parse(wiki_id).unwrap(),
             page: PathBuf::from(page),
             body: body.to_owned(),
-            owner: "user:alice".parse::<Principal>().unwrap(),
+            subject: "user:alice".parse::<Principal>().unwrap(),
             allow,
             sender,
             fact_type: None,
@@ -574,17 +577,17 @@ mod tests {
             }
         }
         let (plain_attrs, plain_body) = &seen[fx.plain.as_str()];
-        assert_eq!(plain_attrs.acl.owner, Some("user:alice".parse().unwrap()));
+        assert_eq!(plain_attrs.acl.subject, Some("user:alice".parse().unwrap()));
         assert!(plain_attrs.acl.allow.is_empty());
         assert_eq!(
             plain_attrs.sender,
             Some("user:alice".parse().unwrap()),
-            "a self-fact's sender is materialized to the owner and exported explicitly (never collapsed)"
+            "a self-fact's sender is materialized to the subject and exported explicitly (never collapsed)"
         );
         assert_eq!(plain_body, "Alice likes tea");
 
         let (acl_attrs, acl_body) = &seen[fx.acl.as_str()];
-        assert_eq!(acl_attrs.acl.owner, Some("user:alice".parse().unwrap()));
+        assert_eq!(acl_attrs.acl.subject, Some("user:alice".parse().unwrap()));
         assert_eq!(
             acl_attrs.acl.allow,
             vec!["user:bob".parse::<Principal>().unwrap()]
@@ -594,7 +597,7 @@ mod tests {
 
         let (orphan_attrs, orphan_body) = &seen[ORPHAN_KEY];
         assert_eq!(
-            orphan_attrs.acl.owner, None,
+            orphan_attrs.acl.subject, None,
             "unindexed region must stay bare"
         );
         assert!(orphan_attrs.acl.allow.is_empty());
@@ -603,7 +606,7 @@ mod tests {
         // Descendant page rewritten too.
         let garden = &entries["alice/garden/notes.md"];
         assert!(
-            garden.contains("owner=user:alice") && garden.contains(fx.garden.as_str()),
+            garden.contains("subject=user:alice") && garden.contains(fx.garden.as_str()),
             "{garden}"
         );
 
@@ -668,7 +671,7 @@ mod tests {
                 bytes: b"jpegbytes".to_vec(),
                 kind: crate::media::kind::PHOTO.to_owned(),
                 mime: "image/jpeg".to_owned(),
-                owner: "user:alice".parse().unwrap(),
+                subject: "user:alice".parse().unwrap(),
                 uploaded_by_consumer: None,
                 caption: Some("at the gate".to_owned()),
                 description: None,
@@ -718,7 +721,7 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["catalog_id"], cid.as_str());
         assert_eq!(items[0]["kind"], "photo");
-        assert_eq!(items[0]["owner"], "user:alice");
+        assert_eq!(items[0]["subject"], "user:alice");
         assert_eq!(items[0]["allow"][0], "group:famiglia");
         assert_eq!(items[0]["caption"], "at the gate");
 

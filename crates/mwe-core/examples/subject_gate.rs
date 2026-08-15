@@ -163,9 +163,7 @@ async fn main() -> anyhow::Result<()> {
         sender_id: sender_id.clone(),
         sender_groups: sender_groups.clone(),
     };
-    let policy = NavigatorPolicy {
-        ..NavigatorPolicy::default()
-    };
+    let policy = NavigatorPolicy::default();
     let roster = enrollment::list_users(&pool).await?;
     println!(
         "sender={sender_id} groups={sender_groups:?} roster={:?} top_k={top_k}\n",
@@ -291,7 +289,11 @@ async fn run_probe(
         &probe.phrase,
         &entries,
         policy,
-        &[],
+        // Nothing pre-served: the probe walks from a cold block.
+        recall_nav::Served {
+            pages: &[],
+            cards: &[],
+        },
     )
     .await?;
     println!(

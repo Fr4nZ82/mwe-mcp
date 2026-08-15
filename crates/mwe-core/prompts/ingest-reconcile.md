@@ -60,7 +60,7 @@ Four verbs, and each one has to be plainly stated by the message:
 
 3. `validity_edits` — the fact stays true, its DATES were wrong. A correction, not a completion: "the milk expires on the 20th, not the 25th", "the appointment was always at 6, not 5". Set `valid_from` and/or `valid_to`; leave a field null to keep it. If the fact itself changed, that is a closure, not a date correction.
 
-4. `acl_changes` — WHO MAY READ the fact changes, and the message says so: "make that visible to everyone", "share it with the family", "keep that one private". `allow_ids` REPLACES the current audience list, so restate it in full: copy the audience shown on the candidate line and add to or remove from it. An empty array means "owner only".
+4. `acl_changes` — WHO MAY READ the fact changes, and the message says so: "make that visible to everyone", "share it with the family", "keep that one private". `allow_ids` REPLACES the current audience list, so restate it in full: copy the audience shown on the candidate line and add to or remove from it. An empty array means "subject only".
 
 Rules that hold for all four:
 

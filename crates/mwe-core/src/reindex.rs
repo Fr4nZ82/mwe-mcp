@@ -11,7 +11,7 @@
 //!   with no per-fragment `{{f=…}}` markers, so recall indexes the
 //!   **content** — each page is chunked into heading-delimited sections,
 //!   embedded, and the page's `fact_index` rows are drop-and-reinserted.
-//!   Every row carries the wiki-level ACL from `_meta` (owner +
+//!   Every row carries the wiki-level ACL from `_meta` (subject +
 //!   `shared_with`) projected onto it; a removed page's rows are
 //!   hard-dropped (no tombstone). Unchanged sections reuse their stored
 //!   embedding so an idle page mutates zero rows.
@@ -263,7 +263,7 @@ pub struct ReindexFullReport {
 /// **Smart** (content-indexed, markerless — [`section_index_page`]):
 /// - the page is chunked into heading-delimited sections, each embedded,
 ///   and the page's `fact_index` rows are drop-and-reinserted; every row
-///   carries the wiki-level ACL from `_meta` (owner + `shared_with`)
+///   carries the wiki-level ACL from `_meta` (subject + `shared_with`)
 /// - an unchanged page mutates zero rows; an edit re-embeds only the
 ///   changed sections (unchanged section text reuses its stored vector)
 /// - file missing from disk → the page's rows are hard-dropped (no
@@ -776,7 +776,7 @@ fn plan_page_source_paths(tree: &WikiTree) -> anyhow::Result<HashSet<String>> {
 ///    close the recall window on this tick even if nobody touched the
 ///    dashboard sharing route.
 /// 2. **The descriptions.** Each project's door sign is mirrored out of
-///    the registry and into the owner's signpost page **as a fact**,
+///    the registry and into the subject's signpost page **as a fact**,
 ///    because a standard consumer's per-turn recall reads the fact corpus
 ///    only: a door that lives just in a column cannot be found by the
 ///    ranking that fills the block. Second, and unconditional, since step
@@ -1966,7 +1966,7 @@ mod tests {
 
     /// A smart wiki (`smart: true`) owned by the user whose id matches
     /// `wiki_id` — a `wiki-user` identity root, so the scope-principal
-    /// derivation yields `user:<wiki_id>` (the owner the section rows
+    /// derivation yields `user:<wiki_id>` (the subject the section rows
     /// inherit). Extra `_meta` lines (e.g. `shared_with: [user:bob]`) are
     /// appended verbatim.
     fn write_smart_wiki_meta_with(abs_dir: &Path, wiki_id: &str, extra: &str) {
@@ -2001,7 +2001,7 @@ mod tests {
             region_end: offsets.map(|(_, e)| e),
             text: text.to_owned(),
             embedding: vec![0.0; 8],
-            owner_id: "user:alice".parse().unwrap(),
+            subject_id: "user:alice".parse().unwrap(),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: None,
@@ -2442,7 +2442,7 @@ mod tests {
             region_end: None,
             text: "a claim".to_owned(),
             embedding: vec![0.0; 8],
-            owner_id: "user:alice".parse().unwrap(),
+            subject_id: "user:alice".parse().unwrap(),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: None,

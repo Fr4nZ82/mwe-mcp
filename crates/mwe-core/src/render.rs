@@ -11,11 +11,11 @@
 //! region's ACL. The caller pre-loads the page's fact-key → ACL map
 //! ([`crate::fact_index::page_acl_map`]) and passes it in; a region
 //! whose `f=<uuid>` key is in the map is gated **entirely** by the DB
-//! record (owner, allow, sender — the inline attributes are ignored, and
-//! the owner is always explicit there). The inline marker attributes
+//! record (subject, allow, sender — the inline attributes are ignored, and
+//! the subject is always explicit there). The inline marker attributes
 //! remain the fallback for regions the DB does not know — a file not yet
 //! indexed, or a marker without `f=` — with the region's own `sender` as
-//! the owner of last resort (see "Owner-of-last-resort semantics" below).
+//! the subject of last resort (see "Subject-of-last-resort semantics" below).
 //! This keeps `render_for_sender` itself a pure, synchronous function:
 //! all I/O stays with the caller.
 //!
@@ -26,7 +26,7 @@
 //!   separators, the connective tissue between fact regions. The LLM
 //!   that ingests this file needs that context to understand a region it
 //!   later extracts or supersedes; the human reader needs it to
-//!   understand the sentence around a redacted block. The owner-of-last-
+//!   understand the sentence around a redacted block. The subject-of-last-
 //!   resort never filters prose. This was the source of an early
 //!   misimplementation — see
 //!   the redaction-policy design note.
@@ -46,14 +46,14 @@
 //!   the redaction-policy design note
 //!   for the full discussion).
 //!
-//! ## Owner-of-last-resort semantics
+//! ## Subject-of-last-resort semantics
 //!
 //! A region whose marker carries no explicit `owner=` (and which `db_acl`
 //! does not cover) falls back to its own captured **`sender`** — its
 //! provenance, never the wiki's scope principal: a fact's ACL is the fact's,
-//! not the category's. A region with neither an inline owner nor a sender is
+//! not the category's. A region with neither an inline subject nor a sender is
 //! left **unreadable** (visible only via a matching `allow`) rather than
-//! inheriting a wiki-wide audience it was never granted. This owner-of-last-
+//! inheriting a wiki-wide audience it was never granted. This subject-of-last-
 //! resort does **not** apply to prose or to standalone embeds (those always
 //! pass through). `meta_acl_default` is kept on the call signatures for
 //! stability but no longer consulted.
@@ -469,15 +469,15 @@ fn is_inline_region(text: &str, start: usize, end: usize) -> bool {
 /// Resolve the ACL gating one region, plus its cross-user attribution.
 ///
 /// DB first: when the page's [`FactAclMap`] covers the region's fact
-/// key, the DB record gates it alone — owner is always explicit there,
+/// key, the DB record gates it alone — subject is always explicit there,
 /// and the inline attributes are ignored even when present (they are a
 /// derived projection, not the source of truth). Otherwise the inline
 /// marker attributes gate the region.
 ///
-/// The owner of last resort for a region with **no inline `owner=`** is the
+/// The subject of last resort for a region with **no inline `owner=`** is the
 /// region's own `sender` (its captured provenance), NOT the wiki's scope
 /// principal — a fact's ACL is the fact's, never the category's. When the
-/// region has neither an inline owner nor a sender, `owner` stays `None` and
+/// region has neither an inline subject nor a sender, `subject` stays `None` and
 /// the region is left unreadable (invisible to everyone but a matching `allow`)
 /// rather than inheriting a wiki-wide audience it was never granted.
 /// `meta_acl_default` is accepted for signature stability but no longer
@@ -495,11 +495,11 @@ fn resolve_region_acl<'a>(
             || {
                 (
                     Acl {
-                        // Inline owner, else the region's sender (its captured
-                        // provenance) — never the wiki principal. No owner AND
+                        // Inline subject, else the region's sender (its captured
+                        // provenance) — never the wiki principal. No subject AND
                         // no sender ⇒ `None` ⇒ unreadable, rather than inventing
                         // a category-wide audience.
-                        owner: attrs.acl.owner.clone().or_else(|| attrs.sender.clone()),
+                        subject: attrs.acl.subject.clone().or_else(|| attrs.sender.clone()),
                         allow: attrs.acl.allow.clone(),
                     },
                     attrs.sender.as_ref(),
@@ -508,7 +508,7 @@ fn resolve_region_acl<'a>(
             |rec| {
                 (
                     Acl {
-                        owner: Some(rec.owner.clone()),
+                        subject: Some(rec.subject.clone()),
                         allow: rec.allow.clone(),
                     },
                     rec.sender.as_ref(),
@@ -534,12 +534,12 @@ mod tests {
     }
 
     /// One-entry DB map for the shared `SAMPLE_UUID_V7` fact key.
-    fn db_acl(owner: &str, allow: &[&str], sender: Option<&str>) -> FactAclMap {
+    fn db_acl(subject: &str, allow: &[&str], sender: Option<&str>) -> FactAclMap {
         let mut map = FactAclMap::default();
         map.insert(
             FactId::parse(SAMPLE_UUID_V7).unwrap(),
             RegionAcl {
-                owner: owner.parse().unwrap(),
+                subject: subject.parse().unwrap(),
                 allow: allow.iter().map(|p| p.parse().unwrap()).collect(),
                 sender: sender.map(|p| p.parse().unwrap()),
             },
@@ -551,8 +551,8 @@ mod tests {
     /// to `UUIDv7`-format `fact_id`s).
     ///
     /// Region 3 carries `sender=user:alice` (its captured provenance — alice
-    /// authored it) but no explicit `owner=`: with the owner-of-last-resort now
-    /// being the region's sender, alice reads it as its owner while a team
+    /// authored it) but no explicit `owner=`: with the subject-of-last-resort now
+    /// being the region's sender, alice reads it as its subject while a team
     /// member reads it via `allow=group:team`. An outsider sees neither.
     fn modello_memoria_5_input() -> String {
         format!(
@@ -670,14 +670,14 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
     }
 
-    // ---------- owner-of-last-resort: the region's SENDER, never the wiki ----------
+    // ---------- subject-of-last-resort: the region's SENDER, never the wiki ----------
 
     #[test]
-    fn region_without_owner_falls_back_to_its_sender() {
+    fn region_without_subject_falls_back_to_its_sender() {
         // Region has a fact_id and a `sender=user:alice` but NO explicit
-        // `owner=`. The owner-of-last-resort is the region's own sender (its
+        // `owner=`. The subject-of-last-resort is the region's own sender (its
         // captured provenance), NOT the wiki principal — so alice reads it as
-        // its owner, bob does not. `meta_acl_default` (here a contrasting
+        // its subject, bob does not. `meta_acl_default` (here a contrasting
         // `global`) is no longer consulted. Surrounding prose always passes.
         let input = format!(
             "before {{{{sender=user:alice f={SAMPLE_UUID_V7}}}}}private body{{{{/}}}} after"
@@ -704,7 +704,7 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
     }
 
     #[test]
-    fn region_without_owner_or_sender_is_unreadable_not_wiki_default() {
+    fn region_without_subject_or_sender_is_unreadable_not_wiki_default() {
         // A region with neither an inline `owner=` nor a `sender` is left
         // UNREADABLE — it is never rescued by the wiki's scope principal. Even
         // the wiki principal passed as `meta_acl_default` (here `user:alice`)
@@ -719,7 +719,7 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
         );
         assert!(
             !out.text.contains("orphan body"),
-            "no owner, no sender ⇒ invisible"
+            "no subject, no sender ⇒ invisible"
         );
         assert!(out.text.contains("before "));
         assert!(out.text.contains(" after"));
@@ -727,11 +727,39 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
         assert_eq!(out.blocks_redacted, 1);
     }
 
+    #[test]
+    fn a_wikis_own_principal_does_not_read_a_fact_about_someone_else() {
+        // The two axes this codebase long spelled with the same word are
+        // independent, and this is the case that proves it: `meta_acl_default`
+        // is the WIKI's principal — its proprietor, the authority for
+        // wiki-level acts — while the region attribute is the FACT's subject.
+        // A fact about bob filed inside alice's wiki stays bob's, and alice
+        // opening her own wiki does not thereby read it.
+        //
+        // The sibling test above covers the orphan region (no subject at all);
+        // this one covers the case that actually carries someone else's datum.
+        let input =
+            format!("before {{{{owner=user:bob f={SAMPLE_UUID_V7}}}}}bob's weight{{{{/}}}} after");
+        let wiki_principal = Principal::User("alice".into());
+
+        let for_alice = render_for_sender(&input, &no_db(), &wiki_principal, "alice", &[]);
+        assert!(
+            !for_alice.text.contains("bob's weight"),
+            "the wiki's proprietor is not a reader of every fact filed in it"
+        );
+        assert_eq!(for_alice.blocks_redacted, 1);
+
+        // …and the fact is not lost, only withheld: its own subject reads it.
+        let for_bob = render_for_sender(&input, &no_db(), &wiki_principal, "bob", &[]);
+        assert!(for_bob.text.contains("bob's weight"));
+        assert_eq!(for_bob.blocks_redacted, 0);
+    }
+
     // ---------- cross-user attribution ----------
 
     #[test]
     fn group_sender_microphone_case() {
-        // Family microphone: owner = user:gollum (the person the fact
+        // Family microphone: subject = user:gollum (the person the fact
         // describes), sender = group:famiglia (the device that captured
         // it). Family members reread via the sender shortcut even when
         // `famiglia` is NOT in `allow=`. Outsiders stay out.
@@ -775,7 +803,7 @@ Sméagol stamattina ha brontolato a colazione.{{{{/}}}}"
 
     #[test]
     fn sender_attribution_lets_capturer_reread() {
-        // Region owner = user:gollum, sender = user:galadriel.
+        // Region subject = user:gollum, sender = user:galadriel.
         // Galadriel must be able to reread even with no other access.
         let input = format!(
             "{{{{owner=user:gollum sender=user:galadriel allow=group:famiglia f={SAMPLE_UUID_V7}}}}}\
@@ -1260,13 +1288,13 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
             "Alice pesa {{{{f={private_key}}}}}72 kg{{{{/}}}} \
 al 10 maggio, ha {{{{f={public_key}}}}}tagliato i capelli{{{{/}}}} ieri."
         );
-        // Two DB records: the private one (owner alice) reveals for bob,
-        // the public one (owner global) is plainly readable.
+        // Two DB records: the private one (subject alice) reveals for bob,
+        // the public one (subject global) is plainly readable.
         let mut map = db_acl("user:alice", &[], None);
         map.insert(
             FactId::parse(public_key).unwrap(),
             RegionAcl {
-                owner: "global".parse().unwrap(),
+                subject: "global".parse().unwrap(),
                 allow: vec![],
                 sender: None,
             },
@@ -1301,7 +1329,7 @@ al 10 maggio, ha {{{{f={public_key}}}}}tagliato i capelli{{{{/}}}} ieri."
         let input = modello_memoria_5_input();
         // Dave (an outsider, in `global` only) sees the scaffolding prose and
         // the `owner=global` region. Region 2 (`owner=user:alice`) and region 3
-        // (`sender=user:alice`, no owner) are both redacted: the owner-of-last-
+        // (`sender=user:alice`, no subject) are both redacted: the subject-of-last-
         // resort is the region's sender, not a wiki-wide `global` default, so a
         // sender-owned region is not globally readable.
         let out = render_for_sender(&input, &no_db(), &Principal::global(), "dave", &[]);

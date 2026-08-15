@@ -150,7 +150,7 @@ async fn index(
             reveal
                 || can_read(
                     &Acl {
-                        owner: Some(w.owner_id.clone()),
+                        subject: Some(w.owner_id.clone()),
                         allow: w.shared_with.clone(),
                     },
                     &user.sender_id,

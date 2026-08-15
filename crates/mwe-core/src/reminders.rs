@@ -121,7 +121,7 @@ pub struct DueReminder {
     pub fact_id: String,
     /// Its home wiki — also the `dashboard_path` anchor.
     pub wiki_id: String,
-    /// Addressee: the owner of the commitment, `user:`-prefixed.
+    /// Addressee: the subject of the commitment, `user:`-prefixed.
     pub recipient_id: String,
     /// The fact's own prose. The notice carries it so the delivering
     /// agent can say the thing without a recall round-trip — the same
@@ -202,7 +202,7 @@ pub async fn due_now(
         }
         // A group has no single inbox, and the wire form of the builtin
         // global group is not even `group:`-prefixed — only a person rings.
-        let crate::types::Principal::User(owner) = &row.owner_id else {
+        let crate::types::Principal::User(subject) = &row.subject_id else {
             continue;
         };
         let Some(valid_to) = row.valid_to.as_deref() else {
@@ -222,7 +222,7 @@ pub async fn due_now(
         }
         // An agent principal has no inbox — same rule as the
         // fact-minted notice.
-        if crate::enrollment::is_agent(pool, owner.as_str())
+        if crate::enrollment::is_agent(pool, subject.as_str())
             .await
             .unwrap_or(false)
         {
@@ -231,7 +231,7 @@ pub async fn due_now(
         due.push(DueReminder {
             fact_id: row.fact_id.as_str().to_owned(),
             wiki_id: row.wiki_id.clone(),
-            recipient_id: row.owner_id.to_string(),
+            recipient_id: row.subject_id.to_string(),
             body: row.text.clone(),
             due_at: valid_to.to_owned(),
             fires_at,
@@ -327,19 +327,19 @@ mod tests {
     async fn plan_fact(
         pool: &SqlitePool,
         fact_id: &str,
-        owner: &str,
+        subject: &str,
         fact_type: &str,
         valid_to: Option<&str>,
     ) {
         sqlx::query(
             r#"INSERT INTO fact_index
                  (fact_id, wiki_id, source_path, "text", embedding, embedding_dim,
-                  owner_id, fact_type, created_at, updated_at, valid_to)
+                  subject_id, fact_type, created_at, updated_at, valid_to)
                VALUES (?, 'alice', 'alice/index.md', 'dentist at nine', X'00000000', 1,
                        ?, ?, '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z', ?)"#,
         )
         .bind(fact_id)
-        .bind(owner)
+        .bind(subject)
         .bind(fact_type)
         .bind(valid_to)
         .execute(pool)
@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_notice_carries_the_body_and_addresses_the_owner() {
+    async fn the_notice_carries_the_body_and_addresses_the_subject() {
         let (_workdir, pool) = fresh_pool().await;
         plan_fact(
             &pool,

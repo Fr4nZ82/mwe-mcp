@@ -530,14 +530,14 @@ pub struct EnqueueRequest {
     /// document resolve against it.
     pub occurred_at: Option<String>,
     /// Owning principal of everything the job writes.
-    pub owner: Principal,
+    pub subject: Principal,
     /// `allow=` extension list (inherited from the source catalog row).
     pub allow: Vec<Principal>,
     /// Cross-user attribution (who captured it). `None` on input is
-    /// materialized to `owner` at enqueue — always stored as a distinct,
-    /// explicit field, never collapsed into `owner`.
+    /// materialized to `subject` at enqueue — always stored as a distinct,
+    /// explicit field, never collapsed into `subject`.
     pub sender: Option<Principal>,
-    /// Bypass the (text sha256, owner) idempotency check.
+    /// Bypass the (text sha256, subject) idempotency check.
     pub force: bool,
 }
 
@@ -546,7 +546,7 @@ pub struct EnqueueRequest {
 pub struct EnqueueOutcome {
     /// The job id (fresh, or the prior job's on an idempotency hit).
     pub job_id: String,
-    /// True when an existing non-failed job for the same (text, owner)
+    /// True when an existing non-failed job for the same (text, subject)
     /// absorbed the call.
     pub existing: bool,
     /// Resolved document size, characters.
@@ -574,7 +574,7 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// Enqueue a document job. Idempotent by (text sha256, owner) across
+/// Enqueue a document job. Idempotent by (text sha256, subject) across
 /// non-failed jobs unless `force`; the receipt is immediate, the work is
 /// the worker loop's.
 ///
@@ -596,15 +596,15 @@ pub async fn enqueue(
         )));
     }
     let sha = sha256_hex(&req.text);
-    let owner = req.owner.to_string();
+    let subject = req.subject.to_string();
     if !req.force {
         let existing: Option<(String,)> = sqlx::query_as(
             "SELECT job_id FROM document_jobs
-              WHERE text_sha256 = ? AND owner_id = ? AND status != 'failed'
+              WHERE text_sha256 = ? AND subject_id = ? AND status != 'failed'
               ORDER BY created_at DESC LIMIT 1",
         )
         .bind(&sha)
-        .bind(&owner)
+        .bind(&subject)
         .fetch_optional(pool)
         .await?;
         if let Some((job_id,)) = existing {
@@ -624,15 +624,15 @@ pub async fn enqueue(
     )
     .map_err(|e| DocumentError::Invalid(format!("allow_ids: {e}")))?;
     // Mirror the capture-path invariant: sender is always materialized
-    // (= owner when absent) and kept distinct from owner, so a later
-    // ownership change never rebinds the original provenance.
-    let sender = req.sender.clone().or_else(|| Some(req.owner.clone()));
+    // (= subject when absent) and kept distinct from subject, so a later
+    // subject authority change never rebinds the original provenance.
+    let sender = req.sender.clone().or_else(|| Some(req.subject.clone()));
     let ts = now();
     sqlx::query(
         r#"INSERT INTO document_jobs (
             job_id, source_kind, source_ref, text_sha256, "text", title_hint,
             disposition_requested, format_requested, occurred_at,
-            owner_id, allow_ids, sender_id, status, created_at, updated_at
+            subject_id, allow_ids, sender_id, status, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
     )
     .bind(&job_id)
@@ -644,7 +644,7 @@ pub async fn enqueue(
     .bind(req.disposition.map(Disposition::as_str))
     .bind(req.format.map(DocFormat::as_str))
     .bind(&req.occurred_at)
-    .bind(&owner)
+    .bind(&subject)
     .bind(&allow_json)
     .bind(sender.map(|s| s.to_string()))
     .bind(&ts)
@@ -688,10 +688,10 @@ pub struct DocumentJob {
     /// The document's semantic clock.
     pub occurred_at: Option<String>,
     /// Owning principal (string form).
-    pub owner_id: String,
+    pub subject_id: String,
     /// JSON array of allow principals.
     pub allow_ids: Option<String>,
-    /// Cross-user attribution. Materialized (= owner) at enqueue; `None`
+    /// Cross-user attribution. Materialized (= subject) at enqueue; `None`
     /// survives only as the degenerate scrubbed state.
     pub sender_id: Option<String>,
     /// `queued` | `running` | `done` | `failed`.
@@ -733,7 +733,7 @@ pub struct DocumentJob {
 const SELECT_JOB: &str = r#"
     SELECT job_id, source_kind, source_ref, text_sha256, "text", title_hint,
            disposition_requested, format_requested, occurred_at,
-           owner_id, allow_ids, sender_id, status,
+           subject_id, allow_ids, sender_id, status,
            resolved_disposition, resolved_format, resolved_title,
            target_wiki_id, document_page, anchor_fact_id, summary,
            reduced_json, total_segments, done_segments, facts_extracted,
@@ -1202,7 +1202,7 @@ pub struct ClassifyInput<'a> {
     /// Caller-forced format (overrides the proposal).
     pub forced_format: Option<DocFormat>,
     /// Owning principal — its identity wiki is the routing fallback.
-    pub owner: &'a Principal,
+    pub subject: &'a Principal,
     /// The rendered `LANGUAGE` directive for the `{locale}` placeholder:
     /// the title and summary this phase coins are memory a person reads,
     /// so they follow the submitter's declared language rather than the
@@ -1290,7 +1290,7 @@ fn sender_groups_block(groups: &[(String, Option<String>)]) -> String {
 }
 
 /// Render the `known_users` roster the extractor resolves a named subject
-/// against — the enrolment gate that stops `owner_id` minting a `user:<id>`
+/// against — the enrolment gate that stops `subject_id` minting a `user:<id>`
 /// for a person who is not in the system. Mirrors `ingest::build_prompt`'s
 /// `known_users` section (id + aliases); an empty roster renders `(none)`.
 fn known_users_block(users: &[crate::enrollment::EnrolledUserLite]) -> String {
@@ -1393,19 +1393,19 @@ pub async fn classify_document(
             )
         });
 
-    // Routing: the proposal, else the owner's identity wiki, else the
+    // Routing: the proposal, else the subject's identity wiki, else the
     // first standard wiki — same anti-hallucination posture as ingest.
     let target_wiki_id = match plan.target_wiki_id {
         Some(w) if wiki_exists_standard(tree, &w) => w,
         _ => {
-            let owner_wiki = match input.owner {
+            let subject_wiki = match input.subject {
                 Principal::User(id) => id.clone(),
-                // A group owner (incl. the builtin global group) has no user
+                // A group subject (incl. the builtin global group) has no user
                 // identity wiki — fall through to the first standard wiki.
                 Principal::Group(_) => String::new(),
             };
-            if !owner_wiki.is_empty() && wiki_exists_standard(tree, &owner_wiki) {
-                owner_wiki
+            if !subject_wiki.is_empty() && wiki_exists_standard(tree, &subject_wiki) {
+                subject_wiki
             } else {
                 available_wikis(tree, usize::MAX)?
                     .into_iter()
@@ -1463,10 +1463,11 @@ pub struct CandidateFact {
     /// audience. `None` (absent) defaults to `user:<sender>` (the uploader) at
     /// the file phase, the same default the `ingest` path uses.
     #[serde(default)]
-    pub owner_id: Option<String>,
-    /// The fact's AUDIENCE — extra read principals beyond owner+sender,
+    #[serde(alias = "owner_id")]
+    pub subject_id: Option<String>,
+    /// The fact's AUDIENCE — extra read principals beyond subject+sender,
     /// decided by the extractor from the group/wiki `scope` signals and the
-    /// document's own cues. Empty (the default) keeps the fact to owner+sender.
+    /// document's own cues. Empty (the default) keeps the fact to subject+sender.
     #[serde(default)]
     pub allow_ids: Vec<String>,
     /// Taxonomy hint.
@@ -1558,9 +1559,9 @@ async fn extract_segment(
     user.push_str(current_time);
     user.push('\n');
     // The document's sender is the uploader (`sender_id`, materialized to the
-    // owner when absent) — the principal `owner_id`/`allow_ids` default against.
+    // subject when absent) — the principal `subject_id`/`allow_ids` default against.
     user.push_str("sender_id: ");
-    user.push_str(job.sender_id.as_deref().unwrap_or(&job.owner_id));
+    user.push_str(job.sender_id.as_deref().unwrap_or(&job.subject_id));
     user.push('\n');
     user.push('\n');
     user.push_str(&known_users_block(known_users));
@@ -1667,15 +1668,15 @@ fn cluster_by_similarity(
 }
 
 /// Resolve the reader set a candidate would be filed with, under the same
-/// rules the file phase applies: [`candidate_acl`] for owner + allow, and the
+/// rules the file phase applies: [`candidate_acl`] for subject + allow, and the
 /// job's uploader as sender.
 fn candidate_readers(
     cand: &CandidateFact,
-    fallback_owner: &Principal,
+    fallback_subject: &Principal,
     sender: Option<&Principal>,
 ) -> BTreeSet<String> {
-    let (owner, allow) = candidate_acl(cand, fallback_owner);
-    crate::acl::reader_set(&owner, &allow, sender)
+    let (subject, allow) = candidate_acl(cand, fallback_subject);
+    crate::acl::reader_set(&subject, &allow, sender)
 }
 
 async fn reduce_candidates(
@@ -1685,7 +1686,7 @@ async fn reduce_candidates(
     policy: &DocumentPolicy,
     candidates: Vec<CandidateFact>,
     language_directive: &str,
-    fallback_owner: &Principal,
+    fallback_subject: &Principal,
     sender: Option<&Principal>,
 ) -> Result<Vec<CandidateFact>> {
     if candidates.len() < 2 {
@@ -1695,7 +1696,7 @@ async fn reduce_candidates(
     let embeddings = embedder.embed_batch(&bodies).await?;
     let readers: Vec<BTreeSet<String>> = candidates
         .iter()
-        .map(|c| candidate_readers(c, fallback_owner, sender))
+        .map(|c| candidate_readers(c, fallback_subject, sender))
         .collect();
     let clusters = cluster_by_similarity(&embeddings, &readers, policy.merge_threshold);
     let mut out = Vec::with_capacity(clusters.len());
@@ -1742,7 +1743,7 @@ async fn reduce_candidates(
                 let first = members[0];
                 m.target_wiki_id.clone_from(&first.target_wiki_id);
                 m.target_page.clone_from(&first.target_page);
-                m.owner_id.clone_from(&first.owner_id);
+                m.subject_id.clone_from(&first.subject_id);
                 m.allow_ids.clone_from(&first.allow_ids);
                 m.fact_type.clone_from(&first.fact_type);
                 m.topics.clone_from(&first.topics);
@@ -1766,34 +1767,37 @@ fn parse_principal(s: &str) -> Result<Principal> {
         .map_err(|e| DocumentError::Invalid(format!("principal `{s}`: {e}")))
 }
 
-/// Resolve an extracted fact's `owner_id` / `allow_ids` (the strings the
+/// Resolve an extracted fact's `subject_id` / `allow_ids` (the strings the
 /// extractor returned) into engine principals under the ingest rules.
 ///
 /// A fact's subject/audience follow the SAME rules regardless of source: the
 /// extractor decides them just as the message classifier does. The defaults
-/// mirror that path — an absent/malformed `owner_id` falls back to the
-/// uploader (`fallback_owner`, the job's materialized sender) so a fact is
-/// never ownerless; malformed `allow_ids` entries are dropped (never widen on a
+/// mirror that path — an absent/malformed `subject_id` falls back to the
+/// uploader (`fallback_subject`, the job's materialized sender) so a fact is
+/// never subjectless; malformed `allow_ids` entries are dropped (never widen on a
 /// parse slip). The `sender` stays the uploader, stamped separately by the
 /// caller.
-fn candidate_acl(cand: &CandidateFact, fallback_owner: &Principal) -> (Principal, Vec<Principal>) {
-    let owner = cand
-        .owner_id
+fn candidate_acl(
+    cand: &CandidateFact,
+    fallback_subject: &Principal,
+) -> (Principal, Vec<Principal>) {
+    let subject = cand
+        .subject_id
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .and_then(|s| s.parse::<Principal>().ok())
-        .unwrap_or_else(|| fallback_owner.clone());
+        .unwrap_or_else(|| fallback_subject.clone());
     let allow = cand
         .allow_ids
         .iter()
         .filter_map(|s| s.trim().parse::<Principal>().ok())
         .collect();
-    (owner, allow)
+    (subject, allow)
 }
 
 fn job_acl(job: &DocumentJob) -> Result<(Principal, Vec<Principal>, Option<Principal>)> {
-    let owner = parse_principal(&job.owner_id)?;
+    let subject = parse_principal(&job.subject_id)?;
     let allow: Vec<Principal> = match job.allow_ids.as_deref() {
         None | Some("") => Vec::new(),
         Some(json) => serde_json::from_str::<Vec<String>>(json)
@@ -1803,7 +1807,7 @@ fn job_acl(job: &DocumentJob) -> Result<(Principal, Vec<Principal>, Option<Princ
             .collect::<Result<Vec<_>>>()?,
     };
     let sender = job.sender_id.as_deref().map(parse_principal).transpose()?;
-    Ok((owner, allow, sender))
+    Ok((subject, allow, sender))
 }
 
 /// Drive one job through its remaining phases. Re-entrant: every phase
@@ -1822,12 +1826,12 @@ async fn process_job(
         touch_job(pool, &job.job_id, "status = ?", &["running"]).await?;
         job.status = "running".into();
     }
-    let (owner, allow, sender) = job_acl(&job)?;
+    let (subject, allow, sender) = job_acl(&job)?;
     // Every phase below writes memory a person reads — the document's own
     // language does not govern it, the submitter's declared one does.
     // Resolved once per job: three phases, one lookup.
     let language_directive = crate::locale::render_memory_language_directive(
-        crate::enrollment::locale_for_principal(pool, &owner)
+        crate::enrollment::locale_for_principal(pool, &subject)
             .await
             .unwrap_or_default()
             .as_deref(),
@@ -1849,7 +1853,7 @@ async fn process_job(
                     .as_deref()
                     .and_then(Disposition::parse),
                 forced_format: job.format_requested.as_deref().and_then(DocFormat::parse),
-                owner: &owner,
+                subject: &subject,
                 language_directive: &language_directive,
             };
             let plan = classify_document(llm, tree, workdir, policy, &input).await?;
@@ -1962,7 +1966,7 @@ async fn process_job(
         let wiki_id = WikiId::parse(&target_wiki)
             .map_err(|e| DocumentError::Invalid(format!("target wiki id: {e}")))?;
         // The anchor is the document's own identity fact (subject = the
-        // uploader/owner), so its audience is the explicit `allow` that rode the
+        // uploader/subject), so its audience is the explicit `allow` that rode the
         // job — no placement-derived widening. A fact's ACL is the fact's, never
         // inherited from where it lands.
         let outcome = capture::wiki_capture_with_source(
@@ -1977,7 +1981,7 @@ async fn process_job(
                         .unwrap_or_else(|| "documento.md".into()),
                 ),
                 body,
-                owner: owner.clone(),
+                subject: subject.clone(),
                 allow: allow.clone(),
                 sender: sender.clone(),
                 fact_type: Some("document".into()),
@@ -2006,7 +2010,7 @@ async fn process_job(
             && let Some(sref) = &job.source_ref
             && let Ok(cid) = CatalogId::parse(sref)
             && let Err(e) =
-                crate::media::widen_acl(pool, &cid, &owner, &allow, sender.as_ref()).await
+                crate::media::widen_acl(pool, &cid, &subject, &allow, sender.as_ref()).await
         {
             tracing::warn!(job_id = job.job_id, error = %e, "document: media ACL widening failed (soft)");
         }
@@ -2025,15 +2029,15 @@ async fn process_job(
         // extractor reads when deciding each fact's `allow_ids`, the same
         // assembly the message classifier uses. A `group:<scope>` device-channel
         // sender (no enrollment row) simply yields no groups.
-        let sender_id_str = job.sender_id.as_deref().unwrap_or(&job.owner_id);
+        let sender_id_str = job.sender_id.as_deref().unwrap_or(&job.subject_id);
         let sender_groups = crate::enrollment::groups_with_scope_for(pool, sender_id_str)
             .await
             .unwrap_or_default();
         // The enrolled roster the extractor resolves a named subject against —
-        // the gate that stops `owner_id` minting a `user:<id>` for a person who
+        // the gate that stops `subject_id` minting a `user:<id>` for a person who
         // is not in the system (a relative, a pet). The same roster the message
         // classifier injects; the message path had it, the document path did not
-        // — which is how unenrolled `user:<X>` owners were coined.
+        // — which is how unenrolled `user:<X>` subjects were coined.
         let known_users = crate::enrollment::list_users(pool)
             .await
             .unwrap_or_default();
@@ -2147,10 +2151,10 @@ async fn process_job(
                     candidates.append(&mut facts);
                 }
             }
-            // The audience gate needs the same fallback owner the file phase
+            // The audience gate needs the same fallback subject the file phase
             // uses, so a candidate is clustered under the reader set it will
             // actually be filed with.
-            let reduce_owner_fallback = sender.clone().unwrap_or_else(|| owner.clone());
+            let reduce_subject_fallback = sender.clone().unwrap_or_else(|| subject.clone());
             let reduced = reduce_candidates(
                 llm,
                 embedder,
@@ -2158,7 +2162,7 @@ async fn process_job(
                 policy,
                 candidates,
                 &language_directive,
-                &reduce_owner_fallback,
+                &reduce_subject_fallback,
                 sender.as_ref(),
             )
             .await?;
@@ -2189,28 +2193,28 @@ async fn process_job(
                 .map_err(|e| DocumentError::Invalid(format!("fact wiki id: {e}")))?;
             // A fact is a fact: its subject/audience follow the ingest rules,
             // decided per-fact by the extractor — not derived from where it
-            // lands. The owner defaults to the uploader; the audience is the
+            // lands. The subject defaults to the uploader; the audience is the
             // extractor's `allow_ids` (group/wiki scope + document cues).
-            let fact_owner_fallback = sender.clone().unwrap_or_else(|| owner.clone());
-            let (fact_owner, fact_allow) = candidate_acl(cand, &fact_owner_fallback);
-            // Engine floor of the 2026-06-30 subject-owner ruling (the
+            let fact_subject_fallback = sender.clone().unwrap_or_else(|| subject.clone());
+            let (fact_subject, fact_allow) = candidate_acl(cand, &fact_subject_fallback);
+            // Engine floor of the 2026-06-30 subject-subject ruling (the
             // dangling principal of that incident was coined on THIS
             // path): the extractor prompt carries the `known_users`
-            // roster, but nothing enforced that the owner it emits is
-            // enrollment-backed. An unknown owner falls back to the
+            // roster, but nothing enforced that the subject it emits is
+            // enrollment-backed. An unknown subject falls back to the
             // uploader, exactly like an absent or malformed one. Fail-open
             // on a DB error.
-            let fact_owner = if crate::enrollment::principal_exists(pool, &fact_owner)
+            let fact_subject = if crate::enrollment::principal_exists(pool, &fact_subject)
                 .await
                 .unwrap_or(true)
             {
-                fact_owner
+                fact_subject
             } else {
                 tracing::warn!(
-                    owner = %fact_owner,
-                    "document: extracted owner is not an enrolled principal — re-owned to the uploader"
+                    subject = %fact_subject,
+                    "document: extracted subject is not an enrolled principal — re-owned to the uploader"
                 );
-                fact_owner_fallback.clone()
+                fact_subject_fallback.clone()
             };
             // Same guard as the live capture path, on the same class of name:
             // one the extractor coined. The buffer is the fallback, not the
@@ -2232,10 +2236,10 @@ async fn process_job(
             };
             let body = cand.body.trim().to_owned();
             // Reverse-channel snapshot before `body` moves into the
-            // request: a user-owned fact whose owner is not the uploader
+            // request: a user-owned fact whose subject is not the uploader
             // is news to that user.
-            let minted_beneficiary = match &fact_owner {
-                Principal::User(u) if fact_owner != fact_owner_fallback => {
+            let minted_beneficiary = match &fact_subject {
+                Principal::User(u) if fact_subject != fact_subject_fallback => {
                     Some((u.clone(), body.clone()))
                 },
                 _ => None,
@@ -2266,7 +2270,7 @@ async fn process_job(
                     wiki_id,
                     page,
                     body,
-                    owner: fact_owner,
+                    subject: fact_subject,
                     allow: fact_allow,
                     sender: sender.clone(),
                     fact_type: cand.fact_type.clone(),
@@ -2324,7 +2328,7 @@ async fn process_job(
             .flatten(),
         "facts_buffered": job.facts_buffered,
         "source_ref": job.source_ref,
-        "recipient_id": job.owner_id,
+        "recipient_id": job.subject_id,
     });
     events::insert_event(
         pool,
@@ -2342,7 +2346,7 @@ async fn process_job(
     // Non-fatal: a lost notice never fails the job. A job resumed after
     // a crash reports only the facts buffered since the resume — the
     // notice is a courtesy; `facts_buffered` stays the audit count.
-    let uploader = sender.clone().unwrap_or_else(|| owner.clone());
+    let uploader = sender.clone().unwrap_or_else(|| subject.clone());
     let from_user_id = match &uploader {
         Principal::User(u) => Some(u.as_str()),
         Principal::Group(_) => None,
@@ -2780,7 +2784,7 @@ mod tests {
         let readers = vec![
             BTreeSet::from(["user:frodo".to_owned()]),
             BTreeSet::from(["user:sam".to_owned()]),
-            // Same owner as the first, but shared with the team.
+            // Same subject as the first, but shared with the team.
             BTreeSet::from(["user:frodo".to_owned(), "group:team".to_owned()]),
         ];
         let clusters = cluster_by_similarity(&e, &readers, 0.9);
@@ -2792,7 +2796,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enqueue_is_idempotent_per_owner_and_text() {
+    async fn enqueue_is_idempotent_per_subject_and_text() {
         let pool = make_pool().await;
         let req = EnqueueRequest {
             source_kind: "inline".into(),
@@ -2802,7 +2806,7 @@ mod tests {
             disposition: None,
             format: None,
             occurred_at: None,
-            owner: "user:frodo".parse().unwrap(),
+            subject: "user:frodo".parse().unwrap(),
             allow: Vec::new(),
             sender: None,
             force: false,
@@ -2814,9 +2818,9 @@ mod tests {
             .expect("second");
         assert!(second.existing);
         assert_eq!(first.job_id, second.job_id);
-        // Same text, different owner → a fresh job.
+        // Same text, different subject → a fresh job.
         let mut other = req.clone();
-        other.owner = "user:gimli".parse().unwrap();
+        other.subject = "user:gimli".parse().unwrap();
         let third = enqueue(&pool, &policy(), other).await.expect("third");
         assert!(!third.existing);
         // force bypasses the idempotency hit.
@@ -2884,9 +2888,9 @@ mod tests {
         let wikis = dir.path().join("wikis");
         std::fs::create_dir_all(&wikis).unwrap();
         write_wiki(&wikis, "alice", "Alice", "wiki-user");
-        // The extracted fact below is owned by Gimli: subject owners must be
+        // The extracted fact below is owned by Gimli: subject subjects must be
         // enrollment-backed (the engine re-owns a coined principal to the
-        // uploader — see `dossier_unenrolled_owner_falls_back_to_uploader`).
+        // uploader — see `dossier_unenrolled_subject_falls_back_to_uploader`).
         sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('gimli', 0)")
             .execute(&pool)
             .await
@@ -2899,9 +2903,9 @@ mod tests {
             // classify
             r#"{"disposition":"dossier","format":"prose","title":"Meeting X","page_slug":"meeting_x.md","target_wiki_id":"alice","summary":"Riunione sul viaggio in Norvegia.","page_description":"dossier del meeting","style":"prosa","topics":["meeting"]}"#,
             // extract (one segment — short document). The extractor decides the
-            // fact's subject (`owner_id`) and audience (`allow_ids`) under the
+            // fact's subject (`subject_id`) and audience (`allow_ids`) under the
             // ingest rules — here a fact ABOUT Gimli, shared with the team.
-            r#"{"facts":[{"body":"Gimli prenota il viaggio in Norvegia entro venerdì 19 giugno 2026.","target_wiki_id":"alice","target_page":"viaggio_norvegia.md","owner_id":"user:gimli","allow_ids":["group:team"],"fact_type":"commitment","topics":["viaggio"]}]}"#,
+            r#"{"facts":[{"body":"Gimli prenota il viaggio in Norvegia entro venerdì 19 giugno 2026.","target_wiki_id":"alice","target_page":"viaggio_norvegia.md","subject_id":"user:gimli","allow_ids":["group:team"],"fact_type":"commitment","topics":["viaggio"]}]}"#,
         ]);
 
         let outcome = enqueue(
@@ -2916,7 +2920,7 @@ mod tests {
                 disposition: None,
                 format: None,
                 occurred_at: Some("2026-06-12T10:00:00Z".into()),
-                owner: "user:alice".parse().unwrap(),
+                subject: "user:alice".parse().unwrap(),
                 allow: Vec::new(),
                 sender: None,
                 force: false,
@@ -2984,13 +2988,13 @@ mod tests {
             "the dossier-page pointer rides authored_refs"
         );
         // A fact is a fact: the extracted fact carries the extractor's
-        // owner/allow (subject = Gimli, audience = the team), NOT the job
-        // owner (alice) nor a placement-derived default. The sender stays the
+        // subject/allow (subject = Gimli, audience = the team), NOT the job
+        // subject (alice) nor a placement-derived default. The sender stays the
         // uploader (alice).
         assert_eq!(
-            buffered[0].owner,
+            buffered[0].subject,
             "user:gimli".parse::<Principal>().unwrap(),
-            "extracted fact's owner is the LLM-decided subject, not the job owner"
+            "extracted fact's subject is the LLM-decided subject, not the job subject"
         );
         assert_eq!(
             buffered[0].allow,
@@ -3004,7 +3008,7 @@ mod tests {
         );
 
         // Completion notice emitted — and, because the extracted fact's
-        // owner (gimli) is an enrolled user other than the uploader, the
+        // subject (gimli) is an enrolled user other than the uploader, the
         // beneficiary's reverse-channel notice follows it.
         let kinds: Vec<(String,)> = sqlx::query_as("SELECT kind FROM wiki_events ORDER BY id ASC")
             .fetch_all(&pool)
@@ -3017,13 +3021,13 @@ mod tests {
         drop(dir);
     }
 
-    /// Engine floor of the 2026-06-30 subject-owner ruling on the document
+    /// Engine floor of the 2026-06-30 subject-subject ruling on the document
     /// path — the one where the original dangling principal was
-    /// coined: an extractor-emitted owner that enrollment does not back is
+    /// coined: an extractor-emitted subject that enrollment does not back is
     /// re-owned to the uploader instead of minting a principal no reader
     /// matches.
     #[tokio::test]
-    async fn dossier_unenrolled_owner_falls_back_to_uploader() {
+    async fn dossier_unenrolled_subject_falls_back_to_uploader() {
         let dir = tempfile::tempdir().unwrap();
         let pool = crate::db::open_or_init(dir.path()).await.expect("db");
         let wikis = dir.path().join("wikis");
@@ -3036,7 +3040,7 @@ mod tests {
         // `legolas` is never enrolled: the extractor coined him.
         let llm = ScriptedLlm::new(&[
             r#"{"disposition":"dossier","format":"prose","title":"Meeting X","page_slug":"meeting_x.md","target_wiki_id":"alice","summary":"Riunione sul viaggio.","page_description":"dossier del meeting","style":"prosa","topics":["meeting"]}"#,
-            r#"{"facts":[{"body":"Legolas prenota il viaggio entro venerdì.","target_wiki_id":"alice","target_page":"viaggio.md","owner_id":"user:legolas","allow_ids":[],"fact_type":"commitment","topics":["viaggio"]}]}"#,
+            r#"{"facts":[{"body":"Legolas prenota il viaggio entro venerdì.","target_wiki_id":"alice","target_page":"viaggio.md","subject_id":"user:legolas","allow_ids":[],"fact_type":"commitment","topics":["viaggio"]}]}"#,
         ]);
         enqueue(
             &pool,
@@ -3049,7 +3053,7 @@ mod tests {
                 disposition: None,
                 format: None,
                 occurred_at: Some("2026-06-12T10:00:00Z".into()),
-                owner: "user:alice".parse().unwrap(),
+                subject: "user:alice".parse().unwrap(),
                 allow: Vec::new(),
                 sender: None,
                 force: false,
@@ -3066,9 +3070,9 @@ mod tests {
             .expect("buffered");
         assert_eq!(buffered.len(), 1);
         assert_eq!(
-            buffered[0].owner,
+            buffered[0].subject,
             "user:alice".parse::<Principal>().unwrap(),
-            "an unenrolled extracted owner must fall back to the uploader"
+            "an unenrolled extracted subject must fall back to the uploader"
         );
         drop(dir);
     }
@@ -3094,7 +3098,7 @@ mod tests {
             .unwrap();
         let llm = ScriptedLlm::new(&[
             r#"{"disposition":"dossier","format":"prose","title":"Meeting X","page_slug":"meeting_x.md","target_wiki_id":"alice","summary":"Riunione sul viaggio.","page_description":"dossier del meeting","style":"prosa","topics":["meeting"]}"#,
-            r#"{"facts":[{"body":"Gimli prenota il viaggio entro venerdì.","target_wiki_id":"alice","target_page":"viaggio.md","owner_id":"user:gimli","allow_ids":[],"fact_type":"commitment","topics":["viaggio"]}]}"#,
+            r#"{"facts":[{"body":"Gimli prenota il viaggio entro venerdì.","target_wiki_id":"alice","target_page":"viaggio.md","subject_id":"user:gimli","allow_ids":[],"fact_type":"commitment","topics":["viaggio"]}]}"#,
         ]);
         enqueue(
             &pool,
@@ -3107,7 +3111,7 @@ mod tests {
                 disposition: None,
                 format: None,
                 occurred_at: Some("2026-06-12T10:00:00Z".into()),
-                owner: "user:alice".parse().unwrap(),
+                subject: "user:alice".parse().unwrap(),
                 allow: Vec::new(),
                 sender: None,
                 force: false,
@@ -3157,7 +3161,7 @@ mod tests {
             body: "Gimli prenota il viaggio entro venerdì.".into(),
             target_wiki_id: Some("alice".into()),
             target_page: Some("viaggio_norvegia.md".into()),
-            owner_id: Some("user:gimli".into()),
+            subject_id: Some("user:gimli".into()),
             allow_ids: vec!["group:team".into()],
             fact_type: Some("commitment".into()),
             topics: vec!["viaggio".into()],
@@ -3199,7 +3203,7 @@ mod tests {
         // Routing / ACL still the first member's.
         assert_eq!(m.target_wiki_id.as_deref(), Some("alice"));
         assert_eq!(m.target_page.as_deref(), Some("viaggio_norvegia.md"));
-        assert_eq!(m.owner_id.as_deref(), Some("user:gimli"));
+        assert_eq!(m.subject_id.as_deref(), Some("user:gimli"));
         assert_eq!(m.allow_ids, vec!["group:team".to_owned()]);
         // Taxonomy: the first member's wins over the hallucinated
         // "preference"/"cucina" pair the scripted reply smuggled in.
@@ -3220,7 +3224,7 @@ mod tests {
             disposition: None,
             format: None,
             occurred_at: None,
-            owner: "user:frodo".parse().unwrap(),
+            subject: "user:frodo".parse().unwrap(),
             allow: Vec::new(),
             sender: None,
             force: false,

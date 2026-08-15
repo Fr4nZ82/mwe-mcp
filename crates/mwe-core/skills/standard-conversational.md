@@ -1,7 +1,7 @@
 ---
 name: standard-conversational
-version: 1.3.0
-description: "Default conversational pattern for standard consumers (openclaw, hermes, nanoclaw): wiki_ingest_message passthrough, recent_messages window, disambiguation, locale plumbing, pending_attention nudges, events_poll cadence, structural notices + undo routing, on-the-fly date corrections + sharing changes on the owner's own facts, no wiki_admin_* writes."
+version: 1.4.0
+description: "Default conversational pattern for standard consumers (openclaw, hermes, nanoclaw): wiki_ingest_message passthrough, recent_messages window, disambiguation, locale plumbing, pending_attention nudges, events_poll cadence, structural notices + undo routing, on-the-fly date corrections + sharing changes on the facts the sender is the subject of, no wiki_admin_* writes."
 depends_on: ["core"]
 applies_to:
   consumer_class: standard
@@ -35,12 +35,14 @@ for the dispatcher.
 - Intent classification (capture vs recall vs structural vs skip).
 - Recall (vector + full-text + multi-hop) with ACL filtering.
 - Capture / supersede / forget routing.
-- **Operation-path edits on the owner's own stored facts** — a date
+- **Operation-path edits on stored facts the sender is the subject of** — a date
   correction ("the milk expires on the 20th, not the 25th") and a sharing change
   ("make this one visible to everyone", "share it with the family group") are
   recognized in the same `wiki_ingest_message` turn and applied act-first,
-  revertible from the dashboard (the owner gate is enforced server-side;
-  standard memory wikis only). You still just pass the raw message through.
+  revertible from the dashboard (the gate is server-side: only the fact's
+  **subject** — the user it is about, or a member of the group it is about —
+  may edit it; standard memory wikis only). You still just pass the raw message
+  through.
 - Structural proposal emission (questionnaire when a new wiki or
   type should emerge).
 - Topic extraction (server-internal, never exposed).

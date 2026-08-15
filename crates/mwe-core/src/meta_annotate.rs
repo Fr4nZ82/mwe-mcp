@@ -47,7 +47,7 @@
 //! and **idempotent** (a `_meta` already matching the computed value is left
 //! untouched, so a steady-state compile rewrites nothing).
 //!
-//! The compile-time card those passes write is **owner-tier** (the
+//! The compile-time card those passes write is **subject-tier** (the
 //! [`fact_at_default_visibility`] boundary) — the operator's Obsidian view. The
 //! serve-time counterpart lives here too: [`build_reader_card`] recomputes the
 //! card **per reader** from `fact_index` for the recall navigator, so a reader
@@ -100,15 +100,15 @@ pub async fn sync_wiki_keywords(pool: &SqlitePool, tree: &WikiTree) -> Result<us
 
 /// The **ACL card boundary**: a fact contributes its topics to a card — the
 /// wiki `_meta` keywords or a page's testata keywords — iff it sits at the
-/// wiki's **default visibility**: `owner == global`, or `owner ==` the wiki's
+/// wiki's **default visibility**: `subject == global`, or `subject ==` the wiki's
 /// resolved `acl_default` principal. An `allow=` list only *extends*
 /// readability, so it never disqualifies a default-owned fact. Anything else
 /// (a cross-user region, a group-owned region on a user wiki, …) is
 /// special-cased content whose topic words must not surface on a card that is
 /// readable at wiki level. See the boundary write-up in
 /// [`identity-and-acl.md`](../../../docs/concepts/identity-and-acl.md).
-fn fact_at_default_visibility(owner: &Principal, default: &Principal) -> bool {
-    owner.is_global() || owner == default
+fn fact_at_default_visibility(subject: &Principal, default: &Principal) -> bool {
+    subject.is_global() || subject == default
 }
 
 /// Collect the sorted, de-duplicated union of every card-eligible active
@@ -131,7 +131,7 @@ async fn collect_wiki_topics(
     .with_context(|| format!("query facts for wiki {wiki_id}"))?;
     let mut set: BTreeSet<String> = BTreeSet::new();
     for row in &rows {
-        if !fact_at_default_visibility(&row.owner_id, default) {
+        if !fact_at_default_visibility(&row.subject_id, default) {
             continue;
         }
         for topic in &row.topics {
@@ -206,7 +206,7 @@ async fn collect_page_topics(
     .with_context(|| format!("query facts for wiki {wiki_id}"))?;
     let mut by_page: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for row in &rows {
-        if !fact_at_default_visibility(&row.owner_id, default) {
+        if !fact_at_default_visibility(&row.subject_id, default) {
             continue;
         }
         let set = by_page.entry(row.source_path.clone()).or_default();
@@ -226,9 +226,9 @@ async fn collect_page_topics(
 // ---------------------------------------------------------------------
 // Reader-relative card (serve-time, navigator-facing).
 //
-// The passes above WRITE the owner-tier card into the `.md` at compile
+// The passes above WRITE the subject-tier card into the `.md` at compile
 // time (the `fact_at_default_visibility` boundary). At serve time the
-// recall navigator must NOT hand that owner-tier card to a reader who
+// recall navigator must NOT hand that subject-tier card to a reader who
 // cannot read the underlying facts — a reader denied a page's body facts
 // could otherwise infer their themes from the card's topics. So the
 // navigator rebuilds the card PER READER from `fact_index`: topics are the
@@ -316,7 +316,7 @@ impl ReaderCard {
 /// The **reader-relative** card boundary — the serve-time counterpart of
 /// [`fact_at_default_visibility`]: a fact contributes its topics to the card
 /// rendered FOR `reader` iff the reader can read it (the same
-/// owner ∪ allow ∪ sender predicate the redaction path applies via
+/// subject ∪ allow ∪ sender predicate the redaction path applies via
 /// [`crate::acl::can_read`]).
 fn fact_readable_by(
     row: &fact_index::CardAclRow,
@@ -324,7 +324,7 @@ fn fact_readable_by(
     reader_groups: &[String],
 ) -> bool {
     let acl = Acl {
-        owner: Some(row.owner_id.clone()),
+        subject: Some(row.subject_id.clone()),
         allow: row.allow_ids.clone(),
     };
     crate::acl::can_read(&acl, reader_id, reader_groups, row.sender_id.as_ref())
@@ -335,7 +335,7 @@ fn fact_readable_by(
 ///
 /// Topics are recomputed from `fact_index` (the union over the reader's
 /// readable facts, the [`fact_readable_by`] boundary), NOT read from the
-/// owner-tier `.md` — so a reader never sees the topic of a fact they cannot
+/// subject-tier `.md` — so a reader never sees the topic of a fact they cannot
 /// read, while every topic they CAN read still surfaces (filter, not drop, so
 /// recall does not silently narrow). The abstract is gated separately: a
 /// reader sees a wiki's `summary` / page `description` only when their read-set
@@ -674,7 +674,7 @@ fn apply_topics_keyword(keywords: &mut serde_yaml::Mapping, topics: &[String]) -
 /// `value = Some(v)` inserts or updates `key → v`; `value = None` clears it.
 /// Returns `true` iff the mapping actually changed, so a caller can skip a
 /// no-op write. The single mutation point for `keywords` entries so every
-/// owner (topics, lifecycle params, …) shares one idempotent, sibling-safe
+/// subject (topics, lifecycle params, …) shares one idempotent, sibling-safe
 /// implementation.
 fn apply_keyword(keywords: &mut serde_yaml::Mapping, key: &str, value: Option<&str>) -> bool {
     let key = serde_yaml::Value::String(key.to_owned());
@@ -756,15 +756,15 @@ mod tests {
         page: &str,
         topics: &[&str],
     ) {
-        insert_fact_owned(pool, uuid, wiki, page, &format!("user:{wiki}"), topics).await;
+        insert_fact_with_subject(pool, uuid, wiki, page, &format!("user:{wiki}"), topics).await;
     }
 
-    async fn insert_fact_owned(
+    async fn insert_fact_with_subject(
         pool: &SqlitePool,
         uuid: &str,
         wiki: &str,
         page: &str,
-        owner: &str,
+        subject: &str,
         topics: &[&str],
     ) {
         let fact = fact_index::NewFact {
@@ -776,7 +776,7 @@ mod tests {
             region_end: Some(16),
             text: "claim".to_owned(),
             embedding: vec![0.1, 0.2, 0.3, 0.4],
-            owner_id: owner.parse().unwrap(),
+            subject_id: subject.parse().unwrap(),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: None,
@@ -794,14 +794,14 @@ mod tests {
         fact_index::insert(pool, &fact).await.expect("insert fact");
     }
 
-    /// Insert a fact with an explicit `owner` + `allow` list, for the
+    /// Insert a fact with an explicit `subject` + `allow` list, for the
     /// reader-relative card boundary tests.
     async fn insert_fact_acl(
         pool: &SqlitePool,
         uuid: &str,
         wiki: &str,
         page: &str,
-        owner: &str,
+        subject: &str,
         allow: &[&str],
         topics: &[&str],
     ) {
@@ -814,7 +814,7 @@ mod tests {
             region_end: Some(16),
             text: "claim".to_owned(),
             embedding: vec![0.1, 0.2, 0.3, 0.4],
-            owner_id: owner.parse().unwrap(),
+            subject_id: subject.parse().unwrap(),
             allow_ids: allow.iter().map(|a| a.parse().unwrap()).collect(),
             sender_id: None,
             fact_type: None,
@@ -1211,7 +1211,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn card_keywords_exclude_off_default_owners_on_both_levels() {
+    async fn card_keywords_exclude_off_default_subjects_on_both_levels() {
         let (_dir, tree) = open_tree();
         forge(&tree, "alice");
         let pool = make_pool().await;
@@ -1225,9 +1225,9 @@ mod tests {
         // alice's wiki (acl_default user:alice): her own fact and a global
         // fact contribute; bob's cross-user region must not leak its topic
         // words onto either card.
-        insert_fact_owned(&pool, UUID_1, "alice", "notes.md", "user:alice", &["food"]).await;
-        insert_fact_owned(&pool, UUID_2, "alice", "notes.md", "global", &["public"]).await;
-        insert_fact_owned(&pool, UUID_3, "alice", "notes.md", "user:bob", &["secret"]).await;
+        insert_fact_with_subject(&pool, UUID_1, "alice", "notes.md", "user:alice", &["food"]).await;
+        insert_fact_with_subject(&pool, UUID_2, "alice", "notes.md", "global", &["public"]).await;
+        insert_fact_with_subject(&pool, UUID_3, "alice", "notes.md", "user:bob", &["secret"]).await;
 
         sync_wiki_keywords(&pool, &tree).await.unwrap();
         sync_page_keywords(&pool, &tree).await.unwrap();
@@ -1283,7 +1283,7 @@ mod tests {
         let carol_card = build_reader_card(&pool, &tree, "carol", &[]).await.unwrap();
 
         let topics = |c: &ReaderCard, w: &str| -> Vec<String> { c.wiki_topics(w).to_vec() };
-        // Owner sees every topic of her own wiki.
+        // Subject sees every topic of her own wiki.
         assert_eq!(
             topics(&alice_card, "alice"),
             ["celiachia", "ricette", "viaggio"]

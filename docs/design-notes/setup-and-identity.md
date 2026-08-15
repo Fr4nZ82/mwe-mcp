@@ -29,11 +29,12 @@ moment a user is **invited** — because that is when the admin sets it
 (the "Add user" form), well before the `user_credentials` row is born at
 accept-invite. The password hash lands on `user_credentials` at accept.
 
-The slug appears in **every** marker on disk
-(`{{owner=user:franz}}…{{/}}`), every `fact_index` row's `owner_id`
-column, every JWT's `sender` claim, and as the directory name of the
-user's personal memory wiki. Changing it would ripple through the
-filesystem — so it's chosen once at creation time and never rewritten.
+The slug appears in **every** `fact_index` row's `subject_id` column, in
+the self-describing marker an export writes
+(`{{subject=user:franz …}}…{{/}}`), every JWT's `sender` claim, and as
+the directory name of the user's personal memory wiki. Changing it would
+ripple through the filesystem — so it's chosen once at creation time and
+never rewritten.
 
 The email is what the operator types at the login form, what the
 SMTP-based recovery flow targets (roadmap 28), and what an SSO
@@ -211,7 +212,7 @@ reinforcing **section markers** to one composed message.
 
 | Step | Fields | Destination | How the engine routes it |
 |---|---|---|---|
-| **1 · Chi sei** | `email`, `display_name`, `nickname`, `presentati`, `birthday`, `address`, `language`, `timezone`, `pronouns`, `phone`, `occupation`, `health_safety` | the owner's `profile.md` identity card (their always-on base context) | the ingest LLM marks the identity/always-on facts `salience: high`; the engine routes the high-salience core onto `profile.md` |
+| **1 · Chi sei** | `email`, `display_name`, `nickname`, `presentati`, `birthday`, `address`, `language`, `timezone`, `pronouns`, `phone`, `occupation`, `health_safety` | the sender's `profile.md` identity card (their always-on base context) | the ingest LLM marks the identity/always-on facts `salience: high`; the engine routes the high-salience core onto `profile.md` |
 | **2 · Le tue regole** | `sharing_default` (radio: private / group / always-private), `sharing_exclusions`, `private_topics`, `do_not_store` | the sender's `rules.md` engine-policy page | the ingest LLM marks each directive `engine_rule: true`; the engine appends it as policy prose to `rules.md` — never a row in `fact_index` |
 | **3 · Il resto** | `favorite_color`, `hobbies`, `food_preferences` | the normal pipeline | no special tag — the LLM files them wherever it sees fit (`salience` stays normal/low) |
 
@@ -271,12 +272,12 @@ everything they enter here is **public**; the consent line mirrors that in
 natural language (no JSON jargon — quoting an ACL keyword verbatim makes
 Qwen 3.5 9B copy it into `target_wiki_id` and crash the pipeline). "Public"
 is the **visibility** axis: the `ingest` slot emits each `wiki_capture`
-with `allow_ids: ["global"]` while `owner_id` stays the **subject** (the
-user filling the primer) — the facts are *about me* and *visible to all*,
-not *owned by everyone*. (Keeping `owner` on the subject keeps the
-[same-owner supersede guard](../concepts/identity-and-acl.md) effective:
-two users' public primer facts can never supersede each other, which an
-`owner=global` framing would allow.) **The primer is the public-profile channel:** the
+with `allow_ids: ["global"]` while `subject_id` stays the user filling
+the primer — the facts are *about me* and *visible to all*, not *about
+everyone*. (Keeping the subject on the individual keeps the
+[same-subject supersede guard](../concepts/identity-and-acl.md) effective:
+two users' public primer facts can never supersede each other, which a
+`subject=global` framing would allow.) **The primer is the public-profile channel:** the
 identity clauses, `presentati`, **and** the always-on `health_safety` line
 all sit inside that public block, so a health/safety entry is captured
 public too (the LLM still marks it `salience: high`). The form is explicit

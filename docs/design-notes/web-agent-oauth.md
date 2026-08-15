@@ -61,7 +61,7 @@ only ever follows the `webagentoauth` flow.
   wiki carries one wiki-level ACL in `_meta` (`scope` + `shared_with`,
   read+notify only). **No OAuth scopes** — the ACL is the governance.
 - **The consumer name is chosen at consent, not pre-provisioned.** The smart token
-  carries `owner_id` (the logged-in user, from the OAuth identity) and
+  carries `sender_id` (the logged-in user, from the OAuth identity) and
   `consumer_id`/`device_label` (the name of this connection), confirmed on the
   consent screen and defaulting to the `client_name` the client declared at
   Dynamic Client Registration. `consumer_register` is idempotent, so
@@ -140,7 +140,7 @@ shape: PKCE mandatory; mwe-mcp is both authorization server and protected resour
   callback port is assigned per run, so an exact-port check would reject it.
 - **Token** — `POST /webagentoauth/token` for the `authorization_code` and
   `refresh_token` grants. It mints a **short-lived** (1 h) smart-JWT access token via
-  `jwt::issue` (`consumer_class=smart`, `profile=web`, `owner_id` = the approving
+  `jwt::issue` (`consumer_class=smart`, `profile=web`, `sender_id` = the approving
   user, `consumer_id` from the code, `is_admin` re-resolved from `enrollment_users`),
   plus a 30-day **refresh token** rotated on every use. Short access token + refresh
   is chosen over a long-lived JWT because this endpoint is public to a third-party
@@ -185,9 +185,9 @@ It drops only the genuinely local/plumbing tools: the `wiki_admin_lease_*` pair
 plumbing, and the skill catalog. **Call-time authorization is unchanged** — the
 smart-class / ACL / owner-match gates still enforce; the profile only cuts routing
 noise. To steer routing for a model that never loads a skill, the recall-vs-search
-rule lives in the **tool descriptions** themselves (`recall_core_global` is
-owner-scoped → use `wiki_search` for other entities; see
-[mcp-tools](../protocol/mcp-tools.md)).
+rule lives in the **tool descriptions** themselves (`recall_core_global` returns
+only facts whose *subject* is the caller → use `wiki_search` for anything about
+another person or entity; see [mcp-tools](../protocol/mcp-tools.md)).
 
 ## Skills and recall without a bridge
 

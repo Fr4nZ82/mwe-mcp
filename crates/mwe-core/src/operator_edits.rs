@@ -14,8 +14,8 @@
 //! here.
 //!
 //! These wrappers do **not** enforce authorisation: the chat path gates on
-//! the fact's owner from the recall window; the dashboard route gates on
-//! the session (owner-or-admin) and the wiki family (standard only). The
+//! the fact's subject from the recall window; the dashboard route gates on
+//! the session (subject-or-admin) and the wiki family (standard only). The
 //! wrappers are the shared engine half below that gate.
 //!
 //! The receipts are `wiki_promote` variants (`acl_change` / `validity_edit`)
@@ -89,7 +89,7 @@ pub async fn acl_change_operator(
     pool: &SqlitePool,
     fact_id: &FactId,
     wiki_id: &str,
-    new_owner: &Principal,
+    new_subject: &Principal,
     new_allow: &[Principal],
     keep_sender: Option<&Principal>,
     preview: &str,
@@ -99,20 +99,22 @@ pub async fn acl_change_operator(
     // Surface write: promoted row first, then the still-buffered capture
     // (the id is stable across promotion), EXACTLY like the chat path.
     let (prev, surface) =
-        match fact_index::set_acl(pool, fact_id, new_owner, new_allow, keep_sender).await? {
+        match fact_index::set_acl(pool, fact_id, new_subject, new_allow, keep_sender).await? {
             Some(prev) => (prev, promote::ClosureSurface::Fact),
-            None => match capture_buffer::set_acl(pool, fact_id, new_owner, new_allow, keep_sender)
-                .await?
-            {
-                Some(prev) => (prev, promote::ClosureSurface::Buffer),
-                None => return Err(OperatorEditError::FactVanished(fact_id.clone())),
+            None => {
+                match capture_buffer::set_acl(pool, fact_id, new_subject, new_allow, keep_sender)
+                    .await?
+                {
+                    Some(prev) => (prev, promote::ClosureSurface::Buffer),
+                    None => return Err(OperatorEditError::FactVanished(fact_id.clone())),
+                }
             },
         };
 
     let widening = acl::widens(
-        &prev.prev_owner_id,
+        &prev.prev_subject_id,
         &prev.prev_allow_ids,
-        new_owner,
+        new_subject,
         new_allow,
     );
     let audit_id = match disclosure_audit::record(
@@ -121,7 +123,7 @@ pub async fn acl_change_operator(
         wiki_id,
         actor_id,
         &prev,
-        new_owner,
+        new_subject,
         new_allow,
         keep_sender,
         widening,
@@ -141,7 +143,7 @@ pub async fn acl_change_operator(
 
     tracing::info!(
         fact_id = %fact_id,
-        owner = %new_owner,
+        subject = %new_subject,
         widening,
         surface = surface.as_str(),
         actor = actor_id,
@@ -152,7 +154,7 @@ pub async fn acl_change_operator(
         fact_id: fact_id.clone(),
         wiki_id: wiki_id.to_owned(),
         preview: preview.to_owned(),
-        new_owner: new_owner.clone(),
+        new_subject: new_subject.clone(),
         new_allow: new_allow.to_vec(),
         prev,
         audit_id,
@@ -306,7 +308,7 @@ mod tests {
             wiki_id: crate::types::WikiId::parse("alice").unwrap(),
             page: PathBuf::from(page),
             body: body.to_owned(),
-            owner: "user:alice".parse::<Principal>().unwrap(),
+            subject: "user:alice".parse::<Principal>().unwrap(),
             allow: vec![],
             sender: None,
             fact_type: None,
@@ -330,13 +332,13 @@ mod tests {
         let (_dir, tree, pool) = setup().await;
         let f1 = capture_one(&tree, &pool, embedder(), "index.md", "Alice usa la bici").await;
 
-        let new_owner: Principal = "user:alice".parse().unwrap();
+        let new_subject: Principal = "user:alice".parse().unwrap();
         let new_allow: Vec<Principal> = vec!["group:famiglia".parse().unwrap()];
         let applied = acl_change_operator(
             &pool,
             &f1,
             "alice",
-            &new_owner,
+            &new_subject,
             &new_allow,
             None,
             "Alice usa la bici",

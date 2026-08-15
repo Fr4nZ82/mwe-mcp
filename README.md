@@ -42,7 +42,7 @@ The engine resolves "Bob", decides the fact is *about* Bob so it lands on **his*
 
 Same page, same fact, two answers. Zoe isn't on the `team`, so the span is **removed before it ever reaches her agent**. No error, no "access denied", just invisible.
 
-Here is the page itself. Each governed span is wrapped in a marker that carries only a stable key, so the prose stays clean and everything sensitive about the fact (owner, sender, audience, validity) lives in the engine's index:
+Here is the page itself. Each governed span is wrapped in a marker that carries only a stable key, so the prose stays clean and everything sensitive about the fact (subject, sender, audience, validity) lives in the engine's index:
 
 ```markdown
 Alice is going through a busy stretch at work. See [[alice/acmecorp]].
@@ -57,15 +57,15 @@ Alice sees that verbatim. Anyone who isn't Alice sees the protected span collaps
 She weighs [redacted] as of May 10, and just cut her hair.
 ```
 
-<p align="center"><img src="docs/assets/acl-two-readers.png" alt="The same wiki page opened by two users: the owner sees the private span, the other reader sees it replaced by [redacted], with a banner explaining the declassified view" width="100%"></p>
-<p align="center"><sub>The same page in the built-in dashboard, opened by its owner and by another member of the household. The reader is told the view is declassified, never what was withheld.</sub></p>
+<p align="center"><img src="docs/assets/acl-two-readers.png" alt="The same wiki page opened by two users: the person the private fact is about sees the span, the other reader sees it replaced by [redacted], with a banner explaining the declassified view" width="100%"></p>
+<p align="center"><sub>The same page in the built-in dashboard, opened by the person that private fact is about and by another member of the household. Reading it is decided by the fact's subject, audience and sender — not by whose wiki the page sits in. The reader is told the view is declassified, never what was withheld.</sub></p>
 
 No permissions database bolted on top, no per-document walls. Visibility is enforced fragment by fragment, sentence by sentence. **This is the thing most agent memories simply cannot express.**
 
 ## What sets it apart
 
 - 🔒 **Access control inside a single page.** One page mixes public, private and group-restricted spans, redacted per reader before any text reaches an agent.
-- 🪪 **Owner and sender are never the same field.** *Who a fact is about* and *who reported it* stay separate, with authorship kept for audit.
+- 🪪 **Subject and sender are never the same field.** *Who a fact is about* and *who reported it* stay separate, with authorship kept for audit.
 - ⏳ **Facts that know when they stop being true.** Every fact carries a validity window, and closes on contradiction, expiry or completion. Closing is never deleting: the window shuts, the history stays, the prose narrates it.
 - 🧭 **Recall that walks the wiki instead of grepping it.** Local embeddings seed the entry points, then a navigator follows pages, links and hubs the way a person would. That's how the deviating fact surfaces: the cancelled trip, the allergy behind the dinner plan.
 - 🌙 **A nightly cycle that keeps the memory in shape.** While nobody is waiting, REM deduplicates, merges near-synonym pages, closes what conversations left open, re-anchors rotting dates, and recompiles everything into prose.
@@ -105,7 +105,7 @@ Deployment topologies, LLM profiles and security posture are in [`INSTALL.md`](I
 
 **Use something else if** you need a hosted recall API for a million mutually-invisible end-users. That is what Mem0, Zep and Letta are built for: developer-facing memory *APIs*, multi-user **by isolation**, each end-user in their own partition, the partitions never talking. They are strong products with real scale behind them, and for that shape they are the right tool. mwe-mcp would just be a server you have to run.
 
-**Use mwe-mcp if** the people sharing the memory are supposed to know each other. A household, a team, a family with a speaker in the kitchen and a bot on the phone. That is where isolation stops being the answer and governance starts: one memory several people legitimately share, with the boundaries drawn *inside* the page rather than around it. Per-fragment ACL, owner and sender kept apart, per-reader redaction, sharing rules that survive the session. Self-hosted, on your disk, under the AGPL.
+**Use mwe-mcp if** the people sharing the memory are supposed to know each other. A household, a team, a family with a speaker in the kitchen and a bot on the phone. That is where isolation stops being the answer and governance starts: one memory several people legitimately share, with the boundaries drawn *inside* the page rather than around it. Per-fragment ACL, subject and sender kept apart, per-reader redaction, sharing rules that survive the session. Self-hosted, on your disk, under the AGPL.
 
 We are not trying to win the recall race. Remembering more, faster and cheaper is a well-funded contest with years of optimization behind it, and it isn't the axis this was built on.
 
@@ -149,7 +149,7 @@ flowchart TB
 1. **Per turn**, the agent calls one tool, `wiki_ingest_message`, with the raw user message. The internal LLM classifies it (capture / supersede / close / recall / structural / skip) and routes it. The agent gets back a context block with recalled memory, imminent commitments and a draft reply, and never sees a filesystem path.
 2. **Capture and dedup are deterministic**: local embeddings, cosine, a string-similarity check. Bounded latency, predictable cost.
 3. **Nightly**, with nobody waiting, the REM cycle tends the memory and recompiles the fact store into prose pages, one home per fact. Every structural change lands immediately, leaves a receipt, and stays revertible for a week.
-4. **Storage is a single folder.** `wikis/` holds the Markdown prose, `engine.db` beside it holds the per-fact governance. Snapshot the folder and you have backed up the memory. Export it and every fragment carries its full governance inline, ready to re-import anywhere.
+4. **Storage is a single folder.** `wikis/` holds the Markdown prose, `engine.db` beside it holds the per-fact governance. Snapshot the folder and you have backed up the memory. Export it and every fragment carries its governance inline — subject, audience, sender in the marker itself — so the archive reads on its own, without the index beside it. Reading such an archive back in is a job for a future importer; no import path ships today.
 
 The consumer pays for conversation volume. mwe-mcp pays a low floor, and it isn't a *second* bill: it is memory work a serious consumer would otherwise do itself, relocated to one place and paid once, then amortized across every agent that shares the memory.
 

@@ -1,6 +1,6 @@
 ---
 name: document-extract
-description: document-ingest map phase — extracts atomic facts from one segment, each with its subject (owner_id) and audience (allow_ids) decided under the ingest rules; the {selectivity} placeholder switches the dossier posture (only what transcends the document) vs the dissolve posture (everything worth remembering)
+description: document-ingest map phase — extracts atomic facts from one segment, each with its subject (subject_id) and audience (allow_ids) decided under the ingest rules; the {selectivity} placeholder switches the dossier posture (only what transcends the document) vs the dissolve posture (everything worth remembering)
 version: 1.6
 default_version_at_bootstrap: v1.6
 ---
@@ -25,9 +25,9 @@ The system prompt for the document-ingest **extraction (map)** phase
   `current_time` (the segment's instant, else the document's clock —
   relative dates resolve against it), `sender_id`, the `known_users`
   roster (the enrolled people the subject may resolve to — the gate that
-  stops `owner_id` minting a `user:<id>` for a non-enrolled person), the
+  stops `subject_id` minting a `user:<id>` for a non-enrolled person), the
   `sender_groups` section (each group's id + operator-set `scope` prose —
-  the audience signal **and** the owner fallback for a non-enrolled
+  the audience signal **and** the subject fallback for a non-enrolled
   subject), optional `segment_heading`, the always-written `segment_position`,
   the `available_wikis` window (each with the wiki's `scope` prose), and the
   `segment` text. The same assembly `ingest`'s `build_prompt` uses.
@@ -57,8 +57,8 @@ EACH FACT:
 - "body": ONE atomic, self-contained prose claim, in the language named under LANGUAGE below. A reader with no access to the document must understand it: resolve pronouns, name people, resolve relative dates against current_time into explicit dates.
 - "target_wiki_id": the wiki from available_wikis where this fact belongs.
 - "target_page": a lowercase_underscore page name for the subject this fact belongs to (e.g. "norway_trip.md"). Group related facts on the same page.
-- "owner_id": WHO the fact is ABOUT — the subject, NOT who may read it. "user:<sender>" is the DEFAULT (a fact about the uploader). Use "user:<X>" ONLY for a person listed in known_users (resolve names and aliases to that roster) — NEVER mint a "user:<id>" for someone not in known_users (a relative who does not use the system, a pet, a third party): the system has no principal for them. For such a NON-ENROLLED individual, set owner_id to the group whose scope the fact falls inside (the same scope read you do for allow_ids) — the collective responsible for that subject — or "user:<sender>" when no group scope applies; keep the person's name in the body prose, never as a principal. A clinical or care fact about a non-enrolled family member → owner_id "group:family". Use "group:<id>" when the subject is the collective itself (a list the whole group keeps), and "global" for a world fact belonging to no one. The subject stays the owner even when the fact is public — that is the allow_ids axis.
-- "allow_ids": WHO may read it — independent of owner_id. The fact is ALWAYS readable by its owner and the uploader, so [] (the DEFAULT) means exactly "only them". Widen it from three signals, the more specific overriding the more general: (1) the destination's GROUP scope — when a fact falls inside a group's domain in sender_groups, add that "group:<id>"; (2) the destination WIKI's scope prose in available_wikis (the same audience reading applied to the wiki's category); (3) an explicit cue in the document, in whatever language it is written — public ("public", "visible to everyone", "not confidential") → add "global"; private ("just us", "confidential", "private") → [] even when a group scope matches. allow_ids only ever WIDENS reading; owner_id stays the subject.
+- "subject_id": WHO the fact is ABOUT — the subject, NOT who may read it. "user:<sender>" is the DEFAULT (a fact about the uploader). Use "user:<X>" ONLY for a person listed in known_users (resolve names and aliases to that roster) — NEVER mint a "user:<id>" for someone not in known_users (a relative who does not use the system, a pet, a third party): the system has no principal for them. For such a NON-ENROLLED individual, set subject_id to the group whose scope the fact falls inside (the same scope read you do for allow_ids) — the collective responsible for that subject — or "user:<sender>" when no group scope applies; keep the person's name in the body prose, never as a principal. A clinical or care fact about a non-enrolled family member → subject_id "group:family". Use "group:<id>" when the subject is the collective itself (a list the whole group keeps), and "global" for a world fact belonging to no one. The subject stays the subject even when the fact is public — that is the allow_ids axis.
+- "allow_ids": WHO may read it — independent of subject_id. The fact is ALWAYS readable by its subject and the uploader, so [] (the DEFAULT) means exactly "only them". Widen it from three signals, the more specific overriding the more general: (1) the destination's GROUP scope — when a fact falls inside a group's domain in sender_groups, add that "group:<id>"; (2) the destination WIKI's scope prose in available_wikis (the same audience reading applied to the wiki's category); (3) an explicit cue in the document, in whatever language it is written — public ("public", "visible to everyone", "not confidential") → add "global"; private ("just us", "confidential", "private") → [] even when a group scope matches. allow_ids only ever WIDENS reading; subject_id stays the subject.
 - "fact_type": bio | preference | episode | commitment | decision | other.
 - "topics": up to 3 short tags.
 - "valid_from"/"valid_to": ISO-8601 validity interval when the fact is time-bound (a commitment's window, a stay, an appointment); omit both for open-ended knowledge.
@@ -74,7 +74,7 @@ RULES:
 - An empty array is a valid answer.
 
 Reply with ONE JSON object only:
-{"facts": [{"body": "...", "target_wiki_id": "...", "target_page": "...", "owner_id": "user:<sender>", "allow_ids": [], "fact_type": "...", "topics": ["..."], "valid_from": null, "valid_to": null, "salience": "normal"}]}
+{"facts": [{"body": "...", "target_wiki_id": "...", "target_page": "...", "subject_id": "user:<sender>", "allow_ids": [], "fact_type": "...", "topics": ["..."], "valid_from": null, "valid_to": null, "salience": "normal"}]}
 
 LANGUAGE: {locale}
 ```

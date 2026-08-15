@@ -623,7 +623,7 @@ mod tests {
             region_end: Some(5),
             text: "claim".to_owned(),
             embedding: vec![0.0; 4],
-            owner_id: "user:alice".parse().unwrap(),
+            subject_id: "user:alice".parse().unwrap(),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: None,

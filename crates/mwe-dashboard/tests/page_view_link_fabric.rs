@@ -83,7 +83,7 @@ async fn capture_fact(
     tree: &WikiTree,
     page: &str,
     body: &str,
-    owner: &str,
+    subject: &str,
 ) -> FactId {
     let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
     let req = CaptureRequest {
@@ -91,7 +91,7 @@ async fn capture_fact(
         wiki_id: WikiId::parse("alice").unwrap(),
         page: PathBuf::from(page),
         body: body.to_owned(),
-        owner: owner.parse::<Principal>().unwrap(),
+        subject: subject.parse::<Principal>().unwrap(),
         allow: vec![],
         sender: None,
         fact_type: None,

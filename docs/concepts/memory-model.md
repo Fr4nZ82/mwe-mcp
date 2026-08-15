@@ -104,8 +104,8 @@ section, and a group-restricted section, sentence by sentence
 region's ACL sits in its `fact_index` row and the marker is bare):
 
 ```markdown
-Alice weighs {{owner=user:alice}}72 kg{{/}} as of May 10, and
-{{owner=global}}cut her hair{{/}} yesterday.
+Alice weighs {{subject=user:alice}}72 kg{{/}} as of May 10, and
+{{subject=global}}cut her hair{{/}} yesterday.
 ```
 
 To Alice this renders verbatim. To Bob — who matches neither
@@ -220,7 +220,7 @@ The split *wiring* files one capture per `extractions[]` element, and
 fact" as the lead instruction in the ingest prompt, so a multi-fact turn
 (*"Galadriel ha fatto spesa: latte, formaggio, salame, pane, poi ha preso
 Matteo a karate"*) splits into its constituent atomic facts rather than
-landing as one consolidated fact. The owner (`global` bio vs `user:`
+landing as one consolidated fact. The subject (`global` bio vs `user:`
 preference) is decided **per fact**.
 
 A wiki's kind is a **bare `wiki_type` string** in its `_meta.md` — there
@@ -239,8 +239,8 @@ wiki" below), `wiki-group`, `wiki-companion`
 and has no behavioural type at all. Several attributes are decided at
 capture. **Per fact**: its temporal **validity** (`valid_from`/`valid_to`)
 and its **salience** (`high` / `normal` / `low` — a `high` fact joins the
-owner's always-on base context, routed to its `profile.md` card rather
-than a subject page, and is kept scarce). **Per placement**: which page the fact
+subject's always-on base context, routed to its `profile.md` card rather
+than a topic page, and is kept scarce). **Per placement**: which page the fact
 lands on (`target_page`) and the page's **physical form** (line → page →
 folder). **Per target page** (repeated across facts sharing a page): a
 **writing style** hint (prosa / prosa-tecnica / lista) and a one-line
@@ -270,7 +270,7 @@ that wiki self-describes: its `_meta.md` carries `is_agent: true` — a mirror o
 the authoritative `consumers.system_user_id` binding — so it is distinguishable
 from a human's wiki at a glance and without a DB lookup. The agent fills that
 wiki with its **own** memory: what it did, advised, and learned about itself
-(emitted with `owner_id: "self"` on its own turn), surfaced back to it every turn
+(emitted with `subject_id: "self"` on its own turn), surfaced back to it every turn
 — its identity always, its history with the current user scoped to that user. So
 the engine's own author is not just a routing destination for behaviour rules but
 a peer with an emergent, remembered self. See
@@ -328,50 +328,57 @@ speak; a consumer agent that uses it speaks.**
 
 ---
 
-## Owner vs sender — the distinctive idea
+## Subject vs sender — the distinctive idea
 
 The single most distinctive concept in mwe-mcp is the separation of two
 attributions that other memory systems conflate:
 
 | Question | Attribute | Marker / column |
 |---|---|---|
-| **Who is a fact *about*?** | **owner** | `owner=` / `fact_index.owner_id` |
+| **Who is a fact *about*?** | **subject** | `subject=` / `fact_index.subject_id` |
 | **Who *said* it?** | **sender** | `sender=` / `fact_index.sender_id` |
 
 The canonical example: **"Alice says Bob has a dentist appointment."**
 The fact is *about* Bob (it lives in Bob's wiki, it is his appointment),
 but Alice is the one who reported it. That is captured as (export
-form; at runtime the two attributions are the `owner_id` / `sender_id`
+form; at runtime the two attributions are the `subject_id` / `sender_id`
 columns of the fact's row):
 
 ```markdown
-{{owner=user:bob sender=user:alice f=018f1234-5678-7abc-9def-0123456789ae}}
+{{subject=user:bob sender=user:alice f=018f1234-5678-7abc-9def-0123456789ae}}
 Has a dentist appointment on Thursday.
 {{/}}
 ```
 
-- `owner=user:bob` — the fact belongs to Bob; it is filed in his wiki and
-  he reads it as owner.
+- `subject=user:bob` — the fact is about Bob; it is filed in his wiki and
+  he reads it as its subject.
 - `sender=user:alice` — Alice reported it; she is guaranteed read access
-  to the region she wrote, even though Bob is the owner.
+  to the region she wrote, even though the subject is Bob.
+
+The fact's subject is a different axis from the wiki's proprietor. A wiki
+belongs to one principal (its `owner_user`, resolved from the tree); the
+`subject` names who a single region is *about* — so a fact whose subject
+is `user:franz` can perfectly well sit in a wiki owned by
+`group:famiglia`, and being that wiki's proprietor is not, by itself,
+read access to the region.
 
 ### How the code models it
 
-Capture persists the two attributions as separate columns — `owner_id`
+Capture persists the two attributions as separate columns — `subject_id`
 and a nullable `sender_id` in
 [`FactIndexRow`](../../crates/mwe-core/src/fact_index.rs); the marker
-grammar still parses the full attributed form (legacy pages, imported
-archives) into a [`RegionAttrs`](../../crates/mwe-core/src/types.rs)
-whose `acl.owner` and `sender` are independent `Principal`s. A `Principal`
+grammar also parses the full attributed form (hand-written lines, the
+export's own output) into a [`RegionAttrs`](../../crates/mwe-core/src/types.rs)
+whose `acl.subject` and `sender` are independent `Principal`s. A `Principal`
 is one of `global`, `user:<id>`, or `group:<id>`.
 
 Two rules make this clean in practice (both enforced in
 [`capture.rs::normalize_sender_attribution`](../../crates/mwe-core/src/capture.rs)):
 
-1. **`sender` is omitted when it equals `owner`.** The common case — a
-   user filing a fact about themselves — needs no `sender=`; the column
-   stays `NULL` and the marker stays terse. `sender` is materialised only
-   when it genuinely differs from `owner`.
+1. **`sender` need not be supplied when it equals `subject`.** The common
+   case — a user filing a fact about themselves — arrives with no
+   `sender=`; capture materialises the column as the subject itself, so
+   provenance is a value on the row and not an absence to re-derive.
 2. **`sender` is never duplicated into `allow=`.** The redaction
    algorithm already auto-grants read access to the region's sender, so
    listing it again under `allow=` is rejected as redundant.
@@ -382,7 +389,7 @@ group as a whole* with `sender=group:famiglia`; every member of that
 group then re-reads the region, because the device captured it "for
 them." This generalisation is why `sender` is a full `Principal` and not
 a bare user id. The access-control consequences (effective ACL =
-`owner ∪ allow ∪ {sender}`) are detailed in
+`subject ∪ allow ∪ {sender}`) are detailed in
 [`redaction-policy.md`](../design-notes/redaction-policy.md).
 
 ---
@@ -408,7 +415,7 @@ family:
   re-embeds the page. There the files do drive the index, because the
   consumer owns those bytes. That index is a **separate table**,
   `wiki_sections`, not `fact_index`: a section is a searchable chunk of a
-  document, with no owner, no sender, no supersedence chain, no validity
+  document, with no subject, no sender, no supersedence chain, no validity
   window and no tombstone. Read access belongs to the *wiki* and is held
   once in the `smart_wikis` registry
   ([`mwe_core::sections`](../../crates/mwe-core/src/sections.rs)).
@@ -519,7 +526,7 @@ ACL projection without re-parsing the file:
 |---|---|---|
 | Identity & location | `fact_id` (UUIDv7), `wiki_id`, `source_path`, `region_start`/`region_end` (byte offsets, both nullable) | Find the exact region in the rendered page file. |
 | Content | `text` (body verbatim, no markers), `embedding` (`f32` BLOB), `embedding_dim` | Recall and audit without touching disk. |
-| Attribution & ACL | `owner_id`, `allow_ids`, `sender_id` | Project the per-sender view. |
+| Attribution & ACL | `subject_id`, `allow_ids`, `sender_id` | Project the per-sender view. |
 | Taxonomy | `fact_type`, `topics` | Filter and weight recall. |
 | Lifecycle | `created_at`, `updated_at`, `superseded_at`, `superseded_by`, `deleted_at`, `deleted_reason`, `successor_fact_id` | Supersedence chains and tombstones; `successor_fact_id` is the succession pointer on a **live** closed row (stamped by `close_validity`, rendered by the compiler as the "today see […]" rail). |
 | Recall telemetry | `last_recall_at`, `recall_count_30d` | REM's signal for what is hot vs cold. |
@@ -570,27 +577,27 @@ closed set is:
 > guarantees — a hand-edit or a future caller *could* store an off-list
 > value, and the engine would index it without complaint.
 
-### Prose, owner-less regions, and the owner-of-last-resort rule
+### Prose, subject-less regions, and the subject-of-last-resort rule
 
 A region need not have an ACL of its own. Redaction resolves each
 region by its fact key from `fact_index` first; when the DB does not
-know the region **and** its marker carries no inline `owner=` (a
-hand-written line, a legacy page), the region's owner-of-last-resort is
+know the region **and** its marker names no subject (a hand-written
+line, a legacy page), the region's subject-of-last-resort is
 its own `sender` — the user who captured it (unreadable to anyone else,
 and to no one when there is no sender; never the wiki `scope`). This is
 how a list-style page of records (below) stays private by default: each
 body is a region whose only reader is its capturing sender until a
-capture deliberately widens it with a group owner, an `allow` list, or
+capture deliberately widens it with a group subject, an `allow` list, or
 `global`.
 
 The subtle and load-bearing half of the rule: **the fallback only
-governs owner-less *regions*, never free prose.** Prose outside any marker
+governs subject-less *regions*, never free prose.** Prose outside any marker
 is narrative scaffolding — it always passes through to the reader (and to
 the internal LLM reading the file for context), regardless of any region
 ACL. So a sender who is denied every region on a page still sees
 the surrounding prose; redaction collapses the region bodies, not the
 narrative around them. The mechanics — how the per-region check resolves a
-sender against `owner ∪ allow ∪ {sender}`, and how a fully-redacted page is
+sender against `subject ∪ allow ∪ {sender}`, and how a fully-redacted page is
 handled — live in [`identity-and-acl.md`](identity-and-acl.md) and
 [`redaction-policy.md`](../design-notes/redaction-policy.md).
 
@@ -624,8 +631,8 @@ compiled page. The classifier's supersede proposal rides along as a
 > deterministically (no LLM). The **narrative compiler**
 > ([`crate::compiler`](../../crates/mwe-core/src/compiler.rs)) then turns
 > those facts into the published `.md`: Il Cronista (a **strong** model) writes
-> each dirty leaf page as cohesive prose, wrapping every claim in an inline
-> `{{owner=… f=<fact_id>}}…{{/}}` marker that carries the fact's stable
+> each dirty leaf page as cohesive prose, wrapping every claim in a bare
+> `{{f=<fact_id>}}…{{/}}` marker that carries the fact's stable
 > `fact_id`, and the compiler repoints the fact's `fact_index` row at the
 > compiled marker region (via
 > [`fact_index::move_region`](../../crates/mwe-core/src/fact_index.rs)) so
@@ -664,9 +671,9 @@ Per page it dispatches:
   [`crates/mwe-core/prompts/cronista.md`](../../crates/mwe-core/prompts/cronista.md).
 
 The load-bearing design choice is **information starvation**. The Cronista is
-shown its **own** facts in full — each tagged with `[TYPE]`, body text, and an
-ACL of `owner` / optional `sender` / `f=<fact_id>` — but for every *other* page
-it sees only a `canonical wikilink → one-line description` line
+shown its **own** facts in full — a numbered list of `[TYPE]` + body text, each
+narrower-than-public fact carrying an `(audience: …)` hint — but for every
+*other* page it sees only a `canonical wikilink → one-line description` line
 (the link grammar),
 **never another page's facts**. It is therefore structurally unable to copy a
 detail it was never shown, so when it needs to mention another page it must
@@ -719,7 +726,7 @@ wikis, whose pages are still hand-authored and keep the full marker reindex.
 Region bodies are written in one of the three per-page **writing styles**
 (decided per fact at ingest/compile): `prosa` and `prosa-tecnica` are
 free-flowing text an LLM reads; `lista` renders one fact per line as a
-**record** (`- {{owner=… f=…}}text{{/}}`), bypassing the prose compiler.
+**record** (`- {{f=…}}text{{/}}`), bypassing the prose compiler.
 There is no separate "typed YAML body" kind: a list-style page is records,
 not a YAML schema block.
 

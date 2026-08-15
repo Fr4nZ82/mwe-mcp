@@ -18,9 +18,9 @@ You have no local copy, so there's nothing to reconcile — `pull` simply loads 
 
 You already hold your own wiki (from `pull`). For anything beyond it, search the memory — and pick the tool by how deep the question is:
 
-- **A personal fact about the user themselves** (their preferences, plans, history) → `recall_core_global` — owner-scoped to the user's own memory.
+- **A personal fact about the user themselves** (their preferences, plans, history) → `recall_core_global` — it returns only the facts whose **subject** is the user, wherever those facts are filed.
 - **A quick, one-line lookup about anyone or anything else** (a contact's birthday, a place) → `wiki_search` — a fast, flat search over everything the user lets you read.
-- **A question that needs depth or connections** ("tell me everything about X", "how does Y relate to Z") → `wiki_navigate` — the deep recall: it follows the wiki structure hop by hop and is a **superset** of `wiki_search` (slower — one step per hop — so save it for when depth matters). Steer it with `topics` and `owners` (`user:<id>` / `group:<id>`) when the conversation already tells you who/what it's about.
+- **A question that needs depth or connections** ("tell me everything about X", "how does Y relate to Z") → `wiki_navigate` — the deep recall: it follows the wiki structure hop by hop and is a **superset** of `wiki_search` (slower — one step per hop — so save it for when depth matters). Steer it with `topics` and `subjects` (`user:<id>` / `group:<id>`) when the conversation already tells you who/what it's about — that field was previously named `owners`, and both spellings work (an older server takes only `owners`).
 - **When a hit points at a page and you need the full prose** → `wiki_read` that page by its `path`; the snippet often omits detail the page itself holds.
 
 ## Keep current — capture as you go, don't ask

@@ -155,7 +155,7 @@ struct WikiSeedInfo {
 /// (empty today). The call is deterministic and read-only — safe to run on
 /// every turn, with no side effect on recall counters.
 ///
-/// **There is no owner/subject channel any more.** It existed to seed a
+/// **There is no subject/subject channel any more.** It existed to seed a
 /// principal's identity wiki, and a wiki is not a door: whose turn it is, and
 /// whom it is about, reach the block by being *served* — deterministically,
 /// as a card — not by the navigator being pointed at a person.
@@ -178,7 +178,7 @@ pub async fn gather_entry_points(
 ) -> Result<Vec<EntryPoint>> {
     // Reader-relative card: the topic union the sender can actually read on
     // each wiki, recomputed from `fact_index` per turn so a seed never matches
-    // a denied fact's theme (the owner-tier `.md` keywords would leak it).
+    // a denied fact's theme (the subject-tier `.md` keywords would leak it).
     let reader_card =
         meta_annotate::build_reader_card(pool, tree, &sender.sender_id, &sender.sender_groups)
             .await
@@ -787,7 +787,7 @@ struct NavOpen {
 ///
 /// The ingest recall block passes the sender's identity card, which
 /// `WHO IS SPEAKING` serves deterministically every turn (roadmap 69a), so
-/// `index.md` is not a navigation destination for its own owner at all
+/// `index.md` is not a navigation destination for its own subject at all
 /// (69b; founder, 2026-08-03: *«non ci frega dell'indice se col rag arriviamo
 /// già sulle pagine giuste»* — the recalled facts land on the right pages
 /// directly, so the hub's routing is not needed to get there). `wiki_navigate`
@@ -821,7 +821,7 @@ pub async fn navigate(
 
     // Reader-relative card for the prompt-facing surface (the candidate page
     // cards): topics the sender can read, descriptions gated to the wiki's
-    // default visibility — never the owner-tier `.md`. Wiki-keyed because that
+    // default visibility — never the subject-tier `.md`. Wiki-keyed because that
     // is how the ACL is derived, not because anything renders a wiki.
     let reader_card =
         meta_annotate::build_reader_card(pool, tree, &sender.sender_id, &sender.sender_groups)
@@ -1003,10 +1003,10 @@ struct QuerySeedsJson {
     entities: Vec<String>,
 }
 
-/// Extract topic + owner seeds from a free-text query via the `navigator` slot.
+/// Extract topic + subject seeds from a free-text query via the `navigator` slot.
 ///
 /// The `wiki_navigate` fallback **B** (roadmap 24b: the caller's explicit
-/// `topics`/`owners` first (C), then this, then principal+RAG only (A)). Ingest
+/// `topics`/`subjects` first (C), then this, then principal+RAG only (A)). Ingest
 /// gets these seeds from its classifier; a standalone search has no classifier
 /// in the loop, so this is a small dedicated extraction (not the heavy ingest
 /// classifier).
@@ -1050,7 +1050,7 @@ pub async fn extract_query_seeds(
     };
 
     let mut topics = parsed.topics;
-    let mut owners: Vec<Principal> = Vec::new();
+    let mut subjects: Vec<Principal> = Vec::new();
     if !parsed.entities.is_empty() {
         let users = match enrollment::list_users(pool).await {
             Ok(users) => users,
@@ -1072,19 +1072,19 @@ pub async fn extract_query_seeds(
                 Vec::new()
             },
         };
-        fold_entities(parsed.entities, &users, &groups, &mut topics, &mut owners);
+        fold_entities(parsed.entities, &users, &groups, &mut topics, &mut subjects);
     }
-    (topics, owners)
+    (topics, subjects)
 }
 
 /// Route each extracted entity name into the two seed channels.
 ///
-/// An entity is recorded on `owners` when the roster resolves it, and is kept
+/// An entity is recorded on `subjects` when the roster resolves it, and is kept
 /// as a `topics` needle **either way**.
 ///
 /// That "either way" is the fix, and the shape it replaced is worth naming:
-/// it was an `if let … else`, so a resolved name went ONLY to `owners`. Since
-/// 69b `owners` seeds no door — a principal names a wiki, and recall opens
+/// it was an `if let … else`, so a resolved name went ONLY to `subjects`. Since
+/// 69b `subjects` seeds no door — a principal names a wiki, and recall opens
 /// content pages — so a name the roster *recognised* went to a dead channel
 /// while an unrecognised one went to the live card matcher. A query about an
 /// enrolled person was served strictly worse than one about a stranger.
@@ -1095,13 +1095,13 @@ fn fold_entities(
     users: &[enrollment::EnrolledUserLite],
     groups: &[enrollment::EnrolledGroupLite],
     topics: &mut Vec<String>,
-    owners: &mut Vec<Principal>,
+    subjects: &mut Vec<Principal>,
 ) {
     for entity in entities {
         if let Some(p) = resolve_entity(&entity, users, groups)
-            && !owners.contains(&p)
+            && !subjects.contains(&p)
         {
-            owners.push(p);
+            subjects.push(p);
         }
         if !topics.iter().any(|t| t.eq_ignore_ascii_case(&entity)) {
             topics.push(entity);
@@ -1712,7 +1712,7 @@ fn reader_page_keywords(
 /// falls back to opening the page, which is never wrong; the table is a
 /// cache and an empty one degrades to exactly the previous behaviour.
 ///
-/// The description is read from the **owner-tier** testata but shown only
+/// The description is read from the **subject-tier** testata but shown only
 /// where the reader is inside the wiki's default visibility
 /// (`summary_visible`) — the same gate as before, moved, not relaxed. A page
 /// whose card cannot be read (vanished, unparseable) is marked read with no
@@ -1860,8 +1860,8 @@ mod tests {
     }
 
     #[test]
-    fn a_resolved_entity_stays_a_topic_needle_instead_of_only_a_dead_owner() {
-        // `owners` seeds no door since 69b. Routing a RESOLVED name there and
+    fn a_resolved_entity_stays_a_topic_needle_instead_of_only_a_dead_subject() {
+        // `subjects` seeds no door since 69b. Routing a RESOLVED name there and
         // ONLY an unresolved one to `topics` served a query about an enrolled
         // person strictly worse than one about a stranger.
         let users = vec![enrollment::EnrolledUserLite {
@@ -1871,14 +1871,14 @@ mod tests {
         }];
         let groups: Vec<enrollment::EnrolledGroupLite> = Vec::new();
         let mut topics = vec!["concerti".to_owned()];
-        let mut owners: Vec<Principal> = Vec::new();
+        let mut subjects: Vec<Principal> = Vec::new();
 
         fold_entities(
             vec!["Xheni".to_owned(), "Gandalf".to_owned()],
             &users,
             &groups,
             &mut topics,
-            &mut owners,
+            &mut subjects,
         );
 
         assert!(
@@ -1890,7 +1890,7 @@ mod tests {
             "an unresolved name keeps reaching it: {topics:?}"
         );
         assert_eq!(
-            owners,
+            subjects,
             vec![Principal::User("morgana".to_owned())],
             "and the resolution is still recorded, once"
         );
@@ -1902,13 +1902,13 @@ mod tests {
         let users: Vec<enrollment::EnrolledUserLite> = Vec::new();
         let groups: Vec<enrollment::EnrolledGroupLite> = Vec::new();
         let mut topics = vec!["gandalf".to_owned()];
-        let mut owners: Vec<Principal> = Vec::new();
+        let mut subjects: Vec<Principal> = Vec::new();
         fold_entities(
             vec!["Gandalf".to_owned()],
             &users,
             &groups,
             &mut topics,
-            &mut owners,
+            &mut subjects,
         );
         assert_eq!(topics, vec!["gandalf".to_owned()], "case-insensitive dedup");
     }
@@ -1987,7 +1987,7 @@ mod tests {
             region_start: None,
             region_end: None,
             text: "claim".to_owned(),
-            owner_id: Principal::global(),
+            subject_id: Principal::global(),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: None,
@@ -2011,7 +2011,7 @@ mod tests {
         format!("018f1234-5678-7abc-9def-0123456789{n:02x}")
     }
 
-    /// Insert one active fact carrying `topics` with the given ACL `owner`, so
+    /// Insert one active fact carrying `topics` with the given ACL `subject`, so
     /// the reader-relative card recomputes from `fact_index` (the navigator no
     /// longer reads topics from the `.md` testata).
     async fn seed_fact(
@@ -2019,7 +2019,7 @@ mod tests {
         id: &str,
         wiki: &str,
         source_path: &str,
-        owner: Principal,
+        subject: Principal,
         topics: &[&str],
     ) {
         fact_index::insert(
@@ -2032,7 +2032,7 @@ mod tests {
                 region_end: None,
                 text: "body".to_owned(),
                 embedding: vec![0.0, 0.0, 0.0, 0.0],
-                owner_id: owner,
+                subject_id: subject,
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
@@ -2161,8 +2161,8 @@ mod tests {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "bob");
         let pool = make_pool().await;
-        // A PRIVATE fact on bob's wiki: only bob can read "celiachia" (owner
-        // bob, no allow). The owner-tier `.md` card would carry the topic to
+        // A PRIVATE fact on bob's wiki: only bob can read "celiachia" (subject
+        // bob, no allow). The subject-tier `.md` card would carry the topic to
         // anyone; the reader-relative card must not.
         seed_fact(
             &pool,
@@ -2174,7 +2174,7 @@ mod tests {
         )
         .await;
 
-        // bob (the owner) is topic-seeded down to the page.
+        // bob (the subject) is topic-seeded down to the page.
         let bob_fan = gather_entry_points(
             &pool,
             &tree,
@@ -2185,7 +2185,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let page_seed = find(&bob_fan, "bob", "salute.md").expect("owner page topic seed");
+        let page_seed = find(&bob_fan, "bob", "salute.md").expect("subject page topic seed");
         assert_eq!(page_seed.origin, EntryOrigin::Topic);
 
         // alice (denied) gets NO seed from the private topic — the leak closed.
@@ -2872,7 +2872,7 @@ mod tests {
                 region_end: None,
                 text: "secret".to_owned(),
                 embedding: vec![0.1, 0.2, 0.3, 0.4],
-                owner_id: Principal::User("alice".into()),
+                subject_id: Principal::User("alice".into()),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
@@ -2910,7 +2910,7 @@ mod tests {
         let f = &out.fragments[0];
         assert!(
             !f.text.contains("secret") && f.text.contains("[redacted]"),
-            "the DB owner must out-gate the inline owner=global: {}",
+            "the DB subject must out-gate the inline owner=global: {}",
             f.text
         );
     }

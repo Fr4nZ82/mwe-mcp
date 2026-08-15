@@ -88,7 +88,7 @@ async fn capture_fact(pool: &SqlitePool, tree: &WikiTree, page: &str, body: &str
         wiki_id: WikiId::parse("alice").unwrap(),
         page: PathBuf::from(page),
         body: body.to_owned(),
-        owner: "user:alice".parse::<Principal>().unwrap(),
+        subject: "user:alice".parse::<Principal>().unwrap(),
         allow: vec![],
         sender: None,
         fact_type: None,
@@ -166,7 +166,7 @@ async fn export_serves_tar_attachment_to_admin() {
     assert!(entries.contains_key("alice/_meta.md"), "{entries:?}");
     let index = entries.get("alice/index.md").expect("index page travels");
     assert!(
-        index.contains("owner=user:alice") && index.contains("Alice likes tea"),
+        index.contains("subject=user:alice") && index.contains("Alice likes tea"),
         "captured region must travel as a full marker: {index}"
     );
 }

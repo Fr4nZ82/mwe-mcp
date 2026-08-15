@@ -87,7 +87,7 @@ answers *where does a fact belong* for whoever is filing one, and the read
 path never opens it), which is also what frees the REM
 [map writer](rem-cycle.md#map-writer-sub-job) to author it. The two nodes
 are not interchangeable, because two different things arrive at the
-[orphan fallback](#orphan-fallback):
+[orphan fallback](#stage-2--the-architetto-deterministic-assembly):
 
 | node | file | receives |
 |---|---|---|
@@ -168,7 +168,7 @@ an existing page rather than minting a duplicate.
 live in any wiki, and the engine putting one where the prose reads better is
 its judgment, not damage (founder, 2026-08-10 — the compiler upholds exactly
 that with `move_to_wiki`, and REM has a whole cross-wiki refile sweep). Read
-permission is judged per fact on `owner ∪ allow ∪ sender`, never on the
+permission is judged per fact on `subject ∪ allow ∪ sender`, never on the
 container, so a placement exposes nothing and hides nothing. **The page list is
 therefore the entire mechanism**: a page the model is not shown is a page a
 fact can never reach, and a list scoped to the batch's own wiki meant a fact
@@ -236,11 +236,11 @@ guard with a gap answers "free" for a taken name.
 
 The engine enriches that context with **structural signals**
 ([`CartografoSignals`](../../crates/mwe-core/src/planner.rs)) — information
-the model weighs; no ownership or count gate exists in Rust:
+the model weighs; no identity-scope or count gate exists in Rust:
 
 - **Identity-page scope, per fact.** Every fact line carries an
   `identity_pages=` tag: the `person` pages the fact's *subject* covers —
-  the owner user's own page; for a group-owned fact the member users' pages,
+  the subject user's own page; for a group subject the member users' pages,
   expanded from enrollment by
   [`subject_scopes_for`](../../crates/mwe-core/src/planner.rs)
   (`enrollment::members_for`); `any` for the builtin global group (world
@@ -248,7 +248,7 @@ the model weighs; no ownership or count gate exists in Rust:
   members. The prompt's **identity-page discipline** reads the tag: an
   identity card (a `person` page — a `wiki-user`'s `profile.md`, the agent
   wiki included) carries **one subject** and never takes a
-  **foreign-subject** fact (owner = a different user, or a group the page's
+  **foreign-subject** fact (subject = a different user, or a group the page's
   user is not a member of — a group they belong to is their own shared
   context, never foreign). The foreign detail is homed on the subject's own
   pages, split by content; the relation surfaces on the identity card only
@@ -514,17 +514,17 @@ Two of these steps deserve calling out:
 
 - **Deterministic orphan homing** (step 4). A fact the Cartografo never
   assigned (or whose batch was skipped) is homed by
-  [`orphan_target`](../../crates/mwe-core/src/planner.rs): the **owner's**
+  [`orphan_target`](../../crates/mwe-core/src/planner.rs): the **subject's**
   `person` / `group_theme` page if it exists, else the fact's **source
   wiki's** foundation page, else dropped from the plan with a warning —
   **never an arbitrary page**. The home is a function of the
-  fact's own owner and provenance, so the same orphan lands the same place
+  fact's own subject and provenance, so the same orphan lands the same place
   every run. (A concept *page* the Cartografo leaves without a resolvable
   `parent_hub` — typically a `global` fact's page — is homed by
   [`resolve_page_wiki`](../../crates/mwe-core/src/planner.rs) in **its facts'
   source wiki**, never a root: a `global` fact captured from frodo compiles into
-  `wikis/frodo/…` with an `{{owner=global …}}` marker. The facts decide the
-  page's wiki, which keeps `fact_index.wiki_id` and the compiled `source_path` in
+  `wikis/frodo/…`, its subject still `global`. The facts decide the page's
+  wiki, which keeps `fact_index.wiki_id` and the compiled `source_path` in
   the same wiki — mwe-mcp's tree is a **forest** of top-level wikis with no
   materialised root.)
 - **Fixpoint GC** (step 7). Empty concept pages are removed
@@ -567,7 +567,7 @@ the definitions there are the SSOT.
   reorg has drained them onto children.
 - **[`FactForPage`]** — a fact materialised onto a page. It carries the
   verbatim claim text, the classifier's `fact_type`, the full ACL triple
-  (`owner` / `allow` / `sender`), the `source_wiki_id`, the optional
+  (`subject` / `allow` / `sender`), the `source_wiki_id`, the optional
   **validity window** (`valid_from` / `valid_to`, a read-only projection of
   the [`fact_index`](capture-and-dedup.md) columns — see
   [the validity cue](#the-validity-cue)), and — crucially —
@@ -877,7 +877,7 @@ leaf, fed:
 
 - its **own** `primary_facts` only — a **numbered** list, each line `N. [TYPE]
   text`. The Cronista does not write the marker, so `f=<fact_id>` and the raw
-  `owner`/`allow`/`sender` are withheld — but a fact whose read audience is
+  `subject`/`allow`/`sender` are withheld — but a fact whose read audience is
   **narrower than public** carries a trailing `(audience: <names>)` hint (its
   read-set, projected by [`audience_hint`](../../crates/mwe-core/src/compiler.rs)),
   so the Cronista keeps that fact's substance **inside its `<fN>` span** and out
@@ -930,7 +930,7 @@ leaf, fed:
   live ([ingest-pipeline.md](ingest-pipeline.md), and ~30% of the live
   assistant's wiki is such residue), and the residue does not vanish the day
   the guard starts working. A leaf gets the autobiography voice only when most
-  of its facts are owned by the agent itself; otherwise it keeps the ordinary
+  of its facts have the agent as their subject; otherwise it keeps the ordinary
   identity voice. Narrating a user's pregnancy as the assistant's own life is a
   far worse failure than the third-person log the voice exists to fix. The
   **index / hub** pass stays wiki-level on purpose: an identity wiki's index is
@@ -966,7 +966,7 @@ since the Cronista only ever sees the facts the plan gave the page.
 The Cronista writes flowing prose that makes the **relations** between facts
 explicit, and marks **which span of prose is which fact** by wrapping it in a
 lightweight tag `<fN>…</fN>` (N = the fact's 1-based number from the list above).
-It writes **no** ACL, owner, `allow`, `sender`, braces, or `fact_id` — only the
+It writes **no** ACL, subject, `allow`, `sender`, braces, or `fact_id` — only the
 span boundary. The unmarked connective prose between tags inherits the page's
 default visibility. It returns one JSON object (`mergedBody`, `description`,
 `style`); the `description` is the page's one-liner, and for a wiki's
@@ -1001,7 +1001,7 @@ The same discipline then runs over the page's **links** — see
 The **on-disk runtime marker format is the bare** `{{f=…}}` — only the
 Cronista's transient output uses `<fN>` tags; the parser, the capture path, and
 every other prompt that references the marker share that one format (the full
-`{{owner=… allow=… sender=… f=…}}` form is the export/interchange serialization
+`{{subject=… allow=… sender=… f=…}}` form is the export/interchange serialization
 only — see [marker grammar §0](marker-grammar.md#0-runtime-form-vs-export-form--what-gets-written-when)).
 
 The Cronista's **output budget scales with the page's fact mass**
@@ -1576,7 +1576,7 @@ card level:
 
 Both unions apply the **ACL card boundary**
 ([`identity-and-acl.md`](../concepts/identity-and-acl.md#the-acl-card-boundary--what-card-metadata-may-carry)):
-only facts at the wiki's default visibility (owner `global` or the resolved
+only facts at the wiki's default visibility (subject `global` or the resolved
 `scope` principal) contribute topic words — an off-default region never
 surfaces on a card readable at wiki level. The Cronista's `description`
 (prompt v1.7) carries the same contract on the prose side.
@@ -1622,15 +1622,15 @@ fields are the roster):
   cover one concept: these pairs feed the
   [REM page-merge sub-job](rem-cycle.md#page-merge-sub-job-semantic-page-consolidation)
   as merge candidates.
-- **missing ACL marker** — an owned fact (owner ≠ `global`) on a page whose
-  compiled body carries no non-public `{{… f=<fact_id>}}` marker for it. This
-  is the **ACL-leak guard**: an owned claim rendered as
+- **missing ACL marker** — a non-global fact (subject ≠ `global`) on a page
+  whose compiled body carries no non-public `{{… f=<fact_id>}}` marker for it.
+  This is the **ACL-leak guard**: a claim about a named subject rendered as
   unmarked prose would be world-readable. Since the Cronista's **forward
   completeness guard** appends, at write time, any fact it omitted (with its
   full marker), this should be near-zero in practice; the reviewer remains the
   independent backstop.
 - **cross-subject bloat** — an identity index whose **plan** carries a
-  foreign-subject fact: owner is a different user, or a group the page's
+  foreign-subject fact: subject is a different user, or a group the page's
   user is not a member of (a group they belong to is their own shared
   context, never foreign; global never qualifies). Identity-index detection
   reads the `_meta` `wiki_type` — the page is a `wiki-user`'s `index.md`
@@ -1695,7 +1695,7 @@ act on cycle N+1 (the `force_dirty` park pattern). All
 **Only a build that runs the Cartografo may consume the re-open park.**
 A light (`Ingest`) or degraded-full (`OrphanFallback`) build carries it
 forward untouched: those placements would re-settle the re-opened facts
-on stale ingest `target_page` hints / the owner's foundation page —
+on stale ingest `target_page` hints / the subject's foundation page —
 burning the nomination and silently **reversing** considered moves
 (observed live 2026-07-04: a light build undid the refile judge's
 cross-wiki move within three hours, re-filing the facts by hints that
@@ -1766,17 +1766,17 @@ message — no new operator slot). Two invariants hold the cost rule and the ACL
   mutates a stranger's fact). A `correct` keeps the same `fact_id`, so the
   [content-aware fingerprint](#page_fingerprint--the-dirty-set) marks **only that
   page** dirty — the recompile is one page, never a whole-wiki rescan.
-- **A fact is a fact.** A `correct` preserves the fact's owner/`allow`/sender
+- **A fact is a fact.** A `correct` preserves the fact's subject/`allow`/sender
   (it touches claim text only); an `add` carries its **own** ACL under the same
-  rules as a captured message — the interpreter decides `owner` (subject) and
-  `allow` (audience) from the comment, the page's wiki `scope`, and the
-  commenter's group scopes, defaulting to `user:<commenter>` / `[]`, with
-  `sender` = the human who left the comment (`author_sender_id`). It is **never
-  an arbitrary existing fact's owner** (a standard page can hold facts from
-  several principals — the Cartografo homes by topic, not by owner — one of
-  which may be broader). When the comment has no recorded author **and** the LLM
-  emits no `owner_id`, the `add` falls back to the wiki's scope principal —
-  never inventing a sender.
+  rules as a captured message — the interpreter decides the `subject` (who the
+  fact is about) and `allow` (audience) from the comment, the page's wiki
+  `scope`, and the commenter's group scopes, defaulting to `user:<commenter>` /
+  `[]`, with `sender` = the human who left the comment (`author_sender_id`). It
+  is **never an arbitrary existing fact's subject** (a standard page can hold
+  facts from several principals — the Cartografo homes by topic, not by
+  subject — one of which may be broader). When the comment has no recorded
+  author **and** the LLM emits no `subject_id`, the `add` falls back to the
+  wiki's scope principal — never inventing a sender.
 
 The application is wired into the **REM full cycle** (the batched, nightly-or-
 admin-triggered dream), not the frequent light dream — so comments accumulate and

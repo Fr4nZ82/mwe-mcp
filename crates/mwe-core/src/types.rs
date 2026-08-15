@@ -59,7 +59,7 @@ impl<'de> Deserialize<'de> for FactId {
 /// Every principal is a **user** or a **group** — there is no separate
 /// "global" variant. Public/world reach is the builtin **`global` group**,
 /// to which every user implicitly belongs: a region naming `global` (in
-/// `owner`, `allow`, or `sender`) is therefore readable by anyone. The
+/// `subject`, `allow`, or `sender`) is therefore readable by anyone. The
 /// global group also carries an operator-editable `scope` like any other
 /// group; see [`crate::enrollment`] and the engineering wiki
 /// (`identity-and-acl.md`).
@@ -149,31 +149,37 @@ impl fmt::Display for Principal {
 
 // ---------- Acl ----------
 
-/// Region ACL: `owner` (the fact's *subject*) + optional allow-list.
+/// Region ACL: `subject` (the fact's *subject*) + optional allow-list.
 ///
-/// **`owner` names the fact's SUBJECT — who or what the region is
+/// **`subject` names the fact's SUBJECT — who or what the region is
 /// *about*.** It is *not* who wrote it (that is `sender`, the provenance)
 /// and *not* who may read it (that is `allow`, the audience): the three
-/// are independent axes. The "owner" name is deliberate, not a leftover
-/// from a classic file-ownership model — in mwe-mcp the data subject
-/// *governs* the fact about them (ACL changes are owner-or-admin), so the
-/// subject genuinely owns the datum on themselves. Read `owner` as
-/// *subject* everywhere; never as "creator" or "visibility". The
-/// engineering wiki (`concepts/identity-and-acl.md`) is the SSOT for the
-/// model.
+/// are independent axes. The data subject also *governs* the fact about
+/// them — an ACL change is subject-or-admin — which is a consequence of
+/// the axis, not its definition. Never read `subject` as "creator" or as
+/// "visibility". The engineering wiki (`concepts/identity-and-acl.md`) is
+/// the SSOT for the model.
 ///
-/// `owner == None` means "inherit `acl_default` from the enclosing
-/// `_meta.md`". The parser builds [`Acl`] from the marker's `owner=` and
-/// `allow=` attributes; if `owner=` is absent the parser leaves it as
-/// `None`, and `render` later resolves it against `acl_default`.
+/// Distinct from the **wiki owner** — the principal a whole memory wiki
+/// belongs to, derived from tree topology by
+/// [`crate::wiki::WikiTree::resolve_scope_principal`]. A fact whose subject
+/// is `user:franz` can live in a wiki owned by `group:famiglia`; that is
+/// per-fragment governance, and it is the reason the two axes are named
+/// apart.
+///
+/// `subject == None` means "inherit `acl_default` from the enclosing
+/// `_meta.md`". The parser builds [`Acl`] from the marker's `subject=` and
+/// `allow=` attributes (`owner=` is the permanent legacy alias of
+/// `subject=`, read but never written); with neither present the parser
+/// leaves it `None`, and `render` later resolves it against `acl_default`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Acl {
     /// The fact's **subject** — the single principal the region is *about*
     /// (not its author `sender`, not its audience `allow`). `None` ⇒
     /// inherit `acl_default`.
-    pub owner: Option<Principal>,
+    pub subject: Option<Principal>,
     /// Additional principals extended by `allow=…` — the *audience* axis,
-    /// who may read it beyond owner + sender (possibly empty).
+    /// who may read it beyond subject + sender (possibly empty).
     pub allow: Vec<Principal>,
 }
 
@@ -507,21 +513,22 @@ impl fmt::Display for WikiId {
 /// Attributes carried by a region opening marker `{{…}}`.
 ///
 /// Built by the parser from the four supported attributes:
-/// - `owner=<principal>` → `acl.owner` (the fact's *subject* — who it is
-///   *about*, not its author or audience; see [`Acl`])
+/// - `subject=<principal>` → `acl.subject` (the fact's *subject* — who it is
+///   *about*, not its author or audience; see [`Acl`]). `owner=` is the
+///   permanent legacy alias of this key: read, never written.
 /// - `allow=<principal>(,<principal>)*` → `acl.allow`
 /// - `sender=<principal>` → `sender` (cross-user attribution, see
 ///   `modello-memoria.md §4`)
 /// - `f=<UUIDv7>` → `fact_id`
 ///
-/// All four are optional. `owner == None` means the region inherits
+/// All four are optional. `subject == None` means the region inherits
 /// `acl_default` from the enclosing `_meta.md`. `sender == None` means
-/// auto-attribution (sender = owner, common case).
+/// auto-attribution (sender = subject, common case).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RegionAttrs {
     /// Region-level access control list.
     pub acl: Acl,
-    /// Cross-user attribution. `None` ⇒ sender equals owner (the common
+    /// Cross-user attribution. `None` ⇒ sender equals subject (the common
     /// case).
     pub sender: Option<Principal>,
     /// `fact_id` from `f=…`. `None` for regions used only as ACL wrappers

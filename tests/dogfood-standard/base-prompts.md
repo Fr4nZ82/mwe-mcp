@@ -35,7 +35,7 @@ Two things happen as the corpus is ingested:
   facts (**never 1**); an atomic message yields **exactly 1**; a not-memorable
   message yields **0** (`skip`); an indivisible fact is **not over-split** (a
   full name is one fact). This is the pass/fail axis for the v2.6 fix.
-- **Scope (`owner_id`), as a secondary read:** each fact's principal
+- **Scope (`subject_id`), as a secondary read:** each fact's principal
   (`user:`/`group:`/`global`), now decided **per extraction**. The exhaustive
   scope-gradient verdict lives in `instruction.md` §2; here it's a sanity note.
 
@@ -57,7 +57,7 @@ split). Count the new rows after each line:
 
 ```bash
 sqlite3 -header ./work/engine.db \
-  "SELECT wiki_id, owner_id, substr(replace(body,char(10),' '),1,70) AS body \
+  "SELECT wiki_id, subject_id, substr(replace(body,char(10),' '),1,70) AS body \
    FROM capture_buffer WHERE status='buffered' ORDER BY rowid DESC LIMIT 12;"
 ```
 
@@ -135,7 +135,7 @@ proposed.
 
 | # | as | message (IT) | expect: split | expect: scope |
 |---|---|---|---|---|
-| 18 | frodo | "Domani ho il dentista alle 9 e il nonno Bruno ha cambiato medico." | **2**, different owners | frodo → `user:frodo` (or famiglia presence); Bruno → `user:bilbo` (cross-user) |
+| 18 | frodo | "Domani ho il dentista alle 9 e il nonno Bruno ha cambiato medico." | **2**, different subjects | frodo → `user:frodo` (or famiglia presence); Bruno → `user:bilbo` (cross-user) |
 | 19 | frodo | "Ciao Sam! tutto bene? grazie mille." | **0** (skip) | — (not-memorable → empty array) |
 
 ### 9 — More from the real household (richer multi-fact)
@@ -188,7 +188,7 @@ test exercises dedup/reorg over the accumulated facts.
 
 ## After the run
 
-Per line I record the **observed** split (count + bodies) and the owner each
+Per line I record the **observed** split (count + bodies) and the subject each
 fact landed under; I flag any collapse (N→1), over-split, or mis-route, and note
 where the LLM was borderline (probabilistic — a re-run gauges stability). Pass
 bar for the v2.6 fix: **every multi-fact line splits into several atomic facts,
@@ -204,7 +204,7 @@ lines split as intended**, no collapse, no over-split:
 - **Line 10** (canonical regression) → **5** facts (`latte / formaggio / salame /
   pane / Matteo a karate`), all `group:famiglia`.
 - **Skip** (line 19) → **0**. The welcome-primer profile (a 6-field run-on) → **8**.
-- **Per-fact owner** held inside a single message (line 4 age→`user:gollum` /
+- **Per-fact subject** held inside a single message (line 4 age→`user:gollum` /
   karate→`group:famiglia`; line 18 dentist→`user:frodo` / Bruno→`user:bilbo`;
   line 24 → 4 facts, 2 private + 2 family). Cross-user aliases resolved
   (`Matteo`→gollum, `nonno Bruno`→bilbo); the private bug (line 15) stayed

@@ -81,13 +81,18 @@ async fn login_as_admin(app: &Router) -> String {
 }
 
 /// Register a smart wiki and index one page of sections into it.
-async fn seed_sections(pool: &SqlitePool, wiki_id: &str, owner: &str, shared_with: Vec<Principal>) {
+async fn seed_sections(
+    pool: &SqlitePool,
+    wiki_id: &str,
+    subject: &str,
+    shared_with: Vec<Principal>,
+) {
     sections::upsert_smart_wiki(
         pool,
         &SmartWikiRow {
             wiki_id: wiki_id.to_owned(),
             slug: wiki_id.rsplit('-').next().unwrap_or(wiki_id).to_owned(),
-            owner_id: owner.parse().expect("owner principal"),
+            owner_id: subject.parse().expect("subject principal"),
             shared_with,
             project_id: Some("abc123".to_owned()),
             wiki_type: "project".to_owned(),
@@ -197,7 +202,7 @@ async fn sections_page_honours_the_per_wiki_acl() {
     assert!(html.contains("alice-proj"), "{html}");
     assert!(
         !html.contains("bob-proj"),
-        "another owner's sections must not leak: {html}"
+        "another subject's sections must not leak: {html}"
     );
 }
 

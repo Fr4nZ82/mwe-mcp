@@ -8,15 +8,15 @@
 //! that flag is a UI hint only.
 //!
 //! The algorithm reduces to a single rule: build the effective principal
-//! set `acl.owner ∪ acl.allow ∪ {sender_of_region}` and check whether
+//! set `acl.subject ∪ acl.allow ∪ {sender_of_region}` and check whether
 //! any principal in it matches the current reader. The cross-user
 //! attribution shortcut ("the principal that captured the region always
 //! rereads it") is just the third element of that union.
 //!
-//! The three are independent axes, not synonyms: `owner` is the fact's
+//! The three are independent axes, not synonyms: `subject` is the fact's
 //! **subject** (who it is *about*), `allow` is the **audience** (who else
 //! may read), and `sender_of_region` is the **provenance** (who captured
-//! it). `owner` is named for the data-subject-governs-their-fact model
+//! it). `subject` is named for the data-subject-governs-their-fact model
 //! (see the engineering wiki `concepts/identity-and-acl.md`), never for
 //! authorship or visibility — both of which live on the other two axes.
 //!
@@ -32,19 +32,19 @@ use std::collections::{BTreeSet, HashMap};
 use crate::types::{Acl, FactId, Principal};
 
 /// Authoritative ACL of one region, as stored in the engine DB
-/// (`fact_index.owner_id` / `allow_ids` / `sender_id`).
+/// (`fact_index.subject_id` / `allow_ids` / `sender_id`).
 ///
-/// Unlike the inline-marker [`Acl`], the owner is never optional here —
-/// every `fact_index` row carries an explicit owner, so a DB-resolved
+/// Unlike the inline-marker [`Acl`], the subject is never optional here —
+/// every `fact_index` row carries an explicit subject, so a DB-resolved
 /// region never inherits `acl_default`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegionAcl {
     /// The fact's **subject** — who/what it is *about* (always explicit in
     /// the DB; never the author `sender` or the audience `allow`).
-    pub owner: Principal,
+    pub subject: Principal,
     /// `allow=` extension list (possibly empty).
     pub allow: Vec<Principal>,
-    /// Cross-user attribution; `None` ⇒ sender equals owner.
+    /// Cross-user attribution; `None` ⇒ sender equals subject.
     pub sender: Option<Principal>,
 }
 
@@ -68,11 +68,11 @@ pub type FactAclMap = HashMap<FactId, RegionAcl>;
 /// readable by every member of `famiglia` even if `famiglia` is not in
 /// `region_acl.allow`.
 ///
-/// `region_acl.owner` may be `None` — that means "no explicit owner in the
+/// `region_acl.subject` may be `None` — that means "no explicit subject in the
 /// marker, region inherits `acl_default` from `_meta.md`". In that case the
 /// caller (typically [`crate::render::render_for_sender`]) is responsible
-/// for substituting the inherited owner *before* calling this function;
-/// passing an `Acl { owner: None, allow: [] }` here will deny everyone
+/// for substituting the inherited subject *before* calling this function;
+/// passing an `Acl { subject: None, allow: [] }` here will deny everyone
 /// except a matching `sender_of_region`.
 #[must_use]
 pub fn can_read(
@@ -81,11 +81,11 @@ pub fn can_read(
     sender_groups: &[String],
     sender_of_region: Option<&Principal>,
 ) -> bool {
-    // Effective principal set: owner ∪ allow ∪ {sender_of_region}.
-    let owner_iter = region_acl.owner.iter();
+    // Effective principal set: subject ∪ allow ∪ {sender_of_region}.
+    let subject_iter = region_acl.subject.iter();
     let allow_iter = region_acl.allow.iter();
     let sender_iter = sender_of_region.into_iter();
-    for principal in owner_iter.chain(allow_iter).chain(sender_iter) {
+    for principal in subject_iter.chain(allow_iter).chain(sender_iter) {
         if principal_matches(principal, sender_id, sender_groups) {
             return true;
         }
@@ -99,7 +99,7 @@ pub fn can_read(
 /// [`can_read`] asks, per stored principal, "does this reader match it?".
 /// The same question can be asked once per *reader* instead: build the set
 /// of principal strings this reader matches, and a region is readable
-/// exactly when that set intersects `owner ∪ allow ∪ {sender}`. The two
+/// exactly when that set intersects `subject ∪ allow ∪ {sender}`. The two
 /// formulations are equivalent, and this one is the shape a **query** can
 /// use — which is why it exists: `fact_index::FactFilters::readable_by`
 /// turns the ACL from a post-filter over every active fact into a
@@ -130,7 +130,7 @@ pub fn reader_principals(sender_id: &str, sender_groups: &[String]) -> Vec<Strin
 }
 
 /// The set of principals a region grants read access to, in canonical wire
-/// form — `owner ∪ allow ∪ {sender}`, the **same three axes** [`can_read`]
+/// form — `subject ∪ allow ∪ {sender}`, the **same three axes** [`can_read`]
 /// evaluates.
 ///
 /// It lives beside `can_read` on purpose: a caller that reasons about "who can
@@ -138,7 +138,7 @@ pub fn reader_principals(sender_id: &str, sender_groups: &[String]) -> Vec<Strin
 /// and the drift is invisible until somebody is shown something they were
 /// never told. None of the three is sufficient alone — a fact can be readable
 /// through its `allow=` extension or through the principal who captured it,
-/// with no bearing on its owner.
+/// with no bearing on its subject.
 ///
 /// Comparable by construction (a `BTreeSet` of the canonical strings), so
 /// "same audience?" is set equality. Group membership is deliberately **not**
@@ -147,11 +147,11 @@ pub fn reader_principals(sender_id: &str, sender_groups: &[String]) -> Vec<Strin
 /// does not un-merge.
 #[must_use]
 pub fn reader_set(
-    owner: &Principal,
+    subject: &Principal,
     allow: &[Principal],
     sender: Option<&Principal>,
 ) -> BTreeSet<String> {
-    std::iter::once(owner)
+    std::iter::once(subject)
         .chain(allow.iter())
         .chain(sender)
         .map(ToString::to_string)
@@ -164,7 +164,7 @@ pub fn reader_set(
 /// ([identity and ACL](../../../docs/concepts/identity-and-acl.md)):
 /// only the fact's **sender** (its author / provenance) acts on their own
 /// contribution directly; an admin may act on any fact. A non-sender (even a
-/// non-sender `owner`) is refused here — their path is a request → vote (a
+/// non-sender `subject`) is refused here — their path is a request → vote (a
 /// later step).
 ///
 /// The `sender` is always a human author in practice, so only
@@ -178,10 +178,10 @@ pub fn can_delete(sender_of_fact: Option<&Principal>, caller: &str, is_admin: bo
 /// Enumerate the **read audience** of a fact as a sorted, deduplicated list of
 /// bare **user ids**.
 ///
-/// This is the finite electorate a non-sender owner's forget request is put to
+/// This is the finite electorate a non-sender subject's forget request is put to
 /// ([the write-authority model](../../../docs/concepts/identity-and-acl.md)).
 /// The audience is the same effective read-set [`can_read`] checks,
-/// `owner ∪ allow ∪ {sender}`, but resolved to concrete humans: each
+/// `subject ∪ allow ∪ {sender}`, but resolved to concrete humans: each
 /// [`Principal::Group`] is expanded to its members via
 /// [`crate::enrollment::members_for`], and the builtin `global` group is
 /// **dropped** (a public fact has no finite electorate — there is nobody to
@@ -193,13 +193,13 @@ pub fn can_delete(sender_of_fact: Option<&Principal>, caller: &str, is_admin: bo
 /// Propagates the underlying `sqlx` error from the group-member lookups.
 pub async fn audience(
     pool: &sqlx::SqlitePool,
-    owner: &Principal,
+    subject: &Principal,
     allow: &[Principal],
     sender: Option<&Principal>,
 ) -> Result<Vec<String>, sqlx::Error> {
     use std::collections::BTreeSet;
     let mut users: BTreeSet<String> = BTreeSet::new();
-    for principal in std::iter::once(owner).chain(allow.iter()).chain(sender) {
+    for principal in std::iter::once(subject).chain(allow.iter()).chain(sender) {
         match principal {
             Principal::User(id) => {
                 users.insert(id.clone());
@@ -232,26 +232,26 @@ pub(crate) fn principal_matches(p: &Principal, sender_id: &str, sender_groups: &
 /// Whether a region is public — readable by anyone.
 ///
 /// True when the builtin `global` group appears anywhere in the region's
-/// effective principal set (`owner ∪ allow ∪ sender`). Centralises the "is
+/// effective principal set (`subject ∪ allow ∪ sender`). Centralises the "is
 /// this public?" question so call sites stop pattern-matching a single
-/// position (the old `owner == global` shortcut, which broke once `owner`
+/// position (the old `subject == global` shortcut, which broke once `subject`
 /// became the subject and visibility moved to the `allow`/`sender` axes).
 #[must_use]
-pub fn is_public(owner: &Principal, allow: &[Principal], sender: Option<&Principal>) -> bool {
-    owner.is_global()
+pub fn is_public(subject: &Principal, allow: &[Principal], sender: Option<&Principal>) -> bool {
+    subject.is_global()
         || allow.iter().any(Principal::is_global)
         || sender.is_some_and(Principal::is_global)
 }
 
-/// Whether `sender` has OWNER authority over a region (ACL change / chat edit).
+/// Whether `sender` has SUBJECT authority over a region (ACL change / chat edit).
 ///
 /// Distinct from `principal_matches` (read authority): the builtin `global`
-/// group grants read to everyone but ownership to no one, so a world fact
-/// (`owner=global`) is not editable from chat. Ownership is the sender being the
+/// group grants read to everyone but subject authority to no one, so a world fact
+/// (`owner=global`) is not editable from chat. Subject authority is the sender being the
 /// owning user, or a member of a non-global owning group.
 #[must_use]
-pub fn sender_owns(owner: &Principal, sender_id: &str, sender_groups: &[String]) -> bool {
-    match owner {
+pub fn sender_is_subject(subject: &Principal, sender_id: &str, sender_groups: &[String]) -> bool {
+    match subject {
         Principal::User(id) => id == sender_id,
         Principal::Group(id) if id == "global" => false,
         Principal::Group(id) => sender_groups.iter().any(|g| g == id),
@@ -263,21 +263,23 @@ pub fn sender_owns(owner: &Principal, sender_id: &str, sender_groups: &[String])
 ///
 /// The disclosure signal for the audit row written by the chat
 /// `acl_changes` verb (ingest pipeline).
-/// The effective read-set is `{owner} ∪ allow` on each side; a change is a
+/// The effective read-set is `{subject} ∪ allow` on each side; a change is a
 /// widening when any principal in the new set is absent from the old set.
 /// `Global` is treated like any other principal here — adding it newly is
 /// a widening because it admits everyone; a change that only NARROWS (a
 /// pure subset of the old set) is not.
 #[must_use]
 pub fn widens(
-    old_owner: &Principal,
+    old_subject: &Principal,
     old_allow: &[Principal],
-    new_owner: &Principal,
+    new_subject: &Principal,
     new_allow: &[Principal],
 ) -> bool {
     use std::collections::HashSet;
-    let old_set: HashSet<&Principal> = std::iter::once(old_owner).chain(old_allow.iter()).collect();
-    std::iter::once(new_owner)
+    let old_set: HashSet<&Principal> = std::iter::once(old_subject)
+        .chain(old_allow.iter())
+        .collect();
+    std::iter::once(new_subject)
         .chain(new_allow.iter())
         .any(|p| !old_set.contains(p))
 }
@@ -295,11 +297,11 @@ mod tests {
     /// facts it must refuse.
     #[test]
     fn reader_set_unions_the_three_axes_and_expands_no_group() {
-        let owner = Principal::User("alice".to_owned());
+        let subject = Principal::User("alice".to_owned());
         let allow = vec![Principal::User("bob".to_owned())];
         let sender = Principal::Group("famiglia".to_owned());
 
-        let set = reader_set(&owner, &allow, Some(&sender));
+        let set = reader_set(&subject, &allow, Some(&sender));
         assert_eq!(
             set,
             ["group:famiglia", "user:alice", "user:bob"]
@@ -315,7 +317,7 @@ mod tests {
             ("dora", &["famiglia".to_owned()][..]),
         ] {
             let acl = Acl {
-                owner: Some(owner.clone()),
+                subject: Some(subject.clone()),
                 allow: allow.clone(),
             };
             assert!(
@@ -332,21 +334,25 @@ mod tests {
         assert_ne!(famiglia, casa);
 
         // Order and duplication never make two identical audiences differ.
-        let a = reader_set(&owner, &[allow[0].clone(), owner.clone()], Some(&sender));
-        let b = reader_set(&owner, &[sender, allow[0].clone()], Some(&owner));
+        let a = reader_set(
+            &subject,
+            &[allow[0].clone(), subject.clone()],
+            Some(&sender),
+        );
+        let b = reader_set(&subject, &[sender, allow[0].clone()], Some(&subject));
         assert_eq!(a, b);
     }
 
-    fn acl_owner(owner: Principal) -> Acl {
+    fn acl_subject(subject: Principal) -> Acl {
         Acl {
-            owner: Some(owner),
+            subject: Some(subject),
             allow: vec![],
         }
     }
 
-    fn acl_owner_allow(owner: Principal, allow: Vec<Principal>) -> Acl {
+    fn acl_subject_allow(subject: Principal, allow: Vec<Principal>) -> Acl {
         Acl {
-            owner: Some(owner),
+            subject: Some(subject),
             allow,
         }
     }
@@ -391,43 +397,43 @@ mod tests {
     }
 
     #[test]
-    fn widens_counts_owner_swap_that_admits_new_reader() {
-        // owner moves alice → bob with empty allow on both sides: bob is a
+    fn widens_counts_subject_swap_that_admits_new_reader() {
+        // subject moves alice → bob with empty allow on both sides: bob is a
         // reader who was not in the old set, so this widens.
         let alice = Principal::User("alice".into());
         let bob = Principal::User("bob".into());
         assert!(widens(&alice, &[], &bob, &[]));
     }
 
-    // ---------- owner-only ----------
+    // ---------- subject-only ----------
 
     #[test]
-    fn owner_user_matches_self() {
-        let acl = acl_owner(Principal::User("alice".into()));
+    fn subject_user_matches_self() {
+        let acl = acl_subject(Principal::User("alice".into()));
         assert!(can_read(&acl, "alice", &[], None));
     }
 
     #[test]
-    fn owner_user_rejects_other() {
-        let acl = acl_owner(Principal::User("alice".into()));
+    fn subject_user_rejects_other() {
+        let acl = acl_subject(Principal::User("alice".into()));
         assert!(!can_read(&acl, "bob", &[], None));
     }
 
     #[test]
-    fn owner_group_matches_member() {
-        let acl = acl_owner(Principal::Group("team".into()));
+    fn subject_group_matches_member() {
+        let acl = acl_subject(Principal::Group("team".into()));
         assert!(can_read(&acl, "bob", &groups(&["team", "alpha"]), None));
     }
 
     #[test]
-    fn owner_group_rejects_non_member() {
-        let acl = acl_owner(Principal::Group("team".into()));
+    fn subject_group_rejects_non_member() {
+        let acl = acl_subject(Principal::Group("team".into()));
         assert!(!can_read(&acl, "carol", &groups(&["alpha"]), None));
     }
 
     #[test]
-    fn owner_global_admits_anyone() {
-        let acl = acl_owner(Principal::global());
+    fn subject_global_admits_anyone() {
+        let acl = acl_subject(Principal::global());
         assert!(can_read(&acl, "alice", &[], None));
         assert!(can_read(&acl, "bob", &groups(&["whatever"]), None));
         assert!(can_read(&acl, "carol", &[], None));
@@ -452,7 +458,7 @@ mod tests {
 
     #[test]
     fn allow_user_extends_visibility() {
-        let acl = acl_owner_allow(
+        let acl = acl_subject_allow(
             Principal::User("alice".into()),
             vec![Principal::User("bob".into())],
         );
@@ -463,7 +469,7 @@ mod tests {
 
     #[test]
     fn allow_group_extends_visibility() {
-        let acl = acl_owner_allow(
+        let acl = acl_subject_allow(
             Principal::User("alice".into()),
             vec![Principal::Group("team".into())],
         );
@@ -473,21 +479,21 @@ mod tests {
     }
 
     #[test]
-    fn allow_global_makes_region_public_even_with_owner() {
-        let acl = acl_owner_allow(Principal::User("alice".into()), vec![Principal::global()]);
+    fn allow_global_makes_region_public_even_with_subject() {
+        let acl = acl_subject_allow(Principal::User("alice".into()), vec![Principal::global()]);
         assert!(can_read(&acl, "anyone", &[], None));
     }
 
     #[test]
     fn allow_combination_user_and_group() {
-        let acl = acl_owner_allow(
+        let acl = acl_subject_allow(
             Principal::User("gollum".into()),
             vec![
                 Principal::User("frodo".into()),
                 Principal::Group("famiglia".into()),
             ],
         );
-        // owner
+        // subject
         assert!(can_read(&acl, "gollum", &[], None));
         // allow user
         assert!(can_read(&acl, "frodo", &[], None));
@@ -500,10 +506,10 @@ mod tests {
     // ---------- cross-user attribution ----------
 
     #[test]
-    fn user_sender_overrides_owner_for_that_user() {
-        // Galadriel captured a region whose owner is gollum. Galadriel
+    fn user_sender_overrides_subject_for_that_user() {
+        // Galadriel captured a region whose subject is gollum. Galadriel
         // must still be able to reread it.
-        let acl = acl_owner_allow(
+        let acl = acl_subject_allow(
             Principal::User("gollum".into()),
             vec![Principal::Group("famiglia".into())],
         );
@@ -516,7 +522,7 @@ mod tests {
 
     #[test]
     fn user_sender_does_not_help_other_users() {
-        let acl = acl_owner(Principal::User("alice".into()));
+        let acl = acl_subject(Principal::User("alice".into()));
         let carol = Principal::User("carol".into());
         // bob is reading, region was captured by carol — bob has no
         // shortcut.
@@ -528,9 +534,9 @@ mod tests {
     /// region's allow-list does not name the group.
     #[test]
     fn group_sender_admits_group_members() {
-        // Region owner = gollum (the person the fact is about). Sender =
+        // Region subject = gollum (the person the fact is about). Sender =
         // group:famiglia (the device that captured). No allow=.
-        let acl = acl_owner(Principal::User("gollum".into()));
+        let acl = acl_subject(Principal::User("gollum".into()));
         let famiglia = Principal::Group("famiglia".into());
         // Galadriel ∈ famiglia → reads via sender shortcut.
         assert!(can_read(
@@ -563,7 +569,7 @@ mod tests {
     /// region public.)
     #[test]
     fn global_sender_admits_anyone() {
-        let acl = acl_owner(Principal::User("alice".into()));
+        let acl = acl_subject(Principal::User("alice".into()));
         let global = Principal::global();
         assert!(can_read(&acl, "bob", &[], Some(&global)));
         assert!(can_read(&acl, "carol", &groups(&["team"]), Some(&global)));
@@ -575,19 +581,19 @@ mod tests {
         // can_read has no `is_admin` parameter — by construction the API
         // cannot grant blanket access. This test documents the invariant
         // rather than the absence of an opt-out flag.
-        let acl = acl_owner(Principal::User("alice".into()));
+        let acl = acl_subject(Principal::User("alice".into()));
         let admin_id = "admin";
         let admin_groups = groups(&["admins", "root"]);
         assert!(!can_read(&acl, admin_id, &admin_groups, None));
     }
 
-    // ---------- is_public / sender_owns ----------
+    // ---------- is_public / sender_is_subject ----------
 
     #[test]
     fn is_public_detects_global_on_any_axis() {
         let alice = Principal::User("alice".into());
         let g = Principal::global();
-        assert!(is_public(&g, &[], None), "owner global");
+        assert!(is_public(&g, &[], None), "subject global");
         assert!(
             is_public(&alice, &[Principal::global()], None),
             "allow global"
@@ -600,20 +606,20 @@ mod tests {
     }
 
     #[test]
-    fn sender_owns_user_and_group_member_but_never_global() {
+    fn sender_is_subject_user_and_group_member_but_never_global() {
         let alice = Principal::User("alice".into());
         let team = Principal::Group("team".into());
         let g = Principal::global();
         // The owning user.
-        assert!(sender_owns(&alice, "alice", &[]));
-        assert!(!sender_owns(&alice, "bob", &[]));
+        assert!(sender_is_subject(&alice, "alice", &[]));
+        assert!(!sender_is_subject(&alice, "bob", &[]));
         // A member of the owning group; a non-member is refused.
-        assert!(sender_owns(&team, "bob", &groups(&["team"])));
-        assert!(!sender_owns(&team, "carol", &groups(&["other"])));
+        assert!(sender_is_subject(&team, "bob", &groups(&["team"])));
+        assert!(!sender_is_subject(&team, "carol", &groups(&["other"])));
         // A world fact (owner=global) is editable from chat by no one,
         // even though everyone can READ it.
-        assert!(!sender_owns(&g, "alice", &groups(&["global"])));
-        assert!(can_read(&acl_owner(g), "alice", &[], None));
+        assert!(!sender_is_subject(&g, "alice", &groups(&["global"])));
+        assert!(can_read(&acl_subject(g), "alice", &[], None));
     }
 
     // ---------- can_delete (sender-direct authority) ----------
@@ -637,7 +643,7 @@ mod tests {
 
     #[test]
     fn can_delete_non_sender_user_refused() {
-        // A different non-admin user — even if they were the owner/subject —
+        // A different non-admin user — even if they were the subject/subject —
         // is refused the direct act; their path is a request → vote.
         let alice = Principal::User("alice".into());
         assert!(!can_delete(Some(&alice), "bob", false));
@@ -689,7 +695,7 @@ mod tests {
         .await
         .expect("mirror enrollment");
 
-        // owner = user:franz, allow = [group:famiglia, global], sender = user:nina.
+        // subject = user:franz, allow = [group:famiglia, global], sender = user:nina.
         let aud = audience(
             &pool,
             &Principal::User("franz".into()),
@@ -699,19 +705,19 @@ mod tests {
         .await
         .expect("audience");
         // Group expanded; global dropped; sender included; sorted + deduped
-        // (franz appears as both owner and a famiglia member → once).
+        // (franz appears as both subject and a famiglia member → once).
         assert_eq!(aud, vec!["bilbo", "franz", "morgana", "nina"]);
     }
 
     #[tokio::test]
-    async fn audience_global_owner_is_empty_electorate() {
+    async fn audience_global_subject_is_empty_electorate() {
         let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         // A purely public fact (owner=global, no allow, no sender) has nobody
         // finite to poll.
         let aud = audience(&pool, &Principal::global(), &[], None)
             .await
             .expect("audience");
-        assert!(aud.is_empty(), "global owner yields no finite electorate");
+        assert!(aud.is_empty(), "global subject yields no finite electorate");
     }
 
     // ---------- proptest invariants ----------
@@ -730,7 +736,7 @@ mod tests {
             proptest::option::of(principal_strategy()),
             vec(principal_strategy(), 0..4),
         )
-            .prop_map(|(owner, allow)| Acl { owner, allow })
+            .prop_map(|(subject, allow)| Acl { subject, allow })
     }
 
     fn sender_groups_strategy() -> impl Strategy<Value = Vec<String>> {
@@ -750,14 +756,14 @@ mod tests {
             prop_assert!(can_read(&acl, &sender, &groups, None));
         }
 
-        /// `User(sender)` as owner always lets the named user in.
+        /// `User(sender)` as subject always lets the named user in.
         #[test]
-        fn owner_self_always_reads(
+        fn subject_self_always_reads(
             sender in "[a-z]{1,8}",
             allow in vec(principal_strategy(), 0..4),
             groups in sender_groups_strategy(),
         ) {
-            let acl = Acl { owner: Some(Principal::User(sender.clone())), allow };
+            let acl = Acl { subject: Some(Principal::User(sender.clone())), allow };
             prop_assert!(can_read(&acl, &sender, &groups, None));
         }
 
@@ -793,7 +799,7 @@ mod tests {
         }
 
         /// A group sender admits every member of that group, regardless
-        /// of `acl.owner` / `acl.allow`. "Family microphone" property.
+        /// of `acl.subject` / `acl.allow`. "Family microphone" property.
         #[test]
         fn group_sender_admits_members(
             acl in acl_strategy(),

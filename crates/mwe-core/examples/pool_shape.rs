@@ -53,6 +53,10 @@
 
 #![allow(
     clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::collapsible_if,
+    clippy::single_match_else,
     clippy::too_many_lines,
     clippy::option_if_let_else,
     reason = "measurement harness: the report code is written for a human \
@@ -146,7 +150,7 @@ fn parse_candidate_line(line: &str) -> Option<(String, Option<String>)> {
 
 #[async_trait]
 impl LlmBackend for OpenTheFirst {
-    fn model_id(&self) -> &str {
+    fn model_id(&self) -> &'static str {
         "open-the-first"
     }
 
@@ -314,9 +318,23 @@ async fn main() -> anyhow::Result<()> {
         // What the ingest turn passes: the sender's identity card, already in
         // the block, so the funnel neither offers nor opens it.
         let served = [(turn.sender.clone(), PathBuf::from("index.md"))];
-        let outcome =
-            recall_nav::navigate(&pool, &tree, &llm, &ctx, &turn.text, &fan, &policy, &served)
-                .await?;
+        let outcome = recall_nav::navigate(
+            &pool,
+            &tree,
+            &llm,
+            &ctx,
+            &turn.text,
+            &fan,
+            &policy,
+            // The card's own links are harvested only when a page is opened, and a
+            // served page never is — the ingest turn passes them alongside. This
+            // harness measures pool shape, not link yield, so it serves none.
+            recall_nav::Served {
+                pages: &served,
+                cards: &[],
+            },
+        )
+        .await?;
 
         t.turns += 1;
         t.labelled += usize::from(answer_page.is_some());

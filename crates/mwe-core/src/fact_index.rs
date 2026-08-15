@@ -76,15 +76,15 @@ pub struct FactIndexRow {
     pub embedding: Vec<f32>,
     /// The fact's **subject** — who/what it is *about* (`user:<id>` |
     /// `group:<id>` | `global`). NOT its author (that is `sender_id`) and
-    /// NOT its audience (that is `allow_ids`); "owner" because the subject
-    /// governs their own fact's ACL. Persisted in the `owner_id` column.
+    /// NOT its audience (that is `allow_ids`); "subject" because the subject
+    /// governs their own fact's ACL. Persisted in the `subject_id` column.
     /// See the engineering wiki (`concepts/identity-and-acl.md`).
-    pub owner_id: Principal,
+    pub subject_id: Principal,
     /// Additional principals the region's `allow=` extension grants
     /// read access to (possibly empty).
     pub allow_ids: Vec<Principal>,
     /// Cross-user attribution — the principal who authored the region.
-    /// Always populated on the write path (equal to `owner_id` for a
+    /// Always populated on the write path (equal to `subject_id` for a
     /// self-authored fact); `None` only on legacy rows with unknown
     /// provenance.
     pub sender_id: Option<Principal>,
@@ -134,7 +134,7 @@ pub struct FactIndexRow {
     /// closure kinds need no migration).
     pub decay_reason: Option<String>,
     /// Per-fact SALIENCE: how always-relevant the fact
-    /// is to the owner. `None` = unspecified (treated as `normal`); the closed
+    /// is to the subject. `None` = unspecified (treated as `normal`); the closed
     /// set is `high | normal | low`, deduced by the ingest classifier (no
     /// hardcoded gate, enforced at the producer like [`Self::fact_type`]).
     /// `high` = "must be known in every interaction" → routed to the actor-wiki
@@ -170,12 +170,12 @@ pub struct FactIndexRow {
 }
 
 impl FactIndexRow {
-    /// True when this fact belongs to the owner's **identity core** — the
+    /// True when this fact belongs to the subject's **identity core** — the
     /// always-on base context that identifies *who someone is and how they
     /// relate to others* (`fact_type = "bio"` AND `salience = "high"`).
     ///
     /// The identity core is the small always-on set the ingest classifier
-    /// routes to the owner's `index.md`: name/aliases, **role(s) and the
+    /// routes to the subject's `index.md`: name/aliases, **role(s) and the
     /// people they are tied to (relations)**, birthdate, place, contacts.
     /// It is deliberately **stable** — automatic background reorganisation
     /// (the REM dedup revisor) must never silently retire one of these
@@ -212,7 +212,7 @@ pub struct NewFact {
     pub embedding: Vec<f32>,
     /// The fact's **subject** — who/what it is *about* (not its author
     /// `sender_id`, not its audience `allow_ids`).
-    pub owner_id: Principal,
+    pub subject_id: Principal,
     /// `allow=` extension list (possibly empty).
     pub allow_ids: Vec<Principal>,
     /// Cross-user attribution.
@@ -412,7 +412,7 @@ where
     // here for the group-17 provenance breadcrumbs (same shape as topics).
     let authored_refs_json = topics_to_json(&fact.authored_refs)?;
     let sender = fact.sender_id.as_ref().map(ToString::to_string);
-    let owner = fact.owner_id.to_string();
+    let subject = fact.subject_id.to_string();
 
     // `ON CONFLICT(fact_id) DO NOTHING` rather than `INSERT OR IGNORE`:
     // both work on SQLite, but the explicit conflict-target form makes
@@ -422,7 +422,7 @@ where
     let sql = if ignore_conflict {
         r#"INSERT INTO fact_index (
             fact_id, wiki_id, source_path, region_start, region_end, "text",
-            embedding, embedding_dim, owner_id, allow_ids, sender_id,
+            embedding, embedding_dim, subject_id, allow_ids, sender_id,
             fact_type, topics, created_at, updated_at,
             valid_from, valid_to, target_page, style, page_description,
             salience, source_ref, authored_refs, recall_count_30d
@@ -431,7 +431,7 @@ where
     } else {
         r#"INSERT INTO fact_index (
             fact_id, wiki_id, source_path, region_start, region_end, "text",
-            embedding, embedding_dim, owner_id, allow_ids, sender_id,
+            embedding, embedding_dim, subject_id, allow_ids, sender_id,
             fact_type, topics, created_at, updated_at,
             valid_from, valid_to, target_page, style, page_description,
             salience, source_ref, authored_refs, recall_count_30d
@@ -447,7 +447,7 @@ where
         .bind(&fact.text)
         .bind(&blob)
         .bind(embedding_dim)
-        .bind(&owner)
+        .bind(&subject)
         .bind(&allow_json)
         .bind(&sender)
         .bind(&fact.fact_type)
@@ -653,7 +653,7 @@ pub struct PrevValidity {
 /// Correct a fact's validity *interval*: set `valid_from` and/or
 /// `valid_to` and bump `updated_at`, **leaving `decay_reason` untouched**.
 ///
-/// The write half of the **validity-edit verb** ("the owner corrects a
+/// The write half of the **validity-edit verb** ("the subject corrects a
 /// stored fact's dates from chat") — the sibling of the closure verb, but
 /// for a *correction* rather than a completion/retraction. A `Some(value)`
 /// SETS that bound; a `None` LEAVES the bound unchanged (the COALESCE is
@@ -740,18 +740,18 @@ pub async fn restore_validity_interval(
 /// them — the revert payload of the act-first `acl_change` receipt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrevAcl {
-    /// `owner_id` before the change.
-    pub prev_owner_id: Principal,
+    /// `subject_id` before the change.
+    pub prev_subject_id: Principal,
     /// `allow_ids` before the change.
     pub prev_allow_ids: Vec<Principal>,
     /// `sender_id` before the change.
     pub prev_sender_id: Option<Principal>,
 }
 
-/// Replace a fact's ACL columns: set `owner_id`, `allow_ids`, and
+/// Replace a fact's ACL columns: set `subject_id`, `allow_ids`, and
 /// `sender_id`, and bump `updated_at`.
 ///
-/// The write half of the **acl-change verb** ("the owner changes who can
+/// The write half of the **acl-change verb** ("the subject changes who can
 /// read a stored fact from chat"). The fact row stays alive — an ACL
 /// change is never a tombstone — and the page recompiles on the next
 /// dream because the per-fact ACL is part of the render's authoritative
@@ -767,7 +767,7 @@ pub struct PrevAcl {
 pub async fn set_acl(
     pool: &SqlitePool,
     fact_id: &FactId,
-    owner: &Principal,
+    subject: &Principal,
     allow: &[Principal],
     sender: Option<&Principal>,
 ) -> Result<Option<PrevAcl>> {
@@ -778,7 +778,7 @@ pub async fn set_acl(
         return Ok(None);
     }
     let prev = PrevAcl {
-        prev_owner_id: row.owner_id,
+        prev_subject_id: row.subject_id,
         prev_allow_ids: row.allow_ids,
         prev_sender_id: row.sender_id,
     };
@@ -786,10 +786,10 @@ pub async fn set_acl(
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
         "UPDATE fact_index
-            SET owner_id = ?, allow_ids = ?, sender_id = ?, updated_at = ?
+            SET subject_id = ?, allow_ids = ?, sender_id = ?, updated_at = ?
           WHERE fact_id = ? AND deleted_at IS NULL",
     )
-    .bind(owner.to_string())
+    .bind(subject.to_string())
     .bind(&allow_json)
     .bind(sender.map(ToString::to_string))
     .bind(&now)
@@ -799,16 +799,16 @@ pub async fn set_acl(
     Ok(Some(prev))
 }
 
-/// Replace **only** a fact's `allow_ids`, leaving `owner_id` and `sender_id`
+/// Replace **only** a fact's `allow_ids`, leaving `subject_id` and `sender_id`
 /// untouched, and bump `updated_at`.
 ///
 /// The write half of a **supersede**, and deliberately narrower than
 /// [`set_acl`]. A supersede carries the retired fact's audience onto its
-/// successor — the allow list is the audience; the owner is not. Carrying the
-/// owner across would silently re-assign the successor: when Alice retires a
+/// successor — the allow list is the audience; the subject is not. Carrying the
+/// subject across would silently re-assign the successor: when Alice retires a
 /// fact of her own by stating one about Bob, the successor is born owned by
-/// Bob, and a reader set is `owner ∪ allow ∪ sender` — so overwriting the
-/// owner with Alice's principal takes the fact about Bob away from Bob.
+/// Bob, and a reader set is `subject ∪ allow ∪ sender` — so overwriting the
+/// subject with Alice's principal takes the fact about Bob away from Bob.
 ///
 /// Returns `false` when `fact_id` has no active row (unknown or tombstoned),
 /// so the caller can fall through to the capture buffer.
@@ -848,7 +848,7 @@ pub async fn inherit_allow(
 pub async fn restore_acl(
     pool: &SqlitePool,
     fact_id: &FactId,
-    owner: &Principal,
+    subject: &Principal,
     allow: &[Principal],
     sender: Option<&Principal>,
 ) -> Result<u64> {
@@ -856,10 +856,10 @@ pub async fn restore_acl(
     let now = chrono::Utc::now().to_rfc3339();
     let res = sqlx::query(
         "UPDATE fact_index
-            SET owner_id = ?, allow_ids = ?, sender_id = ?, updated_at = ?
+            SET subject_id = ?, allow_ids = ?, sender_id = ?, updated_at = ?
           WHERE fact_id = ? AND deleted_at IS NULL",
     )
-    .bind(owner.to_string())
+    .bind(subject.to_string())
     .bind(&allow_json)
     .bind(sender.map(ToString::to_string))
     .bind(&now)
@@ -1334,7 +1334,7 @@ pub async fn latest_page_activity(
 
 /// Authoritative fact-key → ACL map for one page.
 ///
-/// Loads `owner_id` / `allow_ids` / `sender_id` for **every** row whose
+/// Loads `subject_id` / `allow_ids` / `sender_id` for **every** row whose
 /// `source_path` is this file — superseded and tombstoned rows included
 /// on purpose: whatever region text still sits in the file is gated by
 /// its last-known ACL rather than silently falling back to the page
@@ -1352,7 +1352,7 @@ pub async fn latest_page_activity(
 /// cited inside a person's `index.md`). Keying on `wiki_id` too would drop
 /// those foreign-home regions from the map, so they fall through to the
 /// attribute-less inline marker and redact for **everyone**, including the
-/// fact's own owner/sender. `fact_id` is the primary key, so widening the
+/// fact's own subject/sender. `fact_id` is the primary key, so widening the
 /// key never collides.
 ///
 /// This full-set map is for **interchange** (export rewrites every on-disk
@@ -1376,8 +1376,8 @@ pub async fn page_acl_map(pool: &SqlitePool, source_path: &str) -> Result<FactAc
 /// A region whose fact the DB has retired (superseded or deleted) but whose
 /// bytes still sit on disk is dropped from the map, so the render path finds
 /// no ACL for it: a bare runtime marker (`{{f=uuid}}`, no inline attributes)
-/// then falls through to the owner-of-last-resort and, having neither an
-/// inline owner nor sender, redacts for **everyone** (fail-closed). This is
+/// then falls through to the subject-of-last-resort and, having neither an
+/// inline subject nor sender, redacts for **everyone** (fail-closed). This is
 /// what the reader paths — recall-by-navigation ([`crate::recall_nav`]) and
 /// `wiki_read` — must use, so a superseded/contradictory or deleted region
 /// is never surfaced from the raw page even before its bytes are stripped.
@@ -1395,10 +1395,10 @@ async fn page_acl_map_impl(
     active_only: bool,
 ) -> Result<FactAclMap> {
     let sql = if active_only {
-        "SELECT fact_id, owner_id, allow_ids, sender_id FROM fact_index
+        "SELECT fact_id, subject_id, allow_ids, sender_id FROM fact_index
          WHERE source_path = ? AND superseded_at IS NULL AND deleted_at IS NULL"
     } else {
-        "SELECT fact_id, owner_id, allow_ids, sender_id FROM fact_index
+        "SELECT fact_id, subject_id, allow_ids, sender_id FROM fact_index
          WHERE source_path = ?"
     };
     let rows: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(sql)
@@ -1407,12 +1407,12 @@ async fn page_acl_map_impl(
         .await?;
 
     let mut map = FactAclMap::with_capacity(rows.len());
-    for (fact_id, owner, allow, sender) in rows {
+    for (fact_id, subject, allow, sender) in rows {
         let fact_id = FactId::parse(&fact_id)
             .map_err(|e| sqlx::Error::Decode(format!("fact_id: {e}").into()))?;
-        let owner = owner
+        let subject = subject
             .parse::<Principal>()
-            .map_err(|e| sqlx::Error::Decode(format!("owner_id: {e}").into()))?;
+            .map_err(|e| sqlx::Error::Decode(format!("subject_id: {e}").into()))?;
         let allow = match allow.as_deref() {
             None | Some("") => Vec::new(),
             Some(s) => principals_from_json(s).map_err(|e| sqlx::Error::Decode(e.into()))?,
@@ -1424,7 +1424,7 @@ async fn page_acl_map_impl(
         map.insert(
             fact_id,
             RegionAcl {
-                owner,
+                subject,
                 allow,
                 sender,
             },
@@ -1448,10 +1448,10 @@ pub struct CardAclRow {
     pub source_path: String,
     /// The fact's **subject** — who/what it is *about* (not its author
     /// `sender_id`, not its audience `allow_ids`).
-    pub owner_id: Principal,
+    pub subject_id: Principal,
     /// `allow=` extension list (possibly empty).
     pub allow_ids: Vec<Principal>,
-    /// Cross-user attribution (`None` ⇒ sender equals owner).
+    /// Cross-user attribution (`None` ⇒ sender equals subject).
     pub sender_id: Option<Principal>,
     /// Free-form topic tags contributed to the reader's visible card.
     pub topics: Vec<String>,
@@ -1469,7 +1469,7 @@ pub struct CardAclRow {
 ///
 /// `sqlx::Error` + decode errors on the principal / topics JSON columns.
 pub async fn active_card_acl_rows(pool: &SqlitePool) -> Result<Vec<CardAclRow>> {
-    // (wiki_id, source_path, owner_id, allow_ids, sender_id, topics) as stored.
+    // (wiki_id, source_path, subject_id, allow_ids, sender_id, topics) as stored.
     type RawCardTuple = (
         String,
         String,
@@ -1479,17 +1479,17 @@ pub async fn active_card_acl_rows(pool: &SqlitePool) -> Result<Vec<CardAclRow>> 
         Option<String>,
     );
     let rows: Vec<RawCardTuple> = sqlx::query_as(
-        "SELECT wiki_id, source_path, owner_id, allow_ids, sender_id, topics FROM fact_index
+        "SELECT wiki_id, source_path, subject_id, allow_ids, sender_id, topics FROM fact_index
              WHERE superseded_at IS NULL AND deleted_at IS NULL",
     )
     .fetch_all(pool)
     .await?;
 
     rows.into_iter()
-        .map(|(wiki_id, source_path, owner, allow, sender, topics)| {
-            let owner_id = owner
+        .map(|(wiki_id, source_path, subject, allow, sender, topics)| {
+            let subject_id = subject
                 .parse::<Principal>()
-                .map_err(|e| sqlx::Error::Decode(format!("owner_id: {e}").into()))?;
+                .map_err(|e| sqlx::Error::Decode(format!("subject_id: {e}").into()))?;
             let allow_ids = match allow.as_deref() {
                 None | Some("") => Vec::new(),
                 Some(s) => principals_from_json(s)
@@ -1510,7 +1510,7 @@ pub async fn active_card_acl_rows(pool: &SqlitePool) -> Result<Vec<CardAclRow>> 
             Ok(CardAclRow {
                 wiki_id,
                 source_path,
-                owner_id,
+                subject_id,
                 allow_ids,
                 sender_id,
                 topics,
@@ -1556,7 +1556,7 @@ pub async fn find_active_in_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<Vec
 ///
 /// A wiki with **no active facts** surfaces to everyone — there is nothing to
 /// hide, and a just-created or not-yet-promoted wiki must not 404 for its own
-/// owner. A wiki that **does** hold facts surfaces only to a reader who can read
+/// subject. A wiki that **does** hold facts surfaces only to a reader who can read
 /// ≥1 of them (the same [`crate::acl::can_read`] the redaction path applies, so
 /// a per-fragment `allow=` grant is honoured — it is deliberately *not* gated on
 /// the wiki-level `shared_with`). Reads a wiki's *own* rows only
@@ -1579,7 +1579,7 @@ pub async fn wiki_visible_to(
     }
     Ok(rows.iter().any(|row| {
         let acl = crate::types::Acl {
-            owner: Some(row.owner_id.clone()),
+            subject: Some(row.subject_id.clone()),
             allow: row.allow_ids.clone(),
         };
         crate::acl::can_read(&acl, sender_id, sender_groups, row.sender_id.as_ref())
@@ -1606,7 +1606,7 @@ pub async fn find_recently_contradicted(
 ) -> Result<Vec<FactIndexRow>> {
     let sql = r#"
     SELECT fact_id, wiki_id, source_path, region_start, region_end,
-           "text", embedding, embedding_dim, owner_id, allow_ids, sender_id,
+           "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
@@ -1654,7 +1654,7 @@ pub async fn find_due_between(
 ) -> Result<Vec<FactIndexRow>> {
     let mut sql = String::from(
         r#"SELECT fact_id, wiki_id, source_path, region_start, region_end,
-                  "text", embedding, embedding_dim, owner_id, allow_ids, sender_id,
+                  "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
                   fact_type, topics, created_at, updated_at, superseded_at,
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
@@ -1730,11 +1730,11 @@ pub async fn count_active_on_page(pool: &SqlitePool, source_path: &str) -> Resul
 pub struct FactFilters {
     /// Scope to a single wiki.
     pub wiki_id: Option<String>,
-    /// Scope to an owner principal.
-    pub owner_id: Option<Principal>,
+    /// Scope to a subject principal.
+    pub subject_id: Option<Principal>,
     /// Scope to the cross-user attribution principal — the `sender` who
     /// wrote the fact (`fact_index.sender_id`). (Behaviour-rule recall does
-    /// NOT ride this: the channel is owner-scoped, via its dedicated
+    /// NOT ride this: the channel is subject-scoped, via its dedicated
     /// [`find_behaviour_rules`] query.)
     pub sender_id: Option<Principal>,
     /// Scope to a fact-type tag.
@@ -1778,7 +1778,7 @@ pub struct FactFilters {
     /// applied before both scans so an unreadable wiki's bytes never leave
     /// the store.
     ///
-    /// Read access is `owner ∪ allow ∪ sender` — all three axes, none of
+    /// Read access is `subject ∪ allow ∪ sender` — all three axes, none of
     /// them sufficient alone — so the predicate tests all three, the
     /// `allow_ids` JSON array included. It is a **narrowing** filter and
     /// never a substitute for [`crate::acl::can_read`]: callers keep the
@@ -1815,8 +1815,8 @@ pub enum FactSortKey {
     FactType,
     /// `wiki_id` — containing wiki (lexical).
     WikiId,
-    /// `owner_id` — owning principal (lexical).
-    OwnerId,
+    /// `subject_id` — owning principal (lexical).
+    SubjectId,
     /// `salience` — ranked by semantic order `high < normal < low`, not lexically.
     Salience,
 }
@@ -1833,7 +1833,7 @@ impl FactSortKey {
             Self::ValidTo => "valid_to",
             Self::FactType => "fact_type",
             Self::WikiId => "wiki_id",
-            Self::OwnerId => "owner_id",
+            Self::SubjectId => "subject_id",
             // `high` is most salient → smallest rank, so ASC = high first.
             Self::Salience => {
                 "CASE salience WHEN 'high' THEN 0 WHEN 'normal' THEN 1 WHEN 'low' THEN 2 ELSE 3 END"
@@ -1853,7 +1853,11 @@ impl FactSortKey {
             "valid_to" => Some(Self::ValidTo),
             "fact_type" => Some(Self::FactType),
             "wiki_id" => Some(Self::WikiId),
-            "owner_id" => Some(Self::OwnerId),
+            // `owner_id` is the pre-rename token. It stays accepted: a
+            // bookmarked or shared dashboard URL that carried it would
+            // otherwise fall silently back to the default sort, looking like
+            // the page simply ignored the click.
+            "subject_id" | "owner_id" => Some(Self::SubjectId),
             "salience" => Some(Self::Salience),
             _ => None,
         }
@@ -1886,7 +1890,7 @@ pub async fn find_by_filters(
 ) -> Result<Vec<FactIndexRow>> {
     let mut sql = String::from(
         r#"SELECT fact_id, wiki_id, source_path, region_start, region_end,
-                  "text", embedding, embedding_dim, owner_id, allow_ids, sender_id,
+                  "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
                   fact_type, topics, created_at, updated_at, superseded_at,
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
@@ -1907,8 +1911,8 @@ pub async fn find_by_filters(
         preds.push("wiki_id = ?".to_owned());
         binds.push(w.clone());
     }
-    if let Some(o) = &filters.owner_id {
-        preds.push("owner_id = ?".to_owned());
+    if let Some(o) = &filters.subject_id {
+        preds.push("subject_id = ?".to_owned());
         binds.push(o.to_string());
     }
     if let Some(s) = &filters.sender_id {
@@ -1947,7 +1951,7 @@ pub async fn find_by_filters(
         binds.push(at.clone());
     }
     // The ACL, as a predicate rather than a post-filter. All three read
-    // axes, because none is sufficient alone: the subject (`owner_id`), the
+    // axes, because none is sufficient alone: the subject (`subject_id`), the
     // audience (`allow_ids`, a JSON array scanned the same way `topics_any`
     // is), and the provenance (`sender_id`). Placeholders are generated from
     // the list's own length and every value is bound — no caller text ever
@@ -1992,7 +1996,7 @@ pub async fn find_by_filters(
 /// The storage primitive behind the per-turn behaviour-rules channel
 /// (`ingest::recall_behaviour_rules`). Both channel invariants live
 /// **in the SQL, before the `LIMIT`**, so the cap counts rules only —
-/// unrelated facts sharing the wiki and owner can never starve old
+/// unrelated facts sharing the wiki and subject can never starve old
 /// rules out of the window:
 ///
 /// - **rules-page predicate** — `source_path LIKE '%/' || 'rules.md'`
@@ -2013,20 +2017,20 @@ pub async fn find_by_filters(
 pub async fn find_behaviour_rules(
     pool: &SqlitePool,
     wiki_id: &str,
-    owner: &Principal,
+    subject: &Principal,
     valid_at: &str,
     limit: usize,
 ) -> Result<Vec<FactIndexRow>> {
     let mut sql = String::from(
         r#"SELECT fact_id, wiki_id, source_path, region_start, region_end,
-                  "text", embedding, embedding_dim, owner_id, allow_ids, sender_id,
+                  "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
                   fact_type, topics, created_at, updated_at, superseded_at,
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
                   target_page, style, page_description, salience, source_ref, authored_refs
              FROM fact_index
             WHERE wiki_id = ?
-              AND owner_id = ?
+              AND subject_id = ?
               AND superseded_at IS NULL AND deleted_at IS NULL
               AND source_path LIKE ?
               AND (valid_from IS NULL OR datetime(valid_from) <= datetime(?))
@@ -2039,7 +2043,7 @@ pub async fn find_behaviour_rules(
     }
     let rows = sqlx::query_as::<_, RawFactRow>(&sql)
         .bind(wiki_id)
-        .bind(owner.to_string())
+        .bind(subject.to_string())
         .bind(format!("%/{}", crate::wiki::RULES_FILENAME))
         .bind(valid_at)
         .bind(valid_at)
@@ -2424,7 +2428,7 @@ pub async fn rebase_source_path_prefix(
 
 /// The three-axis read predicate as SQL, bound `3 × n` times by the caller.
 ///
-/// `owner ∪ allow ∪ sender` — the query-side mirror of
+/// `subject ∪ allow ∪ sender` — the query-side mirror of
 /// [`crate::acl::can_read`], written once here so every store query that
 /// pre-filters by reader agrees with the row check that follows it. `table`
 /// qualifies the `allow_ids` column for `json_each`, which needs the owning
@@ -2436,7 +2440,7 @@ pub async fn rebase_source_path_prefix(
 fn readable_by_sql(table: &str, n: usize) -> String {
     let placeholders = vec!["?"; n].join(",");
     format!(
-        "(owner_id IN ({placeholders}) \
+        "(subject_id IN ({placeholders}) \
           OR sender_id IN ({placeholders}) \
           OR EXISTS (SELECT 1 FROM json_each({table}.allow_ids) \
                       WHERE json_each.value IN ({placeholders})))"
@@ -2817,7 +2821,7 @@ pub async fn set_wiki_id(
 
 const SELECT_ALL_COLUMNS_WHERE_ID: &str = r#"
     SELECT fact_id, wiki_id, source_path, region_start, region_end,
-           "text", embedding, embedding_dim, owner_id, allow_ids, sender_id,
+           "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
@@ -2828,7 +2832,7 @@ const SELECT_ALL_COLUMNS_WHERE_ID: &str = r#"
 
 const SELECT_ACTIVE_IN_WIKI: &str = r#"
     SELECT fact_id, wiki_id, source_path, region_start, region_end,
-           "text", embedding, embedding_dim, owner_id, allow_ids, sender_id,
+           "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
@@ -2842,7 +2846,7 @@ const SELECT_ACTIVE_IN_WIKI: &str = r#"
 
 const SELECT_ACTIVE_BY_SOURCE_PATH: &str = r#"
     SELECT fact_id, wiki_id, source_path, region_start, region_end,
-           "text", embedding, embedding_dim, owner_id, allow_ids, sender_id,
+           "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
@@ -2865,7 +2869,7 @@ struct RawFactRow {
     embedding: Vec<u8>,
     #[allow(dead_code)]
     embedding_dim: i64,
-    owner_id: String,
+    subject_id: String,
     allow_ids: Option<String>,
     sender_id: Option<String>,
     fact_type: Option<String>,
@@ -2893,10 +2897,10 @@ struct RawFactRow {
 fn decode_row(raw: RawFactRow) -> Result<FactIndexRow> {
     let fact_id = FactId::parse(&raw.fact_id)
         .map_err(|e| sqlx::Error::Decode(format!("fact_id: {e}").into()))?;
-    let owner = raw
-        .owner_id
+    let subject = raw
+        .subject_id
         .parse::<Principal>()
-        .map_err(|e| sqlx::Error::Decode(format!("owner_id: {e}").into()))?;
+        .map_err(|e| sqlx::Error::Decode(format!("subject_id: {e}").into()))?;
     let allow_ids = match raw.allow_ids.as_deref() {
         None | Some("") => Vec::new(),
         Some(s) => principals_from_json(s)
@@ -2945,7 +2949,7 @@ fn decode_row(raw: RawFactRow) -> Result<FactIndexRow> {
         region_end: raw.region_end,
         text: raw.text,
         embedding,
-        owner_id: owner,
+        subject_id: subject,
         allow_ids,
         sender_id,
         fact_type: raw.fact_type,
@@ -2994,7 +2998,7 @@ mod tests {
     const SAMPLE_UUID_V7_3: &str = "018f1234-5678-7abc-9def-0123456789ad";
     const SAMPLE_UUID_V7_4: &str = "018f1234-5678-7abc-9def-0123456789ae";
 
-    fn sample_new_fact(fact_id_str: &str, wiki: &str, owner: &str, text: &str) -> NewFact {
+    fn sample_new_fact(fact_id_str: &str, wiki: &str, subject: &str, text: &str) -> NewFact {
         NewFact {
             authored_refs: Vec::new(),
             fact_id: FactId::parse(fact_id_str).unwrap(),
@@ -3004,7 +3008,7 @@ mod tests {
             region_end: Some(64),
             text: text.to_owned(),
             embedding: vec![0.1, 0.2, 0.3, 0.4],
-            owner_id: owner.parse().unwrap(),
+            subject_id: subject.parse().unwrap(),
             allow_ids: vec!["group:family".parse().unwrap()],
             sender_id: Some("user:bob".parse().unwrap()),
             fact_type: Some("preference".to_owned()),
@@ -3093,7 +3097,7 @@ mod tests {
             let mut f = sample_new_fact(id, wiki, "user:bob", "x");
             f.source_path = format!("wikis/{wiki}/{page}");
             f.style = Some("lista".to_owned());
-            f.owner_id = "user:bob".parse().unwrap();
+            f.subject_id = "user:bob".parse().unwrap();
             f.sender_id = Some("user:bob".parse().unwrap());
             insert_if_absent(&pool, &f).await.unwrap();
             sqlx::query("UPDATE fact_index SET updated_at = ? WHERE fact_id = ?")
@@ -3133,7 +3137,7 @@ mod tests {
         let pool = make_pool().await;
         sqlx::query(
             "INSERT INTO capture_buffer \
-               (capture_id, wiki_id, target_page, body, owner_id, allow_ids, sender_id, \
+               (capture_id, wiki_id, target_page, body, subject_id, allow_ids, sender_id, \
                 status, captured_at, source_kind, style, page_description) \
              VALUES (?, 'famiglia', 'spesa.md', 'latte', 'group:famiglia', '[]', \
                      'user:bob', 'buffered', '2026-08-06T10:00:00Z', 'ingest', \
@@ -3270,7 +3274,7 @@ mod tests {
         .unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
 
-        // A fact franz authored in the family wiki (owner = the collective).
+        // A fact franz authored in the family wiki (subject = the collective).
         let mut f = sample_new_fact(
             SAMPLE_UUID_V7_1,
             "famiglia",
@@ -3404,7 +3408,7 @@ mod tests {
         assert_eq!(back.fact_id, f.fact_id);
         assert_eq!(back.wiki_id, "alice");
         assert_eq!(back.text, "I love pasta");
-        assert_eq!(back.owner_id, "user:alice".parse().unwrap());
+        assert_eq!(back.subject_id, "user:alice".parse().unwrap());
         assert_eq!(back.allow_ids, vec!["group:family".parse().unwrap()]);
         assert_eq!(back.sender_id, Some("user:bob".parse().unwrap()));
         assert_eq!(back.topics, vec!["food".to_owned(), "italian".to_owned()]);
@@ -3470,16 +3474,16 @@ mod tests {
 
     /// The behaviour-rules channel query: the rules-page predicate and the
     /// validity filter live IN the SQL, before the `LIMIT` — so non-rules
-    /// facts under the same owner never consume the cap (the starvation
-    /// regression), a closed-window rule is not served, and other owners'
+    /// facts under the same subject never consume the cap (the starvation
+    /// regression), a closed-window rule is not served, and other subjects'
     /// rules stay out.
     #[tokio::test]
-    async fn find_behaviour_rules_filters_page_validity_and_owner_before_the_cap() {
+    async fn find_behaviour_rules_filters_page_validity_and_subject_before_the_cap() {
         let pool = make_pool().await;
         let at = "2026-07-02T12:00:00Z";
 
-        // Open rule (oldest), closed rule, other-owner rule, and a NEWEST
-        // non-rules crowder under the same owner.
+        // Open rule (oldest), closed rule, other-subject rule, and a NEWEST
+        // non-rules crowder under the same subject.
         let mut open_rule = sample_new_fact(SAMPLE_UUID_V7_1, "agent", "user:bob", "Dammi del tu.");
         open_rule.source_path = "wikis/agent/rules.md".to_owned();
         let mut closed_rule =
@@ -3518,7 +3522,7 @@ mod tests {
             rules.iter().map(|r| r.fact_id.as_str()).collect::<Vec<_>>(),
             vec![SAMPLE_UUID_V7_1],
             "limit 1 must still serve the old open rule: the newer non-rules \
-             fact, the closed rule, and the other owner's rule never enter \
+             fact, the closed rule, and the other subject's rule never enter \
              the window"
         );
 
@@ -3564,7 +3568,7 @@ mod tests {
         // Identity, body, ACL and attribution preserved.
         assert_eq!(back.fact_id, f.fact_id);
         assert_eq!(back.text, "I love pasta");
-        assert_eq!(back.owner_id, "user:alice".parse().unwrap());
+        assert_eq!(back.subject_id, "user:alice".parse().unwrap());
         assert_eq!(back.allow_ids, vec!["group:family".parse().unwrap()]);
         assert_eq!(back.sender_id, Some("user:bob".parse().unwrap()));
     }
@@ -3634,7 +3638,7 @@ mod tests {
         // compiler: home `wiki_id = famiglia`, but its bytes live in
         // `wikis/alice/intro.md`. The map keys on `source_path` (the file),
         // so this MUST be loaded — keying on `wiki_id` too would drop it and
-        // redact it for everyone, including its owner.
+        // redact it for everyone, including its subject.
         let mut embedded = sample_new_fact(SAMPLE_UUID_V7_4, "famiglia", "user:alice", "embedded");
         embedded.source_path = "wikis/alice/intro.md".to_owned();
         insert(&pool, &a).await.expect("insert a");
@@ -3658,7 +3662,7 @@ mod tests {
             "both alice rows + the embedded famiglia row; the bob-file row excluded"
         );
         let rec = map.get(&a.fact_id).expect("a present");
-        assert_eq!(rec.owner, "user:alice".parse().unwrap());
+        assert_eq!(rec.subject, "user:alice".parse().unwrap());
         assert_eq!(rec.allow, vec!["group:family".parse().unwrap()]);
         assert_eq!(rec.sender, Some("user:bob".parse().unwrap()));
         assert!(map.contains_key(&b.fact_id), "superseded row kept");
@@ -3955,20 +3959,20 @@ mod tests {
 
     #[tokio::test]
     async fn set_acl_replaces_and_restore_round_trips() {
-        // The acl-change verb: replace owner/allow/sender, get the previous
+        // The acl-change verb: replace subject/allow/sender, get the previous
         // snapshot back, and a restore from it reinstates the prior ACL.
         let pool = make_pool().await;
         let f = sample_new_fact(SAMPLE_UUID_V7_1, "alice", "user:alice", "private note");
         // sample_new_fact seeds allow=[group:family], sender=user:bob.
         insert(&pool, &f).await.expect("insert");
 
-        let new_owner: Principal = "user:alice".parse().unwrap();
+        let new_subject: Principal = "user:alice".parse().unwrap();
         let new_allow = vec!["global".parse::<Principal>().unwrap()];
-        let prev = set_acl(&pool, &f.fact_id, &new_owner, &new_allow, None)
+        let prev = set_acl(&pool, &f.fact_id, &new_subject, &new_allow, None)
             .await
             .expect("set")
             .expect("active row");
-        assert_eq!(prev.prev_owner_id, "user:alice".parse().unwrap());
+        assert_eq!(prev.prev_subject_id, "user:alice".parse().unwrap());
         assert_eq!(prev.prev_allow_ids, vec!["group:family".parse().unwrap()]);
         assert_eq!(prev.prev_sender_id, Some("user:bob".parse().unwrap()));
 
@@ -3979,7 +3983,7 @@ mod tests {
         let touched = restore_acl(
             &pool,
             &f.fact_id,
-            &prev.prev_owner_id,
+            &prev.prev_subject_id,
             &prev.prev_allow_ids,
             prev.prev_sender_id.as_ref(),
         )
@@ -4348,13 +4352,13 @@ mod tests {
     #[tokio::test]
     async fn wiki_visible_to_gates_on_derived_visibility() {
         let pool = make_pool().await;
-        // Wiki "alice" holds one fact: owner alice, allow-listed to group:team.
+        // Wiki "alice" holds one fact: subject alice, allow-listed to group:team.
         let mut f = sample_new_fact(SAMPLE_UUID_V7_1, "alice", "user:alice", "private");
         f.allow_ids = vec!["group:team".parse().unwrap()];
         f.sender_id = Some("user:alice".parse().unwrap());
         insert(&pool, &f).await.unwrap();
 
-        // The owner reads it → the wiki surfaces.
+        // The subject reads it → the wiki surfaces.
         assert!(wiki_visible_to(&pool, "alice", "alice", &[]).await.unwrap());
         // A team member reads it via the per-fragment `allow=` grant — the gate
         // uses `can_read`, so an allow-listed reader is NOT excluded (the whole
@@ -4368,7 +4372,7 @@ mod tests {
         // surface (404 upstream) — this is the leak the gate closes.
         assert!(!wiki_visible_to(&pool, "alice", "carol", &[]).await.unwrap());
         // A wiki with NO active facts hides nothing → it surfaces to anyone (a
-        // fresh / not-yet-promoted wiki must not 404 for its owner).
+        // fresh / not-yet-promoted wiki must not 404 for its subject).
         assert!(wiki_visible_to(&pool, "empty", "alice", &[]).await.unwrap());
     }
 
@@ -4394,7 +4398,7 @@ mod tests {
         // Body, embedding, attribution preserved.
         assert_eq!(row.text, "fact body");
         assert_eq!(row.embedding, vec![0.1, 0.2, 0.3, 0.4]);
-        assert_eq!(row.owner_id.to_string(), "user:alice");
+        assert_eq!(row.subject_id.to_string(), "user:alice");
     }
 
     #[tokio::test]

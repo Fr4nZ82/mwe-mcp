@@ -54,7 +54,7 @@ flowchart TB
         RAG --> TOPK["take top_k<br/><b>recall_top_k</b>"]
     end
 
-    TOPK --> CLS["2 · classifier<br/>intent + topics + owners"]
+    TOPK --> CLS["2 · classifier<br/>intent + topics + subjects"]
     CLS -->|"capture / recall / disambig"| FAN
     CLS -->|"skip / structural"| BLOCK
 
@@ -625,7 +625,7 @@ count that included unreadable rows would itself disclose their existence.
 Cosine alone cannot tell that a turn naming *two* people should be answered
 by a fact about *both*. Measured on a real corpus: the fact naming both
 people, the right topic and the right occasion ranked **8th at 0.458**,
-below a birth date at 0.484. `owner_id`/`allow_ids` decided only *whether*
+below a birth date at 0.484. `subject_id`/`allow_ids` decided only *whether*
 a reader may see a fact, never *how much it was worth*.
 
 So the score is multiplied by
@@ -649,9 +649,9 @@ covering two of a two-person question scores ×1.15, three ×1.30:
   preferiti di X?»* — which used to make the asker a subject of every such
   turn.
 - **A fact's people** come from governance *and* content together —
-  `owner`/`allow`/`sender` say who may read it, text and topics say who it
-  names. Neither alone is aboutness: the measured answer is owned by one
-  person and names the other only in its topics and prose.
+  `subject`/`allow`/`sender` say who may read it, text and topics say who it
+  names. Neither alone is aboutness: the measured answer carries one person
+  as its subject and names the other only in its topics and prose.
 - **Free below two subjects.** The per-row scan runs only when the turn
   carries at least two subjects, which is rare — of 141 real turns, **2**
   did. Every other turn pays one comparison and nothing else, so a signal
@@ -689,7 +689,7 @@ Order rationale:
   is a cosine against every candidate's stored embedding, so an unreadable
   candidate used to cost a vector read, a transfer and a decode before being
   discarded — on the path that runs once per conversational turn over the whole
-  active corpus. The predicate tests all three read axes (`owner_id`,
+  active corpus. The predicate tests all three read axes (`subject_id`,
   `sender_id`, and the `allow_ids` JSON array), because none of them is
   sufficient alone. The section corpus already worked this way: `search_sections`
   applies the ACL before both scans so an unreadable wiki's bytes never leave the
@@ -715,7 +715,7 @@ not a crash.
 | Field | Semantics |
 |---|---|
 | `wiki_id` | scope to a single wiki |
-| `owner_id` | scope to an owner Principal |
+| `subject_id` | scope to a subject Principal — who or what the fact is about |
 | `fact_type` | scope to a fact-type tag |
 | `created_after`/`created_before` | ISO 8601 string-compare range |
 | `topics_any` | ANY-match against `topics` JSON array (uses `json_each` from the SQLite JSON1 extension) |
@@ -858,7 +858,7 @@ it is reached like any other page, by a hit on it, by its own card matching, or
 by a `[[wikilink]]`.
 
 **Groups seed no door either.** `principal` once meant "any wiki tied to a
-principal", which swept in the sender's group memberships and each owner's
+principal", which swept in the sender's group memberships and each subject's
 groups. A group root is a directory (`page_type: group_theme`, a members list,
 links to every child), it holds one identity-core fact against a person's
 fifteen to twenty-two, and it contributed roughly 40 candidates every time it
@@ -869,7 +869,7 @@ belongs — and routing has two proper consumers already: the ingest classifier
 (which reads the group scopes) and REM. A group wiki is
 still reachable as *content*, through its pages.
 
-*Consequence for `wiki_navigate`:* a caller that names a group in `owners`
+*Consequence for `wiki_navigate`:* a caller that names a group in `subjects`
 (seed rung **C**) gets no group-root door either — the same rule applies at
 both call sites. Its pages are still reached through the query's own flat hits
 and their cards.
@@ -905,14 +905,14 @@ Three invariants:
 - **Reader-relative cards.** Topic/situational seeds match a card recomputed
   per turn for the sender by `meta_annotate::build_reader_card`: the union of
   `topics` over the facts in a wiki (and on a page) the sender can read
-  (`acl::can_read`), **not** the owner-tier `_meta`/testata keywords the
+  (`acl::can_read`), **not** the subject-tier `_meta`/testata keywords the
   [keyword sync](narrative-compiler.md#keyword-sync--fact-topics-into-_meta-and-the-page-testate-recall-navigation)
   writes into the `.md` for the operator's Obsidian view. So a fact the sender
   cannot read never contributes its theme — a restricted fact's topic words can
   neither act as an entry-point nor surface in the candidate cards the
   navigator LLM sees. This is the serve-time enforcement of the
   [ACL card boundary](../concepts/identity-and-acl.md#the-acl-card-boundary--what-card-metadata-may-carry):
-  the compile-time `.md` card stays owner-tier, the served card is reader-relative.
+  the compile-time `.md` card stays subject-tier, the served card is reader-relative.
   The wiki's one-line abstract (`summary`/page `description`) is gated separately —
   served only to a reader whose read-set covers the wiki's default visibility
   (i.e. matches its resolved `scope`).
@@ -1131,10 +1131,12 @@ the read-side fallback above.
 
 **Wired into the ingest turn** as the recall block's `NAVIGATED PAGES`
 section: the funnel runs **after** the classification, reusing its
-`topics`/`owner_id`s as gather seeds (the Step-1 flat recall stays the cheap
+`topics` as gather seeds (the Step-1 flat recall stays the cheap
 seed and classifier input — «RAG for the entrances»), only for intents that
 justify the LLM spend (capture / recall / disambiguation), and only when the
-call site wired the optional `navigator` backend. The reserved `rules.md`
+call site wired the optional `navigator` backend. The classification's
+`subject_id`s ride the recall trace but seed no door — no family is keyed on
+a principal, see *There is no identity family* above. The reserved `rules.md`
 policy page is never a door (channel-only — the fan skips it, a RAG hit
 homed on it seeds nothing, and the open step discards it as a fail-safe).
 
@@ -1188,7 +1190,7 @@ flat explicit escape hatch. The tool is not class-gated (whole-corpus +
 ACL-filtered is safe for any caller) — this is positioning, not a gate.
 
 Seed cascade (the tool has no classifier in the loop, unlike ingest): the
-caller's explicit `topics`/`owners` win (**C**); else a small dedicated
+caller's explicit `topics`/`subjects` win (**C**); else a small dedicated
 extraction over the query on the `navigator` slot
 (`recall_nav::extract_query_seeds`, prompt
 [`prompts/query-seeds.md`](../../crates/mwe-core/prompts/query-seeds.md);
@@ -1267,7 +1269,7 @@ queries:
     query: cosa cucino stasera per gli ospiti?
     sender_id: alice
     topics: [cucina]                # optional classifier-style seeds
-    owners: ["user:galadriel"]      # optional
+    subjects: ["user:galadriel"]    # optional
     expect:                         # ground truth: snippets recall MUST surface
       - celiaca
       - senza glutine
@@ -1334,7 +1336,7 @@ ever letting an unreviewed case *become* the judge.
 ## ACL projection
 
 Every orchestrator routes through `row_visible_to(row, sender)`,
-which builds an `Acl { owner: Some(row.owner_id), allow:
+which builds an `Acl { subject: Some(row.subject_id), allow:
 row.allow_ids }` and calls [`acl::can_read`] with the row's
 optional `sender_id` for the cross-user attribution invariant
 (the `sender=` marker rule in
@@ -1345,7 +1347,7 @@ prefix) and `sender_groups: Vec<String>`, mirroring what the JWT
 puts on the wire.
 
 The fresh slot mirrors this: `buffered_visible_to(cap, sender)` builds the same
-`Acl` from the buffered capture's `owner` / `allow` / `sender` and calls the
+`Acl` from the buffered capture's `subject` / `allow` / `sender` and calls the
 identical [`acl::can_read`], so an un-promoted capture is ACL-gated exactly like
 a promoted fact.
 
@@ -1359,7 +1361,7 @@ the ingest orchestrator
 calls the scope-carrying sibling
 [`groups_with_scope_for`](../../crates/mwe-core/src/enrollment.rs) and
 derives the bare ids from `.0`, so the prompt also gets each group's
-`scope` for owner routing; see
+`scope` for subject routing; see
 [`ingest-pipeline.md`](ingest-pipeline.md)),
 the `wiki_search` MCP tool
 ([`call_wiki_search`](../../crates/mwe-mcp-server/src/mcp/tools.rs)),
@@ -1372,12 +1374,12 @@ leaves the vector empty and is therefore reserved for tests and the
 `anonymous()` path.
 
 Tests cover:
-- owner-user self vs other
+- subject-user self vs other
 - cross-user attribution (sender = bob captures on alice's wiki ⇒
   bob can read his own region)
 - group membership (now wired end-to-end in production via
   `enrollment::groups_for`)
-- global owner ⇒ anyone (anonymous + named user)
+- global subject ⇒ anyone (anonymous + named user)
 
 ## Why brute-force cosine for now
 
@@ -1409,7 +1411,7 @@ table is the larger and the more regenerable of the two.
   zero / mismatched-dim / empty).
 - ACL projection: 4 row-visibility tests (user/cross-user/group/global).
 - `score_and_filter`: 3 (descending sort + truncate / ACL drop / empty).
-- `fact_index::find_by_filters`: 3 (wiki scope / owner+type combo /
+- `fact_index::find_by_filters`: 3 (wiki scope / subject+type combo /
   topics_any with `json_each`).
 - `wiki_search`: 4 (top-K by cosine / ACL drop / recall-counter bump
   / top-K=0 returns empty).
@@ -1458,7 +1460,7 @@ table is the larger and the more regenerable of the two.
   project's roster; a malformed day is refused.
 - `wiki_facts_for`: 2 (filtered without counter bump / ACL filter).
 - `wiki_recall`: 1 (delegates to search today).
-- `recall_fresh_captures`: 1 (un-promoted buffered capture surfaces, ACL-scoped, flagged `fresh`; another owner's capture is filtered out).
+- `recall_fresh_captures`: 1 (un-promoted buffered capture surfaces, ACL-scoped, flagged `fresh`; a capture with another subject is filtered out).
 - `recall_nav` (gatherer): per-family seed tests (topic and situational card
   matches / rag path mapping / the three hits that seed nothing — `fresh`,
   `rules.md`, the map), the per-family ACL-cascade matrix, dedup/sort,

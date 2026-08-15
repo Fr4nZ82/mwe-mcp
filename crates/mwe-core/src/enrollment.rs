@@ -208,9 +208,9 @@ pub fn validate(file: &EnrollmentFile) -> Result<ValidationReport, EnrollmentErr
         // Alias collisions are soft — the alias still works, but the
         // operator should know the resolution may be ambiguous.
         for alias in &user.aliases {
-            if let Some(prev_owner) = alias_seen.insert(alias.clone(), user.id.clone()) {
+            if let Some(prev_subject) = alias_seen.insert(alias.clone(), user.id.clone()) {
                 report.warnings.push(format!(
-                    "alias {alias:?} is shared by users {prev_owner} and {}",
+                    "alias {alias:?} is shared by users {prev_subject} and {}",
                     user.id
                 ));
             }
@@ -274,13 +274,13 @@ pub const GLOBAL_GROUP_ID: &str = "global";
 
 /// Default `scope` shipped for the builtin [`GLOBAL_GROUP_ID`] group.
 ///
-/// The admin can override it from the dashboard. Frames `global` ownership
+/// The admin can override it from the dashboard. Frames `global` subject authority
 /// as WORLD facts, explicitly NOT as "a public personal fact" (that is the
 /// `allow` visibility axis), so the classifier does not collapse public
 /// profile facts onto `owner=global`.
 pub const DEFAULT_GLOBAL_SCOPE: &str = "General, public-domain facts that are true for everyone and \
 belong to no single user or group (e.g. common knowledge, weather, public events). NOT for making a \
-personal fact public — that is visibility (put `global` in a fact's allow-list), not ownership.";
+personal fact public — that is visibility (put `global` in a fact's allow-list), not subject authority.";
 
 /// Whether `id` is the builtin universal group.
 #[must_use]
@@ -370,7 +370,7 @@ pub async fn groups_for(pool: &SqlitePool, user_id: &str) -> Result<Vec<String>,
 /// The inverse of [`groups_for`] (member → groups): this resolves
 /// group → members by reading the `enrollment_groups.members` JSON array.
 /// The fact-forget audience ([`crate::acl::audience`]) derives the
-/// **eligible voter set** from it — a group `owner`/`allow` expands to its
+/// **eligible voter set** from it — a group `subject`/`allow` expands to its
 /// members. The builtin `global` group stores
 /// an empty `members` array (everyone is implicitly in it, never enumerated),
 /// so this returns empty for it; an unknown / empty `group_id`
@@ -401,7 +401,7 @@ pub async fn members_for(pool: &SqlitePool, group_id: &str) -> Result<Vec<String
 /// ACL evaluator matches `Principal::Group(_)` against; this one also
 /// carries the `scope` column so the `ingest` classifier can route a
 /// capture into a group's shared memory when the fact falls inside that
-/// group's declared domain (the classifier determines `owner_id` by
+/// group's declared domain (the classifier determines `subject_id` by
 /// consulting the scope of the sender's groups). The `scope` is
 /// operator-written free prose, `None` when the admin never configured one.
 ///
@@ -454,7 +454,7 @@ pub struct EnrolledUserLite {
 ///
 /// The "known users" roster the classifier injects into its
 /// prompt so it can attribute a fact to the right person by canonical name —
-/// e.g. a message from Alice that says "Bob prefers tea" resolves `owner_id`
+/// e.g. a message from Alice that says "Bob prefers tea" resolves `subject_id`
 /// to `user:bob` rather than filing it under Alice. Sibling of
 /// [`groups_with_scope_for`] (groups + scope) on the identity-injection side.
 /// `aliases` is parsed from the
@@ -678,7 +678,7 @@ pub async fn is_system_user(pool: &SqlitePool, user_id: &str) -> Result<bool, sq
 ///   present. This is the security-critical guard: issuing a standard token
 ///   for a human *with a login account* would let a multi-user bot
 ///   read/write as that one human → a cross-user recall/ACL leak.
-/// - **`smart`** ⇒ Pattern A. The sender is the human owner; this side is a
+/// - **`smart`** ⇒ Pattern A. The sender is the human subject; this side is a
 ///   convention, not a hard gate. A smart token is mono-user (no act-as), so
 ///   it is harmless regardless of sender, and "is this a bot or a
 ///   not-yet-onboarded human" is not reliably distinguishable by credentials
@@ -1673,7 +1673,7 @@ mod tests {
     #[tokio::test]
     async fn token_identity_rejects_guest_for_any_class() {
         // The builtin guest pseudo-identity never holds a token — not as
-        // a standard bot sender, not as a smart human owner. It is only
+        // a standard bot sender, not as a smart human subject. It is only
         // ever reached via X-MWE-Act-As under a delegation grant.
         let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 

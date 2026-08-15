@@ -118,17 +118,22 @@ option (a). Both land on the identical fixture.
 These are the load-bearing facts about how the system actually behaves;
 they shape what to test and how to read the results.
 
-- **ACL is region-level**, via inline markers
-  `{{owner=… allow=… sender=… f=<uuid>}}body{{/}}`. The only principals
-  are `user:<id>`, `group:<id>`, `global`. There is no wiki-level
-  "scope". Filtering happens region by region (`can_read`).
+- **ACL is region-level**, one governed region per fact. A page on disk
+  carries the **bare** region key `{{f=<uuid>}}body{{/}}` and nothing
+  else: the governance — subject, allow list, sender — lives in the
+  `fact_index` row that key points at. The full self-describing form
+  `{{subject=… allow=… sender=… f=<uuid>}}` is what the archive export
+  writes and what the parser still accepts as *input*; no write path
+  ever puts it on a page. The only principals are `user:<id>`,
+  `group:<id>`, `global`. There is no wiki-level "scope". Filtering
+  happens region by region (`can_read`).
 - **Enforcement is solid and deterministic.** Recall drops invisible
   facts entirely; `wiki_read` renders them inline as the literal
   `[redacted]` (with `redacted_count`). `isAdmin` does **not** bypass
   ACL. This is the part that just works — assert on it confidently.
 - **Scope is decided by the ingest LLM, not the caller.** A standard
   consumer only sends `wiki_ingest_message`; the server's internal
-  classifier picks `owner_id` (`user:`/`group:`/`global`) and the
+  classifier picks `subject_id` (`user:`/`group:`/`global`) and the
   target wiki. **Default when unsure = private** (`user:<sender>`).
 - **The classifier is the load-bearing piece — on the canonical run it is a
   strong model (Gemini), not the local 9B.** The `ingest` slot points at Gemini,
@@ -226,7 +231,7 @@ Creates admin **frodo** and lands on the welcome primer.
 **2 — welcome primer** (`/dashboard/welcome`, shown on each user's first login). 14
 optional fields → composed into a first-person Italian message → ingested as
 **public** profile facts (the wizard prepends a public-consent line, so they land
-`owner_id: global`). It doubles as an atomization probe: a multi-field profile is a
+`subject_id: global`). It doubles as an atomization probe: a multi-field profile is a
 multi-clause message that must split into N facts. Fill only what the cast sheet
 supports, leave the rest blank:
 
@@ -257,7 +262,7 @@ them from the user-edit view if you need cross-user attribution to resolve "Folc
 **amici** = {frodo, bilbo}. Copy the exact `scope` strings from `setup.sh`
 (`FAM_SCOPE` and the amici line) — the family scope (shared lists / plans / presence /
 kids' school; excludes personal passwords + irrelevant-personal facts) is what the
-classifier routes `owner_id` on.
+classifier routes `subject_id` on.
 
 **5 — issue the standard consumer token** (`/dashboard/tokens/issue`): sender
 `samvise`, `consumer_token` on, `consumer_id` = `samvise-prod`, act-as
@@ -310,22 +315,32 @@ shows several under-sharing (F-A) — that's the regression target.
 | (as B) "ho finito un romanzo" | `user:B` (private) |
 
 Inspect what the classifier decided — the response does **not** expose
-`owner_id`, so read it from the index:
+`subject_id`, so read it from the index:
 
 ```bash
 sqlite3 -header ./work/engine.db \
-  "SELECT wiki_id, owner_id, fact_type, substr(replace(text,char(10),' '),1,50) \
+  "SELECT wiki_id, subject_id, fact_type, substr(replace(text,char(10),' '),1,50) \
    FROM fact_index WHERE deleted_at IS NULL AND superseded_at IS NULL \
    ORDER BY created_at DESC LIMIT 10;"
 ```
 
 Then confirm the *consequence* as B: a `group:` fact is recallable by
-B; a `user:A`-private one is not. Inspect the raw marker on disk to see
-`owner=`/`sender=`:
+B; a `user:A`-private one is not. Don't expect the page on disk to tell
+you who the fact is about — a compiled page carries the bare region key
+and nothing else:
 
 ```bash
 sqlite3 ./work/engine.db "SELECT source_path FROM fact_index WHERE text LIKE '%detersivo%';"
-cat "./work/wikis/<group>/<that_source_path_basename>"
+cat "./work/wikis/<group>/<that_source_path_basename>"   # {{f=<uuid>}}body{{/}}
+```
+
+The governance behind that key is the `fact_index` row above
+(`subject_id`, `allow_ids`, `sender_id`). The one place in the workdir
+that spells it out is the per-wiki capture journal, whose entry header
+comment carries `subject=` / `allow=` / `sender=`:
+
+```bash
+grep -o "subject=[^ ]* allow=[^ ]* sender=[^ ]*" "./work/wikis/<group>/_captures.md" | tail -5
 ```
 
 ### 3. The rest of the checklist

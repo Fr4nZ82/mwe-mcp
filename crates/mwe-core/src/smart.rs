@@ -20,10 +20,11 @@
 //! - [`recall_core_global`] — used by the `UserPromptSubmit` hook.
 //!   Wraps [`crate::recall::wiki_search`] with the canonical
 //!   "transversal recall" filter documented in the bundled skill
-//!   `core-globalmemory.md`: scope to the caller's own
-//!   `acl_default = user:<sender>` wikis **and** exclude the
-//!   `the smart family` set so project-bound memory does not leak into
-//!   unrelated work.
+//!   `core-globalmemory.md`: keep only facts whose **subject** is the
+//!   caller (`subject_id = user:<sender>` — facts *about* them, wherever
+//!   they are filed) **and** exclude the `the smart family` set so
+//!   project-bound memory does not leak into unrelated work. It is a
+//!   filter on the fact's subject, not on which wiki holds it.
 //!
 //! Both gated on `consumer_class=smart` — these tools have no business
 //! on a standard/conversational token.
@@ -306,8 +307,8 @@ pub async fn bootstrap(
         if !d.meta.smart {
             continue;
         }
-        let owner = tree.resolve_scope_principal(&d.meta)?;
-        if owner != caller_principal {
+        let subject = tree.resolve_scope_principal(&d.meta)?;
+        if subject != caller_principal {
             continue;
         }
 
@@ -464,9 +465,16 @@ pub struct RecallCoreGlobalRequest {
 /// can include it verbatim in audit logs / a forked-subagent distillate.
 #[derive(Debug, Clone)]
 pub struct RecallCoreGlobalFilter {
-    /// `caller.sender_id` — every hit is scoped to wikis whose derived
-    /// scope principal is this user.
-    pub owner_user: String,
+    /// `caller.sender_id` — every hit is a fact whose **subject** is this
+    /// user, wherever it is filed.
+    ///
+    /// This is a predicate on `fact_index.subject_id`, NOT on which wiki a
+    /// fact lives in: a wiki whose proprietor is the caller can perfectly
+    /// well hold facts about other people, and this filter does not return
+    /// them. The field was called `owner_user` and documented as wiki
+    /// scoping until the subject rename; the name said one thing and the
+    /// code did another, and it is the code that was right.
+    pub subject_user: String,
     /// Companion-family `wiki_type` stems excluded from this search.
     /// Returned for diagnostic clarity; collected at query time from the
     /// per-wiki `_meta.md` smart flag of every wiki on disk (derived
@@ -534,7 +542,7 @@ pub async fn recall_core_global(
         sender_groups,
     };
     let filters = FactFilters {
-        owner_id: Some(Principal::User(caller.sender_id.clone())),
+        subject_id: Some(Principal::User(caller.sender_id.clone())),
         ..Default::default()
     };
     // The fact corpus only. Smart-wiki documentation lives in its own
@@ -584,7 +592,7 @@ pub async fn recall_core_global(
     Ok(RecallCoreGlobalResponse {
         query,
         filter_applied: RecallCoreGlobalFilter {
-            owner_user: caller.sender_id.clone(),
+            subject_user: caller.sender_id.clone(),
             // The smart-family `wiki_type`s excluded from this view, sorted
             // by the BTreeSet (derived from `_meta.md`).
             excluded_wiki_types: excluded_types.into_iter().collect(),
@@ -1124,7 +1132,7 @@ mod tests {
         // No fact_index rows yet, so empty hits — but the response
         // shape (filter echo + smart-family stems list) is populated.
         assert!(resp.hits.is_empty());
-        assert_eq!(resp.filter_applied.owner_user, "alice");
+        assert_eq!(resp.filter_applied.subject_user, "alice");
         assert_eq!(resp.query, "anything");
     }
 

@@ -1,7 +1,7 @@
 ---
 name: core-globalmemory
-version: 1.7.0
-description: "Transversal mwe-mcp mode for smart consumers when the cwd has no .mwe/state.json: auto-recall across the user's wikis (forked subagent to prevent context bleed) AND manage your own dedicated operational wiki if you own one (general working memory + behaviour rules + conversations.md via wiki_admin_*). Facts about the user go to wiki_ingest_message; never dump everything into standard memory."
+version: 1.8.0
+description: "Transversal mwe-mcp mode for smart consumers when the cwd has no .mwe/state.json: auto-recall of the facts about the user, wherever they are filed (forked subagent to prevent context bleed) AND manage your own dedicated operational wiki if you own one (general working memory + behaviour rules + conversations.md via wiki_admin_*). Facts about the user go to wiki_ingest_message; never dump everything into standard memory."
 depends_on: ["core"]
 applies_to:
   consumer_class: smart
@@ -68,9 +68,13 @@ recall_core_global({
 })
 ```
 
-The server applies the canonical filter for you — caller-owned wikis
-(`owner_user = user:<your sender_id>`), companion family excluded.
-The response echoes the filter in `filter_applied.excluded_wiki_types`
+The server applies the canonical filter for you: the facts whose
+**subject** is you (`subject_id = user:<your sender_id>`) — facts
+*about* the caller, wherever they are filed — with smart wikis
+excluded. It is a predicate on the fact, not on which wikis you own:
+a wiki of yours can perfectly well hold facts about other people, and
+those do **not** come back. The response echoes it in
+`filter_applied.subject_user` + `filter_applied.excluded_wiki_types`
 so the audit trail is unambiguous.
 
 Why a dedicated tool rather than `wiki_search` with a hand-rolled
@@ -92,15 +96,17 @@ the hook is disabled, fall back to the explicit shape:
 
 ```jsonc
 wiki_search({
-  filter: { owner_user: "<your sender_id>" },
-  query: "<the user prompt, lightly cleaned of greetings>"
+  query: "<the user prompt, lightly cleaned of greetings>",
+  scope: {
+    subject_ids: ["user:<your sender_id>"],  // pre-rename servers: `owner_ids`
+    smart: false                             // keeps smart wikis out
+  }
 })
 ```
 
-— then drop hits whose `wiki_type` belongs to `family=companion`
-(see `wiki_type_describe` if you don't already know the set). The
-`recall_core_global` tool is exactly this fallback, server-side, with
-the gates pre-wired.
+Principals are always prefixed (`user:` / `group:`, or bare `global`);
+an unprefixed id is rejected. The `recall_core_global` tool is exactly
+this fallback, server-side, with the gates pre-wired.
 
 If the recall returns hits, weave them into your reply with a citation
 (`wiki://<wiki_id>/<path>` — see companion-wikis.md §citation-ids
@@ -115,22 +121,24 @@ check whether a fact is already recorded before contradicting it.
 
 ## Asking about someone/something else — use `wiki_search`, not `recall_core_global`
 
-`recall_core_global` is **owner-scoped to the user** by design (caller-owned
-wikis only), so a question about *another person or entity* the user knows — a
+`recall_core_global` is **subject-scoped to the user** by design (only facts
+*about* them), so a question about *another person or entity* the user knows — a
 contact's birthday, a colleague's role, a shared address — returns **nothing**
-from it. For those, call `wiki_search` with **no `owner_user` filter**: it spans
-the whole corpus the user is allowed to read (ACL-filtered), including other
-people's pages they have access to. If the top snippet doesn't carry the exact
-fact, `wiki_read` the page it points to — the prose holds detail the snippet may
-omit. (Empirically confirmed: a "when was X born" query draws a blank on
-`recall_core_global` but lands the right page via `wiki_search`.)
+from it, even when that fact sits in a wiki the user owns. For those, call
+`wiki_search` with **no `subject_ids` in `scope`**: it spans the whole corpus
+the user is allowed to read (ACL-filtered), including other people's pages they
+have access to. If the top snippet doesn't carry the exact fact, `wiki_read` the
+page it points to — the prose holds detail the snippet may omit. (Empirically
+confirmed: a "when was X born" query draws a blank on `recall_core_global` but
+lands the right page via `wiki_search`.)
 
 For a question that needs **depth or to connect things across pages** ("tell me
 everything about X", "how does Y relate to Z"), use **`wiki_navigate`** instead
 of `wiki_search`: a navigator walks the wiki structure hop by hop and returns the
 path it took as context, plus the flat hits (a superset of `wiki_search`). It
 costs an LLM call per hop, so keep `wiki_search` for quick one-line lookups.
-Steer it with `topics` and `owners` (e.g. `["user:<id>"]`) you already know.
+Steer it with `topics` and `subjects` (e.g. `["user:<id>"]`) you already know
+(`owners` still accepted).
 
 ## Forked-subagent recall — run the search in an isolated context
 
@@ -149,7 +157,7 @@ Concretely:
   Explore` (read-only search) or `general-purpose` when the recall
   needs to combine `wiki_search` + `wiki_read` + light synthesis.
   Hand the subagent a self-contained prompt that includes the user
-  query and the scope filter (`owner_ids`, `wiki_types` allowlist),
+  query and the scope filter (`subject_ids`, `wiki_types` allowlist),
   ask for a short report (target ≤ 200 words, citing
   `wiki://<wiki_id>/<path>` for each fact). Use the distillate
   verbatim in your reply; do **not** re-issue `wiki_search` in the
@@ -175,7 +183,7 @@ Use:
   wiki_search({
     query: "<user query>",
     scope: {
-      owner_ids: ["<your sender_id>"],
+      subject_ids: ["user:<your sender_id>"],
       wiki_types: ["wiki-user","wiki-tech","wiki-lists"]
     }
   })

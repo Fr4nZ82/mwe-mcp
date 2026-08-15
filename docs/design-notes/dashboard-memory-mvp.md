@@ -288,7 +288,7 @@ chat-reply render has no context and never rewrites.
 **Region → source-fact click-through.** Each fact region the viewer can read
 carries a small superscript anchor (`§`, `sup.fact-ref`) at the region's end,
 linking to that fact's **record** — `/dashboard/facts/:fact_id/edit`, the
-per-fact view with the canonical text, owner/sender, validity, provenance and
+per-fact view with the canonical text, subject/sender, validity, provenance and
 the structured actions — so a reader who spots something wrong in the prose
 is one click from the surface that corrects it. Mechanics: the page view
 walks the segmented render and appends a `{{factref=<id>}}` marker to each
@@ -350,8 +350,8 @@ Hence three dispositions, ordered by what they destroy:
 
 | Disposition | Form value | What it does |
 |---|---|---|
-| **Dissolve** *(default)* | `dissolve` | Destroys the structure, keeps every fact. Nothing is tombstoned: each fact moves to a live wiki (`page::dissolve_home` — its sender's home, else its owner's, else the deleter's) and the dissolved wiki's plan slugs are parked as `reopen_pages`, so the next Cartografo build **re-decides where each fact belongs** corpus-wide rather than letting it inherit the page it sat on. The evacuation target is a waiting room, not the answer. Only a fact with no live home anywhere is tombstoned — and it is **counted** in `facts_tombstoned`. |
-| **Return to each author** | `authors` | The `SenderKeyed` arm: a fact the deleter sent is tombstoned; a foreign-authored one is evacuated intact to its sender's home wiki (owner as fallback). A fact whose sender and owner both lack a home is tombstoned. |
+| **Dissolve** *(default)* | `dissolve` | Destroys the structure, keeps every fact. Nothing is tombstoned: each fact moves to a live wiki (`page::dissolve_home` — its sender's home, else its subject's, else the deleter's) and the dissolved wiki's plan slugs are parked as `reopen_pages`, so the next Cartografo build **re-decides where each fact belongs** corpus-wide rather than letting it inherit the page it sat on. The evacuation target is a waiting room, not the answer. Only a fact with no live home anywhere is tombstoned — and it is **counted** in `facts_tombstoned`. |
+| **Return to each author** | `authors` | The `SenderKeyed` arm: a fact the deleter sent is tombstoned; a foreign-authored one is evacuated intact to its sender's home wiki (subject as fallback). A fact whose sender and subject both lack a home is tombstoned. |
 | **Tombstone all** | `tombstone` | Tombstones every fact regardless of sender, destroying others' contributions. |
 
 A dissolve that actually freed facts then kicks off a **background full
@@ -455,7 +455,7 @@ tool-call trace in the panel, backed by `LlmBackend::chat` /
 
 `structure_proposal_apply` is wired into the chassis;
 `AgenticContext.hub_writer` is threaded through to `apply_proposal` for
-kinds that need an LLM at apply time. `wiki_supersede` inherits owner /
+kinds that need an LLM at apply time. `wiki_supersede` inherits subject /
 ACL / `fact_type` / topics from the targeted fact, so the chat only has
 to surface a `fact_id` (via `wiki_recall`) plus the corrected body; the
 dispatcher refuses already-superseded / already-tombstoned rows with a
@@ -501,7 +501,7 @@ mirrors `wiki_facts_full_for` via `SenderContext::user(&user.sender_id)` —
 so by default an admin sees only the facts they can read, **not** every
 user's. The [admin-reveal lens](redaction-policy.md#dashboard-admin-reveal)
 lifts that: with reveal on, the list (and `load_visible_fact`) pass
-`reveal = true` to skip the per-row ACL gate, so the owner-or-admin
+`reveal = true` to skip the per-row ACL gate, so the subject-or-admin
 actions below can reach another user's fact. Per-row "wiki" + "modifica" +
 "elimina" actions. "modifica" targets
 `GET /dashboard/facts/:fact_id/edit`; "elimina" is a `confirm()`-gated
@@ -514,7 +514,7 @@ on-disk bytes ([redaction-policy](redaction-policy.md)) — (reloads through
 tombstone. Both appear only on active promoted rows.
 
 It renders as a **compact, wide data-grid** (`.facts-table.compact`)
-that surfaces every column of the row — ACL (`owner_id` / `sender_id` /
+that surfaces every column of the row — ACL (`subject_id` / `sender_id` /
 `allow_ids`), classification (`fact_type` / `salience` / `topics` /
 `style` / `page_description`), validity (`valid_from` / `valid_to` /
 `decay_reason`), recall signals (`last_recall_at` / `recall_count_30d`),
@@ -585,8 +585,8 @@ an explicit empty state rather than a bare empty table.
 The edit page (`GET /dashboard/facts/:fact_id/edit`) opens on the fact's
 **record** — a reading-width page (the `authenticated_reading_page`
 layout) whose summary grid (`section.meta`) surfaces the placement
-(`wiki_id`), all three ACL axes (`owner` subject / `sender` provenance /
-`allow` audience), taxonomy (`topics` / `fact_type`), the validity
+(`wiki_id`), all three ACL axes (`subject` who it is about / `sender`
+provenance / `allow` audience), taxonomy (`topics` / `fact_type`), the validity
 bounds, the `successor` pointer when a closure stamped one (linked to the
 successor fact's own record — one click from the obituary to the current
 truth), `created`, and — for document-extracted facts — the `source_ref`
@@ -603,8 +603,8 @@ The edit form carries **three** surfaces, split by how they apply:
 - **ACL** (`POST /facts/:id/acl`) and **validity**
   (`POST /facts/:id/validity`) are **structured, engine-direct** actions
   — plain `<form method=post>` + 303-redirect, no chat. Each handler
-  reloads the fact (`load_visible_fact`), enforces **owner-OR-admin**
-  (`owner_id == user:<sender>` or `is_admin` → else 403) and
+  reloads the fact (`load_visible_fact`), enforces **subject-OR-admin**
+  (`subject_id == user:<sender>` or `is_admin` → else 403) and
   **standard-wikis-only** (a smart wiki's ACL / validity is wiki-level,
   not per-fragment — refused with 422 pointing at the consumer / sharing
   page), then calls the act-first wrapper in

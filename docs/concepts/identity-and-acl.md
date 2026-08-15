@@ -2,7 +2,7 @@
 title: Identity & ACL model
 area: concepts
 status: implemented
-last_review: "2026-07-02"
+last_review: "2026-08-15"
 ---
 
 # Identity & ACL model
@@ -48,7 +48,7 @@ as `EnrollmentFile { version, users[], groups[] }` /
 `UserEntry` / `GroupEntry`.
 
 - A **user** is a person (or a bot's "system user") that can be a
-  sender, a fact owner, and the owner of a personal memory wiki.
+  sender, the subject of a fact, and the owner of a personal memory wiki.
 - A **group** is a named set of users with a free-prose `scope`. A
   group can own a shared memory wiki and can appear as a principal in a
   region's ACL (`group:famiglia`). Group membership is what the ACL
@@ -60,16 +60,17 @@ its aliases the same way.
 
 **The builtin `global` group.** One group always exists: `global`, the
 universal everyone-group. It is the public/world principal — a region
-naming it (in `owner`, `sender`, or `allow`) is readable by anyone, because
+naming it (in `subject`, `sender`, or `allow`) is readable by anyone, because
 every user is implicitly a member (enforced in
 [`acl::principal_matches`](../../crates/mwe-core/src/acl.rs), not stored in
 the member list). It is a real `enrollment_groups` row so the admin can edit
 its **`scope`** from the dashboard — the prose the `ingest` classifier reads
 to recognise a genuine *world* fact (e.g. weather, common knowledge) and
-route it to `owner=global`, as opposed to a *public personal* fact (which is
-`owner=<subject>` + `allow=global`). It is special-cased throughout: never
-hand-membered or deletable, excluded from the collaborative-group list that
-seeds `group_theme` hubs, and seeded by migration `0047` /
+route it to `subject=global`, as opposed to a *public personal* fact (which
+names the person in `subject=` and adds `allow=global`). It is special-cased
+throughout: never hand-membered or deletable, excluded from the
+collaborative-group list that seeds `group_theme` hubs, and seeded by
+migration `0047` /
 [`enrollment::ensure_global_group`](../../crates/mwe-core/src/enrollment.rs).
 
 **The builtin `guest` pseudo-identity.** The second builtin is the inverse
@@ -103,7 +104,7 @@ contains it). The contract, per surface:
   matches no region (the id is reserved, so no fact ever names it),
   guest belongs to no group, and the `global` arm matches anyone — so a
   guest reader sees exactly the regions where `global` appears in
-  `owner ∪ allow ∪ sender`, on every read surface (recall, `wiki_read` /
+  `subject ∪ allow ∪ sender`, on every read surface (recall, `wiki_read` /
   `wiki_search` / `wiki_navigate`, the reader-relative cards).
 - **The permanent-write / operator surface refuses it.**
   `wiki_ingest_external`, `wiki_admin_notify`, `consumer_register`,
@@ -167,8 +168,8 @@ the model in one table:
 | **Account** | The credential pair used to sign in (`email + password`). | `user_credentials` table | Cheap — a single `UPDATE` on `user_credentials.email`. |
 | **Identity** | The canonical principal of the domain: the `user_id` slug. | `enrollment_users` row + `<workdir>/wikis/<user_id>/` directory | Expensive — the slug is wired into the filesystem and every fact. |
 
-The slug appears in **every `fact_index` row's `owner_id`**, in every
-exported marker (`{{owner=user:franz}}…{{/}}` — the full form a
+The slug appears in **every `fact_index` row's `subject_id`**, in every
+exported marker (`{{subject=user:franz}}…{{/}}` — the full form a
 portable archive carries), in every JWT's `sender` claim, and as the
 directory name of the user's personal memory wiki. Changing it would ripple through the whole
 filesystem, so it is chosen once at creation and never rewritten. The
@@ -184,10 +185,11 @@ middleware (not the dashboard):
   the token holder for single-user clients; equal to the
   `X-MWE-Act-As` header for delegated multi-user bot ("consumer")
   tokens.
-- **Fact owner** = the application-level `owner_id` argument on write
-  paths — *whose datum it is*. Defaults to the effective sender; when
-  it differs, the fact records `owner=user:X` + `sender=user:Y` in its
-  `fact_index` columns (spelled inline only in the export form).
+- **Fact subject** = the principal a write path files the region under
+  (`CaptureRequest::subject` → `fact_index.subject_id`) — *whose datum
+  it is*. Defaults to the effective sender; when it differs, the fact
+  records `subject=user:X` + `sender=user:Y` in its `fact_index`
+  columns (spelled inline only in the export form).
 
 The token/session model is documented in full in
 [`jwt-and-session-model.md`](../design-notes/jwt-and-session-model.md).
@@ -407,13 +409,13 @@ This is "the single law": there is one rule, evaluated per region.
 ### Marker fields
 
 A region is a span of text delimited by an inline marker:
-`{{owner=… sender=… allow=… f=…}}…{{/}}`. Three of those fields carry
+`{{subject=… sender=… allow=… f=…}}…{{/}}`. Three of those fields carry
 the ACL; the fourth (`f`) is the fact id. The ACL data model lives in
 [`crates/mwe-core/src/types.rs`](../../crates/mwe-core/src/types.rs) as
 `Principal` (`user:<id>` / `group:<id>` — every principal is a user or a
 group; the builtin **`global` group** is the universal everyone-group, see
 [§1 Users and groups](#users-and-groups)) and
-`Acl { owner: Option<Principal>, allow: Vec<Principal> }`.
+`Acl { subject: Option<Principal>, allow: Vec<Principal> }`.
 
 The three ACL fields are **three independent axes** — provenance, subject,
 and visibility — and any of them may name a user or a group (`global`
@@ -421,45 +423,46 @@ included):
 
 | Field | Axis | Meaning |
 |---|---|---|
-| **`owner=`** | *subject* — who the fact is **about** | `owner=user:alice` ⇒ a fact about alice; `owner=group:team` ⇒ about the team; `owner=global` ⇒ a **world** fact about no one in particular ("ieri ha piovuto"). Owner is **not** a visibility flag. **`owner` absent ⇒ the region's owner-of-last-resort is its `sender`** (resolved before the check; unreadable if it has no sender — never the wiki principal). |
-| **`sender=`** | *provenance* — who **captured** it | A full principal — `user:Y` (Galadriel wrote a fact about Gollum), `group:Y` (an ambient "family microphone"), or the `global` group (a public capture device). The sender is *always* allowed to reread their own capture. Omitted when it would equal `owner=user:X`. |
-| **`allow=`** | *visibility* — who **else** may read | Extra principals beyond owner and sender — comma-separated, each prefixed (`allow=group:team,user:bob`). **A fact is public when the `global` group is in `allow`** (`allow=global`), with `owner` left on the subject — *about me, visible to all*, not *owned by everyone*. Purely additive. |
+| **`subject=`** | *subject* — who the fact is **about** | `subject=user:alice` ⇒ a fact about alice; `subject=group:team` ⇒ about the team; `subject=global` ⇒ a **world** fact about no one in particular ("ieri ha piovuto"). The subject is **not** a visibility flag. **`subject` absent ⇒ the region's subject-of-last-resort is its `sender`** (resolved before the check; unreadable if it has no sender — never the wiki principal). `owner=` is the legacy spelling of this key: read forever, never written (see the naming note below). |
+| **`sender=`** | *provenance* — who **captured** it | A full principal — `user:Y` (Galadriel wrote a fact about Gollum), `group:Y` (an ambient "family microphone"), or the `global` group (a public capture device). The sender is *always* allowed to reread their own capture. Materialized at capture: a self-fact stores (and exports) `sender` equal to its `subject` rather than leaving it blank, so a later subject change cannot silently rebind the provenance. |
+| **`allow=`** | *visibility* — who **else** may read | Extra principals beyond subject and sender — comma-separated, each prefixed (`allow=group:team,user:bob`). **A fact is public when the `global` group is in `allow`** (`allow=global`), with `subject=` still naming the person it is about — *about me, visible to all*, not *about everyone*. Purely additive. |
 | **`f=`** | — | The region's `fact_id` (canonical `UUIDv7`). Identity, not access — listed here only because it shares the marker. |
 
 At runtime the engine writes the **bare** marker (`{{f=<uuid>}}…{{/}}`)
 and stores the ACL in the `fact_index` columns only — the **DB is the
 authoritative source**: redaction resolves a region's ACL by its `f=`
 key from `fact_index`, falling back to the inline attributes only for
-regions the DB does not know (legacy pages, imported archives — the
-attributed form above remains valid input and is the export format).
+regions the DB does not know (a hand-authored region, a page carried in by
+hand out of an export tarball — the attributed form above remains valid
+input and is the export format; there is no importer).
 See [`redaction-policy.md`](../design-notes/redaction-policy.md)
 and marker grammar §0.
 
-### `owner` is always an existing principal — non-enrolled subjects
+### `subject` is always an existing principal — non-enrolled subjects
 
-`owner` is the **subject**, but the system has only one vocabulary for a
-subject: a `Principal` (`user:<id>` / `group:<id>` / `global`). It therefore
-never invents one. A subject the deployment does **not** enrol — a relative
-who does not use the system (Bruno, Franz's father), a pet, a third party —
-is **never** minted as a `user:<them>`: that would be a dangling principal
-no reader matches and no enrolment backs. The ingest/document classifiers
+The system has only one vocabulary for a subject: a `Principal`
+(`user:<id>` / `group:<id>` / `global`), and it therefore never invents one.
+A subject the deployment does **not** enrol — a relative who does not use
+the system (Bruno, Franz's father), a pet, a third party — is **never**
+minted as a `user:<them>`: that would be a dangling principal no reader
+matches and no enrolment backs. The ingest/document classifiers
 resolve such a subject to an **existing** principal instead:
 
 - the **group whose `scope` the fact falls inside** (the same scope signal
   that drives `allow`) — the collective that holds responsibility for that
-  subject. Bruno's health and care facts → `owner=group:famiglia`,
+  subject. Bruno's health and care facts → `subject=group:famiglia`,
   `sender=user:franz`, readable by every `famiglia` member.
 - else `user:<sender>` — "a note the sender holds about someone".
 
 The non-enrolled individual's name lives in the region's **prose**, not in a
-principal. Read the pillar as *owner = the principal that **governs** the
-subject*: an enrolled subject governs themselves; a non-participating subject
-is governed by the collective (or the capturer) responsible for them — so a
-group `owner` here is not "the subject is the collective", it is "the
-collective governs facts about this member". This keeps `owner` stable
-across re-ingests (no per-run minting), which is what lets the subject's
-facts share **one** home wiki and be deduplicated. The rule lives in the
-classifier prompts
+principal. Read the pillar as *`subject=` names the principal that
+**governs** what the fact is about*: an enrolled person governs themselves;
+a non-participating third party is governed by the collective (or the
+capturer) responsible for them — so a group in `subject=` here is not "the
+subject is the collective", it is "the collective governs facts about this
+member". This keeps `subject=` stable across re-ingests (no per-run
+minting), which is what lets the subject's facts share **one** home wiki
+and be deduplicated. The rule lives in the classifier prompts
 ([`ingest.md`](../../crates/mwe-core/prompts/ingest.md),
 [`document-extract.md`](../../crates/mwe-core/prompts/document-extract.md));
 the document path injects the `known_users` roster so it can tell enrolled
@@ -469,12 +472,12 @@ from non-enrolled.
 model), and the line is **destroy vs update**: the
 **`sender`** (author) may **`delete`** their own contribution directly —
 [`acl::can_delete`](../../crates/mwe-core/src/acl.rs) = `is_admin ∨ sender == caller` — while the
-**`owner`** (subject) may **update** the fact directly: edit its content (`supersede`), shift or close
+**`subject`** may **update** the fact directly: edit its content (`supersede`), shift or close
 its validity, and change its visibility (`acl_change`) —
-[`acl::sender_owns`](../../crates/mwe-core/src/acl.rs) ‖ admin. So *reading* resolves on
-`owner ∪ allow ∪ sender`, *destroying* keys on `sender`, and *updating / re-sharing* on `owner`. An
+[`acl::sender_is_subject`](../../crates/mwe-core/src/acl.rs) ‖ admin. So *reading* resolves on
+`subject ∪ allow ∪ sender`, *destroying* keys on `sender`, and *updating / re-sharing* on `subject`. An
 update is the subject keeping a fact about themselves current (never a vote); only destruction is
-governed. A non-sender who wants a fact gone — even its owner — has no direct path: instead they open a
+governed. A non-sender who wants a fact gone — even its subject — has no direct path: instead they open a
 request, **from the dashboard**, that its audience votes on
 ([`votes::open_forget_request`](../../crates/mwe-core/src/votes.rs), silence = consent). A vote is
 only ever opened (and cast) when a user acts from the dashboard — never started in the background by
@@ -482,36 +485,36 @@ a consumer agent. A `sender` may also clear **all** their own facts in bulk
 ([`fact_index::mark_forgotten_by_sender`](../../crates/mwe-core/src/fact_index.rs)). Restructuring
 (deleting a page or wiki, `move`) is the admin's.
 
-> **Naming caveat — the region `owner` means *subject*, and that is load-bearing.**
-> Coming from Unix/IAM, "owner" suggests the *creator* or the *access
-> controller*. The per-fragment ACL `owner` of *this* section — the
-> `owner=` marker field, `fact_index.owner_id`, [`Acl::owner`](../../crates/mwe-core/src/types.rs) —
-> is neither: the creator is `sender` (provenance), the visibility is
-> `allow` (audience), and `owner` is the fact's **subject** — who or what
-> it is *about* (a user, or a group when the subject *is* the collective).
-> The name is kept on purpose: the data subject **governs who may read**
-> the fact about them (an `acl_change` is owner-or-admin), so the subject
-> genuinely *owns* the datum on themselves — per-fragment governance seen
-> from the subject's side.
+> **Subject vs. owner — two axes, and only one of them is per-fragment.**
+> The per-fragment ACL axis of *this* section is the fact's **subject** —
+> who or what the region is *about* (a user, or a group when the subject
+> *is* the collective): the `subject=` marker field,
+> `fact_index.subject_id`, [`Acl::subject`](../../crates/mwe-core/src/types.rs).
+> It is neither of the other two axes: the author is `sender` (provenance),
+> the audience is `allow` (visibility). The subject is also the **governing**
+> principal — an `acl_change` is subject-or-admin — so the data subject
+> decides who may read the fact about them.
 >
-> Do **not** conflate this with the **wiki-level owner** — the principal a
-> whole memory wiki belongs to (`WikiMeta.owner_user`: a user for a
-> personal wiki, the **group** for a `wiki-group`; see §1 and §4). *That*
-> owner is a genuine **proprietor/master** — the access controller in the
-> classic sense, the authority for wiki-level acts — and is a **separate
-> axis** from the per-fragment subject. The two are independent: a fact
-> `owner=user:franz` (subject) can live in a wiki owned by `group:famiglia`
-> (proprietor). A full rename `owner → subject` was considered and
-> **declined** near release precisely because the word spans both senses
-> (plus `owner_id` doubling as the token holder), so a blind rename would
-> corrupt unrelated code for little gain. The concept is reinforced
-> instead; the name stays. **Within this section**, read `owner` /
-> `owner_id` / `owner=` as *subject* — never "creator" or "visibility".
+> The **wiki owner** is the other axis and keeps the word: the principal a
+> whole memory wiki belongs to, derived from the tree's topology by
+> [`WikiTree::resolve_scope_principal`](../../crates/mwe-core/src/wiki.rs)
+> (the user for a `wiki-user` root, the **group** for a `wiki-group`; see §1
+> and §4). *That* owner is a genuine **proprietor** — the access controller
+> in the classic sense, the authority for wiki-level acts. The two are
+> independent, and mixing them breaks the model in both directions: a fact
+> with `subject=user:franz` can live in a wiki owned by `group:famiglia`,
+> and a wiki franz owns can hold facts about somebody else entirely.
+>
+> *2026-08-15 — the rename `owner → subject` on the per-fragment axis was
+> declined once near release and then carried out. The legacy marker key
+> `owner=` is read forever (never written), and the deprecated tool
+> arguments (`owner_ids` on `wiki_search`, `owners` on `wiki_navigate`)
+> stay accepted; the wiki-owner axis above was not renamed.*
 
 ### The single rule
 
 The evaluator `acl::can_read` builds the **effective principal set** —
-`owner ∪ allow ∪ {sender_of_region}` — and grants read if *any*
+`subject ∪ allow ∪ {sender_of_region}` — and grants read if *any*
 principal in it matches the current reader (the reader's `sender_id`
 for `User`, the reader's group list for `Group` — and the builtin
 `global` group, which every user belongs to, matches everyone). The
@@ -535,27 +538,27 @@ redaction-policy.md.
 ### Default-private vs. group-shared — the declarative policy
 
 The ACL is **default-private**. A region with no ACL of its own — no
-DB record and no inline `owner=` — falls back to its own `sender` as the
-owner of last resort (e.g. `user:alice`, the user who captured it;
+DB record and no inline `subject=` — falls back to its own `sender` as the
+subject of last resort (e.g. `user:alice`, the user who captured it;
 unreadable to anyone else, and to no one when there is no sender). To
 expose a region
-beyond its owner requires a *deliberate* declarative act at capture
+beyond its subject requires a *deliberate* declarative act at capture
 (recorded in the region's `fact_index` columns; spelled inline only in
 the export form):
 
 - `allow=…` — extend reading to extra users or groups, or
 - `allow=global` — make it public (the builtin `global` group is everyone),
-  with `owner` left on the subject, or
-- `owner=group:team` — file it as a fact *about* a group (every member then
-  reads it).
+  with `subject=` still naming the person it is about, or
+- `subject=group:team` — file it as a fact *about* a group (every member
+  then reads it).
 
-(`owner=global` is **not** in this list: it marks a *world* fact about no one
-in particular, not "a public fact" — public is the `allow` axis above.)
+(`subject=global` is **not** in this list: it marks a *world* fact about no
+one in particular, not "a public fact" — public is the `allow` axis above.)
 There is no implicit widening. This is what "declarative sharing
 policy" means: visibility beyond the default is declared per region,
 at capture, never inferred. Lista-style pages are the typical place
 where the sender fallback fires — a hand-written list item with
-no DB record and no inline owner leans on its capturing `sender`.
+no DB record and no inline subject leans on its capturing `sender`.
 
 #### The ACL card boundary — what card metadata may carry
 
@@ -567,11 +570,12 @@ tiers, with two boundaries:
   topic at the wiki's **default visibility** — the boundary the keyword syncs
   enforce
   ([`meta_annotate::fact_at_default_visibility`](../../crates/mwe-core/src/meta_annotate.rs)):
-  **a fact contributes its topic words only when its owner is `global` or the
-  wiki's resolved `scope` principal** (an `allow=` list only *extends*
-  readability, so it never disqualifies a default-owned fact). A cross-user
-  region, a group-owned region on a user wiki, or any other off-default fact is
-  special-cased content: its topics never reach the `.md` card.
+  **a fact contributes its topic words only when its subject is `global` or
+  the wiki's resolved `scope` principal** (an `allow=` list only *extends*
+  readability, so it never disqualifies a fact already at the default). A
+  region about another user, a group-subject region on a user wiki, or any
+  other off-default fact is special-cased content: its topics never reach
+  the `.md` card.
 - **The served card is reader-relative.** The consumer-facing surfaces that
   expose card metadata — the recall navigator's topic seeds and its candidate
   **page** cards (both the ingest recall path and the `wiki_navigate` tool);
@@ -619,17 +623,17 @@ The deciding question is **stewardship**: if a single identifiable user
 curates the thing, it lives under them with a `group:*` ACL; if the
 collective curates it (no unique custodian) or a scope device-channel
 captured it, it lives under `wiki-group/<scope>/`. The REM forge
-cluster detector can flag *ex post* a cluster of user-owned captures
-that looks collective and propose promotion to `wiki-group/<scope>/`
+cluster detector can flag *ex post* a cluster of captures on a user-owned
+wiki that looks collective and propose promotion to `wiki-group/<scope>/`
 (opt-in, never automatic).
 
 Either way the fact lives in a **real, existing** wiki — there is no "root"
 wiki to fall back to. mwe-mcp's tree is a **forest** of top-level wikis (one
 per user / group), so a fact with no natural collective home stays in the
-**sender's** wiki with a broader marker — `allow=global` for a public fact (owner
-still the subject), `owner=group:*` for a collective one — and the narrative
-compiler homes its page in the fact's source wiki, never a root (see
-`narrative-compiler.md`).
+**sender's** wiki with a broader marker — `allow=global` for a public fact
+(`subject=` still on the person it is about), `subject=group:*` for a
+collective one — and the narrative compiler homes its page in the fact's
+source wiki, never a root (see `narrative-compiler.md`).
 
 ### Per-sender redaction *before* context injection
 
@@ -665,7 +669,7 @@ Two model rules are worth internalising:
   instead of N), not the existence leak.
 
 The pseudocode for the inline-marker placement, the prose/embed
-pass-through, the total-redaction collapse, and the owner-of-last-resort
+pass-through, the total-redaction collapse, and the subject-of-last-resort
 resolution all live in
 [`redaction-policy.md`](../design-notes/redaction-policy.md);
 the marker grammar and parser behaviour live in
@@ -710,7 +714,7 @@ A few clarifications that keep these levels from blurring:
   opt-in **ACL-reveal toggle** (a single control on the Settings page): an
   admin can flip a dashboard-wide lens that shows (highlighted) the
   fragments redaction would hide **and** lists every user's facts on
-  `/dashboard/facts` so the owner-or-admin fact actions can reach them. It
+  `/dashboard/facts` so the subject-or-admin fact actions can reach them. It
   is gated server-side on the admin role, dashboard-only, and never
   touches the MCP tool surface; until it is on, the memory viewer still
   redacts and `/dashboard/facts` stays ACL-projected (it does **not** show
@@ -747,13 +751,16 @@ only extends the *read/notify* perimeter, never write. There is an
 explicit test (`shared_with_does_not_grant_write_access`) pinning this.
 
 Resolution order (first match wins, so the audit view shows the
-most-specific grant): **owner** → direct `Principal::User` in
+most-specific grant): **owner** — the wiki's own principal, i.e. the user
+itself, anyone when that principal is the `global` group, or a member of
+the owning group (owner-equivalent) → direct `Principal::User` in
 `shared_with` → `Principal::Group` membership in `shared_with`
 (one enrollment lookup, only when a group entry is present) →
 `Principal::Global` in `shared_with` → otherwise **denied**. The
-outcome is a tagged `ReadAccessOutcome` enum (`Owner` / `SharedUser` /
-`SharedGroup(id)` / `Global` / `Denied`) rather than a bare boolean, so
-the access-via-group path stays distinguishable in the audit log.
+outcome is a tagged `ReadAccessOutcome` enum (`Owner` /
+`OwnerGroupMember(id)` / `SharedUser` / `SharedGroup(id)` / `Global` /
+`Denied`) rather than a bare boolean, so the access-via-group path stays
+distinguishable in the audit log.
 
 `shared_with` is the sharing primitive of the **smart-wiki** family
 (a wiki marked `smart: true` in its `_meta.md`). It is

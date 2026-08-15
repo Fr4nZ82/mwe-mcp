@@ -6,7 +6,7 @@
 //! per-media ACL (`media_catalog` row, `can_read` semantics — no admin
 //! bypass). The byte-level mechanics (store, dedup, widening) are
 //! covered by `mwe_core::media` unit tests; here we pin the route
-//! contract: owner reads, an outsider gets 403 even though the page
+//! contract: subject reads, an outsider gets 403 even though the page
 //! marker is visible, widening opens the read, unknown ids 404,
 //! malformed ids 400, and an anonymous request bounces to login.
 
@@ -107,7 +107,7 @@ async fn owner_reads_outsider_denied_until_widened() {
             bytes: b"jpegbytes".to_vec(),
             kind: media::kind::PHOTO.to_owned(),
             mime: "image/jpeg".to_owned(),
-            owner: "user:alice".parse().unwrap(),
+            subject: "user:alice".parse().unwrap(),
             uploaded_by_consumer: None,
             caption: None,
             description: None,
@@ -118,7 +118,7 @@ async fn owner_reads_outsider_denied_until_widened() {
     .expect("store");
     let cid = stored.row.catalog_id;
 
-    // The owner streams the bytes with the right content type.
+    // The subject streams the bytes with the right content type.
     let resp = send(&app, media_request(cid.as_str(), &alice)).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(

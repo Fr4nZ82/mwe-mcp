@@ -130,7 +130,7 @@ operational chat + first-login welcome wizard**.
     so they cannot drift. Shown to every authenticated user, not just
     admins.
 - **Form-to-chat bridge** — the
-  deterministic `GET /dashboard/facts/:fact_id/edit` form (owner /
+  deterministic `GET /dashboard/facts/:fact_id/edit` form (subject /
   allow / topics / fact_type / body, pre-populated from `fact_index`)
   routes its `POST /edit/submit` through a `match` mapper
   (`compose_edit_message` with three macro-cases — metadata-only /

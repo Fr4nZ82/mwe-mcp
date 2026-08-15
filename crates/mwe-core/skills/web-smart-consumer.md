@@ -1,6 +1,6 @@
 ---
 name: web-smart-consumer
-version: 1.2.0
+version: 1.3.0
 description: "Mirror-less mode for a smart consumer connected over the web (the claude.ai web app, or any custom MCP connector) via the webagentoauth OAuth flow — no local filesystem, no per-turn bridge. You own ONE dedicated smart wiki (bound at consent, markerless, wiki-level ACL). Operate stateless per session: smart_bootstrap → wiki_admin_pull into context → edit → wiki_admin_push of only the pages you touched (never re-emit the whole wiki). No always-on recall: search/recall and save only on demand. Distinct from `smart-consumer`, which assumes a local .mwe/ working copy this transport does not have."
 depends_on: ["core"]
 applies_to:
@@ -56,15 +56,18 @@ There is no per-turn recall block injected for you. So:
 - **Recall / search only when it helps, or when the user asks** ("search in
   MwE", "what do you remember about X"). Do not assume context you did not
   explicitly fetch this turn. **Pick the right tool — they differ in scope:**
-  - `recall_core_global` searches **only the user's OWN memory** (their personal
-    wikis), and excludes project wikis. Use it for facts *about the user
-    themselves* ("what's my doctor's name", "my preferences").
+  - `recall_core_global` returns **only the facts whose subject is the user** —
+    facts *about them*, wherever they happen to be filed — and excludes smart
+    wikis. Use it for facts *about the user themselves* ("what's my doctor's
+    name", "my preferences").
   - `wiki_search` searches **the whole corpus the user is allowed to read**,
     ACL-filtered — including *other people's / other entities'* pages they have
     access to. Use it for anything about someone or something **other than the
     user** ("when was Morgana born", "what's the office address"). A query about
     another person will return **nothing** from `recall_core_global` (it is
-    owner-scoped by design), so go straight to `wiki_search` for those.
+    subject-scoped by design — a fact about someone else is out of its reach
+    even when it sits in a wiki the user owns), so go straight to `wiki_search`
+    for those.
   - A `wiki_search` hit points you at a page; if the snippet doesn't carry the
     exact fact, `wiki_read` the page (pass its `path`) — the prose holds detail
     the snippet may omit.
@@ -74,7 +77,8 @@ There is no per-turn recall block injected for you. So:
     so reach for it on a **question that needs depth or to connect things**
     ("tell me everything about X", "how does Y relate to Z"); use plain
     `wiki_search` for a quick one-line lookup. Steer it by passing `topics` and
-    `owners` (e.g. `["user:morgana"]`) you already know from the conversation.
+    `subjects` (e.g. `["user:morgana"]`) you already know from the conversation
+    (`owners` still accepted).
 - **Save when asked** ("save this", "remember this", "save this chat"):
   - durable project knowledge → `wiki_admin_push` into your dedicated wiki;
   - a whole conversation / transcript → `wiki_ingest_external` (source `inline`,

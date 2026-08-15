@@ -155,7 +155,7 @@ fn subjects_of(turn: &Turn, roster: &[enrollment::EnrolledUserLite]) -> BTreeSet
 }
 
 /// The people a FACT is about — governance and content together, because
-/// neither alone is aboutness: `owner`/`allow` say who may READ it, and the
+/// neither alone is aboutness: `subject`/`allow` say who may READ it, and the
 /// text and topics say who it NAMES. The measured example needs both at once —
 /// the answering fact is owned by one person and names the other only in its
 /// topics and its prose.
@@ -166,7 +166,7 @@ fn mentions_of(row: &FactIndexRow, roster: &[enrollment::EnrolledUserLite]) -> B
             out.insert(u.to_lowercase());
         }
     };
-    push(&row.owner_id);
+    push(&row.subject_id);
     for a in &row.allow_ids {
         push(a);
     }
@@ -360,7 +360,7 @@ async fn main() -> anyhow::Result<()> {
                         .saturating_sub(1) as f32;
                     let raw = h.score / SUBJECT_COVERAGE_UPLIFT.mul_add(extra, 1.0);
                     let s = if let Some(w) = label.strip_prefix("cover:") {
-                        raw + w.parse::<f32>().unwrap_or(0.0) * extra
+                        w.parse::<f32>().unwrap_or(0.0).mul_add(extra, raw)
                     } else if let Some(m) = label.strip_prefix("mult:") {
                         raw * m.parse::<f32>().unwrap_or(0.0).mul_add(extra, 1.0)
                     } else {

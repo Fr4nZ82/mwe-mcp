@@ -112,7 +112,7 @@ roadmap).
 | Identity bootstrap / admin reset / token issue | info | `cmd_*` handlers |
 | `capture: CAPTURED`, `SKIPPED`, `SUPERSEDED`, `FORGOTTEN`, `LINKED` | info | [`capture`](../../crates/mwe-core/src/capture.rs) |
 | `config: file absent, falling back to defaults` | info | [`Config::load`](../../crates/mwe-core/src/config.rs) |
-| capture validated request (wiki, page, owner, body_len) | debug | `wiki_capture` |
+| capture validated request (wiki, page, subject, body_len) | debug | `wiki_capture` |
 | capture embedded body (model, dim) | debug | `wiki_capture` |
 | capture dedup scoring (candidates, best_score, best_id) | debug | `wiki_capture` |
 | capture forget no-op | debug | `wiki_forget` |

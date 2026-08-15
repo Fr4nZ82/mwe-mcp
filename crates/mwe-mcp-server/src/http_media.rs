@@ -13,8 +13,8 @@
 //! - `POST /media` — multipart fields: `file` (required; bytes + optional
 //!   filename + content type), `kind` (required; `photo` / `video` /
 //!   `audio` / `doc`), `caption` / `description` (optional). Stores the
-//!   bytes content-addressed, dedups per (hash, owner), mints the
-//!   `catalog_id`, stamps the provisional ACL (owner = the effective
+//!   bytes content-addressed, dedups per (hash, subject), mints the
+//!   `catalog_id`, stamps the provisional ACL (subject = the effective
 //!   principal) and returns `{ catalog_id, kind, mime, sha256,
 //!   size_bytes, dedup }` — `201` fresh, `200` deduplicated.
 //! - `GET /media/:catalog_id` — loads the catalog row, evaluates the
@@ -153,7 +153,7 @@ async fn upload_media(
         );
     }
 
-    let owner = match format!("user:{}", profile.sender_id).parse() {
+    let subject = match format!("user:{}", profile.sender_id).parse() {
         Ok(p) => p,
         Err(e) => {
             warn!(error = %e, sender = %profile.sender_id, "media upload: unusable principal");
@@ -169,7 +169,7 @@ async fn upload_media(
         bytes,
         kind: fields.kind,
         mime: fields.mime,
-        owner,
+        subject,
         uploaded_by_consumer: profile.consumer_id.clone(),
         caption: fields.caption,
         description: fields.description,
@@ -584,7 +584,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn act_as_upload_stamps_the_effective_principal_as_owner() {
+    async fn act_as_upload_stamps_the_effective_principal_as_subject() {
         let (state, secret, pool, _dir) = build_state().await;
         delegations::upsert(&pool, "sam-bot", &["frodo".to_owned()], "admin")
             .await

@@ -420,7 +420,7 @@ mod tests {
             region_end: None,
             text: text.to_owned(),
             embedding: vec![0.1, 0.2, 0.3, 0.4],
-            owner_id: Principal::User("alice".into()),
+            subject_id: Principal::User("alice".into()),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: None,

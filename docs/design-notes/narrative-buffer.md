@@ -30,9 +30,9 @@ runtime SSOT for the buffer itself.
 If the `Capture` arm of `wiki_ingest_message` appended each classified
 claim straight into the published page through
 [`wiki_capture`](capture-and-dedup.md), the published page would become a
-**raw marker log** — a flat stack of `{{owner=…}}…{{/}}` regions, one per
-claim, grouped by owner, with no synthesis, no narrative dedup, no topic
-organisation. The page would accrete; it would never get *written*.
+**raw marker log** — a flat stack of `{{subject=…}}…{{/}}` regions, one
+per claim, grouped by subject, with no synthesis, no narrative dedup, no
+topic organisation. The page would accrete; it would never get *written*.
 
 Authoring is **mwe-mcp's** job, not the consumer's. mwe-mcp is
 **agent-agnostic**: a workhorse classifier (or a voice consumer, or a
@@ -146,18 +146,18 @@ kind: capture_journal
 wiki_id: alice
 ---
 
-<!-- mwe-capture id=0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d40 ts=2026-05-31T10:00:00+00:00 page=index.md type=preference status=buffered owner=user:alice allow= sender= sup= topics=food vf=2026-05-31T10:00:00+00:00 vt= style=prosa desc=Cosa%20piace%20ad%20Alice -->
+<!-- mwe-capture id=0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d40 ts=2026-05-31T10:00:00+00:00 page=index.md type=preference status=buffered subject=user:alice allow= sender=user:alice sup= topics=food vf=2026-05-31T10:00:00+00:00 vt= style=prosa desc=Cosa%20piace%20ad%20Alice -->
 Alice loves pasta.
 <!-- /mwe-capture -->
 
-<!-- mwe-capture id=0190f3c2-9b71-7d88-a4e0-7c2b9f0a1e22 ts=2026-05-31T10:01:12+00:00 page=recipes/dinner.md type=plan status=buffered owner=group:famiglia allow=user:bob sender=user:alice sup= topics=dinner vf=2026-05-31T10:01:12+00:00 vt=2026-06-05T19:00:00+00:00 style=prosa-tecnica desc=Cene%20coi%20Brandibuck -->
+<!-- mwe-capture id=0190f3c2-9b71-7d88-a4e0-7c2b9f0a1e22 ts=2026-05-31T10:01:12+00:00 page=recipes/dinner.md type=plan status=buffered subject=group:famiglia allow=user:bob sender=user:alice sup= topics=dinner vf=2026-05-31T10:01:12+00:00 vt=2026-06-05T19:00:00+00:00 style=prosa-tecnica desc=Cene%20coi%20Brandibuck -->
 Cena con i Brandibuck venerdì sera.
 <!-- /mwe-capture -->
 ```
 
 The open-comment attributes carry the classifier's full output: the
 capture `id`, the timestamp `ts`, the proposed `page`, the fact `type`,
-the lifecycle `status`, the `owner` / `allow` / `sender` ACL triple, the
+the lifecycle `status`, the `subject` / `allow` / `sender` ACL triple, the
 `sup` supersede hint, the `topics` CSV, and the per-fact validity
 interval `vf` / `vt` (`valid_from` / `valid_to`,
 ISO-8601, whitespace-free; empty `vt` = an OPEN horizon), and the ingest
@@ -165,13 +165,29 @@ placement style axis `style` / `desc` (the proposed
 page `style` rides as a bare enum token; the free-text `page_description`
 is percent-escaped into `desc` so it stays one token in this
 whitespace-delimited list). Empty optional
-fields are written as bare `key=` (see `allow=`, `sender=`, `sup=`,
+fields are written as bare `key=` (see `allow=`, `sup=`,
 `vt=` above). Because
 the comment grammar is structural, a body may not contain `{{`, `}}`, or
 `<!--`; `buffer_capture` rejects such a body with `BodyContainsReserved`
 (and an empty body with `EmptyBody`), mirroring the capture path's
-validation. As in `wiki_capture`, a `sender` equal to the `owner` is
-dropped to `None`.
+validation. As in `wiki_capture`, `sender` is always **materialized**: a
+claim whose classifier output names no distinct sender is written with
+`sender` equal to its `subject`, and the two stay separate attributes, so
+a later subject change never rebinds the original provenance. An empty
+`sender=` is the degenerate scrubbed state (a deleted user) and falls
+back to the subject at read.
+
+`subject=` names the fact's **subject** — who or what the claim is
+*about*, as distinct from `allow` (its audience) and `sender` (who
+captured it). The parser also accepts `owner=` for that attribute, and
+**always will**: this journal is the durable record a `rm engine.db`
+rebuild replays, so it holds entries written by every version the
+deployment has ever run, and the attribute is required — an entry
+carrying neither spelling is dropped whole by `parse_entry`, silently,
+with no warning and no counter. Withdrawing the alias would therefore
+not raise an error; it would report a clean rebuild that had lost facts.
+Nothing writes `owner=`, and an entry that somehow carries both is read
+as `subject=`.
 
 ## The `capture_buffer` table — a rebuildable index
 
@@ -183,7 +199,7 @@ the `style` / `page_description` placement columns, 0038 the
 **It is a cache/index over the journal, not the SSOT.** Its columns mirror
 the `fact_index` classifier/ACL columns so promotion can be a straight copy:
 `capture_id` (primary key), `wiki_id`, `target_page`, `body`,
-`owner_id`, `allow_ids` (JSON), `sender_id`, `fact_type`, `topics`
+`subject_id`, `allow_ids` (JSON), `sender_id`, `fact_type`, `topics`
 (JSON), `supersede_hint`, `status`, `captured_at`, `processed_at`,
 `resolved_fact_id`, `source_kind`, `source_ref`, the validity
 interval `valid_from` / `valid_to` (mirrored in the journal as `vf` /
@@ -288,7 +304,7 @@ Per buffered capture, in order:
    jaccard 6-gram scan a live
    [`capture::wiki_capture`](capture-and-dedup.md) runs
    ([`capture::best_dedup_candidate`](../../crates/mwe-core/src/capture.rs):
-   same-owner scope, rules-page boundary, embed-set guard, the same
+   same-subject scope, rules-page boundary, embed-set guard, the same
    `dedup_threshold` default) is re-run here against the wiki's active
    facts. At or above the threshold the capture resolves to the
    survivor — its row is stamped `skipped_dup` with `resolved_fact_id`
@@ -298,9 +314,9 @@ Per buffered capture, in order:
    similarity dedup anywhere in its lifecycle (promotion collapsed
    exact strings only, and the Revisor deliberately skips pairs above
    the threshold as write-time territory). Sub-threshold paraphrases
-   stay the REM night's job (the Revisor sub-job). Same-owner scoping
-   also means the same text under two owners promotes as two facts —
-   per-fragment ownership is never folded across principals. The
+   stay the REM night's job (the Revisor sub-job). Same-subject scoping
+   also means the same text about two subjects promotes as two facts —
+   per-fragment subject authority is never folded across principals. The
    capture is excluded from its own comparison, so a retry after a
    partial promotion does not skip a capture against the fact it itself
    minted. Still no LLM here — the scan is pure CPU. A fold is also the
@@ -396,7 +412,7 @@ remaining stage is tracked in the roadmap:
 
 | Stage | What it adds | Status |
 |---|---|---|
-| **light dream (promotion)** | Drains `buffered` captures into `fact_index` (`fact_id == capture_id`), applying the `supersede_hint` and the capture-parity dedup skip (jaccard ≥ threshold, same-owner); flips `status` to `promoted` / `skipped_dup`. | **landed** ([above](#promotion--the-light-dream)) |
+| **light dream (promotion)** | Drains `buffered` captures into `fact_index` (`fact_id == capture_id`), applying the `supersede_hint` and the capture-parity dedup skip (jaccard ≥ threshold, same-subject); flips `status` to `promoted` / `skipped_dup`. | **landed** ([above](#promotion--the-light-dream)) |
 | **Cronista (compilation)** | Compiles the promoted facts into the published prose `.md` pages on the nightly cadence. The `.md` becomes the compiler's output, and `source_path` + offsets are repointed off `_captures.md` onto it. | **landed** ([`narrative-compiler.md`](narrative-compiler.md)) |
 | **recall over compiled prose** | Recall navigates and serves the compiled standard pages rather than the raw promoted fact body. | planned |
 

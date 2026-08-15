@@ -12,7 +12,7 @@
 //!
 //! 1. **Dedup skip — the direct path's own check, deferred.** The same
 //!    jaccard 6-gram scan a live [`crate::capture::wiki_capture`] runs
-//!    (same-owner scope, rules-page boundary, embed-set guard, the same
+//!    (same-subject scope, rules-page boundary, embed-set guard, the same
 //!    `dedup_threshold` default): when an active fact in the wiki already
 //!    carries the claim at ≥ threshold, the capture resolves to that
 //!    survivor (`skipped_dup`) and no new fact is created. Parity is the
@@ -232,7 +232,7 @@ async fn promote_one(
     };
 
     // Dedup skip — the direct path's own scan, deferred to promotion
-    // ([`crate::capture::best_dedup_candidate`]: same-owner scope,
+    // ([`crate::capture::best_dedup_candidate`]: same-subject scope,
     // channel-page boundary, jaccard 6-gram vs the wiki's active facts).
     // Exclude self so a retry after a partial promotion does not skip
     // the capture against its own fact. The embed SETS must also match:
@@ -242,7 +242,7 @@ async fn promote_one(
     let on_channel_page = crate::wiki::is_channel_page(&cap.target_page.to_string_lossy());
     if let Some((dup, score)) = crate::capture::best_dedup_candidate(
         &active,
-        &cap.owner,
+        &cap.subject,
         on_channel_page,
         &cap.body,
         Some(&cap.capture_id),
@@ -305,7 +305,7 @@ async fn promote_one(
         region_end: None,
         text: cap.body.clone(),
         embedding,
-        owner_id: cap.owner.clone(),
+        subject_id: cap.subject.clone(),
         allow_ids: cap.allow.clone(),
         sender_id: cap.sender.clone(),
         fact_type: cap.fact_type.clone(),
@@ -423,7 +423,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("index.md"),
             body: body.to_owned(),
-            owner: "user:alice".parse::<Principal>().unwrap(),
+            subject: "user:alice".parse::<Principal>().unwrap(),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("preference".to_owned()),
@@ -467,7 +467,7 @@ mod tests {
         assert_eq!(row.text, "Alice loves pasta.");
         assert!(row.source_path.ends_with("_captures.md"));
         assert!(row.region_start.is_none());
-        assert_eq!(row.owner_id, "user:alice".parse::<Principal>().unwrap());
+        assert_eq!(row.subject_id, "user:alice".parse::<Principal>().unwrap());
 
         // The buffer row is now promoted, not pending.
         assert_eq!(capture_buffer::count_buffered(&pool).await.unwrap(), 0);
@@ -816,17 +816,17 @@ mod tests {
         );
     }
 
-    /// Ownership discipline at promotion (the direct path's same-owner
-    /// scope, ported): the SAME text under two different owners is two
-    /// facts — per-fragment ownership is never folded across principals.
+    /// Subject authority discipline at promotion (the direct path's same-subject
+    /// scope, ported): the SAME text under two different subjects is two
+    /// facts — per-fragment subject authority is never folded across principals.
     #[tokio::test]
-    async fn same_text_different_owner_is_not_folded() {
+    async fn same_text_different_subject_is_not_folded() {
         let (_dir, tree, pool) = setup().await;
         capture_buffer::buffer_capture(&tree, &pool, cap_req("The cat is called Felix."), None)
             .await
             .unwrap();
         let mut other = cap_req("The cat is called Felix.");
-        other.owner = "user:bob".parse::<Principal>().unwrap();
+        other.subject = "user:bob".parse::<Principal>().unwrap();
         capture_buffer::buffer_capture(&tree, &pool, other, None)
             .await
             .unwrap();
@@ -834,7 +834,7 @@ mod tests {
         let report = run_light_cycle(&pool, &tree, embedder(), &LightPolicy::default())
             .await
             .unwrap();
-        assert_eq!(report.promoted, 2, "cross-owner pair must not dedup");
+        assert_eq!(report.promoted, 2, "cross-subject pair must not dedup");
         assert_eq!(report.skipped_dup, 0);
     }
 }

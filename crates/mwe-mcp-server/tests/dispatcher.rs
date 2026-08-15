@@ -402,7 +402,7 @@ async fn wiki_read_returns_not_found_for_unknown_wiki() {
 /// `wikis/alice/salute.md`: global → owner=user:alice → allow=group:famiglia.
 /// `alice` (member of `famiglia`) sees everything; `bob` (also in
 /// `famiglia`) sees global + the group-allowed region but not alice's
-/// owner-only region; `carol` (no group) sees only the global region.
+/// subject-only region; `carol` (no group) sees only the global region.
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,
@@ -479,7 +479,7 @@ async fn wiki_read_projects_acl_per_sender() {
     let tree = WikiTree::open(dir.path()).expect("reopen");
     let state = McpState { tree, ..state };
 
-    // ---- alice (owner + group member) sees everything ----
+    // ---- alice (subject + group member) sees everything ----
     let out = call(
         &state,
         &alice_identity,
@@ -498,8 +498,8 @@ async fn wiki_read_projects_acl_per_sender() {
     assert!(rendered.contains("Shared note for the family group."));
     assert!(!rendered.contains("[redacted]"));
 
-    // ---- bob (group member, not owner) sees global + group-allowed,
-    //      misses alice's owner-only region ----
+    // ---- bob (group member, not subject) sees global + group-allowed,
+    //      misses alice's subject-only region ----
     let bob_identity = IdentityProfile {
         sender_id: "bob".into(),
         ..alice_identity.clone()
@@ -521,7 +521,7 @@ async fn wiki_read_projects_acl_per_sender() {
     assert!(rendered.contains("Shared note for the family group."));
     assert!(rendered.contains("[redacted]"));
 
-    // ---- carol (not owner, not in `famiglia`) sees only the global region ----
+    // ---- carol (not subject, not in `famiglia`) sees only the global region ----
     let carol_identity = IdentityProfile {
         sender_id: "carol".into(),
         ..alice_identity
@@ -559,7 +559,7 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
     .expect("write _meta.md");
     std::fs::write(wiki_dir.join("index.md"), "# Alice\n\nLanding page.\n")
         .expect("write index.md");
-    // A non-index page with one owner-only region — proves the ACL map is
+    // A non-index page with one subject-only region — proves the ACL map is
     // resolved for the *page read*, not for `index.md`.
     std::fs::write(
         wiki_dir.join("recipes").join("pasta.md"),
@@ -596,7 +596,7 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
     .expect_err("the map is not a memory page");
     assert!(err.contains("not_found") && err.contains("map"), "{err}");
 
-    // The owner (alice) reads the subpage in full.
+    // The subject (alice) reads the subpage in full.
     let out = call(
         &state,
         &identity,
@@ -604,14 +604,14 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
         json!({"wiki_id": "alice", "path": "recipes/pasta.md"}),
     )
     .await
-    .expect("owner subpage read");
+    .expect("subject subpage read");
     assert_eq!(out["page"], json!("recipes/pasta.md"));
     let rendered = out["content_rendered_for_sender"].as_str().unwrap();
     assert!(rendered.contains("Free prose anyone can read."));
     assert!(rendered.contains("Alice's secret sauce."));
     assert_eq!(out["redacted_count"], json!(0));
 
-    // A non-owner reads the subpage: prose passes, the owner-only region is
+    // A non-subject reads the subpage: prose passes, the subject-only region is
     // redacted — i.e. the page's *own* ACL is applied, not index.md's.
     let bob = IdentityProfile {
         sender_id: "bob".into(),
@@ -672,7 +672,7 @@ async fn wiki_read_strips_frontmatter_so_card_topics_never_leak() {
     .expect("write _meta.md");
     // A page whose testata summarises a PRIVATE fact: the topic word
     // "celiachia" and the description sit in the frontmatter, the fact body
-    // is an owner-only region.
+    // is a subject-only region.
     std::fs::write(
         wiki_dir.join("salute.md"),
         "---\ntitle: Salute\ndescription: \"Note di salute di Alice\"\n\
@@ -685,7 +685,7 @@ async fn wiki_read_strips_frontmatter_so_card_topics_never_leak() {
     let tree = WikiTree::open(dir.path()).expect("reopen");
     let state = McpState { tree, ..state };
 
-    // A non-owner reads the page: the private region is redacted AND the
+    // A non-subject reads the page: the private region is redacted AND the
     // frontmatter (description + topic words) never reaches the reader.
     let bob = IdentityProfile {
         sender_id: "bob".into(),
@@ -729,8 +729,8 @@ async fn wiki_read_strips_frontmatter_so_card_topics_never_leak() {
         "frontmatter fence leaked: {rendered}"
     );
 
-    // The owner reads the same page: the fact is visible, but the raw
-    // frontmatter is still stripped (title/owner ride the structured JSON).
+    // The subject reads the same page: the fact is visible, but the raw
+    // frontmatter is still stripped (title/subject ride the structured JSON).
     let out = call(
         &state,
         &identity,
@@ -740,14 +740,14 @@ async fn wiki_read_strips_frontmatter_so_card_topics_never_leak() {
     .await
     .expect("alice read");
     let rendered = out["content_rendered_for_sender"].as_str().unwrap();
-    assert!(rendered.contains("è celiaca"), "owner must see the fact");
+    assert!(rendered.contains("è celiaca"), "subject must see the fact");
     assert!(
         !rendered.contains("keywords:"),
-        "frontmatter leaked to owner: {rendered}"
+        "frontmatter leaked to subject: {rendered}"
     );
     assert!(
         !rendered.contains("celiachia"),
-        "frontmatter leaked to owner: {rendered}"
+        "frontmatter leaked to subject: {rendered}"
     );
 }
 
@@ -862,7 +862,7 @@ async fn wiki_ingest_external_inline_enqueues_idempotent_job() {
     .expect("ingest");
     assert_eq!(out["status"], json!("queued"));
     let job_id = out["job_id"].as_str().expect("job_id").to_owned();
-    // Same text, same owner → the idempotency hit returns the prior job.
+    // Same text, same subject → the idempotency hit returns the prior job.
     let again = call(
         &state,
         &identity,
@@ -1537,6 +1537,52 @@ async fn wiki_admin_pull_shape_mode_returns_counters_and_no_content() {
     assert!(page["shape"]["sections"].as_u64().is_some());
 }
 
+/// The subject filter must be READ under both spellings.
+///
+/// `scope.subject_ids` is canonical; `scope.owner_ids` is the pre-rename
+/// spelling and stays accepted. Both arguments are `#[serde(default)]` with no
+/// `deny_unknown_fields`, and the `scope` object does not declare
+/// `additionalProperties: false` — so a key the server does not recognise is
+/// never rejected. The filter simply vanishes, and the caller receives every
+/// fact it may read instead of one subject's. Over-returning other people's
+/// memory is precisely what the per-fragment ACL exists to prevent, which is
+/// why "the argument was read at all" is pinned here independently of any
+/// corpus, embedder or ranking.
+///
+/// The probe is a deliberately malformed principal: a key that IS read reports
+/// an error, a key that is ignored reports nothing. The third case is the
+/// control — without it the two assertions above could pass for the wrong
+/// reason.
+#[tokio::test]
+async fn the_subject_filter_is_read_under_both_spellings() {
+    let (state, identity, _dir) = fixture(false, None).await;
+
+    for key in ["subject_ids", "owner_ids"] {
+        let err = call(
+            &state,
+            &identity,
+            "wiki_search",
+            json!({"query": "x", "scope": {key: ["not-a-principal"]}}),
+        )
+        .await
+        .expect_err("a malformed principal under a key the server reads must be refused");
+        assert!(
+            err.contains("invalid_input"),
+            "scope.{key} must reach the parser, got: {err}"
+        );
+    }
+
+    // Control: an unrecognised key really is swallowed whole.
+    call(
+        &state,
+        &identity,
+        "wiki_search",
+        json!({"query": "x", "scope": {"proprietor_ids": ["not-a-principal"]}}),
+    )
+    .await
+    .expect("an unrecognised scope key is silently ignored — that is the trap");
+}
+
 #[tokio::test]
 async fn recall_core_global_rejects_standard_token_with_smart_class_wire_error() {
     let (state, identity, _dir) = fixture(false, None).await;
@@ -1566,6 +1612,8 @@ async fn recall_core_global_returns_empty_hits_with_filter_echo_for_smart_caller
     .await
     .expect("smart caller, empty index, should succeed with no hits");
     assert_eq!(out["query"], json!("anything"));
+    assert_eq!(out["filter_applied"]["subject_user"], json!("alice"));
+    // The pre-rename key rides along for one release, same value.
     assert_eq!(out["filter_applied"]["owner_user"], json!("alice"));
     let excluded = out["filter_applied"]["excluded_wiki_types"]
         .as_array()
@@ -1651,12 +1699,12 @@ async fn forget_fixture() -> (McpState, IdentityProfile, tempfile::TempDir) {
     (state, identity, dir)
 }
 
-/// Insert one fact on `famiglia/vacanze.md` with explicit owner/allow/sender,
+/// Insert one fact on `famiglia/vacanze.md` with explicit subject/allow/sender,
 /// returning its id string. `uuid_tail` makes each test's fact distinct.
 async fn insert_forget_fact(
     pool: &sqlx::SqlitePool,
     uuid_tail: &str,
-    owner: &str,
+    subject: &str,
     allow: &[&str],
     sender: Option<&str>,
 ) -> String {
@@ -1675,7 +1723,7 @@ async fn insert_forget_fact(
             region_end: Some(32),
             text: "shared family fact".to_owned(),
             embedding: vec![0.1, 0.2, 0.3, 0.4],
-            owner_id: owner.parse().unwrap(),
+            subject_id: subject.parse().unwrap(),
             allow_ids: allow.iter().map(|a| a.parse().unwrap()).collect(),
             sender_id: sender.map(|s| s.parse().unwrap()),
             fact_type: None,
@@ -1734,13 +1782,13 @@ async fn wiki_forget_author_tombstones_own_fact() {
     assert_eq!(again["outcome"], json!("already_forgotten"));
 }
 
-/// A non-author owner (alice owns the fact bob authored) is **not** allowed to
+/// A non-author subject (alice owns the fact bob authored) is **not** allowed to
 /// open a vote from the consumer MCP — the vote is dashboard-only. The tool
 /// steers them to the dashboard and opens **no** proposal in the background.
 #[tokio::test]
-async fn wiki_forget_non_author_owner_is_pointed_to_dashboard() {
+async fn wiki_forget_non_author_subject_is_pointed_to_dashboard() {
     let (state, identity, _dir) = forget_fixture().await;
-    // owner=alice, sender=bob, allow=famiglia → alice is owner-not-author.
+    // owner=alice, sender=bob, allow=famiglia → alice is subject-not-author.
     let fid = insert_forget_fact(
         &state.pool,
         "02",
@@ -1751,7 +1799,7 @@ async fn wiki_forget_non_author_owner_is_pointed_to_dashboard() {
     .await;
     let out = call(&state, &identity, "wiki_forget", json!({"fact_id": fid}))
         .await
-        .expect("owner steered to dashboard");
+        .expect("subject steered to dashboard");
     assert_eq!(out["outcome"], json!("request_from_dashboard"));
     assert!(out["detail"].is_string(), "carries a steer for the agent");
     assert!(
@@ -1767,7 +1815,7 @@ async fn wiki_forget_non_author_owner_is_pointed_to_dashboard() {
     assert_eq!(proposals, 0, "no fact_forget proposal opened from MCP");
 }
 
-/// An unrelated caller (neither author, owner, nor owning-group member) is
+/// An unrelated caller (neither author, subject, nor owning-group member) is
 /// refused with `sender_unauthorized`.
 #[tokio::test]
 async fn wiki_forget_unrelated_caller_is_refused() {

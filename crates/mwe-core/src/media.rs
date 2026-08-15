@@ -19,7 +19,7 @@
 //! without a row is harmless garbage; a row without a blob would be a
 //! broken `GET` — the order rules it out.
 //!
-//! ACL semantics: the row's `owner` is stamped from the authenticated
+//! ACL semantics: the row's `subject` is stamped from the authenticated
 //! (act-as-resolved) principal at upload and never changes; when ingest
 //! files a fact embedding the media, the fact's read set is **unioned**
 //! into `allow_ids` ([`widen_acl`]) — monotone widening only, mirroring
@@ -105,12 +105,12 @@ pub struct MediaRow {
     /// Blob size in bytes.
     pub size_bytes: i64,
     /// Owning principal — explicit, never inherited.
-    pub owner_id: Principal,
+    pub subject_id: Principal,
     /// Additional principals granted read (grows by [`widen_acl`]).
     pub allow_ids: Vec<Principal>,
-    /// Cross-user attribution. Materialized to `owner` at upload (media has
+    /// Cross-user attribution. Materialized to `subject` at upload (media has
     /// no distinct capturer today); `None` survives only as the degenerate
-    /// scrubbed state that falls back to owner at read time.
+    /// scrubbed state that falls back to subject at read time.
     pub sender_id: Option<Principal>,
     /// The consumer that performed the upload, for audit.
     pub uploaded_by_consumer: Option<String>,
@@ -136,7 +136,7 @@ pub struct NewMedia {
     /// Declared MIME type; empty falls back to `application/octet-stream`.
     pub mime: String,
     /// Owning principal (the act-as-resolved authenticated sender).
-    pub owner: Principal,
+    pub subject: Principal,
     /// The uploading consumer's id (token claim), for audit.
     pub uploaded_by_consumer: Option<String>,
     /// Optional caption.
@@ -153,7 +153,7 @@ pub struct StoreOutcome {
     /// The catalog row (fresh or pre-existing).
     pub row: MediaRow,
     /// `true` when the same bytes were already catalogued for the same
-    /// owner and the existing row was returned instead of minting a new
+    /// subject and the existing row was returned instead of minting a new
     /// one (idempotent re-upload).
     pub deduplicated: bool,
 }
@@ -237,9 +237,9 @@ pub fn blob_path(workdir: &Path, sha256: &str) -> PathBuf {
 /// Store one media item: content-address the bytes, write the blob (once
 /// per hash), mint the catalog id and insert the row.
 ///
-/// Idempotency: a second upload of the same bytes by the same owner
+/// Idempotency: a second upload of the same bytes by the same subject
 /// returns the existing row with `deduplicated = true` (absorbing bridge
-/// retries and re-sent photos); the same bytes from a *different* owner
+/// retries and re-sent photos); the same bytes from a *different* subject
 /// mint a fresh row sharing the blob.
 ///
 /// # Errors
@@ -264,9 +264,9 @@ pub async fn store_media(
         hex::encode(Sha256::digest(&media.bytes))
     };
 
-    // Idempotent re-upload: same bytes + same owner = the existing row.
-    let owner_wire = media.owner.to_string();
-    if let Some(row) = find_by_sha_and_owner(pool, &sha256, &owner_wire).await? {
+    // Idempotent re-upload: same bytes + same subject = the existing row.
+    let subject_wire = media.subject.to_string();
+    if let Some(row) = find_by_sha_and_subject(pool, &sha256, &subject_wire).await? {
         backfill_annotations(
             pool,
             &row,
@@ -285,7 +285,7 @@ pub async fn store_media(
 
     // Blob first, row second — the snapshot ordering invariant (see the
     // module docs). Content-addressed blobs are immutable: if the path
-    // already exists (same bytes from another owner) the write is skipped.
+    // already exists (same bytes from another subject) the write is skipped.
     let blob_abs = blob_path(workdir, &sha256);
     if !blob_abs.exists() {
         if let Some(parent) = blob_abs.parent() {
@@ -310,7 +310,7 @@ pub async fn store_media(
 
     // Mint + insert with a small retry loop: two concurrent uploads can
     // race on the per-day-per-kind NNN (PK collision) or — for identical
-    // bytes from the same owner — on the (sha256, owner) unique index.
+    // bytes from the same subject — on the (sha256, subject) unique index.
     // Both surface as a unique-constraint violation; re-probe/re-mint
     // and try again instead of bubbling a 500.
     let mut catalog_id = None;
@@ -320,7 +320,7 @@ pub async fn store_media(
         let inserted = sqlx::query(
             "INSERT INTO media_catalog (
                 catalog_id, sha256, kind, mime, size_bytes,
-                owner_id, allow_ids, sender_id, uploaded_by_consumer,
+                subject_id, allow_ids, sender_id, uploaded_by_consumer,
                 caption, description, original_filename, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
@@ -329,12 +329,12 @@ pub async fn store_media(
         .bind(&media.kind)
         .bind(&mime)
         .bind(size)
-        .bind(&owner_wire)
+        .bind(&subject_wire)
         .bind(&allow_json)
-        // sender_id = owner: media has no distinct capturer concept today,
-        // so provenance is materialized to the owner (never NULL-at-birth),
-        // keeping it frozen if ownership is ever transferred.
-        .bind(&owner_wire)
+        // sender_id = subject: media has no distinct capturer concept today,
+        // so provenance is materialized to the subject (never NULL-at-birth),
+        // keeping it frozen if subject authority is ever transferred.
+        .bind(&subject_wire)
         .bind(&media.uploaded_by_consumer)
         .bind(&media.caption)
         .bind(&media.description)
@@ -350,8 +350,8 @@ pub async fn store_media(
             },
             Err(e) if is_unique_violation(&e) => {
                 // A concurrent identical upload may have won the
-                // (sha256, owner) race — return its row as a dedup.
-                if let Some(row) = find_by_sha_and_owner(pool, &sha256, &owner_wire).await? {
+                // (sha256, subject) race — return its row as a dedup.
+                if let Some(row) = find_by_sha_and_subject(pool, &sha256, &subject_wire).await? {
                     return Ok(StoreOutcome {
                         row,
                         deduplicated: true,
@@ -372,7 +372,7 @@ pub async fn store_media(
         catalog_id = %catalog_id,
         kind = %media.kind,
         size_bytes = size,
-        owner = %owner_wire,
+        subject = %subject_wire,
         "media stored"
     );
 
@@ -402,16 +402,16 @@ pub async fn find_by_id(pool: &SqlitePool, catalog_id: &CatalogId) -> Result<Opt
 
 /// The upload dedup probe: the row for this content hash owned by this
 /// principal, when one exists.
-async fn find_by_sha_and_owner(
+async fn find_by_sha_and_subject(
     pool: &SqlitePool,
     sha256: &str,
-    owner_wire: &str,
+    subject_wire: &str,
 ) -> Result<Option<MediaRow>> {
     let raw: Option<RawMediaRow> = sqlx::query_as(&format!(
-        "SELECT {COLUMNS} FROM media_catalog WHERE sha256 = ? AND owner_id = ?"
+        "SELECT {COLUMNS} FROM media_catalog WHERE sha256 = ? AND subject_id = ?"
     ))
     .bind(sha256)
-    .bind(owner_wire)
+    .bind(subject_wire)
     .fetch_optional(pool)
     .await?;
     raw.map(decode_row).transpose()
@@ -440,7 +440,7 @@ pub async fn find_by_ids(pool: &SqlitePool, catalog_ids: &[CatalogId]) -> Result
 #[must_use]
 pub fn row_visible_to(row: &MediaRow, sender_id: &str, sender_groups: &[String]) -> bool {
     let acl = Acl {
-        owner: Some(row.owner_id.clone()),
+        subject: Some(row.subject_id.clone()),
         allow: row.allow_ids.clone(),
     };
     can_read(&acl, sender_id, sender_groups, row.sender_id.as_ref())
@@ -449,9 +449,9 @@ pub fn row_visible_to(row: &MediaRow, sender_id: &str, sender_groups: &[String])
 /// Widen the row's ACL with a linked fact's read set — **monotone union
 /// only**, the media twin of the fact `allow`-monotonicity invariant.
 ///
-/// The fact's owner, every `allow` entry and its sender are unioned into
-/// the row's `allow_ids` (minus the row's own owner, which already
-/// reads). The row's `owner`/`sender` slots never change. Widening is a
+/// The fact's subject, every `allow` entry and its sender are unioned into
+/// the row's `allow_ids` (minus the row's own subject, which already
+/// reads). The row's `subject`/`sender` slots never change. Widening is a
 /// disclosure-relevant event, so it is traced; a dedicated audit verb is
 /// the open ACL-change design (roadmap group 6) and deliberately not
 /// built here.
@@ -464,7 +464,7 @@ pub fn row_visible_to(row: &MediaRow, sender_id: &str, sender_groups: &[String])
 pub async fn widen_acl(
     pool: &SqlitePool,
     catalog_id: &CatalogId,
-    fact_owner: &Principal,
+    fact_subject: &Principal,
     fact_allow: &[Principal],
     fact_sender: Option<&Principal>,
 ) -> Result<bool> {
@@ -473,11 +473,11 @@ pub async fn widen_acl(
     };
     let mut allow = row.allow_ids.clone();
     let mut grew = false;
-    let candidates = std::iter::once(fact_owner)
+    let candidates = std::iter::once(fact_subject)
         .chain(fact_allow.iter())
         .chain(fact_sender);
     for p in candidates {
-        if *p != row.owner_id && !allow.contains(p) {
+        if *p != row.subject_id && !allow.contains(p) {
             allow.push(p.clone());
             grew = true;
         }
@@ -543,7 +543,7 @@ pub async fn backfill_annotations(
 }
 
 /// Whether a `sqlx` error is a `SQLite` unique-constraint violation (the
-/// catalog-id PK or the (sha256, owner) index).
+/// catalog-id PK or the (sha256, subject) index).
 fn is_unique_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.message().contains("UNIQUE constraint failed"))
 }
@@ -615,7 +615,7 @@ fn derive_ext(original_filename: Option<&str>, mime: &str) -> String {
 
 // ---------- row decode ----------
 
-const COLUMNS: &str = "catalog_id, sha256, kind, mime, size_bytes, owner_id, allow_ids, \
+const COLUMNS: &str = "catalog_id, sha256, kind, mime, size_bytes, subject_id, allow_ids, \
      sender_id, uploaded_by_consumer, caption, description, original_filename, \
      created_at, updated_at";
 
@@ -626,7 +626,7 @@ struct RawMediaRow {
     kind: String,
     mime: String,
     size_bytes: i64,
-    owner_id: String,
+    subject_id: String,
     allow_ids: Option<String>,
     sender_id: Option<String>,
     uploaded_by_consumer: Option<String>,
@@ -640,8 +640,8 @@ struct RawMediaRow {
 fn decode_row(r: RawMediaRow) -> Result<MediaRow> {
     let catalog_id =
         CatalogId::parse(&r.catalog_id).map_err(|e| MediaError::Decode(e.to_string()))?;
-    let owner_id = r
-        .owner_id
+    let subject_id = r
+        .subject_id
         .parse::<Principal>()
         .map_err(|e| MediaError::Decode(e.to_string()))?;
     let allow_ids = match r.allow_ids.as_deref() {
@@ -660,7 +660,7 @@ fn decode_row(r: RawMediaRow) -> Result<MediaRow> {
         kind: r.kind,
         mime: r.mime,
         size_bytes: r.size_bytes,
-        owner_id,
+        subject_id,
         allow_ids,
         sender_id,
         uploaded_by_consumer: r.uploaded_by_consumer,
@@ -689,12 +689,12 @@ mod tests {
         pool
     }
 
-    fn sample_media(owner: &str) -> NewMedia {
+    fn sample_media(subject: &str) -> NewMedia {
         NewMedia {
             bytes: b"fake jpeg bytes".to_vec(),
             kind: kind::PHOTO.to_owned(),
             mime: "image/jpeg".to_owned(),
-            owner: owner.parse().expect("principal"),
+            subject: subject.parse().expect("principal"),
             uploaded_by_consumer: Some("sam".to_owned()),
             caption: Some("at the gate".to_owned()),
             description: None,
@@ -714,7 +714,7 @@ mod tests {
         assert!(one.row.catalog_id.as_str().ends_with("-photo-001.jpg"));
         assert_eq!(one.row.kind, "photo");
         assert_eq!(one.row.mime, "image/jpeg");
-        assert_eq!(one.row.owner_id, "user:frodo".parse().unwrap());
+        assert_eq!(one.row.subject_id, "user:frodo".parse().unwrap());
         assert!(one.row.allow_ids.is_empty());
         let blob = blob_path(dir.path(), &one.row.sha256);
         assert_eq!(std::fs::read(&blob).unwrap(), b"fake jpeg bytes");
@@ -727,7 +727,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn same_bytes_same_owner_dedups_to_existing_row() {
+    async fn same_bytes_same_subject_dedups_to_existing_row() {
         let dir = tempfile::tempdir().unwrap();
         let pool = make_pool().await;
 
@@ -742,7 +742,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn same_bytes_different_owner_mints_fresh_row_sharing_blob() {
+    async fn same_bytes_different_subject_mints_fresh_row_sharing_blob() {
         let dir = tempfile::tempdir().unwrap();
         let pool = make_pool().await;
 
@@ -778,7 +778,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn acl_check_owner_reads_others_denied_until_widened() {
+    async fn acl_check_subject_reads_others_denied_until_widened() {
         let dir = tempfile::tempdir().unwrap();
         let pool = make_pool().await;
 

@@ -269,12 +269,13 @@ pub struct FactForPage {
     /// Optional taxonomy hint.
     pub fact_type: Option<String>,
     /// Owning principal (`global` / `user:<id>` / `group:<id>`).
-    pub owner: Principal,
+    #[serde(alias = "owner")]
+    pub subject: Principal,
     /// Extra read principals.
     #[serde(default)]
     pub allow: Vec<Principal>,
     /// Cross-user attribution (who said it); always set on write — equals
-    /// `owner` for a self-authored fact. `None` only on legacy provenance.
+    /// `subject` for a self-authored fact. `None` only on legacy provenance.
     pub sender: Option<Principal>,
     /// The standard wiki the fact currently lives in (its `fact_index.wiki_id`).
     pub source_wiki_id: String,
@@ -344,7 +345,7 @@ impl FactForPage {
             fact_id: row.fact_id.clone(),
             text: row.text.clone(),
             fact_type: row.fact_type.clone(),
-            owner: row.owner_id.clone(),
+            subject: row.subject_id.clone(),
             allow: row.allow_ids.clone(),
             sender: row.sender_id.clone(),
             source_wiki_id: row.wiki_id.clone(),
@@ -1007,7 +1008,7 @@ pub fn build_compilation_plan(
         }
     }
 
-    // 5. orphan fallback (deterministic): owner's person page, else the fact's
+    // 5. orphan fallback (deterministic): subject's person page, else the fact's
     // source wiki's foundation page, else skip (never an arbitrary page).
     for f in facts {
         if assigned.contains(f.fact_id.as_str()) {
@@ -1346,7 +1347,7 @@ fn resolve_page_wiki(
     candidate.filter(|w| w != crate::types::WikiId::ROOT)
 }
 
-/// Deterministic orphan home — the owner's wiki first, then the fact's source
+/// Deterministic orphan home — the subject's wiki first, then the fact's source
 /// wiki; `None` when neither has a foundation node.
 ///
 /// **Which page of that wiki depends on the fact, not only on the wiki.** Two
@@ -1368,13 +1369,13 @@ fn resolve_page_wiki(
 /// no identity to reserve.
 fn orphan_target(f: &FactForPage, pages: &BTreeMap<String, PagePlan>) -> Option<String> {
     let identity = f.salience.as_deref() == Some("high");
-    let owner_slug = match &f.owner {
-        // The builtin global group has no owner page to home an orphan on.
+    let subject_slug = match &f.subject {
+        // The builtin global group has no subject page to home an orphan on.
         p if p.is_global() => String::new(),
         Principal::User(id) | Principal::Group(id) => slugify(id),
     };
     let src_slug = slugify(&f.source_wiki_id);
-    for wiki_slug in [owner_slug, src_slug] {
+    for wiki_slug in [subject_slug, src_slug] {
         if wiki_slug.is_empty() {
             continue;
         }
@@ -1486,7 +1487,7 @@ fn fact_render_key(f: &FactForPage) -> String {
     // The ACL is part of the key because the Cronista's tagging now depends on
     // it: a restricted fact gets an `(audience: …)` hint and its prose is kept
     // inside its `<fN>` span (see `compiler::audience_hint`), so the compiled
-    // page content is a function of owner/allow/sender. An ACL-only change must
+    // page content is a function of subject/allow/sender. An ACL-only change must
     // therefore re-dirty the page so the next compile re-tags. `allow` is sorted
     // so a pure reordering is not a spurious change.
     let mut allow: Vec<String> = f.allow.iter().map(ToString::to_string).collect();
@@ -1498,7 +1499,7 @@ fn fact_render_key(f: &FactForPage) -> String {
         f.valid_to.as_deref().unwrap_or(""),
         f.decay_reason.as_deref().unwrap_or(""),
         f.successor_fact_id.as_ref().map_or("", |s| s.as_str()),
-        f.owner,
+        f.subject,
         allow.join(","),
         f.sender.as_ref().map_or(String::new(), ToString::to_string),
     )
@@ -1519,7 +1520,7 @@ pub fn page_fingerprint(p: &PagePlan) -> String {
     // in-place claim correction (same `fact_id`, new text — the shape a
     // dashboard comment produces), a validity closure (same id, new
     // `valid_to`/`decay_reason`), or an ACL change (same id, new
-    // owner/allow/sender — which now steers the Cronista's tagging) flips the
+    // subject/allow/sender — which now steers the Cronista's tagging) flips the
     // fingerprint and marks the page dirty. A fact-id-only fingerprint would
     // miss them all: they keep the id.
     let mut facts: Vec<String> = p
@@ -2039,7 +2040,7 @@ pub fn extract_assigned_fact_ids(plan: &CompilationPlan) -> BTreeMap<String, Str
 /// Rust only computes what the model cannot see on its own). Two signals
 /// ride the prompt context:
 ///
-/// - **identity-page scope** (per fact, via its owner) — which `person`
+/// - **identity-page scope** (per fact, via its subject) — which `person`
 ///   pages the fact's *subject* covers, so the model can keep a foreign
 ///   subject off a user's identity index (an identity index carries one
 ///   subject; the relation surfaces through the page-user's own facts plus
@@ -2054,7 +2055,7 @@ pub struct CartografoSignals {
     /// every page of it, or a per-wiki slice once the memory outgrows
     /// [`FOREST_PAGE_CEILING`]. Built by [`foreign_page_offers`].
     pub foreign_pages: ForeignPages,
-    /// Owner principal (wire form, e.g. `user:bruno` / `group:famiglia` /
+    /// Subject principal (wire form, e.g. `user:bruno` / `group:famiglia` /
     /// `global`) → the rendered identity-page scope tag: a comma-joined list
     /// of `person`-page slugs, `any` (the builtin global group — world
     /// context is never a foreign subject), or `none` (a group with no
@@ -2072,7 +2073,7 @@ pub struct CartografoSignals {
 }
 
 impl CartografoSignals {
-    /// The identity-page scope tag for one owner, from the precomputed map.
+    /// The identity-page scope tag for one subject, from the precomputed map.
     ///
     /// Falls back to what is derivable without enrollment (a bag built
     /// empty): a user covers their own page, the global group covers `any`,
@@ -2089,11 +2090,11 @@ impl CartografoSignals {
     }
 
     #[must_use]
-    fn identity_scope_tag(&self, owner: &Principal) -> String {
-        if let Some(tag) = self.subject_scopes.get(&owner.to_string()) {
+    fn identity_scope_tag(&self, subject: &Principal) -> String {
+        if let Some(tag) = self.subject_scopes.get(&subject.to_string()) {
             return tag.clone();
         }
-        match owner {
+        match subject {
             p if p.is_global() => "any".to_owned(),
             Principal::User(id) => slugify(id),
             Principal::Group(_) => "none".to_owned(),
@@ -2105,7 +2106,7 @@ impl CartografoSignals {
 ///
 /// **A fact is free to live in any wiki** (founder, 2026-08-10): where a fact
 /// is filed changes nothing about who may read it — read permission is judged
-/// per fact on `owner ∪ allow ∪ sender`, never on the container — so the only
+/// per fact on `subject ∪ allow ∪ sender`, never on the container — so the only
 /// question is whether the prose it lands in hangs together. That makes the
 /// page list the whole mechanism: a page the model is not shown is a page a
 /// fact can never reach, and until 2026-08-14 the list was its own wiki's
@@ -2240,13 +2241,13 @@ fn registry_source_path(tree: &WikiTree, e: &ConceptRegistryEntry) -> Option<Str
     ))
 }
 
-/// Compute the per-owner identity-page scope tags for `facts` from the
+/// Compute the per-subject identity-page scope tags for `facts` from the
 /// enrollment tables — the mechanical half of the identity-page discipline.
 ///
-/// A fact is *foreign* to an identity index when its `owner` is a
+/// A fact is *foreign* to an identity index when its `subject` is a
 /// **different user**, or a **group the page's user is not a member of** (a
 /// group the user belongs to is their own shared context, never foreign).
-/// Rendered per distinct owner as the pages the subject covers:
+/// Rendered per distinct subject as the pages the subject covers:
 ///
 /// - `user:<id>` → that user's `person`-page slug;
 /// - `group:<g>` → the member users' `person`-page slugs
@@ -2264,11 +2265,11 @@ pub async fn subject_scopes_for(
 ) -> Result<BTreeMap<String, String>> {
     let mut scopes: BTreeMap<String, String> = BTreeMap::new();
     for f in facts {
-        let key = f.owner.to_string();
+        let key = f.subject.to_string();
         if scopes.contains_key(&key) {
             continue;
         }
-        let tag = match &f.owner {
+        let tag = match &f.subject {
             p if p.is_global() => "any".to_owned(),
             Principal::User(id) => slugify(id),
             Principal::Group(g) => {
@@ -2532,7 +2533,7 @@ pub async fn wiki_locales_for(
 ///
 /// LLM, batched, one-fact-one-page. Resilient: a batch whose LLM call or JSON
 /// parse fails is **skipped softly** (its facts fall to the Architetto's
-/// deterministic owner-page fallback) rather than aborting the cycle.
+/// deterministic subject-page fallback) rather than aborting the cycle.
 ///
 /// `signals` is the structural context ([`CartografoSignals`]): each fact
 /// line carries its identity-page scope tag, each page line its fact mass —
@@ -2709,11 +2710,11 @@ pub enum NewFactPlacement<'a> {
     /// overnight.
     ///
     /// A `salience: "high"` fact is in neither half — it is reserved for the
-    /// owner's identity card and gets there by orphan-fallback, exactly as
+    /// subject's identity card and gets there by orphan-fallback, exactly as
     /// under [`Self::Ingest`].
     NamedThenCartografo(&'a dyn LlmBackend),
     /// No placement intelligence: every new fact orphan-falls-back to its
-    /// owner / source-wiki foundation page — the historical `cartografo = None`
+    /// subject / source-wiki foundation page — the historical `cartografo = None`
     /// degradation, kept for a Full pass on a deployment with no strong slot.
     OrphanFallback,
 }
@@ -2799,7 +2800,7 @@ fn ingest_placement_blueprint(facts: &[FactForPage]) -> Blueprint {
         // constraints) whose home is the actor's identity CARD,
         // *overriding* any concrete ingest `target_page`. We achieve that by
         // leaving it UNASSIGNED here: the deterministic orphan-fallback in
-        // `build_compilation_plan` then homes it on the owner's card node
+        // `build_compilation_plan` then homes it on the subject's card node
         // (`profile.md`) — see `orphan_target`, which reads the same salience
         // to tell a reserved fact from one that merely has no page yet. No new
         // branch, no LLM — the same path a fact with no proposed page already
@@ -2856,7 +2857,7 @@ async fn place_new_facts(
                 .collect();
             // The remainder is what the classifier left unplaced. A
             // `high`-salience fact is excluded with the same `continue` that
-            // keeps it out of `named`: its home is the owner's card, reserved
+            // keeps it out of `named`: its home is the subject's card, reserved
             // by the routing rather than chosen, so putting it in front of the
             // Cartografo would offer a decision that is already made.
             let remainder: Vec<FactForPage> = facts
@@ -3828,12 +3829,12 @@ fn describe_facts(batch: &[FactForPage], signals: &CartografoSignals) -> String 
         .iter()
         .map(|f| {
             format!(
-                "[id:{}] \"{}\" type={} owner={} identity_pages={}",
+                "[id:{}] \"{}\" type={} subject={} identity_pages={}",
                 f.fact_id,
                 f.text.replace('\n', " "),
                 f.fact_type.as_deref().unwrap_or("other"),
-                f.owner,
-                signals.identity_scope_tag(&f.owner),
+                f.subject,
+                signals.identity_scope_tag(&f.subject),
             )
         })
         .collect::<Vec<_>>()
@@ -3944,7 +3945,7 @@ fn parse_json<T: serde::de::DeserializeOwned>(raw: &str) -> Option<T> {
 mod tests {
     use super::*;
 
-    fn fact(id_seed: u8, text: &str, owner: &str, src: &str) -> FactForPage {
+    fn fact(id_seed: u8, text: &str, subject: &str, src: &str) -> FactForPage {
         // Deterministic UUIDv7-shaped ids for tests.
         let id = format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{id_seed:02x}");
         FactForPage {
@@ -3952,7 +3953,7 @@ mod tests {
             fact_id: FactId::parse(&id).unwrap(),
             text: text.to_owned(),
             fact_type: Some("bio".to_owned()),
-            owner: owner.parse::<Principal>().unwrap(),
+            subject: subject.parse::<Principal>().unwrap(),
             allow: Vec::new(),
             sender: None,
             source_wiki_id: src.to_owned(),
@@ -4022,7 +4023,7 @@ mod tests {
         );
         assert!(
             !seen.contains("celiaco"),
-            "a high-salience fact is reserved for the owner's card by the routing, \
+            "a high-salience fact is reserved for the subject's card by the routing, \
              so it is not a decision to offer"
         );
         assert_eq!(
@@ -4159,7 +4160,7 @@ mod tests {
                 region_end: None,
                 text: text.to_owned(),
                 embedding: vec![0.1, 0.2],
-                owner_id: "user:alice".parse::<Principal>().unwrap(),
+                subject_id: "user:alice".parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
@@ -4360,7 +4361,7 @@ mod tests {
             &ConceptRegistry::empty("t"),
             "2026-05-31T00:00:00Z",
         );
-        // Both facts land on alice (1 assigned, 2 orphan→owner page).
+        // Both facts land on alice (1 assigned, 2 orphan→subject page).
         let alice = &plan.pages["alice"];
         assert_eq!(alice.primary_facts.len(), 2);
         assert_eq!(plan.fact_count, 2);
@@ -4677,7 +4678,7 @@ mod tests {
                 region_end: None,
                 text: "Alice did not ask to be signed up for the east fair".to_owned(),
                 embedding: vec![0.1, 0.2],
-                owner_id: "user:alice".parse::<Principal>().unwrap(),
+                subject_id: "user:alice".parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: Some("episode".to_owned()),
@@ -4800,7 +4801,7 @@ mod tests {
                 region_end: None,
                 text: "Alice loves pasta".to_owned(),
                 embedding: vec![0.1, 0.2],
-                owner_id: "user:alice".parse::<Principal>().unwrap(),
+                subject_id: "user:alice".parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: Some("preference".to_owned()),
@@ -4819,7 +4820,7 @@ mod tests {
         .await
         .unwrap();
 
-        // First build (no LLM → foundation + deterministic owner-page fallback).
+        // First build (no LLM → foundation + deterministic subject-page fallback).
         let plan = build_wiki_plan(
             &pool,
             &tree,
@@ -4905,7 +4906,7 @@ mod tests {
             region_end: None,
             text: "x".to_owned(),
             embedding: vec![0.1, 0.2],
-            owner_id: "user:alice".parse::<Principal>().unwrap(),
+            subject_id: "user:alice".parse::<Principal>().unwrap(),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: Some(fact_type.to_owned()),
@@ -5347,7 +5348,7 @@ mod tests {
         // In the LIGHT cadence the planner places NEW facts on the
         // page the ingest classifier proposed — with NO LLM. A fact with a
         // concrete `target_page` lands on a concept_leaf (carrying its testata);
-        // an `index.md` fact orphan-falls-back to its owner's foundation page.
+        // an `index.md` fact orphan-falls-back to its subject's foundation page.
         let dir = tempfile::tempdir().unwrap();
         let pool = crate::db::open_or_init(dir.path()).await.expect("db");
         let wikis = dir.path().join("wikis");
@@ -5500,7 +5501,7 @@ mod tests {
                 region_end: None,
                 text: "Alice was born in 1985".to_owned(),
                 embedding: vec![0.1, 0.2],
-                owner_id: "user:alice".parse::<Principal>().unwrap(),
+                subject_id: "user:alice".parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
@@ -5569,15 +5570,15 @@ mod tests {
     }
 
     /// The identity-page scope tags — the mechanical half of the 32a
-    /// identity-page discipline. A user owner covers exactly their own
-    /// person page; a group owner expands through enrollment to its
+    /// identity-page discipline. A user subject covers exactly their own
+    /// person page; a group subject expands through enrollment to its
     /// members' pages (a group the page's user belongs to is their own
     /// shared context — the tag CONTAINS their page, so the fact is not
     /// foreign there); a group the user is NOT in yields a tag WITHOUT
     /// their page (foreign); the builtin global group is `any` (world
     /// context, never a foreign subject); a memberless group is `none`.
     #[tokio::test]
-    async fn subject_scopes_expand_owners_through_enrollment() {
+    async fn subject_scopes_expand_subjects_through_enrollment() {
         let dir = tempfile::tempdir().unwrap();
         let pool = crate::db::open_or_init(dir.path()).await.expect("db");
         sqlx::query("INSERT INTO enrollment_groups (group_id, members) VALUES (?, ?)")
@@ -5634,9 +5635,9 @@ mod tests {
             fact(2, "family shopping", "group:famiglia", "famiglia"),
         ];
         let out = describe_facts(&facts, &signals);
-        // The user owner falls back to its own page even without a map entry.
-        assert!(out.contains("owner=user:bruno identity_pages=bruno"));
-        assert!(out.contains("owner=group:famiglia identity_pages=bruno,franz"));
+        // The user subject falls back to its own page even without a map entry.
+        assert!(out.contains("subject=user:bruno identity_pages=bruno"));
+        assert!(out.contains("subject=group:famiglia identity_pages=bruno,franz"));
     }
 
     #[test]

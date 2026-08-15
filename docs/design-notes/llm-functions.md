@@ -50,8 +50,9 @@ The `Cronista` variant is the **narrative prose-compiler
 slot**. It backs Il Cronista
 in [`crate::compiler::compile_leaf_page`](../../crates/mwe-core/src/compiler.rs):
 once per dirty standard-wiki leaf, it rewrites that page's own facts into
-cohesive prose, each claim wrapped in an inline `{{owner=… f=<fact_id>}}…{{/}}`
-ACL marker (see [`narrative-compiler.md`](narrative-compiler.md)). It
+cohesive prose, each claim wrapped in an inline bare `{{f=<fact_id>}}…{{/}}`
+region marker — the ACL itself lives in the `fact_index` columns, not in the
+marker (see [`narrative-compiler.md`](narrative-compiler.md)). It
 wants a **strong** model — faithful fact→prose without invention or leak,
 not the 9B workhorse. The slot resolves the usual way through
 [`LlmConfig::cronista`](../../crates/mwe-core/src/config.rs) and is surfaced in
@@ -248,7 +249,7 @@ fact container and leads with "extract every atomic fact", so even a
 Flash-tier model splits reliably. The
 *strong* model earns its keep on the **judgment** calls — structural
 intent, public→`global`, the group/wiki `scope` audience signals, and
-cross-user `owner_id` — not on the split. See
+cross-user `subject_id` — not on the split. See
 [ingest-pipeline.md](ingest-pipeline.md).
 
 | Property | Value |

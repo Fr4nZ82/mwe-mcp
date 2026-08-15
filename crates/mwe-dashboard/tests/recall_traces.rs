@@ -131,7 +131,7 @@ fn sample_trace() -> RecallTrace {
         intent: Some("recall".to_owned()),
         seed_mode: "classifier".to_owned(),
         topics: vec!["cucina".to_owned()],
-        owners: vec!["user:galadriel".to_owned()],
+        subjects: vec!["user:galadriel".to_owned()],
         flat_hits: vec![TraceHit {
             fact_id: "0197fa00-0000-7000-8000-000000000001".to_owned(),
             wiki_id: "galadriel".to_owned(),

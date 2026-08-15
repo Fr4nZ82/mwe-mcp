@@ -10,11 +10,11 @@
 //!   contribution);
 //! - a fact sent by **someone else** is **evacuated intact** to its sender's
 //!   home wiki ([`crate::promote::apply_fact_refile_direct`], act-first +
-//!   born-applied revert receipt) — the `owner`/`allow`/`sender` ACL rides
+//!   born-applied revert receipt) — the `subject`/`allow`/`sender` ACL rides
 //!   along untouched, so reading (per-fragment) is unchanged wherever it lands;
 //! - when the sender is **gone** (no home wiki — a removed/never-enrolled
-//!   principal) the **owner** is the fallback (owner == deleter → tombstone,
-//!   else evacuate to the owner's wiki); when neither has a home wiki the fact
+//!   principal) the **subject** is the fallback (subject == deleter → tombstone,
+//!   else evacuate to the subject's wiki); when neither has a home wiki the fact
 //!   is tombstoned (nobody to hand it to).
 //!
 //! The whole deletion is recorded as **one** born-applied
@@ -121,7 +121,7 @@ pub enum PageError {
 pub struct PageDeletionOutcome {
     /// Facts tombstoned (the deleter's own, or facts with no enrolled home).
     pub facts_tombstoned: u64,
-    /// Foreign-authored facts evacuated to their sender's (or owner's) wiki.
+    /// Foreign-authored facts evacuated to their sender's (or subject's) wiki.
     pub facts_evacuated: u64,
     /// The single born-applied `bundle` receipt wrapping every tombstone +
     /// evacuation, for revert. `None` only when the page had no active facts
@@ -194,12 +194,12 @@ pub async fn delete_page_direct(
     let mut evacuated_to: BTreeSet<String> = BTreeSet::new();
     for row in &rows {
         // The principal responsible for the fact: its sender (provenance) when
-        // materialized, else its owner (subject) — the sender-gone fallback.
+        // materialized, else its subject (subject) — the sender-gone fallback.
         // Admin "delete all" collapses every fact onto the tombstone arm.
-        let responsible = row.sender_id.as_ref().unwrap_or(&row.owner_id);
+        let responsible = row.sender_id.as_ref().unwrap_or(&row.subject_id);
         let action = match policy.mode {
             DeletionMode::TombstoneAll => Action::Tombstone,
-            DeletionMode::SenderKeyed => decide(responsible, &row.owner_id, deleter, tree),
+            DeletionMode::SenderKeyed => decide(responsible, &row.subject_id, deleter, tree),
             // Dissolving is a whole-wiki gesture: it re-opens the placement
             // of everything it frees so the Cartografo redistributes it.
             // On a single page that is not a deletion at all — it is what
@@ -295,15 +295,15 @@ pub(crate) enum Action {
 
 /// The per-fact decision (module docs): tombstone the deleter's own
 /// contribution; evacuate a foreign one to its sender's home wiki; fall back to
-/// the owner when the sender has no home wiki; tombstone when neither does.
+/// the subject when the sender has no home wiki; tombstone when neither does.
 ///
 /// Shared with [`crate::wiki_delete::delete_wiki_subtree`], whose `SenderKeyed`
 /// whole-wiki evacuation partitions every fact in the subtree by exactly this
 /// rule. The caller computes `responsible` = the fact's `sender` (provenance)
-/// when present, else its `owner` (the sender-gone fallback).
+/// when present, else its `subject` (the sender-gone fallback).
 pub(crate) fn decide(
     responsible: &Principal,
-    owner: &Principal,
+    subject: &Principal,
     deleter: &Principal,
     tree: &WikiTree,
 ) -> Action {
@@ -313,11 +313,11 @@ pub(crate) fn decide(
     if let Some(dest) = existing_home_wiki(responsible, tree) {
         return Action::Evacuate(dest);
     }
-    // Sender gone (no home wiki) → fall back to the owner axis.
-    if owner == deleter {
+    // Sender gone (no home wiki) → fall back to the subject axis.
+    if subject == deleter {
         return Action::Tombstone;
     }
-    existing_home_wiki(owner, tree).map_or(Action::Tombstone, Action::Evacuate)
+    existing_home_wiki(subject, tree).map_or(Action::Tombstone, Action::Evacuate)
 }
 
 /// Where one fact waits when its wiki is **dissolved** (module docs of
@@ -328,17 +328,17 @@ pub(crate) fn decide(
 /// while its placement is re-decided, because a row pointing into the trash
 /// would drop out of the compilation plan's input and never be re-placed.
 /// The preference order is the fact's own provenance first (sender, then
-/// owner), and the deleter's home only as the last resort that keeps it
+/// subject), and the deleter's home only as the last resort that keeps it
 /// reachable. `None` means the fact has no live home anywhere — the caller
 /// must surface it rather than silently destroy it.
 pub(crate) fn dissolve_home(
     responsible: &Principal,
-    owner: &Principal,
+    subject: &Principal,
     deleter: &Principal,
     tree: &WikiTree,
 ) -> Option<String> {
     existing_home_wiki(responsible, tree)
-        .or_else(|| existing_home_wiki(owner, tree))
+        .or_else(|| existing_home_wiki(subject, tree))
         .or_else(|| existing_home_wiki(deleter, tree))
 }
 
@@ -381,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn decide_partitions_by_sender_with_owner_fallback() {
+    fn decide_partitions_by_sender_with_subject_fallback() {
         let dir = tempdir().unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
         seed_user(&tree, "franz");
@@ -403,17 +403,17 @@ mod tests {
             Action::Evacuate(d) => assert_eq!(d, "morgana"),
             Action::Tombstone => panic!("expected evacuation to morgana"),
         }
-        // sender gone (no wiki), owner == deleter → tombstone.
+        // sender gone (no wiki), subject == deleter → tombstone.
         assert!(matches!(
             decide(&ghost, &franz, &franz, &tree),
             Action::Tombstone
         ));
-        // sender gone, owner has a wiki ≠ deleter → evacuate to the owner's wiki.
+        // sender gone, subject has a wiki ≠ deleter → evacuate to the subject's wiki.
         match decide(&ghost, &morgana, &franz, &tree) {
             Action::Evacuate(d) => assert_eq!(d, "morgana"),
-            Action::Tombstone => panic!("expected evacuation to the owner's wiki"),
+            Action::Tombstone => panic!("expected evacuation to the subject's wiki"),
         }
-        // neither sender nor owner has a home wiki → tombstone (nobody to hand
+        // neither sender nor subject has a home wiki → tombstone (nobody to hand
         // it to).
         assert!(matches!(
             decide(&ghost, &ghost2, &franz, &tree),

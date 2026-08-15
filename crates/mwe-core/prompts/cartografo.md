@@ -28,18 +28,18 @@ an operator override at `<workdir>/prompts/cartografo.md` wins.
   `{taken_slugs}` (bare page names of the pages **not** shown above — the
   collision guard, and nothing else now that the pages themselves are
   offered), `{facts}` (the batch's facts:
-  `[id:<uuid>] "<text>" type=<fact_type> owner=<principal>
+  `[id:<uuid>] "<text>" type=<fact_type> subject=<principal>
   identity_pages=<slugs|any|none>`). Every page line carries a `facts: N`
   fact-mass count and every fact line an `identity_pages=` scope tag: the structural
   signals of `crate::planner::CartografoSignals` (mass = carried-over
   placements plus this run's own assignments so far; scope = the person
   pages the fact's subject covers, expanded from enrollment by
   `planner::subject_scopes_for`). Signals only: the discipline below decides
-  what to do with them, no count or ownership gate exists in Rust.
+  what to do with them, no count or authority gate exists in Rust.
 - **Output**: one strict JSON object — `{ "assignments": [...], "new_pages": [...] }`
   — parsed into `crate::planner::Blueprint`. The parser tolerates a leading
   ```json fence. A batch that fails to parse is skipped softly (its facts fall
-  to the Architetto's deterministic owner-page fallback).
+  to the Architetto's deterministic subject-page fallback).
 
 ## System prompt
 
@@ -55,7 +55,7 @@ single directive is the right answer for every item in it.
 **One wiki is the batch, not the page list.** The pages offered are the
 forest's: a fact is free to live in any wiki, and the engine putting one where
 it reads better is its judgment, not damage (founder, 2026-08-10). Read
-permission is judged per fact on `owner ∪ allow ∪ sender` and never on the
+permission is judged per fact on `subject ∪ allow ∪ sender` and never on the
 container, so a placement changes nothing about who may see what. What one
 wiki per batch buys is the **language** — the pages this call *coins* are
 homed in its own facts' wiki (`resolve_page_wiki`), so `{locale}` is the right
@@ -87,9 +87,9 @@ PAGE TOPOLOGY (four kinds):
 - concept_leaf — a thematic detail page. HOLDS facts. Has a parent_hub: an EXISTING foundation page of this wiki (its group_theme or its wiki_buffer). Every page you propose is a concept_leaf — there is no other kind you may create. Its slug is never one of the reserved page names (`index`, `profile`, `notes`, `rules`, `projects`): a proposal that coins one is dropped, and its facts fall through to the buffer.
 
 ASSIGNMENT RULES:
-1. owner=user:<id> → that user's person page IF the fact is bio / preference / personal identity; otherwise it MAY go to a thematic concept_leaf if more pertinent (e.g. a detailed work topic).
-2. owner=group:<id> → a concept_leaf UNDER that group's group_theme (NEVER directly on the group_theme). If no suitable leaf exists, CREATE one with parent_hub = the group_theme slug.
-3. owner=global → a thematic concept_leaf.
+1. subject=user:<id> → that user's person page IF the fact is bio / preference / personal identity; otherwise it MAY go to a thematic concept_leaf if more pertinent (e.g. a detailed work topic).
+2. subject=group:<id> → a concept_leaf UNDER that group's group_theme (NEVER directly on the group_theme). If no suitable leaf exists, CREATE one with parent_hub = the group_theme slug.
+3. subject=global → a thematic concept_leaf.
 
 WHICH WIKI — a fact is not confined to the one it arrived in:
 - The pages listed below belong to several wikis; the foreign ones say `wiki: <id>`. ANY of them is a legitimate destination. Choose by pertinence alone — who may read a fact is decided by the fact itself, never by the page it sits on, so moving it exposes nothing and hides nothing.
@@ -98,9 +98,9 @@ WHICH WIKI — a fact is not confined to the one it arrived in:
 - A page you PROPOSE is born in this batch's wiki, so its parent_hub must be one of THIS wiki's foundation pages. You cannot create a page inside another wiki; if the fact belongs there, assign it to a page that already exists there.
 
 IDENTITY-PAGE DISCIPLINE — a person page carries ONE subject:
-- A person page is a user's identity CARD (the reserved `profile.md`). Every fact carries an identity_pages= tag: the person pages its SUBJECT covers — the owner user's own page; for a group-owned fact, the pages of that group's members (a group the user belongs to is their own shared context, never foreign); "any" = global/world context, allowed anywhere; "none" = it covers no person page.
+- A person page is a user's identity CARD (the reserved `profile.md`). Every fact carries an identity_pages= tag: the person pages its SUBJECT covers — the subject user's own page; for a group-owned fact, the pages of that group's members (a group the user belongs to is their own shared context, never foreign); "any" = global/world context, allowed anywhere; "none" = it covers no person page.
 - NEVER assign a fact to a person page that is not in its identity_pages tag: there it is a FOREIGN SUBJECT — another subject's detail woven into this user's identity card. Home it on the subject's own pages instead (the subject's person page when biographical, else a concept_leaf in the subject's context), split by content. Those pages are usually in the SUBJECT's wiki and they are on your list: the tag says which cards are allowed, the list says where they are.
-- The relation between the page's user and another subject lives on the identity card ONLY through the user's OWN facts (owner = the page's user, e.g. "coordinates her father's care"): prefer assigning such an existing coordinating fact to the person page, and the other subject's detail to the subject's pages — the pages reach each other by [[wikilink]], never by restating the detail.
+- The relation between the page's user and another subject lives on the identity card ONLY through the user's OWN facts (subject = the page's user, e.g. "coordinates her father's care"): prefer assigning such an existing coordinating fact to the person page, and the other subject's detail to the subject's pages — the pages reach each other by [[wikilink]], never by restating the detail.
 
 PAGE MASS — split by content before a page outgrows one reliable page:
 - Every page line carries "facts: N" — how many facts currently live on it. The numbers are a signal, not a rule: YOU judge when a page has grown past what still reads (and renders) reliably as ONE page.

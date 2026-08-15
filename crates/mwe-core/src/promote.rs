@@ -2131,7 +2131,7 @@ async fn apply_file_to_subwiki(
         parent_wiki_id: Some(parent_wiki_id.clone()),
         slug: new_slug.clone(),
         title: new_title,
-        // Owner derives from the parent chain (this is a child of
+        // Subject derives from the parent chain (this is a child of
         // `parent_wiki_id`); 2b will fill `scope` prose at emergence.
         scope: None,
         shared_with: Vec::new(),
@@ -4225,11 +4225,13 @@ async fn revert_validity_edit(pool: &SqlitePool, spec: &Value) -> Result<(), Rev
 struct AclChangeRecord {
     fact_id: String,
     /// New ACL, principals as wire strings.
-    new_owner_id: String,
+    #[serde(alias = "new_owner_id")]
+    new_subject_id: String,
     new_allow_ids: Vec<String>,
     new_sender_id: Option<String>,
     /// Previous ACL (the revert restores it verbatim).
-    prev_owner_id: String,
+    #[serde(alias = "prev_owner_id")]
+    prev_subject_id: String,
     prev_allow_ids: Vec<String>,
     prev_sender_id: Option<String>,
     /// `disclosure_audit.audit_id` the change wrote — marked reverted on
@@ -4256,8 +4258,8 @@ pub struct AppliedAclChange {
     pub wiki_id: String,
     /// Short claim preview shown on the dashboard receipt.
     pub preview: String,
-    /// New owner.
-    pub new_owner: Principal,
+    /// New subject.
+    pub new_subject: Principal,
     /// New allow-list.
     pub new_allow: Vec<Principal>,
     /// Snapshot taken at change time — the revert payload.
@@ -4304,9 +4306,9 @@ fn acl_change_context(changes: &[AppliedAclChange], gesture: Option<&str>) -> Va
                         "fact_id": c.fact_id.as_str(),
                         "wiki_id": c.wiki_id,
                         "preview": c.preview,
-                        "new_owner_id": c.new_owner.to_string(),
+                        "new_subject_id": c.new_subject.to_string(),
                         "new_allow_ids": principal_strings(&c.new_allow),
-                        "prev_owner_id": c.prev.prev_owner_id.to_string(),
+                        "prev_subject_id": c.prev.prev_subject_id.to_string(),
                         "prev_allow_ids": principal_strings(&c.prev.prev_allow_ids),
                         "widening": c.widening,
                         "audit_id": c.audit_id,
@@ -4347,15 +4349,15 @@ pub async fn emit_acl_change_receipt(
             .iter()
             .map(|c| AclChangeRecord {
                 fact_id: c.fact_id.as_str().to_owned(),
-                new_owner_id: c.new_owner.to_string(),
+                new_subject_id: c.new_subject.to_string(),
                 new_allow_ids: principal_strings(&c.new_allow),
-                // An acl-change re-shares (owner/allow) only and PRESERVES the
+                // An acl-change re-shares (subject/allow) only and PRESERVES the
                 // fact's cross-user attribution: `set_acl` was called with the
                 // prior sender, so the applied sender equals `prev_sender_id`.
                 // Record that (not None) so the receipt + disclosure audit
                 // match the DB. Revert restores `prev_sender_id` regardless.
                 new_sender_id: c.prev.prev_sender_id.as_ref().map(ToString::to_string),
-                prev_owner_id: c.prev.prev_owner_id.to_string(),
+                prev_subject_id: c.prev.prev_subject_id.to_string(),
                 prev_allow_ids: principal_strings(&c.prev.prev_allow_ids),
                 prev_sender_id: c.prev.prev_sender_id.as_ref().map(ToString::to_string),
                 audit_id: c.audit_id,
@@ -4401,10 +4403,10 @@ async fn revert_acl_change(pool: &SqlitePool, spec: &Value) -> Result<(), Revert
     for c in &spec.changes {
         let fact_id = FactId::parse(&c.fact_id)
             .map_err(|err| RevertError::InvalidPayload(format!("bad fact_id in spec: {err}")))?;
-        let owner = c
-            .prev_owner_id
+        let subject = c
+            .prev_subject_id
             .parse::<Principal>()
-            .map_err(|err| RevertError::InvalidPayload(format!("bad prev_owner_id: {err}")))?;
+            .map_err(|err| RevertError::InvalidPayload(format!("bad prev_subject_id: {err}")))?;
         let allow = c
             .prev_allow_ids
             .iter()
@@ -4418,12 +4420,12 @@ async fn revert_acl_change(pool: &SqlitePool, spec: &Value) -> Result<(), Revert
             .transpose()
             .map_err(|err| RevertError::InvalidPayload(format!("bad prev_sender_id: {err}")))?;
 
-        let touched = fact_index::restore_acl(pool, &fact_id, &owner, &allow, sender.as_ref())
+        let touched = fact_index::restore_acl(pool, &fact_id, &subject, &allow, sender.as_ref())
             .await
             .map_err(|err| RevertError::HandlerData(format!("fact ACL restore: {err}")))?;
         if touched == 0 {
             let buffered =
-                capture_buffer::restore_acl(pool, &fact_id, &owner, &allow, sender.as_ref())
+                capture_buffer::restore_acl(pool, &fact_id, &subject, &allow, sender.as_ref())
                     .await
                     .map_err(|err| {
                         RevertError::HandlerData(format!("buffer ACL restore: {err}"))
@@ -4806,13 +4808,13 @@ mod tests {
         page: &str,
         body: &str,
     ) -> FactId {
-        let owner = format!("user:{wiki}");
+        let subject = format!("user:{wiki}");
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: PathBuf::from(page),
             body: body.to_owned(),
-            owner: owner.parse::<Principal>().unwrap(),
+            subject: subject.parse::<Principal>().unwrap(),
             allow: vec![],
             sender: None,
             fact_type: None,
@@ -4843,7 +4845,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from(page),
             body: body.to_owned(),
-            owner: "user:alice".parse::<Principal>().unwrap(),
+            subject: "user:alice".parse::<Principal>().unwrap(),
             allow: vec![],
             sender: None,
             fact_type: None,

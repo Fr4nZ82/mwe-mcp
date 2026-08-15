@@ -99,7 +99,7 @@ CREATE TABLE fact_index (
     "text"           TEXT NOT NULL,      -- region body (no markers)
     embedding        BLOB NOT NULL,      -- vector bytes
     embedding_dim    INTEGER NOT NULL,   -- explicit, for embedding-model migrations
-    owner_id         TEXT NOT NULL,      -- "global" | "user:X" | "group:X"
+    subject_id       TEXT NOT NULL,      -- who the fact is ABOUT: "global" | "user:X" | "group:X"
     allow_ids        TEXT,               -- JSON array of principals
     sender_id        TEXT,               -- provenance: who captured it. Always materialized at
                                          -- birth since 0051; NULL survives only as the "scrubbed"
@@ -209,7 +209,7 @@ request.
 
 **Per-fact salience (`salience`, migration 0037).** Design SSOT
 [`ingest-pipeline.md`](ingest-pipeline.md) (the "Per-fact salience" section). One more
-producer-decided axis: how always-relevant a fact is to its owner — `'high'`
+producer-decided axis: how always-relevant a fact is to its subject — `'high'`
 (the scarce always-on set: identity, health/safety, hard standing constraints),
 `'normal'` (default), `'low'` (trivia); `NULL` = unspecified. Same convention as
 `fact_type` / `decay_reason`: **free `TEXT`, no DB `CHECK`**, the closed
@@ -222,7 +222,7 @@ cadence**: `ingest_placement_blueprint` routes a `'high'` fact to the
 actor-wiki's `index.md` base context, overriding its proposed `target_page` (see
 [narrative-compiler.md](narrative-compiler.md)).
 
-Indices: `idx_fact_wiki_id`, `idx_fact_owner`, `idx_fact_created`,
+Indices: `idx_fact_wiki_id`, `idx_fact_subject`, `idx_fact_created`,
 `idx_fact_type` (partial, `WHERE fact_type IS NOT NULL`),
 `idx_fact_active`, `idx_fact_recall` (partial), `idx_fact_path`,
 `idx_fact_valid_to` (partial, `WHERE valid_to IS NOT NULL` — backs the REM
@@ -351,7 +351,7 @@ The **`recipient_id` column** (migration 0032) is the addressee of a
 proposal — the human the consumer agent should notify and who (with an
 admin) may apply / confirm / revert it. REM derives it from the
 triggering fact (`proposals::recipient_from_fact`: the fact's
-`sender_id`, else the owning user, else `NULL` for a group/global owner
+`sender_id`, else the subject user, else `NULL` for a group/global subject
 with no sender). `NULL` is the unaddressed / admin-fallback bucket and
 the value every pre-0032 row reads as. The dashboard tray, its agentic
 `structure_proposal_list` tool, and the `pending_attention` count scope
@@ -374,7 +374,7 @@ One row per `(proposal, voter)`: the cast votes on a proposal put to an
 audience — a governed group-wiki page deletion (a born-applied `bundle`
 receipt whose eligible voters are the owning group's roster minus the
 deleter) and the propose-first `fact_forget` request (a non-sender
-owner asking to forget a fact, put to the fact's audience). The tally
+subject asking to forget a fact, put to the fact's audience). The tally
 lives in [`mwe-core::votes`](../../crates/mwe-core/src/votes.rs):
 more than half voting NO blocks/reverts, silence is consent, and an
 all-voted quorum resolves early — explicit YES votes are recorded too
@@ -753,7 +753,7 @@ CREATE TABLE capture_buffer (
     wiki_id           TEXT NOT NULL,
     target_page       TEXT NOT NULL,                    -- page the classifier proposed (a compiler hint)
     body              TEXT NOT NULL,                    -- captured claim prose, verbatim, no markers
-    owner_id          TEXT NOT NULL,                    -- "global" | "user:X" | "group:X"
+    subject_id        TEXT NOT NULL,                    -- who the fact is ABOUT: "global" | "user:X" | "group:X"
     allow_ids         TEXT NOT NULL DEFAULT '[]',       -- JSON array of principals
     sender_id         TEXT,                             -- provenance: who captured it; materialized at
                                                         -- birth since 0051 (NULL only as scrubbed fallback)
@@ -842,12 +842,12 @@ bare key a `{{embed=…}}` marker carries on a page. Columns: `sha256`
 (the content address of the blob at `<workdir>/media/<aa>/<sha256>`),
 `kind` (closed producer vocabulary `photo` / `video` / `audio` / `doc`
 — free TEXT, no DB CHECK, the `decay_reason` convention), `mime`,
-`size_bytes`, the ACL triple (`owner_id` NOT NULL / `allow_ids` JSON /
+`size_bytes`, the ACL triple (`subject_id` NOT NULL / `allow_ids` JSON /
 `sender_id` materialized at birth since 0051, NULL only as the scrubbed
 fallback — byte-compatible with `fact_index`),
 `uploaded_by_consumer` (audit), `caption` / `description` /
-`original_filename`, timestamps. `UNIQUE(sha256, owner_id)` makes
-re-uploads idempotent per owner. **Not rebuildable from the markdown**
+`original_filename`, timestamps. `UNIQUE(sha256, subject_id)` makes
+re-uploads idempotent per subject. **Not rebuildable from the markdown**
 (the marker is a bare key — per-media metadata is DB-authoritative,
 like the per-fact ACL): the workdir snapshot is the recovery story.
 Design SSOT: [`media-pipeline.md`](media-pipeline.md).
@@ -875,7 +875,7 @@ and the deployment-wide 2FA toggle (`auth.require_2fa_all`).
 
 Append-only log of per-fact ACL edits made from the consumer chat (the
 `acl_changes` ingest verb) and the operator surfaces: one immutable row
-per applied change (actor, previous + new owner/allow/sender, a
+per applied change (actor, previous + new subject/allow/sender, a
 `widening` flag from `crate::acl::widens`, `reverted_at` stamped on
 undo); indexed on `(wiki_id, ts)` and `(fact_id, ts)`. Durable engine
 state, **not rebuildable** — it logs a DB-authoritative column. See
@@ -1065,7 +1065,7 @@ directory. One annotated row per migration:
 | `0040_document_ingest` | Backing tables for the document-ingest job (`wiki_ingest_external`) — async checkpointed segmentation + map/reduce extraction. |
 | `0041_engine_meta` | A tiny `key`/`value` table for engine-level state with no per-fact / per-wiki home. First consumer: the embedder-identity guard (the `embedder_model_id` / `embedder_dim` the store's vectors were built with — see [reindex-pipeline.md](reindex-pipeline.md#embedder-identity-guard-roadmap-18g)). |
 | `0042_authored_refs` | `authored_refs TEXT NOT NULL DEFAULT '[]'` on `fact_index` **and** `capture_buffer` — a JSON array of plain `[[wiki_id/page]]` wikilinks (same shape as `topics`). Carries a smart consumer's project-page authorship breadcrumbs from `wiki_ingest_message`'s `metadata.authored_refs` through capture → light-dream → fact, so consolidation links instead of duplicating ("link, don't duplicate", roadmap group 17). |
-| `0043_disclosure_audit` | Append-only `disclosure_audit` table — the change log of per-fact ACL edits made from the consumer chat (the `acl_changes` ingest verb; see [ingest-pipeline.md](ingest-pipeline.md#operation-path-edits--validity-edit--acl-change)). One immutable row per applied change (actor, previous + new owner/allow/sender, a `widening` flag from `crate::acl::widens`, `reverted_at` stamped on undo); indexed on `(wiki_id, ts)` and `(fact_id, ts)`. Durable engine state, not rebuildable — it logs a DB-authoritative column. |
+| `0043_disclosure_audit` | Append-only `disclosure_audit` table — the change log of per-fact ACL edits made from the consumer chat (the `acl_changes` ingest verb; see [ingest-pipeline.md](ingest-pipeline.md#operation-path-edits--validity-edit--acl-change)). One immutable row per applied change (actor, previous + new subject/allow/sender, a `widening` flag from `crate::acl::widens`, `reverted_at` stamped on undo); indexed on `(wiki_id, ts)` and `(fact_id, ts)`. Durable engine state, not rebuildable — it logs a DB-authoritative column. |
 | `0044_webagentoauth` | Inbound OAuth 2.x authorization-server state: `webagentoauth_clients` (dynamic client registrations), `webagentoauth_codes` (short-lived authorization codes), `webagentoauth_refresh` (refresh tokens) — backs an OAuth-connected smart consumer (the claude.ai web app, and Claude Code over the loopback redirect) with no per-turn bridge. See [`web-agent-oauth.md`](web-agent-oauth.md). |
 | `0045_user_email_on_enrollment` | Moves the login `email` onto `enrollment_users` (the row born at invite, where the admin sets it) with a partial-UNIQUE index, back-fills it from `user_credentials`, then drops the `user_credentials.email` column + index that `0017` added. Login becomes email-only (no username fallback); see [setup-and-identity.md](setup-and-identity.md#the-login-resolution). |
 | `0046_drop_enrollment_blurbs` | Drops the cosmetic free-prose blurbs `enrollment_users.profile` and `enrollment_groups.description` — nothing read them at runtime (the identity-wiki title falls back to the `user_id`; a group's routing prose is `scope`, the planner's group theme derives from the `group_id`). The surviving content channels are the per-user welcome primer and the group `scope`. |
@@ -1085,15 +1085,13 @@ directory. One annotated row per migration:
 | `0060_recent_exchanges` | The `recent_exchanges` buffer behind the cross-consumer recent window (group 43) — a bounded, TTL'd per-user serving buffer of the exchanges the per-turn ingest already receives (`user_id`, `consumer_id`, `channel`, `author`, `text`, `occurred_at` + the per-user index). **Not** a transcript store: never indexed, never embedded, never REM-processed; cap and TTL enforced in the write path (`mwe_core::recent_window`). |
 | `0061_enrollment_users_timezone` | Per-user IANA `timezone` on `enrollment_users` for ingest reference-time stamping — the sender's zone wins over the deployment-wide `recall.ingest_timezone` (two users of one deployment can live in different places). Set from the users page or the welcome wizard; a per-turn zone from the consumer is a tracked protocol extension. |
 | `0062_wiki_sections` | Smart-wiki content leaves `fact_index` for its own pair of tables: **`wiki_sections`** (one row per heading-delimited section, keyed by `(source_path, section_ord)` — no ACL, no lifecycle, see [`mwe_core::sections`](../../crates/mwe-core/src/sections.rs)) and **`smart_wikis`** (a queryable projection of each smart wiki's `_meta.md`: owner, `shared_with`, `project_id`, `wiki_type`). **DDL only** — SQL cannot tell which `wiki_id`s are smart, because that flag lives on disk, so the data move is the tree-aware idempotent boot pass [`reindex::backfill_smart_sections`](../../crates/mwe-core/src/reindex.rs), which copies embeddings verbatim. |
-| `0063_smart_wikis_slug` | `smart_wikis.slug` — each smart wiki's directory slug, mirrored from `_meta.md`. Feeds the per-turn **named-project trigger**: a standard consumer's turn recalls facts only, unless the message names a readable smart wiki, in which case that wiki's sections are ranked into a labelled reference slot ([recall-pipeline.md](recall-pipeline.md#the-project-docs-slot--two-ways-in-one-of-them-gated)). Deliberately the slug and not the title — titles carry generic words that would fire on ordinary conversation. Backfilled empty; the registry projection fills it on the next boot or safety-net tick, and an empty slug simply never matches. |
-
+| `0063_smart_wikis_slug` | `smart_wikis.slug` — each smart wiki's directory slug, mirrored from `_meta.md`. Feeds the per-turn **named-project trigger**: a standard consumer's turn recalls facts only, unless the message names a readable smart wiki, in which case that wiki's sections are ranked into a labelled reference slot ([recall-pipeline.md](recall-pipeline.md#the-project-docs-slot--two-entry-points-at-two-different-stages)). Deliberately the slug and not the title — titles carry generic words that would fire on ordinary conversation. Backfilled empty; the registry projection fills it on the next boot or safety-net tick, and an empty slug simply never matches. |
 | `0064_rem_verdicts` | The REM confirmers' **negative-verdict memo** — `(kind, key_hash)` PK plus a debugging `subject_ref` and the `created_at` the TTL sweep reads. A row means "this exact question, on this exact content, judged by this exact model and prompt, already came back no", so the per-cycle confirm caps stop being spent re-buying settled verdicts. `key_hash` is a SHA-256 over the model id and the rendered prompt, so content, prompt, and model changes all self-invalidate; only negatives are stored (a positive mutates the corpus and invalidates its own key). Bounded by `RemPolicy::verdict_memo_ttl` (default 90 days) at cycle start — see [`mwe_core::rem_verdicts`](../../crates/mwe-core/src/rem_verdicts.rs) and [rem-cycle.md](rem-cycle.md#the-verdict-memo--why-examined-now-means-asked). |
-
 | `0065_wiki_sections_fts` | **`wiki_sections_fts`** — an FTS5 external-content index (`content='wiki_sections'`, `unicode61 remove_diacritics 2`) over each section's `heading_path` and `"text"`, plus the three triggers that maintain it. Recall fuses its `bm25` ranking with the cosine one so that an **identifier** — `D-006`, an ADR number, a ticket id, a stack-trace symbol — can be found at all: an embedding has almost nothing to encode in one, and the query `D-006` used to return the section that merely *cites* it. The heading is a separate, 4×-weighted column because `"text"` already contains the heading chain, and counting it twice is exactly what separates the section that *is* `D-006` from one that refers to it (measured: 4 of 7 decision identifiers ranked first with one column, 7 of 7 with two). Triggers live in the schema, not in the Rust write path, so no writer can bypass them. Fully regenerable, and cheap enough to be: 2.5 MB and 60 ms on the 4 220-section production corpus, with no embedder. See [recall-pipeline.md](recall-pipeline.md#the-section-corpus-is-ranked-by-two-passes-fused). |
 | `0066_llm_usage` | **`llm_usage`** — one row per internal-LLM call: slot, backend, model, `kind`, `billing`, `source`/`tag`, the four token columns, latency, and the error *class* of a failed call. Written by the `usage::maybe_wrap` decorator in `build_backend`, so every slot and transport is covered without touching a call site; **no prompt text is stored**, which is the whole reason this is not the training spool. The prompt is kept as three quantities because providers price them at three rates — plain input is `prompt_tokens - cached_prompt_tokens - cache_write_tokens` — and `billing` is its own column because the same provider is metered against a key in one config and covered by a flat subscription in the next. `NULL` means *not reported*, `0` means *measured zero*. Swept against `usage.retention_days` (default 400) at most once a UTC day. See [`mwe_core::usage`](../../crates/mwe-core/src/usage.rs) and [llm-usage-ledger.md](llm-usage-ledger.md). |
 | `0067_smart_wikis_description` | **`smart_wikis.description`** — one authored line per project, the **door sign** that makes it reachable from a turn that never names it. Mirrored from the wiki's own `_meta.scope` by `WikiMeta::door_description`; no second field, because `scope` already means *what goes in this container* and a smart wiki is never a placement target, so the classifier's reading of it cannot collide with this one. **Project wikis only** — an agent's operational notebook is a smart wiki too and is nobody's door — declined on *either* marker (`is_agent`, `wiki_type: agent`), because production holds one with the type and no on-disk flag. Nullable **on purpose**: it replaces a signpost fact somebody had to remember to write, and the counting is what justified the change — across the whole training window only four projects ever had one written, and the largest undescribed corpus was 1 477 sections with none. A missing act leaves no trace; an empty column can be counted, shown and asked about. See [smart-wikis.md](smart-wikis.md). |
-
 | `0069_page_card` | **`page_card`** — a page's testata `description` (its **card**: the one line saying what belongs on it), plus its owner-tier keywords, its style, and a `(mtime_ms, size)` validity stamp, keyed by `source_path`. The card is what the recall navigator is shown when it decides whether to open a page, and for a page no `[[wikilink]]` points at it is the only thing that can bring a reader there — yet it lived only in the `.md` frontmatter, so *asking anything about the cards* meant opening every page. A **cache, with the file authoritative**, in the same class as the `smart_wikis` projection: rows are written by the reindex pipeline (the watcher per edit, plus a card-only pass in `reindex_full` that covers the standard wikis the fact sweep deliberately skips), a missing row falls back to opening the page, and a stale row is caught by the stamp before it is shown. `embedding` is NULL until the card selection that replaces `compiler::page_index_block`'s uncapped list is built — the column is here so that work needs no second migration. See [`mwe_core::page_card`](../../crates/mwe-core/src/page_card.rs) and [recall-pipeline.md](recall-pipeline.md#entry-point-gathering--recall_nav-navigation-phase-1). |
+| `0070_rename_owner_to_subject` | Renames the per-fragment ACL axis for what it holds — **who or what a fact is about**, the third axis beside authorship (`sender_id`) and audience (`allow_ids`). The whole mapping: `owner_id` → `subject_id` on `fact_index`, `capture_buffer`, `media_catalog` and `document_jobs`; `disclosure_audit.prev_owner_id` / `new_owner_id` → `prev_subject_id` / `new_subject_id`; `idx_fact_owner` → `idx_fact_subject`; `idx_media_sha256_owner` → `idx_media_sha256_subject`. No data moves, and SQLite rewrites every index / view / trigger definition that names a renamed column, so the two DROP/CREATE pairs are for the index **names** only. Deliberately **not** renamed: `smart_wikis.owner_id` + `idx_smart_wikis_owner`, which are the wiki's proprietor and a separate axis — a fact whose subject is `user:franz` can live in a wiki owned by `group:famiglia`; `idx_document_jobs_idem`, whose name carries no owner; and `idx_webagentoauth_refresh_owner`, which covers `(sender_id, consumer_id)` — no webagentoauth table has an owner column at all. The same release moves the on-disk companions, the `.md` region marker and the `_captures.md` journal, to `subject=`, and both readers accept `owner=` **permanently**: the journal is what a `rm engine.db` rebuild replays and it holds entries from every version the deployment has ever run, so a key that stops parsing there is silent data loss, not an error. |
 
 ## How the runtime gets here
 

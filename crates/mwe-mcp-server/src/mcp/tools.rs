@@ -335,7 +335,7 @@ async fn maybe_promote_turn(
         return Ok(None);
     }
 
-    let owner: mwe_core::types::Principal = format!("user:{}", identity.sender_id)
+    let subject: mwe_core::types::Principal = format!("user:{}", identity.sender_id)
         .parse()
         .map_err(|e| {
             ToolError::new(
@@ -343,7 +343,7 @@ async fn maybe_promote_turn(
                 format!("effective sender: {e}"),
             )
         })?;
-    let row = promote_text_to_media(state, identity, &owner, text, None).await?;
+    let row = promote_text_to_media(state, identity, &subject, text, None).await?;
     let outcome = mwe_core::document::enqueue(
         &state.pool,
         &state.document_policy,
@@ -355,7 +355,7 @@ async fn maybe_promote_turn(
             disposition: None,
             format: None,
             occurred_at: metadata.occurred_at.map(|d| d.to_rfc3339()),
-            owner,
+            subject,
             allow: Vec::new(),
             sender: None,
             force: false,
@@ -1007,7 +1007,8 @@ struct WikiSearchArgs {
 #[derive(Debug, Deserialize, Default)]
 struct WikiSearchScope {
     #[serde(default)]
-    owner_ids: Vec<String>,
+    #[serde(alias = "owner_ids")]
+    subject_ids: Vec<String>,
     #[serde(default)]
     wiki_types: Vec<String>,
     /// Filter hits down to wikis whose
@@ -1048,13 +1049,13 @@ pub(super) async fn call_wiki_search(
         sender_id: identity.sender_id.clone(),
         sender_groups,
     };
-    let owner_principal = args
+    let subject_principal = args
         .scope
         .as_ref()
-        .and_then(|s| s.owner_ids.first())
+        .and_then(|s| s.subject_ids.first())
         .map(|s| s.parse::<mwe_core::types::Principal>())
         .transpose()
-        .map_err(|e| invalid_input(format!("scope.owner_ids[0]: {e}")))?;
+        .map_err(|e| invalid_input(format!("scope.subject_ids[0]: {e}")))?;
     let valid_at = args
         .scope
         .as_ref()
@@ -1066,7 +1067,7 @@ pub(super) async fn call_wiki_search(
         })
         .transpose()?;
     let filters = FactFilters {
-        owner_id: owner_principal,
+        subject_id: subject_principal,
         valid_at,
         ..Default::default()
     };
@@ -1195,54 +1196,55 @@ struct WikiNavigateArgs {
     #[serde(default)]
     top_k: Option<usize>,
     /// 24b seed family C — caller-supplied topic needles (free text). When
-    /// present (with or alongside `owners`), the query-extraction fallback (B)
+    /// present (with or alongside `subjects`), the query-extraction fallback (B)
     /// is skipped.
     #[serde(default)]
     topics: Vec<String>,
-    /// 24b seed family C — caller-supplied owner principals (`user:<id>` /
+    /// 24b seed family C — caller-supplied subject principals (`user:<id>` /
     /// `group:<id>`). Unparseable entries are ignored.
     #[serde(default)]
-    owners: Vec<String>,
+    #[serde(alias = "owners")]
+    subjects: Vec<String>,
 }
 
-/// Resolve the navigator's `(topics, owners)` seeds for `wiki_navigate`
-/// (roadmap 24b cascade): **C** — the caller named `topics`/`owners` — wins;
+/// Resolve the navigator's `(topics, subjects)` seeds for `wiki_navigate`
+/// (roadmap 24b cascade): **C** — the caller named `topics`/`subjects` — wins;
 /// otherwise **B** extracts them from the query via the navigator slot
 /// ([`mwe_core::recall_nav::extract_query_seeds`], which degrades to empty →
-/// **A**, principal + RAG only). Unparseable owner principals are dropped.
+/// **A**, principal + RAG only). Unparseable subject principals are dropped.
 /// The third element labels which rung fired (the recall trace journals it).
 async fn navigate_seeds(
     state: &McpState,
     nav_llm: &dyn mwe_core::llm::LlmBackend,
     args: &WikiNavigateArgs,
 ) -> (Vec<String>, Vec<mwe_core::types::Principal>, &'static str) {
-    if !args.topics.is_empty() || !args.owners.is_empty() {
-        let owners = args
-            .owners
+    if !args.topics.is_empty() || !args.subjects.is_empty() {
+        let subjects = args
+            .subjects
             .iter()
             .filter_map(|o| o.parse::<mwe_core::types::Principal>().ok())
             .collect();
-        (args.topics.clone(), owners, "caller")
+        (args.topics.clone(), subjects, "caller")
     } else {
-        let (topics, owners) = mwe_core::recall_nav::extract_query_seeds(
+        let (topics, subjects) = mwe_core::recall_nav::extract_query_seeds(
             &state.pool,
             &state.workdir,
             nav_llm,
             &args.query,
         )
         .await;
-        let mode = if topics.is_empty() && owners.is_empty() {
+        let mode = if topics.is_empty() && subjects.is_empty() {
             "rag_only"
         } else {
             "query_extraction"
         };
-        (topics, owners, mode)
+        (topics, subjects, mode)
     }
 }
 
 /// `wiki_navigate` — deep recall via the funnel navigator (the consumer
 /// counterpart of the ingest-side navigation). Whole visible corpus,
-/// ACL-filtered. `owners` is resolved and journalled but seeds **no door**:
+/// ACL-filtered. `subjects` is resolved and journalled but seeds **no door**:
 /// a principal names a wiki, and recall opens content pages, never wikis
 /// (founder, 2026-08-03). Who the turn is about reaches the block by being
 /// served, not by being navigated to. Returns the
@@ -1319,7 +1321,7 @@ pub(super) async fn call_wiki_navigate(
         navigator_available,
         seed_mode,
         seed_topics,
-        seed_owners,
+        seed_subjects,
     } = funnel;
 
     let navigated_json: Vec<Value> = navigated
@@ -1385,7 +1387,7 @@ pub(super) async fn call_wiki_navigate(
         query: &args.query,
         seed_mode,
         seed_topics,
-        seed_owners: &seed_owners,
+        seed_subjects: &seed_subjects,
         flat_hits: &flat_hits,
         entries: &entries,
         navigated: &navigated,
@@ -1409,7 +1411,7 @@ struct NavigateFunnel {
     navigator_available: bool,
     seed_mode: &'static str,
     seed_topics: Vec<String>,
-    seed_owners: Vec<mwe_core::types::Principal>,
+    seed_subjects: Vec<mwe_core::types::Principal>,
 }
 
 /// Resolve seeds (the 24b cascade), gather the fan and run the funnel —
@@ -1428,16 +1430,16 @@ async fn run_navigate_funnel(
             navigator_available: false,
             seed_mode: "rag_only",
             seed_topics: Vec::new(),
-            seed_owners: Vec::new(),
+            seed_subjects: Vec::new(),
         });
     };
-    let (topics, owners, seed_mode) = navigate_seeds(state, nav_llm.as_ref(), args).await;
+    let (topics, subjects, seed_mode) = navigate_seeds(state, nav_llm.as_ref(), args).await;
     let entries = mwe_core::recall_nav::gather_entry_points(
         &state.pool,
         &state.tree,
         sender,
         &topics,
-        // `owners` is resolved and journalled but no longer seeds: a principal
+        // `subjects` is resolved and journalled but no longer seeds: a principal
         // names a wiki, and recall opens content pages, never wikis (founder,
         // 2026-08-03). Who the turn is about reaches the block by being served.
         flat_hits,
@@ -1468,7 +1470,7 @@ async fn run_navigate_funnel(
         navigator_available: true,
         seed_mode,
         seed_topics: topics,
-        seed_owners: owners,
+        seed_subjects: subjects,
     })
 }
 
@@ -1480,7 +1482,7 @@ struct NavigateTraceParts<'a> {
     query: &'a str,
     seed_mode: &'a str,
     seed_topics: Vec<String>,
-    seed_owners: &'a [mwe_core::types::Principal],
+    seed_subjects: &'a [mwe_core::types::Principal],
     flat_hits: &'a [mwe_core::recall::RecallHit],
     entries: &'a [mwe_core::recall_nav::EntryPoint],
     navigated: &'a mwe_core::recall_nav::NavigationOutcome,
@@ -1503,7 +1505,11 @@ async fn record_navigate_trace(parts: NavigateTraceParts<'_>) {
         intent: None,
         seed_mode: parts.seed_mode.to_owned(),
         topics: parts.seed_topics,
-        owners: parts.seed_owners.iter().map(ToString::to_string).collect(),
+        subjects: parts
+            .seed_subjects
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
         flat_hits: parts.flat_hits.iter().map(TraceHit::from_hit).collect(),
         fresh_hits: Vec::new(),
         due_soon: Vec::new(),
@@ -1753,7 +1759,7 @@ struct WikiIngestExternalArgs {
     promote: Option<String>,
     #[serde(default)]
     dry_run: bool,
-    /// Bypass the (text, owner) idempotency check.
+    /// Bypass the (text, subject) idempotency check.
     #[serde(default)]
     force: bool,
 }
@@ -1803,7 +1809,7 @@ fn first_line_excerpt(text: &str) -> Option<String> {
 async fn promote_text_to_media(
     state: &McpState,
     identity: &IdentityProfile,
-    owner: &mwe_core::types::Principal,
+    subject: &mwe_core::types::Principal,
     text: &str,
     title_hint: Option<&str>,
 ) -> Result<mwe_core::media::MediaRow, ToolError> {
@@ -1820,7 +1826,7 @@ async fn promote_text_to_media(
             // check (`text/*`), or the pipeline would refuse its own
             // artifact on a later re-resolution.
             mime: "text/plain".into(),
-            owner: owner.clone(),
+            subject: subject.clone(),
             uploaded_by_consumer: identity.consumer_id.clone(),
             caption,
             description: Some("promoted verbatim from pasted inline text".into()),
@@ -1851,7 +1857,7 @@ struct ResolvedDocumentSource {
     text: String,
     title_hint: Option<String>,
     occurred_at: Option<String>,
-    owner: mwe_core::types::Principal,
+    subject: mwe_core::types::Principal,
     allow: Vec<mwe_core::types::Principal>,
 }
 
@@ -1866,13 +1872,13 @@ async fn resolve_promoted_inline(
     state: &McpState,
     identity: &IdentityProfile,
     args: &WikiIngestExternalArgs,
-    effective_owner: mwe_core::types::Principal,
+    effective_subject: mwe_core::types::Principal,
     content: String,
 ) -> Result<ResolvedDocumentSource, ToolError> {
     let row = promote_text_to_media(
         state,
         identity,
-        &effective_owner,
+        &effective_subject,
         &content,
         args.title.as_deref(),
     )
@@ -1886,7 +1892,7 @@ async fn resolve_promoted_inline(
             .occurred_at
             .clone()
             .or_else(|| Some(row.created_at.clone())),
-        owner: row.owner_id,
+        subject: row.subject_id,
         allow: row.allow_ids,
     })
 }
@@ -1897,7 +1903,7 @@ async fn resolve_document_source(
     args: &WikiIngestExternalArgs,
     promote_to_media: bool,
 ) -> Result<ResolvedDocumentSource, ToolError> {
-    let effective_owner: mwe_core::types::Principal = format!("user:{}", identity.sender_id)
+    let effective_subject: mwe_core::types::Principal = format!("user:{}", identity.sender_id)
         .parse()
         .map_err(|e| {
             ToolError::new(
@@ -1911,7 +1917,7 @@ async fn resolve_document_source(
                 invalid_input("source.content required when source.type == 'inline'")
             })?;
             if promote_to_media {
-                return resolve_promoted_inline(state, identity, args, effective_owner, content)
+                return resolve_promoted_inline(state, identity, args, effective_subject, content)
                     .await;
             }
             Ok(ResolvedDocumentSource {
@@ -1920,7 +1926,7 @@ async fn resolve_document_source(
                 text: content,
                 title_hint: args.title.clone(),
                 occurred_at: args.occurred_at.clone(),
-                owner: effective_owner,
+                subject: effective_subject,
                 allow: Vec::new(),
             })
         },
@@ -1989,7 +1995,7 @@ async fn resolve_document_source(
                     .occurred_at
                     .clone()
                     .or_else(|| Some(row.created_at.clone())),
-                owner: row.owner_id.clone(),
+                subject: row.subject_id.clone(),
                 allow: row.allow_ids.clone(),
             })
         },
@@ -2018,7 +2024,7 @@ async fn ingest_external_dry_run(
     // the caller previews must be the plan they would get, title and summary
     // included.
     let language_directive = mwe_core::locale::render_memory_language_directive(
-        mwe_core::enrollment::locale_for_principal(&state.pool, &resolved.owner)
+        mwe_core::enrollment::locale_for_principal(&state.pool, &resolved.subject)
             .await
             .unwrap_or_default()
             .as_deref(),
@@ -2030,7 +2036,7 @@ async fn ingest_external_dry_run(
         occurred_at: resolved.occurred_at.as_deref(),
         forced_disposition: disposition,
         forced_format: format,
-        owner: &resolved.owner,
+        subject: &resolved.subject,
         language_directive: &language_directive,
     };
     let plan = document::classify_document(
@@ -2148,7 +2154,7 @@ pub(super) async fn call_wiki_ingest_external(
     }
 
     let promoted_catalog_id = would_promote.then(|| resolved.source_ref.clone()).flatten();
-    let sender = (resolved.owner != effective_sender).then_some(effective_sender);
+    let sender = (resolved.subject != effective_sender).then_some(effective_sender);
     let outcome = document::enqueue(
         &state.pool,
         &state.document_policy,
@@ -2160,7 +2166,7 @@ pub(super) async fn call_wiki_ingest_external(
             disposition,
             format,
             occurred_at: resolved.occurred_at,
-            owner: resolved.owner,
+            subject: resolved.subject,
             allow: resolved.allow,
             sender,
             force: args.force,
@@ -3215,7 +3221,11 @@ pub(super) async fn call_recall_core_global(
     Ok(json!({
         "query": resp.query,
         "filter_applied": {
-            "owner_user": resp.filter_applied.owner_user,
+            "subject_user": resp.filter_applied.subject_user,
+            // Deprecated echo of the same value under its pre-rename key,
+            // kept one release so a consumer reading the diagnostic block
+            // by name does not silently find nothing.
+            "owner_user": resp.filter_applied.subject_user,
             "excluded_wiki_types": resp.filter_applied.excluded_wiki_types,
         },
         "hits": hits,
@@ -3273,8 +3283,8 @@ struct WikiForgetBulkArgs {
 /// Routes by the caller's authority over the loaded fact:
 /// - **author or admin** ([`mwe_core::acl::can_delete`]) → tombstone it now
 ///   (`outcome: "forgotten"`).
-/// - **owner who did not author it** (subject / owning-group member,
-///   [`mwe_core::acl::sender_owns`]) → forgetting needs an audience vote, and a
+/// - **subject who did not author it** (the fact is about them, or about a group they belong to;
+///   [`mwe_core::acl::sender_is_subject`]) → forgetting needs an audience vote, and a
 ///   vote is opened **only from the dashboard**, never started in the background
 ///   by the agent (the write-authority model —
 ///   [identity and ACL](../../../docs/concepts/identity-and-acl.md)). So the tool does
@@ -3347,11 +3357,11 @@ pub(super) async fn call_wiki_forget(
     let caller_groups = mwe_core::enrollment::groups_for(&state.pool, caller)
         .await
         .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
-    if mwe_core::acl::sender_owns(&row.owner_id, caller, &caller_groups) {
+    if mwe_core::acl::sender_is_subject(&row.subject_id, caller, &caller_groups) {
         return Ok(json!({
             "outcome": "request_from_dashboard",
             "fact_id": fact_id.as_str(),
-            "detail": "You own this fact but did not author it, so forgetting it needs an \
+            "detail": "This fact is about you but you did not write it, so forgetting it needs an \
                        audience vote — which is opened from the dashboard, not by the agent. \
                        Tell the user to open the forget request there (a `dashboard_link` helps).",
         }));
@@ -3359,7 +3369,7 @@ pub(super) async fn call_wiki_forget(
     Err(ToolError::new(
         ToolErrorClass::SenderUnauthorized,
         "you can neither forget nor request to forget this fact \
-         (you are not its author, owner, or an owning-group member)",
+         (it is not about you, you did not write it, and you are not in a group it is about)",
     ))
 }
 

@@ -17,7 +17,7 @@ the bundled default embedded by `include_str!` is the floor; an override at
 
 - **Call site**: `crates/mwe-core/src/recall_nav.rs::extract_query_seeds` —
   the `wiki_navigate` tool's seed cascade, fallback **B**: used when the caller
-  supplies no explicit `topics`/`owners` (**C**), and before degrading to the
+  supplies no explicit `topics`/`subjects` (**C**), and before degrading to the
   flat RAG hits alone (**A**, journalled as `rag_only`) — the `Principal`
   seed family that rung was named after was deleted on 2026-08-03. One completion per `wiki_navigate` call,
   not one per hop. Ingest gets these seeds from its classifier; the standalone
@@ -33,7 +33,7 @@ the bundled default embedded by `include_str!` is the floor; an override at
   **every** extracted name stays a `topics` needle either way (`fold_entities`,
   `recall_nav.rs`), because resolving a name says who the turn is about, it
   does not make the word less useful for matching the cards of the pages that
-  mention them. Before 2026-08-04 a resolved name went *only* to the owners
+  mention them. Before 2026-08-04 a resolved name went *only* to the subjects
   channel, which seeds no door since 69b — so a query about an enrolled person
   was served strictly worse than one about a stranger. Best-effort by contract: any load / LLM / parse
   failure returns empty seeds and the caller degrades to fallback **A**.

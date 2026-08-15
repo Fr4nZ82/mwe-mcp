@@ -20,13 +20,13 @@
 //! - **duplicate prose** — two leaf pages whose stripped bodies share a
 //!   char-6-gram Jaccard above [`PROSE_DUP_THRESHOLD`] (the starvation invariant
 //!   should make cross-page prose duplication near-zero; hubs are excluded).
-//! - **missing ACL marker** — an owned fact (owner ≠ `global`) assigned to a
+//! - **missing ACL marker** — an owned fact (subject ≠ `global`) assigned to a
 //!   page whose compiled body carries no `{{… f=<fact_id>}}` marker for it, or
 //!   whose marker is public. This is the ACL-leak guard the old engine lacked:
 //!   an owned claim rendered as unmarked prose would be readable by everyone.
 //! - **cross-subject bloat** — an identity card (a `wiki-user`'s `profile.md`;
 //!   the agent wiki included) whose plan carries a **foreign-subject** fact:
-//!   owner is a different user, or a group the page's user is not a member of
+//!   subject is a different user, or a group the page's user is not a member of
 //!   (a group they belong to is their own shared context, never foreign).
 //!   Observability for the identity-page discipline the Cartografo prompt
 //!   carries — a count in the report/log, never a gate.
@@ -112,12 +112,12 @@ impl IdentityContext {
     }
 
     /// The mechanical foreign-subject test: a fact is foreign to an identity
-    /// page iff its owner is a **different user**, or a **group the page's
+    /// page iff its subject is a **different user**, or a **group the page's
     /// user is not a member of**. A group the user belongs to is their own
     /// shared context — never foreign — and the builtin global group has
     /// universal membership.
-    fn is_foreign(&self, page_user: &str, owner: &Principal) -> bool {
-        match owner {
+    fn is_foreign(&self, page_user: &str, subject: &Principal) -> bool {
+        match subject {
             p if p.is_global() => false,
             Principal::User(u) => u != page_user,
             Principal::Group(g) => !self
@@ -142,7 +142,7 @@ pub struct ReviewReport {
     /// `(slug, fact_id)` owned facts with no matching non-public marker on the
     /// compiled page.
     pub missing_acl_markers: Vec<(String, String)>,
-    /// `(slug, fact_id, owner)` foreign-subject facts the plan places on an
+    /// `(slug, fact_id, subject)` foreign-subject facts the plan places on an
     /// identity card (a `wiki-user`'s `profile.md`) — the identity-page
     /// discipline violated. Observability only, never a gate.
     pub cross_subject_bloat: Vec<(String, String, String)>,
@@ -218,11 +218,11 @@ pub fn review(
         let is_identity_card = page.page_path == crate::wiki::PROFILE_FILENAME
             && identity.user_wikis.contains(&page.wiki_id);
         for f in &page.primary_facts {
-            if is_identity_card && identity.is_foreign(&page.wiki_id, &f.owner) {
+            if is_identity_card && identity.is_foreign(&page.wiki_id, &f.subject) {
                 report.cross_subject_bloat.push((
                     slug.clone(),
                     f.fact_id.as_str().to_owned(),
-                    f.owner.to_string(),
+                    f.subject.to_string(),
                 ));
             }
             homes
@@ -266,7 +266,7 @@ pub fn review(
 
         // missing ACL marker: every owned fact on the page must appear in a
         // non-public marker region.
-        let owned_marked: std::collections::BTreeSet<String> = parsed
+        let subject_marked: std::collections::BTreeSet<String> = parsed
             .events
             .iter()
             .filter_map(|ev| match ev {
@@ -274,10 +274,10 @@ pub fn review(
                     let fid = attrs.fact_id.as_ref()?;
                     // A region is public — and so does NOT protect an owned
                     // fact — when the builtin global group appears in its
-                    // owner or allow set. (Inheritance, i.e. owner=None, is
+                    // subject or allow set. (Inheritance, i.e. owner=None, is
                     // treated as non-public: it can resolve to a non-global
                     // default.)
-                    let public = attrs.acl.owner.as_ref().is_some_and(Principal::is_global)
+                    let public = attrs.acl.subject.as_ref().is_some_and(Principal::is_global)
                         || attrs.acl.allow.iter().any(Principal::is_global);
                     if public {
                         None
@@ -289,8 +289,8 @@ pub fn review(
             })
             .collect();
         for f in &page.primary_facts {
-            if !crate::acl::is_public(&f.owner, &f.allow, f.sender.as_ref())
-                && !owned_marked.contains(f.fact_id.as_str())
+            if !crate::acl::is_public(&f.subject, &f.allow, f.sender.as_ref())
+                && !subject_marked.contains(f.fact_id.as_str())
             {
                 report
                     .missing_acl_markers
@@ -415,13 +415,13 @@ mod tests {
         }
     }
 
-    fn ffp(seed: u8, owner: &str) -> FactForPage {
+    fn ffp(seed: u8, subject: &str) -> FactForPage {
         FactForPage {
             authored_refs: Vec::new(),
             fact_id: fid(seed),
             text: format!("fact {seed}"),
             fact_type: Some("bio".to_owned()),
-            owner: owner.parse::<Principal>().unwrap(),
+            subject: subject.parse::<Principal>().unwrap(),
             allow: Vec::new(),
             sender: None,
             source_wiki_id: "alice".to_owned(),
@@ -590,7 +590,7 @@ mod tests {
     }
 
     /// The identity index of `franz` (a `wiki-user`) planned with facts of
-    /// every ownership shape: only the foreign SUBJECTS are flagged —
+    /// every subject authority shape: only the foreign SUBJECTS are flagged —
     /// another user's fact and a fact of a group franz is NOT in. His own
     /// facts, a group he belongs to (his own shared context), and global
     /// world context are all clean.

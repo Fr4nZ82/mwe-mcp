@@ -91,7 +91,7 @@ pub mod kind {
     pub const DEDUP_MERGE: &str = "dedup_merge";
     /// Bundle multiple ops into one transactional apply.
     pub const BUNDLE: &str = "bundle";
-    /// A non-sender owner's request to forget one fact, put to the fact's
+    /// A non-sender subject's request to forget one fact, put to the fact's
     /// audience as a propose-first vote ([`crate::votes`]).
     ///
     /// Part of the write-authority model
@@ -718,23 +718,23 @@ pub async fn count_in_flight(
 /// triggered it.
 ///
 /// The human who actually said it (`sender_id`) wins; otherwise the
-/// owning user; otherwise `None` (a group/global owner with no sender →
+/// owning user; otherwise `None` (a group/global subject with no sender →
 /// unaddressed / admin-fallback). The returned string, when `Some`, is a
-/// `Principal` wire string like `"user:frodo"`, matching `owner_id` /
+/// `Principal` wire string like `"user:frodo"`, matching `subject_id` /
 /// `sender_id` on the fact and the `recipient_id` column.
 ///
 /// This is the single policy knob for "who gets notified about a
 /// proposal" — change it here and every emitter follows.
 #[must_use]
 pub fn recipient_from_fact(
-    owner_id: &crate::types::Principal,
+    subject_id: &crate::types::Principal,
     sender_id: Option<&crate::types::Principal>,
 ) -> Option<String> {
     use crate::types::Principal;
     if let Some(Principal::User(id)) = sender_id {
         return Some(format!("user:{id}"));
     }
-    if let Principal::User(id) = owner_id {
+    if let Principal::User(id) = subject_id {
         return Some(format!("user:{id}"));
     }
     None
@@ -966,7 +966,7 @@ async fn dispatch_apply_kind(
 
 /// Apply a `fact_forget` proposal: tombstone the fact named in its `context`.
 ///
-/// The terminal step of a non-sender owner's forget vote ([`crate::votes`]): the
+/// The terminal step of a non-sender subject's forget vote ([`crate::votes`]): the
 /// audience's silence (or an all-voted quorum) consented, so the fact is
 /// forgotten via [`crate::fact_index::mark_forgotten`] (reason
 /// `"fact_forget_vote"`). Returns a small spec recording the tombstoned id (so
@@ -2419,7 +2419,7 @@ mod tests {
     // ---- recipient derivation + authorization (0032) ----
 
     #[test]
-    fn recipient_from_fact_prefers_sender_then_owner_else_none() {
+    fn recipient_from_fact_prefers_sender_then_subject_else_none() {
         use crate::types::Principal;
         // The human who actually said it (sender) wins, even on a group fact.
         assert_eq!(
@@ -2434,7 +2434,7 @@ mod tests {
             recipient_from_fact(&Principal::User("galadriel".into()), None),
             Some("user:galadriel".to_owned()),
         );
-        // Group / global owner with no sender → unaddressed (admin-fallback).
+        // Group / global subject with no sender → unaddressed (admin-fallback).
         assert_eq!(
             recipient_from_fact(&Principal::Group("famiglia".into()), None),
             None,

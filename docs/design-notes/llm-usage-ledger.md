@@ -19,7 +19,7 @@ Related pages:
 
 - [`llm-functions.md`](llm-functions.md) — the slots being counted, and
   the prefix-cache accounting the token columns come from.
-- [`engine-db-and-migrations.md`](engine-db-and-migrations.md#the-migration-ledger)
+- [`engine-db-and-migrations.md`](engine-db-and-migrations.md#migration-ledger)
   — the `llm_usage` DDL in the migration ledger.
 - [`../protocol/config-schema.md`](../protocol/config-schema.md) — the
   `usage:` and `llm_pricing:` sections.

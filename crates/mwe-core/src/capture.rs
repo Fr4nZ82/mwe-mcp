@@ -30,8 +30,8 @@
 //!   keep their `proposal_ops_log` journaling.
 //! - **Cross-user attribution constraints.** Per
 //!   [the memory model](../../../docs/concepts/memory-model.md),
-//!   when `sender != owner` the sender must have read access to the
-//!   owner's wiki. The check is a later tightening — the agent
+//!   when `sender != subject` the sender must have read access to the
+//!   subject's wiki. The check is a later tightening — the agent
 //!   composing the call today is the only writer surface, and it is
 //!   trusted.
 //!
@@ -153,13 +153,13 @@ pub struct CaptureRequest {
     /// the `fact_index` columns, not the marker).
     pub body: String,
     /// Owning principal.
-    pub owner: Principal,
+    pub subject: Principal,
     /// Additional principals granted read access via `allow=`.
     pub allow: Vec<Principal>,
     /// Cross-user attribution (who *captured* the fact, orthogonal to
-    /// `owner`). `None` on input is materialized to `owner` by
+    /// `subject`). `None` on input is materialized to `subject` by
     /// [`normalize_sender_attribution`] — `sender` is always stored as a
-    /// distinct, explicit field, never collapsed into `owner`.
+    /// distinct, explicit field, never collapsed into `subject`.
     pub sender: Option<Principal>,
     /// Optional fact taxonomy hint (`bio`, `preference`, `episode`, …).
     pub fact_type: Option<String>,
@@ -279,12 +279,12 @@ pub struct LinkOutcome {
 /// and the light-dream promotion, so a buffered capture gets exactly
 /// the dedup a live write would have gotten:
 ///
-/// - **Same owner only.** A fact dedups only against facts owned by the
-///   same principal. Different owner ⇒ different fact — two senders
+/// - **Same subject only.** A fact dedups only against facts owned by the
+///   same principal. Different subject ⇒ different fact — two senders
 ///   adding to a shared `group:` page collapse to one item (same
-///   owner), but per-user facts that merely share a wiki (an agent's
+///   subject), but per-user facts that merely share a wiki (an agent's
 ///   behaviour rules, each owned by the user who dictated it) never
-///   collide. Preserves per-fragment ownership.
+///   collide. Preserves per-fragment subject authority.
 /// - **Never across the channel-page boundary** ([`crate::wiki::is_channel_page`]:
 ///   both sides on a reserved channel page, or neither): a new behaviour
 ///   rule must not be skipped as a duplicate of an ordinary fact that
@@ -301,7 +301,7 @@ pub struct LinkOutcome {
 /// stays with the caller, which decides what a hit means.
 pub(crate) fn best_dedup_candidate<'a>(
     candidates: &'a [FactIndexRow],
-    owner: &Principal,
+    subject: &Principal,
     on_channel_page: bool,
     body: &str,
     exclude: Option<&FactId>,
@@ -315,7 +315,7 @@ pub(crate) fn best_dedup_candidate<'a>(
         if exclude.is_some_and(|id| id == &row.fact_id) {
             continue;
         }
-        if &row.owner_id != owner {
+        if &row.subject_id != subject {
             continue;
         }
         if crate::wiki::is_channel_page(&row.source_path) != on_channel_page {
@@ -407,7 +407,7 @@ pub async fn wiki_capture_with_source(
     tracing::debug!(
         wiki_id = %wiki_id_str,
         page = %req.page.display(),
-        owner = %req.owner,
+        subject = %req.subject,
         body_len = req.body.len(),
         "capture: validated request"
     );
@@ -437,7 +437,7 @@ pub async fn wiki_capture_with_source(
         .max(0.0);
     let candidates = fact_index::find_active_in_wiki(pool, &wiki_id_str).await?;
     let on_channel_page = crate::wiki::is_channel_page(&req.page.to_string_lossy());
-    let best = best_dedup_candidate(&candidates, &req.owner, on_channel_page, &req.body, None);
+    let best = best_dedup_candidate(&candidates, &req.subject, on_channel_page, &req.body, None);
     tracing::debug!(
         wiki_id = %wiki_id_str,
         candidates = candidates.len(),
@@ -507,7 +507,7 @@ pub async fn wiki_capture_with_source(
         region_end: None,
         text: req.body,
         embedding,
-        owner_id: req.owner,
+        subject_id: req.subject,
         allow_ids: req.allow,
         sender_id: req.sender,
         fact_type: req.fact_type,
@@ -831,12 +831,12 @@ fn validate_body(body: &str) -> Result<()> {
 /// [`CaptureRequest`]
 /// (see capture & dedup):
 ///
-/// 1. When `req.sender` is absent, materialize it to `req.owner`. The
-///    capturer is the owner (the "user talks about themself" case);
-///    `sender` and `owner` are always kept as two separate, materialized
-///    fields so a later owner change never silently rebinds the original
+/// 1. When `req.sender` is absent, materialize it to `req.subject`. The
+///    capturer is the subject (the "user talks about themself" case);
+///    `sender` and `subject` are always kept as two separate, materialized
+///    fields so a later subject change never silently rebinds the original
 ///    provenance. `sender_id = NULL` survives only as the degenerate
-///    "scrubbed" state (e.g. a deleted user) that falls back to owner at
+///    "scrubbed" state (e.g. a deleted user) that falls back to subject at
 ///    read time — see
 ///    marker-grammar §5.
 /// 2. When `req.sender` is also listed in `req.allow`, refuse. The
@@ -847,7 +847,7 @@ fn validate_body(body: &str) -> Result<()> {
 ///    principal into both fields).
 ///
 /// Note: at this layer we cannot validate "the implicit sender of the
-/// MCP call ≠ owner" — the JWT identity is consumed at the MCP
+/// MCP call ≠ subject" — the JWT identity is consumed at the MCP
 /// dispatcher level, and capture only sees the materialised
 /// `CaptureRequest`. The dispatcher is responsible for translating its
 /// own bearer-token identity into `req.sender` when capturing on
@@ -855,12 +855,12 @@ fn validate_body(body: &str) -> Result<()> {
 /// translation has happened.
 fn normalize_sender_attribution(req: &mut CaptureRequest) -> Result<()> {
     let Some(sender) = req.sender.clone() else {
-        // Absent attribution → materialize sender = owner. Provenance is
+        // Absent attribution → materialize sender = subject. Provenance is
         // frozen at birth as a distinct field, never collapsed to NULL.
-        req.sender = Some(req.owner.clone());
+        req.sender = Some(req.subject.clone());
         return Ok(());
     };
-    if sender == req.owner {
+    if sender == req.subject {
         // Already explicit and consistent — keep it materialized.
         return Ok(());
     }
@@ -902,22 +902,23 @@ pub fn render_embed_marker(catalog_id: &CatalogId) -> String {
 }
 
 /// The **export/interchange** marker: the full self-describing form
-/// `{{owner=… allow=… sender=… f=…}}body{{/}}`.
+/// `{{subject=… allow=… sender=… f=…}}body{{/}}`.
 ///
 /// Never written at runtime — used when producing a portable archive
 /// where each fragment must carry its own ACL without the engine DB
-/// next to it. The parser accepts this form as input, so an exported
-/// page re-imports losslessly.
+/// next to it. The parser accepts this form as input forever — but no
+/// importer ships in this workspace, so an archive is read by hand or by
+/// another tool, never fed back in by mwe-mcp.
 #[must_use]
 pub fn render_full_marker(
     fact_id: &FactId,
-    owner: &Principal,
+    subject: &Principal,
     allow: &[Principal],
     sender: Option<&Principal>,
     body: &str,
 ) -> String {
     let mut attrs = Vec::with_capacity(4);
-    attrs.push(format!("owner={owner}"));
+    attrs.push(format!("subject={subject}"));
     if !allow.is_empty() {
         let joined: Vec<String> = allow.iter().map(ToString::to_string).collect();
         attrs.push(format!("allow={}", joined.join(",")));
@@ -1022,7 +1023,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("intro.md"),
             body: body.to_owned(),
-            owner: "user:alice".parse().unwrap(),
+            subject: "user:alice".parse().unwrap(),
             allow: vec![],
             sender: None,
             fact_type: Some("preference".to_owned()),
@@ -1079,13 +1080,13 @@ mod tests {
 
     // ---------- normalize_sender_attribution ----------
 
-    fn req_with(owner: &str, sender: Option<&str>, allow: Vec<&str>) -> CaptureRequest {
+    fn req_with(subject: &str, sender: Option<&str>, allow: Vec<&str>) -> CaptureRequest {
         CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("index.md"),
             body: "x".into(),
-            owner: owner.parse().unwrap(),
+            subject: subject.parse().unwrap(),
             allow: allow.into_iter().map(|s| s.parse().unwrap()).collect(),
             sender: sender.map(|s| s.parse().unwrap()),
             fact_type: None,
@@ -1100,18 +1101,18 @@ mod tests {
     }
 
     #[test]
-    fn normalize_sender_keeps_materialized_when_equal_to_owner() {
+    fn normalize_sender_keeps_materialized_when_equal_to_subject() {
         let mut req = req_with("user:alice", Some("user:alice"), vec![]);
         normalize_sender_attribution(&mut req).unwrap();
         assert_eq!(
             req.sender.as_ref().map(ToString::to_string).as_deref(),
             Some("user:alice"),
-            "sender must stay materialized (= owner), never collapsed to None"
+            "sender must stay materialized (= subject), never collapsed to None"
         );
     }
 
     #[test]
-    fn normalize_sender_keeps_when_different_from_owner() {
+    fn normalize_sender_keeps_when_different_from_subject() {
         let mut req = req_with("user:bob", Some("user:alice"), vec![]);
         normalize_sender_attribution(&mut req).unwrap();
         assert_eq!(
@@ -1135,13 +1136,13 @@ mod tests {
     }
 
     #[test]
-    fn normalize_sender_materializes_to_owner_when_none() {
+    fn normalize_sender_materializes_to_subject_when_none() {
         let mut req = req_with("user:bob", None, vec!["user:alice"]);
         normalize_sender_attribution(&mut req).unwrap();
         assert_eq!(
             req.sender.as_ref().map(ToString::to_string).as_deref(),
             Some("user:bob"),
-            "absent sender must be materialized to the owner"
+            "absent sender must be materialized to the subject"
         );
         assert_eq!(req.allow.len(), 1);
     }
@@ -1161,12 +1162,12 @@ mod tests {
     #[test]
     fn render_full_marker_emits_canonical_export_form() {
         let fid = FactId::parse("018f1234-5678-7abc-9def-0123456789ab").unwrap();
-        let owner: Principal = "user:alice".parse().unwrap();
+        let subject: Principal = "user:alice".parse().unwrap();
         let allow: Vec<Principal> =
             vec!["group:family".parse().unwrap(), "user:bob".parse().unwrap()];
         let sender: Principal = "user:bob".parse().unwrap();
-        let rendered = render_full_marker(&fid, &owner, &allow, Some(&sender), "I love pasta");
-        let expected = "{{owner=user:alice allow=group:family,user:bob sender=user:bob \
+        let rendered = render_full_marker(&fid, &subject, &allow, Some(&sender), "I love pasta");
+        let expected = "{{subject=user:alice allow=group:family,user:bob sender=user:bob \
                         f=018f1234-5678-7abc-9def-0123456789ab}}I love pasta{{/}}";
         assert_eq!(rendered, expected);
     }
@@ -1174,9 +1175,9 @@ mod tests {
     #[test]
     fn render_full_marker_omits_empty_allow_and_absent_sender() {
         let fid = FactId::parse("018f1234-5678-7abc-9def-0123456789ab").unwrap();
-        let owner: Principal = "user:alice".parse().unwrap();
-        let rendered = render_full_marker(&fid, &owner, &[], None, "body");
-        let expected = "{{owner=user:alice f=018f1234-5678-7abc-9def-0123456789ab}}body{{/}}";
+        let subject: Principal = "user:alice".parse().unwrap();
+        let rendered = render_full_marker(&fid, &subject, &[], None, "body");
+        let expected = "{{subject=user:alice f=018f1234-5678-7abc-9def-0123456789ab}}body{{/}}";
         assert_eq!(rendered, expected);
     }
 
@@ -1208,7 +1209,7 @@ mod tests {
         let intro = std::fs::read_to_string(dir.path().join("wikis/alice/intro.md")).unwrap();
         assert!(intro.contains("I love pasta"));
         assert!(intro.contains("{{f="));
-        assert!(!intro.contains("owner="));
+        assert!(!intro.contains("subject=") && !intro.contains("owner="));
         assert!(intro.contains("{{/}}"));
 
         // fact_index row written.
@@ -1448,7 +1449,7 @@ mod tests {
 
     /// Dedup never crosses the rules-page boundary (both-or-neither): a new
     /// behaviour rule on `rules.md` is NOT skipped as a duplicate of an
-    /// ordinary same-owner fact that restates it — a skip would keep the rule
+    /// ordinary same-subject fact that restates it — a skip would keep the rule
     /// off `rules.md` and out of the behaviour-rules channel — while
     /// rule-vs-rule on the page still dedups.
     #[tokio::test]

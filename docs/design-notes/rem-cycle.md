@@ -176,7 +176,7 @@ byte for byte — and the `rem_verdicts` memo keys stay valid.
 
 Within a line the passes stay god-mode as they always were —
 the family is the same subject's own tree; per-fragment ACL travels
-untouched with every move (`move_to_wiki` keeps owner/allow/sender).
+untouched with every move (`move_to_wiki` keeps subject/allow/sender).
 Pinned by `family_scopes_partition_by_directory_nesting_not_id`.
 
 ## The verdict memo — why `examined` now means `asked`
@@ -270,7 +270,7 @@ For each **family line** ([family scope](#family-scope--the-consolidation-passes
    **And never when the side that would lose is identity-core** (`bio` +
    `salience: high` — a role, a relationship,
    [`FactIndexRow::is_identity_core`](../../crates/mwe-core/src/fact_index.rs)).
-   Background dedup does not retire what the owner's always-on identity core
+   Background dedup does not retire what the subject's always-on identity core
    is made of: *«Frodo is Galadriel's partner»* changes by an explicit
    correction or not at all. Same shape as the two fences above — structural,
    ahead of the model. It also means the flagship worked example the prompt
@@ -285,7 +285,7 @@ For each **family line** ([family scope](#family-scope--the-consolidation-passes
    once the loser's bytes are off the page there is no undo. Text similarity
    is a *candidate* signal; the audience and the provenance decide (founder,
    2026-07-28). The reader set is
-   [`acl::reader_set`](../../crates/mwe-core/src/acl.rs) — `owner ∪ allow ∪
+   [`acl::reader_set`](../../crates/mwe-core/src/acl.rs) — `subject ∪ allow ∪
    sender`, the same three axes `can_read` evaluates, taken from there so the
    two answers cannot drift — compared for equality
    ([`rem::reader_sets_differ`](../../crates/mwe-core/src/rem.rs)). Group
@@ -295,7 +295,7 @@ For each **family line** ([family scope](#family-scope--the-consolidation-passes
    the other invariants **before** the LLM sees the pair — a rule the model
    could weigh is a rule that fails on the day it matters. It costs nothing:
    the three fields are already on the rows the loop holds. Where this can
-   actually bite is a group wiki, where facts owned by different users with
+   actually bite is a group wiki, where facts about different users with
    different `allow` lists share one family scope.
 4. Ask the `rem_dedup_semantic` LLM with a strict-JSON prompt:
    `{"same": true|false}`. Each side is framed with the page it lives
@@ -552,9 +552,9 @@ in every wiki:
    page→sub-wiki pass. The receipt
    and its notice both carry the **recipient** (0032), derived from the
    first moved fact with `proposals::recipient_from_fact` (the fact's
-   `sender_id`, else the owning user, else `null`); the dedup sub-job
-   does the same for its `DedupProposed` event, and the archive
-   emitter carries `recipient_id: null` (no single fact in scope).
+   `sender_id`, else the subject when it is a user, else `null`); the
+   dedup sub-job does the same for its `DedupProposed` event, and the
+   archive emitter carries `recipient_id: null` (no single fact in scope).
 
 The sub-job is **gated by the LLM slot**: when `RemLlms.auto_promote`
 is `None` (operator has not configured `llm.rem_promotions` in
@@ -686,7 +686,7 @@ view ([`run_completion_sweep`](../../crates/mwe-core/src/rem.rs)).
    it completes nothing (the live incident: one user's naming rule read
    as evidence "completing" another user's parallel naming rule), and it
    is never completed by neighbouring evidence — a rule leaves the
-   channel only via supersede, tombstone, or its owner's explicit
+   channel only via supersede, tombstone, or its subject's explicit
    closure.
 2. **Nomination** (no LLM): for each evidence fact, the most similar
    **open** facts of the same
@@ -853,7 +853,7 @@ with the global view.
    2026-07-01: the freshly revised TTS rules fell as satellites of their
    own dead predecessors); and **rules-page facts are never
    candidates** — a standing directive leaves the channel only via
-   supersede, tombstone, or its owner's explicit closure, never as
+   supersede, tombstone, or its subject's explicit closure, never as
    collateral of a neighbouring contradiction. Similarity nominates
    only; freshest seeds first, capped by
    `policy.contradiction_sweep_cap` (default 8; `0` disables).
@@ -1495,8 +1495,8 @@ then ends with the deterministic post-compile reviewer
 ([narrative-compiler.md §The reviewer](narrative-compiler.md#the-reviewer)),
 whose findings include **`cross_subject_bloat`**: an identity index (a
 `wiki-user`'s `index.md`, the agent wiki included) whose plan carries a
-**foreign-subject** fact — owner is a different user, or a group the page's
-user is not a member of (enrollment-fed `reviewer::IdentityContext`, loaded
+**foreign-subject** fact — its subject is a different user, or a group the
+page's user is not a member of (enrollment-fed `reviewer::IdentityContext`, loaded
 best-effort by `dream::run_compile`). Observability for the Cartografo's
 identity-page discipline — counts in the report/log, never a gate. The pass is **skipped**
 when the `cronista` slot is unconfigured — so the light dream still promotes,

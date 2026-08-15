@@ -86,11 +86,11 @@ buffer write side is documented in
    one page's facts into another's.
 3. **Embed**: call the supplied `Arc<dyn Embedder>` on the body. A
    remote-embedder failure short-circuits *before* any durable write.
-4. **Dedup**: fetch every active fact in the wiki **owned by the same
-   principal as the new fact** (different owner ⇒ different fact — two senders
+4. **Dedup**: fetch every active fact in the wiki **whose subject is the same
+   principal as the new fact's** (different subject ⇒ different fact — two senders
    adding to one `group:` page collapse to a shared item, but per-user facts
-   that merely share a wiki, like an agent's behaviour rules each owned by the
-   user who dictated it, stay distinct), **never crossing the rules-page
+   that merely share a wiki, like an agent's behaviour rules whose subject is the
+   user who dictated each one, stay distinct), **never crossing the rules-page
    boundary** (candidates pair only when both the new fact's page and the
    candidate's are `rules.md`, or neither is — a behaviour rule dedups
    rule-vs-rule; a rule skipped as a "duplicate" of an ordinary fact would
@@ -119,7 +119,7 @@ buffer write side is documented in
    contents and the region's byte offsets are computed here, before any
    durable write.
 6. **Insert — the commit point**: `fact_index::insert` with the
-   authoritative owner / allow / sender + topics + the embedding, and
+   authoritative subject / allow / sender + topics + the embedding, and
    **region offsets NULL**. Offsets mean "rendered on disk", and the
    marker is not on disk yet — an offset-less row is a *pending render*
    the [reindex existence sweep](reindex-pipeline.md) exempts.
@@ -182,10 +182,10 @@ this is the per-fragment governance the product exists to sell, and a
 consolidation feature that skips it sells the opposite.
 
 Where it is enforced today: the nightly revisor's **audience gate**
-([rem-cycle.md](rem-cycle.md#4-revisor--semantic-dedup-across-a-family)) refuses
+([rem-cycle.md](rem-cycle.md#revisor--conciliatore-sub-job)) refuses
 to nominate a pair whose reader sets differ, structurally, before the confirmer
 sees it. The reader set is [`acl::reader_set`](../../crates/mwe-core/src/acl.rs)
-— `owner ∪ allow ∪ sender`, read from beside `can_read` so the two cannot
+— `subject ∪ allow ∪ sender`, read from beside `can_read` so the two cannot
 drift. The write-time scan below is a different case (one author, one turn,
 one audience by construction) and takes no such gate.
 
@@ -217,7 +217,7 @@ in the roadmap):
 | Not done | Why |
 |---|---|
 | **WAL applicative wrap** | Not needed: the `fact_index` insert is the capture's **commit point** (step 6 above). A failed page write compensates by tombstoning the row; a crash between insert and write leaves a pending render (offsets NULL) that the next compile re-emits and the reindex sweep never mistakes for an orphan. Multi-step structural writes elsewhere (the REM proposal kinds) keep their `proposal_ops_log` journaling. |
-| **Cross-user attribution enforcement** | Per the [memory model](../concepts/memory-model.md), when `sender ≠ owner`, the sender must have read access to the owner's wiki. The agent composing the call today is the trusted writer surface; the preventive check is not yet wired into the dashboard/server-side caller composition. |
+| **Cross-user attribution enforcement** | Per the [memory model](../concepts/memory-model.md), when `sender ≠ subject`, the sender must have read access to the wiki that subject owns. The agent composing the call today is the trusted writer surface; the preventive check is not yet wired into the dashboard/server-side caller composition. |
 | **In-place region edit** | `wiki_capture` only appends. Editing an existing region in place (preserving its `fact_id`) — so `wiki_ingest_message` could refine a just-captured paragraph — is not supported. |
 
 ## Error surface (`CaptureError`)

@@ -31,7 +31,7 @@ MCP. In one server:
   readable surface, with the authoritative fact store (`fact_index` in
   `engine.db`) beneath it;
 - **per-fragment ACL** — every marked region of a page carries its own
-  owner / audience / sender, authoritative in the DB (`fact_index`; the
+  subject / audience / sender, authoritative in the DB (`fact_index`; the
   inline marker carries only the region key), redacted per reader at
   render time;
 - **four hard-coded actor wiki kinds** (`wiki-user`, `wiki-group`,
@@ -73,7 +73,7 @@ navigation rules and the conventions for adding/updating pages.
 If you are new, read in this order:
 
 1. [The memory model](concepts/memory-model.md) — the conceptual front
-   door: what mwe-mcp is, the four product pillars, owner-vs-sender
+   door: what mwe-mcp is, the four product pillars, subject-vs-sender
    attribution, the file-first surface principle.
 2. [Identity & ACL](concepts/identity-and-acl.md) — users, groups,
    single-admin, block-level access control, derived wiki visibility.
@@ -92,7 +92,7 @@ If you are new, read in this order:
 ### `concepts/`
 - [memory-model.md](concepts/memory-model.md) — the four pillars (wiki
   not vector store, block-level ACL, Wiki-as-Component, the agent-as-user
-  persona), owner/sender attribution, the region-level fact model,
+  persona), subject/sender attribution, the region-level fact model,
   typed regions, the media catalog, supersedence chains.
 - [identity-and-acl.md](concepts/identity-and-acl.md) — the identity
   model (single-admin, account-vs-identity, id-rules), block-level ACL,

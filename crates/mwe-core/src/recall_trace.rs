@@ -112,13 +112,13 @@ pub struct RecallTrace {
     pub turn_text: String,
     /// The turn's classified intent (ingest only).
     pub intent: Option<String>,
-    /// Where the topic/owner seeds came from: `classifier` (ingest),
+    /// Where the topic/subject seeds came from: `classifier` (ingest),
     /// `caller` / `query_extraction` / `rag_only` (the `wiki_navigate`
     /// cascade), `guest` (the ephemeral guest turn — no classifier runs).
     ///
     /// `rag_only` means the funnel started from the flat recall hits and
     /// nothing else — no navigator slot configured, or an extraction that
-    /// returned neither topic nor owner. It was called `principal_rag_only`
+    /// returned neither topic nor subject. It was called `principal_rag_only`
     /// until 2026-08-14, after the `Principal` seed family it named was
     /// deleted on 2026-08-03: an operator's own diagnostic surface reported a
     /// mechanism that no longer existed, and those rows are what a later
@@ -126,8 +126,9 @@ pub struct RecallTrace {
     pub seed_mode: String,
     /// Topic seeds that fed the entry-point gather.
     pub topics: Vec<String>,
-    /// Owner seeds (principal strings) that fed the gather.
-    pub owners: Vec<String>,
+    /// Subject seeds (principal strings) that fed the gather.
+    #[serde(alias = "owners")]
+    pub subjects: Vec<String>,
     /// Flat vector-recall hits (promoted facts), scored.
     pub flat_hits: Vec<TraceHit>,
     /// Fresh-slot hits (un-promoted buffered captures; no page region).

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Non-sender owner's **forget request** and the audience vote that resolves it
+//! Non-sender subject's **forget request** and the audience vote that resolves it
 //! (the fact-forget vote).
 //!
 //! "ACL lives only in the fact." A fact's **sender** (its author) deletes their
 //! own contribution directly ([`crate::acl::can_delete`]); an admin acts on any
-//! fact. But a non-sender **`owner`** — the fact's *subject*, or a member of an
+//! fact. But a non-sender **`subject`** — the fact's *subject*, or a member of an
 //! owning group — who did not author it has no such authority. Their path is a
 //! **request the fact's audience votes on**, built here.
 //!
@@ -18,7 +18,7 @@
 //!   the window — the requester has no authority to remove a contribution they
 //!   did not author, so nothing is destroyed up front.
 //! - the **eligible voters** are the fact's [`crate::acl::can_read`] audience
-//!   (`owner ∪ allow ∪ {sender}`, groups expanded, `global` dropped — a public
+//!   (`subject ∪ allow ∪ {sender}`, groups expanded, `global` dropped — a public
 //!   fact has no finite electorate), **minus the requester** (who consented by
 //!   asking). The sender (author) is always in the audience.
 //! - a **NO-majority** within the window (`no * 2 > eligible`) **blocks** it: the
@@ -358,7 +358,7 @@ pub enum ForgetRequestError {
         requester: String,
     },
     /// The requester is not authorized to open a forget request: not an admin,
-    /// not the fact's `owner` (subject), and not a member of an owning group.
+    /// not the fact's `subject` (subject), and not a member of an owning group.
     #[error("requester {requester} not authorized to request forgetting {fact_id}")]
     NotAuthorized {
         /// The fact id.
@@ -378,12 +378,12 @@ pub enum ForgetRequestError {
 }
 
 /// Open a **forget request** for `fact_id` on behalf of `requester` (a bare user
-/// id), the non-sender owner's path (module docs).
+/// id), the non-sender subject's path (module docs).
 ///
 /// Refuses when the fact is missing / already tombstoned, when the requester is
 /// the fact's **sender** (they delete directly), or when the requester is not
-/// authorized to request (authorized = `is_admin`, OR `owner == user:requester`,
-/// OR `owner == group:g` with the requester a member of `g`). Computes the
+/// authorized to request (authorized = `is_admin`, OR `subject == user:requester`,
+/// OR `subject == group:g` with the requester a member of `g`). Computes the
 /// eligible audience ([`crate::acl::audience`]) minus the requester; if that is
 /// **empty** (the requester is the fact's only reader) the forget applies
 /// immediately. Otherwise a **pending** `fact_forget` proposal is emitted with a
@@ -418,9 +418,9 @@ pub async fn open_forget_request(
         });
     }
 
-    // Only the owner (subject) or an owning-group member — or an admin — may
+    // Only the subject (subject) or an owning-group member — or an admin — may
     // open the request.
-    if !is_admin && !owner_authorizes(pool, &row.owner_id, requester).await? {
+    if !is_admin && !subject_authorizes(pool, &row.subject_id, requester).await? {
         return Err(ForgetRequestError::NotAuthorized {
             fact_id: fact_id.as_str().to_owned(),
             requester: requester.to_owned(),
@@ -429,8 +429,13 @@ pub async fn open_forget_request(
 
     // The electorate: the fact's read audience minus the requester (who
     // consented by asking).
-    let mut eligible =
-        crate::acl::audience(pool, &row.owner_id, &row.allow_ids, row.sender_id.as_ref()).await?;
+    let mut eligible = crate::acl::audience(
+        pool,
+        &row.subject_id,
+        &row.allow_ids,
+        row.sender_id.as_ref(),
+    )
+    .await?;
     eligible.retain(|u| u != requester);
 
     // Nobody left to vote (the requester was the only reader) → apply now.
@@ -476,16 +481,16 @@ pub async fn open_forget_request(
     })
 }
 
-/// Whether `requester` is the fact's `owner` (subject) or a member of an owning
+/// Whether `requester` is the fact's `subject` (subject) or a member of an owning
 /// group — the request-authorization predicate (the sender / admin paths are
 /// handled by the caller). The builtin `global` group authorizes no one (a
-/// public fact has no specific owner to request on its behalf).
-async fn owner_authorizes(
+/// public fact has no specific subject to request on its behalf).
+async fn subject_authorizes(
     pool: &SqlitePool,
-    owner: &Principal,
+    subject: &Principal,
     requester: &str,
 ) -> Result<bool, sqlx::Error> {
-    match owner {
+    match subject {
         Principal::User(id) => Ok(id == requester),
         Principal::Group(id) if id == "global" => Ok(false),
         Principal::Group(id) => Ok(crate::enrollment::members_for(pool, id)
@@ -520,7 +525,7 @@ pub struct PendingVote {
     pub proposal_id: String,
     /// The fact under request.
     pub fact_id: String,
-    /// The user who opened the request (the fact's owner / an owning-group
+    /// The user who opened the request (the fact's subject / an owning-group
     /// member).
     pub requester: String,
     /// RFC 3339 deadline — silence past it is consent (the forget applies).
@@ -674,10 +679,10 @@ mod tests {
         (workdir, pool, tree)
     }
 
-    /// Insert one fact on `famiglia/vacanze.md` with explicit owner/allow/sender.
+    /// Insert one fact on `famiglia/vacanze.md` with explicit subject/allow/sender.
     async fn insert_fact(
         pool: &SqlitePool,
-        owner: &str,
+        subject: &str,
         allow: &[&str],
         sender: Option<&str>,
     ) -> FactId {
@@ -693,7 +698,7 @@ mod tests {
                 region_end: Some(32),
                 text: "shared family fact".to_owned(),
                 embedding: vec![0.1, 0.2, 0.3, 0.4],
-                owner_id: owner.parse().unwrap(),
+                subject_id: subject.parse().unwrap(),
                 allow_ids: allow.iter().map(|a| a.parse().unwrap()).collect(),
                 sender_id: sender.map(|s| s.parse().unwrap()),
                 fact_type: None,
@@ -729,7 +734,7 @@ mod tests {
             .expect("status")
     }
 
-    /// franz owns the fact morgana authored: franz (owner, NOT sender) opens a
+    /// franz owns the fact morgana authored: franz (subject, NOT sender) opens a
     /// request; the audience minus franz is {bilbo, morgana}.
     fn opened_voters(req: &ForgetRequest) -> (&str, &[String]) {
         match req {
@@ -745,9 +750,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owner_opens_request_audience_all_yes_applies() {
+    async fn subject_opens_request_audience_all_yes_applies() {
         let (_workdir, pool, tree) = seed_famiglia().await;
-        // owner=franz, allow=famiglia, sender=morgana → franz is owner not sender.
+        // owner=franz, allow=famiglia, sender=morgana → franz is subject not sender.
         let fact = insert_fact(
             &pool,
             "user:franz",
@@ -877,7 +882,7 @@ mod tests {
     #[tokio::test]
     async fn unauthorized_requester_is_refused() {
         let (_workdir, pool, tree) = seed_famiglia().await;
-        // owner=franz (a user), sender=morgana. bilbo is neither owner nor sender
+        // owner=franz (a user), sender=morgana. bilbo is neither subject nor sender
         // and not an admin → refused (he is in the audience but cannot *request*).
         let fact = insert_fact(
             &pool,
@@ -888,12 +893,12 @@ mod tests {
         .await;
         let err = open_forget_request(&pool, &tree, &embedder(), &fact, "bilbo", false)
             .await
-            .expect_err("non-owner refused");
+            .expect_err("non-subject refused");
         assert!(matches!(err, ForgetRequestError::NotAuthorized { .. }));
     }
 
     #[tokio::test]
-    async fn group_owner_member_may_request() {
+    async fn group_subject_member_may_request() {
         let (_workdir, pool, tree) = seed_famiglia().await;
         // owner=group:famiglia, sender=morgana. bilbo (a famiglia member, not the
         // sender) may open the request; audience minus bilbo = {franz, morgana}.
@@ -906,7 +911,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_may_request_even_when_not_owner() {
+    async fn admin_may_request_even_when_not_subject() {
         let (_workdir, pool, tree) = seed_famiglia().await;
         // owner=franz, sender=morgana. nina is neither, but as admin may request.
         // Audience = {franz, morgana}; minus requester nina (not in it) = both.

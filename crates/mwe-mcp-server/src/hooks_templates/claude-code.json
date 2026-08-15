@@ -14,7 +14,7 @@
     },
     "recall_core_global": {
       "status": "shipped",
-      "note": "The model calls it on the first prompt / on a topic shift (steered by the skill). Owner-scoped transversal recall over the user's own wikis. Smart-only."
+      "note": "The model calls it on the first prompt / on a topic shift (steered by the skill). Transversal recall over the facts whose subject is the user — facts about them, wherever they are filed. Smart-only."
     },
     "wiki_admin_push": {
       "status": "shipped",

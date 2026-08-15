@@ -11,7 +11,7 @@
 //! - [`crate::page::DeletionMode::Dissolve`] — **the default**: destroy the
 //!   *structure*, keep every fact. Nothing is tombstoned. Each fact is moved to
 //!   a live wiki ([`crate::page::dissolve_home`] — its sender's home, else its
-//!   owner's, else the deleter's) and the dissolved wiki's pages are parked on
+//!   subject's, else the deleter's) and the dissolved wiki's pages are parked on
 //!   the compilation plan as `reopen_pages`, so the next Cartografo build
 //!   **re-decides where each fact belongs** corpus-wide instead of letting it
 //!   inherit the page it happened to sit on. The evacuation target is a
@@ -24,8 +24,8 @@
 //!   partitioned by its per-fragment `sender`, so no one's contribution is
 //!   destroyed. A fact the `deleter` sent is tombstoned (their own); a
 //!   foreign-authored one is **evacuated intact** to its sender's home wiki (the
-//!   `owner` is the fallback when the sender has no home), carrying its
-//!   `owner`/`allow`/`sender` ACL untouched — reading is per-fragment, so it
+//!   `subject` is the fallback when the sender has no home), carrying its
+//!   `subject`/`allow`/`sender` ACL untouched — reading is per-fragment, so it
 //!   keeps its audience wherever it lands. Reuses [`crate::page::decide`] + the
 //!   cross-wiki refile engine.
 //! - [`crate::page::DeletionMode::TombstoneAll`] — **tombstone them all**: every
@@ -246,8 +246,9 @@ pub async fn delete_wiki_subtree(
                 // on. The evacuation target is transient by design.
                 reopen_slugs.extend(planner::plan_slugs_of_wiki(tree, wiki_id)?);
                 for row in fact_index::find_active_in_wiki(pool, wiki_id).await? {
-                    let responsible = row.sender_id.as_ref().unwrap_or(&row.owner_id);
-                    let Some(dest) = page::dissolve_home(responsible, &row.owner_id, deleter, tree)
+                    let responsible = row.sender_id.as_ref().unwrap_or(&row.subject_id);
+                    let Some(dest) =
+                        page::dissolve_home(responsible, &row.subject_id, deleter, tree)
                     else {
                         // No live wiki anywhere for this fact (a `global`-owned
                         // fact whose sender is gone and whose deleter has no
@@ -277,10 +278,10 @@ pub async fn delete_wiki_subtree(
             DeletionMode::SenderKeyed => {
                 for row in fact_index::find_active_in_wiki(pool, wiki_id).await? {
                     // The principal responsible for the fact: its sender
-                    // (provenance) when present, else its owner — the same
+                    // (provenance) when present, else its subject — the same
                     // partition the per-page governed delete applies.
-                    let responsible = row.sender_id.as_ref().unwrap_or(&row.owner_id);
-                    match page::decide(responsible, &row.owner_id, deleter, tree) {
+                    let responsible = row.sender_id.as_ref().unwrap_or(&row.subject_id);
+                    match page::decide(responsible, &row.subject_id, deleter, tree) {
                         Action::Tombstone => {
                             fact_index::mark_forgotten(pool, &row.fact_id, DELETE_REASON).await?;
                             facts_tombstoned += 1;
@@ -392,9 +393,9 @@ mod tests {
     }
 
     /// Capture a fact into `wiki` owned by `user:<owner_user>` (sender unset, so
-    /// the owner is the responsible principal the evacuation keys on) — writes
+    /// the subject is the responsible principal the evacuation keys on) — writes
     /// the page on disk so the refile can read it.
-    async fn capture_owned(
+    async fn capture_with_subject(
         tree: &WikiTree,
         pool: &SqlitePool,
         emb: Arc<dyn Embedder>,
@@ -407,7 +408,7 @@ mod tests {
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: PathBuf::from("index.md"),
             body: body.to_owned(),
-            owner: format!("user:{owner_user}").parse::<Principal>().unwrap(),
+            subject: format!("user:{owner_user}").parse::<Principal>().unwrap(),
             allow: vec![],
             sender: None,
             fact_type: None,
@@ -522,9 +523,10 @@ mod tests {
 
         // bob owns a note in his own wiki (so bob/index.md exists as a dest),
         // plus a fact that landed in acme; franz (the deleter) has one too.
-        capture_owned(&tree, &pool, emb.clone(), "bob", "bob", "Bob's own note").await;
-        let bob_fact = capture_owned(&tree, &pool, emb.clone(), "acme", "bob", "About bob").await;
-        capture_owned(&tree, &pool, emb, "acme", "franz", "About franz").await;
+        capture_with_subject(&tree, &pool, emb.clone(), "bob", "bob", "Bob's own note").await;
+        let bob_fact =
+            capture_with_subject(&tree, &pool, emb.clone(), "acme", "bob", "About bob").await;
+        capture_with_subject(&tree, &pool, emb, "acme", "franz", "About franz").await;
 
         let report = delete_wiki_subtree(
             &pool,
@@ -570,8 +572,8 @@ mod tests {
 
         // Two foreign facts (neither is the deleter): tombstone-all destroys
         // both in place, never evacuating.
-        capture_owned(&tree, &pool, emb.clone(), "acme", "bob", "About bob").await;
-        capture_owned(&tree, &pool, emb, "acme", "morgana", "About morgana").await;
+        capture_with_subject(&tree, &pool, emb.clone(), "acme", "bob", "About bob").await;
+        capture_with_subject(&tree, &pool, emb, "acme", "morgana", "About morgana").await;
 
         let report = delete_wiki_subtree(
             &pool,
@@ -630,7 +632,7 @@ mod tests {
         let db_dir = tempdir().unwrap();
         let pool = crate::db::open_or_init(db_dir.path()).await.unwrap();
         let emb = embedder();
-        capture_owned(&tree, &pool, emb, "ghost", "ghost", "A ghost's note").await;
+        capture_with_subject(&tree, &pool, emb, "ghost", "ghost", "A ghost's note").await;
 
         let report = delete_wiki_subtree(
             &pool,
@@ -661,8 +663,10 @@ mod tests {
         seed(&tree, "dossier", "wiki-tech");
         let tree = WikiTree::open(dir.path()).unwrap();
 
-        let f1 = capture_owned(&tree, &pool, embedder(), "dossier", "alice", "first note").await;
-        let f2 = capture_owned(&tree, &pool, embedder(), "dossier", "alice", "second note").await;
+        let f1 =
+            capture_with_subject(&tree, &pool, embedder(), "dossier", "alice", "first note").await;
+        let f2 =
+            capture_with_subject(&tree, &pool, embedder(), "dossier", "alice", "second note").await;
 
         let report = delete_wiki_subtree(
             &pool,
@@ -680,7 +684,7 @@ mod tests {
         assert!(report.trash_dir.exists(), "the husk went to trash");
 
         // Both facts are alive, and they left the dissolved wiki for their
-        // owner's live one — no row may point into the trash.
+        // subject's live one — no row may point into the trash.
         for fid in [&f1, &f2] {
             let row = fact_index::find_by_id(&pool, fid)
                 .await
@@ -701,7 +705,7 @@ mod tests {
         seed(&tree, "alice", "wiki-user");
         seed(&tree, "dossier", "wiki-tech");
         let tree = WikiTree::open(dir.path()).unwrap();
-        capture_owned(&tree, &pool, embedder(), "dossier", "alice", "a note").await;
+        capture_with_subject(&tree, &pool, embedder(), "dossier", "alice", "a note").await;
 
         // A persisted plan that knows the dissolved wiki's page: the dissolve
         // must park its slug so the next Cartografo build re-decides where
@@ -770,7 +774,8 @@ mod tests {
         // Owner `ghost` has no wiki, and neither does the deleter: there is no
         // live home anywhere, so this is the one fact a dissolve cannot keep —
         // and it must be counted, never silently dropped.
-        let fid = capture_owned(&tree, &pool, embedder(), "dossier", "ghost", "homeless").await;
+        let fid =
+            capture_with_subject(&tree, &pool, embedder(), "dossier", "ghost", "homeless").await;
 
         let report = delete_wiki_subtree(
             &pool,

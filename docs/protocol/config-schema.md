@@ -162,7 +162,9 @@ YAML means "this function is not wired in this deployment".
 > slot.** The `LlmFunction::Cronista` variant backs Il Cronista in
 > `crate::compiler::compile_leaf_page`: once per dirty standard-wiki leaf, it
 > rewrites that page's own facts into cohesive prose, each claim wrapped
-> in an inline `{{owner=… f=<fact_id>}}…{{/}}` ACL marker. It wants a
+> in an inline `{{subject=… f=<fact_id>}}…{{/}}` ACL marker (a
+> **deprecated** `owner=` spelling is still parsed, never written). It
+> wants a
 > **strong** model — faithful fact→prose without invention or leak, not
 > the 9B workhorse. The value loads into `LlmConfig::cronista` and is
 > read at runtime by the compiler, but — unlike the other five slots — it

@@ -85,8 +85,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Step 1 — exactly what the live turn computed: flat recall at the policy's
     // own top_k, used as the RAG seeds. The classifier returned no topics and no
-    // owners on the real turn, so both stay empty here.
-    let mut policy = IngestPolicy::default();
+    // subjects on the real turn, so both stay empty here.
+    let policy = IngestPolicy::default();
     let rag = recall::wiki_search(
         &pool,
         Arc::clone(&embedder),
@@ -127,7 +127,11 @@ async fn main() -> anyhow::Result<()> {
         &turn,
         &fan,
         &policy.nav,
-        &[],
+        // Nothing pre-served: the harness replays the funnel from a cold block.
+        recall_nav::Served {
+            pages: &[],
+            cards: &[],
+        },
     )
     .await?;
 

@@ -82,7 +82,7 @@ async fn capture_fact(pool: &SqlitePool, tree: &WikiTree, page: &str, body: &str
         wiki_id: WikiId::parse("alice").unwrap(),
         page: PathBuf::from(page),
         body: body.to_owned(),
-        owner: "user:alice".parse::<Principal>().unwrap(),
+        subject: "user:alice".parse::<Principal>().unwrap(),
         allow: vec![],
         sender: None,
         fact_type: None,
@@ -443,7 +443,7 @@ async fn dashboard_sharing_forbidden_on_standard_wiki() {
 
     // Seed a STANDARD wiki by hand (no `smart:` key → defaults to false),
     // with a valid `acl_default` so the only thing that can refuse the
-    // sharing surface is the new family guard, not the owner/acl_default check.
+    // sharing surface is the new family guard, not the subject/acl_default check.
     let dir = tree.wikis_dir().join("projstd");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -620,7 +620,7 @@ async fn dashboard_describe_round_trips_and_preserves_siblings() {
     let html = body_string(view).await;
     assert!(
         html.contains("what goes here"),
-        "owner page view must surface the describe affordance: {html}"
+        "subject page view must surface the describe affordance: {html}"
     );
 }
 
@@ -673,8 +673,8 @@ async fn dashboard_describe_forbidden_on_smart_wiki() {
     );
 }
 
-/// A non-owner non-admin is refused (`404`) on the describe editor — the gate
-/// is owner-or-admin, and the page is left untouched.
+/// A non-subject non-admin is refused (`404`) on the describe editor — the gate
+/// is subject-or-admin, and the page is left untouched.
 #[tokio::test]
 async fn dashboard_describe_refused_for_non_owner_non_admin() {
     let (app, _pool, tree, _dir) = make_app_with_memory().await;
@@ -696,13 +696,13 @@ async fn dashboard_describe_refused_for_non_owner_non_admin() {
     assert_eq!(
         post.status(),
         StatusCode::NOT_FOUND,
-        "non-owner describe POST"
+        "non-subject describe POST"
     );
     let abs = tree.wikis_dir().join("notes").join("health.md");
     assert_eq!(
         mwe_core::meta_annotate::read_page_description(&abs).unwrap(),
         None,
-        "non-owner must not have written a description"
+        "non-subject must not have written a description"
     );
 }
 
@@ -1838,7 +1838,7 @@ async fn chat_ingest_e2e_captures_fact_with_fake_backend() {
         "context_snippet": "",
         "target_wiki_id": "alice",
         "target_page": "index.md",
-        "owner_id": "user:alice",
+        "subject_id": "user:alice",
         "allow_ids": [],
         "fact_type": "bio",
         "topics": ["intro"],
@@ -2286,7 +2286,7 @@ async fn chat_agentic_supersedes_single_fact_with_corrected_body_end_to_end() {
         Some(new_fact_id.as_str())
     );
 
-    // New row exists with the corrected body and inherited owner.
+    // New row exists with the corrected body and inherited subject.
     let new_fact_typed = FactId::parse(&new_fact_id).expect("new fact id parses");
     let new_row = fact_index::find_by_id(&pool, &new_fact_typed)
         .await
@@ -2499,7 +2499,7 @@ async fn chat_agentic_changes_wiki_scope_under_new_parent_end_to_end() {
             wiki_id: WikiId::parse("alice-acmecorp").unwrap(),
             page: PathBuf::from("intro.md"),
             body: "ACME è un cliente storico".to_owned(),
-            owner: "user:alice".parse::<Principal>().unwrap(),
+            subject: "user:alice".parse::<Principal>().unwrap(),
             allow: vec![],
             sender: None,
             fact_type: None,
@@ -2747,7 +2747,7 @@ async fn capture_fact_in(
         wiki_id: WikiId::parse(wiki_id).unwrap(),
         page: PathBuf::from(page),
         body: body.to_owned(),
-        owner: "user:alice".parse::<Principal>().unwrap(),
+        subject: "user:alice".parse::<Principal>().unwrap(),
         allow: vec![],
         sender: None,
         fact_type: None,
@@ -2893,8 +2893,8 @@ async fn facts_edit_form_pre_populates_from_fact_index_row() {
         html.contains(&format!("action=\"/dashboard/facts/{fact}/validity\"")),
         "validity sub-form action: {html}"
     );
-    // Structured ACL fields (owner + allow) and validity date inputs.
-    assert!(html.contains("name=\"owner\""), "{html}");
+    // Structured ACL fields (subject + allow) and validity date inputs.
+    assert!(html.contains("name=\"subject\""), "{html}");
     assert!(html.contains("name=\"allow\""), "{html}");
     assert!(html.contains("name=\"valid_from\""), "{html}");
     assert!(html.contains("name=\"valid_to\""), "{html}");

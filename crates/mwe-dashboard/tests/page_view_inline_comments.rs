@@ -1127,14 +1127,14 @@ async fn submit_process_refuses_standard_wiki_comment() {
 }
 
 /// The page view renders the body but never the **testata** (the
-/// frontmatter card): its owner-tier `keywords`/`description` must not leak
+/// frontmatter card): its subject-tier `keywords`/`description` must not leak
 /// into the dashboard, exactly as `wiki_read` strips it for a consumer
 /// (the card-exposure fix, dashboard half — roadmap 25b).
 #[tokio::test]
 async fn page_view_strips_the_testata_so_card_topics_never_leak() {
     let (app, _pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
-    // A page whose testata carries owner-tier card topics + a description.
+    // A page whose testata carries subject-tier card topics + a description.
     let page = "---\n\
                 title: Health\n\
                 keywords:\n  topics: celiachia, gravidanza\n\
@@ -1302,7 +1302,7 @@ async fn page_view_redacts_a_retired_region_but_reveal_still_shows_it() {
             region_end: None,
             text: "RETIREDBODY line".to_owned(),
             embedding: vec![0.0; 8],
-            owner_id: "user:alice".parse().unwrap(),
+            subject_id: "user:alice".parse().unwrap(),
             allow_ids: Vec::new(),
             sender_id: Some("user:alice".parse().unwrap()),
             fact_type: None,
@@ -1363,7 +1363,7 @@ async fn page_view_redacts_a_retired_region_but_reveal_still_shows_it() {
     assert!(!html.contains("[redacted]"), "reveal never redacts: {html}");
     assert!(
         !html.contains("acl-revealed"),
-        "the full map gates by the last-known ACL, so the owner's own \
+        "the full map gates by the last-known ACL, so the subject's own \
          region is not highlighted: {html}"
     );
 }

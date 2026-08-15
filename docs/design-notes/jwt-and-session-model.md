@@ -182,10 +182,12 @@ Confusing these is the source of most bugs in identity layers:
   Equal to the token holder for single-user clients; different
   (and controlled by the `X-MWE-Act-As` HTTP header) for multi-user
   consumer bots.
-- **Fact owner** = application-level `owner_id` parameter on
-  capture-style tools. Defaults to the effective sender. When
-  different, it expresses cross-user attribution: the
-  marker shows `{{owner=user:X sender=user:Y ...}}`.
+- **Fact subject** = application-level `subject_id` parameter on
+  capture-style tools — who or what the fact is *about*. Defaults to
+  the effective sender. When different, it expresses cross-user
+  attribution: the row carries `subject_id = user:X` beside
+  `sender_id = user:Y`, which an export serialises into the full
+  marker `{{subject=user:X sender=user:Y ...}}`.
 
 ## How the middleware resolves the effective sender
 
@@ -218,7 +220,7 @@ dispatch to rmcp tool handler
 
 The MCP tools themselves do not take a `sender_id` parameter — they
 read `effective_sender` from the request context. Tools that perform
-cross-user attribution take `owner_id` as a regular application
+cross-user attribution take `subject_id` as a regular application
 parameter (separate concern entirely).
 
 The builtin **`guest`** pseudo-identity rides this exact rule with no

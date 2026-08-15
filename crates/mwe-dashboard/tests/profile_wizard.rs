@@ -122,7 +122,7 @@ async fn welcome_post_save_fails_422_without_llm_slot() {
     // No marker on disk — capture was not attempted.
     let index = std::fs::read_to_string(tree.wikis_dir().join("alice").join("index.md")).unwrap();
     assert!(
-        !index.contains("{{owner="),
+        !index.contains("{{subject=") && !index.contains("{{owner="),
         "failed save must not leave a partial capture: {index}"
     );
 
@@ -157,7 +157,7 @@ async fn welcome_post_skip_flips_flag_without_capturing_and_without_llm() {
     // index.md still the placeholder — no marker added.
     let index = std::fs::read_to_string(tree.wikis_dir().join("alice").join("index.md")).unwrap();
     assert!(
-        !index.contains("{{owner="),
+        !index.contains("{{subject=") && !index.contains("{{owner="),
         "skip must not capture: {index}"
     );
 

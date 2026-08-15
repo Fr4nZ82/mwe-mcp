@@ -120,7 +120,7 @@ async fn capture_fact(
         wiki_id: WikiId::parse(wiki_id).unwrap(),
         page: std::path::PathBuf::from(page),
         body: body.to_owned(),
-        owner: "user:alice".parse::<Principal>().unwrap(),
+        subject: "user:alice".parse::<Principal>().unwrap(),
         allow: vec![],
         sender: None,
         fact_type: None,
@@ -510,7 +510,7 @@ async fn capture_fact_owned(
     wiki_id: &str,
     page: &str,
     body: &str,
-    owner: &str,
+    subject: &str,
 ) -> FactId {
     use mwe_core::capture::{CaptureAction, CaptureRequest, wiki_capture};
     let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
@@ -519,7 +519,7 @@ async fn capture_fact_owned(
         wiki_id: WikiId::parse(wiki_id).unwrap(),
         page: std::path::PathBuf::from(page),
         body: body.to_owned(),
-        owner: owner.parse::<Principal>().unwrap(),
+        subject: subject.parse::<Principal>().unwrap(),
         allow: vec![],
         sender: None,
         fact_type: None,

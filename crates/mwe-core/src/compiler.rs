@@ -1748,16 +1748,16 @@ const fn principal_name(p: &Principal) -> &str {
 /// ACL projected for the Cronista. **Empty** for a *public* fact (`global` on
 /// any axis: its substance is safe to weave into the page's default-visibility
 /// connective prose); otherwise `(audience: <names>)` naming the read-set
-/// (`owner ∪ allow ∪ sender`, sorted + deduped) so the Cronista keeps that
+/// (`subject ∪ allow ∪ sender`, sorted + deduped) so the Cronista keeps that
 /// fact's substance **inside its own `<fN>` span** rather than leaking it into
 /// the untagged prose every reader of the page sees (prompt FACT TAGS rule).
 /// A one-way projection: the DB ACL stays authoritative and the marker is
 /// still rendered by code from the fact — the hint is never parsed back.
-fn audience_hint(owner: &Principal, allow: &[Principal], sender: Option<&Principal>) -> String {
-    if crate::acl::is_public(owner, allow, sender) {
+fn audience_hint(subject: &Principal, allow: &[Principal], sender: Option<&Principal>) -> String {
+    if crate::acl::is_public(subject, allow, sender) {
         return String::new();
     }
-    let mut names: Vec<&str> = std::iter::once(owner)
+    let mut names: Vec<&str> = std::iter::once(subject)
         .chain(allow.iter())
         .chain(sender)
         .map(principal_name)
@@ -1777,7 +1777,7 @@ fn primary_facts_text(
         return "(no facts — write only a brief introduction)".to_owned();
     }
     // A NUMBERED list — the Cronista wraps each fact's prose span in `<fN>…</fN>`
-    // by this 1-based number. We deliberately DO NOT show owner / allow / sender /
+    // by this 1-based number. We deliberately DO NOT show subject / allow / sender /
     // fact_id: the ACL is load-bearing and is rendered by code (see
     // [`expand_fact_tags`]), never copied by the LLM — so the model cannot drop
     // an `allow=` or miscount the braces of a marker it no longer writes.
@@ -1835,7 +1835,7 @@ fn primary_facts_text(
             // connective prose is the page's default-visibility narrative and
             // must not paraphrase a restricted fact (prompt FACT TAGS). A
             // public fact carries no hint and weaves freely.
-            let audience = audience_hint(&f.owner, &f.allow, f.sender.as_ref());
+            let audience = audience_hint(&f.subject, &f.allow, f.sender.as_ref());
             format!(
                 "{}. [{ft}] {}{audience}{validity}{succession}{provenance}",
                 i + 1,
@@ -2288,7 +2288,7 @@ const AGENT_TONE: &str = "agent-autobiography-first-person";
 
 /// The voice of a person's own wiki, and the fallback for a page inside an
 /// agent's wiki whose subject is somebody else.
-const IDENTITY_TONE: &str = "narrative-first-person-when-sender-equals-owner";
+const IDENTITY_TONE: &str = "narrative-first-person-when-sender-equals-subject";
 
 /// Resolve the prose tone of a page's wiki from its `wiki_type`.
 ///
@@ -2365,7 +2365,7 @@ fn tone_for_page(wiki_tone: &str, page: &PagePlan) -> String {
     let mine = page
         .primary_facts
         .iter()
-        .filter(|f| f.owner == agent)
+        .filter(|f| f.subject == agent)
         .count();
     if mine * 2 > page.primary_facts.len() {
         AGENT_TONE.to_owned()
@@ -2489,15 +2489,15 @@ mod tests {
     /// user's pregnancy as its own life.
     #[test]
     fn tone_for_page_keeps_the_first_person_off_another_subjects_page() {
-        let mut mine = page_with_owners("hermes1", &["user:hermes1", "user:hermes1"]);
+        let mut mine = page_with_subjects("hermes1", &["user:hermes1", "user:hermes1"]);
         assert_eq!(tone_for_page(AGENT_TONE, &mine), AGENT_TONE);
 
         // One stray fact does not flip a page that is mostly the agent's.
         mine.primary_facts
-            .push(ffp_owned(9, "Carol parte lunedì", "user:carol"));
+            .push(ffp_with_subject(9, "Carol parte lunedì", "user:carol"));
         assert_eq!(tone_for_page(AGENT_TONE, &mine), AGENT_TONE);
 
-        let hers = page_with_owners("hermes1", &["user:carol", "user:carol"]);
+        let hers = page_with_subjects("hermes1", &["user:carol", "user:carol"]);
         assert_eq!(
             tone_for_page(AGENT_TONE, &hers),
             IDENTITY_TONE,
@@ -2505,7 +2505,7 @@ mod tests {
         );
 
         // A human's wiki is untouched by the narrowing.
-        let plain = page_with_owners("alice", &["user:alice"]);
+        let plain = page_with_subjects("alice", &["user:alice"]);
         assert_eq!(tone_for_page(IDENTITY_TONE, &plain), IDENTITY_TONE);
     }
 
@@ -2515,7 +2515,7 @@ mod tests {
     /// would be a lie that costs prose on a page nobody serves.
     #[test]
     fn only_a_person_node_on_its_reserved_page_is_an_identity_card() {
-        let mut page = page_with_owners("alice", &["user:alice"]);
+        let mut page = page_with_subjects("alice", &["user:alice"]);
 
         page.page_type = PageType::Person;
         page.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
@@ -2575,8 +2575,8 @@ mod tests {
         );
     }
 
-    /// A `PagePlan` carrying one fact per owner string, for the tone tests.
-    fn page_with_owners(wiki_id: &str, owners: &[&str]) -> PagePlan {
+    /// A `PagePlan` carrying one fact per subject string, for the tone tests.
+    fn page_with_subjects(wiki_id: &str, subjects: &[&str]) -> PagePlan {
         PagePlan {
             slug: "pagina".to_owned(),
             title: "Pagina".to_owned(),
@@ -2586,10 +2586,10 @@ mod tests {
             owner_scope: None,
             parent_hub: None,
             child_leaves: Vec::new(),
-            primary_facts: owners
+            primary_facts: subjects
                 .iter()
                 .enumerate()
-                .map(|(i, o)| ffp_owned(u8::try_from(i).unwrap_or(0), "un fatto", o))
+                .map(|(i, o)| ffp_with_subject(u8::try_from(i).unwrap_or(0), "un fatto", o))
                 .collect(),
             outgoing_links: Vec::new(),
             incoming_links: Vec::new(),
@@ -2598,9 +2598,9 @@ mod tests {
         }
     }
 
-    fn ffp_owned(seed: u8, text: &str, owner: &str) -> FactForPage {
+    fn ffp_with_subject(seed: u8, text: &str, subject: &str) -> FactForPage {
         FactForPage {
-            owner: owner.parse::<Principal>().unwrap(),
+            subject: subject.parse::<Principal>().unwrap(),
             ..ffp(seed, text)
         }
     }
@@ -2612,7 +2612,7 @@ mod tests {
                 .unwrap(),
             text: text.to_owned(),
             fact_type: Some("bio".to_owned()),
-            owner: "user:alice".parse::<Principal>().unwrap(),
+            subject: "user:alice".parse::<Principal>().unwrap(),
             allow: Vec::new(),
             sender: None,
             source_wiki_id: "alice".to_owned(),
@@ -2660,15 +2660,15 @@ mod tests {
     fn primary_facts_text_appends_audience_hint_only_for_restricted_facts() {
         // A public fact (global on any axis) weaves freely — no hint. A fact
         // readable by less than everyone carries `(audience: …)` naming the
-        // read-set (owner ∪ allow ∪ sender, sorted + deduped) so the Cronista
+        // read-set (subject ∪ allow ∪ sender, sorted + deduped) so the Cronista
         // keeps its substance inside its own <fN> span, out of the
         // default-visibility connective prose.
         let mut public = ffp(1, "La biblioteca apre alle 9.");
-        public.owner = Principal::global();
+        public.subject = Principal::global();
         let restricted = ffp(2, "Alice ha un appuntamento in ospedale.");
         // ffp defaults to owner=user:alice, allow=[], sender=None.
         let mut shared = ffp(3, "Nota di famiglia su Gollum.");
-        shared.owner = "user:gollum".parse::<Principal>().unwrap();
+        shared.subject = "user:gollum".parse::<Principal>().unwrap();
         shared.allow = vec!["group:famiglia".parse::<Principal>().unwrap()];
         shared.sender = Some("user:galadriel".parse::<Principal>().unwrap());
 
@@ -2686,12 +2686,12 @@ mod tests {
         );
         assert!(
             lines[1].contains("(audience: alice)"),
-            "an owner-only fact names its owner: {}",
+            "a subject-only fact names its subject: {}",
             lines[1]
         );
         assert!(
             lines[2].contains("(audience: famiglia, galadriel, gollum)"),
-            "the read-set is owner ∪ allow ∪ sender, sorted + deduped: {}",
+            "the read-set is subject ∪ allow ∪ sender, sorted + deduped: {}",
             lines[2]
         );
     }
@@ -2856,7 +2856,7 @@ mod tests {
     async fn plant_fact_at(
         pool: &SqlitePool,
         fid: &FactId,
-        owner: &str,
+        subject: &str,
         text: &str,
         source_path: &str,
         start: Option<i64>,
@@ -2873,7 +2873,7 @@ mod tests {
                 region_end: end,
                 text: text.to_owned(),
                 embedding: vec![0.1, 0.2],
-                owner_id: owner.parse::<Principal>().unwrap(),
+                subject_id: subject.parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: Some("preference".to_owned()),
@@ -2891,7 +2891,7 @@ mod tests {
         .unwrap();
     }
 
-    async fn plant_fact(pool: &SqlitePool, fid: &FactId, owner: &str, text: &str) {
+    async fn plant_fact(pool: &SqlitePool, fid: &FactId, subject: &str, text: &str) {
         fact_index::insert(
             pool,
             &crate::fact_index::NewFact {
@@ -2903,7 +2903,7 @@ mod tests {
                 region_end: None,
                 text: text.to_owned(),
                 embedding: vec![0.1, 0.2],
-                owner_id: owner.parse::<Principal>().unwrap(),
+                subject_id: subject.parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: Some("preference".to_owned()),
@@ -2941,7 +2941,7 @@ mod tests {
                     fact_id: fid.clone(),
                     text: "Alice loves pasta".to_owned(),
                     fact_type: Some("preference".to_owned()),
-                    owner: "user:alice".parse::<Principal>().unwrap(),
+                    subject: "user:alice".parse::<Principal>().unwrap(),
                     allow: Vec::new(),
                     sender: None,
                     source_wiki_id: "alice".to_owned(),
@@ -2990,7 +2990,7 @@ mod tests {
                 region_end: None,
                 text: "Alice loves pasta".to_owned(),
                 embedding: vec![0.1, 0.2],
-                owner_id: "user:alice".parse::<Principal>().unwrap(),
+                subject_id: "user:alice".parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: Some("preference".to_owned()),
@@ -3065,7 +3065,7 @@ mod tests {
                 region_end: None,
                 text: "Alice loves pasta".to_owned(),
                 embedding: vec![0.1, 0.2],
-                owner_id: "user:alice".parse::<Principal>().unwrap(),
+                subject_id: "user:alice".parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: Some("preference".to_owned()),
@@ -3168,7 +3168,7 @@ mod tests {
                 region_end: None,
                 text: "Alice loves pasta".to_owned(),
                 embedding: vec![0.1, 0.2],
-                owner_id: "user:alice".parse::<Principal>().unwrap(),
+                subject_id: "user:alice".parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: Some("preference".to_owned()),
@@ -3226,7 +3226,7 @@ mod tests {
                 region_end: None,
                 text: "Alice loves pasta".to_owned(),
                 embedding: vec![0.1, 0.2],
-                owner_id: "user:alice".parse::<Principal>().unwrap(),
+                subject_id: "user:alice".parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: Some("preference".to_owned()),
@@ -3332,7 +3332,10 @@ mod tests {
         // Each fact is a bullet record wrapped in its bare region marker
         // (the ACL gates from the DB by key, not from inline attributes).
         assert!(page.contains("- {{f="), "bullet record + marker: {page}");
-        assert!(!page.contains("owner="), "no inline ACL on disk: {page}");
+        assert!(
+            !page.contains("subject=") && !page.contains("subject=") && !page.contains("owner="),
+            "no inline ACL on disk: {page}"
+        );
         assert!(page.contains("latte{{/}}"), "latte record present: {page}");
         assert!(
             page.contains(&format!("f={}", f1.fact_id))
@@ -3662,7 +3665,7 @@ mod tests {
                         fact_id: fid1.clone(),
                         text: "Alice loves pasta".to_owned(),
                         fact_type: Some("preference".to_owned()),
-                        owner: "user:alice".parse::<Principal>().unwrap(),
+                        subject: "user:alice".parse::<Principal>().unwrap(),
                         allow: Vec::new(),
                         sender: None,
                         source_wiki_id: "alice".to_owned(),
@@ -3680,7 +3683,7 @@ mod tests {
                         fact_id: fid2.clone(),
                         text: "Matteo has homework on Monday".to_owned(),
                         fact_type: Some("plan".to_owned()),
-                        owner: "group:famiglia".parse::<Principal>().unwrap(),
+                        subject: "group:famiglia".parse::<Principal>().unwrap(),
                         allow: Vec::new(),
                         sender: None,
                         source_wiki_id: "alice".to_owned(),
@@ -3730,7 +3733,7 @@ mod tests {
             "omitted fact appended by the forward completeness guard"
         );
         assert!(
-            !page.contains("owner="),
+            !page.contains("subject=") && !page.contains("owner="),
             "bare runtime markers — no inline ACL on disk"
         );
         assert!(
@@ -4033,11 +4036,11 @@ mod tests {
     #[test]
     fn primary_facts_text_withholds_acl_from_the_cronista() {
         // Under the <fN> contract the Cronista no longer writes markers, so the
-        // ACL (owner / allow / sender / fact_id) is deliberately NOT shown to it —
+        // ACL (subject / allow / sender / fact_id) is deliberately NOT shown to it —
         // the code renders the marker (expand_fact_tags). Withholding it is what
         // removes the brace/attribute miscount failure mode of LLM-written markers.
         let mut f = ffp(2, "Frodo works only the afternoon tomorrow");
-        f.owner = "user:frodo".parse::<Principal>().unwrap();
+        f.subject = "user:frodo".parse::<Principal>().unwrap();
         f.allow = vec!["group:famiglia".parse::<Principal>().unwrap()];
         f.sender = Some("user:galadriel".parse::<Principal>().unwrap());
         let txt = primary_facts_text(
@@ -4047,8 +4050,8 @@ mod tests {
             &|_| None,
         );
         assert!(
-            !txt.contains("owner="),
-            "owner must NOT reach the prompt: {txt}"
+            !txt.contains("subject=") && !txt.contains("owner="),
+            "subject must NOT reach the prompt: {txt}"
         );
         assert!(
             !txt.contains("allow="),
@@ -4547,7 +4550,7 @@ mod tests {
                 region_end: None,
                 text: "Alice loves pasta".to_owned(),
                 embedding: vec![0.1, 0.2],
-                owner_id: "user:alice".parse::<Principal>().unwrap(),
+                subject_id: "user:alice".parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: Some("preference".to_owned()),
@@ -5000,7 +5003,10 @@ mod tests {
             "marker on disk: {page}"
         );
         assert!(page.contains("Alice loves pasta"), "canonical claim text");
-        assert!(!page.contains("owner="), "bare runtime marker");
+        assert!(
+            !page.contains("subject=") && !page.contains("owner="),
+            "bare runtime marker"
+        );
         let row = fact_index::find_by_id(&pool, &f.fact_id)
             .await
             .unwrap()

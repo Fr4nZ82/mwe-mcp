@@ -7,7 +7,7 @@
 //! Earlier, `wiki_ingest_message` wrote each classified claim straight
 //! into the published `.md` page (via [`crate::capture::wiki_capture`]). The
 //! result was a raw log of `{{owner=…}}…{{/}}`
-//! markers stacked per owner — no synthesis, no dedup, no topic organisation.
+//! markers stacked per subject — no synthesis, no dedup, no topic organisation.
 //! The root cause was the *Sam-as-Author* assumption — an
 //! agent writing finished prose in the turn — which is incoherent with mwe-mcp
 //! being agent-agnostic. The standard-wiki path restores the old engine's pipeline:
@@ -147,12 +147,12 @@ pub struct BufferedCapture {
     /// Captured claim prose, verbatim, no markers.
     pub body: String,
     /// Owning principal.
-    pub owner: Principal,
+    pub subject: Principal,
     /// Extra principals granted read access via `allow=`.
     pub allow: Vec<Principal>,
     /// Cross-user attribution (who captured the fact). Always materialized
-    /// (= owner when absent) and kept distinct from `owner`; `None` survives
-    /// only as the degenerate scrubbed state that falls back to owner.
+    /// (= subject when absent) and kept distinct from `subject`; `None` survives
+    /// only as the degenerate scrubbed state that falls back to subject.
     pub sender: Option<Principal>,
     /// Optional fact taxonomy hint (`bio`, `preference`, …).
     pub fact_type: Option<String>,
@@ -409,7 +409,7 @@ pub async fn buffer_capture_with_source(
         wiki_id,
         page,
         body,
-        owner,
+        subject,
         allow,
         sender,
         fact_type,
@@ -437,18 +437,18 @@ pub async fn buffer_capture_with_source(
     } = req;
     validate_buffer_body(&body)?;
     let handle = tree.locate(&wiki_id)?;
-    // Mirror capture.rs: sender is always materialized (= owner when
-    // absent) and kept distinct from owner, so a later owner change never
+    // Mirror capture.rs: sender is always materialized (= subject when
+    // absent) and kept distinct from subject, so a later subject change never
     // rebinds the original provenance. NULL survives only as the degenerate
-    // scrubbed state (e.g. a deleted user) that falls back to owner at read.
-    let sender = sender.or_else(|| Some(owner.clone()));
+    // scrubbed state (e.g. a deleted user) that falls back to subject at read.
+    let sender = sender.or_else(|| Some(subject.clone()));
     let capture_id = new_capture_id()?;
     let cap = BufferedCapture {
         capture_id: capture_id.clone(),
         wiki_id,
         target_page: page,
         body,
-        owner,
+        subject,
         allow,
         sender,
         fact_type,
@@ -479,7 +479,7 @@ pub async fn buffer_capture_with_source(
         wiki_id = %cap.wiki_id,
         capture_id = %cap.capture_id,
         page = %cap.target_page.display(),
-        owner = %cap.owner,
+        subject = %cap.subject,
         "capture_buffer: BUFFERED"
     );
     Ok(BufferOutcome {
@@ -847,11 +847,11 @@ pub async fn restore_validity_interval(
 }
 
 /// Replace the ACL columns of a still-**buffered** capture: set
-/// `owner_id`, `allow_ids`, and `sender_id` on the buffer row.
+/// `subject_id`, `allow_ids`, and `sender_id` on the buffer row.
 ///
 /// The buffered half of the acl-change verb — the fact-side
 /// [`crate::fact_index::set_acl`] probes first; this catches a target
-/// whose capture has not been promoted yet. The buffer's `owner_id` is
+/// whose capture has not been promoted yet. The buffer's `subject_id` is
 /// NOT NULL and `allow_ids` defaults to `'[]'`, so both always carry a
 /// value.
 ///
@@ -864,21 +864,21 @@ pub async fn restore_validity_interval(
 pub async fn set_acl(
     pool: &SqlitePool,
     capture_id: &FactId,
-    owner: &Principal,
+    subject: &Principal,
     allow: &[Principal],
     sender: Option<&Principal>,
 ) -> Result<Option<crate::fact_index::PrevAcl>> {
     let prev: Option<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT owner_id, allow_ids, sender_id FROM capture_buffer
+        "SELECT subject_id, allow_ids, sender_id FROM capture_buffer
           WHERE capture_id = ? AND status = 'buffered'",
     )
     .bind(capture_id.as_str())
     .fetch_optional(pool)
     .await?;
-    let Some((prev_owner, prev_allow, prev_sender)) = prev else {
+    let Some((prev_subject, prev_allow, prev_sender)) = prev else {
         return Ok(None);
     };
-    let prev_owner_id = prev_owner.parse::<Principal>()?;
+    let prev_subject_id = prev_subject.parse::<Principal>()?;
     let prev_allow_ids = principals_from_json(&prev_allow);
     let prev_sender_id = prev_sender
         .as_deref()
@@ -887,17 +887,17 @@ pub async fn set_acl(
     let allow_json = crate::fact_index::principals_to_json(allow)?;
     sqlx::query(
         "UPDATE capture_buffer
-            SET owner_id = ?, allow_ids = ?, sender_id = ?
+            SET subject_id = ?, allow_ids = ?, sender_id = ?
           WHERE capture_id = ? AND status = 'buffered'",
     )
-    .bind(owner.to_string())
+    .bind(subject.to_string())
     .bind(&allow_json)
     .bind(sender.map(ToString::to_string))
     .bind(capture_id.as_str())
     .execute(pool)
     .await?;
     Ok(Some(crate::fact_index::PrevAcl {
-        prev_owner_id,
+        prev_subject_id,
         prev_allow_ids,
         prev_sender_id,
     }))
@@ -905,7 +905,7 @@ pub async fn set_acl(
 
 /// Replace **only** a buffered capture's `allow_ids`.
 ///
-/// `owner_id` and `sender_id` are left untouched — the buffered twin of
+/// `subject_id` and `sender_id` are left untouched — the buffered twin of
 /// [`crate::fact_index::inherit_allow`], for a successor the promoter has not
 /// moved into the fact store yet. The capture id is stable across promotion,
 /// so correcting the buffer row is correcting the fact.
@@ -946,17 +946,17 @@ pub async fn inherit_allow(
 pub async fn restore_acl(
     pool: &SqlitePool,
     capture_id: &FactId,
-    owner: &Principal,
+    subject: &Principal,
     allow: &[Principal],
     sender: Option<&Principal>,
 ) -> Result<u64> {
     let allow_json = crate::fact_index::principals_to_json(allow)?;
     let res = sqlx::query(
         "UPDATE capture_buffer
-            SET owner_id = ?, allow_ids = ?, sender_id = ?
+            SET subject_id = ?, allow_ids = ?, sender_id = ?
           WHERE capture_id = ? AND status = 'buffered'",
     )
-    .bind(owner.to_string())
+    .bind(subject.to_string())
     .bind(&allow_json)
     .bind(sender.map(ToString::to_string))
     .bind(capture_id.as_str())
@@ -999,7 +999,7 @@ pub async fn reindex_capture_journal(
 
 // ---------- DB layer ----------
 
-const SELECT_COLS: &str = "SELECT capture_id, wiki_id, target_page, body, owner_id, allow_ids, \
+const SELECT_COLS: &str = "SELECT capture_id, wiki_id, target_page, body, subject_id, allow_ids, \
      sender_id, fact_type, topics, supersede_hint, status, captured_at, processed_at, \
      resolved_fact_id, source_kind, source_ref, valid_from, valid_to, decay_reason, style, \
      page_description, salience, authored_refs, embedding, origin_message_hash \
@@ -1011,7 +1011,7 @@ struct BufferRow {
     wiki_id: String,
     target_page: String,
     body: String,
-    owner_id: String,
+    subject_id: String,
     allow_ids: String,
     sender_id: Option<String>,
     fact_type: Option<String>,
@@ -1051,7 +1051,7 @@ fn decode(r: BufferRow) -> Result<BufferedCapture> {
         wiki_id: WikiId::parse(&r.wiki_id)?,
         target_page: PathBuf::from(r.target_page),
         body: r.body,
-        owner: r.owner_id.parse::<Principal>()?,
+        subject: r.subject_id.parse::<Principal>()?,
         allow: principals_from_json(&r.allow_ids),
         sender,
         fact_type: r.fact_type,
@@ -1096,7 +1096,7 @@ async fn insert_row(pool: &SqlitePool, cap: &BufferedCapture) -> Result<u64> {
     let authored_refs_json = serde_json::to_string(&cap.authored_refs)?;
     let res = sqlx::query(
         "INSERT INTO capture_buffer
-            (capture_id, wiki_id, target_page, body, owner_id, allow_ids, sender_id, fact_type,
+            (capture_id, wiki_id, target_page, body, subject_id, allow_ids, sender_id, fact_type,
              topics, supersede_hint, status, captured_at, processed_at, resolved_fact_id,
              source_kind, source_ref, valid_from, valid_to, decay_reason, style,
              page_description, salience, authored_refs, embedding, embedding_dim,
@@ -1108,7 +1108,7 @@ async fn insert_row(pool: &SqlitePool, cap: &BufferedCapture) -> Result<u64> {
     .bind(cap.wiki_id.as_str())
     .bind(cap.target_page.to_string_lossy().as_ref())
     .bind(&cap.body)
-    .bind(cap.owner.to_string())
+    .bind(cap.subject.to_string())
     .bind(allow_json)
     .bind(cap.sender.as_ref().map(ToString::to_string))
     .bind(cap.fact_type.clone())
@@ -1229,7 +1229,7 @@ fn render_entry(cap: &BufferedCapture) -> String {
     let omsg = cap.origin_message_hash.clone().unwrap_or_default();
     format!(
         "<!-- mwe-capture id={id} ts={ts} page={page} type={ft} status={status} \
-         owner={owner} allow={allow_csv} sender={sender} sup={sup} topics={topics_csv} \
+         subject={subject} allow={allow_csv} sender={sender} sup={sup} topics={topics_csv} \
          vf={vf} vt={vt} style={style} desc={desc} sal={sal} src={src} sref={sref} \
          aref={aref_csv} omsg={omsg} -->\n\
          {body}\n\
@@ -1237,7 +1237,7 @@ fn render_entry(cap: &BufferedCapture) -> String {
         id = cap.capture_id,
         ts = cap.captured_at,
         status = cap.status.as_str(),
-        owner = cap.owner,
+        subject = cap.subject,
         body = cap.body,
     )
 }
@@ -1323,7 +1323,18 @@ fn parse_entry(attrs: &str, body: &str, wiki_id: &WikiId) -> Option<BufferedCapt
         }
     }
     let capture_id = FactId::parse(map.get("id").copied()?).ok()?;
-    let owner = map.get("owner").copied()?.parse::<Principal>().ok()?;
+    // `owner=` is the pre-rename spelling, read forever and never written.
+    // This key is required — the `?` drops the WHOLE entry when it is missing,
+    // silently, with no warning and no counter — and this journal is the
+    // durable source of truth a `rm engine.db` rebuild replays, holding entries
+    // from every version the deployment has ever run. Dropping the alias would
+    // not raise an error, it would report a clean rebuild that lost facts.
+    let subject = map
+        .get("subject")
+        .or_else(|| map.get("owner"))
+        .copied()?
+        .parse::<Principal>()
+        .ok()?;
     let allow = map
         .get("allow")
         .copied()
@@ -1376,7 +1387,7 @@ fn parse_entry(attrs: &str, body: &str, wiki_id: &WikiId) -> Option<BufferedCapt
         wiki_id: wiki_id.clone(),
         target_page: PathBuf::from(map.get("page").copied().unwrap_or("index.md")),
         body: body.to_owned(),
-        owner,
+        subject,
         allow,
         sender,
         fact_type,
@@ -1440,13 +1451,13 @@ mod tests {
         std::fs::write(d.join("index.md"), "# index\n").unwrap();
     }
 
-    fn req(wiki: &str, body: &str, owner: &str) -> CaptureRequest {
+    fn req(wiki: &str, body: &str, subject: &str) -> CaptureRequest {
         CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: PathBuf::from("index.md"),
             body: body.to_owned(),
-            owner: owner.parse::<Principal>().unwrap(),
+            subject: subject.parse::<Principal>().unwrap(),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("bio".to_owned()),
@@ -1485,7 +1496,7 @@ mod tests {
         assert_eq!(buffered[0].capture_id, out.capture_id);
         assert_eq!(buffered[0].body, "Alice loves pasta.");
         assert_eq!(
-            buffered[0].owner,
+            buffered[0].subject,
             "user:alice".parse::<Principal>().unwrap()
         );
         assert_eq!(buffered[0].fact_type.as_deref(), Some("bio"));
@@ -1506,7 +1517,7 @@ mod tests {
             wiki_id: WikiId::parse("famiglia").unwrap(),
             target_page: PathBuf::from("recipes/pasta.md"),
             body: "Cena con i Brandibuck venerdì.\nSeconda riga.".to_owned(),
-            owner: "group:famiglia".parse::<Principal>().unwrap(),
+            subject: "group:famiglia".parse::<Principal>().unwrap(),
             allow: vec!["user:bob".parse::<Principal>().unwrap()],
             sender: Some("user:alice".parse::<Principal>().unwrap()),
             fact_type: Some("plan".to_owned()),
@@ -1535,7 +1546,7 @@ mod tests {
         assert_eq!(p.capture_id, cap.capture_id);
         assert_eq!(p.target_page, cap.target_page);
         assert_eq!(p.body, cap.body);
-        assert_eq!(p.owner, cap.owner);
+        assert_eq!(p.subject, cap.subject);
         assert_eq!(p.allow, cap.allow);
         assert_eq!(p.sender, cap.sender);
         assert_eq!(p.fact_type, cap.fact_type);
@@ -1552,6 +1563,46 @@ mod tests {
         // blob has no place in a human-readable journal. A rebuilt row pays
         // one embedding at its next read or at promotion.
         assert_eq!(p.embedding, None);
+    }
+
+    #[test]
+    fn a_legacy_journal_entry_still_parses() {
+        // The journal is the durable source of truth a `rm engine.db` rebuild
+        // replays. It is append-only with no compaction path, so it holds
+        // entries written by every version the deployment has ever run.
+        //
+        // The round-trip test above cannot catch a codec change: it renders and
+        // re-parses with the same code, so both halves move together and it
+        // stays green while every entry already on disk stops loading. This
+        // test exists to be the half that does not move — the line below is
+        // verbatim, written the way an older version wrote it, and it must keep
+        // parsing forever.
+        //
+        // What makes it worth a test of its own: `parse_entry` reads the
+        // subject key with `?` inside an Option-returning function, so a key it
+        // fails to find drops the WHOLE entry — no warning, no counter, no
+        // error. The rebuild then reports success having quietly lost the fact.
+        //
+        // The `owner=` below is the point of the test, not a leftover to sweep.
+        let legacy = "<!-- mwe-capture id=018f1234-5678-7abc-9def-0123456789ab \
+             ts=2026-05-01T10:00:00+00:00 page=persone/alice.md type=bio \
+             status=buffered owner=user:alice allow=user:bob sender=user:carol \
+             sup= topics=peso,salute -->\n\
+             Alice pesa 72 kg.\n\
+             <!-- /mwe-capture -->\n";
+
+        let parsed = parse_journal(legacy, &WikiId::parse("famiglia").unwrap());
+        assert_eq!(parsed.len(), 1, "a legacy entry must not be dropped");
+        let p = &parsed[0];
+        assert_eq!(p.subject, Principal::User("alice".into()));
+        assert_eq!(p.allow, vec![Principal::User("bob".into())]);
+        assert_eq!(p.sender, Some(Principal::User("carol".into())));
+        assert_eq!(p.body, "Alice pesa 72 kg.");
+        // Attributes that did not yet exist when this entry was written come
+        // back as their absent value, not as a parse failure.
+        assert_eq!(p.valid_from, None);
+        assert_eq!(p.origin_message_hash, None);
+        assert_eq!(p.source_kind, "ingest");
     }
 
     #[test]
@@ -1797,7 +1848,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sender_equal_owner_is_materialized() {
+    async fn sender_equal_subject_is_materialized() {
         let (_dir, tree, pool) = setup().await;
         let mut r = req("alice", "self note", "user:alice");
         r.sender = Some("user:alice".parse::<Principal>().unwrap());
@@ -1806,7 +1857,7 @@ mod tests {
         assert_eq!(
             buffered[0].sender,
             Some("user:alice".parse::<Principal>().unwrap()),
-            "sender must stay materialized (= owner), never collapsed to None"
+            "sender must stay materialized (= subject), never collapsed to None"
         );
     }
 }

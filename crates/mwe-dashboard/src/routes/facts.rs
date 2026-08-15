@@ -11,8 +11,8 @@
 //!   deep-links to the edit form below.
 //! - `GET /dashboard/facts/:fact_id/edit` — edit form for a single fact,
 //!   pre-populated from the current `fact_index` row. It carries two
-//!   **structured** sub-forms (the per-fragment **ACL** — owner-or-admin —
-//!   and **validity** — owner-or-admin — surfaces, engine-direct,
+//!   **structured** sub-forms (the per-fragment **ACL** — subject-or-admin —
+//!   and **validity** — subject-or-admin — surfaces, engine-direct,
 //!   standard-wikis only, born-applied + revertible) plus the **body /
 //!   topics / `fact_type`**
 //!   supersede, which still rides the **form-to-chat bridge** (the chat
@@ -30,7 +30,7 @@
 //!   (`valid_from` / `valid_to`). **Owner-or-admin** gated (validity is the
 //!   subject's *update* of a fact about themselves — the write-authority
 //!   model, [identity and ACL](../../../../docs/concepts/identity-and-acl.md)),
-//!   the same owner axis as the ACL action; same standard-wiki gate + paper
+//!   the same subject axis as the ACL action; same standard-wiki gate + paper
 //!   trail otherwise, via
 //!   [`mwe_core::operator_edits::validity_edit_operator`].
 //! - `POST /dashboard/facts/:fact_id/edit/submit` — the form-to-chat
@@ -166,7 +166,7 @@ impl FactsFilters {
     fn to_core_filters(&self, limit: usize) -> FactFilters {
         FactFilters {
             wiki_id: non_empty(self.wiki_id.as_deref()),
-            owner_id: None,
+            subject_id: None,
             sender_id: None,
             fact_type: non_empty(self.fact_type.as_deref()),
             created_after: non_empty(self.created_after.as_deref()),
@@ -272,7 +272,7 @@ struct FactRow {
     fact_id: String,
     wiki_id: String,
     fact_type: Option<String>,
-    owner_id: String,
+    subject_id: String,
     sender_id: Option<String>,
     allow_ids: Vec<String>,
     topics: Vec<String>,
@@ -307,7 +307,7 @@ impl FactRow {
             fact_id: r.fact_id.as_str().to_owned(),
             wiki_id: r.wiki_id,
             fact_type: r.fact_type,
-            owner_id: r.owner_id.to_string(),
+            subject_id: r.subject_id.to_string(),
             sender_id: r.sender_id.map(|p| p.to_string()),
             allow_ids: r.allow_ids.iter().map(ToString::to_string).collect(),
             topics: r.topics,
@@ -339,7 +339,7 @@ impl FactRow {
             fact_id: c.capture_id.as_str().to_owned(),
             wiki_id: c.wiki_id.as_str().to_owned(),
             fact_type: c.fact_type,
-            owner_id: c.owner.to_string(),
+            subject_id: c.subject.to_string(),
             sender_id: c.sender.map(|p| p.to_string()),
             allow_ids: c.allow.iter().map(ToString::to_string).collect(),
             topics: c.topics,
@@ -398,7 +398,7 @@ async fn index(
         sender_groups,
     };
     // Admin reveal lens: when on, both fetches skip the per-row ACL gate so
-    // the table lists every user's facts and the owner-or-admin actions
+    // the table lists every user's facts and the subject-or-admin actions
     // (ACL / validity / delete) become reachable on them. Gated on
     // `is_admin` inside `reveal::active`, so a non-admin can never trip it.
     let reveal = crate::reveal::active(&state, &user, &jar);
@@ -484,13 +484,13 @@ async fn edit_form(
         FactId::parse(&fact_id_raw).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_visible_fact(&state, &user, &fact_id, reveal).await?;
-    // Both structured forms gate on the **owner** axis (the write-authority
+    // Both structured forms gate on the **subject** axis (the write-authority
     // model — docs/concepts/identity-and-acl.md): ACL (visibility) is the
     // subject's privacy call, and
     // validity (an *update* of the fact, not a destruction) is likewise the
     // subject's act. Only `delete` keys on `sender` / a vote.
-    let can_acl = owner_or_admin(&user, &row);
-    let can_validity = owner_or_admin(&user, &row);
+    let can_acl = subject_or_admin(&user, &row);
+    let can_validity = subject_or_admin(&user, &row);
     let is_smart = wiki_is_smart(&state, &row.wiki_id);
     tracing::info!(
         sender_id = %user.sender_id,
@@ -509,24 +509,24 @@ async fn edit_form(
     )))
 }
 
-/// The owner-or-admin predicate — the gate for the subject's acts on a fact
+/// The subject-or-admin predicate — the gate for the subject's acts on a fact
 /// about themselves: **`acl_change`** (visibility) and **`validity_edit`** (an
-/// *update* of the fact, not a destruction). Both are the owner's call (the
+/// *update* of the fact, not a destruction). Both are the subject's call (the
 /// write-authority model —
 /// [identity and ACL](../../../../docs/concepts/identity-and-acl.md)).
-/// User-owner only (a group-owned fact's
+/// User-subject only (a group-owned fact's
 /// member updates it via ingest / admin), matching `acl_submit`.
-fn owner_or_admin(user: &SessionUser, row: &FactIndexRow) -> bool {
-    row.owner_id == Principal::User(user.sender_id.clone()) || user.is_admin
+fn subject_or_admin(user: &SessionUser, row: &FactIndexRow) -> bool {
+    row.subject_id == Principal::User(user.sender_id.clone()) || user.is_admin
 }
 
 /// The sender-or-admin predicate — the **`delete`** (author-direct) gate
 /// (the write-authority model —
 /// [identity and ACL](../../../../docs/concepts/identity-and-acl.md)):
 /// only the fact's `sender` (its author) **destroys** their
-/// own contribution directly; an admin may delete any fact. A non-sender owner's
+/// own contribution directly; an admin may delete any fact. A non-sender subject's
 /// path is a request → vote, opened from the dashboard. *Updates* (edit /
-/// validity) are the owner's, not the sender's — see [`owner_or_admin`].
+/// validity) are the subject's, not the sender's — see [`subject_or_admin`].
 /// Delegates to [`mwe_core::acl::can_delete`] so the policy stays in one place.
 fn sender_or_admin(user: &SessionUser, row: &FactIndexRow) -> bool {
     mwe_core::acl::can_delete(row.sender_id.as_ref(), &user.sender_id, user.is_admin)
@@ -551,7 +551,7 @@ fn wiki_is_smart(state: &DashboardState, wiki_id: &str) -> bool {
 /// Form payload accepted by `POST /dashboard/facts/:fact_id/edit/submit`.
 ///
 /// The supersede surfaces that still ride the form-to-chat bridge:
-/// `topics`, `fact_type`, and `body`. ACL (owner + allow) and validity
+/// `topics`, `fact_type`, and `body`. ACL (subject + allow) and validity
 /// moved to the structured engine-direct actions ([`acl_submit`] /
 /// [`validity_submit`]), so they are NOT here. Every field is trimmed
 /// before the mapper compares it to the original row, so whitespace-only
@@ -608,8 +608,8 @@ async fn edit_submit(
     let Some(message) = compose_edit_message(&fact_id, &row, &delta) else {
         // Nothing changed — re-render the form with an inline flash so
         // the user understands why the submit didn't go anywhere.
-        let can_acl = owner_or_admin(&user, &row);
-        let can_validity = owner_or_admin(&user, &row);
+        let can_acl = subject_or_admin(&user, &row);
+        let can_validity = subject_or_admin(&user, &row);
         let is_smart = wiki_is_smart(&state, &row.wiki_id);
         return Ok(Html(render_edit_form(
             &state,
@@ -667,11 +667,12 @@ async fn edit_submit(
 /// Form body of `POST /dashboard/facts/:fact_id/acl`.
 #[derive(Debug, Default, Deserialize)]
 pub struct AclActionForm {
-    /// New owner principal as a Display string (`global` / `user:…` /
+    /// New subject principal as a Display string (`global` / `user:…` /
     /// `group:…`). Required — a structured ACL change always names the
-    /// owner (the form pre-fills the current value).
+    /// subject (the form pre-fills the current value).
     #[serde(default)]
-    pub owner: String,
+    #[serde(alias = "owner")]
+    pub subject: String,
     /// Comma-separated `allow=…` principals. Empty clears the allow set.
     #[serde(default)]
     pub allow: String,
@@ -692,7 +693,7 @@ pub struct ValidityActionForm {
 /// `POST /dashboard/facts/:fact_id/acl` — structured, engine-direct
 /// per-fragment ACL change.
 ///
-/// Gated **owner-OR-admin** + **standard-wikis only** (smart wikis carry
+/// Gated **subject-OR-admin** + **standard-wikis only** (smart wikis carry
 /// wiki-level ACL, not per-fragment — see
 /// smart-wikis). Calls the
 /// act-first wrapper, posts the `structure_applied` notice mirroring the
@@ -709,14 +710,14 @@ async fn acl_submit(
         FactId::parse(&fact_id_raw).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_visible_fact(&state, &user, &fact_id, reveal).await?;
-    enforce_owner_or_admin(&user, &row)?;
+    enforce_subject_or_admin(&user, &row)?;
     enforce_standard_wiki(&state, &row.wiki_id)?;
 
-    let new_owner = form
-        .owner
+    let new_subject = form
+        .subject
         .trim()
         .parse::<Principal>()
-        .map_err(|e| DashboardError::Validation(format!("owner non valido: {e}")))?;
+        .map_err(|e| DashboardError::Validation(format!("subject non valido: {e}")))?;
     let new_allow = split_csv(&form.allow)
         .iter()
         .map(|s| s.parse::<Principal>())
@@ -727,13 +728,13 @@ async fn acl_submit(
     // re-share never rewrites it, exactly like the chat verb.
     let keep_sender = row.sender_id.clone();
     let preview = components::truncate_chars(&row.text, 120);
-    let recipient = proposals::recipient_from_fact(&row.owner_id, row.sender_id.as_ref());
+    let recipient = proposals::recipient_from_fact(&row.subject_id, row.sender_id.as_ref());
 
     let applied = operator_edits::acl_change_operator(
         &state.pool,
         &fact_id,
         &row.wiki_id,
-        &new_owner,
+        &new_subject,
         &new_allow,
         keep_sender.as_ref(),
         &preview,
@@ -743,7 +744,7 @@ async fn acl_submit(
     .await
     .map_err(|e| map_operator_edit_err(&e))?;
 
-    let widening = mwe_core::acl::widens(&row.owner_id, &row.allow_ids, &new_owner, &new_allow);
+    let widening = mwe_core::acl::widens(&row.subject_id, &row.allow_ids, &new_subject, &new_allow);
     emit_structure_applied(
         &state,
         "acl_change",
@@ -772,7 +773,7 @@ async fn acl_submit(
 /// per-fragment validity edit. **Owner-or-admin** gated (validity is the
 /// subject's *update* of a fact about themselves — the write-authority model,
 /// [identity and ACL](../../../../docs/concepts/identity-and-acl.md)), the
-/// same owner axis as [`acl_submit`]; same standard-wiki gate + paper trail.
+/// same subject axis as [`acl_submit`]; same standard-wiki gate + paper trail.
 async fn validity_submit(
     State(state): State<DashboardState>,
     user: SessionUser,
@@ -784,9 +785,9 @@ async fn validity_submit(
         FactId::parse(&fact_id_raw).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
     let reveal = crate::reveal::active(&state, &user, &jar);
     let row = load_visible_fact(&state, &user, &fact_id, reveal).await?;
-    // Validity is an *update* of the fact (not a destruction): the owner's act
-    // (the write-authority model), the same owner axis as ACL.
-    enforce_owner_or_admin(&user, &row)?;
+    // Validity is an *update* of the fact (not a destruction): the subject's act
+    // (the write-authority model), the same subject axis as ACL.
+    enforce_subject_or_admin(&user, &row)?;
     enforce_standard_wiki(&state, &row.wiki_id)?;
 
     let valid_from = normalize_date_bound(&form.valid_from)?;
@@ -798,7 +799,7 @@ async fn validity_submit(
     }
 
     let preview = components::truncate_chars(&row.text, 120);
-    let recipient = proposals::recipient_from_fact(&row.owner_id, row.sender_id.as_ref());
+    let recipient = proposals::recipient_from_fact(&row.subject_id, row.sender_id.as_ref());
 
     let applied = operator_edits::validity_edit_operator(
         &state.pool,
@@ -884,11 +885,11 @@ async fn delete_fact(
     Ok(Redirect::to("/dashboard/facts").into_response())
 }
 
-/// Enforce the **owner-OR-admin** gate on a structured fact action: the
-/// session must own the fact (`owner_id == user:<sender_id>`) or be admin.
+/// Enforce the **subject-OR-admin** gate on a structured fact action: the
+/// session must own the fact (`subject_id == user:<sender_id>`) or be admin.
 /// 403 otherwise.
-fn enforce_owner_or_admin(user: &SessionUser, row: &FactIndexRow) -> Result<()> {
-    if owner_or_admin(user, row) {
+fn enforce_subject_or_admin(user: &SessionUser, row: &FactIndexRow) -> Result<()> {
+    if subject_or_admin(user, row) {
         Ok(())
     } else {
         Err(DashboardError::Forbidden)
@@ -1031,7 +1032,7 @@ async fn load_visible_fact(
 
     // Admin reveal bypasses the read projection so the structured fact
     // actions reach another user's facts. The per-action authority gate
-    // (`enforce_owner_or_admin` for ACL, `enforce_sender_or_admin` for
+    // (`enforce_subject_or_admin` for ACL, `enforce_sender_or_admin` for
     // delete / validity) remains the authority on the write itself.
     if reveal {
         return Ok(row);
@@ -1244,7 +1245,7 @@ fn format_metadata_changes(row: &FactIndexRow, delta: &EditDelta) -> String {
 /// [`mwe_core::acl::can_read`] so the policy stays in one place.
 fn fact_visible_to(row: &FactIndexRow, sender: &SenderContext) -> bool {
     let acl = Acl {
-        owner: Some(row.owner_id.clone()),
+        subject: Some(row.subject_id.clone()),
         allow: row.allow_ids.clone(),
     };
     can_read(
@@ -1380,7 +1381,7 @@ fn render_index(
                     (sort_header(filters, page_size, "wiki_id", "wiki_id"))
                     (sort_header(filters, page_size, "fact_type", "fact_type"))
                     (sort_header(filters, page_size, "salience", "salience"))
-                    (sort_header(filters, page_size, "owner_id", "owner_id"))
+                    (sort_header(filters, page_size, "subject_id", "subject_id"))
                     th { "sender_id" }
                     th { "allow_ids" }
                     th { "topics" }
@@ -1411,7 +1412,7 @@ fn render_index(
                             td { code { (row.wiki_id) } }
                             td.muted { (opt_cell(row.fact_type.as_deref())) }
                             td { (opt_cell(row.salience.as_deref())) }
-                            td { code { (row.owner_id) } }
+                            td { code { (row.subject_id) } }
                             td { (opt_cell(row.sender_id.as_deref())) }
                             td { (list_cell(&row.allow_ids)) }
                             td { (list_cell(&row.topics)) }
@@ -1686,9 +1687,9 @@ fn filter_hidden_inputs(filters: &FactsFilters, page_size: usize) -> Markup {
 ///
 /// `flash` is shown above the form when set (the unchanged-submit branch
 /// in [`edit_submit`] uses it to nudge the user without forcing them off
-/// the page). `can_acl` (owner-or-admin) and `can_validity` (owner-or-admin)
+/// the page). `can_acl` (subject-or-admin) and `can_validity` (subject-or-admin)
 /// gate the two structured sub-forms per the write-authority model (both the
-/// owner's acts — visibility and update;
+/// subject's acts — visibility and update;
 /// [identity and ACL](../../../../docs/concepts/identity-and-acl.md)), and
 /// `is_smart` is the fact's wiki family — together they decide whether each
 /// structured action renders as a live form or as a disabled note (smart wikis
@@ -1762,7 +1763,7 @@ fn rendered_fact_body(state: &DashboardState, row: &FactIndexRow) -> Markup {
 }
 
 /// The read-only "current state" summary of the fact: the full record —
-/// placement (`wiki_id`), the three ACL axes (`owner` subject, `sender`
+/// placement (`wiki_id`), the three ACL axes (`subject` subject, `sender`
 /// provenance, `allow` audience), taxonomy, validity bounds, document
 /// provenance (`source_ref`) — followed by the canonical text rendered
 /// as prose (see [`rendered_fact_body`]). `section.meta` picks up the
@@ -1783,7 +1784,7 @@ fn fact_summary_dl(fact_id: &FactId, row: &FactIndexRow, body_html: &Markup) -> 
             h2 { "Current state of fact " code { (fact_id.as_str()) } }
             dl {
                 dt { "wiki_id" } dd { code { (row.wiki_id) } }
-                dt { "owner" } dd { code { (row.owner_id) } }
+                dt { "subject" } dd { code { (row.subject_id) } }
                 dt { "sender" }
                 dd {
                     @if let Some(sender) = &row.sender_id {
@@ -1869,8 +1870,8 @@ fn fact_summary_dl(fact_id: &FactId, row: &FactIndexRow, body_html: &Markup) -> 
 /// disabled note on smart wikis (no per-fragment governance); otherwise each
 /// form renders only for the principal who may submit it (the write-authority
 /// model):
-/// the **ACL** form needs `can_acl` (owner-or-admin — visibility is the
-/// subject's call), the **validity** form needs `can_validity` (owner-or-admin —
+/// the **ACL** form needs `can_acl` (subject-or-admin — visibility is the
+/// subject's call), the **validity** form needs `can_validity` (subject-or-admin —
 /// updating validity is the subject's act too, not a destruction). When the
 /// viewer can do neither, an axis-accurate refusal note replaces both.
 fn structured_actions_section(
@@ -1888,7 +1889,7 @@ fn structured_actions_section(
         .map(Principal::to_string)
         .collect::<Vec<_>>()
         .join(", ");
-    let owner_current = row.owner_id.to_string();
+    let owner_current = row.subject_id.to_string();
     let valid_from_current = row.valid_from.as_deref().unwrap_or("");
     let valid_to_current = row.valid_to.as_deref().unwrap_or("");
     html! {
@@ -1904,7 +1905,7 @@ fn structured_actions_section(
                 }
             } @else if !can_acl && !can_validity {
                 p.muted {
-                    "Only the fact's owner (or an admin) may change its "
+                    "Only the fact's subject (or an admin) may change its "
                     "visibility (ACL), and only its author (the "
                     code { "sender" }
                     ") or an admin may correct its validity."
@@ -1921,8 +1922,8 @@ fn structured_actions_section(
                     form.fact-acl method="post" action=(acl_action) {
                         h3 { "Change " code { "ACL" } }
                         p {
-                            label for="acl-owner" { code { "owner" } }
-                            input id="acl-owner" type="text" name="owner"
+                            label for="acl-subject" { code { "subject" } }
+                            input id="acl-subject" type="text" name="subject"
                                 value=(owner_current)
                                 placeholder="e.g. user:alice or group:famiglia or global";
                         }
@@ -1937,7 +1938,7 @@ fn structured_actions_section(
                     }
                 } @else {
                     p.muted {
-                        "Only the fact's owner (or an admin) may change its "
+                        "Only the fact's subject (or an admin) may change its "
                         "visibility (ACL)."
                     }
                 }
@@ -2054,7 +2055,7 @@ mod tests {
             region_end: None,
             text: "Alice usa la bici a Milano".to_owned(),
             embedding: Vec::new(),
-            owner_id: "user:alice".parse::<Principal>().expect("principal"),
+            subject_id: "user:alice".parse::<Principal>().expect("principal"),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: Some("preferenza".to_owned()),
@@ -2373,33 +2374,33 @@ mod tests {
         }
     }
 
-    /// `owner_or_admin` is the **`acl_change`** (visibility) gate — owner of
+    /// `subject_or_admin` is the **`acl_change`** (visibility) gate — subject of
     /// the subject, or admin. The author/`sender` axis does not enter here.
     #[test]
-    fn owner_or_admin_gate_admits_owner_and_admin_only() {
-        let row = make_row("018f1234-5678-7abc-9def-0123456789ab"); // owner = user:alice
-        assert!(owner_or_admin(&session("alice", false), &row), "owner");
-        assert!(owner_or_admin(&session("bob", true), &row), "admin");
+    fn subject_or_admin_gate_admits_subject_and_admin_only() {
+        let row = make_row("018f1234-5678-7abc-9def-0123456789ab"); // subject = user:alice
+        assert!(subject_or_admin(&session("alice", false), &row), "subject");
+        assert!(subject_or_admin(&session("bob", true), &row), "admin");
         assert!(
-            !owner_or_admin(&session("bob", false), &row),
-            "non-owner non-admin refused"
+            !subject_or_admin(&session("bob", false), &row),
+            "non-subject non-admin refused"
         );
         // The Result-returning wrapper agrees.
-        assert!(enforce_owner_or_admin(&session("alice", false), &row).is_ok());
+        assert!(enforce_subject_or_admin(&session("alice", false), &row).is_ok());
         assert!(matches!(
-            enforce_owner_or_admin(&session("bob", false), &row),
+            enforce_subject_or_admin(&session("bob", false), &row),
             Err(DashboardError::Forbidden)
         ));
     }
 
     /// `sender_or_admin` is the **`delete`** (author-direct) gate — the fact's
-    /// `sender`, or admin. Crucially it is independent of the `owner`/subject
-    /// axis: the owner (alice) is NOT admitted to delete a fact she did not
-    /// author, while the author (carol) is — even though she is not owner.
-    /// (Updates — edit / validity — are the owner's, gated by `owner_or_admin`.)
+    /// `sender`, or admin. Crucially it is independent of the `subject`/subject
+    /// axis: the subject (alice) is NOT admitted to delete a fact she did not
+    /// author, while the author (carol) is — even though she is not subject.
+    /// (Updates — edit / validity — are the subject's, gated by `subject_or_admin`.)
     #[test]
     fn sender_or_admin_gate_admits_sender_and_admin_only() {
-        // owner = user:alice, author/sender = user:carol.
+        // subject = user:alice, author/sender = user:carol.
         let mut row = make_row("018f1234-5678-7abc-9def-0123456789ab");
         row.sender_id = Some("user:carol".parse::<Principal>().expect("principal"));
 
@@ -2409,11 +2410,11 @@ mod tests {
             !sender_or_admin(&session("dave", false), &row),
             "non-sender non-admin refused"
         );
-        // The owner/subject is NOT the author → refused the direct delete (her
+        // The subject/subject is NOT the author → refused the direct delete (her
         // path is a request → vote, opened from the dashboard).
         assert!(
             !sender_or_admin(&session("alice", false), &row),
-            "owner-but-not-author refused the delete"
+            "subject-but-not-author refused the delete"
         );
         // The Result-returning wrapper agrees.
         assert!(enforce_sender_or_admin(&session("carol", false), &row).is_ok());

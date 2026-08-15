@@ -169,7 +169,7 @@ Concretely, verified against the code:
 - **Capture / supersede / forget / link**
   (`crates/mwe-core/src/capture.rs`): embed the body, run the
   **deterministic** jaccard 6-gram dedup (`recall::jaccard_sets`),
-  render the `{{owner=… allow=… sender=… f=…}}…{{/}}` marker, append to
+  render the `{{subject=… allow=… sender=… f=…}}…{{/}}` marker, append to
   the page with an `atomic_write`, insert the `fact_index` row. The only
   model call is the local embedding. The jaccard threshold (default
   `0.85`, `recall::DEFAULT_DEDUP_THRESHOLD`) is a pure string-similarity
@@ -217,7 +217,7 @@ sequenceDiagram
 
     M->>ML: ONE call — intent + routing + capture plan (JSON)
     Note right of ML: paid by mwe-mcp owner<br/>if online, zero if local
-    ML-->>M: { intent, target_wiki_id, body, owner, supersede?, ... }
+    ML-->>M: { intent, target_wiki_id, body, subject, supersede?, ... }
 
     M->>FS: capture / supersede (only if intent=capture)
     FS-->>M: fact_id
@@ -247,7 +247,7 @@ The orchestrator is `ingest::wiki_ingest_message` in
    `llm-functions.md`) producing a
    single strict JSON object that encodes
    *both* the intent classification and the operational plan (target
-   wiki, body, owner, `fact_type`, topics, supersede target, disambig
+   wiki, body, subject, `fact_type`, topics, supersede target, disambig
    need). Calling the model **once** — rather than intent → routing →
    seed as three round-trips — is what keeps latency inside the
    conversational budget and the cost predictable.

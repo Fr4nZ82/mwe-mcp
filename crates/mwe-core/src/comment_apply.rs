@@ -20,17 +20,18 @@
 //!   anchored to. `correct` / `remove` / `move` are refused for any `fact_id`
 //!   not on that page (a cross-page / hallucinated id never mutates a stranger's
 //!   fact). `move` relocates such a fact *out* of the page, but only to a
-//!   destination drawn from a bounded list (the wiki owner's other non-smart
-//!   wikis + this wiki's other pages) — never an invented or cross-owner one.
+//!   destination drawn from a bounded list (the other non-smart wikis of this
+//!   wiki's OWNER + this wiki's other pages) — never an invented one, and never
+//!   one belonging to a different owner.
 //! - **A fact is a fact.** A `correct` preserves the existing fact's
-//!   owner/`allow`/sender verbatim (it touches claim text only); an `add` carries
+//!   subject/`allow`/sender verbatim (it touches claim text only); an `add` carries
 //!   its OWN ACL under the same rules as a captured message — the LLM decides
-//!   the subject (`owner`) and audience (`allow`) from the comment, the page's
+//!   the subject (`subject`) and audience (`allow`) from the comment, the page's
 //!   wiki scope, and the commenter's group scopes, defaulting to the commenter /
 //!   `[]`, with `sender` = the human who left the comment (`author_sender_id`).
-//!   It never copies an arbitrary existing fact's (possibly broader) owner. A
+//!   It never copies an arbitrary existing fact's (possibly broader) subject. A
 //!   `move` keeps the fact's ACL and refuses a destination wiki with a different
-//!   owner.
+//!   subject.
 //!
 //! Unlike `correct` / `remove` / `add` (which apply bare), a `move` is
 //! **born-applied + revertible** — the `promote::*_direct` wrappers mint a
@@ -88,7 +89,7 @@ pub struct CommentApplyReport {
     /// New facts added on the anchored page.
     pub facts_added: usize,
     /// `add` ops skipped by the write-time dedup (the text was a
-    /// near-duplicate of an existing same-owner fact — nothing inserted).
+    /// near-duplicate of an existing same-subject fact — nothing inserted).
     pub facts_deduped: usize,
     /// Facts tombstoned at a comment's request.
     pub facts_removed: usize,
@@ -152,10 +153,11 @@ struct RawOp {
     /// the ingest rules. Absent/malformed → `user:<commenter>` (the default a
     /// captured message fact takes for its author).
     #[serde(default)]
-    owner_id: Option<String>,
+    #[serde(alias = "owner_id")]
+    subject_id: Option<String>,
     /// `add` only: the new fact's AUDIENCE (extra read principals beyond
-    /// owner+sender), decided by the LLM from the page/group scope signals.
-    /// Empty (the default) keeps the fact to owner+commenter.
+    /// subject+sender), decided by the LLM from the page/group scope signals.
+    /// Empty (the default) keeps the fact to subject+commenter.
     #[serde(default)]
     allow_ids: Vec<String>,
     /// `move` only: the destination wiki chosen from `{destinations}`. Absent
@@ -203,19 +205,20 @@ pub async fn apply_comments(
         Err(WikiError::WikiNotFound { .. }) => return Ok(report),
         Err(e) => return Err(e.into()),
     };
-    // The wiki's scope principal (derived from topology). Two roles: it bounds a
-    // `move` destination to a same-owner wiki, and it is the LAST-RESORT owner an
-    // `add` falls back to when the LLM emits no `owner_id` AND the comment has no
+    // The wiki's scope principal (derived from topology) — its OWNER. It plays two
+    // roles, on two different axes: it bounds a `move` destination to a wiki with the
+    // SAME OWNER, and it is the LAST-RESORT subject an
+    // `add` falls back to when the LLM emits no `subject_id` AND the comment has no
     // recorded author — never an arbitrary existing fact's (possibly broader)
-    // owner. With an author and/or an LLM `owner_id` the `add` follows the
+    // subject. With an author and/or an LLM `subject_id` the `add` follows the
     // captured-message rules instead (see `apply_add`).
-    let add_owner = tree.resolve_scope_principal(handle.meta())?;
+    let add_subject = tree.resolve_scope_principal(handle.meta())?;
     // The language every claim this pass writes comes out in. The operator may
     // comment in any language; the page keeps the one its wiki declares, so a
     // correction never leaves a page speaking two languages. Resolved once per
     // wiki off the principal already in hand.
     let language_directive = crate::locale::render_memory_language_directive(
-        crate::enrollment::locale_for_principal(pool, &add_owner)
+        crate::enrollment::locale_for_principal(pool, &add_subject)
             .await
             .unwrap_or_default()
             .as_deref(),
@@ -245,7 +248,7 @@ pub async fn apply_comments(
             embedder,
             llm,
             wiki_id,
-            &add_owner,
+            &add_subject,
             &language_directive,
             &source_path,
             &comments,
@@ -275,7 +278,7 @@ async fn apply_page(
     embedder: &Arc<dyn Embedder>,
     llm: &dyn LlmBackend,
     wiki_id: &WikiId,
-    add_owner: &Principal,
+    add_subject: &Principal,
     language_directive: &str,
     source_path: &str,
     comments: &[(i64, String, Option<String>)],
@@ -296,10 +299,10 @@ async fn apply_page(
     // The commenter whose `add` facts are owned/sent: the single distinct author
     // among this page's pending comments. The dashboard records every comment's
     // author (`author_sender_id`), so — like a captured message — an `add`'s
-    // `sender` is that human and the owner defaults to them. When a page mixes
+    // `sender` is that human and the subject defaults to them. When a page mixes
     // authors (rare: comments are interpreted together but an `add` op carries
     // no back-reference to one comment), the most recent author represents them;
-    // the LLM may still attribute a fact to a named subject via `owner_id`.
+    // the LLM may still attribute a fact to a named subject via `subject_id`.
     let commenter = representative_commenter(comments);
     let scope_ctx = describe_scope(tree, wiki_id, commenter.as_ref(), pool).await;
 
@@ -309,7 +312,7 @@ async fn apply_page(
     // wiki's owner may write into (cross-wiki moves) plus this wiki's other
     // pages (same-wiki page moves). The LLM resolves "salute" → a concrete
     // wiki/page from this list; it can only pick what is offered here.
-    let destinations = describe_destinations(tree, wiki_id, source_path, add_owner);
+    let destinations = describe_destinations(tree, wiki_id, source_path, add_subject);
     let system = prompts::render(
         "comment-apply",
         tree.workdir(),
@@ -362,7 +365,7 @@ async fn apply_page(
                     wiki_id,
                     source_path,
                     commenter.as_ref(),
-                    add_owner,
+                    add_subject,
                     &batch_removals,
                     op,
                     report,
@@ -377,7 +380,7 @@ async fn apply_page(
                     &known,
                     wiki_id,
                     source_path,
-                    add_owner,
+                    add_subject,
                     op,
                     &reason,
                     report,
@@ -492,19 +495,19 @@ async fn apply_remove(
 
 /// Insert a new fact on the anchored page. A fact is a fact: its subject and
 /// audience follow the same rules as a captured message — the LLM decides
-/// `owner`/`allow` (subject + audience from the comment, the page's wiki scope,
+/// `subject`/`allow` (subject + audience from the comment, the page's wiki scope,
 /// and the commenter's group scopes), and the `sender` is the human who left
 /// the comment (`commenter`, recorded as `author_sender_id`).
 ///
-/// Defaults mirror the message path: an absent/malformed `owner_id` falls back
+/// Defaults mirror the message path: an absent/malformed `subject_id` falls back
 /// to the commenter (the fact's author), and if even the commenter is unknown
-/// to `fallback_owner` (the wiki's resolved scope principal) so the fact is
-/// never ownerless. Malformed `allow_ids` entries are dropped — never widen on
+/// to `fallback_subject` (the wiki's resolved scope principal) so the fact is
+/// never subjectless. Malformed `allow_ids` entries are dropped — never widen on
 /// a parse slip.
 ///
 /// Before the insert the add passes the same write-time dedup the capture path
 /// applies everywhere else ([`crate::capture::best_dedup_candidate`]): an add
-/// that is really a rephrase of an existing same-owner fact is skipped —
+/// that is really a rephrase of an existing same-subject fact is skipped —
 /// capture-`Skipped` semantics, nothing is inserted or merged — counted in
 /// `facts_deduped` (`facts_added` is not bumped). Facts a `remove` op in the
 /// same batch targets (`batch_removals`) never count as dedup candidates: the
@@ -512,7 +515,7 @@ async fn apply_remove(
 /// tombstone.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the add threads the wiki/page, the commenter, the fallback owner, the batch removals, the op, and the report"
+    reason = "the add threads the wiki/page, the commenter, the fallback subject, the batch removals, the op, and the report"
 )]
 async fn apply_add(
     pool: &SqlitePool,
@@ -520,7 +523,7 @@ async fn apply_add(
     wiki_id: &WikiId,
     source_path: &str,
     commenter: Option<&Principal>,
-    fallback_owner: &Principal,
+    fallback_subject: &Principal,
     batch_removals: &HashSet<&str>,
     op: &RawOp,
     report: &mut CommentApplyReport,
@@ -529,14 +532,14 @@ async fn apply_add(
         report.errors.push("add missing text".to_owned());
         return Ok(());
     };
-    let owner_id = op
-        .owner_id
+    let subject_id = op
+        .subject_id
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .and_then(|s| s.parse::<Principal>().ok())
         .or_else(|| commenter.cloned())
-        .unwrap_or_else(|| fallback_owner.clone());
+        .unwrap_or_else(|| fallback_subject.clone());
     let allow_ids: Vec<Principal> = op
         .allow_ids
         .iter()
@@ -546,7 +549,7 @@ async fn apply_add(
     // Write-time dedup, exactly as the capture path applies at every other
     // write site: an `add` that merely rephrases an existing fact is skipped
     // rather than minting a near-duplicate row. Same discipline as
-    // `capture::wiki_capture` — same-owner scope, the channel-page boundary,
+    // `capture::wiki_capture` — same-subject scope, the channel-page boundary,
     // jaccard 6-gram against the wiki's active facts, and the embed-set guard
     // (two distinct media with near-identical captions stay two facts). Dedup
     // first so a hit short-circuits before the (possibly remote) embed call.
@@ -557,7 +560,7 @@ async fn apply_add(
     candidates.retain(|c| !batch_removals.contains(c.fact_id.as_str()));
     let on_channel_page = crate::wiki::is_channel_page(source_path);
     if let Some((dup, score)) =
-        crate::capture::best_dedup_candidate(&candidates, &owner_id, on_channel_page, text, None)
+        crate::capture::best_dedup_candidate(&candidates, &subject_id, on_channel_page, text, None)
         && score >= crate::recall::DEFAULT_DEDUP_THRESHOLD
     {
         if crate::parser::collect_embeds(&dup.text) == crate::parser::collect_embeds(text) {
@@ -591,7 +594,7 @@ async fn apply_add(
         region_end: None,
         text: text.to_owned(),
         embedding,
-        owner_id,
+        subject_id,
         allow_ids,
         sender_id: commenter.cloned(),
         fact_type: None,
@@ -619,7 +622,7 @@ async fn apply_add(
 /// - **cross-wiki** (`op.dest_wiki_id` set and ≠ this wiki): the fact is
 ///   refiled onto the destination wiki's buffer page via
 ///   [`promote::apply_fact_refile_direct`]. The destination must locate, be
-///   **owned by the same owner** as the source (no cross-owner move), and be
+///   **owned by the same principal** as the source wiki (no move across owners), and be
 ///   **standard** (a smart wiki is the consumer's — refused).
 /// - **same-wiki page move** (`dest_wiki_id` absent / == this wiki, with a
 ///   `dest_page` that differs from the source page): the fact moves to that
@@ -632,7 +635,7 @@ async fn apply_add(
 /// **born-applied + revertible** — the `_direct` wrappers mint the receipt.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the contained move threads the page facts, containment set, source wiki/page, owner, the op, and the receipt reason"
+    reason = "the contained move threads the page facts, containment set, source wiki/page, subject, the op, and the receipt reason"
 )]
 async fn apply_move(
     pool: &SqlitePool,
@@ -641,7 +644,7 @@ async fn apply_move(
     known: &HashSet<&str>,
     wiki_id: &WikiId,
     source_path: &str,
-    add_owner: &Principal,
+    add_subject: &Principal,
     op: &RawOp,
     reason: &str,
     report: &mut CommentApplyReport,
@@ -667,7 +670,7 @@ async fn apply_move(
         .iter()
         .find(|f| f.fact_id.as_str() == fid_str)
         .expect("fid is in `known`, built from `facts`");
-    let recipient = proposals::recipient_from_fact(&row.owner_id, row.sender_id.as_ref());
+    let recipient = proposals::recipient_from_fact(&row.subject_id, row.sender_id.as_ref());
 
     // Is this a cross-wiki move? Only when a dest wiki is named AND it differs
     // from the source wiki; an absent or same-wiki dest_wiki_id is a same-wiki
@@ -686,7 +689,7 @@ async fn apply_move(
             wiki_id,
             source_path,
             dest_wiki_id,
-            add_owner,
+            add_subject,
             recipient,
             reason,
             report,
@@ -712,7 +715,7 @@ async fn apply_move(
 /// refile the fact onto its buffer page.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the cross-wiki branch carries the fact, both wiki endpoints, source page, owner, recipient, and reason"
+    reason = "the cross-wiki branch carries the fact, both wiki endpoints, source page, subject, recipient, and reason"
 )]
 async fn apply_move_cross_wiki(
     pool: &SqlitePool,
@@ -721,7 +724,7 @@ async fn apply_move_cross_wiki(
     wiki_id: &WikiId,
     source_path: &str,
     dest_wiki_id: &str,
-    add_owner: &Principal,
+    add_subject: &Principal,
     recipient: Option<String>,
     reason: &str,
     report: &mut CommentApplyReport,
@@ -733,8 +736,8 @@ async fn apply_move_cross_wiki(
         return Ok(());
     };
     // The destination must locate (anti-hallucination), be standard (a smart
-    // wiki is the consumer's), and be owned by the SAME owner as the source
-    // (the page's resolved acl_default) — never a cross-owner move.
+    // wiki is the consumer's), and be owned by the SAME principal as the source
+    // wiki (its resolved scope principal) — never a move across owners.
     let Ok(dest_handle) = tree.locate(&dest_id) else {
         report
             .errors
@@ -748,9 +751,9 @@ async fn apply_move_cross_wiki(
         return Ok(());
     }
     let dest_owner = tree.resolve_scope_principal(dest_handle.meta())?;
-    if &dest_owner != add_owner {
+    if &dest_owner != add_subject {
         report.errors.push(format!(
-            "move refused: dest wiki {dest_wiki_id} owner {dest_owner} differs from source owner {add_owner}"
+            "move refused: dest wiki {dest_wiki_id} is owned by {dest_owner}, the source wiki by {add_subject}"
         ));
         return Ok(());
     }
@@ -883,10 +886,10 @@ fn page_wiki_relative(handle: &WikiHandle, source_path: &str) -> String {
 
 /// Describe the destinations a `move` op may target, for the prompt's
 /// `{destinations}` placeholder. Two bounded lists for the source wiki's
-/// **owner** (`owner` is the page's resolved `acl_default`):
+/// **subject** (`subject` is the page's resolved `acl_default`):
 ///
-/// - **other wikis** the owner can write — every **non-smart** wiki whose
-///   resolved `acl_default` equals `owner`, except the source wiki itself
+/// - **other wikis** the subject can write — every **non-smart** wiki whose
+///   resolved `acl_default` equals `subject`, except the source wiki itself
 ///   (cross-wiki moves; a fact always lands on the dest wiki's buffer page);
 /// - **this wiki's other pages** (same-wiki page moves), the source page
 ///   excluded.
@@ -898,7 +901,7 @@ fn describe_destinations(
     tree: &WikiTree,
     wiki_id: &WikiId,
     source_path: &str,
-    owner: &Principal,
+    subject: &Principal,
 ) -> String {
     let mut wikis: Vec<String> = Vec::new();
     if let Ok(discovered) = tree.walk() {
@@ -906,10 +909,10 @@ fn describe_destinations(
             if &d.meta.wiki_id == wiki_id || d.meta.smart {
                 continue;
             }
-            // Only wikis the same owner controls — never a cross-owner target.
+            // Only wikis the same subject controls — never a cross-subject target.
             if tree
                 .resolve_scope_principal(&d.meta)
-                .is_ok_and(|p| &p == owner)
+                .is_ok_and(|p| &p == subject)
             {
                 wikis.push(format!("{} · {}", d.meta.wiki_id.as_str(), d.meta.title));
             }
@@ -975,7 +978,7 @@ struct CommentRow {
 /// Load `(target_cite, body, author_sender_id)` for a pending comment, or
 /// `None` if the row is gone or already processed (a racing manual drain).
 /// `author_sender_id` is the bare id of the signed-in user who left the comment
-/// (the dashboard stamps it on every parked comment) — the `sender`/owner
+/// (the dashboard stamps it on every parked comment) — the `sender`/subject
 /// default an `add` op uses.
 async fn load_comment(
     pool: &SqlitePool,
@@ -1060,7 +1063,7 @@ fn representative_commenter(comments: &[(i64, String, Option<String>)]) -> Optio
 
 /// Build the `{scope}` context block for the prompt: the commenter's id, this
 /// page's wiki `scope` prose, and the commenter's group scopes — the same
-/// audience signals `ingest::build_prompt` surfaces for the `owner_id`/
+/// audience signals `ingest::build_prompt` surfaces for the `subject_id`/
 /// `allow_ids` decision. Best-effort: a lookup failure degrades a section to a
 /// note rather than failing the page (the LLM then simply keeps the default
 /// `[]` audience).
@@ -1151,10 +1154,10 @@ mod tests {
     }
 
     async fn insert_fact(pool: &SqlitePool, id: &str, text: &str) {
-        insert_fact_owned(pool, id, text, "user:alice").await;
+        insert_fact_with_subject(pool, id, text, "user:alice").await;
     }
 
-    async fn insert_fact_owned(pool: &SqlitePool, id: &str, text: &str, owner: &str) {
+    async fn insert_fact_with_subject(pool: &SqlitePool, id: &str, text: &str, subject: &str) {
         fact_index::insert(
             pool,
             &NewFact {
@@ -1166,7 +1169,7 @@ mod tests {
                 region_end: Some(40),
                 text: text.to_owned(),
                 embedding: vec![0.1, 0.2],
-                owner_id: owner.parse::<Principal>().unwrap(),
+                subject_id: subject.parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
@@ -1242,7 +1245,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.text, "Alice was born in 1986");
-        assert_eq!(row.owner_id, "user:alice".parse::<Principal>().unwrap());
+        assert_eq!(row.subject_id, "user:alice".parse::<Principal>().unwrap());
         // Comment drained.
         let processed: Option<String> =
             sqlx::query_scalar("SELECT processed_at FROM wiki_briefing_items WHERE id = ?")
@@ -1332,15 +1335,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_defaults_owner_to_commenter_and_stamps_them_as_sender() {
-        // The page mixes owners: facts[0] is `global` — the over-grant trap a
-        // previous design would copy. With no LLM `owner_id`, the new fact now
+    async fn add_defaults_subject_to_commenter_and_stamps_them_as_sender() {
+        // The page mixes subjects: facts[0] is `global` — the over-grant trap a
+        // previous design would copy. With no LLM `subject_id`, the new fact now
         // defaults to the COMMENTER (its author, `author_sender_id=alice`) and
         // is SENT by them — never the arbitrary global facts[0], never the wiki
         // default for a fact whose author is known.
         let (dir, tree, pool) = setup().await;
-        insert_fact_owned(&pool, &fid_str(0x41), "Alice's project is public", "global").await;
-        insert_fact_owned(&pool, &fid_str(0x42), "Alice prefers tea", "user:alice").await;
+        insert_fact_with_subject(&pool, &fid_str(0x41), "Alice's project is public", "global")
+            .await;
+        insert_fact_with_subject(&pool, &fid_str(0x42), "Alice prefers tea", "user:alice").await;
         let bi = insert_comment(
             &pool,
             Some("wiki://alice/index.md#bio"),
@@ -1348,7 +1352,7 @@ mod tests {
         )
         .await;
 
-        // No owner_id / allow_ids on the add → the documented defaults apply.
+        // No subject_id / allow_ids on the add → the documented defaults apply.
         let llm = FakeLlmBackend::new(
             "fake",
             "{\"ops\":[{\"action\":\"add\",\"text\":\"Alice has a cat\"}]}",
@@ -1377,13 +1381,13 @@ mod tests {
             .find(|f| f.text == "Alice has a cat")
             .expect("the added fact is present");
         assert_eq!(
-            added.owner_id,
+            added.subject_id,
             "user:alice".parse::<Principal>().unwrap(),
-            "add defaults its owner to the commenter, never the arbitrary global facts[0]"
+            "add defaults its subject to the commenter, never the arbitrary global facts[0]"
         );
         assert!(
             added.allow_ids.is_empty(),
-            "no allow_ids on the op → owner+commenter only"
+            "no allow_ids on the op → subject+commenter only"
         );
         assert_eq!(
             added.sender_id,
@@ -1394,9 +1398,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_uses_llm_owner_and_allow_under_the_ingest_rules() {
+    async fn add_uses_llm_subject_and_allow_under_the_ingest_rules() {
         // A fact is a fact: when the comment is ABOUT someone else and shared
-        // with a group, the LLM's `owner_id`/`allow_ids` are honoured verbatim
+        // with a group, the LLM's `subject_id`/`allow_ids` are honoured verbatim
         // (subject = Bob, audience = the family) while `sender` stays the human
         // commenter (alice).
         let (dir, tree, pool) = setup().await;
@@ -1410,7 +1414,7 @@ mod tests {
 
         let llm = FakeLlmBackend::new(
             "fake",
-            "{\"ops\":[{\"action\":\"add\",\"text\":\"Bob changed jobs.\",\"owner_id\":\"user:bob\",\"allow_ids\":[\"group:famiglia\"]}]}",
+            "{\"ops\":[{\"action\":\"add\",\"text\":\"Bob changed jobs.\",\"subject_id\":\"user:bob\",\"allow_ids\":[\"group:famiglia\"]}]}",
         );
         let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 2));
         let wiki_id = WikiId::parse("alice").unwrap();
@@ -1436,9 +1440,9 @@ mod tests {
             .find(|f| f.text == "Bob changed jobs.")
             .expect("the added fact is present");
         assert_eq!(
-            added.owner_id,
+            added.subject_id,
             "user:bob".parse::<Principal>().unwrap(),
-            "owner is the LLM-decided subject"
+            "subject is the LLM-decided subject"
         );
         assert_eq!(
             added.allow_ids,
@@ -1473,8 +1477,8 @@ mod tests {
         .await;
 
         // The LLM over-eagerly emits an `add` restating the existing fact.
-        // Owner defaults to the commenter (user:alice) — the same owner as the
-        // existing fact — so same-owner dedup engages and skips it.
+        // Subject defaults to the commenter (user:alice) — the same subject as the
+        // existing fact — so same-subject dedup engages and skips it.
         let llm = FakeLlmBackend::new(
             "fake",
             "{\"ops\":[{\"action\":\"add\",\"text\":\"Alice adopted a black cat named Felix in 2019\"}]}",
@@ -1521,7 +1525,7 @@ mod tests {
         let old_text = "Alice adopted a black cat named Felix from the shelter in 2019";
         let new_text = "Alice adopted a black cat named Felix from the shelter in 2021";
         // Premise guard: the corrected text must trip the write-time dedup
-        // (same owner, same wiki, similarity at/above the threshold) — the
+        // (same subject, same wiki, similarity at/above the threshold) — the
         // test would not exercise the dedup path otherwise.
         let sim = crate::recall::jaccard_6gram(old_text, new_text);
         assert!(
@@ -1580,7 +1584,7 @@ mod tests {
 
     /// `setup()` + two destination wikis under the same workdir, both
     /// children of `alice` so the scope-principal derivation makes them
-    /// `user:alice` (the SAME owner as `alice`):
+    /// `user:alice` (the SAME subject as `alice`):
     /// - `salute` (standard — a cross-wiki move into it is allowed);
     /// - `proj` (a SMART wiki — a cross-wiki move into it must be refused
     ///   because it is the consumer's container).
@@ -1621,7 +1625,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: std::path::PathBuf::from(page),
             body: body.to_owned(),
-            owner: "user:alice".parse::<Principal>().unwrap(),
+            subject: "user:alice".parse::<Principal>().unwrap(),
             allow: vec![],
             sender: None,
             fact_type: None,

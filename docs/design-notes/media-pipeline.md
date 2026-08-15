@@ -18,7 +18,7 @@ becomes memory, without betraying the two pillars:
 - **Key-first, DB-authoritative.** The `{{embed=<catalog_id>}}` marker
   in a memory-wiki page is a **bare key**
   ([marker grammar](marker-grammar.md)). Everything behind it — kind,
-  MIME, size and the **per-media ACL** (owner/sender/allow) — is
+  MIME, size and the **per-media ACL** (subject/sender/allow) — is
   authoritative in the `media_catalog` table of `engine.db`, the twin
   of `fact_index` ([engine DB](engine-db-and-migrations.md)); the bytes
   live on disk like the prose. Resolution is by key with the catalog
@@ -52,7 +52,7 @@ ordering that makes the workdir snapshot self-consistent
 image always finds its blob in the later file copy.
 
 The catalog row carries: `catalog_id` (PK), `sha256`, `kind`, `mime`,
-`size_bytes`, the ACL triple (`owner_id` NOT NULL / `allow_ids` /
+`size_bytes`, the ACL triple (`subject_id` NOT NULL / `allow_ids` /
 `sender_id`), `uploaded_by_consumer` (audit), `caption`, `description`,
 `original_filename`, timestamps. Like the fact ACL after the
 DB-authoritative move, the catalog is **not rebuildable from the
@@ -71,9 +71,9 @@ producer (`media::kind`, the `fact_index::decay` convention) — the
 `CatalogId` *parser* deliberately accepts any `[a-z]+` kind so legacy
 ids and imported archives stay valid input forever.
 
-Upload dedup: a second upload of the same bytes by the same owner
+Upload dedup: a second upload of the same bytes by the same subject
 returns the existing row (`dedup: true` — bridge retries and re-sent
-photos are absorbed); the same bytes from a different owner mint a
+photos are absorbed); the same bytes from a different subject mint a
 fresh row sharing the blob, each row carrying its own ACL.
 
 ## Entry — two-phase: bytes out of band, then the ingest
@@ -84,7 +84,7 @@ The MCP ingest is JSON and stays JSON; bytes travel beside it:
    `X-MWE-Act-As`) as `/mcp`. Fields: `file` (required), `kind`
    (required), `caption` / `description` (optional). Returns the minted
    `catalog_id` (201 fresh / 200 dedup); the provisional ACL is stamped
-   from the **effective** (act-as-resolved) principal as owner. Body
+   from the **effective** (act-as-resolved) principal as subject. Body
    cap: 32 MiB (`http_media::MAX_UPLOAD_BYTES`).
 2. **`wiki_ingest_message.attachments`** — optional array of
    `{catalog_id, kind?, caption?, description?}`. The dispatcher
@@ -208,16 +208,16 @@ the stored body keeps the marker.
 
 ## ACL — provisional at upload, widened by the facts
 
-The row's `owner` is the effective principal at upload and never
+The row's `subject` is the effective principal at upload and never
 changes. When ingest files a fact embedding the media, the fact's read
-set (owner ∪ allow ∪ sender) is **unioned into the row's `allow_ids`**
+set (subject ∪ allow ∪ sender) is **unioned into the row's `allow_ids`**
 (`media::widen_acl`) — monotone widening only, mirroring the `allow`
 monotonicity invariant of `acl::can_read`; a media embedded by several
 facts keeps the union. Widening is disclosure-relevant and traced; the
 dedicated post-capture ACL-change verb (with its audit surface) is the
 open roadmap-6 design and deliberately not built here.
 
-Reads go through the same pure `can_read` as fact regions — owner,
+Reads go through the same pure `can_read` as fact regions — the subject,
 every `allow` entry and the capturing sender are each sufficient;
 **no admin bypass** ([redaction policy](redaction-policy.md)).
 

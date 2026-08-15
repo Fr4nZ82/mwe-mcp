@@ -216,7 +216,7 @@ pub(crate) fn window_closed_at(
 /// A question naming two people should be answered by a fact about both,
 /// and cosine alone cannot say so: measured on a live corpus, the fact
 /// that named both people, the right topic and the right occasion ranked
-/// **8th at 0.458**, below a birth date at 0.484. `owner_id`/`allow_ids`
+/// **8th at 0.458**, below a birth date at 0.484. `subject_id`/`allow_ids`
 /// decided only *whether* a reader may see a fact, never what it was worth.
 ///
 /// **Multiplicative, and that is the whole design.** The first version of
@@ -348,7 +348,7 @@ pub fn turn_subjects(query: &str, sender_id: &str, roster: &[EnrolledUserLite]) 
 }
 
 /// The people a fact is **about** — governance and content together,
-/// because neither alone is aboutness: `owner`/`allow` say who may READ
+/// because neither alone is aboutness: `subject`/`allow` say who may READ
 /// it, the text and topics say who it NAMES. The measured example needs
 /// both at once — the answering fact is owned by one person and names the
 /// other only in its topics and its prose.
@@ -362,7 +362,7 @@ fn fact_mentions(
             out.insert(u.to_lowercase());
         }
     };
-    push(&row.owner_id);
+    push(&row.subject_id);
     for a in &row.allow_ids {
         push(a);
     }
@@ -548,8 +548,8 @@ pub struct RecallHit {
     /// Region body text (no markers).
     pub text: String,
     /// Owner principal (the fact's SUBJECT).
-    pub owner_id: Principal,
-    /// Read-extension list (the visibility axis, additive to owner+sender).
+    pub subject_id: Principal,
+    /// Read-extension list (the visibility axis, additive to subject+sender).
     /// Surfaced so the classifier can SEE a recalled fact's current
     /// audience and faithfully reproduce it on a REPLACE-semantics
     /// `acl_change` (and so a supersede can inherit it).
@@ -589,7 +589,7 @@ impl RecallHit {
             region_start: row.region_start,
             region_end: row.region_end,
             text: row.text,
-            owner_id: row.owner_id,
+            subject_id: row.subject_id,
             allow_ids: row.allow_ids,
             sender_id: row.sender_id,
             fact_type: row.fact_type,
@@ -613,7 +613,7 @@ impl RecallHit {
             region_start: None,
             region_end: None,
             text: cap.body,
-            owner_id: cap.owner,
+            subject_id: cap.subject,
             allow_ids: cap.allow,
             sender_id: cap.sender,
             fact_type: cap.fact_type,
@@ -630,7 +630,7 @@ impl RecallHit {
 
 fn row_visible_to(row: &FactIndexRow, sender: &SenderContext) -> bool {
     let acl = Acl {
-        owner: Some(row.owner_id.clone()),
+        subject: Some(row.subject_id.clone()),
         allow: row.allow_ids.clone(),
     };
     can_read(
@@ -643,7 +643,7 @@ fn row_visible_to(row: &FactIndexRow, sender: &SenderContext) -> bool {
 
 fn buffered_visible_to(cap: &BufferedCapture, sender: &SenderContext) -> bool {
     let acl = Acl {
-        owner: Some(cap.owner.clone()),
+        subject: Some(cap.subject.clone()),
         allow: cap.allow.clone(),
     };
     can_read(
@@ -822,7 +822,7 @@ async fn bump_recall_hits_from(pool: &SqlitePool, hits: &[RecallHit]) -> RecallR
 ///
 /// Deliberately **not** a [`RecallHit`]: a section is a chunk of a
 /// document a smart consumer authored, not a governed fact. It has no
-/// owner, no sender, no validity window and no lifecycle, so the ingest
+/// subject, no sender, no validity window and no lifecycle, so the ingest
 /// verbs that act on facts (supersede, forget, validity edit, ACL edit)
 /// have nothing to bite on. Keeping the two types apart is what stops a
 /// fact-shaped code path from silently operating on documentation — the
@@ -909,7 +909,7 @@ impl SearchHit {
 ///
 /// This is the whole point of moving the ACL off the rows: read access to
 /// a smart wiki is one decision about one wiki, not one decision per
-/// indexed section. The effective set is the same `owner ∪ shared_with`
+/// indexed section. The effective set is the same `subject ∪ shared_with`
 /// the per-row check used to evaluate, so visibility is unchanged.
 async fn readable_smart_wikis(
     pool: &SqlitePool,
@@ -920,7 +920,7 @@ async fn readable_smart_wikis(
         .into_iter()
         .filter(|w| {
             let acl = Acl {
-                owner: Some(w.owner_id.clone()),
+                subject: Some(w.owner_id.clone()),
                 allow: w.shared_with.clone(),
             };
             can_read(&acl, &sender.sender_id, &sender.sender_groups, None)
@@ -1214,7 +1214,7 @@ async fn smart_wikis_named_in(
         .into_iter()
         .filter(|w| {
             let acl = Acl {
-                owner: Some(w.owner_id.clone()),
+                subject: Some(w.owner_id.clone()),
                 allow: w.shared_with.clone(),
             };
             can_read(&acl, &sender.sender_id, &sender.sender_groups, None)
@@ -1227,7 +1227,7 @@ async fn smart_wikis_named_in(
 /// The readable projects a **signpost surfaced this turn** points at.
 ///
 /// The other half of the project-docs trigger, roadmap group 48. A
-/// signpost is a short fact on its owner's reserved page
+/// signpost is a short fact on its subject's reserved page
 /// ([`crate::signposts`]) saying that a project exists; when one comes
 /// back in the turn's ordinary fact recall, the project it names becomes
 /// a candidate — that is how a turn reaches project documentation
@@ -1274,7 +1274,7 @@ async fn projects_signposted_in(
         .filter(|w| {
             named.contains(&w.wiki_id) && {
                 let acl = Acl {
-                    owner: Some(w.owner_id.clone()),
+                    subject: Some(w.owner_id.clone()),
                     allow: w.shared_with.clone(),
                 };
                 can_read(&acl, &sender.sender_id, &sender.sender_groups, None)
@@ -1641,7 +1641,7 @@ pub async fn recall_signposted_project_docs(
 /// it is what makes the description load-bearing rather than decorative —
 /// and naming the project still reaches it.
 ///
-/// The description is an ordinary `fact_index` row on the owner's reserved
+/// The description is an ordinary `fact_index` row on the subject's reserved
 /// `projects.md`, so its **stored** embedding is reused (no per-turn
 /// re-embed of the funnel) and its visibility is the ordinary per-fragment
 /// ACL: a reader who cannot see a project's signpost cannot open its docs,
@@ -1860,7 +1860,7 @@ pub async fn wiki_facts_full_for(
 /// Unlike [`recall_fresh_captures`] this does **no** semantic ranking (it is a
 /// list, not a search, so it needs no embedder): it returns every visible
 /// buffered capture, ACL-filtered for `sender` and honouring the `wiki_id`,
-/// `owner_id`, `fact_type`, `topics_any`, and `created_*` fields of `filters`.
+/// `subject_id`, `fact_type`, `topics_any`, and `created_*` fields of `filters`.
 /// The dashboard renders these with a `fresh` flag of its own.
 ///
 /// `reveal` has the same meaning as in [`wiki_facts_full_for`]: when `true`
@@ -1902,8 +1902,8 @@ pub async fn wiki_buffered_full_for(
 /// deliberately ignored — a buffered capture is alive by definition (no closed
 /// window yet) and the candidate set is already capped.
 fn capture_matches_filters(cap: &BufferedCapture, filters: &fact_index::FactFilters) -> bool {
-    if let Some(owner) = filters.owner_id.as_ref()
-        && &cap.owner != owner
+    if let Some(subject) = filters.subject_id.as_ref()
+        && &cap.subject != subject
     {
         return false;
     }
@@ -2553,7 +2553,7 @@ mod tests {
 
     // ---------- ACL projection ----------
 
-    fn sample_row(id_str: &str, owner: &str, sender: Option<&str>, text: &str) -> FactIndexRow {
+    fn sample_row(id_str: &str, subject: &str, sender: Option<&str>, text: &str) -> FactIndexRow {
         FactIndexRow {
             authored_refs: Vec::new(),
             fact_id: FactId::parse(id_str).unwrap(),
@@ -2563,7 +2563,7 @@ mod tests {
             region_end: Some(32),
             text: text.to_owned(),
             embedding: vec![0.1, 0.2, 0.3, 0.4],
-            owner_id: owner.parse().unwrap(),
+            subject_id: subject.parse().unwrap(),
             allow_ids: vec![],
             sender_id: sender.map(|s| s.parse().unwrap()),
             fact_type: None,
@@ -2591,7 +2591,7 @@ mod tests {
     }
 
     #[test]
-    fn row_visible_to_owner_user() {
+    fn row_visible_to_subject_user() {
         let row = sample_row(
             "018f1234-5678-7abc-9def-0123456789ab",
             "user:alice",
@@ -2637,7 +2637,7 @@ mod tests {
     }
 
     #[test]
-    fn row_visible_to_global_owner_lets_anyone() {
+    fn row_visible_to_global_subject_lets_anyone() {
         let row = sample_row("018f1234-5678-7abc-9def-0123456789ab", "global", None, "x");
         assert!(row_visible_to(&row, &SenderContext::anonymous()));
         assert!(row_visible_to(&row, &SenderContext::user("bob")));
@@ -2679,7 +2679,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("index.md"),
             body,
-            owner: "user:alice".parse::<Principal>().unwrap(),
+            subject: "user:alice".parse::<Principal>().unwrap(),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("episode".into()),
@@ -2759,7 +2759,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("index.md"),
             body: body.to_owned(),
-            owner: "user:alice".parse::<Principal>().unwrap(),
+            subject: "user:alice".parse::<Principal>().unwrap(),
             allow: Vec::new(),
             sender: None,
             fact_type: None,
@@ -2857,12 +2857,12 @@ mod tests {
         }
         let tree = WikiTree::open(dir.path()).expect("tree");
 
-        let mk = |wiki: &str, body: &str, owner: &str| CaptureRequest {
+        let mk = |wiki: &str, body: &str, subject: &str| CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: PathBuf::from("index.md"),
             body: body.to_owned(),
-            owner: owner.parse::<Principal>().unwrap(),
+            subject: subject.parse::<Principal>().unwrap(),
             allow: Vec::new(),
             sender: None,
             fact_type: None,
@@ -2914,7 +2914,10 @@ mod tests {
         assert_eq!(hits.len(), 1, "alice must see only her buffered capture");
         assert!(hits[0].fresh, "buffered hit must be flagged fresh");
         assert!(hits[0].text.contains("Virgin Active"));
-        assert_eq!(hits[0].owner_id, "user:alice".parse::<Principal>().unwrap());
+        assert_eq!(
+            hits[0].subject_id,
+            "user:alice".parse::<Principal>().unwrap()
+        );
         assert!(
             hits[0].region_start.is_none(),
             "fresh hit has no published-page region"
@@ -2949,12 +2952,12 @@ mod tests {
         }
         let tree = WikiTree::open(dir.path()).expect("tree");
 
-        let mk = |wiki: &str, body: &str, owner: &str, fact_type: Option<&str>| CaptureRequest {
+        let mk = |wiki: &str, body: &str, subject: &str, fact_type: Option<&str>| CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: PathBuf::from("index.md"),
             body: body.to_owned(),
-            owner: owner.parse::<Principal>().unwrap(),
+            subject: subject.parse::<Principal>().unwrap(),
             allow: Vec::new(),
             sender: None,
             fact_type: fact_type.map(str::to_owned),
@@ -3004,7 +3007,7 @@ mod tests {
         .expect("buffer bob");
 
         let alice = SenderContext::user("alice");
-        let alice_owner = "user:alice".parse::<Principal>().unwrap();
+        let alice_subject = "user:alice".parse::<Principal>().unwrap();
 
         // No filter: alice sees both her buffered captures; bob's is
         // ACL-filtered out — no embedder involved.
@@ -3013,7 +3016,7 @@ mod tests {
             .expect("buffered list");
         assert_eq!(all.len(), 2, "alice sees only her two buffered captures");
         assert!(
-            all.iter().all(|c| c.owner == alice_owner),
+            all.iter().all(|c| c.subject == alice_subject),
             "every capture is owned by alice"
         );
 
@@ -3309,7 +3312,7 @@ mod tests {
         pool_setup: &mut Vec<NewFact>,
         id_str: &str,
         wiki: &str,
-        owner: &str,
+        subject: &str,
         text: &str,
         embedding: Vec<f32>,
     ) {
@@ -3322,7 +3325,7 @@ mod tests {
             region_end: Some(32),
             text: text.to_owned(),
             embedding,
-            owner_id: owner.parse().unwrap(),
+            subject_id: subject.parse().unwrap(),
             allow_ids: vec![],
             sender_id: None,
             fact_type: None,
@@ -3350,7 +3353,7 @@ mod tests {
     async fn seed_smart_wiki(
         pool: &SqlitePool,
         wiki_id: &str,
-        owner: &str,
+        subject: &str,
         shared_with: Vec<Principal>,
     ) {
         sections::upsert_smart_wiki(
@@ -3358,7 +3361,7 @@ mod tests {
             &sections::SmartWikiRow {
                 wiki_id: wiki_id.to_owned(),
                 slug: wiki_id.rsplit('-').next().unwrap_or(wiki_id).to_owned(),
-                owner_id: owner.parse().unwrap(),
+                owner_id: subject.parse().unwrap(),
                 shared_with,
                 project_id: None,
                 wiki_type: "project".to_owned(),
@@ -3602,13 +3605,13 @@ mod tests {
     }
 
     /// Seed a project's **description signpost** — the funnel's own input:
-    /// an ordinary fact on the owner's reserved `projects.md`, carrying the
+    /// an ordinary fact on the subject's reserved `projects.md`, carrying the
     /// topics [`crate::signposts`] writes.
     fn insert_signpost(
         pool_setup: &mut Vec<NewFact>,
         id_str: &str,
         owner_wiki: &str,
-        owner: &str,
+        subject: &str,
         project_wiki_id: &str,
         text: &str,
         embedding: Vec<f32>,
@@ -3622,7 +3625,7 @@ mod tests {
             region_end: Some(32),
             text: text.to_owned(),
             embedding,
-            owner_id: owner.parse().unwrap(),
+            subject_id: subject.parse().unwrap(),
             allow_ids: vec![],
             sender_id: None,
             fact_type: Some(crate::signposts::SIGNPOST_FACT_TYPE.to_owned()),
@@ -4077,7 +4080,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(owner_hits.len(), 2, "the owner reads both");
+        assert_eq!(owner_hits.len(), 2, "the subject reads both");
 
         let bob = SenderContext {
             sender_id: "bob".to_owned(),
@@ -4247,13 +4250,13 @@ mod tests {
         assert!(unnamed.is_empty());
     }
 
-    /// Plant a description signpost for `project` on `owner`'s reserved
+    /// Plant a description signpost for `project` on `subject`'s reserved
     /// page and return it as a hit, the way the turn's fact recall would
     /// have surfaced it.
     async fn surfaced_signpost(
         pool: &SqlitePool,
         owner_wiki: &str,
-        owner: &str,
+        subject: &str,
         project: &str,
         text: &str,
     ) -> RecallHit {
@@ -4267,7 +4270,7 @@ mod tests {
             region_end: Some(32),
             text: text.to_owned(),
             embedding: vec![0.0, 0.0, 1.0, 0.0],
-            owner_id: owner.parse().unwrap(),
+            subject_id: subject.parse().unwrap(),
             allow_ids: vec![],
             sender_id: None,
             fact_type: Some(crate::signposts::SIGNPOST_FACT_TYPE.to_owned()),
@@ -4657,7 +4660,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_by_filters_combines_owner_and_fact_type() {
+    async fn find_by_filters_combines_subject_and_fact_type() {
         let pool = make_pool().await;
         let mut rows = Vec::new();
         let r1 = NewFact {
@@ -4669,7 +4672,7 @@ mod tests {
             region_end: Some(32),
             text: "preference".into(),
             embedding: vec![0.1; 4],
-            owner_id: "user:alice".parse().unwrap(),
+            subject_id: "user:alice".parse().unwrap(),
             allow_ids: vec![],
             sender_id: None,
             fact_type: Some("preference".into()),
@@ -4695,7 +4698,7 @@ mod tests {
             &pool,
             &FactFilters {
                 wiki_id: Some("alice".into()),
-                owner_id: Some("user:alice".parse().unwrap()),
+                subject_id: Some("user:alice".parse().unwrap()),
                 fact_type: Some("preference".into()),
                 ..Default::default()
             },
@@ -4718,7 +4721,7 @@ mod tests {
             region_end: Some(32),
             text: "x".into(),
             embedding: vec![0.1; 4],
-            owner_id: "user:alice".parse().unwrap(),
+            subject_id: "user:alice".parse().unwrap(),
             allow_ids: vec![],
             sender_id: None,
             fact_type: None,
@@ -5022,7 +5025,7 @@ mod tests {
 
     /// The ACL now narrows the QUERY as well as the result rows, and the two
     /// must agree. This is the test that keeps them agreeing: read access is
-    /// `owner ∪ allow ∪ sender`, none of the three sufficient alone, so a
+    /// `subject ∪ allow ∪ sender`, none of the three sufficient alone, so a
     /// predicate that forgot one would silently hide facts a reader is
     /// entitled to — and nothing else would notice, because the row check
     /// downstream can only ever remove rows, never restore one the query
@@ -5452,12 +5455,12 @@ mod tests {
     fn insert_due(
         pool_setup: &mut Vec<NewFact>,
         id_str: &str,
-        owner: &str,
+        subject: &str,
         text: &str,
         valid_to: Option<&str>,
     ) {
-        let wiki = owner.split(':').next_back().unwrap_or(owner);
-        insert_row(pool_setup, id_str, wiki, owner, text, vec![0.1; 4]);
+        let wiki = subject.split(':').next_back().unwrap_or(subject);
+        insert_row(pool_setup, id_str, wiki, subject, text, vec![0.1; 4]);
         pool_setup.last_mut().unwrap().valid_to = valid_to.map(str::to_owned);
     }
 

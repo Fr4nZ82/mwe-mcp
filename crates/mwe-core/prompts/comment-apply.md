@@ -1,6 +1,6 @@
 ---
 name: comment-apply
-description: turns parked dashboard comments on a narrative page into precise fact ops (correct / remove / add / move) over that page's facts; an `add` carries its own owner_id/allow_ids decided under the ingest rules (subject + audience from the comment, the page's wiki scope, and the commenter's group scopes)
+description: turns parked dashboard comments on a narrative page into precise fact ops (correct / remove / add / move) over that page's facts; an `add` carries its own subject_id/allow_ids decided under the ingest rules (subject + audience from the comment, the page's wiki scope, and the commenter's group scopes)
 version: 1.4
 default_version_at_bootstrap: v1.4
 ---
@@ -24,19 +24,19 @@ an operator override at `<workdir>/prompts/comment-apply.md` wins.
   `<fact_id>: <claim>`), `{comments}` (the operator's pending comments on that
   page, numbered), `{scope}` (the commenter's id, this page's wiki `scope` prose,
   and the commenter's group scopes — the audience signals an `add`'s
-  `owner_id`/`allow_ids` are decided from, mirroring `ingest`'s assembly),
+  `subject_id`/`allow_ids` are decided from, mirroring `ingest`'s assembly),
   `{destinations}` (the wikis + pages a `move` op may target —
-  the source wiki owner's other non-smart wikis, and this wiki's other pages).
+  the other non-smart wikis of the source wiki's owner, and this wiki's other pages).
 - **Output**: one strict JSON object — `{ "ops": [...] }` — parsed into
   `crate::comment_apply::InterpretedOps`. Each op is `correct` (with `fact_id`
   + full `text`), `remove` (with `fact_id`), `add` (with `text` + its own
-  `owner_id`/`allow_ids`), or `move`
+  `subject_id`/`allow_ids`), or `move`
   (with `fact_id` + a destination chosen from `{destinations}`). The caller
   refuses any `fact_id` not present on the page (containment guard); an `add`'s
-  `owner`/`allow` are the LLM's (subject + audience under the ingest rules,
+  `subject`/`allow` are the LLM's (subject + audience under the ingest rules,
   defaulting to `user:<commenter>` / `[]`) with `sender` = the comment's author;
   and a `move` is refused if its destination does
-  not exist / is smart / has a different owner. A cross-wiki move always lands
+  not exist / is smart / belongs to a different owner. A cross-wiki move always lands
   on the destination wiki's **buffer** page (`CROSS_WIKI_DEST_PAGE` =
   `wiki::NOTES_FILENAME`; not its `index.md`, which is the map — the dest wiki
   re-homes it on its next compile). A `move` is born-applied + revertible from the dashboard; an
@@ -61,8 +61,8 @@ RULES:
 - A comment that fixes a detail of an existing fact → "correct" that fact. Put the FULL corrected claim in "text" (a complete standalone sentence, not a diff and not just the changed word).
 - A comment that says a fact is wrong, private, or should be forgotten → "remove" that fact.
 - A comment that supplies genuinely NEW information not covered by any listed fact → "add", with the new claim in "text" as a complete standalone sentence. An "add" also carries its ACL, decided like a captured message fact:
-  - "owner_id": WHO the new fact is ABOUT — the subject, NOT who may read it. "user:<commenter>" (the comment's author, shown in CONTEXT below) is the DEFAULT; "user:<X>" for a different named person the comment is about; "group:<id>" ONLY when the subject is the collective itself; "global" for a world fact. The subject stays the owner even when the fact is shared.
-  - "allow_ids": WHO may read it — independent of owner_id. The fact is ALWAYS readable by its owner and the commenter, so [] (the DEFAULT) means exactly "only them". Widen it from the CONTEXT scopes below and the comment's own cues, the more specific overriding the more general: a group whose scope the fact falls inside → add that "group:<id>"; the page's wiki scope (the category's audience); an explicit cue in the comment — public → add "global", private/"just us" → []. allow_ids only ever WIDENS reading.
+  - "subject_id": WHO the new fact is ABOUT — the subject, NOT who may read it. "user:<commenter>" (the comment's author, shown in CONTEXT below) is the DEFAULT; "user:<X>" for a different named person the comment is about; "group:<id>" ONLY when the subject is the collective itself; "global" for a world fact. The subject stays the subject even when the fact is shared.
+  - "allow_ids": WHO may read it — independent of subject_id. The fact is ALWAYS readable by its subject and the commenter, so [] (the DEFAULT) means exactly "only them". Widen it from the CONTEXT scopes below and the comment's own cues, the more specific overriding the more general: a group whose scope the fact falls inside → add that "group:<id>"; the page's wiki scope (the category's audience); an explicit cue in the comment — public → add "global", private/"just us" → []. allow_ids only ever WIDENS reading.
 - A comment saying a fact BELONGS SOMEWHERE ELSE → "move" that fact (e.g. "this would be better on the health wiki", "this is really about work", "move this to the contacts page"). Choose the destination ONLY from the DESTINATIONS list:
   - to move it into ANOTHER WIKI: set "dest_wiki_id" to that wiki's id (leave "dest_page" null — a cross-wiki move always lands on the destination wiki's main page, which then re-files it itself).
   - to move it to ANOTHER PAGE of this same wiki: leave "dest_wiki_id" null and set "dest_page" to that page.
@@ -75,7 +75,7 @@ OUTPUT — one strict JSON object, no prose around it:
   "ops": [
     { "action": "correct", "fact_id": "<id from the list>", "text": "<full corrected claim>" },
     { "action": "remove",  "fact_id": "<id from the list>" },
-    { "action": "add",     "text": "<new claim>", "owner_id": "user:<commenter>", "allow_ids": [] },
+    { "action": "add",     "text": "<new claim>", "subject_id": "user:<commenter>", "allow_ids": [] },
     { "action": "move",    "fact_id": "<id from the list>", "dest_wiki_id": "<wiki id from DESTINATIONS | null = this wiki>", "dest_page": "<page from DESTINATIONS | null>" }
   ]
 }
@@ -85,7 +85,7 @@ If nothing is actionable, return { "ops": [] }.
 THIS PAGE'S CURRENT FACTS (each line is `<fact_id>: <claim>`):
 {facts}
 
-CONTEXT — who is commenting, this page's wiki scope, and the commenter's group scopes (the audience signals for an "add"'s owner_id/allow_ids):
+CONTEXT — who is commenting, this page's wiki scope, and the commenter's group scopes (the audience signals for an "add"'s subject_id/allow_ids):
 {scope}
 
 DESTINATIONS (the only wikis/pages a "move" may target):

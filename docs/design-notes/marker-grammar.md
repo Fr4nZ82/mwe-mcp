@@ -2,7 +2,7 @@
 title: Marker grammar — the region key + inline-attribute syntax
 area: design-notes
 status: implemented
-last_review: "2026-06-29"
+last_review: "2026-08-15"
 ---
 
 # Marker grammar — how `mwe-core::parser` reads `{{…}}…{{/}}`
@@ -49,19 +49,21 @@ serializers write different subsets of it
   ([`redaction-policy.md`](redaction-policy.md)); writing it inline
   too would be a second, driftable copy.
 - **Export/interchange:** the **full** form
-  `{{owner=… allow=… sender=… f=…}}body{{/}}` — each fragment
+  `{{subject=… allow=… sender=… f=…}}body{{/}}` — each fragment
   self-describing, for a portable archive read without the engine DB.
   Produced by the dashboard export feature
   ([`mwe_core::export`](../../crates/mwe-core/src/export.rs), served at
   `GET /dashboard/wiki/:id/export`), which joins the on-disk prose with
   the DB ACL per fact key; a region the DB does not know stays bare and
-  is counted in the export report.
-- **Accepted input:** both, indefinitely. Legacy pages written before
-  the bare form, and imported archives, parse unchanged; where the DB
-  knows the fact key, the inline attributes are ignored (the DB wins),
-  and a region the DB does *not* know is still gated by them. No
-  one-shot migration is needed — any page recompile naturally rewrites
-  to the bare form.
+  is counted in the export report. Export is one-way: the tarball is
+  written, and nothing in the repo reads one back — **no importer
+  ships**, in the dashboard or anywhere else.
+- **Accepted input:** both, indefinitely. A page carrying full markers
+  — hand-authored, or lifted out of an export archive into the tree by
+  hand — parses unchanged; where the DB knows the fact key, the inline
+  attributes are ignored (the DB wins), and a region the DB does *not*
+  know is still gated by them. No one-shot migration is needed — any
+  page recompile naturally rewrites to the bare form.
 
 ## 1. Grammar (EBNF-like)
 
@@ -72,7 +74,12 @@ marker_open         ::= '{{' attr_list '}}'
 marker_close        ::= '{{/}}'
 attr_list           ::= attr (WS attr)*
 attr                ::= acl_attr | sender_attr | fact_attr
-acl_attr            ::= 'owner=' principal | 'allow=' principal_list
+acl_attr            ::= subject_attr | 'allow=' principal_list
+subject_attr        ::= 'subject=' principal | 'owner=' principal
+                        # 'subject=' is canonical and the only spelling ever
+                        # written; 'owner=' is a deprecated alias, parsed
+                        # forever. Both on one region ⇒ 'subject=' wins,
+                        # whatever the order (see the syntax note below)
 sender_attr         ::= 'sender=' principal          # cross-user attribution (see §5)
 fact_attr           ::= 'f=' fact_id
 embed               ::= '{{embed=' catalog_id '}}'   # self-closing
@@ -105,23 +112,35 @@ shape fails validation.
 
 ### Syntax notes
 
+- **`owner=` is a permanent deprecated alias of `subject=`.** The parser
+  reads it forever and never writes it — every serializer emits
+  `subject=`. A region carrying both keys resolves to the `subject=`
+  value whatever the order, so a hand-edit with the old key cannot
+  overwrite what the engine itself wrote (repeats of the *same* key keep
+  the ordinary last-wins). The alias is permanent because it sits on
+  every page and every export tarball written before the rename, and
+  retiring it would not even fail loudly: an unknown attribute key is
+  not an error — it falls through the warn-and-keep arm (`UnknownAttr`)
+  and leaves the subject unset, which renders the region unreadable to
+  everyone, the person it is about included.
 - **`global` is the builtin universal group**, written **bare** (no
-  `group:` prefix) for back-compat with legacy `owner=global` markers;
-  `group:global` parses identically. Every user is implicitly a member, so
-  `global` in any of `owner`/`sender`/`allow` opens the region to everyone.
+  `group:` prefix): a marker says `subject=global`, not
+  `subject=group:global`, though `group:global` parses identically.
+  Every user is implicitly a member, so `global` in any of
+  `subject`/`sender`/`allow` opens the region to everyone.
 - **`user:` / `group:` prefixes are mandatory** for every other
   principal, to disambiguate name collisions between a user and a group
   with the same id.
 - **`allow=` takes a comma-separated list** with no spaces inside it:
   `allow=user:bob,group:team`.
-- **No spaces around `=`**: `owner=user:alice` is valid,
-  `owner = user:alice` is not.
-- **A region with no `owner=` and no `allow=`** (e.g. `{{f=<uuid>}}body{{/}}`,
+- **No spaces around `=`**: `subject=user:alice` is valid,
+  `subject = user:alice` is not.
+- **A region with no `subject=` and no `allow=`** (e.g. `{{f=<uuid>}}body{{/}}`,
   pure `fact_id`) carries no ACL of its own: the parser leaves
-  `acl.owner = None`, and `render` resolves the owner-of-last-resort to
-  the region's own `sender` — unreadable if it has none, never the wiki
+  `acl.subject = None`, and `render` resolves the subject-of-last-resort
+  to the region's own `sender` — unreadable if it has none, never the wiki
   `scope` (see [`../design-notes/redaction-policy.md`](../design-notes/redaction-policy.md)).
-- **A region with no `f=`** (e.g. `{{owner=user:alice}}body{{/}}`, pure
+- **A region with no `f=`** (e.g. `{{subject=user:alice}}body{{/}}`, pure
   ACL) applies its ACL but does **not** create a `fact_index` entry.
   Used to put an ACL on prose, or to selectively redact a paragraph
   without promoting it to a fact.
@@ -137,17 +156,17 @@ shape fails validation.
   stay verbatim. Region nesting remains unsupported: any other `{{`
   inside a body warns `NestedRegion`.
 - **The `kind` segment is parser-permissive, producer-closed.** The
-  parser accepts any `[a-z]+` kind — legacy ids (`foto`, `vid`) and
-  imported archives stay valid input forever; the canonical vocabulary
-  `photo` / `video` / `audio` / `doc` is enforced at minting time by
-  the media catalog ([media pipeline](media-pipeline.md)).
+  parser accepts any `[a-z]+` kind — legacy ids (`foto`, `vid`) and ids
+  minted outside the engine stay valid input forever; the canonical
+  vocabulary `photo` / `video` / `audio` / `doc` is enforced at minting
+  time by the media catalog ([media pipeline](media-pipeline.md)).
 - **Nesting is not supported.** A region may not contain another
   region. For complex mixes, use adjacent markers.
 
 ### Valid examples
 
 ```markdown
-{{owner=user:alice f=018f1234-5678-7abc-9def-0123456789ab}}
+{{subject=user:alice f=018f1234-5678-7abc-9def-0123456789ab}}
 Going through a stressful period at work. See [[work/acmecorp]].
 {{/}}
 ```
@@ -155,16 +174,25 @@ Going through a stressful period at work. See [[work/acmecorp]].
 Multiple regions in one paragraph (inline granularity):
 
 ```markdown
-Alice weighs {{owner=user:alice f=018f1234-5678-7abc-9def-0123456789ab}}72 kg{{/}} as of May 10,
-and {{owner=global f=018f1234-5678-7abc-9def-0123456789ac}}got a haircut{{/}} yesterday.
+Alice weighs {{subject=user:alice f=018f1234-5678-7abc-9def-0123456789ab}}72 kg{{/}} as of May 10,
+and {{subject=global f=018f1234-5678-7abc-9def-0123456789ac}}got a haircut{{/}} yesterday.
 ```
 
-Combined `owner` + `allow`, with an embed inside the body:
+Combined `subject` + `allow`, with an embed inside the body:
 
 ```markdown
-{{owner=user:gollum allow=user:frodo,group:famiglia f=018f1234-5678-7abc-9def-0123456789ad}}
+{{subject=user:gollum allow=user:frodo,group:famiglia f=018f1234-5678-7abc-9def-0123456789ad}}
 Sméagol got an 8 in maths today.
 {{embed=c-2026-05-11-doc-01.jpg}}
+{{/}}
+```
+
+The deprecated `owner=` alias — valid input, naming the same axis,
+though nothing writes it:
+
+```markdown
+{{owner=user:alice f=018f1234-5678-7abc-9def-0123456789ab}}
+Allergic to penicillin.
 {{/}}
 ```
 
@@ -177,14 +205,14 @@ Self-closing media embed (no terminator):
 ### Invalid examples (parser emits a warning, recovers)
 
 ```markdown
-{{owner=alice}}body{{/}}                 # missing user: prefix
-{{owner = user:alice}}body{{/}}          # spaces around =
+{{subject=alice}}body{{/}}               # missing user: prefix
+{{subject = user:alice}}body{{/}}        # spaces around =
 {{allow=user:bob+group:team}}body{{/}}   # separator must be a comma
-{{global}}body{{/}}                      # must be owner=global
+{{global}}body{{/}}                      # must be subject=global
 {{f=018f1234-5678-7abc-9def-0123456789ab}}body   # missing {{/}} terminator
 {{f=f-2026-05-11-001}}body{{/}}          # legacy fact_id format (UUIDv7 required)
 {{f=NOTAVALIDUUID}}body{{/}}             # not a UUIDv7
-{{owner=user:alice}}{{owner=user:bob}}body{{/}}{{/}}  # nesting not supported
+{{subject=user:alice}}{{subject=user:bob}}body{{/}}{{/}}  # nesting not supported
 ```
 
 None of these abort parsing — each turns into a [`ParseWarning`](#3-the-parser)
@@ -195,12 +223,13 @@ scanner always makes forward progress.
 
 | Attribute | Maps to | Meaning |
 |---|---|---|
-| `owner=<principal>` | `RegionAttrs.acl.owner` | The fact's **subject** — who/what it is *about* (not its author `sender`, not its audience `allow`); "owner" because the subject governs who may read it (an `acl_change` is owner-or-admin). Distinct from the wiki-level `owner_user` (the wiki's proprietor). `None` (attribute absent) ⇒ owner-of-last-resort is the region's `sender`. |
-| `allow=<principal>,…` | `RegionAttrs.acl.allow` | Extra principals granted read access, additive to `owner`. |
-| `sender=<principal>` | `RegionAttrs.sender` | Who *captured* the region, orthogonal to `owner`. Grants the capturer guaranteed read-back. See [§5](#5-cross-user-attribution). |
+| `subject=<principal>` | `RegionAttrs.acl.subject` | The fact's **subject** — who/what it is *about* (not its author `sender`, not its audience `allow`). The subject governs who may read the fact about them: an `acl_change` is subject-or-admin. Distinct from the wiki-level `owner_user` (the wiki's proprietor) — a fact whose subject is `user:alice` can live in a wiki owned by `group:famiglia`. `None` (attribute absent) ⇒ subject-of-last-resort is the region's `sender`. |
+| `owner=<principal>` | `RegionAttrs.acl.subject` | **Deprecated alias of `subject=`** — same axis, same meaning. Parsed forever, never written; a region carrying both keys takes the `subject=` value whatever the order. See the alias note in [§1](#syntax-notes). |
+| `allow=<principal>,…` | `RegionAttrs.acl.allow` | Extra principals granted read access, additive to `subject`. |
+| `sender=<principal>` | `RegionAttrs.sender` | Who *captured* the region, orthogonal to `subject`. Grants the capturer guaranteed read-back. See [§5](#5-cross-user-attribution). |
 | `f=<UUIDv7>` | `RegionAttrs.fact_id` | The region's `fact_id`. Absent ⇒ ACL-only region, no `fact_index` row. |
 
-The effective read set of a region is the **union** `owner ∪ allow ∪
+The effective read set of a region is the **union** `subject ∪ allow ∪
 {sender}` — not an intersection. Resolution is **DB-first**: when the
 region's `f=` key is in the engine DB, the `fact_index` ACL columns
 gate it and the inline attributes are ignored; the attributes gate
@@ -270,7 +299,11 @@ The main loop scans the input once, dispatching on the shape of each
 Attribute parsing splits the attribute string on ASCII whitespace and,
 for each `key=value` clause, routes on the key:
 
-- `owner` → `value.parse::<Principal>()` into `acl.owner`.
+- `subject`, and its deprecated alias `owner` →
+  `value.parse::<Principal>()` into `acl.subject`. With both keys on one
+  region the `subject=` value wins whatever the order — a hand-edit
+  carrying the old key cannot overwrite what the engine wrote; repeats
+  of the *same* key are last-wins.
 - `allow` → split on `,`, parse each into `acl.allow`.
 - `sender` → `value.parse::<Principal>()` into `sender`.
 - `f` → `FactId::parse(value)` into `fact_id`.
@@ -288,20 +321,20 @@ the rest of the file at lint or render time.
 The Rust scanner is the authoritative description of actual behavior.
 The notable choices it makes:
 
-### No `sender = owner` auto-attribution at parse time
+### No `sender = subject` auto-attribution at parse time
 
 The parser performs **no** auto-attribution: when `sender=` is
 absent, `RegionAttrs.sender` stays `None`. Keeping the parser a pure
 syntactic transform — no semantic inference — is what makes the
 round-trip "parse then re-serialize" loss-free. Materializing the
 implicit attribution is a **capture-side** concern, and capture
-**always** does it: a fact is born with `sender` materialized (=
-`owner` when the capturer did not name a distinct one), stored as a
+**always** does it: a fact is born with `sender` materialized (= the
+`subject` when the capturer did not name a distinct one), stored as a
 separate, explicit `fact_index.sender_id` column. `sender` is the
-immutable provenance — frozen at birth so a later owner change never
+immutable provenance — frozen at birth so a later subject change never
 silently rebinds it — and `sender_id = NULL` survives only as the
 degenerate "scrubbed" state (e.g. a deleted user) that falls back to
-owner at read time. See [§5](#5-cross-user-attribution) and
+the subject at read time. See [§5](#5-cross-user-attribution) and
 [`redaction-policy.md`](redaction-policy.md).
 
 ### Zero regex, single-pass byte scan via `str::find`
@@ -367,37 +400,37 @@ independently and a malformed value never aborts the region.
 
 ## 5. Cross-user attribution
 
-`sender=` records **who captured** a region, distinct from `owner=`
-which records **whose fact it is**. The two dimensions are orthogonal
-(`sender ⊥ owner` as an invariant). `sender` is a full principal
+`sender=` records **who captured** a region, distinct from `subject=`
+which records **who the fact is about**. The two dimensions are orthogonal
+(`sender ⊥ subject` as an invariant). `sender` is a full principal
 (User / Group / Global), and the read evaluator treats it as one extra
 principal in the region's effective ACL — so the principal named in
 `sender=` always gets guaranteed read-back, even when it is not in
-`owner` or `allow`.
+`subject` or `allow`.
 
 | Scenario | Marker | Meaning |
 |---|---|---|
-| Alice talks about herself | `{{owner=user:alice f=<uuid>}}` | sender = owner = alice; an input marker may omit `sender=`, capture materializes it to the owner |
-| Galadriel talks about Gollum | `{{owner=user:gollum sender=user:galadriel f=<uuid>}}` | sender ≠ owner, explicit; Galadriel can re-read |
-| Household ambient microphone | `{{owner=user:gollum sender=group:famiglia f=<uuid>}}` | the group's device captured it → every `famiglia` member re-reads, even without `allow=group:famiglia` |
-| A team member notes a group fact | `{{owner=group:team sender=user:alice f=<uuid>}}` | sender = a specific user, owner = the group |
-| Public capture device (edge case) | `{{owner=user:alice sender=global f=<uuid>}}` | sender = global ⇒ effectively a public region |
+| Alice talks about herself | `{{subject=user:alice f=<uuid>}}` | sender = subject = alice; an input marker may omit `sender=`, capture materializes it to the subject |
+| Galadriel talks about Gollum | `{{subject=user:gollum sender=user:galadriel f=<uuid>}}` | sender ≠ subject, explicit; Galadriel can re-read |
+| Household ambient microphone | `{{subject=user:gollum sender=group:famiglia f=<uuid>}}` | the group's device captured it → every `famiglia` member re-reads, even without `allow=group:famiglia` |
+| A team member notes a group fact | `{{subject=group:team sender=user:alice f=<uuid>}}` | sender = a specific user, subject = the group |
+| Public capture device (edge case) | `{{subject=user:alice sender=global f=<uuid>}}` | sender = global ⇒ effectively a public region |
 
-**Materialization, not collapse.** `sender` and `owner` are two
+**Materialization, not collapse.** `sender` and `subject` are two
 separate, always-materialized fields: capture freezes `sender` at birth
-(= `owner` when the capturer did not name a distinct one), the DB stores
-it explicitly, and the **export full-marker always emits `sender=`**.
-The previous "omit `sender=` when it equals `owner`" lean form is gone —
-collapsing the two was only safe while the owner never changed, and it
-*does* change (the `acl_change` verb today; ownership transfer in the
-future), at which point a `NULL` sender would silently rebind to the new
-owner and the original provenance would be lost (corrupting provenance
-consumers like `structure_proposals` recipient routing and
-behaviour-rule recall). **Input stays lenient**: a legacy or imported
-marker that omits `sender=` parses fine and is materialized to `owner`
-on ingest — but everything mwe-mcp *produces* is explicit. The only
-remaining `NULL` is the degenerate "scrubbed" state (e.g. a deleted
-user), which falls back to owner at read time.
+(= the `subject` when the capturer did not name a distinct one), the DB
+stores it explicitly, and the **export full-marker always emits
+`sender=`**. Collapsing the two — omitting `sender=` whenever it equals
+the subject — would only be safe while the subject never changed, and it
+*does* change (the `acl_change` verb rewrites it), at which point a
+`NULL` sender would silently rebind to the new subject and the original
+provenance would be lost (corrupting provenance consumers like
+`structure_proposals` recipient routing and behaviour-rule recall).
+**Input stays lenient**: a marker that omits `sender=` parses fine and
+is materialized to the subject on ingest — but everything mwe-mcp
+*produces* is explicit. The only remaining `NULL` is the degenerate
+"scrubbed" state (e.g. a deleted user), which falls back to the subject
+at read time.
 
 ## 6. Related types
 
@@ -406,7 +439,7 @@ The parser produces values defined in
 
 - `Principal` — `user:<id>` / `group:<id>` (the builtin `global` group is
   written bare), with `Display` and `FromStr` for marker round-trip.
-- `Acl` — `owner: Option<Principal>` (None ⇒ falls back to the region's `sender`)
+- `Acl` — `subject: Option<Principal>` (None ⇒ falls back to the region's `sender`)
   plus `allow: Vec<Principal>`.
 - `RegionAttrs` — what a single `{{…}}` carries (`acl`, `sender`,
   `fact_id`).

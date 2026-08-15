@@ -34,7 +34,7 @@
 //!   corrected body in-place. The flow is `wiki_recall` to surface the
 //!   candidate, then `wiki_supersede` after the user confirms both
 //!   which fact and the corrected wording. The old row is tombstoned
-//!   with `superseded_by` pointing at the new row; owner, ACL,
+//!   with `superseded_by` pointing at the new row; subject, ACL,
 //!   `fact_type`, topics, and the validity window carry over from the
 //!   original so the chat does not need to re-elicit them.
 //! - **Hierarchical wiki move**: the write tool
@@ -132,7 +132,7 @@ pub enum AgenticTool {
     /// Replace an existing fact with a corrected body, in-place.
     /// Mirrors [`mwe_core::capture::wiki_supersede`]: the old row is
     /// tombstoned with `superseded_by` pointing at the freshly
-    /// captured row, which inherits the original's owner, ACL,
+    /// captured row, which inherits the original's subject, ACL,
     /// `fact_type`, topics, and validity window. A smart-wiki target is
     /// refused (a supersede would write a marker-wrapped fact into the
     /// consumer's plain-markdown page). Write tool — paired
@@ -168,7 +168,7 @@ pub enum AgenticTool {
     /// Delete **one page** of a standard wiki. Facts the operator *sent* are
     /// tombstoned; a foreign-authored fact is *evacuated* intact via the same
     /// refile engine to its sender's home wiki when one exists, falling back
-    /// to its owner's home wiki — a fact whose sender and owner both lack one
+    /// to its subject's home wiki — a fact whose sender and subject both lack one
     /// is tombstoned. **Admin-only**: deleting structure is the operator's
     /// act (see [identity and ACL](../../../docs/concepts/identity-and-acl.md)); a smart wiki is refused
     /// (wiki-level governance). Act-first: the whole deletion is wrapped in
@@ -177,8 +177,8 @@ pub enum AgenticTool {
     /// Write tool.
     WikiDeletePage,
     /// Open a **forget request** for ONE fact the signed-in user does NOT author
-    /// — the non-sender owner's path ([`mwe_core::votes::open_forget_request`];
-    /// the write-authority model, [identity and ACL](../../../docs/concepts/identity-and-acl.md)). The signed-in user must be the fact's `owner`
+    /// — the non-sender subject's path ([`mwe_core::votes::open_forget_request`];
+    /// the write-authority model, [identity and ACL](../../../docs/concepts/identity-and-acl.md)). The signed-in user must be the fact's `subject`
     /// (subject) or a member of an owning group; a **sender** is refused (they
     /// delete directly via [`Self::WikiForget`]). Propose-first: the fact stays
     /// active while the fact's audience votes ([`Self::StructureProposalVote`]) —
@@ -212,7 +212,7 @@ pub enum AgenticTool {
     /// chat as the single operational surface. Write tool.
     StructureProposalConfirm,
     /// Cast a vote on a pending **fact-forget request** — the audience-facing
-    /// half of the non-sender owner's forget vote (the write-authority model). The
+    /// half of the non-sender subject's forget vote (the write-authority model). The
     /// dashboard chat acts as the signed-in member, so this votes **as
     /// them** ([`mwe_core::votes::cast_vote`] with `sender_ctx.sender_id`):
     /// the engine checks the caller is in the request's eligible set, records
@@ -348,7 +348,7 @@ fn read_only_tool_descriptors() -> Vec<Tool> {
         Tool {
             name: AgenticTool::WikiGetMeta.name().to_owned(),
             description: "Return the metadata block of a single wiki — title, type, \
-                slug, owner (derived), parent. Use when the user asks 'what kind of \
+                slug, owner — the wiki's proprietor, derived from the tree — parent. Use when the user asks 'what kind of \
                 wiki is X' or before suggesting a scope/structure change."
                 .to_owned(),
             parameters: json!({
@@ -367,7 +367,7 @@ fn read_only_tool_descriptors() -> Vec<Tool> {
             description: "Look up ONE fact by its exact fact_id (a UUID). Use this to \
                 VERIFY a fact_id the operator gave you before forgetting, superseding, \
                 or moving it — `wiki_facts_for` does NOT filter by id, so it cannot \
-                confirm a specific fact. Returns the fact's body, wiki, owner, and \
+                confirm a specific fact. Returns the fact's body, wiki, subject, and \
                 status (active / superseded / tombstoned), or `{\"found\": false}` when \
                 no such fact exists or you may not read it. If it returns not-found, \
                 tell the operator — do NOT substitute a different fact."
@@ -471,7 +471,7 @@ fn batch_fact_tool_descriptors() -> Vec<Tool> {
                 can show the user what you are about to act on. Filters are AND-\
                 combined; `topics_any` matches any one of the supplied tags. \
                 Returns up to `limit` hits (default 50) with their fact_id, \
-                wiki_id, body snippet, and owner."
+                wiki_id, body snippet, and subject."
                 .to_owned(),
             parameters: json!({
                 "type": "object",
@@ -538,7 +538,7 @@ fn correction_tool_descriptors() -> Vec<Tool> {
     vec![Tool {
         name: AgenticTool::WikiSupersede.name().to_owned(),
         description: "Replace an existing fact with a corrected body, in-place. \
-            Keeps the original's owner, ACL, fact_type, topics, and validity \
+            Keeps the original's subject, ACL, fact_type, topics, and validity \
             window; only the body changes. The old row is tombstoned with `superseded_by` \
             pointing at the new row, so a future `wiki_recall` returns only \
             the corrected text. WRITE TOOL — call this only after the user \
@@ -570,7 +570,8 @@ fn scope_tool_descriptors() -> Vec<Tool> {
             either under a different parent or promoted to the root. The wiki \
             keeps its stable wiki_id, so existing `[[wiki_id]]` cross-links \
             still resolve afterwards. The wiki's owning principal is derived \
-            from its new path, so a move never rewrites an owner. Refuses a \
+            from its place in the tree, never stored, so a move re-derives it \
+            rather than rewriting anything. Refuses a \
             smart source wiki (smart wikis are the consumer's — a re-parent \
             would change their derived wiki-level read audience). WRITE TOOL — \
             call this only after the user has explicitly named both the wiki \
@@ -1280,7 +1281,7 @@ struct FactSnippet {
     wiki_id: String,
     source_path: String,
     body: String,
-    owner: String,
+    subject: String,
     fact_type: Option<String>,
     created_at: String,
 }
@@ -1300,7 +1301,7 @@ struct FactDetail {
     wiki_id: String,
     source_path: String,
     body: String,
-    owner: String,
+    subject: String,
     fact_type: Option<String>,
     topics: Vec<String>,
     created_at: String,
@@ -1343,7 +1344,7 @@ async fn dispatch_wiki_get_fact(
         ctx.is_admin
             || mwe_core::acl::can_read(
                 &mwe_core::types::Acl {
-                    owner: Some(r.owner_id.clone()),
+                    subject: Some(r.subject_id.clone()),
                     allow: r.allow_ids.clone(),
                 },
                 &ctx.sender_ctx.sender_id,
@@ -1359,7 +1360,7 @@ async fn dispatch_wiki_get_fact(
         wiki_id: row.wiki_id,
         source_path: row.source_path,
         body: row.text,
-        owner: row.owner_id.to_string(),
+        subject: row.subject_id.to_string(),
         fact_type: row.fact_type,
         topics: row.topics,
         created_at: row.created_at,
@@ -1386,7 +1387,7 @@ async fn dispatch_wiki_facts_for(
         .min(MAX_FACTS_FOR_RESULTS);
     let filters = FactFilters {
         wiki_id: args.wiki_id,
-        owner_id: None,
+        subject_id: None,
         fact_type: args.fact_type,
         created_after: args.created_after,
         created_before: args.created_before,
@@ -1408,7 +1409,7 @@ async fn dispatch_wiki_facts_for(
             wiki_id: h.wiki_id,
             source_path: h.source_path,
             body: h.text,
-            owner: h.owner_id.to_string(),
+            subject: h.subject_id.to_string(),
             fact_type: h.fact_type,
             created_at: h.created_at,
         })
@@ -1422,7 +1423,7 @@ async fn dispatch_wiki_facts_for(
 /// through `wiki_admin_*`; the operator's touchpoint for one is its briefing,
 /// so the chat's per-fact / structure verbs must not manage them. The guard
 /// keys on the wiki's `smart` meta flag: smart section rows carry
-/// `sender_id = NULL` and owner = the scope principal, so no sender/owner
+/// `sender_id = NULL` and subject = the scope principal, so no sender/subject
 /// gate would catch them.
 fn ensure_standard_wiki(
     ctx: &AgenticContext<'_>,
@@ -1487,7 +1488,7 @@ async fn dispatch_wiki_forget(
     })?;
     // Sender-direct authority (the write-authority model): only the fact's author
     // (its `sender`) forgets it directly; an admin may forget any fact. A
-    // non-sender owner's path is `wiki_request_forget` (a request → audience
+    // non-sender subject's path is `wiki_request_forget` (a request → audience
     // vote), so refuse here and point them there.
     let row = mwe_core::fact_index::find_by_id(ctx.pool, &fact_id)
         .await
@@ -1539,7 +1540,7 @@ async fn dispatch_wiki_forget(
 // ---------------------------------------------------------------------------
 // Single-fact correction: wiki_supersede
 //
-// Inherits owner/ACL/fact_type/topics from the targeted fact; the chat
+// Inherits subject/ACL/fact_type/topics from the targeted fact; the chat
 // only needs to surface a fact_id (via wiki_recall) and a corrected body.
 // ---------------------------------------------------------------------------
 
@@ -1593,24 +1594,24 @@ async fn dispatch_wiki_supersede(
         });
     }
     // Superseding a smart section row would write a marker-wrapped fact into
-    // the consumer's plain-markdown page — refuse before the owner gate (a
-    // smart row's owner is the scope principal, which the operator may match).
+    // the consumer's plain-markdown page — refuse before the subject gate (a
+    // smart row's subject is the scope principal, which the operator may match).
     ensure_standard_wiki(ctx, AgenticTool::WikiSupersede.name(), &old_row.wiki_id)?;
     // Editing the CONTENT of a fact is an *update* — the subject's act (the
-    // write-authority model): the **owner** (subject, or a member of an
-    // owning group) or an admin may supersede it directly, the same owner axis the
-    // ingest supersede guards (`SupersedeCrossOwner`) and the validity closure
+    // write-authority model): the **subject** (subject, or a member of an
+    // owning group) or an admin may supersede it directly, the same subject axis the
+    // ingest supersede guards (`SupersedeCrossSubject`) and the validity closure
     // use. Only *destroying* a fact keys on `sender` / a vote, not updating it.
-    if !(mwe_core::acl::sender_owns(
-        &old_row.owner_id,
+    if !(mwe_core::acl::sender_is_subject(
+        &old_row.subject_id,
         &ctx.sender_ctx.sender_id,
         &ctx.sender_ctx.sender_groups,
     ) || ctx.is_admin)
     {
         return Err(AgenticToolError::InvalidArguments {
             tool: AgenticTool::WikiSupersede.name(),
-            detail: "only the fact's owner (its subject, or an owning-group member) or an \
-                     admin can edit it; you are not its owner"
+            detail: "only the fact's subject (the person it is about, or a member of the group \
+                     it is about) or an admin can edit it; this fact is not about you"
                 .to_owned(),
         });
     }
@@ -1663,7 +1664,7 @@ async fn dispatch_wiki_supersede(
 
 /// Project a stored [`mwe_core::fact_index::FactIndexRow`] back to the
 /// [`capture::CaptureRequest`] shape `wiki_supersede` expects, copying
-/// owner / ACL / `fact_type` / topics / validity window across so the
+/// subject / ACL / `fact_type` / topics / validity window across so the
 /// chat does not have to re-elicit them and a correction never mutates
 /// metadata. `new_body` is the corrected prose from the user;
 /// the page path is recovered by stripping the wiki's relative
@@ -1702,7 +1703,7 @@ fn build_supersede_request(
         wiki_id,
         page: std::path::PathBuf::from(page_str),
         body: new_body,
-        owner: old_row.owner_id.clone(),
+        subject: old_row.subject_id.clone(),
         allow: old_row.allow_ids.clone(),
         sender: old_row.sender_id.clone(),
         fact_type: old_row.fact_type.clone(),
@@ -1710,7 +1711,7 @@ fn build_supersede_request(
         // Supersede is intentional — disable dedup so an identical
         // body is never silently dropped on the floor.
         dedup_threshold: Some(1.01),
-        // The validity window is metadata like owner/topics: a body
+        // The validity window is metadata like subject/topics: a body
         // correction must not silently reopen (or close) the claim.
         valid_from: old_row.valid_from.clone(),
         valid_to: old_row.valid_to.clone(),
@@ -1795,7 +1796,7 @@ async fn dispatch_wiki_change_scope(
 // and the comment-apply `move` op use, so the dashboard, the dream, and the
 // chat all mint the same born-applied + revertible receipt. Admin-only (a move
 // re-categorises — it neither destroys the fact nor changes its visibility — so
-// it is the operator's / REM's act, not the owner's); a smart source or
+// it is the operator's / REM's act, not the subject's); a smart source or
 // destination is refused (smart wikis carry wiki-level governance — moving facts
 // across that boundary corrupts it).
 // ---------------------------------------------------------------------------
@@ -1899,7 +1900,7 @@ async fn dispatch_wiki_move_fact(
 
     // Load + gate the fact + resolve its (standard) source wiki/page.
     let (row, source_wiki_id, source_page) = load_and_gate_movable_fact(ctx, &fact_id).await?;
-    let recipient = proposals::recipient_from_fact(&row.owner_id, row.sender_id.as_ref());
+    let recipient = proposals::recipient_from_fact(&row.subject_id, row.sender_id.as_ref());
     let reason = "dashboard chat: operator move";
 
     // Cross-wiki when a dest wiki is named AND differs from the source;
@@ -1993,8 +1994,8 @@ struct WikiDeletePageReport {
 /// Delete a page: tombstone the operator's own facts, evacuate foreign-authored
 /// ones to their senders' wikis (the governed delete-page path —
 /// agentic-chat.md). Two-level authority — the
-/// operator must be owner-equivalent on the wiki (or admin); the per-fact sender
-/// axis governs each fact inside. Smart wikis are refused.
+/// operator must be an admin (structure is the operator's to change); the per-fact
+/// sender axis governs each fact inside. Smart wikis are refused.
 async fn dispatch_wiki_delete_page(
     arguments: &serde_json::Value,
     ctx: &AgenticContext<'_>,
@@ -2174,9 +2175,9 @@ fn move_fact_wiki_relative_page(handle: &mwe_core::wiki::WikiHandle, source_path
 
 /// Admin-only gate for the single-fact move. Re-categorising a fact neither
 /// destroys it nor changes its visibility, so it is the operator's (admin's)
-/// act — and REM's, server-side — never the per-fact owner's (the structure
+/// act — and REM's, server-side — never the per-fact subject's (the structure
 /// authority of [the write-authority model](../../../docs/concepts/identity-and-acl.md)). The
-/// owner / sender axes gate `delete` / `edit` / `acl_change`, not `move`.
+/// subject / sender axes gate `delete` / `edit` / `acl_change`, not `move`.
 fn enforce_move_admin(
     ctx: &AgenticContext<'_>,
     tool: &'static str,
@@ -2187,7 +2188,7 @@ fn enforce_move_admin(
         Err(AgenticToolError::InvalidArguments {
             tool,
             detail: "moving a fact is admin-only (re-categorising structure is the operator's to \
-                     change, not the owner's)"
+                     change, not the subject's)"
                 .to_owned(),
         })
     }
@@ -2322,10 +2323,10 @@ struct WikiRequestForgetArgs {
 }
 
 /// Open a forget request for a fact the signed-in user does not author — the
-/// non-sender owner's path (the write-authority model).
+/// non-sender subject's path (the write-authority model).
 ///
 /// Requests **as** `ctx.sender_ctx.sender_id`: the engine enforces that the
-/// caller is the fact's owner / an owning-group member (or admin), refuses a
+/// caller is the fact's subject / an owning-group member (or admin), refuses a
 /// sender (who deletes directly via `wiki_forget`), computes the audience
 /// electorate, and either opens a pending vote or — when the caller is the only
 /// reader — forgets the fact immediately.
@@ -3066,7 +3067,7 @@ mod tests {
                 region_end: Some(8),
                 text: "franz's own fact".to_owned(),
                 embedding: vec![0.1, 0.2, 0.3, 0.4],
-                owner_id: "user:franz".parse().unwrap(),
+                subject_id: "user:franz".parse().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: Some("user:franz".parse().unwrap()),
                 fact_type: None,
@@ -3345,7 +3346,7 @@ mod tests {
     // ---------- wiki_move_fact ----------
 
     /// Build a workdir with a standard source wiki `alice`, a standard
-    /// same-owner destination `salute`, and a SMART wiki `proj`. Returns the
+    /// same-subject destination `salute`, and a SMART wiki `proj`. Returns the
     /// tempdir, pool, and tree (re-opened so all three metas are visible).
     async fn move_fact_tree() -> (tempfile::TempDir, SqlitePool, WikiTree) {
         let dir = tempfile::tempdir().unwrap();
@@ -3389,7 +3390,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: std::path::PathBuf::from("index.md"),
             body: body.to_owned(),
-            owner: "user:alice".parse().unwrap(),
+            subject: "user:alice".parse().unwrap(),
             allow: vec![],
             sender: None,
             fact_type: None,
@@ -3424,7 +3425,7 @@ mod tests {
 
     /// Plant a section row in `fact_index` for the smart wiki `proj` the way
     /// the smart content indexer would: `sender_id` NULL (no per-fragment
-    /// capturer) and owner = the wiki's scope principal. Minimal on purpose —
+    /// capturer) and subject = the wiki's scope principal. Minimal on purpose —
     /// the smart guards key on the wiki's `smart` meta flag, not on the row.
     async fn seed_smart_section_row(pool: &SqlitePool, fact_id: &FactId) {
         mwe_core::fact_index::insert(
@@ -3438,7 +3439,7 @@ mod tests {
                 region_end: Some(5),
                 text: "Project uses CI".to_owned(),
                 embedding: vec![0.1, 0.2, 0.3, 0.4],
-                owner_id: "user:alice".parse().unwrap(),
+                subject_id: "user:alice".parse().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
@@ -3584,7 +3585,7 @@ mod tests {
         drop(dir);
     }
 
-    /// A non-admin operator cannot move a fact — even the fact's own owner: a
+    /// A non-admin operator cannot move a fact — even the fact's own subject: a
     /// move is admin-only structure authority (the write-authority model).
     #[tokio::test]
     async fn dispatch_wiki_move_fact_refuses_non_admin() {
@@ -3733,7 +3734,7 @@ mod tests {
 
     /// `wiki_request_forget` refuses a fact living in a smart wiki — forget
     /// votes are per-fact governance, smart governance is wiki-level. The
-    /// operator is the row's owner, so without the guard the engine would
+    /// operator is the row's subject, so without the guard the engine would
     /// have accepted the request.
     #[tokio::test]
     async fn dispatch_wiki_request_forget_refuses_smart_target() {

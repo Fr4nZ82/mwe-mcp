@@ -389,7 +389,7 @@ pub struct RemCycleReport {
     pub archive_detector: ArchiveDetectorReport,
     /// Briefing dispatcher sub-job report — scans smart-wiki
     /// wikis for stale drafts + recall-hot facts and posts items to the
-    /// owner's `_briefing.md` via [`crate::briefing::notify_as_rem`].
+    /// subject's `_briefing.md` via [`crate::briefing::notify_as_rem`].
     pub briefing_dispatcher: BriefingDispatcherReport,
     /// Backlink reciprocity detector sub-job report — flags
     /// `[[wiki:<smart-wiki>#...]]` links from standard wikis that
@@ -607,7 +607,7 @@ pub struct MapWriterReport {
 /// Sub-report for the Briefing dispatcher.
 ///
 /// Walks every wiki of the smart family looking for stale drafts and
-/// recall-hot facts; per finding posts a single item to the owner's
+/// recall-hot facts; per finding posts a single item to the subject's
 /// `_briefing.md` via [`crate::briefing::notify_as_rem`]. Per-wiki cap
 /// = [`RemPolicy::briefing_notify_cap`], idempotency window =
 /// [`RemPolicy::briefing_dedup_window`].
@@ -659,7 +659,7 @@ pub struct BriefingProcessorReport {
     /// Standard-wiki comments applied as fact ops: facts added.
     pub facts_added: usize,
     /// Standard-wiki comment `add` ops skipped by the write-time dedup
-    /// (near-duplicate of an existing same-owner fact — nothing inserted).
+    /// (near-duplicate of an existing same-subject fact — nothing inserted).
     pub facts_deduped: usize,
     /// Standard-wiki comments applied as fact ops: facts removed.
     pub facts_removed: usize,
@@ -677,7 +677,7 @@ pub struct BriefingProcessorReport {
 ///
 /// Walks every wiki *outside* the smart family, scans active fact
 /// bodies for `[[wiki:<id>...]]` references whose target is a smart wiki
-/// of the same owner, and emits a notify on the smart wiki when the
+/// of the same subject, and emits a notify on the smart wiki when the
 /// reciprocal link is missing.
 #[derive(Debug, Clone, Default)]
 pub struct BacklinkReciprocityReport {
@@ -1336,8 +1336,8 @@ const REVISOR_LLM_FAILURE_ABORT: usize = 5;
 /// naming different groups are two audiences even when today's membership
 /// happens to coincide.
 fn reader_sets_differ(a: &fact_index::FactIndexRow, b: &fact_index::FactIndexRow) -> bool {
-    crate::acl::reader_set(&a.owner_id, &a.allow_ids, a.sender_id.as_ref())
-        != crate::acl::reader_set(&b.owner_id, &b.allow_ids, b.sender_id.as_ref())
+    crate::acl::reader_set(&a.subject_id, &a.allow_ids, a.sender_id.as_ref())
+        != crate::acl::reader_set(&b.subject_id, &b.allow_ids, b.sender_id.as_ref())
 }
 
 #[allow(
@@ -1416,7 +1416,7 @@ async fn run_revisor_jaccard(
                     continue;
                 }
                 // Identity-core stickiness: background dedup never retires a
-                // fact from the owner's always-on identity core (role /
+                // fact from the subject's always-on identity core (role /
                 // relationship / bio, `salience=high`). The loser is
                 // `facts[old_idx]` (the pair sorts newest-first, older side
                 // retired); if that is an identity-core fact, skip the pair so
@@ -1562,7 +1562,7 @@ async fn run_revisor_jaccard(
                 // 0032: address the merge receipt to the winner fact's
                 // human (the survivor is the one that stays on the page).
                 let recipient = proposals::recipient_from_fact(
-                    &facts[new_idx].owner_id,
+                    &facts[new_idx].subject_id,
                     facts[new_idx].sender_id.as_ref(),
                 );
                 let hints = DedupMergeHints {
@@ -2213,7 +2213,7 @@ async fn run_auto_promote(
             )
             .await?;
             let recipient =
-                proposals::recipient_from_fact(&moving[0].owner_id, moving[0].sender_id.as_ref());
+                proposals::recipient_from_fact(&moving[0].subject_id, moving[0].sender_id.as_ref());
             let hot = moving.iter().map(|f| f.recall_count_30d).max();
             let hints = ParagraphToFileHints {
                 trigger_page_facts: Some(mass),
@@ -2746,7 +2746,7 @@ async fn run_page_grouping_for_wiki(
         let recipient = facts
             .iter()
             .find(|f| wiki_relative_page(d, &f.source_path).is_some_and(|r| r == pages[0]))
-            .and_then(|f| proposals::recipient_from_fact(&f.owner_id, f.sender_id.as_ref()));
+            .and_then(|f| proposals::recipient_from_fact(&f.subject_id, f.sender_id.as_ref()));
         let hints = promote::PageGroupHints {
             group_pages: Some(pages.len()),
             source_wiki_pages: Some(candidates.len()),
@@ -3430,8 +3430,10 @@ async fn run_page_merge(
             None,
         )
         .await?;
-        let recipient =
-            proposals::recipient_from_fact(&husk_rows[0].owner_id, husk_rows[0].sender_id.as_ref());
+        let recipient = proposals::recipient_from_fact(
+            &husk_rows[0].subject_id,
+            husk_rows[0].sender_id.as_ref(),
+        );
         let params = PageMergeParams {
             wiki_id: husk.wiki_id.as_str(),
             survivor_wiki_id: survivor.wiki_id.as_str(),
@@ -3536,7 +3538,7 @@ fn completion_cases<'a>(
             // questo utente è Gandalf" read as evidence "completing"
             // morgana's parallel Ernest naming rule), and it is never
             // completed by neighbouring evidence — it leaves the channel
-            // only via supersede, tombstone, or its owner's explicit
+            // only via supersede, tombstone, or its subject's explicit
             // closure. Structural perimeter, like the dedup channel-boundary
             // — and a project signpost is fenced out the same way: it is a
             // pointer maintained by its channel, never evidence that
@@ -3823,7 +3825,7 @@ async fn judge_completion_case(
     // The same act-first paper trail as the ingest half: one receipt per
     // evidence fact + the dashboard notice.
     let recipient =
-        proposals::recipient_from_fact(&applied_owner(case, &applied), sender_of(case, &applied));
+        proposals::recipient_from_fact(&applied_subject(case, &applied), sender_of(case, &applied));
     let gesture = format!(
         "REM completion sweep — evidence: {}",
         fact_preview(&case.evidence.text)
@@ -3873,14 +3875,17 @@ async fn judge_completion_case(
 
 /// Owner principal of the first closed target (the receipt addressee
 /// follows the closed fact, as everywhere else).
-fn applied_owner(
+fn applied_subject(
     case: &CompletionCase<'_>,
     applied: &[promote::AppliedClosure],
 ) -> crate::types::Principal {
     case.candidates
         .iter()
         .find(|c| c.fact_id == applied[0].fact_id)
-        .map_or_else(|| case.evidence.owner_id.clone(), |c| c.owner_id.clone())
+        .map_or_else(
+            || case.evidence.subject_id.clone(),
+            |c| c.subject_id.clone(),
+        )
 }
 
 /// Sender attribution of the first closed target, for the addressee.
@@ -4285,7 +4290,7 @@ async fn judge_refile_case(
     .await?;
 
     let recipient =
-        proposals::recipient_from_fact(&case.fact.owner_id, case.fact.sender_id.as_ref());
+        proposals::recipient_from_fact(&case.fact.subject_id, case.fact.sender_id.as_ref());
     let reason = decision
         .reason
         .as_deref()
@@ -4439,12 +4444,12 @@ async fn run_contradiction_sweep(
             //    dead predecessors).
             // 2. The reserved channel pages are channel-governed: a standing
             //    directive — or a project signpost — leaves its page only via
-            //    supersede, tombstone, or its owner's explicit closure, never
+            //    supersede, tombstone, or its subject's explicit closure, never
             //    as collateral of a neighbouring contradiction. Same fence the
             //    dedup/refile sweeps already honour
             //    ([`crate::wiki::is_channel_page`]).
             // 3. An identity-core fact (a role / relationship — `bio` +
-            //    `salience=high`) is sticky: it changes only on the owner's
+            //    `salience=high`) is sticky: it changes only on the subject's
             //    explicit correction (the classifier supersede path), never
             //    as collateral of a background contradiction judgment. The
             //    same perimeter the dedup revisor honours (leva 3), so who a
@@ -4693,7 +4698,7 @@ async fn judge_contradiction_case(
         .iter()
         .find(|c| c.fact_id == applied[0].fact_id)
         .unwrap_or(seed);
-    let recipient = proposals::recipient_from_fact(&first.owner_id, first.sender_id.as_ref());
+    let recipient = proposals::recipient_from_fact(&first.subject_id, first.sender_id.as_ref());
     let gesture = format!(
         "REM contradiction sweep — fell with: {}",
         fact_preview(&seed.text)
@@ -4950,7 +4955,7 @@ async fn repair_one_miss(
             fact.source_path
         )
     })?;
-    let recipient = proposals::recipient_from_fact(&fact.owner_id, fact.sender_id.as_ref());
+    let recipient = proposals::recipient_from_fact(&fact.subject_id, fact.sender_id.as_ref());
     let target = recall_gate::TargetCase {
         query: &miss.restated_text,
         sender_id: &miss.sender_id,
@@ -6831,14 +6836,14 @@ mod tests {
         pool: &SqlitePool,
         wiki: &str,
         body: &str,
-        owner: &str,
+        subject: &str,
     ) -> FactId {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: PathBuf::from("index.md"),
             body: body.to_owned(),
-            owner: Principal::User(owner.to_owned()),
+            subject: Principal::User(subject.to_owned()),
             allow: Vec::new(),
             sender: None,
             fact_type: None,
@@ -6863,7 +6868,7 @@ mod tests {
         pool: &SqlitePool,
         wiki: &str,
         body: &str,
-        owner: &str,
+        subject: &str,
         allow: Vec<Principal>,
         sender: Option<Principal>,
     ) -> FactId {
@@ -6872,7 +6877,7 @@ mod tests {
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: PathBuf::from("index.md"),
             body: body.to_owned(),
-            owner: Principal::User(owner.to_owned()),
+            subject: Principal::User(subject.to_owned()),
             allow,
             sender,
             fact_type: None,
@@ -6936,10 +6941,10 @@ mod tests {
         pool: &SqlitePool,
         wiki: &str,
         body: &str,
-        owner: &str,
+        subject: &str,
         embedding: Vec<f32>,
     ) -> FactId {
-        plant_page_fact_with_embedding(tree, pool, wiki, "index.md", body, owner, embedding).await
+        plant_page_fact_with_embedding(tree, pool, wiki, "index.md", body, subject, embedding).await
     }
 
     /// [`plant_fact_with_embedding`] on a caller-chosen page (e.g. the
@@ -6950,7 +6955,7 @@ mod tests {
         wiki: &str,
         page: &str,
         body: &str,
-        owner: &str,
+        subject: &str,
         embedding: Vec<f32>,
     ) -> FactId {
         let req = CaptureRequest {
@@ -6958,7 +6963,7 @@ mod tests {
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: PathBuf::from(page),
             body: body.to_owned(),
-            owner: Principal::User(owner.to_owned()),
+            subject: Principal::User(subject.to_owned()),
             allow: Vec::new(),
             sender: None,
             fact_type: None,
@@ -7673,7 +7678,7 @@ mod tests {
         pool: &SqlitePool,
         wiki: &str,
         n: usize,
-        owner: &str,
+        subject: &str,
     ) -> Vec<FactId> {
         const TOPICS: [&str; 8] = [
             "alice hikes in the dolomites every summer",
@@ -7687,7 +7692,7 @@ mod tests {
         ];
         let mut out = Vec::with_capacity(n);
         for t in TOPICS.iter().take(n) {
-            out.push(plant_fact(tree, pool, wiki, t, owner).await);
+            out.push(plant_fact(tree, pool, wiki, t, subject).await);
         }
         out
     }
@@ -7709,9 +7714,9 @@ mod tests {
         wiki: &str,
         page: &str,
         body: &str,
-        owner: &str,
+        subject: &str,
     ) -> FactId {
-        plant_fact_with_embedder(tree, pool, fake_embedder(), wiki, page, body, owner).await
+        plant_fact_with_embedder(tree, pool, fake_embedder(), wiki, page, body, subject).await
     }
 
     /// [`plant_fact_on_page`] with a caller-chosen embedder, for tests
@@ -7723,14 +7728,14 @@ mod tests {
         wiki: &str,
         page: &str,
         body: &str,
-        owner: &str,
+        subject: &str,
     ) -> FactId {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: PathBuf::from(page),
             body: body.to_owned(),
-            owner: Principal::User(owner.to_owned()),
+            subject: Principal::User(subject.to_owned()),
             allow: Vec::new(),
             sender: None,
             fact_type: None,
@@ -7968,7 +7973,7 @@ mod tests {
                     .unwrap(),
                 text: format!("fact {i}"),
                 fact_type: None,
-                owner: "user:alice".parse().unwrap(),
+                subject: "user:alice".parse().unwrap(),
                 allow: Vec::new(),
                 sender: None,
                 source_wiki_id: wiki.to_owned(),
@@ -8569,7 +8574,7 @@ mod tests {
         wiki: &str,
         page: &str,
         n: usize,
-        owner: &str,
+        subject: &str,
     ) -> Vec<FactId> {
         const TOPICS: [&str; 8] = [
             "trim the hedge in early spring before the birds nest",
@@ -8588,7 +8593,7 @@ mod tests {
                 wiki_id: WikiId::parse(wiki).unwrap(),
                 page: PathBuf::from(page),
                 body: format!("{page}: {t}"),
-                owner: Principal::User(owner.to_owned()),
+                subject: Principal::User(subject.to_owned()),
                 allow: Vec::new(),
                 sender: None,
                 fact_type: None,
@@ -9213,11 +9218,11 @@ mod tests {
     /// Mirrors `write_wiki` but for `wiki-companion` (companion = true;
     /// renamed from `wiki-project-companion`).
     /// Returns the wiki id so callers can plant facts in it.
-    fn write_smart_wiki(tree: &WikiTree, slug: &str, title: &str, owner: &str) {
+    fn write_smart_wiki(tree: &WikiTree, slug: &str, title: &str, subject: &str) {
         let dir = tree.wikis_dir().join(slug);
         std::fs::create_dir_all(&dir).unwrap();
         let frontmatter = format!(
-            "---\nwiki_id: {slug}\nwiki_type: wiki-companion\nslug: {slug}\ntitle: {title}\nacl_default: 'user:{owner}'\nsmart: true\n---\n",
+            "---\nwiki_id: {slug}\nwiki_type: wiki-companion\nslug: {slug}\ntitle: {title}\nacl_default: 'user:{subject}'\nsmart: true\n---\n",
         );
         std::fs::write(dir.join("_meta.md"), frontmatter).unwrap();
         std::fs::write(dir.join("index.md"), "# placeholder companion\n").unwrap();
@@ -9369,7 +9374,7 @@ mod tests {
     #[tokio::test]
     async fn backlink_reciprocity_emits_when_smart_wiki_lacks_inverse() {
         let (dir, mut tree, pool) = setup_workdir().await;
-        // Standard wiki "alice" + smart wiki "alice-lnprint" (same owner).
+        // Standard wiki "alice" + smart wiki "alice-lnprint" (same subject).
         write_wiki(&tree, "alice", "Alice", "wiki-user");
         write_smart_wiki(&tree, "alice-lnprint", "lnprint companion", "alice");
         tree = WikiTree::open(dir.path()).unwrap();
@@ -9440,7 +9445,7 @@ mod tests {
         plant_section(
             &pool,
             "alice-lnprint",
-            "Back-reference to [[alice]] on the owner wiki.",
+            "Back-reference to [[alice]] on the subject wiki.",
         )
         .await;
 
@@ -9610,7 +9615,7 @@ mod tests {
                 region_end: Some(20),
                 text: "Alice was born in 1985".to_owned(),
                 embedding: vec![0.1, 0.2, 0.3, 0.4],
-                owner_id: "user:alice".parse::<crate::types::Principal>().unwrap(),
+                subject_id: "user:alice".parse::<crate::types::Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
@@ -9889,7 +9894,7 @@ mod tests {
                         wiki_id: WikiId::parse("bot").unwrap(),
                         page: PathBuf::from("rules.md"),
                         body,
-                        owner: Principal::User("bot".to_owned()),
+                        subject: Principal::User("bot".to_owned()),
                         allow: Vec::new(),
                         sender: None,
                         fact_type: Some("rule".to_owned()),
@@ -10736,7 +10741,7 @@ mod tests {
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: PathBuf::from("index.md"),
                         body: body.to_owned(),
-                        owner: Principal::User("alice".to_owned()),
+                        subject: Principal::User("alice".to_owned()),
                         allow: Vec::new(),
                         sender: None,
                         fact_type: None,
@@ -10823,7 +10828,7 @@ mod tests {
 
     /// Rules-page facts are never satellite candidates: a standing
     /// directive leaves the channel only via supersede / tombstone / its
-    /// owner's explicit closure — never as collateral of a neighbouring
+    /// subject's explicit closure — never as collateral of a neighbouring
     /// contradiction (the 2026-07-01 live incident: the freshly revised
     /// TTS rules fell as satellites of their own dead predecessors).
     #[tokio::test]
@@ -10857,7 +10862,7 @@ mod tests {
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: PathBuf::from("rules.md"),
                 body: "Rispondi sempre anche a voce.".to_owned(),
-                owner: Principal::User("alice".to_owned()),
+                subject: Principal::User("alice".to_owned()),
                 allow: Vec::new(),
                 sender: None,
                 fact_type: Some("rule".to_owned()),
@@ -11087,7 +11092,7 @@ mod tests {
         wiki: &str,
         page: &str,
         body: &str,
-        owner: &str,
+        subject: &str,
         topics: &[&str],
     ) -> FactId {
         let req = crate::capture::CaptureRequest {
@@ -11095,7 +11100,7 @@ mod tests {
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: PathBuf::from(page),
             body: body.to_owned(),
-            owner: Principal::User(owner.to_owned()),
+            subject: Principal::User(subject.to_owned()),
             allow: Vec::new(),
             sender: None,
             fact_type: None,
@@ -11681,11 +11686,17 @@ mod tests {
     /// family relation [`family_scopes`] reads (the id is deliberately
     /// NOT `parent-child` shaped in one test case, to pin that ids are
     /// never string-matched).
-    fn write_sub_wiki(tree: &WikiTree, parent: &str, child_slug: &str, wiki_id: &str, owner: &str) {
+    fn write_sub_wiki(
+        tree: &WikiTree,
+        parent: &str,
+        child_slug: &str,
+        wiki_id: &str,
+        subject: &str,
+    ) {
         let dir = tree.wikis_dir().join(parent).join(child_slug);
         std::fs::create_dir_all(&dir).unwrap();
         let frontmatter = format!(
-            "---\nwiki_id: {wiki_id}\nwiki_type: wiki-tech\nslug: {child_slug}\ntitle: {child_slug}\nacl_default: 'user:{owner}'\nparent_wiki_id: {parent}\n---\n",
+            "---\nwiki_id: {wiki_id}\nwiki_type: wiki-tech\nslug: {child_slug}\ntitle: {child_slug}\nacl_default: 'user:{subject}'\nparent_wiki_id: {parent}\n---\n",
         );
         std::fs::write(dir.join("_meta.md"), frontmatter).unwrap();
         std::fs::write(dir.join("index.md"), "# sub\n").unwrap();

@@ -11,7 +11,7 @@
 //!
 //! This is a composite operation (filesystem + DB), so it lives in
 //! its own module rather than inside [`crate::wiki`] which is the
-//! single owner of the on-disk tree and explicitly does not touch
+//! single subject of the on-disk tree and explicitly does not touch
 //! the fact index.
 //!
 //! ## Scope of this operation
@@ -397,7 +397,7 @@ mod tests {
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: PathBuf::from(page),
             body: body.to_owned(),
-            owner: format!("user:{}", wiki.split('-').next().unwrap_or(wiki))
+            subject: format!("user:{}", wiki.split('-').next().unwrap_or(wiki))
                 .parse::<Principal>()
                 .unwrap(),
             allow: vec![],

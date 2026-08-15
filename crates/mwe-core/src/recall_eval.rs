@@ -70,9 +70,10 @@ pub struct GoldQuery {
     /// query under test depends on them.
     #[serde(default)]
     pub topics: Vec<String>,
-    /// Optional classifier-style owner seeds (`user:x` / `group:y`).
+    /// Optional classifier-style subject seeds (`user:x` / `group:y`).
     #[serde(default)]
-    pub owners: Vec<String>,
+    #[serde(alias = "owners")]
+    pub subjects: Vec<String>,
     /// Ground truth: text snippets a good recall must surface, matched
     /// case-insensitively against the hit texts / navigated prose.
     pub expect: Vec<String>,
@@ -282,7 +283,7 @@ async fn eval_query(
     };
 
     // Navigation — same seeds the post-classification step builds:
-    // gold-pinned topics/owners + the flat hits as RAG seeds.
+    // gold-pinned topics/subjects + the flat hits as RAG seeds.
     let nav_outcome = match navigator {
         Some(llm) => Some(navigate_query(pool, tree, llm, q, &sender, &flat, policy).await?),
         None => None,
@@ -343,11 +344,11 @@ async fn navigate_query(
     flat: &[RecallHit],
     policy: &IngestPolicy,
 ) -> anyhow::Result<recall_nav::NavigationOutcome> {
-    // `q.owners` is still parsed for its side effect — a malformed principal in
+    // `q.subjects` is still parsed for its side effect — a malformed principal in
     // the gold file is a gold-file bug and must surface — but it seeds nothing:
     // a principal names a wiki, and recall opens content pages, never wikis.
-    for s in &q.owners {
-        let _: Principal = s.parse().with_context(|| format!("owner `{s}`"))?;
+    for s in &q.subjects {
+        let _: Principal = s.parse().with_context(|| format!("subject `{s}`"))?;
     }
     let entries = recall_nav::gather_entry_points(pool, tree, sender, &q.topics, flat, &[])
         .await
@@ -393,7 +394,7 @@ mod tests {
         let q = &gold.queries[0];
         assert_eq!(q.label(), "coffee");
         assert_eq!(q.expect.len(), 2);
-        assert!(q.topics.is_empty() && q.owners.is_empty());
+        assert!(q.topics.is_empty() && q.subjects.is_empty());
     }
 
     async fn setup_workdir() -> (tempfile::TempDir, WikiTree, SqlitePool) {
@@ -428,7 +429,7 @@ mod tests {
             region_end: None,
             text: text.to_owned(),
             embedding,
-            owner_id: Principal::User("alice".into()),
+            subject_id: Principal::User("alice".into()),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: None,

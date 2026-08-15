@@ -114,7 +114,7 @@ live in `fact_index` — it has its own pair of tables
 `0062`):
 
 - **`wiki_sections`** — one row per heading-delimited section, keyed by
-  `(source_path, section_ord)`. No owner, no sender, no allow list, no
+  `(source_path, section_ord)`. No subject, no sender, no allow list, no
   supersedence, no tombstone, no validity window: a section is a chunk of
   a document, not a governed claim, and it exists exactly as long as its
   page does.
@@ -648,7 +648,7 @@ smart wiki therefore never appears in the routing window, so the
 classifier cannot target one; the defensive backstop is the
 capture-plan validation, which rejects any target not in the offered
 list. See
-[ingest-pipeline.md §Smart-family filter](ingest-pipeline.md#smart-family-filter).
+[ingest-pipeline.md §Narrative-vs-direct split](ingest-pipeline.md#narrative-vs-direct-split).
 
 **The filter excludes the smart wiki, not the conversation** (roadmap
 group 17). A smart consumer is a **superset** of a standard one: it
@@ -727,12 +727,18 @@ mechanism is `skill_list` +
 per-class bodies dispatch from `core` and reference each other in
 their `depends_on` frontmatter.
 
-The `core-globalmemory` body (`version: 1.0.0`, `status:
-implemented`) codifies four pillars: (a) the first-prompt
-transversal `wiki_search` call shape with the **mandatory**
+The `core-globalmemory` body codifies four pillars: (a) the
+first-prompt transversal recall, `recall_core_global`, whose canonical
+filter has two halves — a predicate on the **fact's subject**
+(`subject_id = user:<sender>`): the facts *about* the caller, wherever
+they are filed, and **not** the contents of the wikis the caller owns,
+since one of those can perfectly well hold facts about other people and
+this view does not return them; and the **mandatory**
 `smart: false` scope filter that excludes the companion
 family — without it, a generic-cwd recall would leak project context from
-smart wikis the same user owns elsewhere; (b) the
+smart wikis the same user owns elsewhere. The hand-rolled
+`wiki_search` shape (`scope.subject_ids` + `smart: false`) stays in the
+skill as the fallback for a deployment with no K-family tool; (b) the
 consumer-neutral auto-memory integration table (auto-memory =
 ephemeral per-cwd cache, mwe-mcp = persistent per-user layer); (c)
 heuristics that recognise a cwd as a *companion candidate* (VCS
@@ -1295,7 +1301,7 @@ comments, and richer briefing-triage UX — are not yet implemented
 - **Wire-level tool spec**: [protocol/mcp-tools.md](../protocol/mcp-tools.md) (user-facing roster) + [protocol/tool-reference.md](../protocol/tool-reference.md) (canonical schemas).
 - **Auth model**: [jwt-and-session-model.md §Consumer class](jwt-and-session-model.md#consumer-class--the-smart-vs-standard-gate).
 - **Smart marker**: the `smart: bool` flag in each wiki's `_meta.md` (on-disk key `smart:`, legacy read-alias `companion:`) (§2 above) — see also [../concepts/memory-model.md](../concepts/memory-model.md).
-- **Ingest filter**: [ingest-pipeline.md §Smart-family filter](ingest-pipeline.md#smart-family-filter).
+- **Ingest filter**: [ingest-pipeline.md §Narrative-vs-direct split](ingest-pipeline.md#narrative-vs-direct-split).
 - **Dispatcher wiring**: [mcp-dispatcher.md §The tool roster](mcp-dispatcher.md#the-tool-roster).
 - **Content index**: [`mwe_core::sections`](../../crates/mwe-core/src/sections.rs) (`wiki_sections` + `smart_wikis`) and [reindex-pipeline.md](reindex-pipeline.md#smart-wikis--content-indexing-markerless).
 - **Recall corpora**: [recall-pipeline.md §The two corpora](recall-pipeline.md#the-two-corpora).

@@ -164,6 +164,13 @@ the per-tool sections below. The full enum is the source of truth in
 
 - `iso8601` — ISO 8601 date/time string (e.g. `2026-05-17T14:32:00Z`).
 - `principal` — `user:<id> | group:<id> | global`.
+- **`subject`** — the principal a **fact** is *about*
+  (`fact_index.subject_id`, the `subject=` region marker). It is not the
+  fact's `sender` (who wrote it) and not its `allow` list (who may read
+  it). It is also **not** a wiki's `owner`, which on this surface always
+  means the proprietor a whole memory wiki belongs to: a fact whose
+  subject is `user:franz` can live in a wiki owned by `group:famiglia`.
+  Two independent axes.
 - `wiki_id` — opaque canonical id of a wiki. **Never a filesystem path.**
 - `fact_id` — UUIDv7, lowercase with dashes
   (`018f1234-5678-7abc-9def-0123456789ab`).
@@ -225,7 +232,7 @@ internal pipeline.
 |---|---|---|---|
 | `text` | string | yes | Raw user message body. Empty / whitespace → `400 invalid_input`. |
 | `sender_id` | string | no | Optional override of the token's `sender_id`; must match or `403 sender_token_mismatch`. |
-| `author` | enum `user` \| `assistant` | no (default `user`) | Who wrote `text`. `assistant` feeds the agent's OWN prior reply back for extraction (agent-authored memory, roadmap 27): the classifier then applies the agent-turn discriminator (keep only the durable sediment it synthesised — an episode/decision, advice tied to the user — and skip filler/regenerable knowledge/recall echoes), and any captured fact is attributed `sender = <the calling agent>` (resolved from the consumer↔system-user binding) while its `owner` stays the acting user. An unknown value → `400 invalid_input`. |
+| `author` | enum `user` \| `assistant` | no (default `user`) | Who wrote `text`. `assistant` feeds the agent's OWN prior reply back for extraction (agent-authored memory, roadmap 27): the classifier then applies the agent-turn discriminator (keep only the durable sediment it synthesised — an episode/decision, advice tied to the user — and skip filler/regenerable knowledge/recall echoes), and any captured fact is attributed `sender = <the calling agent>` (resolved from the consumer↔system-user binding) while its `subject` stays the acting user. An unknown value → `400 invalid_input`. |
 | `recent_messages` | `array<{ role: "user"\|"assistant", text, timestamp? }>` | no | Recent turns for coreference resolution. |
 | `context_hint` | enum `conversation` \| `dashboard_command` \| `import` | no (default `conversation`) | Hints the intent classifier. An unknown value → `400 invalid_input`. |
 | `metadata` | object | no | Free-form. The dispatcher honours five keys: `disambig_choice` (string, the second-turn commit), `locale` (BCP-47 tag — an explicit LANGUAGE directive that overrides the per-user `enrollment_users.locale` default), `occurred_at` (ISO-8601 instant the message was originally uttered — the turn's semantic clock for backlog replays/imports: relative dates, validity windows and the due-soon horizon resolve against it instead of the server clock, while operational timestamps stay wall-clock; malformed → `400 invalid_input`), `authored_refs` (array of plain `[[wiki_id/page]]` wikilinks — a smart consumer echoes the `authored_refs` its preceding `wiki_admin_push` returned so personal memory links to the project page instead of duplicating its body; blank/non-string entries ignored — group 17), and `channel` (opaque surface label, e.g. `telegram:42` — multi-channel consumers tag their surfaces apart so the cross-consumer recent window, group 43, excludes only the requesting surface from `recent_window`; blank normalises to unset). |
@@ -352,21 +359,21 @@ anchor `document_page` when one exists, `facts_buffered`, `source_ref`,
 failed/degraded the same page in consecutive compile passes — payload:
 `slug`, `source_path`, `consecutive`, `last_error`, `dashboard_path`;
 see the failure ledger), and `fact_minted_for_you` (ingest filed one or
-more facts owned by an enrolled human who was not the human of that
-turn / the uploader — payload: `recipient_id` (`user:`-prefixed
+more facts whose subject is an enrolled human who was not the human of
+that turn / the uploader — payload: `recipient_id` (`user:`-prefixed
 beneficiary), `from_user_id` (bare id of the human whose turn or upload
 minted them), `origin` (`user_turn` | `assistant_turn` | `document`,
 plus `job_id`/`title` on the document path), `facts` (array of
 `fact_id`/`wiki_id`/`body` — the content rides the notice so the
 consumer's agent can deliver it without a recall round-trip), and
 `dashboard_path`; batched per (beneficiary, turn), so one turn emits at
-most one event per recipient; group-owned facts and agent principals
+most one event per recipient; a group-subject fact and agent principals
 never emit it), and `reminder_due` (a dated commitment already in memory
 has come round — payload: `recipient_id`, `due_at` (the stored
 `valid_to`), `fires_at` (what the policy resolved), a `facts` array of one
 carrying the body, and `dashboard_path`; same shape as
 `fact_minted_for_you` so one parser serves both. Fires for a `plan` with a
-concrete `valid_to`, once, addressed to its owner — see
+concrete `valid_to`, once, addressed to its subject — see
 [reminders.md](../design-notes/reminders.md)).
 The `kind` column is `TEXT`, so new kinds are additive —
 a consumer that does not recognise a kind just receives the JSON payload
@@ -542,7 +549,7 @@ that this wiki has `alice-lavoro`, `alice-salute`, `alice-terapia` beside it —
 names that say plenty on their own, about content that reader may not be able
 to open. The fix is **not** to filter that list: there is no permission on a
 wiki to filter it by. Read access is judged per **fact**
-(`owner ∪ allow ∪ sender`); what looks like a wiki-level gate
+(`subject ∪ allow ∪ sender`); what looks like a wiki-level gate
 (`wiki_visible_to`) is that same judgement derived — *may this reader see at
 least one fact in here*. The structure has no business in the answer. The
 engine's own steps keep using the wiki tree freely: they are not a reply to
@@ -580,7 +587,8 @@ Semantic search over the corpus accessible to the sender. Top-K cosine
 | `query` | string | yes | — |
 | `sender_id` | string | no | Validated against the token. |
 | `top_k` | integer 1–50 | no (default 20) | — |
-| `scope.owner_ids` | `array<principal>` | no | Honoured. Only the first entry is applied as the owner filter. |
+| `scope.subject_ids` | `array<principal>` | no | Honoured. Keeps only facts whose **subject** — who or what the fact is about — is one of these principals; not who wrote it (the sender) and not who may read it (the allow list). Only the first entry is applied. |
+| `scope.owner_ids` | `array<principal>` | no | **DEPRECATED** spelling of `scope.subject_ids`, still accepted (serde alias) and identical in effect. Prefer `subject_ids`. |
 | `scope.wiki_types` | `array<string>` | no | Post-filter: keeps hits whose resolved `wiki_type` is in the set. |
 | `scope.smart` | boolean | no | Corpus selector, applied **before** ranking: `true` searches only `wiki_sections` (smart-wiki documentation), `false` only `fact_index` (standard-wiki memory), omitted searches both and merges. Not a post-filter — `top_k` is honoured either way. |
 | `scope.valid_at` | string (ISO-8601) | no | The dated query: keeps only facts whose validity window contains the instant ("what was true on June 4th?"). Without it a closed window only down-ranks a hit (signal, never filter). Malformed values are `invalid_input`. |
@@ -605,7 +613,8 @@ A `fact` result is keyed by its `fact_id`; a `section` result is keyed by
 its positional `section` handle (`<source_path>#<ord>`), which is stable
 across reindexes.
 
-**Errors**: `400 invalid_input` (bad `scope.owner_ids[0]`),
+**Errors**: `400 invalid_input` (bad `scope.subject_ids[0]` — the message
+always names that key, even when the caller sent `scope.owner_ids`),
 `403 sender_token_mismatch`, `500 internal_error`.
 
 **Caveats**: a **fact** hit is gated by the per-fragment ACL (`can_read`), so a
@@ -639,8 +648,9 @@ across pages; use `wiki_search` for a quick one-line lookup. See
 | `query` | string | yes | What to recall, natural language. |
 | `sender_id` | string | no | Validated against the token. |
 | `top_k` | integer 1–50 | no (default 20) | Cap on the flat hits (and the RAG seeds feeding the funnel). |
-| `topics` | `array<string>` | no | Seed family **C** — subjects to look up. Supplying `topics` or `owners` skips server-side extraction (B). |
-| `owners` | `array<principal>` | no | Seed family **C** — `user:<id>`/`group:<id>` the query is about. Unparseable entries dropped. A `group:` entry skips extraction like any other, but seeds **no door of its own**: a group wiki's root is a directory, not an identity card (see [recall-pipeline.md](../design-notes/recall-pipeline.md#the-identity-anchor-is-not-a-score)). Its pages are still reached by the query's own hits and its card. |
+| `topics` | `array<string>` | no | Seed family **C** — free-text themes to look up. Supplying `topics` or `subjects` skips server-side extraction (B). |
+| `subjects` | `array<principal>` | no | Seed family **C** — `user:<id>`/`group:<id>` the query is about. Unparseable entries dropped. A `group:` entry skips extraction like any other, but seeds **no door of its own**: a group wiki's root is a directory, not an identity card (see [recall-pipeline.md](../design-notes/recall-pipeline.md#there-is-no-identity-family-and-that-is-the-fix)). Its pages are still reached by the query's own hits and its card. |
+| `owners` | `array<principal>` | no | **DEPRECATED** spelling of `subjects`, still accepted (serde alias) and identical in effect. Prefer `subjects`. |
 
 **Output**
 
@@ -663,7 +673,7 @@ across pages; use `wiki_search` for a quick one-line lookup. See
 **Caveats**: smart wikis are not funnel-navigated (their content surfaces only in
 `flat`). Without a `navigator` LLM slot the tool degrades to flat-only
 (`navigator_available: false`), never an error. Seed derivation: caller
-`topics`/`owners` (C) → query extraction on the navigator slot (B) → principal +
+`topics`/`subjects` (C) → query extraction on the navigator slot (B) → principal +
 RAG only (A).
 
 ---
@@ -817,7 +827,7 @@ document ingest.
 | `occurred_at` | iso8601 | no | The document's semantic clock (relative dates resolve against it). Defaults to the catalog row's timestamp for `media`. |
 | `promote` | enum `always` \| `never` | no | Inline only: forces (or forbids) **verbatim source promotion**; absent = document-shaped inline text is auto-promoted to the media rail (blob + catalog row, kind `doc`) so facts cite the preserved original. |
 | `dry_run` | boolean | no (default `false`) | Classify + segment synchronously, write nothing (reports `would_promote`). |
-| `force` | boolean | no (default `false`) | Bypass the (document, owner) idempotency check. |
+| `force` | boolean | no (default `false`) | Bypass the (document, subject) idempotency check. |
 
 **Output (enqueue)**
 
@@ -848,13 +858,13 @@ would never run), `501 not_implemented_phase_c` (`file`/`git`/`url`).
 
 **Caveats**
 
-- Enqueue is idempotent by (document sha256, owner) across non-failed
+- Enqueue is idempotent by (document sha256, subject) across non-failed
   jobs; `force` mints a fresh job. A promoted inline retry is
   idempotent on both layers (the blob bytes are the text verbatim, so
   blob dedup and job dedup key on the same content).
 - ACL: extracted facts inherit the source catalog row's **current** read
-  set; un-promoted inline sources are owner-only for the effective
-  sender (a promoted one starts owner-only too — its fresh catalog row
+  set; un-promoted inline sources are subject-only for the effective
+  sender (a promoted one starts subject-only too — its fresh catalog row
   has an empty allow list — and then widens with the anchor's read set
   like any media source).
 - Corpus→pages import (a document becoming *its own pages* in its own
@@ -1366,11 +1376,18 @@ the hint from then on.
 ### `recall_core_global` *(read-only)*
 
 Canonical "transversal recall" wrapper around `wiki_search`. Filters to
-the caller's own `scope = user:<sender>` wikis **and** excludes
-smart wikis (smart flag `true`), so project-bound memory does not
-leak into unrelated work — the contract the bundled `core-globalmemory`
-skill documents. The canonical transversal-recall call a smart consumer
-makes (model-driven, or from a host's recall hook).
+the facts whose **subject** is the caller (`subject_id = user:<sender>`)
+**and** excludes smart wikis (smart flag `true`), so project-bound memory
+does not leak into unrelated work — the contract the bundled
+`core-globalmemory` skill documents. The canonical transversal-recall
+call a smart consumer makes (model-driven, or from a host's recall hook).
+
+**The filter is on the fact's subject, not on which wiki it lives in.**
+It returns facts *about* the caller wherever they are filed — and a wiki
+whose proprietor is the caller can perfectly well hold facts about other
+people, which this view does **not** return. For a fact about someone or
+something other than the caller (a contact's birthday, a colleague's
+role, a shared address), use `wiki_search`.
 
 **Input**: `{ query (required), limit? (1–20, default 8) }`. The query
 is trimmed; empty after trim → `400 invalid_input`. The limit is
@@ -1382,7 +1399,8 @@ server-clamped.
 {
   "query": "remind me about the lnprint MFA flow",
   "filter_applied": {
-    "owner_user": "alice",
+    "subject_user": "alice",           // bare sender id — the filter is subject_id = user:alice
+    "owner_user": "alice",             // DEPRECATED echo of subject_user, same value, one release only
     "excluded_wiki_types": ["wiki-companion", "wiki-companion-acme"]
   },
   "hits": [
@@ -1406,7 +1424,7 @@ pre-filtered, so the caller's audit trail is unambiguous.
 Forget one fact by id on behalf of the connected sender, **routed by the
 caller's authority over the fact**. This is the consumer-MCP half of the
 forget model: a sender
-deletes their own contribution directly; a non-sender owner opens an audience
+deletes their own contribution directly; a non-sender subject opens an audience
 vote; everyone else is refused. **Casting the vote is dashboard-only — there is
 deliberately no consumer vote tool.**
 
@@ -1426,14 +1444,15 @@ persisted).
   `deleted_at` tombstone plus the best-effort excision of the region's on-disk
   bytes (capture pipeline) →
   `{ "outcome": "forgotten", "fact_id": "…" }`.
-- **non-sender owner** (subject / owning-group member, `acl::sender_owns`) —
+- **non-sender subject** (the fact's subject, or a member of the group that is
+  its subject — `acl::sender_is_subject`) —
   forgetting a fact you did not author needs an **audience vote**, and a vote is
   opened **only from the dashboard**, never started in the background by the agent
   (maintainer 2026-06-29). The tool does **not** open a request; it steers the
   user there → `{ "outcome": "request_from_dashboard", "fact_id": "…", "detail":
   "…" }` (the agent surfaces the steer, e.g. with a `dashboard_link`).
-- **anyone else** (not author, owner, or owning-group member) → `403
-  sender_unauthorized`.
+- **anyone else** (not author, not the subject, not a member of a subject
+  group) → `403 sender_unauthorized`.
 
 On the consumer MCP path the caller acts as the JWT's `sender_id` and is never an
 admin (`is_admin = false`), so the author-or-admin branch reduces to "the caller
@@ -1611,8 +1630,8 @@ The registered `AgenticTool` variants (read the live set off
 | `structure_proposal_get` | read | Full row of one proposal. |
 | `structure_proposal_apply` | write | Apply a proposal with answers (threads `hub_writer` for forge kinds). |
 | `wiki_facts_for` | read | Filtered fact listing (wiki / topic / fact_type / date). |
-| `wiki_forget` | write | Tombstone a single fact — authority-routed (sender-direct; a non-sender owner is steered to the dashboard). |
-| `wiki_supersede` | write | Replace a fact in place, inheriting owner / ACL / fact_type / topics. |
+| `wiki_forget` | write | Tombstone a single fact — authority-routed (sender-direct; a non-sender subject is steered to the dashboard). |
+| `wiki_supersede` | write | Replace a fact in place, inheriting subject / ACL / fact_type / topics. |
 | `wiki_change_scope` | write | Re-parent a wiki (or promote to root); stable `wiki_id`. |
 | `structure_proposal_revert` | write | Undo a previously-applied proposal (inverse of `structure_proposal_apply`); reuses `revert_proposal`. Headline: undo an act-first structured-wiki emergence — the emerged wiki is deleted unless it is "in use". Status-driven `RevertAuth` + 0032 recipient gate. |
 | `structure_proposal_confirm` | write | Confirm a sweep auto-applied proposal (`applied_pending_confirm → applied`) so it sticks — counterpart of `structure_proposal_revert`; reuses `confirm_proposal` (gates by recipient/admin internally). Mints the `revert_token` + opens the 7-day window. |

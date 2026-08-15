@@ -2,7 +2,7 @@
 title: Ingest pipeline — wiki_ingest_message
 area: design-notes
 status: implemented
-last_review: "2026-08-06"
+last_review: "2026-08-15"
 ---
 
 # Ingest pipeline
@@ -34,14 +34,14 @@ classification (`capture | recall | structural | skip`) and — for
 capture — the facts to file. The plan is **multi-fact and array-only**:
 every captured fact lives in an `extractions` array on
 [`LlmIngestPlan`](../../crates/mwe-core/src/ingest.rs), one
-self-contained capture plan per atomic fact (`target_page`, `owner_id`,
+self-contained capture plan per atomic fact (`target_page`, `subject_id`,
 `allow_ids`, `fact_type`, the validity
 interval `valid_from`/`valid_to`, the per-page `style` and
 `page_description`, the per-fact `salience`, the `engine_rule` governance
 flag, `topics`, `body`, `supersede_target`). **`target_wiki_id` is not on
 that list any more**: the prompt tells the model in as many words that it is
 shown no wikis and must not emit one, and the engine derives the destination
-from the `owner_id` it did choose (see [Destination](#destination--derived-not-chosen)).
+from the `subject_id` it did choose (see [Destination](#destination--derived-not-chosen)).
 The field survives on the Rust struct, and as the first arm of
 `derive_target_wiki`, only as a tolerant fallback for something that still
 emits one — never as the ordinary route.
@@ -138,8 +138,8 @@ routing → seed) and stays inside the ~500 ms–2 s conversational budget
 > [redaction-policy.md](redaction-policy.md) (per-fact metadata is DB-authoritative).
 
 > **Per-fact salience.** Each extraction also carries a `salience`
-> (`high` | `normal` | `low`; absent = unspecified) — how always-relevant the fact is to its owner. `high` is
-> the scarce always-on set that belongs in the owner's **base context**: the **identity core** (name, aliases,
+> (`high` | `normal` | `low`; absent = unspecified) — how always-relevant the fact is to its subject. `high` is
+> the scarce always-on set that belongs in the subject's **base context**: the **identity core** (name, aliases,
 > role(s), relations, birthdate, address, language, timezone, contacts — the whole identity card, not just the
 > name), **health/safety**, and **hard standing constraints**. The classifier decides it (no hardcoded gate, an
 > independent axis from `fact_type`/validity/`style`). A `high`-salience identity core is how the
@@ -192,19 +192,19 @@ destination instead, in four descending preferences:
    falls through to the next arm instead of being dropped.
 2. **The list page the turn names.** A `target_page` matching an entry of
    the `list_pages` inventory takes that page's own wiki. This is the one
-   route by which a turn still files into a wiki that is not its owner's,
+   route by which a turn still files into a wiki that is not its subject's,
    and it fires exactly when the user pointed at the list themselves.
-   **Matched on the name AND the owner's wiki**, falling back to the name
+   **Matched on the name AND the subject's wiki**, falling back to the name
    alone: the inventory spans every wiki the sender may read, so `spesa.md`
    can name Alice's shopping list and the family's at once, and a file name
    is not an address. Matching the name alone handed *«aggiungi il detersivo
    alla lista della spesa di famiglia»* — which arrives with
-   `owner_id: group:famiglia` — to whichever wiki the inventory listed first.
+   `subject_id: group:famiglia` — to whichever wiki the inventory listed first.
 3. **The subject's own wiki.** An identity wiki's id *is* its principal's
    id, so `user:marco` → `marco` and `group:famiglia` → `famiglia`. The
    ordinary path.
-4. **The sender's own wiki** — for a `global`-owned fact (no wiki carries
-   that principal) and for a subject with no wiki of their own.
+4. **The sender's own wiki** — for a fact whose subject is `global` (no wiki
+   carries that principal) and for a subject with no wiki of their own.
 
 Nothing left → `MissingTargetWiki`, and the extraction is dropped. That is
 now a deployment fault (the sender has no writable wiki) rather than a
@@ -231,7 +231,7 @@ derivation inherits that exclusion for free.
 is what replaced the wiki window, and it is not the same block in a smaller
 hat. A wiki is an *address* the engine can compute; the file name of the
 shopping list is knowledge only the store holds, and a recalled fact
-carries its wiki, its owner and its audience but **never the page it sits
+carries its wiki, its subject and its audience but **never the page it sits
 on**. Without the inventory, "add detergent to the shopping list" invents a
 name, and — because a requested container is written live — mints a second
 shopping list in front of the user.
@@ -569,7 +569,7 @@ Three properties make it trustworthy, and all three were learned the hard way:
 
 It reports two rates: agreement on *every* compared field, and agreement on
 the consequential subset — intent, how many facts, and each fact's wiki,
-owner and audience. Free prose (`body`, `page_description`, `topics`) is
+subject and audience. Free prose (`body`, `page_description`, `topics`) is
 never compared. Runs resume, so a rate-limited pass is re-runnable for the
 cost of what it missed, and `--dry-run` prints what a pass would send
 without sending it. It is a manual example, never part of `cargo test`: it
@@ -582,12 +582,12 @@ Replaying 340 production turns twice through the **identical** prompt:
 | | agreement, run vs identical run |
 |---|---|
 | every compared field | **51.2%** |
-| intent + fact count + wiki + owner + audience | **67.9%** |
+| intent + fact count + wiki + subject + audience | **67.9%** |
 | …restricted to turns that captured something | **45.7%** |
 
 So on a turn that files memory, the same message with the same recalled
 context lands the same way barely half the time — the wiki differs on 16%
-of turns, the owner on 13%, the audience on 16%.
+of turns, the subject on 13%, the audience on 16%.
 
 This is not a prompt-size effect. The `ingest` slot runs on Gemini 3, which
 **mandates `temperature: 1.0`** — the backend clamps the caller's requested
@@ -609,22 +609,22 @@ came back "indistinguishable" rather than "good" or "bad".
 
 Measured on a read-only production snapshot, 1 001 active facts (2026-07-28).
 Of 28 near-identical fact pairs living side by side, **not one diverges on
-who may read it** — every divergence is `owner_id` and/or `wiki_id`.
+who may read it** — every divergence is `subject_id` and/or `wiki_id`.
 
-The reason is that read access is `owner ∪ allow ∪ sender`
+The reason is that read access is `subject ∪ allow ∪ sender`
 ([identity-and-acl.md](../concepts/identity-and-acl.md#the-single-rule)) —
 **all three, and none of them sufficient alone** — so one audience has
 several equally valid spellings. For a fact about one member that the whole
 group may read, production holds both, in the same notebook:
 
 ```
-owner=user:galadriel  allow=["group:famiglia"]    74 rows
-owner=group:famiglia  allow=[]                    38 rows
+subject=user:galadriel  allow=["group:famiglia"]    74 rows
+subject=group:famiglia  allow=[]                    38 rows
 ```
 
 **54% of active facts sit in a (notebook, audience) group written more than
 one way.** The residue of genuine defects is small: one escaped duplicate,
-~6 agent-activity notes with no settled owner, 50 rows that name the group
+~6 agent-activity notes with no settled subject, 50 rows that name the group
 twice. No leak, no wrong audience.
 
 Two hypotheses this killed, both worth not re-forming:
@@ -641,12 +641,13 @@ Two hypotheses this killed, both worth not re-forming:
 
 **Production is deliberately left as it is.** The notation has no effect on
 recall — `can_read` unions all three fields, so every spelling retrieves
-identically — and only owner-axis queries ("everything about X") see the
+identically — and only subject-axis queries ("everything about X") see the
 difference. The house rule for *new* writes: when a fact is shared with a
-group, the group goes in `allow`; it may additionally be the `owner` when the
-group really is the subject. Rewriting history is not on the table: a
-group-owned row cannot be re-attributed without re-reading the sentence,
-since `sender_id` records who *said* a fact, not who it is *about*.
+group, the group goes in `allow`; it is additionally the `subject` only when
+the group itself is what the fact is about. Rewriting history is not on the
+table: a row whose subject is a group cannot be re-attributed without
+re-reading the sentence, since `sender_id` records who *said* a fact, not who
+it is *about*.
 
 ## Why one LLM call (and not many)
 
@@ -783,16 +784,16 @@ A supersede is a **content update, not a sharing change**: the new fact
 **inherits the superseded fact's allow list**. The reconciler can tell that a
 claim was restated; it must never be relied on to restate who may read it,
 because a restatement that quietly drops the allow list re-privatises a shared
-fact and nothing anywhere says so — invisible to everyone, its owner included.
+fact and nothing anywhere says so — invisible to everyone, its subject included.
 
-**The allow list, and nothing else.** The successor keeps its own `owner_id`
-and its own `sender_id` — a supersede is not a change of ownership either.
-Alice retiring *"Alice is at the dentist Thursday"* by saying *"it is Bob who
-goes"* mints a fact **owned by Bob**, and a reader set is
-`owner ∪ allow ∪ sender`: carrying Alice's ownership onto it would take the
-fact about Bob away from Bob, at the moment Alice was trying to tell him. Where
-the subject does not change — a restated wifi password — the owner was already
-the same, which is what made this invisible.
+**The allow list, and nothing else.** The successor keeps its own `subject_id`
+and its own `sender_id` — a supersede replaces what a fact says, never whose
+fact it is. Alice retiring *"Alice is at the dentist Thursday"* by saying *"it
+is Bob who goes"* mints a fact **whose subject is Bob**, and a reader set is
+`subject ∪ allow ∪ sender`: keeping Alice as the subject would take the fact
+about Bob away from Bob, at the moment Alice was trying to tell him. Where the
+subject does not change — a restated wifi password — it was already the same
+on both sides, which is what made this invisible.
 
 The classifier used to do this inheritance *before* writing the new fact, which
 was free. Deciding the supersede **after** the successor exists makes it a
@@ -815,12 +816,12 @@ Three guards in `vet_supersede`, each refusing rather than guessing — the
 target must be one of the candidates the stage was shown (a hallucinated id
 retires nothing), the successor must be one of the facts **this turn filed**
 (so a fact is never welded to something that does not exist, or to itself), and
-the sender must **own** the target — through
-[`acl::sender_owns`](../../crates/mwe-core/src/acl.rs), so a member of an
-owning **group** counts as the owner. That last is the same call the two
+the sender must be the target's **subject** — through
+[`acl::sender_is_subject`](../../crates/mwe-core/src/acl.rs), so a member of a
+**group** that is the subject counts. That last is the same call the two
 sibling verbs make: reading a fact is not authority over it, and a supersede
 rewrites both its validity and its successor pointer. (A bare principal
-comparison would have refused every group-owned fact from everybody, always —
+comparison would have refused every group-subject fact from everybody, always —
 the family calendar readable and never correctable.) The orchestrator therefore keeps
 **every** id the turn filed (`turn_facts`) — `capture_id` retains only the
 first, as the turn's anchor for the wire, and a successor must be nameable
@@ -1080,19 +1081,20 @@ ends in the same `validity_close` receipt + notice.
 ## Operation-path edits — validity-edit + acl-change
 
 Two sibling verbs ride the same act-first / warn-and-skip / receipt
-shape as the closure verb, letting the owner repair a *stored* fact
+shape as the closure verb, letting a fact's subject repair a *stored* fact
 straight from a conversation. Both are **standard memory wikis only** (a
 smart wiki is markerless — its facts carry no per-fragment validity or
 ACL), both target an explicit fact in this turn's `recalled_memory` (the
 same anti-hallucination rule as the closure verb), and both apply a
-single deterministic gate — the **owner gate** — leaving every semantic
+single deterministic gate — the **subject gate** — leaving every semantic
 decision to the LLM:
 
 > The sender may edit a recalled fact's dates or sharing **only when they
-> own it** (`hit.owner_id == user:<sender>`,
-> [`validate_validity_edit`](../../crates/mwe-core/src/ingest.rs) /
-> [`validate_acl_change`](../../crates/mwe-core/src/ingest.rs)). A
-> non-owner's element is silently skipped — owner-or-admin is the only
+> are its subject** — the subject user, or a member of the group that is
+> the subject ([`acl::sender_is_subject`](../../crates/mwe-core/src/acl.rs),
+> called from [`validate_validity_edit`](../../crates/mwe-core/src/ingest.rs) /
+> [`validate_acl_change`](../../crates/mwe-core/src/ingest.rs)). Anyone
+> else's element is silently skipped — the subject gate is the only
 > deterministic gate, the LLM resolves all natural-language semantics.
 
 - **`validity_edits`** ([prompt](../../crates/mwe-core/prompts/ingest.md)
@@ -1117,10 +1119,10 @@ decision to the LLM:
   tutti"* → `allow_ids: [global]`, *"condividila col gruppo famiglia"* →
   add `group:famiglia`. The LLM resolves the scope to principals (the
   `allow_ids` list REPLACES the old one) — and because `recalled_memory`
-  now surfaces each fact's current `owner` and `allow` (carried on the
+  now surfaces each fact's current `subject` and `allow` (carried on the
   recall hit), it starts from the existing list and adds/removes against
-  it instead of dropping principals it cannot see; `owner_id` defaults to
-  the existing owner when omitted.
+  it instead of dropping principals it cannot see; `subject_id` defaults to
+  the existing subject when omitted.
   [`apply_plan_acl_changes`](../../crates/mwe-core/src/ingest.rs) writes
   the ACL via
   [`fact_index::set_acl`](../../crates/mwe-core/src/fact_index.rs)
@@ -1297,11 +1299,11 @@ places adjacent to this block (the hermes bridge leads with it).
      all: the funnel is handed the page as **already visited**, so it is
      neither offered as a candidate nor opened by any route — fan seed,
      card rail or `[[wikilink]]`. **The identity page is not a
-     navigation destination for its own owner** (founder's ruling,
+     navigation destination for its own subject** (founder's ruling,
      2026-08-03: the recalled facts already land on the pages that answer
      the turn, so the hub's routing buys nothing and a page open is the
-     scarcest thing the walk has). A *subject's* card is a different page
-     and stays navigable — nothing has served it.
+     scarcest thing the walk has). *Another* person's card is a different
+     page and stays navigable — nothing has served it.
    - **A page with no readable fact is scaffolding, not a card** — a freshly
      seeded `profile.md` is a heading and some connective tissue. The slot
      then degrades to the label line alone, and is omitted entirely when
@@ -1410,10 +1412,10 @@ Division of labour and cost discipline:
   `structural` nudge never pays a navigator completion. (Gate to validate
   on the dogfood; an always-on flag is a one-line change.)
 - **The navigation seeds are the classifier's own output, reused**:
-  topics = the union of the plan's capture-unit `topics`, owners = the
-  units' parsed `owner_id`s, RAG seeds = the step-1 flat hits (fresh
+  topics = the union of the plan's capture-unit `topics`, subjects = the
+  units' parsed `subject_id`s, RAG seeds = the step-1 flat hits (fresh
   included — they seed their wiki's root). For a recall intent topics and
-  owners are typically empty, leaving the principal + RAG fan — the
+  subjects are typically empty, leaving the principal + RAG fan — the
   designed degenerate case. Situational seeds stay empty until the host
   adapter supplies them (context model, group 3).
 - **The due-soon slot is time-driven, not query-driven**, and a plain DB
@@ -1512,14 +1514,14 @@ or single-fact:
   exception being the `list_pages` inventory, whose entries are exact names
   to be copied — so canonicalisation is fighting a name the model *coined*,
   never one it read off disk.
-- `owner_id` ⇒ `user:<sender>`.
+- `subject_id` ⇒ `user:<sender>`.
 - `body` ⇒ for the legacy single unit, falls back to raw `request.text`
   when the model omits it; a multi-fact extraction **must** carry its
   own `body` (`MissingBody`) so the whole message is not duplicated
   under every fact.
 - The classifier is **prose-only**: there are no `wiki_type` / `fields` /
   `purpose` fields and no route-or-create step — every fact files as prose
-  into the wiki `derive_target_wiki` resolves from its `owner_id`.
+  into the wiki `derive_target_wiki` resolves from its `subject_id`.
 
 ## ACL projection
 
@@ -1527,58 +1529,58 @@ The orchestrator never bypasses ACL. Recall (step 1) goes through
 [`recall::wiki_recall`] which already applies `acl::can_read` to every
 candidate, so the LLM only sees rows the sender is authorised to read.
 The capture step (step 4) writes a region tagged with the LLM's
-`owner_id` + `allow_ids` (validated as `Principal`), so the same ACL
+`subject_id` + `allow_ids` (validated as `Principal`), so the same ACL
 discipline carries to the new row. One normalization applies on this
 LLM-fed path: a classifier that echoes the **sender** into `allow_ids`
 is expected noise, and `validate_capture_plan` strips it — capture's
 `SenderRedundantInAllow` lint stays strict for hand-written callers but
 can never kill an ingest turn.
 
-A second normalization is the **enrollment guard on `owner_id`** (the
-engine floor under the 2026-06-30 subject-owner ruling): an owner that
-parses as a `Principal` but that enrollment does not back — a principal
-the classifier coined despite the prompt's `known_users` roster — is
-cleared before validation
+A second normalization is the **enrollment guard on `subject_id`** (the
+engine floor under the 2026-06-30 ruling that this axis carries the fact's
+subject): a subject that parses as a `Principal` but that enrollment does
+not back — a principal the classifier coined despite the prompt's
+`known_users` roster — is cleared before validation
 ([`enrollment::principal_exists`](../../crates/mwe-core/src/enrollment.rs),
-fail-open on a DB error, `warn`-logged), so the unit re-owns to the
+fail-open on a DB error, `warn`-logged), so the unit falls back to the
 sender default. An **enrolled** third-party subject (a reciprocal
 relationship fact, a fact filed for another family member) passes
-untouched — the owner axis is the subject, not the interlocutor. The
+untouched — the axis is who the fact is *about*, not who is speaking. The
 document path applies the same guard on its filing loop
 ([document-ingest.md](document-ingest.md)).
 
-A third normalization is the **agent-wiki guard on the target**. Owner
-and `target_wiki_id` are deliberately **independent** axes: the owner is
-the subject and the ACL, the wiki is conceptual organisation — so a
-`group:`-owned fact may legitimately live in a user's wiki and a
-`user:`-owned one in a group wiki (the classifier prompt says so
-explicitly, with worked examples), and the engine does not couple them.
-The one placement that is never legitimate is **somebody else's** fact
+A third normalization is the **agent-wiki guard on the target**. Subject
+and `target_wiki_id` are deliberately **independent** axes: the subject is
+who the fact is about and the first term of its ACL, the wiki is
+conceptual organisation — so a fact about a `group:` may legitimately live
+in a user's wiki and a fact about a `user:` in a group wiki (the classifier
+prompt says so explicitly, with worked examples), and the engine does not
+couple them. The one placement that is never legitimate is **somebody else's** fact
 filed in an **agent's** wiki: that wiki holds one subject, the agent. So
 when the resolved target carries `is_agent` (the flag rides
 `AvailableWiki` from the wiki's `_meta`), `validate_capture_plan`
-**redirects** the write to the owner's own wiki when it is in the turn's
+**redirects** the write to the subject's own wiki when it is in the turn's
 window, and **drops** the extraction when it is not
 (`TargetIsAgentWiki` → skip + warn, rather than misfile).
 
 Two things the guard deliberately does *not* do, both of which would
 destroy facts rather than place them:
 
-- **The owner being the agent itself is exempt.** An identity wiki's id
+- **The subject being the agent itself is exempt.** An identity wiki's id
   *is* its principal's id, so `home == target` means the agent's wiki is
-  the owner's own home — the one place the fact belongs. This is the
+  the subject's own home — the one place the fact belongs. This is the
   ordinary case of a **user** stating something about the assistant
-  ("sei bravo con le pratiche INPS"): the `owner_id: "self"` sentinel
+  ("sei bravo con le pratiche INPS"): the `subject_id: "self"` sentinel
   upstream only fires on an *assistant* turn, so on a user turn the fact
-  arrives here owned by the agent's own principal. Without the exemption
-  the guard would hunt for a non-agent wiki named after the agent, find
-  none, and drop every user-stated fact about the assistant.
-- **The redirect looks for the owner's home and nothing else** — not for
+  arrives here with the agent's own principal as its subject. Without the
+  exemption the guard would hunt for a non-agent wiki named after the
+  agent, find none, and drop every user-stated fact about the assistant.
+- **The redirect looks for the subject's home and nothing else** — not for
   "a home that is not an agent's". With two bots enrolled, a fact about
   bot B aimed at bot A's wiki has a perfectly good home in B's own wiki.
 
 Behaviour-rule and `self` facts never reach this function at all (both
-pin their wiki in code, upstream). Every other owner⊥wiki placement the
+pin their wiki in code, upstream). Every other subject⊥wiki placement the
 classifier proposes is honoured.
 
 The guard is the net, and since the classifier stopped naming wikis it is
@@ -1592,8 +1594,8 @@ wiki's `_meta.md`, so an agent marked only in the DB left the whole
 mechanism inert — which is why the marker is now stamped on every standard
 connect ([identity-and-acl.md](../concepts/identity-and-acl.md) §1.5).
 
-The subject-owner axiom has a **delivery half**: a fact that files
-owned by an enrolled user who is not the human of the conversation is
+The subject axis has a **delivery half**: a fact that files with an
+enrolled user who is not the human of the conversation as its subject is
 news *to that user*, and the recipient must not have to stumble on it
 via recall. The filing loop accumulates such facts per beneficiary and,
 after the loop, emits one **`fact_minted_for_you`** event per recipient
@@ -1604,7 +1606,7 @@ content, not a pointer), `from_user_id` (the human whose turn minted
 them — on an assistant turn `request.sender_id` stays the interlocutor;
 the roadmap-27 flip touches only the fact's `sender` axis), and
 `origin` (`user_turn` | `assistant_turn`). A dedup-skipped direct write
-emits nothing (nothing new was minted), group-owned facts are communal,
+emits nothing (nothing new was minted), group-subject facts are communal,
 and agent principals are skipped (`is_agent` — no inbox). Emission is
 non-fatal: a lost notice never demotes the turn. The document path
 mirrors this per job ([document-ingest.md](document-ingest.md));
@@ -1633,9 +1635,10 @@ region make the audit trail recoverable.
 
 ## Group-scope routing — `sender_groups` in the prompt
 
-`owner_id` is the ACL principal a captured region belongs to. Deciding
-`group:<id>` instead of `user:<sender>` is exactly what makes a fact
-reach a shared family/team memory — but the model can only make that
+`subject_id` is the principal a captured region is *about*, and the first
+term of its ACL. Reading a group's domain — whether as the fact's subject
+or, far more often, as its audience in `allow_ids` — is what makes a fact
+reach a shared family/team memory. But the model can only make that
 call if it knows *which groups the sender belongs to* and *what each
 group's memory is for*. That is operator knowledge: it lives in the
 `enrollment_groups.scope` prose column the admin fills in from the
@@ -1666,11 +1669,13 @@ so a user in the maximum legal 8 groups always lost the one that sorted last,
 and the fact that belonged to its domain was filed private instead.
 A sender in no groups renders `sender_groups:\n  (none)`.
 
-The `owner_id` instructions in the bundled prompt body tell the model to
-compare the *meaning* of the fact against each group's scope and route
-to `group:<id>` when it falls inside that domain — even when the message
+The `subject_id` instructions in the bundled prompt body tell the model to
+compare the *meaning* of the fact against each group's scope and reach for
+`group:<id>` when it falls inside that domain — even when the message
 never names the group — while honouring any exclusions the scope states.
-Without `enrollment_groups.scope` reaching the classifier, family facts
+The scope drives the **audience** (`allow_ids`) unless the collective itself
+is what the fact is about, which is the only case that makes a group the
+`subject_id`. Without `enrollment_groups.scope` reaching the classifier, family facts
 fall back to private captures unless the message echoes a prompt few-shot
 near-verbatim; injecting the scope is what lets the model route on meaning.
 
@@ -1709,7 +1714,7 @@ mia salute restano privati»*, had that rule dropped while the prompt told the
 model it had seen everything. The number survives as the point where an
 unusually long policy is worth a `warn!`, since it costs every turn. The
 bundled prompt body tells the model to **honour the privacy/sharing rules
-when it assigns each fact's `owner_id`/`allow_ids`** — an explicit user
+when it assigns each fact's `subject_id`/`allow_ids`** — an explicit user
 rule ("keep health private", "always share X with the family")
 *overrides* the scope-routing default above — and to **honour
 do-not-store rules by dropping** the matching extraction (no capture at
@@ -1754,22 +1759,22 @@ it.
 
 **Scope is read from the addressee, and scope is the governance.** Every
 behaviour rule carries a `behaviour_scope` the classifier sets from the
-grammatical addressee (Part 7b), and scope alone drives home + owner +
+grammatical addressee (Part 7b), and scope alone drives home + subject +
 authority:
 
 - **per-user** — addressed to the speaker (*"-mi / con me / le mie"*) or a bare
   imperative with no audience: how THIS agent behaves WITH THIS USER. It touches
   only them, so **anyone may set one**; filed in the agent's wiki,
-  `owner = the user`, recalled only for that user on that agent.
+  `subject = the user`, recalled only for that user on that agent.
 - **agent-wide** — impersonal / universal (*"con tutti / con chiunque"*, or a
   how-the-agent-works directive with no per-speaker scope): how the agent behaves
   for EVERYONE. So it is **admin-only**; filed in the agent's wiki,
-  `owner = the agent`, recalled for every user.
+  `subject = the agent`, recalled for every user.
 - **user-global** — the user explicitly addresses EVERY assistant they talk to
   (*"tutti gli assistenti", "con qualunque assistente", "chiunque tu sia"*):
   how every assistant behaves WITH THIS USER. It binds only their own
   conversations, so **anyone may set one**; filed in the **sender's identity
-  wiki**, `owner = the sender`, recalled by every consumer serving them —
+  wiki**, `subject = the sender`, recalled by every consumer serving them —
   whichever consumer happened to hear it.
 
 So a user shapes how the agent behaves *with them* — on one agent or on all of
@@ -1779,7 +1784,7 @@ only *classifies* the scope from the addressee; the engine enforces authority.
 *soul vs operational* (style vs tools) is an **optional content tag** that
 routes nothing — scope comes from the addressee alone, so every quadrant is
 expressible: *"per le mie cose usa claude-code"* is operational AND per-user →
-anyone may set it, `owner = the user`.
+anyone may set it, `subject = the user`.
 
 **Recognition.** The classifier marks an extraction `behaviour_rule: true` and
 tags `behaviour_scope` (Part 7b); the LLM decides, no keyword gate, and defaults a
@@ -1826,22 +1831,22 @@ behaviour facts, no collision since `sender_rules` never reads an agent wiki, th
 agent never being a sender). A **user-global** rule skips the consumer
 resolution entirely: its home is the **sender's identity wiki** `rules.md`,
 alongside the governance prose (the page contract anticipates both — prose plus
-`{{f=…}}` regions). Home + ownership are the scope
+`{{f=…}}` regions). Home + subject are the scope
 ([`ingest::capture_behaviour_rule`](../../crates/mwe-core/src/ingest.rs) taking a
 `BehaviourScope`):
 
-- **per-user** → the agent's wiki, `owner = the served user`, so different
-  users' rules are distinct facts and owner-scoped dedup
+- **per-user** → the agent's wiki, `subject = the served user`, so different
+  users' rules are distinct facts and subject-scoped dedup
   ([capture-and-dedup.md](capture-and-dedup.md)) never folds one user's into
   another's (while still folding a user's own repeat).
-- **agent-wide** → the agent's wiki, `owner = the agent`, one policy deduped
+- **agent-wide** → the agent's wiki, `subject = the agent`, one policy deduped
   across the agent's own standing rules. The dispatch reaches this write only
   after confirming the sender is the admin
   ([`enrollment::is_admin`](../../crates/mwe-core/src/enrollment.rs)). A
   **non-admin's agent-wide directive is refused**: nothing is filed, and the
   `rules` field carries a one-shot notice steering the agent to decline politely
   this turn (their own per-user preference it may still honour).
-- **user-global** → the sender's identity wiki, `owner = the sender` — the same
+- **user-global** → the sender's identity wiki, `subject = the sender` — the same
   open authority as per-user (their own conversations only), with reach across
   every consumer serving them.
 
@@ -1866,10 +1871,10 @@ everywhere-set, served through the user-global source of the dedicated channel.
 the dedicated
 [`fact_index::find_behaviour_rules`](../../crates/mwe-core/src/fact_index.rs)
 query), order pinned and most specific last: the **agent-wide** rules (the
-agent's wiki, `owner = the agent` — the floor, applied for everyone), then
-**X's user-global** rules (X's identity wiki, `owner = user:X` — their
+agent's wiki, `subject = the agent` — the floor, applied for everyone), then
+**X's user-global** rules (X's identity wiki, `subject = user:X` — their
 everywhere-set), then **X's per-user** rules for this agent (the agent's wiki,
-`owner = user:X`). A smart consumer (no distinct agent wiki) draws only the
+`subject = user:X`). A smart consumer (no distinct agent wiki) draws only the
 user-global source. They are returned in the dedicated
 [`rules`](#the-rules-field--behaviour-directives-kept-apart-from-memory)
 field (roadmap 29d), flat — the per-rule scope rides only the classifier
@@ -1877,7 +1882,7 @@ injection (`agent_behaviour_rules`, for supersede targeting), not the consumer
 section — and structurally apart from the recalled facts, so the agent
 applies "how to behave with me" as an instruction rather than mistaking it for
 memory. The page-scope keeps the agent's own self-facts (roadmap 27d,
-`owner = agent` on its content pages) out of this channel, and the agent-wide
+`subject = agent` on its content pages) out of this channel, and the agent-wide
 rules out of the self-context block. Two invariants live **in the SQL, before
 the per-call cap** (`BEHAVIOUR_RULES_RECALL_CAP`, a resource cap):
 
@@ -1885,7 +1890,7 @@ the per-call cap** (`BEHAVIOUR_RULES_RECALL_CAP`, a resource cap):
   name is `rules.md` (the SQL mirror of
   [`wiki::is_rules_page`](../../crates/mwe-core/src/wiki.rs)), so the cap
   counts *rules only*: however many newer facts the agent wiki accumulates
-  under the same owner (self-facts above all), old rules never starve out of
+  under the same subject (self-facts above all), old rules never starve out of
   the `LIMIT` window;
 - **the validity filter** — a rule whose validity window is closed at *now*
   (`valid_to` set and past) stops being served, while the fact stays (closing
@@ -1904,7 +1909,7 @@ perimeter, exactly as they all skip smart wikis:
   ([`planner::gather_standard_facts`](../../crates/mwe-core/src/planner.rs))
   skips every `rules.md` fact — otherwise a behaviour-rule fact (written by the
   direct path, so absent from the persisted plan) would look *new* on the next
-  dream and orphan-fall-back onto the owner's buffer page;
+  dream and orphan-fall-back onto the subject's buffer page;
 - the **REM refile sweep** never *nominates* a `rules.md` fact (a per-user rule
   naturally embeds toward its user's wiki — a confirmed move would land it on a
   foreign wiki's buffer); rules facts still count in the similarity pools;
@@ -1918,12 +1923,12 @@ These are structural **channel invariants** (which facts the channel sees,
 which facts a sweep may nominate), not semantic gates — the LLM still decides
 content.
 
-**Governance stays controllable.** A per-user rule is `owner = the user`, so it
+**Governance stays controllable.** A per-user rule is `subject = the user`, so it
 stays visible and correctable by that user from the dashboard facts browser — it
 leaves the user's *fact* memory without leaving the user's *control*. A
-user-global rule lives in the user's own identity wiki, owned by them — the most
-direct control of all. An agent-wide rule is `owner = the agent`, the agent's
-standing operation, editable by the admin who set it.
+user-global rule lives in the user's own identity wiki with themselves as its
+subject — the most direct control of all. An agent-wide rule is `subject = the
+agent`, the agent's standing operation, editable by the admin who set it.
 
 ## The assistant pass — the agent remembers its own turn (agent-authored memory)
 
@@ -1948,13 +1953,13 @@ poison (noise, opinions, regenerable world knowledge, feedback loops). Part 9 is
 gated hard on the `author: assistant` context line `build_prompt` injects — on a
 normal turn it is ignored and the prompt is byte-identical to before. When armed,
 it classifies each thing the reply states into six kinds and keeps three:
-**episodic sediment** ("discussed X, concluded Y, on D" — `owner_id:
-user:<sender>`) and **personalised advice / a decision** — owned by its
+**episodic sediment** ("discussed X, concluded Y, on D" — `subject_id:
+user:<sender>`) and **personalised advice / a decision** — filed under its
 **subject**: the sender in the normal case, another **enrolled** user when the
 turn explicitly establishes that person must know and act on it (the
-`owner_id` section's ABOUT-includes-FOR necessity test; the owner axis is the
-subject, not the interlocutor) — plus the **self-fact** (`owner_id: "self"`,
-below). When the owner is not the sender, the prompt's **beneficiary rule**
+`subject_id` section's ABOUT-includes-FOR necessity test; the axis is who the
+fact is about, not who is speaking) — plus the **self-fact** (`subject_id:
+"self"`, below). When the subject is not the sender, the prompt's **beneficiary rule**
 governs the body wording: the fact says the advice *passed through* the sender
 («ha spiegato a X cosa Y deve controllare»), never that the agent interacted
 with the absent subject — a delivery that never happened must not be asserted
@@ -1976,7 +1981,7 @@ assistant-turn matter at all; it arrives on the *user's* turn and rides Part 7b
 
 **Attribution.** At the capture site `cap_req.sender` is flipped to the agent
 principal — resolved via `consumers::system_user_for(consumer_id)`, the *same*
-binding the behaviour-rule path above uses — while `owner` stays whoever the fact
+binding the behaviour-rule path above uses — while `subject` stays whoever the fact
 is about (the user, for episodic/advice; `global` for kept generic knowledge). So
 the synthesis lands in the user's wiki and surfaces on their recall, but carries
 the agent's provenance. That provenance **is** the trust tier: agent-derived
@@ -1992,11 +1997,11 @@ proactive follow-up. It **complements** document text extraction (9j/21): that
 captures the source exhaustively; this captures the agent's *synthesis*.
 
 **The self side — the agent has a loaded sense of who it is (roadmap 27d core).**
-The facts above are about the *user* (`owner=user`, in their wiki). The same
+The facts above are about the *user* (`subject=user`, in their wiki). The same
 exchange also has an agent's-eye side, and that lands in the **agent's own**
-wiki: Part 9's `owner_id: "self"` sentinel routes an extraction through
-`capture_agent_self_fact` into the calling agent's wiki, **owned by the agent**
-(`owner == sender == the agent` ⇒ no separate sender), auto-tagged with the
+wiki: Part 9's `subject_id: "self"` sentinel routes an extraction through
+`capture_agent_self_fact` into the calling agent's wiki, **about the agent**
+(`subject == sender == the agent` ⇒ no separate sender), auto-tagged with the
 served user — *except* a high-salience **identity** fact, which stays untagged so
 it is user-agnostic. **The sentinel has two accepted spellings**: the literal
 `self` the prompt prescribes, and the agent's own principal written out
@@ -2005,7 +2010,7 @@ id reaches for instead. Both route here, because a claim the engine does not
 recognise does not degrade gracefully: it files the diary entry in whatever wiki
 `target_wiki_id` named, scattering the agent's history across its users' wikis.
 The alias is unambiguous by construction — the agent principal resolves only on
-a turn the agent authored, so on a user turn an owner naming the agent keeps its
+a turn the agent authored, so on a user turn a subject naming the agent keeps its
 ordinary meaning. **The engine chooses the page too**
 ([`agent_self_fact_page`](../../crates/mwe-core/src/ingest.rs)): an identity
 self-fact lands on the agent's buffer page, from which the next compile's
@@ -2018,8 +2023,8 @@ collapse into one heterogeneous catch-all page: a per-person history is a
 coherent subject the REM can grow and split, a grab-bag of every user's episodes
 is not. The read side is page-agnostic (it buckets by the served-user tag), so
 the routing is a write-time concern only. So one INPS reply yields two facts:
-"the user's deadline is 27/6" (`owner=user`, her wiki, surfaces on *her* recall) and "the agent helped
-the user with the INPS filing" (`owner=self`, the agent's wiki, its own history)
+"the user's deadline is 27/6" (`subject=user`, her wiki, surfaces on *her* recall) and "the agent helped
+the user with the INPS filing" (`subject=self`, the agent's wiki, its own history)
 — the two sides of one event, mirroring how two people each remember a
 conversation from their own side. The read side closes the loop:
 `recall_agent_self` leads the recall block (`context_snippet`) with WHO YOU ARE
@@ -2055,7 +2060,7 @@ routing sink.
 ## Cross-user attribution — `known_users` in the prompt
 
 Group-scope routing decides between `user:<sender>` and `group:<id>`.
-The third `owner_id` target is **another named person**: a message from
+The third `subject_id` target is **another named person**: a message from
 Alice that says "Bob prefers tea" should file under `user:bob`, not under
 Alice. The classifier can only make that call if it knows who is
 enrolled and by what names. `build_prompt` therefore injects a
@@ -2079,18 +2084,18 @@ column, migration 0050) says which entry it is. Without it the "you" of every
 turn reads as one more stranger in the list, and a sentence addressed **to**
 the assistant is indistinguishable from a sentence **about** a third party;
 with it the prompt can state the asymmetry outright: the agent is a real
-principal (a fact whose subject is the agent is owned by it, Part 9's
-`owner_id: "self"`), but a human name in the message never resolves onto that
-entry, and a name addressed to it is address, not attribution — the same
-discrimination the naming-deixis rule makes. Emitted only when true, so a
-roster of humans carries no extra weight.
+principal — a fact about the agent takes the agent as its subject, exactly as
+Part 9's `subject_id: "self"` does — but a human name in the message never
+resolves onto that entry, and a name addressed to it is address, not
+attribution — the same discrimination the naming-deixis rule makes. Emitted
+only when true, so a roster of humans carries no extra weight.
 
-The prompt's `owner_id` rule tells the model to resolve the named person
+The prompt's `subject_id` rule tells the model to resolve the named person
 to a canonical `user_id` through this roster (matching id or any alias)
-and set `owner_id: "user:bob"` — **only** when that person appears in
+and set `subject_id: "user:bob"` — **only** when that person appears in
 `known_users`. A reference to someone not enrolled stays under
 `user:<sender>` (a note the sender holds about a stranger), so the model
-can never mint an `owner_id` for a principal that does not exist. **The
+can never mint a `subject_id` for a principal that does not exist. **The
 roster is not cut**: `MAX_ENROLLED_USERS` (24) refuses the 25th user at
 enrolment, which is where a product limit belongs. The alphabetical cut this
 replaced hid whoever sorts late, and losing a person from the roster does not
@@ -2111,7 +2116,7 @@ onto another user's page.
 
 `known_users` is the identity-context sibling of `sender_groups`:
 together they give the classifier the full picture it needs to route
-`owner_id` to a group or to a third party. Their arrival closes the
+`subject_id` to a group or to a third party. Their arrival closes the
 injection half of the dogfood **F-A** finding (the classifier was blind
 to the group domain *and* to who else exists); the judgement-quality
 half is closed by pointing the slot at a strong model (below).
@@ -2164,7 +2169,7 @@ well.
 
 The classifier **targets** a strong model for the *judgement* calls: the
 structural-vs-capture boundary, the public→`global` cue, and the
-group-scope and cross-user `owner_id` routing. This is a **config-profile
+group-scope and cross-user `subject_id` routing. This is a **config-profile
 choice on the existing `LlmFunction::Ingest` slot** — point `ingest` at a
 strong backend (e.g. Gemini) and the whole classifier moves; there is no
 new plumbing. The dogfood findings confirm the need: the 9B workhorse
@@ -2332,7 +2337,7 @@ self-healing on the next turn.)
 
 - **Pure helpers**: 8 tests (intent parser canonical + default, plan
   parser pure JSON / prose-wrapped / nested-braces / garbage / unterminated,
-  capture-plan validation: missing target / default owner / bad principal).
+  capture-plan validation: missing target / default subject / bad principal).
 - **Prompt building** (the `build_prompt_*` tests in the module): wiki
   list + current message rendered, long recent message truncated with
   `…` sentinel, oldest messages dropped at policy cap, `sender_groups` +
@@ -2369,7 +2374,7 @@ self-healing on the next turn.)
     `ingest_capture_with_empty_extractions_demotes_to_skip` (capture intent
     with an empty array has nothing to file ⇒ skip).
   - **Recall-block tail** — `assemble_recall_block_*` (section join order,
-    all-empty → `None`), `nav_seeds_*` (topic union + owner parse),
+    all-empty → `None`), `nav_seeds_*` (topic union + subject parse),
     `ingest_recall_turn_appends_navigated_memory_section` (scripted
     navigator opens a principal-seeded page; the section lands after the
     flat snippet), `ingest_skip_turn_never_consults_the_navigator` (the

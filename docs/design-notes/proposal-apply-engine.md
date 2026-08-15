@@ -13,7 +13,7 @@ lifecycle, plus the concrete kind handlers shipped today:
 `pages_move_wiki` variants), `dedup_merge` (two-way merge), `bundle` — a
 **born-applied-only** kind wrapping many sub-operations into one
 revertible receipt ([`mwe_core::bundle`], the page-deletion unit) — and
-`fact_forget`, a **propose-first vote** a non-sender owner opens to forget
+`fact_forget`, a **propose-first vote** a non-sender subject opens to forget
 one fact ([`mwe_core::votes`], identity model Part 3). `bundle` has no
 chassis *apply* path (a bundle is born-applied, never `pending`), so its
 `apply` arm stays `KindNotYetImplemented` on purpose; only its **revert**
@@ -238,7 +238,7 @@ token.
 | `kind::WIKI_PROMOTE` | `wiki_promote` | **Shipped** — variants `paragraph_to_file` (default), `pages_to_subwiki`, `pages_move_wiki`, `page_merge`, `fact_refile` (born-applied only), `validity_close` (born-applied only), plus `file_to_subwiki` (no emitter — operator-applied from the dashboard form). See [Promote handler](#promote-handler). |
 | `kind::DEDUP_MERGE` | `dedup_merge` | **Shipped** — two-way merge variant. See [Dedup-merge handler](#dedup-merge-handler). |
 | `kind::BUNDLE` | `bundle` | **Revert shipped** (`bundle::revert_bundle`) — born-applied only (wraps tombstones + cross-wiki refiles for the page deletion); no chassis *apply* path, so `apply` stays `KindNotYetImplemented` by design. See [Bundle handler](#bundle-handler). |
-| `kind::FACT_FORGET` | `fact_forget` | **Apply shipped** (`proposals::apply_fact_forget`) — born-`pending` (a non-sender owner's forget request, [`mwe_core::votes`]); apply tombstones the fact when its audience consents; **no revert** (final). See [Fact-forget handler](#fact-forget-handler). |
+| `kind::FACT_FORGET` | `fact_forget` | **Apply shipped** (`proposals::apply_fact_forget`) — born-`pending` (a non-sender subject's forget request, [`mwe_core::votes`]); apply tombstones the fact when its audience consents; **no revert** (final). See [Fact-forget handler](#fact-forget-handler). |
 
 New-wiki emergence is driven by a **group of pages** turning out to be one
 subject area (auto-promote → `pages_to_subwiki`), **never** by the mass of
@@ -808,8 +808,8 @@ vote over a deletion.
 ## Fact-forget handler
 
 Lives in [`mwe-core::votes`](../../crates/mwe-core/src/votes.rs). A
-`fact_forget` is the **non-sender owner's path** to forget one fact: the
-fact's *subject* (`owner`) — or a member of an owning group — who did not
+`fact_forget` is the **non-sender subject's path** to forget one fact: the
+fact's `subject` — or a member of a group named as the subject — who did not
 **author** it (a sender deletes directly via
 [`acl::can_delete`](../../crates/mwe-core/src/acl.rs)) opens a request the
 fact's **audience** votes on (the write-authority model — see
@@ -825,7 +825,7 @@ sweep):
   write. `context = { variant: "fact_forget", fact_id, requester,
   eligible_voters }`; `timeout_at` is the **voting deadline**
   (`now + REVERT_WINDOW`, 7 days). The eligible voters are the fact's
-  [`acl::audience`](../../crates/mwe-core/src/acl.rs) (`owner ∪ allow ∪
+  [`acl::audience`](../../crates/mwe-core/src/acl.rs) (`subject ∪ allow ∪
   {sender}`, groups expanded, `global` dropped — a public fact has no
   finite electorate) **minus the requester**. If that set is empty (the
   requester is the fact's only reader) the forget applies immediately

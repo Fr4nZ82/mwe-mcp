@@ -19,8 +19,8 @@ call sites; the authoritative source is the code:
 - [`crates/mwe-core/src/render.rs`](../../crates/mwe-core/src/render.rs) — `render_for_sender`, `RenderOutput`
 - [`crates/mwe-core/src/fact_index.rs`](../../crates/mwe-core/src/fact_index.rs) — `page_acl_map` (the per-page ACL-map loader)
 
-For the data model behind it (principals, ownership vs. attribution,
-the owner-of-last-resort rule) see
+For the data model behind it (principals, subject vs. attribution,
+the subject-of-last-resort rule) see
 [`../concepts/identity-and-acl.md`](../concepts/identity-and-acl.md)
 and [`../concepts/memory-model.md`](../concepts/memory-model.md); for
 the marker syntax that produces the regions this page gates see
@@ -28,7 +28,7 @@ the marker syntax that produces the regions this page gates see
 
 ## The region-level ACL is the only access gate
 
-There is **one** read-side ACL gate, and it is the subject of this page:
+There is **one** read-side ACL gate, and it is what this page describes:
 `render_for_sender` admits a sender to a file and then gates each
 `{{…}}…{{/}}` region individually by its own ACL. There is no wiki-level
 access gate above it — a whole wiki or page is never refused as a unit.
@@ -38,10 +38,15 @@ reader `can_read`); the model is at
 [`../concepts/identity-and-acl.md` §5](../concepts/identity-and-acl.md#5-wiki-visibility-is-derived--there-is-no-wiki-level-access-gate).
 
 **This redaction applies to standard memory wikis** — smart (project)
-wikis carry no per-fragment regions, so their reads are governed by the
-**wiki-level ACL** (owner = the wiki's resolved `scope`, allow =
-`shared_with`) projected onto their content-indexed `fact_index` rows and
-checked through the same `can_read`; see [`smart-wikis.md`](smart-wikis.md).
+wikis carry no per-fragment regions, so their reads are governed by a
+**wiki-level ACL** resolved once per wiki from the `smart_wikis`
+registry: the wiki's **proprietor** (`smart_wikis.owner_id`, its
+resolved `scope`) stands in the ACL's `subject` slot, `shared_with` in
+`allow`, and the same `can_read` decides — one answer inherited by every
+section indexed from that wiki. A wiki's **proprietor** and a region's
+**subject** are different axes: a region about `user:franz` sits
+perfectly well in a wiki belonging to `group:famiglia`. See
+[`smart-wikis.md`](smart-wikis.md).
 
 ## `can_read` — the region-level predicate
 
@@ -69,13 +74,15 @@ principal set** and check whether *any* of its members matches the
 current reader:
 
 ```
-effective = region_acl.owner  ∪  region_acl.allow  ∪  {sender_of_region}
+effective = region_acl.subject  ∪  region_acl.allow  ∪  {sender_of_region}
 can_read  = ∃ p ∈ effective . principal_matches(p, sender_id, sender_groups)
 ```
 
-It is a **union**, not an intersection — `owner`, every `allow=`
+It is a **union**, not an intersection — `subject`, every `allow=`
 entry, and the capturing `sender` are each independently sufficient to
-grant access. `principal_matches` is the obvious per-principal test:
+grant access. The three are independent axes, not synonyms: `subject` is
+who the region is *about*, `allow` is who else may read it, `sender` is
+who captured it. `principal_matches` is the obvious per-principal test:
 
 | Principal | Matches when |
 |---|---|
@@ -85,40 +92,40 @@ grant access. `principal_matches` is the obvious per-principal test:
 
 Properties pinned by the proptest suite in `acl.rs`:
 
-- **Global anywhere in the set ⇒ visible to anyone.** A `Global` owner,
-  a `Global` in `allow`, or a `Global` capturing-sender each open the
-  region universally.
-- **`owner = User(sender)` always reads.** A user always rereads a
-  region they own.
+- **Global anywhere in the set ⇒ visible to anyone.** A `Global`
+  subject, a `Global` in `allow`, or a `Global` capturing-sender each
+  open the region universally.
+- **`subject = User(sender)` always reads.** A user always rereads a
+  region that is about them.
 - **Monotonicity in `allow`.** Adding a principal to `allow` can only
   grant visibility, never revoke it (`before ⇒ after`).
 - **The capturer always rereads** (see `sender_of_region` below),
   regardless of the rest of the ACL.
 
-### `owner = None` is resolved *before* `can_read`
+### `subject = None` is resolved *before* `can_read`
 
-The marker grammar lets a region omit `owner=`, in which case
-[`Acl`](../../crates/mwe-core/src/types.rs) carries `owner: None`. The caller (always `render_for_sender`)
-substitutes the **owner of last resort** — the region's own `sender` —
+The marker grammar lets a region omit `subject=`, in which case
+[`Acl`](../../crates/mwe-core/src/types.rs) carries `subject: None`. The caller (always `render_for_sender`)
+substitutes the **subject of last resort** — the region's own `sender` —
 into the slot *before* the check; the wiki's `scope` is placement only
 and is never consulted as a region's ACL fallback. `can_read` itself is
 a pure ACL evaluator with no notion of inheritance. If you ever call
-`can_read` with `Acl { owner: None, allow: [] }` directly, it denies
+`can_read` with `Acl { subject: None, allow: [] }` directly, it denies
 everyone except a matching `sender_of_region` — that is the documented
 contract, not a bug.
 
 ### `sender_of_region` — cross-user attribution as a third union element
 
 `sender=<principal>` on a marker records **who captured** the region,
-as distinct from `owner=`, which records **whose fact it is**. The two
-dimensions are orthogonal (`sender ⊥ owner`). `can_read` folds the
-capturing sender into the effective set as one more principal, and it
-is a full `Principal` — `User`, `Group`, or `Global`, not a scalar
-user id:
+as distinct from `subject=`, which records **who the fact is about**.
+The two dimensions are orthogonal (`sender ⊥ subject`). `can_read`
+folds the capturing sender into the effective set as one more
+principal, and it is a full `Principal` — `User`, `Group`, or `Global`,
+not a scalar user id:
 
 - **`sender=user:galadriel`** — Galadriel captured a fact about Gollum
   on behalf of herself; she always rereads it (personal audit trail),
-  even when she is neither the owner nor in `allow`.
+  even when she is neither the subject nor in `allow`.
 - **`sender=group:famiglia`** — the "family microphone" case: an
   ambient capture device attributed to the household group. *Every*
   member of `famiglia` rereads the region via the sender shortcut,
@@ -128,11 +135,11 @@ user id:
 
 `render_for_sender` passes `attrs.sender.as_ref()` straight through.
 `sender` is materialized at capture time — a fact is born with
-`sender_id` explicit (= `owner` for the common "user talks about
+`sender_id` explicit (= `subject_id` for the common "user talks about
 themself" case), never collapsed — so this predicate sees a concrete
 principal, not an implied one. A `sender_id = NULL` in the DB is the
 degenerate "scrubbed" state (e.g. a deleted user) and, as documented
-under `owner = None` above, the union still admits the owner. See
+under `subject = None` above, the union still admits the subject. See
 [`marker-grammar.md` §5](marker-grammar.md#5-cross-user-attribution).
 
 ## `render_for_sender` — region-by-region projection
@@ -171,14 +178,14 @@ contribute to it.
 ### Where the region ACL comes from — DB first, by fact key
 
 The engine DB is the **authoritative** source for a region's ACL — and
-for all per-fact metadata (owner/ACL, validity, topics, salience), the
+for all per-fact metadata (subject/ACL, validity, topics, salience), the
 runtime marker being the bare region key (see
 [marker-grammar.md §0](marker-grammar.md#0-runtime-form-vs-export-form--what-gets-written-when)).
 Resolution per region, implemented in `resolve_region_acl`:
 
 1. **DB record** — when the region's `f=<uuid>` key is present in the
-   `db_acl` map, the `fact_index` record (`owner_id` / `allow_ids` /
-   `sender_id`) gates the region **alone**. The owner is always
+   `db_acl` map, the `fact_index` record (`subject_id` / `allow_ids` /
+   `sender_id`) gates the region **alone**. The subject is always
    explicit in the DB, so no fallback applies, and the inline
    marker attributes are ignored even when present — they are a
    derived projection of the DB, not the source of truth. This is
@@ -187,9 +194,9 @@ Resolution per region, implemented in `resolve_region_acl`:
    the next read even before the file is rewritten.
 2. **Inline fallback** — a region the map does not cover (a file not
    yet indexed, or a marker without `f=`) is gated by its inline
-   attributes, with the region's own **`sender`** as the owner of last
-   resort when the marker omits `owner=` (never the wiki's scope
-   principal). A region with neither an inline owner nor a sender is
+   attributes, with the region's own **`sender`** as the subject of last
+   resort when the marker carries no subject (never the wiki's scope
+   principal). A region with neither an inline subject nor a sender is
    left **unreadable** rather than inheriting a category-wide audience.
    An **empty map therefore reproduces the pure inline-attribute
    behaviour** — which is how text that never went through capture is
@@ -201,7 +208,7 @@ two variants. The **reader/redaction** paths — recall-by-navigation
 render — use `fact_index::page_acl_map_active(pool, source_path)`, which
 **excludes superseded and tombstoned rows**: a region left on disk after its
 fact was retired is no longer in the map, so a bare `{{f=uuid}}` marker falls
-through to the owner-of-last-resort, finds neither an inline owner nor
+through to the subject-of-last-resort, finds neither an inline subject nor
 sender, and **redacts fail-closed** — no reader surface ever renders a stale
 or contradictory region whose fact the DB has already retired, not even to
 its last-known audience. The full `fact_index::page_acl_map` (retired rows
@@ -261,7 +268,7 @@ consumer LLM can understand the context of a region it is about to
 extract or supersede; and a human reader needs the words around a
 redacted block to make sense of the sentence. If the gate
 filtered prose, an inline-granularity sentence like *"Alice pesa
-{{owner=user:alice}}72 kg{{/}} al 10 maggio."* would lose its
+{{subject=user:alice}}72 kg{{/}} al 10 maggio."* would lose its
 surrounding words for Bob, leaving only the visible region body
 floating in nothing. Prose is treated as scaffolding and only the
 regions are gated. The dedicated regression test
@@ -284,12 +291,13 @@ default-visibility prose safe to pass.
 
 Concretely:
 
-- The owner of last resort for a region whose marker omitted `owner=`
-  is the region's own **`sender`** (its captured provenance) — never the
-  wiki's scope principal: a fact's ACL is the fact's, not the category's.
-  A region with no inline owner **and** no sender stays unreadable. This
-  fallback fires on a not-yet-indexed file or a marker without `f=`; once
-  the region is in `fact_index` the DB record's explicit owner gates it.
+- The subject of last resort for a region whose marker carried no
+  subject is the region's own **`sender`** (its captured provenance) —
+  never the wiki's scope principal: a fact's ACL is the fact's, not the
+  category's. A region with no inline subject **and** no sender stays
+  unreadable. This fallback fires on a not-yet-indexed file or a marker
+  without `f=`; once the region is in `fact_index` the DB record's
+  explicit subject gates it.
 - The gate does **not** filter free prose. A heading or a
   separator paragraph always reaches the sender, regardless of whose
   wiki the file lives under.
@@ -302,7 +310,7 @@ Concretely:
 
 `meta_acl_default` is threaded to the call sites (resolved from
 `WikiTree::resolve_scope_principal`) for signature stability, but the
-render path does not consult it: the owner of last resort is the
+render path does not consult it: the subject of last resort is the
 region's `sender`.
 
 ### Inline placeholder, not block callout — and the deliberate existence leak
@@ -314,8 +322,8 @@ keep the sentence flowing, otherwise the reader sees one sentence
 visually shredded across three paragraphs.
 
 Concrete comparison on the canonical inline-granularity example
-(*"Alice pesa {{owner=user:alice}}72 kg{{/}} al 10 maggio, ha
-{{owner=global}}tagliato i capelli{{/}} ieri."*) viewed by Bob:
+(*"Alice pesa {{subject=user:alice}}72 kg{{/}} al 10 maggio, ha
+{{subject=global}}tagliato i capelli{{/}} ieri."*) viewed by Bob:
 
 - **Block callout (rejected)** — three paragraphs:
   ```
@@ -440,9 +448,9 @@ honour it today:
   every normal reader, remains inspectable here, highlighted per its
   last-known gate.
 - **The facts table** (`/dashboard/facts`) lists **every** user's facts
-  instead of only the reader's ACL-projected set, so the owner-or-admin
-  structured fact actions (ACL / validity / delete — see
-  [dashboard-memory-mvp.md](dashboard-memory-mvp.md)) can **reach**
+  instead of only the reader's ACL-projected set, so the structured fact
+  actions (ACL and validity, subject-or-admin; delete, sender-or-admin —
+  see [dashboard-memory-mvp.md](dashboard-memory-mvp.md)) can **reach**
   another user's fact. Without reveal those facts are filtered out of the
   list and the per-fact form 404s, so the actions are unreachable.
 - **The in-flight proposals** — the topnav badge count
@@ -542,8 +550,9 @@ capability — reading past the per-fragment ACL.
 > the intended supervision path — `/facts` is ACL-projected, so without
 > reveal an admin does **not** already see another user's facts there).
 > It deliberately does **not** extend to the inline-comment write path,
-> which stays scoped to the page's read-set — a comment is applied by REM
-> as fact ops on the owner's memory with no commenter provenance (see
+> which stays scoped to the wiki's read-set — a comment is applied by REM
+> as fact ops on the facts of the page it is anchored to, and a fact it
+> adds is born with the commenter as its `sender` (see
 > [agentic-chat.md](agentic-chat.md)).
 
 Mechanically the reveal wraps each highlighted region in a fixed,
@@ -590,14 +599,14 @@ would move into a localized table. For now they are constants.
 
 ## Tests
 
-- **`can_read`** — unit tests covering owner-only, group membership,
+- **`can_read`** — unit tests covering subject-only, group membership,
   `allow` extension, the three `sender_of_region` cases (user / group /
-  global), the `owner = None` deny rule, and the admin-no-bypass
+  global), the `subject = None` deny rule, and the admin-no-bypass
   invariant; plus a proptest suite asserting global-admits-anyone,
-  owner-self-reads, `allow` monotonicity, and the capturer-always-
+  subject-self-reads, `allow` monotonicity, and the capturer-always-
   rereads property.
-- **`render_for_sender`** — the four-viewer scenario (alice owner, bob
-  in team, carol outsider, dave reading a `global` region) pinned
+- **`render_for_sender`** — the four-viewer scenario (alice the subject,
+  bob in team, carol outsider, dave reading a `global` region) pinned
   both as assertions and as `insta::assert_snapshot!` snapshots under
   `crates/mwe-core/src/snapshots/`; the
   `inline_granularity_preserves_surrounding_words` regression test for

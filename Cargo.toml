@@ -45,7 +45,11 @@ maud = { version = "0.26", features = ["axum"] }
 # elements). Pinned at 0.13 — current stable, fast, escape-aware.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
-# Database — sqlx with compile-time SQL validation
+# Database — sqlx. NOTE: no compile-time SQL validation is in use here. There is no
+# .sqlx offline directory and no `query!` macro call site in the workspace: every
+# statement is a runtime string with `.bind()`, and `FromRow` binds by field name at
+# runtime too. A column name that goes stale is a runtime error, never a build error —
+# grep is the only net, so treat a schema change as a manual sweep.
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate", "json", "uuid"] }
 
 # Async runtime

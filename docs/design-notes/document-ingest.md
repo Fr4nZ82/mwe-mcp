@@ -66,7 +66,7 @@ the [tool reference](../protocol/tool-reference.md#wiki_ingest_external).
 The call returns an **async job receipt** (`job_id`, `status`)
 immediately; queueing refuses when the `ingest` LLM slot is not
 configured (no job that can never run). Enqueue is **idempotent** by
-(document sha256, owner) across non-failed jobs unless `force`.
+(document sha256, subject) across non-failed jobs unless `force`.
 Completion is a `document_ingested` notice on `events_poll` (job id,
 resolved disposition, title, document page, facts buffered, source ref).
 
@@ -78,7 +78,7 @@ a report body) landed as `source_kind=inline`: no `source_ref`, nothing
 to cite, the verbatim original gone. The server now backstops the
 choice: a document-shaped inline ingest is **promoted to the media
 rail** — the text is materialised verbatim as a content-addressed blob
-+ `media_catalog` row (kind `doc`, mime `text/plain`, owner = the
++ `media_catalog` row (kind `doc`, mime `text/plain`, subject = the
 effective sender, caption = the title hint or the first line) — and the
 job proceeds exactly as a `source.type=media` call: facts cite
 `source_ref = catalog_id`, the anchor page carries the `{{embed=…}}`,
@@ -111,7 +111,7 @@ density, or a greeting/sign-off pair. The **`promote` dial** (`always`
 disposition-style: the caller's explicit gesture wins, absence
 delegates to the heuristic. Idempotency is two-layer and aligned by
 construction: the blob bytes are the text verbatim, so the catalog's
-(blob sha256, owner) dedup and the job's (text sha256, owner) dedup
+(blob sha256, subject) dedup and the job's (text sha256, subject) dedup
 move together on retries.
 
 ## The job — checkpointed phases, one worker
@@ -128,7 +128,7 @@ on the **`ingest` LLM slot** (workhorse tier — same slot, no new config).
 1. **Classify** — the `document-classify` prompt proposes disposition,
    format, title, page slug, target wiki, summary, testata seeds.
    Routing is anti-hallucination like ingest: an unknown wiki falls back
-   to the owner's identity wiki, then the first standard wiki.
+   to the subject's identity wiki, then the first standard wiki.
 2. **Segment** — deterministic and code-owned (the model judges content,
    never where to cut): prose cuts on markdown headings + paragraph
    packing (`segment_target_chars`, hard cap `segment_max_chars`);
@@ -150,8 +150,8 @@ on the **`ingest` LLM slot** (workhorse tier — same slot, no new config).
    what transcends the document — an empty array is a good answer;
    `dissolve`: everything worth remembering). Per-fact output mirrors
    the conversational extraction (body, routing, validity, salience,
-   placement seeds, **and the fact's `owner_id`/`allow_ids`** — its
-   subject and audience, decided under the same ingest rules), capped at
+   placement seeds, **and the fact's `subject_id`/`allow_ids`** — who it is
+   about and who may read it, decided under the same ingest rules), capped at
    `max_facts_per_segment`. The prompt input mirrors `ingest`'s assembly:
    the uploader's `sender_groups` (id + `scope`) and each window entry's
    `scope` prose are the audience signals the extractor reads. Note the
@@ -209,21 +209,21 @@ on the **`ingest` LLM slot** (workhorse tier — same slot, no new config).
   the link contaminating the canonical claim. (A REM hygiene sweep
   converges pre-existing rows that still carry the old trailing
   `([[…]])` suffix — [REM cycle](rem-cycle.md#provenance-hygiene-sweep-sub-job).)
-- **ACL**: a fact is a fact — an extracted fact's `owner` (subject) and
+- **ACL**: a fact is a fact — an extracted fact's `subject` and
   `allow` (audience) are decided **per fact by the extractor** under the
-  ingest rules (default `owner = user:<uploader>`, `allow = []`; widened
+  ingest rules (default `subject = user:<uploader>`, `allow = []`; widened
   from the group/wiki `scope` signals and the document's own cues), never
-  derived from where it lands. An extractor-emitted `owner` that
-  enrollment does not back is re-owned to the uploader
+  derived from where it lands. An extractor-emitted `subject` that
+  enrollment does not back falls back to the uploader
   (`enrollment::principal_exists`, fail-open on a DB error) — the engine
   floor under the prompt's `known_users` roster, closing the path where
   the 2026-06-30 dangling principal was coined. Its `sender` stays the
   uploader. The
   **anchor** fact (the document's own identity page, `consult`/`dossier`)
-  keeps the job's `owner` + the explicit `allow` that rode the upload — no
+  keeps the job's `subject` + the explicit `allow` that rode the upload — no
   placement-derived widening. The blob's read set still widens
   monotonically to the anchor's at `GET` time (the media catalog's own
-  ACL). A fact whose surviving owner is an **enrolled user other than
+  ACL). A fact whose surviving subject is an **enrolled user other than
   the uploader** additionally rides the reverse channel: after the job's
   own `document_ingested` notice, one **`fact_minted_for_you`** event
   per beneficiary carries those facts' bodies (`origin: "document"`,

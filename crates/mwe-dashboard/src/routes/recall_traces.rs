@@ -336,7 +336,7 @@ fn render_meta(row: &TraceRow, trace: &RecallTrace) -> Markup {
                     tr { th { "Seeds" } td {
                         (trace.seed_mode)
                         @if !trace.topics.is_empty() { " · topics: " (trace.topics.join(", ")) }
-                        @if !trace.owners.is_empty() { " · owners: " (trace.owners.join(", ")) }
+                        @if !trace.subjects.is_empty() { " · subjects: " (trace.subjects.join(", ")) }
                     } }
                     tr { th { "Navigation" } td {
                         @match &trace.nav_stop {

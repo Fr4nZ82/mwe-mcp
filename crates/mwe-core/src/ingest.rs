@@ -20,7 +20,7 @@
 //!
 //! The LLM is asked to produce one strict JSON object encoding both
 //! the intent classification and the operational plan (target wiki,
-//! body, owner, `fact_type`, topics, disambig need). Calling the model
+//! body, subject, `fact_type`, topics, disambig need). Calling the model
 //! once — instead of intent → routing → seed as three round trips —
 //! keeps latency under the conversational budget the spec calls out
 //! (ingest pipeline) and keeps cost
@@ -163,7 +163,7 @@ pub struct IngestRequest {
     /// of the user — so the agent remembers the synthesis in its own reply (a
     /// deadline it derived, advice it gave) without it masquerading as a
     /// user-asserted fact. `sender_id` still names the user the agent was
-    /// talking to (the owner candidate and the recall/ACL scope), so episodic
+    /// talking to (the subject candidate and the recall/ACL scope), so episodic
     /// and personalised facts still land in that user's wiki.
     pub author: MessageRole,
     /// Identifier of the user (NO `user:` prefix — that wire format
@@ -667,7 +667,8 @@ struct LlmIngestPlan {
     #[serde(default)]
     target_page: Option<String>,
     #[serde(default)]
-    owner_id: Option<String>,
+    #[serde(alias = "owner_id")]
+    subject_id: Option<String>,
     #[serde(default)]
     allow_ids: Vec<String>,
     #[serde(default)]
@@ -843,18 +844,19 @@ struct LlmValidityEdit {
 }
 
 /// One requested ACL *change* of an existing fact (see
-/// [`LlmIngestPlan::acl_changes`]). The owner broadens or narrows who can
+/// [`LlmIngestPlan::acl_changes`]). The subject broadens or narrows who can
 /// read their OWN fact; the LLM resolves the natural-language scope into the
-/// `owner_id` + `allow_ids` principals.
+/// `subject_id` + `allow_ids` principals.
 #[derive(Debug, Clone, Deserialize)]
 struct LlmAclChange {
     /// `fact_id` from `recalled_memory`.
     #[serde(default)]
     target: Option<String>,
-    /// New owner principal wire string; absent/null = keep the existing
-    /// owner.
+    /// New subject principal wire string; absent/null = keep the existing
+    /// subject.
     #[serde(default)]
-    owner_id: Option<String>,
+    #[serde(alias = "owner_id")]
+    subject_id: Option<String>,
     /// New allow-list principal wire strings (replaces the old list).
     #[serde(default)]
     allow_ids: Vec<String>,
@@ -870,7 +872,8 @@ struct LlmExtraction {
     #[serde(default)]
     target_page: Option<String>,
     #[serde(default)]
-    owner_id: Option<String>,
+    #[serde(alias = "owner_id")]
+    subject_id: Option<String>,
     #[serde(default)]
     allow_ids: Vec<String>,
     #[serde(default)]
@@ -910,7 +913,7 @@ struct LlmExtraction {
     /// things", or a bare imperative) — open to any user, filed per-user.
     /// `"agent-wide"` = impersonal / universal ("with everyone", or a how-the-agent-
     /// works directive with no per-speaker scope) — admin-only, filed
-    /// owner = agent. `"user-global"` = explicitly every-assistant ("tutti gli
+    /// subject = agent. `"user-global"` = explicitly every-assistant ("tutti gli
     /// assistenti") — open to any user, filed in THEIR identity wiki. Default
     /// on omission: per-user (the open side).
     /// See [`CaptureUnit::behaviour_scope`] and the dispatch in [`run`].
@@ -941,7 +944,7 @@ struct LlmExtraction {
 struct CaptureUnit<'a> {
     target_wiki_id: Option<&'a str>,
     target_page: Option<&'a str>,
-    owner_id: Option<&'a str>,
+    subject_id: Option<&'a str>,
     allow_ids: &'a [String],
     fact_type: Option<&'a str>,
     /// Borrowed view of the per-fact
@@ -972,10 +975,10 @@ struct CaptureUnit<'a> {
     /// Behaviour-rule scope discriminator (only read when `behaviour_rule`),
     /// read from the addressee (roadmap 29b + 42).
     /// `Some("per-user")` / `None` → addressed to the speaker → any user may
-    /// set it, filed owner = user in the agent's wiki.
+    /// set it, filed subject = user in the agent's wiki.
     /// `Some("agent-wide")` → impersonal / universal → admin-only, filed
-    /// owner = agent. `Some("user-global")` → explicitly every-assistant →
-    /// any user, filed owner = user in THEIR identity wiki. The engine, not
+    /// subject = agent. `Some("user-global")` → explicitly every-assistant →
+    /// any user, filed subject = user in THEIR identity wiki. The engine, not
     /// the model, enforces authority (the model never sees who is admin).
     behaviour_scope: Option<&'a str>,
     topics: &'a [String],
@@ -1002,7 +1005,7 @@ impl LlmIngestPlan {
                 .map(|e| CaptureUnit {
                     target_wiki_id: e.target_wiki_id.as_deref(),
                     target_page: e.target_page.as_deref(),
-                    owner_id: e.owner_id.as_deref(),
+                    subject_id: e.subject_id.as_deref(),
                     allow_ids: &e.allow_ids,
                     fact_type: e.fact_type.as_deref(),
                     valid_from: e.valid_from.as_deref(),
@@ -1038,7 +1041,7 @@ impl LlmIngestPlan {
             return vec![CaptureUnit {
                 target_wiki_id: self.target_wiki_id.as_deref(),
                 target_page: self.target_page.as_deref(),
-                owner_id: self.owner_id.as_deref(),
+                subject_id: self.subject_id.as_deref(),
                 allow_ids: &self.allow_ids,
                 fact_type: self.fact_type.as_deref(),
                 valid_from: self.valid_from.as_deref(),
@@ -1089,15 +1092,15 @@ enum CapturePlanError {
     BadPrincipal(#[from] PrincipalParseError),
     /// A non-`self` fact (owned by a user or group) named an AGENT's own wiki
     /// as its `target_wiki_id`. The agent wiki is reserved for the agent's
-    /// `owner_id:"self"` autobiography (roadmap 27); a user/group fact there
+    /// `subject_id:"self"` autobiography (roadmap 27); a user/group fact there
     /// fragments that principal's memory across two wikis (item 47-x2 /
-    /// Finding D). When the owner's own wiki is in the window the plan is
+    /// Finding D). When the subject's own wiki is in the window the plan is
     /// redirected there; when it is not, the extraction is dropped with this
     /// error rather than misfiled.
     #[error(
-        "target_wiki_id `{target}` is an agent wiki; a {owner}-owned fact cannot be filed there and no owner home wiki was in the window"
+        "target_wiki_id `{target}` is an agent wiki; a {subject}-owned fact cannot be filed there and no subject home wiki was in the window"
     )]
-    TargetIsAgentWiki { target: String, owner: String },
+    TargetIsAgentWiki { target: String, subject: String },
     /// `supersede_target` carried a string that is not a well-formed
     /// `FactId`. Same demote-to-skip treatment as
     /// [`Self::MissingTargetWiki`].
@@ -1116,18 +1119,18 @@ enum CapturePlanError {
     /// "replace a prior statement about the SAME subject"; closing
     /// another principal's fact from this turn's ingest would let one
     /// user silently rewrite another's memory — the cross-user supersede
-    /// leak. The owner axis is the subject (see
+    /// leak. The subject axis is the subject (see
     /// [`crate::types::Principal`]); a public fact carries its subject in
-    /// `owner` and `global` only in `allow`, so two users' public facts
-    /// no longer collapse to the same owner. Demote-to-skip like the
+    /// `subject` and `global` only in `allow`, so two users' public facts
+    /// no longer collapse to the same subject. Demote-to-skip like the
     /// other supersede guards.
     #[error(
-        "supersede_target `{id}` is owned by {target_owner}, not the new fact's owner {new_owner}"
+        "supersede_target `{id}` is owned by {target_subject}, not the new fact's subject {new_subject}"
     )]
-    SupersedeCrossOwner {
+    SupersedeCrossSubject {
         id: String,
-        target_owner: String,
-        new_owner: String,
+        target_subject: String,
+        new_subject: String,
     },
 }
 
@@ -1177,7 +1180,7 @@ pub(crate) fn normalize_capture_page(raw: Option<&str>, default: &Path) -> PathB
     }
 }
 
-/// True when `wiki_id` is the identity wiki of `owner` itself.
+/// True when `wiki_id` is the identity wiki of `subject` itself.
 ///
 /// An identity wiki is a root whose id **is** its principal's id
 /// (`create_identity_wiki`), so the string compare is the whole test — no tree
@@ -1185,8 +1188,8 @@ pub(crate) fn normalize_capture_page(raw: Option<&str>, default: &Path) -> PathB
 /// guard to tell "someone else's fact parked in the agent's space" (what the
 /// guard exists to stop) from "the agent's own fact, at home" (what the wiki is
 /// for).
-fn owner_is_the_wikis_own_principal(owner: &Principal, wiki_id: &str) -> bool {
-    match owner {
+fn owner_is_the_wikis_own_principal(subject: &Principal, wiki_id: &str) -> bool {
+    match subject {
         Principal::User(id) | Principal::Group(id) => id == wiki_id,
     }
 }
@@ -1207,9 +1210,9 @@ fn owner_is_the_wikis_own_principal(owner: &Principal, wiki_id: &str) -> bool {
 ///    list" names a page from the inventory, and that page's own wiki is the
 ///    answer — this is the one route by which a capture still reaches a topic
 ///    wiki from a turn, and it is exactly the case where the user said so.
-///    **Matched on the name AND the owner's wiki**, falling back to the name
+///    **Matched on the name AND the subject's wiki**, falling back to the name
 ///    alone: two wikis may both hold a `spesa.md`, and the file name does not
-///    say which one the turn meant while the resolved `owner_id` does.
+///    say which one the turn meant while the resolved `subject_id` does.
 /// 3. **The subject's own wiki.** An identity wiki's id IS its principal's id,
 ///    so a fact about `user:marco` belongs in `marco` and a fact the family
 ///    owns belongs in `family`. This is the ordinary path.
@@ -1221,7 +1224,7 @@ fn owner_is_the_wikis_own_principal(owner: &Principal, wiki_id: &str) -> bool {
 fn derive_target_wiki(
     unit: &CaptureUnit<'_>,
     request: &IngestRequest,
-    owner: &Principal,
+    subject: &Principal,
     honoured_page: Option<&str>,
     available: &[AvailableWiki],
     list_pages: &[fact_index::ListPage],
@@ -1237,7 +1240,7 @@ fn derive_target_wiki(
     if let Some(explicit) = unit.target_wiki_id.and_then(known) {
         return Some(explicit);
     }
-    let home = match owner {
+    let home = match subject {
         Principal::User(id) | Principal::Group(id) => id.as_str(),
     };
     if let Some(name) = honoured_page
@@ -1250,7 +1253,7 @@ fn derive_target_wiki(
         // whichever one the inventory happened to list first. The OWNER the
         // classifier already resolved is the tiebreak that was sitting right
         // here unused: *«aggiungi il detersivo alla lista della spesa di
-        // famiglia»* arrives with `owner_id: group:famiglia` and used to be
+        // famiglia»* arrives with `subject_id: group:famiglia` and used to be
         // filed in `alice` because `a` sorts before `f`.
         && let Some(hit) = list_pages
             .iter()
@@ -1334,9 +1337,9 @@ fn validate_capture_plan(
     list_pages: &[fact_index::ListPage],
     allow_message_fallback: bool,
 ) -> std::result::Result<CaptureRequest, CapturePlanError> {
-    // Owner first: since the classifier stopped choosing a wiki, the subject
+    // Subject first: since the classifier stopped choosing a wiki, the subject
     // is an INPUT to the destination rather than a sibling decision.
-    let owner = match unit.owner_id {
+    let subject = match unit.subject_id {
         Some(s) => Principal::from_str(s)?,
         None => Principal::User(request.sender_id.clone()),
     };
@@ -1388,7 +1391,7 @@ fn validate_capture_plan(
     let target_wiki_str = derive_target_wiki(
         unit,
         request,
-        &owner,
+        &subject,
         names_its_page.then_some(unit.target_page).flatten(),
         available,
         list_pages,
@@ -1398,18 +1401,18 @@ fn validate_capture_plan(
     let mut wiki_id = WikiId::parse(target_wiki_str)?;
     // Guard (item 47-x2): a fact about SOMEONE ELSE must never be physically
     // filed into an AGENT's own wiki — that space is the agent's autobiography
-    // (roadmap 27). owner↔wiki are otherwise DECOUPLED by design (a
+    // (roadmap 27). subject↔wiki are otherwise DECOUPLED by design (a
     // group-owned fact may live in a user wiki and vice versa — 47-x2a), so
     // this fires ONLY when the target wiki is flagged `is_agent`. `self` and
     // behaviour-rule facts are handled before this function and never reach
-    // here. Redirect to the owner's OWN wiki when it is in the window;
+    // here. Redirect to the subject's OWN wiki when it is in the window;
     // otherwise drop this extraction rather than fragment the principal's
     // memory across two wikis (Finding D).
     //
-    // The owner being the agent ITSELF is the exception, and it is why the
+    // The subject being the agent ITSELF is the exception, and it is why the
     // test is `home != target` and not "is the target an agent wiki": an
     // identity wiki's id IS its principal's id, so `home == target` means the
-    // agent's wiki is the owner's own home — the one place that fact belongs.
+    // agent's wiki is the subject's own home — the one place that fact belongs.
     // It arrives here whenever a USER states something about the agent ("sei
     // bravo con l'INPS"): the `self` sentinel upstream only fires on an
     // assistant turn, so without this exception the guard would look for a
@@ -1419,13 +1422,13 @@ fn validate_capture_plan(
         .iter()
         .find(|w| w.wiki_id == target_wiki_str)
         .is_some_and(|w| w.is_agent)
-        && !owner_is_the_wikis_own_principal(&owner, target_wiki_str)
+        && !owner_is_the_wikis_own_principal(&subject, target_wiki_str)
     {
-        let home = match &owner {
+        let home = match &subject {
             Principal::User(id) | Principal::Group(id) => id.as_str(),
         };
         // `wiki_id == home` is the whole test: an identity wiki's id IS its
-        // principal's, so a match is the owner's own wiki by construction. It
+        // principal's, so a match is the subject's own wiki by construction. It
         // deliberately does NOT also demand a non-agent wiki — with two bots
         // enrolled, a fact about bot B aimed at bot A's wiki has a perfectly
         // good home (B's own), and rejecting it for being an agent wiki would
@@ -1435,15 +1438,15 @@ fn validate_capture_plan(
                 tracing::warn!(
                     from = %target_wiki_str,
                     to = %w.wiki_id,
-                    owner = %owner,
-                    "ingest: non-self fact targeted an agent wiki — redirected to the owner's own wiki (47-x2)"
+                    subject = %subject,
+                    "ingest: non-self fact targeted an agent wiki — redirected to the subject's own wiki (47-x2)"
                 );
                 wiki_id = WikiId::parse(w.wiki_id.as_str())?;
             },
             None => {
                 return Err(CapturePlanError::TargetIsAgentWiki {
                     target: target_wiki_str.to_owned(),
-                    owner: owner.to_string(),
+                    subject: subject.to_string(),
                 });
             },
         }
@@ -1472,7 +1475,7 @@ fn validate_capture_plan(
         wiki_id,
         page,
         body,
-        owner,
+        subject,
         allow,
         sender: Some(Principal::User(request.sender_id.clone())),
         fact_type: unit.fact_type.map(str::to_owned),
@@ -1542,20 +1545,20 @@ fn validate_supersede_target(
         });
     };
     // Same-subject guard: a capture may only supersede a fact about the
-    // SAME owner. Superseding replaces a prior statement about this
+    // SAME subject. Superseding replaces a prior statement about this
     // subject; without this, an ingest from user X could close a fact
     // owned by user Y when recall surfaces a similar-looking fact (the
-    // cross-user supersede leak). The new fact's owner is `unit.owner_id`,
+    // cross-user supersede leak). The new fact's subject is `unit.subject_id`,
     // else the sender default — mirroring [`validate_capture_plan`].
-    let new_owner = match unit.owner_id {
+    let new_subject = match unit.subject_id {
         Some(s) => Principal::from_str(s)?,
         None => Principal::User(request.sender_id.clone()),
     };
-    if hit.owner_id != new_owner {
-        return Err(CapturePlanError::SupersedeCrossOwner {
+    if hit.subject_id != new_subject {
+        return Err(CapturePlanError::SupersedeCrossSubject {
             id: raw.to_owned(),
-            target_owner: hit.owner_id.to_string(),
-            new_owner: new_owner.to_string(),
+            target_subject: hit.subject_id.to_string(),
+            new_subject: new_subject.to_string(),
         });
     }
     Ok(Some(fact_id))
@@ -1612,12 +1615,12 @@ fn append_embed_markers(body: &mut String, ids: &[CatalogId]) {
 async fn widen_media_acl_soft(
     pool: &SqlitePool,
     ids: &[CatalogId],
-    owner: &Principal,
+    subject: &Principal,
     allow: &[Principal],
     sender: Option<&Principal>,
 ) {
     for id in ids {
-        if let Err(e) = media::widen_acl(pool, id, owner, allow, sender).await {
+        if let Err(e) = media::widen_acl(pool, id, subject, allow, sender).await {
             tracing::warn!(catalog_id = %id, error = %e, "ingest: media ACL widening failed");
         }
     }
@@ -1807,12 +1810,12 @@ async fn file_unclaimed_attachments(
             continue;
         };
         append_embed_markers(&mut body, std::slice::from_ref(&att.catalog_id));
-        let owner = Principal::User(request.sender_id.clone());
+        let subject = Principal::User(request.sender_id.clone());
         let cap_req = CaptureRequest {
             wiki_id: wiki_id.clone(),
             page: policy.default_page.clone(),
             body,
-            owner: owner.clone(),
+            subject: subject.clone(),
             allow: Vec::new(),
             sender: None,
             fact_type: None,
@@ -1837,7 +1840,7 @@ async fn file_unclaimed_attachments(
                 widen_media_acl_soft(
                     pool,
                     std::slice::from_ref(&att.catalog_id),
-                    &owner,
+                    &subject,
                     &[],
                     None,
                 )
@@ -1900,13 +1903,13 @@ enum ClosurePlanError {
     UnknownReason(String),
     /// The closure target is OWNED by a different principal than the
     /// sender. A closure edits a fact's validity, so — like an ACL change
-    /// or a validity edit — only an owner may close it (the owning user,
+    /// or a validity edit — only a subject may close it (the owning user,
     /// or a member of the owning group; never a world fact). Blocks the
     /// cross-user closure leak: one user's ingest closing another's fact
     /// (the bug where morgana's primer closed franz's "programmatore"
-    /// fact). See [`crate::acl::sender_owns`].
-    #[error("closure target `{id}` is owned by {owner}, not the sender")]
-    NotOwner { id: String, owner: String },
+    /// fact). See [`crate::acl::sender_is_subject`].
+    #[error("closure target `{id}` is owned by {subject}, not the sender")]
+    NotSubject { id: String, subject: String },
 }
 
 /// Validate one requested closure against this turn's recall window.
@@ -1944,14 +1947,14 @@ fn validate_closure<'a>(
             },
         });
     };
-    // Owner gate: a closure edits the target's validity, so only an owner
+    // Owner gate: a closure edits the target's validity, so only a subject
     // may close it (the owning user or a member of the owning group; a
     // world fact, owner=global, is closable by no one from chat). Blocks
     // the cross-user closure leak.
-    if !crate::acl::sender_owns(&hit.owner_id, sender_id, sender_groups) {
-        return Err(ClosurePlanError::NotOwner {
+    if !crate::acl::sender_is_subject(&hit.subject_id, sender_id, sender_groups) {
+        return Err(ClosurePlanError::NotSubject {
             id: raw.to_owned(),
-            owner: hit.owner_id.to_string(),
+            subject: hit.subject_id.to_string(),
         });
     }
     let reason = match closure
@@ -2028,9 +2031,9 @@ struct LlmSupersede {
 /// - the **successor** must be one of the facts this turn actually filed, so a
 ///   fact can never be welded to something that does not exist, or to itself;
 /// - the sender must **own** the target, through
-///   [`crate::acl::sender_owns`] — the same call its two siblings
+///   [`crate::acl::sender_is_subject`] — the same call its two siblings
 ///   (`apply_plan_validity_edits`, `apply_plan_acl_changes`) make, so a member
-///   of an owning group counts as the owner. Reading a fact is not authority
+///   of an owning group counts as the subject. Reading a fact is not authority
 ///   over it, and a supersede rewrites both its validity and its successor
 ///   pointer.
 fn vet_supersede<'a>(
@@ -2069,10 +2072,10 @@ fn vet_supersede<'a>(
         );
         return None;
     }
-    if !crate::acl::sender_owns(&prev.owner_id, sender_id, sender_groups) {
+    if !crate::acl::sender_is_subject(&prev.subject_id, sender_id, sender_groups) {
         tracing::warn!(
             target = target_raw,
-            owner = %prev.owner_id,
+            subject = %prev.subject_id,
             "ingest: reconcile supersede refused — the sender does not own the target"
         );
         return None;
@@ -2087,9 +2090,9 @@ fn vet_supersede<'a>(
 /// a buffered capture, and since the id is stable across promotion the buffer
 /// row is the one to correct. Returns whether the audience landed.
 ///
-/// **The allow list only.** The successor keeps its own `owner_id` and its own
+/// **The allow list only.** The successor keeps its own `subject_id` and its own
 /// `sender_id`: a supersede replaces what a fact says, never whose fact it is.
-/// See [`fact_index::inherit_allow`] for what carrying the owner across would
+/// See [`fact_index::inherit_allow`] for what carrying the subject across would
 /// cost — it is the case where a fact about Bob ends up unreadable by Bob.
 async fn inherit_audience(pool: &SqlitePool, successor: &FactId, allow: &[Principal]) -> bool {
     match fact_index::inherit_allow(pool, successor, allow).await {
@@ -2118,13 +2121,13 @@ async fn inherit_audience(pool: &SqlitePool, successor: &FactId, allow: &[Princi
 /// write, and that is the price of asking the question where it can be
 /// answered honestly.
 ///
-/// **The allow list, and nothing else.** The successor keeps its own owner and
+/// **The allow list, and nothing else.** The successor keeps its own subject and
 /// its own sender: a supersede is not a change of ownership either. Alice
 /// retiring "Alice is at the dentist Thursday" by saying "it is Bob who goes"
-/// mints a fact owned by Bob — and a reader set is `owner ∪ allow ∪ sender`,
+/// mints a fact owned by Bob — and a reader set is `subject ∪ allow ∪ sender`,
 /// so carrying Alice's ownership across would take the fact about Bob away
 /// from Bob while Alice was trying to tell him. Where the subject does not
-/// change (a restated wifi password) the owner was already the same, which is
+/// change (a restated wifi password) the subject was already the same, which is
 /// why this was invisible.
 ///
 /// Inheriting before welding also fails in the recoverable direction: a failed
@@ -2144,7 +2147,7 @@ async fn apply_reconciled_supersedes(
     request: &IngestRequest,
 ) -> usize {
     let sender = Principal::User(request.sender_id.clone());
-    // Resolve the sender's groups once so the owner gate can admit a
+    // Resolve the sender's groups once so the subject gate can admit a
     // member of an owning group, not just the owning user.
     let sender_groups = enrollment::groups_for(pool, &request.sender_id)
         .await
@@ -2263,7 +2266,7 @@ fn reconcile_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) 
         (None, None) => "open".to_owned(),
     };
     let audience = if h.allow_ids.is_empty() {
-        format!("owner {}", h.owner_id)
+        format!("subject {}", h.subject_id)
     } else {
         let allow = h
             .allow_ids
@@ -2271,7 +2274,7 @@ fn reconcile_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) 
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        format!("owner {} allow [{allow}]", h.owner_id)
+        format!("subject {} allow [{allow}]", h.subject_id)
     };
     format!(
         "{} · {validity} · {audience} · {}",
@@ -2630,7 +2633,7 @@ async fn apply_plan_closures(
     request: &IngestRequest,
     turn_now: chrono::DateTime<chrono::Utc>,
 ) -> usize {
-    // Resolve the sender's groups once so the owner gate can admit a
+    // Resolve the sender's groups once so the subject gate can admit a
     // member of the owning group, not only the owning user.
     let sender_groups = enrollment::groups_for(pool, &request.sender_id)
         .await
@@ -2728,7 +2731,7 @@ async fn emit_closure_paper_trail(
     let recipient = recall_hits
         .iter()
         .find(|h| h.fact_id == applied[0].fact_id)
-        .and_then(|h| proposals::recipient_from_fact(&h.owner_id, h.sender_id.as_ref()));
+        .and_then(|h| proposals::recipient_from_fact(&h.subject_id, h.sender_id.as_ref()));
     let gesture = truncate(&request.text, 160);
     match promote::emit_validity_close_receipt(
         pool,
@@ -2775,7 +2778,7 @@ async fn emit_closure_paper_trail(
 ///
 /// A beneficiary is a user principal that OWNS a fact this turn filed
 /// while not being the conversation's human (`request.sender_id`). The
-/// caller batches per owner, so a turn yields at most one event per
+/// caller batches per subject, so a turn yields at most one event per
 /// recipient no matter how many facts it minted. The payload carries the
 /// fact bodies themselves — the delivery ruling (2026-07-23) wants the
 /// CONTENT to reach the recipient, not a pointer, so the bridge's agent
@@ -2856,10 +2859,10 @@ enum ValidityEditPlanError {
     /// Neither `valid_from` nor `valid_to` was given — nothing to correct.
     #[error("validity_edit gave neither valid_from nor valid_to")]
     NoBounds,
-    /// The owner gate: only the fact's owner may edit its validity from
+    /// The subject gate: only the fact's subject may edit its validity from
     /// chat.
-    #[error("validity_edit sender is not the fact's owner")]
-    NotOwner,
+    #[error("validity_edit sender is not the fact's subject")]
+    NotSubject,
     /// A provided bound did not parse as ISO-8601 / RFC3339.
     #[error("validity_edit date `{0}` is not ISO-8601")]
     BadDate(String),
@@ -2870,7 +2873,7 @@ enum ValidityEditPlanError {
 /// Returns the matched [`RecallHit`] plus the two normalized bounds (each
 /// `Some(value)` SETS that bound, `None` LEAVES it). Tolerant on which
 /// bound is given (at least one required), strict on the anti-hallucination
-/// rule, the owner gate, and date well-formedness.
+/// rule, the subject gate, and date well-formedness.
 fn validate_validity_edit<'a>(
     edit: &LlmValidityEdit,
     recall_hits: &'a [RecallHit],
@@ -2899,10 +2902,10 @@ fn validate_validity_edit<'a>(
             },
         });
     };
-    // The owner gate: only an owner edits their fact's validity from chat —
+    // The subject gate: only a subject edits their fact's validity from chat —
     // the owning user, or a member of the owning group.
-    if !crate::acl::sender_owns(&hit.owner_id, sender_id, sender_groups) {
-        return Err(ValidityEditPlanError::NotOwner);
+    if !crate::acl::sender_is_subject(&hit.subject_id, sender_id, sender_groups) {
+        return Err(ValidityEditPlanError::NotSubject);
     }
     let valid_from = normalize_iso_bound(edit.valid_from.as_deref())?;
     let valid_to = normalize_iso_bound(edit.valid_to.as_deref())?;
@@ -2977,7 +2980,7 @@ async fn apply_plan_validity_edits(
     recall_hits: &[RecallHit],
     request: &IngestRequest,
 ) -> usize {
-    // Resolve the sender's groups once so the owner gate can admit a
+    // Resolve the sender's groups once so the subject gate can admit a
     // member of an owning group, not just the owning user.
     let sender_groups = enrollment::groups_for(pool, &request.sender_id)
         .await
@@ -3083,7 +3086,7 @@ async fn emit_validity_edit_paper_trail(
     let recipient = recall_hits
         .iter()
         .find(|h| h.fact_id == applied[0].fact_id)
-        .and_then(|h| proposals::recipient_from_fact(&h.owner_id, h.sender_id.as_ref()));
+        .and_then(|h| proposals::recipient_from_fact(&h.subject_id, h.sender_id.as_ref()));
     let gesture = truncate(&request.text, 160);
     match promote::emit_validity_edit_receipt(
         pool,
@@ -3139,10 +3142,10 @@ enum AclChangePlanError {
     /// saw in this turn's `recalled_memory`.
     #[error("acl_change target `{id}` is not in recalled_memory ({available})")]
     TargetNotInRecall { id: String, available: String },
-    /// The owner gate: only the fact's owner may change its ACL from chat.
-    #[error("acl_change sender is not the fact's owner")]
-    NotOwner,
-    /// A principal wire string (`owner_id` or one of `allow_ids`) did not
+    /// The subject gate: only the fact's subject may change its ACL from chat.
+    #[error("acl_change sender is not the fact's subject")]
+    NotSubject,
+    /// A principal wire string (`subject_id` or one of `allow_ids`) did not
     /// parse.
     #[error("acl_change bad principal: {0}")]
     BadPrincipal(#[from] PrincipalParseError),
@@ -3150,9 +3153,9 @@ enum AclChangePlanError {
 
 /// Validate one requested ACL change against this turn's recall window.
 ///
-/// Returns the matched [`RecallHit`], the new owner (defaulting to the
-/// existing owner when the LLM omits one), and the new allow-list. Strict
-/// on the anti-hallucination rule, the owner gate, and principal
+/// Returns the matched [`RecallHit`], the new subject (defaulting to the
+/// existing subject when the LLM omits one), and the new allow-list. Strict
+/// on the anti-hallucination rule, the subject gate, and principal
 /// well-formedness.
 fn validate_acl_change<'a>(
     change: &LlmAclChange,
@@ -3182,20 +3185,20 @@ fn validate_acl_change<'a>(
             },
         });
     };
-    // The owner gate: only an owner changes their fact's ACL from chat —
+    // The subject gate: only a subject changes their fact's ACL from chat —
     // the owning user, or a member of the owning group.
-    if !crate::acl::sender_owns(&hit.owner_id, sender_id, sender_groups) {
-        return Err(AclChangePlanError::NotOwner);
+    if !crate::acl::sender_is_subject(&hit.subject_id, sender_id, sender_groups) {
+        return Err(AclChangePlanError::NotSubject);
     }
-    // Default to keeping the existing owner when the LLM omits it.
-    let new_owner = match change
-        .owner_id
+    // Default to keeping the existing subject when the LLM omits it.
+    let new_subject = match change
+        .subject_id
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
         Some(s) => s.parse::<Principal>()?,
-        None => hit.owner_id.clone(),
+        None => hit.subject_id.clone(),
     };
     let new_allow = change
         .allow_ids
@@ -3204,7 +3207,7 @@ fn validate_acl_change<'a>(
         .filter(|s| !s.is_empty())
         .map(str::parse::<Principal>)
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok((hit, new_owner, new_allow))
+    Ok((hit, new_subject, new_allow))
 }
 
 /// Apply the plan's requested ACL changes — the ingest half of the
@@ -3228,14 +3231,14 @@ async fn apply_plan_acl_changes(
     recall_hits: &[RecallHit],
     request: &IngestRequest,
 ) -> usize {
-    // Resolve the sender's groups once so the owner gate can admit a
+    // Resolve the sender's groups once so the subject gate can admit a
     // member of an owning group, not just the owning user.
     let sender_groups = enrollment::groups_for(pool, &request.sender_id)
         .await
         .unwrap_or_default();
     let mut applied: Vec<promote::AppliedAclChange> = Vec::new();
     for change in changes {
-        let (hit, new_owner, new_allow) = match validate_acl_change(
+        let (hit, new_subject, new_allow) = match validate_acl_change(
             change,
             recall_hits,
             request.sender_id.as_str(),
@@ -3262,20 +3265,20 @@ async fn apply_plan_acl_changes(
             );
             continue;
         }
-        // The chat verb changes owner/allow only — the fact's cross-user
+        // The chat verb changes subject/allow only — the fact's cross-user
         // attribution (`sender`, who captured it) is PRESERVED, so the
         // capturer keeps the read shortcut. The widening signal is computed
         // against the PREVIOUS read-set, returned by set_acl.
         let keep_sender = hit.sender_id.as_ref();
         let fact_set =
-            fact_index::set_acl(pool, &hit.fact_id, &new_owner, &new_allow, keep_sender).await;
+            fact_index::set_acl(pool, &hit.fact_id, &new_subject, &new_allow, keep_sender).await;
         let (prev, surface) = match fact_set {
             Ok(Some(prev)) => (prev, promote::ClosureSurface::Fact),
             Ok(None) => {
                 match capture_buffer::set_acl(
                     pool,
                     &hit.fact_id,
-                    &new_owner,
+                    &new_subject,
                     &new_allow,
                     keep_sender,
                 )
@@ -3301,9 +3304,9 @@ async fn apply_plan_acl_changes(
             },
         };
         let widening = acl::widens(
-            &prev.prev_owner_id,
+            &prev.prev_subject_id,
             &prev.prev_allow_ids,
-            &new_owner,
+            &new_subject,
             &new_allow,
         );
         let audit_id = match disclosure_audit::record(
@@ -3312,7 +3315,7 @@ async fn apply_plan_acl_changes(
             &hit.wiki_id,
             request.sender_id.as_str(),
             &prev,
-            &new_owner,
+            &new_subject,
             &new_allow,
             keep_sender,
             widening,
@@ -3330,7 +3333,7 @@ async fn apply_plan_acl_changes(
         };
         tracing::info!(
             fact_id = %hit.fact_id,
-            owner = %new_owner,
+            subject = %new_subject,
             widening,
             surface = surface.as_str(),
             "ingest: ACL CHANGED (acl_change verb)"
@@ -3339,7 +3342,7 @@ async fn apply_plan_acl_changes(
             fact_id: hit.fact_id.clone(),
             wiki_id: hit.wiki_id.clone(),
             preview: truncate(&hit.text, 120),
-            new_owner,
+            new_subject,
             new_allow,
             prev,
             audit_id,
@@ -3366,7 +3369,7 @@ async fn emit_acl_change_paper_trail(
     let recipient = recall_hits
         .iter()
         .find(|h| h.fact_id == applied[0].fact_id)
-        .and_then(|h| proposals::recipient_from_fact(&h.owner_id, h.sender_id.as_ref()));
+        .and_then(|h| proposals::recipient_from_fact(&h.subject_id, h.sender_id.as_ref()));
     let gesture = truncate(&request.text, 160);
     match promote::emit_acl_change_receipt(
         pool,
@@ -3657,7 +3660,7 @@ fn build_prompt(
     }
 
     // sender_groups: the groups the sender belongs to, each with the
-    // operator-written `scope` prose. This is the context the `owner_id`
+    // operator-written `scope` prose. This is the context the `subject_id`
     // decision routes on — without
     // it the classifier is blind to the group domain and falls back to
     // a private capture.
@@ -3687,8 +3690,8 @@ fn build_prompt(
 
     // sender_rules: the sender's own standing policy (their `rules.md`).
     // The classifier honours the privacy/sharing rules here when it
-    // decides each fact's `owner_id`/`allow_ids` (e.g. "keep health private" →
-    // owner-only), and surfaces the behaviour rules to the consumer. Absent →
+    // decides each fact's `subject_id`/`allow_ids` (e.g. "keep health private" →
+    // subject-only), and surfaces the behaviour rules to the consumer. Absent →
     // "(none)": decide ACL as before. No hard gate — an aid to the decision.
     //
     // **Rendered whole.** The prompt calls this the sender's policy «in full»,
@@ -3719,7 +3722,7 @@ fn build_prompt(
 
     // known_users: the enrolled people the classifier can attribute facts to
     // by canonical name. A message from one user about another ("Bob
-    // prefers tea") routes `owner_id` to the named person via this roster
+    // prefers tea") routes `subject_id` to the named person via this roster
     // rather than filing it under the sender. Aliases let the model resolve
     // informal references to the canonical `user_id`.
     //
@@ -3759,7 +3762,7 @@ fn build_prompt(
     // one placement surface: the file names of the open lists. That is the
     // one write that cannot wait for consolidation, and the one name the
     // model has no other way to learn: a recalled fact carries its wiki, its
-    // owner and its audience, never the page it sits on. Without this block
+    // subject and its audience, never the page it sits on. Without this block
     // "add detergent to the shopping list" invents a name and mints a second
     // shopping list in front of the user.
     out.push_str("\nlist_pages:\n");
@@ -3821,13 +3824,13 @@ fn build_prompt(
             out.push_str(h.fact_id.as_str());
             out.push_str("\n    wiki_id: ");
             out.push_str(&h.wiki_id);
-            // owner (the subject) + allow (the current audience) so the
+            // subject (the subject) + allow (the current audience) so the
             // classifier can tell which facts the sender owns and faithfully
             // reproduce the read-set on a REPLACE-semantics `acl_change` /
             // inherit it on a supersede. Without these the model is blind to
             // the current ACL and silently drops allow principals.
-            out.push_str("\n    owner: ");
-            out.push_str(&h.owner_id.to_string());
+            out.push_str("\n    subject: ");
+            out.push_str(&h.subject_id.to_string());
             out.push_str("\n    allow: ");
             if h.allow_ids.is_empty() {
                 out.push_str("(none)");
@@ -3998,7 +4001,7 @@ pub(crate) struct AvailableWiki {
     pub(crate) smart: bool,
     /// Per-wiki `is_agent` flag from `_meta.md`: true for an AGENT's own wiki
     /// (a `wiki-user` stamped `is_agent: true`, e.g. `hermes1`), reserved for
-    /// the agent's `owner_id:"self"` autobiography. The x2 guard reads it to
+    /// the agent's `subject_id:"self"` autobiography. The x2 guard reads it to
     /// keep user/group facts out of the agent wiki.
     pub(crate) is_agent: bool,
 }
@@ -4216,7 +4219,7 @@ fn append_sender_rule(tree: &WikiTree, sender_id: &str, rule: &str) -> Result<bo
 /// for the agent (it is never a sender). In the *user's* identity wiki the
 /// same page carries their USER-GLOBAL behaviour facts alongside the
 /// governance prose (roadmap 42) — [`sender_rules`] reads the prose only and
-/// skips the fact regions. The per-fact `owner` scopes each rule (the served
+/// skips the fact regions. The per-fact `subject` scopes each rule (the served
 /// user for a per-user or user-global rule, the agent for an agent-wide one);
 /// the home wiki tells per-user and user-global apart.
 const BEHAVIOUR_RULES_PAGE: &str = crate::wiki::RULES_FILENAME;
@@ -4230,19 +4233,19 @@ const BEHAVIOUR_RULES_PAGE: &str = crate::wiki::RULES_FILENAME;
 enum BehaviourScope {
     /// Addressed to the speaker ("with me / my things", or a bare imperative
     /// with no audience): shapes how the agent behaves WITH THIS USER. Open to
-    /// **anyone** — it only touches them; filed `owner = the user` in the
+    /// **anyone** — it only touches them; filed `subject = the user` in the
     /// calling agent's wiki, recalled only for that user on that agent. The
     /// default when the addressee is unclear.
     PerUser,
     /// Impersonal / universal ("con tutti / con chiunque", or a how-the-agent-
     /// works directive with no per-speaker scope): changes the agent's
-    /// behaviour for EVERYONE. **Admin-only**; filed `owner = the agent`,
+    /// behaviour for EVERYONE. **Admin-only**; filed `subject = the agent`,
     /// recalled for every user.
     AgentWide,
     /// Explicitly addressed to EVERY assistant the user talks to ("tutti gli
     /// assistenti", "con qualunque assistente", "chiunque tu sia"): the user's
     /// own standing rule for all their consumers (roadmap 42). Open to
-    /// **anyone** — it binds only their own conversations; filed `owner = the
+    /// **anyone** — it binds only their own conversations; filed `subject = the
     /// sender` in the sender's IDENTITY wiki, recalled by every consumer
     /// serving them.
     UserGlobal,
@@ -4285,14 +4288,14 @@ impl BehaviourScope {
 ///   from [`IngestRequest::consumer_id`] via
 ///   [`crate::consumers::system_user_for`], falling back to the sender's own
 ///   wiki when no binding resolves (a smart consumer IS its user) — with
-///   `owner = the sender`, so different users' per-user rules stay distinct
+///   `subject = the sender`, so different users' per-user rules stay distinct
 ///   facts and recall pulls only the served user's own — "how the agent
 ///   behaves WITH ME".
-/// - [`BehaviourScope::AgentWide`] → the agent's wiki, `owner = the agent`, so
+/// - [`BehaviourScope::AgentWide`] → the agent's wiki, `subject = the agent`, so
 ///   the rule is the agent's standing operation, recalled for **every** user.
 ///   The dispatch in [`run`] only reaches here for an agent-wide rule after
 ///   confirming the sender is the admin ([`crate::enrollment::is_admin`]).
-/// - [`BehaviourScope::UserGlobal`] → the SENDER's identity wiki, `owner = the
+/// - [`BehaviourScope::UserGlobal`] → the SENDER's identity wiki, `subject = the
 ///   sender` — the user's own rule for every assistant serving them, recalled
 ///   by every consumer regardless of which one heard it. On a smart consumer
 ///   the per-user fallback and this home coincide (its wiki IS the user's), so
@@ -4334,20 +4337,20 @@ async fn capture_behaviour_rule(
         return Ok(None);
     };
     // Ownership IS the scope. PER-USER and USER-GLOBAL ⇒ owned by the USER who
-    // dictated it, so different users' rules are distinct facts (owner-scoped
+    // dictated it, so different users' rules are distinct facts (subject-scoped
     // dedup never folds franz's into bilbo's) and recall pulls only the served
     // user's own — the home wiki tells the two apart. AGENT-WIDE ⇒ owned by
     // the AGENT itself: one policy for everyone, recalled for every user,
-    // deduped across the agent's own standing rules. Either way owner == the
+    // deduped across the agent's own standing rules. Either way subject == the
     // principal ⇒ no separate sender attribution.
-    let owner = match scope {
+    let subject = match scope {
         BehaviourScope::PerUser | BehaviourScope::UserGlobal => Principal::User(sender.to_owned()),
         BehaviourScope::AgentWide => Principal::User(target.clone()),
     };
     let page_description = match scope {
         BehaviourScope::PerUser => {
             "How this agent should behave, per requesting user (per-user \
-             behaviour rules; one owner per user)."
+             behaviour rules; one subject per user)."
         },
         BehaviourScope::AgentWide => {
             "How this agent behaves for everyone — tone, tools, workflow, \
@@ -4364,7 +4367,7 @@ async fn capture_behaviour_rule(
         wiki_id,
         page: PathBuf::from(BEHAVIOUR_RULES_PAGE),
         body: rule.to_owned(),
-        owner,
+        subject,
         allow: Vec::new(),
         sender: None,
         fact_type: Some("rule".to_owned()),
@@ -4378,7 +4381,7 @@ async fn capture_behaviour_rule(
         authored_refs: Vec::new(),
     };
     // Supersede when the user revises a directive the classifier was shown;
-    // else additive (deduped against this user's own rules by owner scope).
+    // else additive (deduped against this user's own rules by subject scope).
     let outcome = match supersede {
         Some(old) => capture::wiki_supersede(tree, pool, embedder, old, cap_req).await?,
         None => capture::wiki_capture(tree, pool, embedder, cap_req).await?,
@@ -4407,9 +4410,9 @@ fn agent_self_fact_page(is_identity: bool, sender_id: &str, default: &Path) -> P
     }
 }
 
-/// The `owner_id: "self"` sentinel on an assistant turn
+/// The `subject_id: "self"` sentinel on an assistant turn
 /// (prompt Part 9) routes here: the body is filed as a normal fact in the
-/// calling agent's OWN wiki, **owned by the agent** (`owner == sender == the
+/// calling agent's OWN wiki, **owned by the agent** (`subject == sender == the
 /// agent` ⇒ no separate sender), so it becomes the agent's emergent self — its
 /// identity (high-salience facts the REM consolidates onto its card) and its
 /// history with each user. The fact is auto-tagged with the served user's id as
@@ -4430,7 +4433,7 @@ async fn capture_agent_self_fact(
     policy: &IngestPolicy,
 ) -> Result<Option<FactId>> {
     let Some(body) = unit.body.map(str::trim).filter(|b| !b.is_empty()) else {
-        tracing::warn!("ingest: owner_id=self extraction has no body — dropped");
+        tracing::warn!("ingest: subject_id=self extraction has no body — dropped");
         return Ok(None);
     };
     let Ok(wiki_id) = WikiId::parse(agent_id) else {
@@ -4481,8 +4484,8 @@ async fn capture_agent_self_fact(
         page,
         body: body.to_owned(),
         // OWNED BY THE AGENT — this is its own self-knowledge, not about the
-        // user. owner == the agent ⇒ no separate sender attribution.
-        owner: Principal::User(agent_id.to_owned()),
+        // user. subject == the agent ⇒ no separate sender attribution.
+        subject: Principal::User(agent_id.to_owned()),
         allow: Vec::new(),
         sender: None,
         fact_type: unit.fact_type.map(str::to_owned),
@@ -4510,10 +4513,10 @@ const BEHAVIOUR_RULES_RECALL_CAP: usize = 50;
 
 /// Pull the behaviour-rule facts a principal OWNS on the agent's `rules.md`
 /// page (roadmap 29c), via [`fact_index::find_behaviour_rules`]. Page-scoped
-/// on purpose: an `owner = agent` query would otherwise drag in the agent's
+/// on purpose: an `subject = agent` query would otherwise drag in the agent's
 /// self-facts, which live on its content pages, not here. The
 /// rules-page predicate sits **in the SQL, before the cap**, so unrelated
-/// facts under the same owner can never starve old rules out of the LIMIT
+/// facts under the same subject can never starve old rules out of the LIMIT
 /// window; and the query filters validity at *now* — a rule whose window was
 /// closed (retracted from chat, or dated and expired) stops being served,
 /// while the fact itself stays (closing is never deleting). Best-effort — a
@@ -4521,13 +4524,13 @@ const BEHAVIOUR_RULES_RECALL_CAP: usize = 50;
 async fn behaviour_rows_on_page(
     pool: &SqlitePool,
     agent_wiki: &str,
-    owner: &Principal,
+    subject: &Principal,
 ) -> Vec<(FactId, String)> {
     let now = chrono::Utc::now().to_rfc3339();
     match fact_index::find_behaviour_rules(
         pool,
         agent_wiki,
-        owner,
+        subject,
         &now,
         BEHAVIOUR_RULES_RECALL_CAP,
     )
@@ -4543,10 +4546,10 @@ async fn behaviour_rows_on_page(
 
 /// Recall the behaviour rules in force for THIS turn — the read side of the
 /// behaviour-rule loop. Three scopes, two homes (roadmap 42):
-/// **agent-wide** (the agent's wiki, `owner = the agent`) applies for every
-/// user of this agent; **user-global** (the SENDER's identity wiki, `owner =
+/// **agent-wide** (the agent's wiki, `subject = the agent`) applies for every
+/// user of this agent; **user-global** (the SENDER's identity wiki, `subject =
 /// the sender`) applies on every consumer serving this user; **per-user** (the
-/// agent's wiki, `owner = the served user`) applies only to this user on this
+/// agent's wiki, `subject = the served user`) applies only to this user on this
 /// agent. Returns `(fact_id, body, scope)` so the consumer applies them every
 /// turn and the classifier can supersede any of the three (the scope gates who
 /// may — see the dispatch in [`run`]). Order pinned, most specific last:
@@ -4580,14 +4583,14 @@ async fn recall_behaviour_rules(
         // dedicated channel source is the user's own everywhere-set.
         return tag(user_global, BehaviourScope::UserGlobal).collect();
     };
-    // Agent-wide rules (owner = the agent) — recalled for everyone.
+    // Agent-wide rules (subject = the agent) — recalled for everyone.
     let mut rules: Vec<_> = tag(
         behaviour_rows_on_page(pool, &agent_wiki, &Principal::User(agent_wiki.clone())).await,
         BehaviourScope::AgentWide,
     )
     .collect();
     rules.extend(tag(user_global, BehaviourScope::UserGlobal));
-    // The served user's own per-user rules (owner = the user) — "WITH ME".
+    // The served user's own per-user rules (subject = the user) — "WITH ME".
     rules.extend(tag(
         behaviour_rows_on_page(pool, &agent_wiki, &sender).await,
         BehaviourScope::PerUser,
@@ -4742,7 +4745,7 @@ async fn recall_agent_self(
         .and_then(|h| crate::wiki::meta_summary(h.meta()));
     let filters = fact_index::FactFilters {
         wiki_id: Some(agent_wiki.clone()),
-        owner_id: Some(Principal::User(agent_wiki)),
+        subject_id: Some(Principal::User(agent_wiki)),
         limit: AGENT_SELF_RECALL_CAP,
         ..Default::default()
     };
@@ -4893,7 +4896,7 @@ struct SpeakerCard {
 /// 3. **Injected once, and never re-read.** The page's prose could also arrive
 ///    as a flat hit; [`SpeakerCard::page_path`] is what drops it. It cannot
 ///    arrive as a navigated fragment at all — the funnel is handed the page as
-///    already visited, so it is not a navigation destination for its own owner
+///    already visited, so it is not a navigation destination for its own subject
 ///    (69b).
 ///
 /// Falls back to the wiki's one-line `_meta.summary` when there is no readable
@@ -5427,7 +5430,7 @@ fn page_of(source_path: &str) -> &str {
     source_path
         .strip_prefix("wikis/")
         .and_then(|rest| rest.split_once('/'))
-        .map_or(source_path, |(_owner, rest)| {
+        .map_or(source_path, |(_subject, rest)| {
             rest.split_once('/').map_or(rest, |(_wiki, page)| page)
         })
 }
@@ -5459,29 +5462,29 @@ fn date_part(iso: &str) -> &str {
 #[derive(Default)]
 struct NavSeeds {
     topics: Vec<String>,
-    owners: Vec<Principal>,
+    subjects: Vec<Principal>,
 }
 
 /// Union of the plan's capture-unit `topics` plus their parsed
-/// `owner_id`s. For a recall intent both are typically empty, which
+/// `subject_id`s. For a recall intent both are typically empty, which
 /// leaves the principal + RAG fan — the designed degenerate case.
 fn nav_seeds(plan: &LlmIngestPlan) -> NavSeeds {
     let mut topics: Vec<String> = Vec::new();
-    let mut owners: Vec<Principal> = Vec::new();
+    let mut subjects: Vec<Principal> = Vec::new();
     for unit in plan.capture_units() {
         for t in unit.topics {
             if !topics.iter().any(|seen| seen == t) {
                 topics.push(t.clone());
             }
         }
-        if let Some(owner_str) = unit.owner_id
+        if let Some(owner_str) = unit.subject_id
             && let Ok(p) = Principal::from_str(owner_str)
-            && !owners.contains(&p)
+            && !subjects.contains(&p)
         {
-            owners.push(p);
+            subjects.push(p);
         }
     }
-    NavSeeds { topics, owners }
+    NavSeeds { topics, subjects }
 }
 
 /// Stable header of the recall block's navigated-prose section.
@@ -5756,7 +5759,7 @@ async fn record_ingest_trace(
         intent: Some(intent.as_str().to_owned()),
         seed_mode: seed_mode.to_owned(),
         topics: seeds.topics.clone(),
-        owners: seeds.owners.iter().map(ToString::to_string).collect(),
+        subjects: seeds.subjects.iter().map(ToString::to_string).collect(),
         flat_hits: recall_hits
             .iter()
             .filter(|h| !h.fresh)
@@ -6530,7 +6533,7 @@ pub async fn wiki_ingest_message(
                     continue;
                 }
 
-                // `owner_id: "self"` sentinel (prompt Part 9) → a fact the
+                // `subject_id: "self"` sentinel (prompt Part 9) → a fact the
                 // agent states about ITSELF, filed owner=agent in the agent's
                 // own wiki. Only meaningful on an assistant turn
                 // where the agent principal resolved (`agent_sender`); on any
@@ -6549,13 +6552,13 @@ pub async fn wiki_ingest_message(
                 // false positives: on a user turn `agent_sender` is `None`, so
                 // a user's fact ABOUT the agent is untouched, and on an
                 // assistant turn owner==the-speaking-agent IS the self case.
-                let self_owned = unit.owner_id.is_some_and(|raw| {
+                let self_subject = unit.subject_id.is_some_and(|raw| {
                     raw == "self"
                         || agent_sender.as_ref().is_some_and(|agent| {
-                            Principal::from_str(raw).is_ok_and(|owner| owner == *agent)
+                            Principal::from_str(raw).is_ok_and(|subject| subject == *agent)
                         })
                 });
-                if self_owned {
+                if self_subject {
                     if let Some(Principal::User(agent_id)) = agent_sender.as_ref() {
                         if let Some(fact_id) = capture_agent_self_fact(
                             tree,
@@ -6580,40 +6583,40 @@ pub async fn wiki_ingest_message(
                             }
                         } else {
                             tracing::warn!(
-                                "ingest: owner_id=self but no agent wiki / empty body — dropped"
+                                "ingest: subject_id=self but no agent wiki / empty body — dropped"
                             );
                         }
                     } else {
                         tracing::warn!(
-                            "ingest: owner_id=self outside a resolved assistant turn — skipped"
+                            "ingest: subject_id=self outside a resolved assistant turn — skipped"
                         );
                     }
                     continue;
                 }
 
-                // Engine floor of the 2026-06-30 subject-owner ruling (the
+                // Engine floor of the 2026-06-30 subject-subject ruling (the
                 // dangling-principal incident): the `known_users`
                 // roster in the prompt steers the classifier away from
-                // coining an owner for a non-enrolled subject, but nothing
-                // enforced it — a dangling `user:<x>` owner matches no
+                // coining a subject for a non-enrolled subject, but nothing
+                // enforced it — a dangling `user:<x>` subject matches no
                 // reader and splits the subject across homes on re-ingest.
                 // Clearing the field routes the unit through the sender
                 // default in the validators below, the ruling's own
                 // fallback. Fail-open on a DB error: the guard protects
                 // against a coined principal, not against an outage.
                 let mut unit = *unit;
-                if let Some(raw) = unit.owner_id
+                if let Some(raw) = unit.subject_id
                     && let Ok(principal) = Principal::from_str(raw)
                     && !enrollment::principal_exists(pool, &principal)
                         .await
                         .unwrap_or(true)
                 {
                     tracing::warn!(
-                        owner = raw,
+                        subject = raw,
                         sender_id = request.sender_id.as_str(),
-                        "ingest: owner is not an enrolled principal — re-owned to the sender"
+                        "ingest: subject is not an enrolled principal — re-owned to the sender"
                     );
-                    unit.owner_id = None;
+                    unit.subject_id = None;
                 }
 
                 let supersede_target =
@@ -6732,7 +6735,7 @@ pub async fn wiki_ingest_message(
                 }
 
                 // Roadmap 27 — stamp the AGENT as provenance on a fact it derived
-                // from its own reply. Only the `sender` axis flips: `owner` stays
+                // from its own reply. Only the `sender` axis flips: `subject` stays
                 // whoever the fact is ABOUT (the user, for an episode or advice;
                 // `global` for kept generic knowledge), so the fact still lands in
                 // the right wiki and surfaces on that user's recall. The agent
@@ -6759,7 +6762,7 @@ pub async fn wiki_ingest_message(
                     resolve_unit_attachments(unit.attachments, &request, &mut claimed_attachments);
                 append_embed_markers(&mut cap_req.body, &unit_media);
                 let media_acl = (
-                    cap_req.owner.clone(),
+                    cap_req.subject.clone(),
                     cap_req.allow.clone(),
                     cap_req.sender.clone(),
                 );
@@ -7680,7 +7683,7 @@ mod tests {
     /// Ingest buffers **every** standard capture now (founder, 2026-08-05 — the
     /// live-write exception for requested containers is gone), so a fact
     /// reaches `fact_index` at the next light cycle rather than during the
-    /// turn. A test that is about WHAT ends up filed — the owner, the validity
+    /// turn. A test that is about WHAT ends up filed — the subject, the validity
     /// window, the provenance, the inherited audience — still wants to read
     /// the fact, and reading it through the promotion is better than reaching
     /// into the buffer and re-deriving by hand what promotion would have
@@ -8027,7 +8030,7 @@ mod tests {
         let unit = |style: Option<&'static str>, requested: bool| CaptureUnit {
             target_wiki_id: None,
             target_page: Some("spesa.md"),
-            owner_id: None,
+            subject_id: None,
             allow_ids: &no_ids,
             fact_type: None,
             valid_from: None,
@@ -8093,7 +8096,7 @@ mod tests {
     /// The four arms of [`derive_target_wiki`], in the order they fire.
     ///
     /// The list arm is the interesting one: it is the ONLY route left by
-    /// which a turn puts a fact into a wiki that is not its owner's, and it
+    /// which a turn puts a fact into a wiki that is not its subject's, and it
     /// fires exactly when the user pointed at a list themselves.
     #[test]
     fn derive_target_wiki_walks_list_then_subject_then_sender() {
@@ -8113,7 +8116,7 @@ mod tests {
         let unit = |wiki: Option<&'static str>, page: Option<&'static str>| CaptureUnit {
             target_wiki_id: wiki,
             target_page: page,
-            owner_id: None,
+            subject_id: None,
             allow_ids: &no_ids,
             fact_type: None,
             valid_from: None,
@@ -8131,11 +8134,11 @@ mod tests {
             attachments: &no_ids,
         };
         let user = |id: &str| Principal::User(id.to_owned());
-        let derive = |wiki, page, owner: Principal| {
+        let derive = |wiki, page, subject: Principal| {
             derive_target_wiki(
                 &unit(wiki, page),
                 &request,
-                &owner,
+                &subject,
                 page,
                 &available,
                 &lists,
@@ -8153,14 +8156,14 @@ mod tests {
             derive(Some("nowhere"), None, user("bob")).as_deref(),
             Some("bob")
         );
-        // 2 — the list the turn names carries its own wiki, beating the owner
-        // when no list of the owner's own wiki answers to that name.
+        // 2 — the list the turn names carries its own wiki, beating the subject
+        // when no list of the subject's own wiki answers to that name.
         assert_eq!(
             derive(None, Some("spesa.md"), Principal::Group("famiglia".into())).as_deref(),
             Some("casa")
         );
         // …but a file name is not an address. When two wikis both hold a
-        // `spesa.md`, the owner the classifier resolved decides which one the
+        // `spesa.md`, the subject the classifier resolved decides which one the
         // turn meant — matching on the name alone handed «aggiungi il
         // detersivo alla lista della spesa DI FAMIGLIA» to whichever wiki the
         // inventory listed first.
@@ -8187,9 +8190,9 @@ mod tests {
             )
             .as_deref(),
             Some("famiglia"),
-            "the owner's own list wins over a namesake in another wiki"
+            "the subject's own list wins over a namesake in another wiki"
         );
-        // A page that is not a known list is just a page: the owner decides.
+        // A page that is not a known list is just a page: the subject decides.
         assert_eq!(
             derive(None, Some("altro.md"), Principal::Group("famiglia".into())).as_deref(),
             Some("famiglia")
@@ -8226,7 +8229,7 @@ mod tests {
             suggested_seed: None,
             target_wiki_id: Some("alice".into()),
             target_page: Some("rules.md".into()),
-            owner_id: None,
+            subject_id: None,
             allow_ids: Vec::new(),
             fact_type: None,
             valid_from: None,
@@ -8274,7 +8277,7 @@ mod tests {
             suggested_seed: None,
             target_wiki_id: None,
             target_page: None,
-            owner_id: None,
+            subject_id: None,
             allow_ids: Vec::new(),
             fact_type: None,
             valid_from: None,
@@ -8312,13 +8315,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_capture_plan_defaults_owner_to_sender() {
+    fn validate_capture_plan_defaults_subject_to_sender() {
         let plan = LlmIngestPlan {
             intent: "capture".into(),
             suggested_seed: None,
             target_wiki_id: Some("alice".into()),
             target_page: None,
-            owner_id: None,
+            subject_id: None,
             allow_ids: Vec::new(),
             fact_type: Some("preference".into()),
             valid_from: None,
@@ -8350,7 +8353,7 @@ mod tests {
                 .expect("validated");
         assert_eq!(cap.wiki_id.as_str(), "alice");
         assert_eq!(cap.page, PathBuf::from("notes.md"));
-        assert!(matches!(cap.owner, Principal::User(ref id) if id == "alice"));
+        assert!(matches!(cap.subject, Principal::User(ref id) if id == "alice"));
         assert!(matches!(cap.sender, Some(Principal::User(ref id)) if id == "alice"));
         assert_eq!(cap.fact_type.as_deref(), Some("preference"));
         assert_eq!(cap.topics, vec!["coffee".to_owned()]);
@@ -8367,7 +8370,7 @@ mod tests {
             suggested_seed: None,
             target_wiki_id: Some("alice".into()),
             target_page: None,
-            owner_id: None,
+            subject_id: None,
             allow_ids: vec!["user:alice".into(), "group:famiglia".into()],
             fact_type: Some("preference".into()),
             valid_from: None,
@@ -8407,7 +8410,7 @@ mod tests {
             suggested_seed: None,
             target_wiki_id: Some("alice".into()),
             target_page: None,
-            owner_id: Some("not-a-principal".into()),
+            subject_id: Some("not-a-principal".into()),
             allow_ids: Vec::new(),
             fact_type: None,
             valid_from: None,
@@ -8482,7 +8485,7 @@ mod tests {
             suggested_seed: None,
             target_wiki_id: Some("global".into()),
             target_page: None,
-            owner_id: Some("global".into()),
+            subject_id: Some("global".into()),
             allow_ids: Vec::new(),
             fact_type: None,
             valid_from: None,
@@ -8615,15 +8618,15 @@ mod tests {
     fn validate_capture_plan_redirects_non_self_fact_off_agent_wiki() {
         let request = req("some fact", "morgana");
         let policy = IngestPolicy::default();
-        // hermes1 is an agent wiki; morgana (the owner's own wiki) is in the window.
+        // hermes1 is an agent wiki; morgana (the subject's own wiki) is in the window.
         let available = vec![
             sample_agent_available("hermes1"),
             sample_available("morgana"),
         ];
-        // owner user:morgana, but the model aimed the fact at the agent wiki.
+        // subject user:morgana, but the model aimed the fact at the agent wiki.
         let plan = parse_plan(
             "{\"intent\":\"capture\",\"target_wiki_id\":\"hermes1\",\
-             \"owner_id\":\"user:morgana\",\"body\":\"Morgana prefers herbal tea\"}",
+             \"subject_id\":\"user:morgana\",\"body\":\"Morgana prefers herbal tea\"}",
         )
         .expect("plan parses");
         let cap =
@@ -8632,7 +8635,7 @@ mod tests {
         assert_eq!(
             cap.wiki_id.as_str(),
             "morgana",
-            "a user-owned fact aimed at an agent wiki must be redirected to the owner's own wiki"
+            "a user-owned fact aimed at an agent wiki must be redirected to the subject's own wiki"
         );
 
         // With no resolvable home wiki in the window, the extraction is dropped
@@ -8654,8 +8657,8 @@ mod tests {
     }
 
     /// The exception the guard needs to be a guard and not a shredder: a fact
-    /// whose owner IS the agent belongs in the agent's wiki, because that wiki
-    /// is the owner's own home. It reaches this function whenever a USER states
+    /// whose subject IS the agent belongs in the agent's wiki, because that wiki
+    /// is the subject's own home. It reaches this function whenever a USER states
     /// something about the assistant — the `self` sentinel upstream only fires
     /// on an assistant turn. Without the exception the guard hunts for a
     /// *non*-agent wiki named `hermes1`, finds none, and drops the fact.
@@ -8669,20 +8672,20 @@ mod tests {
         ];
         let plan = parse_plan(
             "{\"intent\":\"capture\",\"target_wiki_id\":\"hermes1\",\
-             \"owner_id\":\"user:hermes1\",\"body\":\"L'agente è competente sulle pratiche INPS\"}",
+             \"subject_id\":\"user:hermes1\",\"body\":\"L'agente è competente sulle pratiche INPS\"}",
         )
         .expect("plan parses");
         let cap =
             validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
                 .expect("the agent's own fact stays home");
         assert_eq!(cap.wiki_id.as_str(), "hermes1");
-        assert_eq!(cap.owner, Principal::User("hermes1".to_owned()));
+        assert_eq!(cap.subject, Principal::User("hermes1".to_owned()));
 
         // And it is not a blanket bypass: another principal's fact aimed at the
         // same wiki still leaves it.
         let other = parse_plan(
             "{\"intent\":\"capture\",\"target_wiki_id\":\"hermes1\",\
-             \"owner_id\":\"user:morgana\",\"body\":\"Morgana ha una pratica INPS aperta\"}",
+             \"subject_id\":\"user:morgana\",\"body\":\"Morgana ha una pratica INPS aperta\"}",
         )
         .expect("plan parses");
         let cap = validate_capture_plan(
@@ -8698,7 +8701,7 @@ mod tests {
     }
 
     /// Two bots enrolled: a fact about bot B aimed at bot A's wiki goes to B's
-    /// own wiki. The redirect looks for the owner's home and nothing else — a
+    /// own wiki. The redirect looks for the subject's home and nothing else — a
     /// home that happens to be another agent's wiki is still the right home,
     /// and refusing it would drop a perfectly placeable fact.
     #[test]
@@ -8712,7 +8715,7 @@ mod tests {
         ];
         let plan = parse_plan(
             "{\"intent\":\"capture\",\"target_wiki_id\":\"hermes1\",\
-             \"owner_id\":\"user:samvisebot\",\"body\":\"Samvise gestisce le prenotazioni\"}",
+             \"subject_id\":\"user:samvisebot\",\"body\":\"Samvise gestisce le prenotazioni\"}",
         )
         .expect("plan parses");
         let cap =
@@ -8731,7 +8734,7 @@ mod tests {
             region_start: None,
             region_end: None,
             text: "alice prefers coffee black".into(),
-            owner_id: Principal::User("alice".into()),
+            subject_id: Principal::User("alice".into()),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: Some("preference".into()),
@@ -8749,7 +8752,7 @@ mod tests {
             suggested_seed: None,
             target_wiki_id: Some("alice".into()),
             target_page: None,
-            owner_id: None,
+            subject_id: None,
             allow_ids: Vec::new(),
             fact_type: None,
             valid_from: None,
@@ -8819,25 +8822,25 @@ mod tests {
     /// ingest superseded franz's public profile fact — the recall
     /// surfaced his fact and the classifier mis-targeted it.
     #[test]
-    fn validate_supersede_target_rejects_cross_owner() {
+    fn validate_supersede_target_rejects_cross_subject() {
         let id = "018f1234-5678-7abc-9def-0123456789ab";
-        let plan = plan_with_supersede(Some(id)); // owner_id None → owner = sender
-        let hits = vec![sample_recall_hit(id)]; // hit owner = user:alice
-        // Sender is morgana, so the new fact's owner differs from the
-        // recalled fact's owner (alice): the supersede must be refused.
+        let plan = plan_with_supersede(Some(id)); // subject_id None → subject = sender
+        let hits = vec![sample_recall_hit(id)]; // hit subject = user:alice
+        // Sender is morgana, so the new fact's subject differs from the
+        // recalled fact's subject (alice): the supersede must be refused.
         let err = validate_supersede_target(&first_unit(&plan), &req("x", "morgana"), &hits)
-            .expect_err("cross-owner supersede must fail");
+            .expect_err("cross-subject supersede must fail");
         match err {
-            CapturePlanError::SupersedeCrossOwner {
+            CapturePlanError::SupersedeCrossSubject {
                 id: got_id,
-                target_owner,
-                new_owner,
+                target_subject,
+                new_subject,
             } => {
                 assert_eq!(got_id, id);
-                assert_eq!(target_owner, "user:alice");
-                assert_eq!(new_owner, "user:morgana");
+                assert_eq!(target_subject, "user:alice");
+                assert_eq!(new_subject, "user:morgana");
             },
-            other => panic!("expected SupersedeCrossOwner, got {other:?}"),
+            other => panic!("expected SupersedeCrossSubject, got {other:?}"),
         }
     }
 
@@ -8845,24 +8848,27 @@ mod tests {
     /// another. This is the path that actually fired in the primer bug —
     /// morgana's ingest closed franz's "programmatore" fact as completed.
     #[test]
-    fn validate_closure_rejects_cross_owner() {
+    fn validate_closure_rejects_cross_subject() {
         let id = "018f1234-5678-7abc-9def-0123456789ab";
         let closure = LlmClosure {
             target: Some(id.to_owned()),
             reason: Some("completed".to_owned()),
             valid_to: None,
         };
-        let hits = vec![sample_recall_hit(id)]; // hit owner = user:alice
+        let hits = vec![sample_recall_hit(id)]; // hit subject = user:alice
         let err = validate_closure(&closure, &hits, "morgana", &[])
-            .expect_err("cross-owner closure must fail");
+            .expect_err("cross-subject closure must fail");
         match err {
-            ClosurePlanError::NotOwner { id: got_id, owner } => {
+            ClosurePlanError::NotSubject {
+                id: got_id,
+                subject,
+            } => {
                 assert_eq!(got_id, id);
-                assert_eq!(owner, "user:alice");
+                assert_eq!(subject, "user:alice");
             },
-            other => panic!("expected NotOwner, got {other:?}"),
+            other => panic!("expected NotSubject, got {other:?}"),
         }
-        // The owner herself can close it.
+        // The subject herself can close it.
         assert!(validate_closure(&closure, &hits, "alice", &[]).is_ok());
     }
 
@@ -8979,17 +8985,17 @@ mod tests {
         );
     }
 
-    /// Each recalled fact must surface its current `owner` (the subject)
+    /// Each recalled fact must surface its current `subject` (the subject)
     /// and `allow` (the audience) so the classifier can tell which facts
     /// the sender owns and faithfully reproduce the read-set on a
     /// REPLACE-semantics `acl_change`. Without this the model is blind to
     /// the ACL and silently drops allow principals.
     #[test]
-    fn build_prompt_exposes_owner_and_allow_for_recall_hits() {
+    fn build_prompt_exposes_subject_and_allow_for_recall_hits() {
         let request = req("x", "alice");
         let policy = IngestPolicy::default();
         let mut hit = sample_recall_hit("018f1234-5678-7abc-9def-0123456789ab");
-        hit.owner_id = Principal::User("morgana".into());
+        hit.subject_id = Principal::User("morgana".into());
         hit.allow_ids = vec![Principal::Group("famiglia".into())];
         let prompt = build_prompt(
             &request,
@@ -9003,8 +9009,8 @@ mod tests {
             &policy,
         );
         assert!(
-            prompt.contains("owner: user:morgana"),
-            "recalled fact must surface its owner; prompt:\n{prompt}"
+            prompt.contains("subject: user:morgana"),
+            "recalled fact must surface its subject; prompt:\n{prompt}"
         );
         assert!(
             prompt.contains("allow: group:famiglia"),
@@ -9013,7 +9019,7 @@ mod tests {
     }
 
     /// The sender's group memberships and each group's `scope` prose
-    /// must reach the prompt — that is the context the `owner_id`
+    /// must reach the prompt — that is the context the `subject_id`
     /// decision routes on. A group whose scope the operator never set
     /// renders an explicit placeholder, and an over-long scope is
     /// truncated to the policy cap.
@@ -9640,7 +9646,7 @@ mod tests {
             region_end: None,
             text: "Il colore preferito di Alice è l'indaco.".to_owned(),
             embedding: vec![0.1, 0.2, 0.3, 0.4],
-            owner_id: Principal::User("alice".into()),
+            subject_id: Principal::User("alice".into()),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: Some("preference".to_owned()),
@@ -9661,7 +9667,7 @@ mod tests {
         // to say it again.
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
             \"target_wiki_id\":\"alice\",\"target_page\":\"colore.md\",\
-            \"owner_id\":\"user:alice\",\
+            \"subject_id\":\"user:alice\",\
             \"body\":\"Il colore preferito di Alice è l'indaco.\",\
             \"fact_type\":\"preference\",\"requested_container\":true}]}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -9708,7 +9714,7 @@ mod tests {
             region_end: None,
             text: "Il colore preferito di Alice è l'indaco.".to_owned(),
             embedding: vec![0.1, 0.2, 0.3, 0.4],
-            owner_id: Principal::User("alice".into()),
+            subject_id: Principal::User("alice".into()),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: Some("preference".to_owned()),
@@ -9725,7 +9731,7 @@ mod tests {
 
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
             \"target_wiki_id\":\"alice\",\"target_page\":\"colore.md\",\
-            \"owner_id\":\"user:alice\",\
+            \"subject_id\":\"user:alice\",\
             \"body\":\"Il colore preferito di Alice è l'indaco.\",\
             \"fact_type\":\"preference\",\"requested_container\":true}]}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -9766,7 +9772,7 @@ mod tests {
             region_start: None,
             region_end: None,
             text: "franz lives in Bologna".into(),
-            owner_id: Principal::User("franz".into()),
+            subject_id: Principal::User("franz".into()),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: None,
@@ -9831,7 +9837,7 @@ mod tests {
                 region_start: None,
                 region_end: None,
                 text: "alice likes coffee".into(),
-                owner_id: Principal::User("alice".into()),
+                subject_id: Principal::User("alice".into()),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
@@ -9848,7 +9854,7 @@ mod tests {
                 region_start: None,
                 region_end: None,
                 text: "bob likes tea".into(),
-                owner_id: Principal::User("bob".into()),
+                subject_id: Principal::User("bob".into()),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
@@ -9865,7 +9871,7 @@ mod tests {
                 region_start: None,
                 region_end: None,
                 text: "alice just joined a gym".into(),
-                owner_id: Principal::User("alice".into()),
+                subject_id: Principal::User("alice".into()),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
@@ -9938,14 +9944,14 @@ mod tests {
     }
 
     /// Insert one `fact_index` row homed on `source_path`, owned by
-    /// `owner` — the DB half of a `{{f=…}}` region on the page.
+    /// `subject` — the DB half of a `{{f=…}}` region on the page.
     async fn insert_page_fact(
         pool: &SqlitePool,
         fact_id: &str,
         wiki_id: &str,
         source_path: &str,
         text: &str,
-        owner: Principal,
+        subject: Principal,
     ) {
         let fact = fact_index::NewFact {
             authored_refs: Vec::new(),
@@ -9956,7 +9962,7 @@ mod tests {
             region_end: None,
             text: text.to_owned(),
             embedding: vec![0.9, -0.3, 0.2, -0.1],
-            owner_id: owner,
+            subject_id: subject,
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: Some("bio".to_owned()),
@@ -10051,7 +10057,7 @@ mod tests {
         // nothing for anybody else — correct, and it would make this test
         // pass for the wrong reason. Alice's home town is public, the way
         // most of an identity card is; the surprise stays Carol's.
-        sqlx::query("UPDATE fact_index SET owner_id = 'global' WHERE fact_id = ?")
+        sqlx::query("UPDATE fact_index SET subject_id = 'global' WHERE fact_id = ?")
             .bind(ALICE_FACT_A)
             .execute(&pool)
             .await
@@ -10419,7 +10425,7 @@ mod tests {
         let navigated = snippet.split(HDR_NAVIGATED_PAGES).nth(1).unwrap_or("");
         assert!(
             !navigated.contains("alice/index.md"),
-            "the identity page is not a navigation destination for its own owner: {navigated}"
+            "the identity page is not a navigation destination for its own subject: {navigated}"
         );
         drop(dir);
     }
@@ -10749,7 +10755,7 @@ mod tests {
         // non-smart wiki is a standard wiki, so a plain capture would
         // buffer for the dream instead (covered by
         // `ingest_standard_wiki_buffers_instead_of_writing_md`).
-        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"owner_id\":\"user:alice\",\"body\":\"alice prefers coffee black\",\"fact_type\":\"preference\",\"topics\":[\"coffee\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"user:alice\",\"body\":\"alice prefers coffee black\",\"fact_type\":\"preference\",\"topics\":[\"coffee\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
         let resp = wiki_ingest_message(
@@ -10778,16 +10784,16 @@ mod tests {
         drop(dir);
     }
 
-    /// Engine floor of the 2026-06-30 subject-owner ruling (the
-    /// dangling-principal incident): a classifier-emitted owner
+    /// Engine floor of the 2026-06-30 subject-subject ruling (the
+    /// dangling-principal incident): a classifier-emitted subject
     /// that enrollment does not back is re-owned to the sender — the
     /// ruling's own fallback — instead of minting a principal no reader
     /// matches.
     #[tokio::test]
-    async fn ingest_unenrolled_owner_reowns_to_sender() {
+    async fn ingest_unenrolled_subject_reowns_to_sender() {
         let (dir, tree, pool) = setup_workdir().await;
         // `aragorn` is never enrolled: the classifier coined him.
-        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"owner_id\":\"user:aragorn\",\"body\":\"aragorn arrives on Friday\",\"fact_type\":\"plan\",\"topics\":[\"visit\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"user:aragorn\",\"body\":\"aragorn arrives on Friday\",\"fact_type\":\"plan\",\"topics\":[\"visit\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
         let resp = wiki_ingest_message(
@@ -10807,25 +10813,25 @@ mod tests {
             .expect("find")
             .expect("inserted row");
         assert_eq!(
-            row.owner_id,
+            row.subject_id,
             Principal::User("alice".to_owned()),
-            "an unenrolled owner must fall back to the sender"
+            "an unenrolled subject must fall back to the sender"
         );
         drop(dir);
     }
 
-    /// Counterpart of [`ingest_unenrolled_owner_reowns_to_sender`]: an
-    /// enrolled third-party subject is a legitimate owner (the subject
+    /// Counterpart of [`ingest_unenrolled_subject_reowns_to_sender`]: an
+    /// enrolled third-party subject is a legitimate subject (the subject
     /// axis — reciprocal relationship facts, a fact filed for another
     /// family member) and must pass the guard untouched.
     #[tokio::test]
-    async fn ingest_enrolled_third_party_owner_is_kept() {
+    async fn ingest_enrolled_third_party_subject_is_kept() {
         let (dir, tree, pool) = setup_workdir().await;
         sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('morgana', 0)")
             .execute(&pool)
             .await
             .unwrap();
-        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"owner_id\":\"user:morgana\",\"body\":\"morgana arrives on Friday\",\"fact_type\":\"plan\",\"topics\":[\"visit\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"user:morgana\",\"body\":\"morgana arrives on Friday\",\"fact_type\":\"plan\",\"topics\":[\"visit\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
         let resp = wiki_ingest_message(
@@ -10845,25 +10851,25 @@ mod tests {
             .expect("find")
             .expect("inserted row");
         assert_eq!(
-            row.owner_id,
+            row.subject_id,
             Principal::User("morgana".to_owned()),
-            "an enrolled third-party owner must be kept"
+            "an enrolled third-party subject must be kept"
         );
         drop(dir);
     }
 
     /// The assistant-turn face of the same contract (prompt v2.43: the
-    /// owner axis is the subject, not the interlocutor): advice the agent
+    /// subject axis is the subject, not the interlocutor): advice the agent
     /// synthesised FOR an enrolled third user — the necessity test — files
     /// owned by that user, exactly as on a user turn.
     #[tokio::test]
-    async fn ingest_assistant_turn_keeps_enrolled_beneficiary_owner() {
+    async fn ingest_assistant_turn_keeps_enrolled_beneficiary_subject() {
         let (dir, tree, pool) = setup_workdir().await;
         sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('morgana', 0)")
             .execute(&pool)
             .await
             .unwrap();
-        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"owner_id\":\"user:morgana\",\"body\":\"the agent walked alice through what morgana must check at the viewing\",\"fact_type\":\"plan\",\"topics\":[\"viewing\"],\"requested_container\":true,\"suggested_seed\":\"ok\"}";
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"user:morgana\",\"body\":\"the agent walked alice through what morgana must check at the viewing\",\"fact_type\":\"plan\",\"topics\":[\"viewing\"],\"requested_container\":true,\"suggested_seed\":\"ok\"}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
         let mut request = req("checklist for the used-car viewing", "alice");
@@ -10877,7 +10883,7 @@ mod tests {
             .expect("find")
             .expect("inserted row");
         assert_eq!(
-            row.owner_id,
+            row.subject_id,
             Principal::User("morgana".to_owned()),
             "assistant-turn advice for an enrolled beneficiary is owned by the beneficiary"
         );
@@ -10911,13 +10917,13 @@ mod tests {
             .unwrap();
         let json = "{\"intent\":\"capture\",\"extractions\":[\
             {\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
-             \"owner_id\":\"user:morgana\",\"body\":\"morgana handles the viewing on Friday\",\
+             \"subject_id\":\"user:morgana\",\"body\":\"morgana handles the viewing on Friday\",\
              \"fact_type\":\"plan\",\"topics\":[\"viewing\"],\"requested_container\":true},\
             {\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
-             \"owner_id\":\"user:morgana\",\"body\":\"morgana must bring the service booklet\",\
+             \"subject_id\":\"user:morgana\",\"body\":\"morgana must bring the service booklet\",\
              \"fact_type\":\"plan\",\"topics\":[\"viewing\"],\"requested_container\":true},\
             {\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
-             \"owner_id\":\"user:alice\",\"body\":\"alice sold her bike\",\
+             \"subject_id\":\"user:alice\",\"body\":\"alice sold her bike\",\
              \"fact_type\":\"episode\",\"topics\":[\"bike\"],\"requested_container\":true}],\
             \"suggested_seed\":\"ok\"}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -10960,7 +10966,7 @@ mod tests {
     }
 
     /// An agent principal never gets a minted-for-you ping: it has no
-    /// inbox to drain — a fact cross-filed under an agent owner is that
+    /// inbox to drain — a fact cross-filed under an agent subject is that
     /// agent's own diary, not a delivery.
     #[tokio::test]
     async fn ingest_agent_owned_fact_emits_no_minted_notice() {
@@ -10971,7 +10977,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"owner_id\":\"user:bot\",\"body\":\"the bot tracks the pantry stock\",\"fact_type\":\"plan\",\"topics\":[\"pantry\"],\"requested_container\":true,\"suggested_seed\":\"ok\"}";
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"user:bot\",\"body\":\"the bot tracks the pantry stock\",\"fact_type\":\"plan\",\"topics\":[\"pantry\"],\"requested_container\":true,\"suggested_seed\":\"ok\"}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
         wiki_ingest_message(
@@ -11020,7 +11026,7 @@ mod tests {
         // assert.
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
             \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
-            \"owner_id\":\"user:alice\",\"body\":\"alice prefers tabs over spaces\",\
+            \"subject_id\":\"user:alice\",\"body\":\"alice prefers tabs over spaces\",\
             \"fact_type\":\"preference\",\"topics\":[\"style\"],\"requested_container\":true}],\
             \"suggested_seed\":\"Noted.\"}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -11063,7 +11069,7 @@ mod tests {
         let long = format!("{filler}\n\n{buried}\n\n{filler}");
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
             \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
-            \"owner_id\":\"user:alice\",\"body\":\"alice has a dentist appointment Thursday at 17:00\",\
+            \"subject_id\":\"user:alice\",\"body\":\"alice has a dentist appointment Thursday at 17:00\",\
             \"fact_type\":\"plan\",\"topics\":[\"appointments\"],\"requested_container\":true}],\
             \"suggested_seed\":\"Noted.\"}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -11105,7 +11111,7 @@ mod tests {
         let json = format!(
             "{{\"intent\":\"capture\",\"extractions\":[{{\
             \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
-            \"owner_id\":\"user:alice\",\"body\":\"alice has a dentist appointment Thursday at 17:00\",\
+            \"subject_id\":\"user:alice\",\"body\":\"alice has a dentist appointment Thursday at 17:00\",\
             \"fact_type\":\"plan\",\"topics\":[\"appointments\"],\"requested_container\":true,\
             \"valid_from\":\"2026-06-10T08:00:00Z\",\"valid_to\":\"{valid_to}\"}}],\
             \"suggested_seed\":\"Noted.\"}}"
@@ -11264,14 +11270,14 @@ mod tests {
         );
         assert_eq!(rows[0].text, "Rispondi sempre in modo conciso.");
         assert_eq!(
-            rows[0].owner_id,
+            rows[0].subject_id,
             Principal::User("alice".into()),
-            "the rule is OWNED by the user who dictated it (owner-scoped dedup keeps users' rules distinct)"
+            "the rule is OWNED by the user who dictated it (subject-scoped dedup keeps users' rules distinct)"
         );
         assert_eq!(
             rows[0].sender_id,
             Some(Principal::User("alice".into())),
-            "owner is the user, so there is no SEPARATE sender — sender is materialized to the owner, never the agent"
+            "subject is the user, so there is no SEPARATE sender — sender is materialized to the subject, never the agent"
         );
         assert_eq!(
             resp.capture_id.as_ref(),
@@ -11469,7 +11475,7 @@ mod tests {
             "exactly one agent-wide rule in the agent wiki"
         );
         assert_eq!(
-            rows[0].owner_id,
+            rows[0].subject_id,
             Principal::User("samvisebot".into()),
             "an agent-wide rule is OWNED by the AGENT, not by the admin who set it"
         );
@@ -11586,7 +11592,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(rows.len(), 1, "exactly one rule in alice's identity wiki");
-        assert_eq!(rows[0].owner_id, Principal::User("alice".into()));
+        assert_eq!(rows[0].subject_id, Principal::User("alice".into()));
         assert!(rows[0].source_path.ends_with("rules.md"));
 
         // Served through the channel on a bound consumer…
@@ -11757,7 +11763,7 @@ mod tests {
             wiki_id: WikiId::parse("samvisebot").unwrap(),
             page: PathBuf::from("behaviour_rules.md"),
             body: "Dai del tu all'utente.".into(),
-            owner: Principal::User("samvisebot".into()),
+            subject: Principal::User("samvisebot".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("rule".into()),
@@ -11824,7 +11830,7 @@ mod tests {
             wiki_id: WikiId::parse("samvisebot").unwrap(),
             page: PathBuf::from(page),
             body: body.to_owned(),
-            owner: Principal::User("samvisebot".into()),
+            subject: Principal::User("samvisebot".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("rule".into()),
@@ -11840,7 +11846,7 @@ mod tests {
 
     /// Starvation regression (the cap-before-filter bug): the rules-page
     /// predicate applies IN the SQL before `BEHAVIOUR_RULES_RECALL_CAP`, so
-    /// an old rule survives more than a cap's worth of NEWER same-owner
+    /// an old rule survives more than a cap's worth of NEWER same-subject
     /// facts on the agent wiki's content pages.
     #[tokio::test]
     async fn behaviour_rules_survive_a_crowded_agent_wiki() {
@@ -11859,7 +11865,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        // Crowd the wiki with MORE THAN the recall cap of newer same-owner
+        // Crowd the wiki with MORE THAN the recall cap of newer same-subject
         // facts on a content page (the agent's self-facts).
         for i in 0..(BEHAVIOUR_RULES_RECALL_CAP + 5) {
             capture::wiki_capture(
@@ -11989,7 +11995,7 @@ mod tests {
         let json = "{\"intent\":\"capture\",\"extractions\":[\
             {\"engine_rule\":true,\"fact_type\":\"rule\",\
              \"body\":\"Never store my exact home address.\"},\
-            {\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"owner_id\":\"user:alice\",\
+            {\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"user:alice\",\
              \"body\":\"Alice lives in Bologna.\",\"fact_type\":\"bio\",\"topics\":[\"bio\"]}],\
             \"suggested_seed\":\"Noted.\"}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -12045,7 +12051,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("index.md"),
             body: "alice prefers coffee black".into(),
-            owner: Principal::User("alice".into()),
+            subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("preference".into()),
@@ -12068,7 +12074,7 @@ mod tests {
         // capture into the standard `alice` wiki would buffer instead).
         let llm_resp = format!(
             "{{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\
-             \"target_page\":\"index.md\",\"owner_id\":\"user:alice\",\
+             \"target_page\":\"index.md\",\"subject_id\":\"user:alice\",\
              \"body\":\"alice now prefers tea\",\
              \"fact_type\":\"preference\",\"topics\":[\"tea\"],\
              \"requested_container\":true,\
@@ -12140,7 +12146,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("index.md"),
             body: "alice is 72 kg".into(),
-            owner: Principal::User("alice".into()),
+            subject: Principal::User("alice".into()),
             allow: vec![Principal::Group("famiglia".into())],
             sender: None,
             fact_type: Some("state".into()),
@@ -12160,7 +12166,7 @@ mod tests {
         // restated only the content.
         let llm_resp = format!(
             "{{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\
-             \"target_page\":\"index.md\",\"owner_id\":\"user:alice\",\
+             \"target_page\":\"index.md\",\"subject_id\":\"user:alice\",\
              \"body\":\"alice is 73 kg\",\
              \"fact_type\":\"state\",\"topics\":[\"weight\"],\
              \"requested_container\":true,\
@@ -12212,7 +12218,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("index.md"),
             body: "alice wants to watch Jumanji".into(),
-            owner: Principal::User("alice".into()),
+            subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("plan".into()),
@@ -12310,7 +12316,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("index.md"),
             body: "alice wants to watch Jumanji".into(),
-            owner: Principal::User("alice".into()),
+            subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("plan".into()),
@@ -12424,7 +12430,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("lista_spesa.md"),
             body: "manca il latte".into(),
-            owner: Principal::User("alice".into()),
+            subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("plan".into()),
@@ -12487,7 +12493,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("bacheca.md"),
             body: "la farmacia chiude alle 19".into(),
-            owner: Principal::User("alice".into()),
+            subject: Principal::User("alice".into()),
             allow: vec![Principal::Group("global".into())],
             sender: None,
             fact_type: Some("other".into()),
@@ -12599,7 +12605,7 @@ mod tests {
             "fake",
             "{\"intent\":\"structural\",\"extractions\":[{\
               \"target_wiki_id\":\"alice\",\"target_page\":\"ricette.md\",\
-              \"owner_id\":\"user:alice\",\"fact_type\":\"other\",\
+              \"subject_id\":\"user:alice\",\"fact_type\":\"other\",\
               \"style\":\"prosa-tecnica\",\
               \"body\":\"Ricetta amatriciana: guanciale, pecorino, passata di pomodoro.\",\
               \"topics\":[\"ricette\"]}]}",
@@ -12679,7 +12685,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("index.md"),
             body: "alice is building a small greenhouse in the garden".into(),
-            owner: Principal::User("alice".into()),
+            subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("plan".into()),
@@ -12759,7 +12765,7 @@ mod tests {
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: PathBuf::from("index.md"),
                 body: "alice deve comprare il latte".into(),
-                owner: Principal::User("alice".into()),
+                subject: Principal::User("alice".into()),
                 allow: Vec::new(),
                 sender: None,
                 fact_type: Some("commitment".into()),
@@ -12819,7 +12825,7 @@ mod tests {
     /// A restatement is a content update, not a sharing change. The reconciler
     /// can tell that a claim was restated; it must never be relied on to
     /// restate WHO MAY READ it, because a shared fact quietly coming back
-    /// private is invisible to everyone including its owner. Exercised on the
+    /// private is invisible to everyone including its subject. Exercised on the
     /// applier directly: the successor's id is minted inside the turn, so a
     /// scripted end-to-end run cannot name it in advance.
     #[tokio::test]
@@ -12838,7 +12844,7 @@ mod tests {
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: PathBuf::from("index.md"),
                         body: body.into(),
-                        owner: Principal::User("alice".into()),
+                        subject: Principal::User("alice".into()),
                         allow,
                         sender: None,
                         fact_type: Some("bio".into()),
@@ -12933,7 +12939,7 @@ mod tests {
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: PathBuf::from("notes.md"),
                         body: body.into(),
-                        owner: Principal::User("alice".into()),
+                        subject: Principal::User("alice".into()),
                         allow: Vec::new(),
                         sender: None,
                         fact_type: Some("plan".into()),
@@ -13009,7 +13015,7 @@ mod tests {
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: PathBuf::from("notes.md"),
                 body: "alice ha comprato il latte".into(),
-                owner: Principal::User("alice".into()),
+                subject: Principal::User("alice".into()),
                 allow: Vec::new(),
                 sender: None,
                 fact_type: Some("episode".into()),
@@ -13083,7 +13089,7 @@ mod tests {
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: PathBuf::from("notes.md"),
                 body: "la riunione è giovedì".into(),
-                owner: Principal::User("alice".into()),
+                subject: Principal::User("alice".into()),
                 allow: Vec::new(),
                 sender: None,
                 fact_type: Some("plan".into()),
@@ -13129,7 +13135,7 @@ mod tests {
 
     /// A fact owned by a GROUP can be corrected by a member of that group.
     ///
-    /// The gate asks `acl::sender_owns`, not `owner == sender`: a principal
+    /// The gate asks `acl::sender_is_subject`, not `subject == sender`: a principal
     /// comparison can never match `Group("famiglia")` against `User("alice")`,
     /// so the plain equality this used to do refused every group-owned fact,
     /// from everybody, always — the family calendar could be read and never
@@ -13144,7 +13150,7 @@ mod tests {
             .execute(&pool)
             .await
             .expect("enrol alice in famiglia");
-        let plant = |body: &'static str, owner: Principal| {
+        let plant = |body: &'static str, subject: Principal| {
             let tree = &tree;
             let pool = &pool;
             async move {
@@ -13157,7 +13163,7 @@ mod tests {
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: PathBuf::from("notes.md"),
                         body: body.into(),
-                        owner,
+                        subject,
                         allow: Vec::new(),
                         sender: None,
                         fact_type: Some("bio".into()),
@@ -13223,17 +13229,17 @@ mod tests {
         drop(dir);
     }
 
-    /// A supersede carries the retired fact's ALLOW LIST — not its owner.
+    /// A supersede carries the retired fact's ALLOW LIST — not its subject.
     ///
     /// Alice retires a fact of her own by stating one about Bob. The successor
-    /// is born owned by Bob, and a reader set is `owner ∪ allow ∪ sender`:
-    /// overwriting its owner with Alice's principal would hand Bob's fact to
+    /// is born owned by Bob, and a reader set is `subject ∪ allow ∪ sender`:
+    /// overwriting its subject with Alice's principal would hand Bob's fact to
     /// Alice alone, taking it from the one person the sentence is about — the
     /// opposite of what the inheritance exists to protect.
     #[tokio::test]
-    async fn a_supersede_leaves_the_successor_its_own_owner() {
+    async fn a_supersede_leaves_the_successor_its_own_subject() {
         let (dir, tree, pool) = setup_workdir().await;
-        let plant = |body: &'static str, owner: Principal, allow: Vec<Principal>| {
+        let plant = |body: &'static str, subject: Principal, allow: Vec<Principal>| {
             let tree = &tree;
             let pool = &pool;
             async move {
@@ -13246,7 +13252,7 @@ mod tests {
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: PathBuf::from("notes.md"),
                         body: body.into(),
-                        owner,
+                        subject,
                         allow,
                         sender: Some(Principal::User("alice".into())),
                         fact_type: Some("evento".into()),
@@ -13302,7 +13308,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            successor.owner_id,
+            successor.subject_id,
             Principal::User("bob".into()),
             "the fact about Bob stays Bob's — a supersede replaces what a fact \
              says, never whose it is"
@@ -13313,7 +13319,7 @@ mod tests {
             "and it keeps the sender it was filed with"
         );
         let readers = crate::acl::reader_set(
-            &successor.owner_id,
+            &successor.subject_id,
             &successor.allow_ids,
             successor.sender_id.as_ref(),
         );
@@ -13333,7 +13339,7 @@ mod tests {
     /// and a target the sender does not own. Reading a fact is not authority
     /// over it.
     #[tokio::test]
-    async fn supersede_refuses_a_stranger_target_a_stranger_successor_and_a_foreign_owner() {
+    async fn supersede_refuses_a_stranger_target_a_stranger_successor_and_a_foreign_subject() {
         let (dir, tree, pool) = setup_workdir().await;
         let bobs = capture::wiki_capture(
             &tree,
@@ -13344,7 +13350,7 @@ mod tests {
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: PathBuf::from("index.md"),
                 body: "bob lavora alla Acme".into(),
-                owner: Principal::User("bob".into()),
+                subject: Principal::User("bob".into()),
                 allow: vec![Principal::User("alice".into())],
                 sender: None,
                 fact_type: Some("bio".into()),
@@ -13500,7 +13506,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("index.md"),
             body: "alice is building a small greenhouse in the garden".into(),
-            owner: Principal::User("alice".into()),
+            subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("plan".into()),
@@ -13566,7 +13572,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("dispensa.md"),
             body: "il latte scade il 25 giugno".into(),
-            owner: Principal::User("alice".into()),
+            subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("state".into()),
@@ -13632,17 +13638,17 @@ mod tests {
         drop(dir);
     }
 
-    /// A non-owner's validity edit is skipped (the owner gate). The fact is
+    /// A non-subject's validity edit is skipped (the subject gate). The fact is
     /// owned by `global` — alice can recall it but does not own it.
     #[tokio::test]
-    async fn ingest_validity_edit_by_non_owner_is_skipped() {
+    async fn ingest_validity_edit_by_non_subject_is_skipped() {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("public.md"),
             body: "la biblioteca chiude il 30".into(),
-            owner: Principal::global(),
+            subject: Principal::global(),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("state".into()),
@@ -13711,7 +13717,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("index.md"),
             body: "alice ha un orto sul balcone".into(),
-            owner: Principal::User("alice".into()),
+            subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("bio".into()),
@@ -13729,7 +13735,7 @@ mod tests {
 
         let llm_resp = format!(
             "{{\"intent\":\"capture\",\"extractions\":[],\
-             \"acl_changes\":[{{\"target\":\"{}\",\"owner_id\":null,\
+             \"acl_changes\":[{{\"target\":\"{}\",\"subject_id\":null,\
              \"allow_ids\":[\"global\"]}}],\
              \"suggested_seed\":\"Reso pubblico.\"}}",
             planted.fact_id.as_str()
@@ -13804,7 +13810,7 @@ mod tests {
     #[tokio::test]
     async fn ingest_acl_change_preserves_cross_user_sender() {
         // A fact alice OWNS but galadriel CAPTURED (cross-user attribution).
-        // Alice re-shares it; her acl_change changes owner/allow only —
+        // Alice re-shares it; her acl_change changes subject/allow only —
         // galadriel's capture attribution must survive (she keeps her read
         // shortcut). Regression guard: the apply path must not clear sender.
         let (dir, tree, pool) = setup_workdir().await;
@@ -13813,7 +13819,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("index.md"),
             body: "alice ha un cane di nome Fido".into(),
-            owner: Principal::User("alice".into()),
+            subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: Some(Principal::User("galadriel".into())),
             fact_type: Some("bio".into()),
@@ -13831,7 +13837,7 @@ mod tests {
 
         let llm_resp = format!(
             "{{\"intent\":\"capture\",\"extractions\":[],\
-             \"acl_changes\":[{{\"target\":\"{}\",\"owner_id\":null,\
+             \"acl_changes\":[{{\"target\":\"{}\",\"subject_id\":null,\
              \"allow_ids\":[\"user:bob\"]}}],\
              \"suggested_seed\":\"Condiviso con bob.\"}}",
             planted.fact_id.as_str()
@@ -13873,7 +13879,7 @@ mod tests {
     async fn apply_acl_change_refuses_smart_wiki_fact() {
         // A fact alice OWNS but living in a SMART wiki: the chat acl-change
         // verb must refuse — smart-wiki governance is wiki-level, markerless
-        // (6j.4). The owner gate would pass (she owns it), so the smart guard
+        // (6j.4). The subject gate would pass (she owns it), so the smart guard
         // is what stops the per-fragment write + the disclosure-audit row.
         let (dir, _tree, pool) = setup_workdir().await;
         let proj_dir = dir.path().join("wikis/proj");
@@ -13899,7 +13905,7 @@ mod tests {
                 region_end: None,
                 text: "il progetto usa Rust".into(),
                 embedding: vec![0.0; 8],
-                owner_id: Principal::User("alice".into()),
+                subject_id: Principal::User("alice".into()),
                 allow_ids: Vec::new(),
                 sender_id: None,
                 fact_type: None,
@@ -13923,7 +13929,7 @@ mod tests {
 
         let change = LlmAclChange {
             target: Some(fid.as_str().to_owned()),
-            owner_id: None,
+            subject_id: None,
             allow_ids: vec!["global".into()],
         };
         let applied = apply_plan_acl_changes(
@@ -13966,7 +13972,7 @@ mod tests {
         let llm = FakeLlmBackend::new(
             "fake",
             "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
-              \"owner_id\":\"user:alice\",\"body\":\"alice loves pasta\",\
+              \"subject_id\":\"user:alice\",\"body\":\"alice loves pasta\",\
               \"fact_type\":\"preference\",\"topics\":[\"food\"]}",
         );
         let policy = IngestPolicy::default();
@@ -14024,7 +14030,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
             \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
-            \"owner_id\":\"user:alice\",\"body\":\"Alice beve il caffè amaro.\",\
+            \"subject_id\":\"user:alice\",\"body\":\"Alice beve il caffè amaro.\",\
             \"fact_type\":\"preference\"}]}";
         let llm = FakeLlmBackend::new("fake", json);
         let message = "il caffè lo bevo amaro";
@@ -14089,7 +14095,7 @@ mod tests {
         let llm = FakeLlmBackend::new(
             "fake",
             "{\"intent\":\"capture\",\"extractions\":[\
-               {\"target_wiki_id\":\"alice\",\"target_page\":\"spesa.md\",\"owner_id\":\"user:alice\",\
+               {\"target_wiki_id\":\"alice\",\"target_page\":\"spesa.md\",\"subject_id\":\"user:alice\",\
                 \"body\":\"latte\",\"fact_type\":\"task\",\"style\":\"lista\",\"requested_container\":true}\
              ]}",
         );
@@ -14155,7 +14161,7 @@ mod tests {
                     wiki_id: crate::types::WikiId::parse("alice").unwrap(),
                     page: PathBuf::from("spesa.md"),
                     body: item.to_owned(),
-                    owner: "user:alice".parse().unwrap(),
+                    subject: "user:alice".parse().unwrap(),
                     allow: Vec::new(),
                     sender: None,
                     fact_type: Some("task".to_owned()),
@@ -14201,7 +14207,7 @@ mod tests {
     /// The capstone of agent-authored memory: when the consumer feeds the
     /// agent's OWN reply back with `author: assistant`, a fact derived from
     /// that reply is filed with `sender = <the agent>` (resolved from the
-    /// consumer binding), while its `owner` stays the user the agent was
+    /// consumer binding), while its `subject` stays the user the agent was
     /// talking to — so the synthesis lands in the user's wiki yet carries the
     /// agent's provenance. This is the INPS case: the deadline lived only in
     /// the agent's reply, and now it persists. `requested_container` forces the
@@ -14211,7 +14217,7 @@ mod tests {
     async fn ingest_assistant_turn_attributes_derived_fact_to_the_agent() {
         let (dir, tree, pool) = setup_agent_workdir().await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-            \"target_wiki_id\":\"alice\",\"target_page\":\"inps.md\",\"owner_id\":\"user:alice\",\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"inps.md\",\"subject_id\":\"user:alice\",\
             \"body\":\"Dalla lettera INPS caricata dall'utente, la scadenza per inviare il provvedimento è il 27 giugno 2026.\",\
             \"fact_type\":\"plan\",\"style\":\"prosa-tecnica\",\"requested_container\":true}]}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -14245,9 +14251,9 @@ mod tests {
             "the agent's derived fact is filed in the user's wiki"
         );
         assert_eq!(
-            facts[0].owner_id,
+            facts[0].subject_id,
             Principal::User("alice".into()),
-            "owner stays the USER the fact is about — it surfaces on alice's recall"
+            "subject stays the USER the fact is about — it surfaces on alice's recall"
         );
         assert_eq!(
             facts[0].sender_id,
@@ -14267,7 +14273,7 @@ mod tests {
     async fn ingest_user_turn_stamps_no_agent_provenance_even_with_a_consumer() {
         let (dir, tree, pool) = setup_agent_workdir().await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-            \"target_wiki_id\":\"alice\",\"target_page\":\"spesa.md\",\"owner_id\":\"user:alice\",\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"spesa.md\",\"subject_id\":\"user:alice\",\
             \"body\":\"latte\",\"fact_type\":\"task\",\"style\":\"lista\",\"requested_container\":true}]}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
@@ -14290,7 +14296,7 @@ mod tests {
         assert_eq!(
             facts[0].sender_id,
             Some(Principal::User("alice".into())),
-            "a user turn stamps no agent provenance — sender is materialized to the owner (the user), never the agent"
+            "a user turn stamps no agent provenance — sender is materialized to the subject (the user), never the agent"
         );
         drop(dir);
     }
@@ -14298,13 +14304,13 @@ mod tests {
     /// Graceful fallback: `author: assistant` with NO consumer binding (a smart
     /// consumer IS its user) resolves no distinct agent principal, so
     /// attribution is unchanged from a user turn — sender stays materialized to
-    /// the owner (the user), never an agent. The assistant pass simply no-ops on
+    /// the subject (the user), never an agent. The assistant pass simply no-ops on
     /// attribution rather than dropping the fact or inventing a provenance.
     #[tokio::test]
     async fn ingest_assistant_turn_without_consumer_stamps_no_agent_provenance() {
         let (dir, tree, pool) = setup_workdir().await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-            \"target_wiki_id\":\"alice\",\"target_page\":\"note.md\",\"owner_id\":\"user:alice\",\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"note.md\",\"subject_id\":\"user:alice\",\
             \"body\":\"Promemoria sintetizzato dall'agente.\",\"fact_type\":\"plan\",\
             \"style\":\"prosa-tecnica\",\"requested_container\":true}]}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -14331,7 +14337,7 @@ mod tests {
         assert_eq!(
             facts[0].sender_id,
             Some(Principal::User("alice".into())),
-            "no consumer binding ⇒ no distinct agent ⇒ sender materialized to the owner (the user), never an agent"
+            "no consumer binding ⇒ no distinct agent ⇒ sender materialized to the subject (the user), never an agent"
         );
         drop(dir);
     }
@@ -14396,17 +14402,17 @@ mod tests {
         );
     }
 
-    /// Roadmap 27d — the self side. An assistant turn with `owner_id: "self"`
+    /// Roadmap 27d — the self side. An assistant turn with `subject_id: "self"`
     /// files the fact into the AGENT's OWN wiki, owned by the agent and tagged
     /// with the served user (so the read side can scope "history with THIS
     /// user"), while the user's wiki stays untouched. The model's
     /// `target_wiki_id` (here deliberately the user's) is ignored — the engine
     /// knows the agent's wiki. This is the agent's emergent self.
     #[tokio::test]
-    async fn ingest_assistant_turn_owner_self_files_into_the_agent_wiki() {
+    async fn ingest_assistant_turn_subject_self_files_into_the_agent_wiki() {
         let (dir, tree, pool) = setup_agent_workdir().await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-            \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"owner_id\":\"self\",\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"self\",\
             \"body\":\"L'agente ha aiutato Alice con la pratica INPS.\",\
             \"fact_type\":\"episode\",\"salience\":\"normal\"}]}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -14442,7 +14448,7 @@ mod tests {
             "the self-fact is filed in the agent's own wiki"
         );
         assert_eq!(
-            agent_facts[0].owner_id,
+            agent_facts[0].subject_id,
             Principal::User("samvisebot".into()),
             "owned by the AGENT — its own self-knowledge, not about the user"
         );
@@ -14455,13 +14461,13 @@ mod tests {
                 .await
                 .unwrap(),
             0,
-            "owner_id=self never lands in the user's wiki, even when target_wiki_id names it"
+            "subject_id=self never lands in the user's wiki, even when target_wiki_id names it"
         );
         drop(dir);
     }
 
     /// The sentinel's OTHER spelling. A model that knows its own principal
-    /// writes `owner_id: "user:<agent>"` where Part 9 asks for `self` — the
+    /// writes `subject_id: "user:<agent>"` where Part 9 asks for `self` — the
     /// identical claim, "this fact is about me". Only the literal used to
     /// match, so the spelled-out form fell through to the normal path and the
     /// agent's diary entry landed in whichever wiki `target_wiki_id` named (40
@@ -14469,10 +14475,10 @@ mod tests {
     /// the same route: agent's wiki, owned by the agent, tagged with the served
     /// user, user's wiki untouched.
     #[tokio::test]
-    async fn ingest_assistant_turn_owner_spelled_as_the_agent_files_into_the_agent_wiki() {
+    async fn ingest_assistant_turn_subject_spelled_as_the_agent_files_into_the_agent_wiki() {
         let (dir, tree, pool) = setup_agent_workdir().await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-            \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"owner_id\":\"user:samvisebot\",\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"user:samvisebot\",\
             \"body\":\"L'agente ha aiutato Alice con la pratica INPS.\",\
             \"fact_type\":\"episode\",\"salience\":\"normal\"}]}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -14505,10 +14511,10 @@ mod tests {
         assert_eq!(
             agent_facts.len(),
             1,
-            "owner spelled as the agent's own principal routes like `self`"
+            "subject spelled as the agent's own principal routes like `self`"
         );
         assert_eq!(
-            agent_facts[0].owner_id,
+            agent_facts[0].subject_id,
             Principal::User("samvisebot".into()),
             "owned by the AGENT — its own self-knowledge, not about the user"
         );
@@ -14527,7 +14533,7 @@ mod tests {
     }
 
     /// The boundary the alias must not cross. On a USER turn `agent_sender` is
-    /// `None` by construction, so `owner_id: "user:<agent>"` keeps its ordinary
+    /// `None` by construction, so `subject_id: "user:<agent>"` keeps its ordinary
     /// meaning — a fact stated on the USER's turn that happens to be owned by
     /// the agent principal — and stays on the normal path. The self path
     /// short-circuits ahead of every capture validator and ignores
@@ -14535,11 +14541,11 @@ mod tests {
     /// fired, this extraction would sit in the agent's wiki whatever the rest
     /// of the pipeline decided. It does not.
     #[tokio::test]
-    async fn ingest_user_turn_owner_naming_the_agent_is_not_a_self_fact() {
+    async fn ingest_user_turn_subject_naming_the_agent_is_not_a_self_fact() {
         let (dir, tree, pool) = setup_agent_workdir().await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
             \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
-            \"owner_id\":\"user:samvisebot\",\
+            \"subject_id\":\"user:samvisebot\",\
             \"body\":\"L'agente ha aiutato Alice con la pratica INPS.\",\
             \"fact_type\":\"episode\",\"salience\":\"normal\"}]}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -14583,7 +14589,7 @@ mod tests {
         // Seed an IDENTITY fact (high salience ⇒ untagged, always-on).
         let identity_llm = FakeLlmBackend::new(
             "fake",
-            "{\"intent\":\"capture\",\"extractions\":[{\"owner_id\":\"self\",\
+            "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"self\",\
               \"target_page\":\"index.md\",\"body\":\"L'agente è l'assistente della famiglia di Franz.\",\
               \"fact_type\":\"bio\",\"salience\":\"high\"}]}",
         );
@@ -14605,7 +14611,7 @@ mod tests {
         // Seed a RELATIONSHIP fact (normal salience ⇒ tagged with alice).
         let rel_llm = FakeLlmBackend::new(
             "fake",
-            "{\"intent\":\"capture\",\"extractions\":[{\"owner_id\":\"self\",\
+            "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"self\",\
               \"target_page\":\"diario.md\",\"body\":\"L'agente ha aiutato Alice con la pratica INPS.\",\
               \"fact_type\":\"episode\",\"salience\":\"normal\"}]}",
         );
@@ -14675,7 +14681,7 @@ mod tests {
         // Seed a relationship self-fact (tagged with the served user).
         let seed_llm = FakeLlmBackend::new(
             "fake",
-            "{\"intent\":\"capture\",\"extractions\":[{\"owner_id\":\"self\",\
+            "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"self\",\
               \"target_page\":\"diario.md\",\"body\":\"L'agente ha aiutato Alice con la pratica INPS.\",\
               \"fact_type\":\"episode\",\"salience\":\"normal\"}]}",
         );
@@ -14766,7 +14772,7 @@ mod tests {
         // A bio self-fact with NORMAL salience: identity by fact_type alone.
         let bio_llm = FakeLlmBackend::new(
             "fake",
-            "{\"intent\":\"capture\",\"extractions\":[{\"owner_id\":\"self\",\
+            "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"self\",\
               \"target_page\":\"index.md\",\"body\":\"L'agente parla italiano e inglese.\",\
               \"fact_type\":\"bio\",\"salience\":\"normal\"}]}",
         );
@@ -14850,7 +14856,7 @@ mod tests {
 
         let llm = FakeLlmBackend::new(
             "fake",
-            "{\"intent\":\"capture\",\"extractions\":[{\"owner_id\":\"self\",\
+            "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"self\",\
               \"target_page\":\"diario.md\",\"body\":\"L'agente ha consigliato Alice su Bob.\",\
               \"fact_type\":\"episode\",\"salience\":\"normal\",\
               \"topics\":[\"consigli\",\"bob\"]}]}",
@@ -14907,7 +14913,7 @@ mod tests {
 
         let rel_llm = FakeLlmBackend::new(
             "fake",
-            "{\"intent\":\"capture\",\"extractions\":[{\"owner_id\":\"self\",\
+            "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"self\",\
               \"target_page\":\"diario.md\",\"body\":\"L'agente ha aiutato Alice con la pratica INPS.\",\
               \"fact_type\":\"episode\",\"salience\":\"normal\"}]}",
         );
@@ -14960,9 +14966,9 @@ mod tests {
         let llm = FakeLlmBackend::new(
             "fake",
             "{\"intent\":\"capture\",\"extractions\":[\
-               {\"target_wiki_id\":\"alice\",\"owner_id\":\"user:alice\",\"body\":\"Alice loves pasta\",\"fact_type\":\"preference\"},\
-               {\"target_wiki_id\":\"alice\",\"owner_id\":\"user:alice\",\"body\":\"Alice runs every morning\",\"fact_type\":\"bio\"},\
-               {\"target_wiki_id\":\"alice\",\"owner_id\":\"user:alice\",\"body\":\"Alice dislikes loud music\",\"fact_type\":\"preference\"}\
+               {\"target_wiki_id\":\"alice\",\"subject_id\":\"user:alice\",\"body\":\"Alice loves pasta\",\"fact_type\":\"preference\"},\
+               {\"target_wiki_id\":\"alice\",\"subject_id\":\"user:alice\",\"body\":\"Alice runs every morning\",\"fact_type\":\"bio\"},\
+               {\"target_wiki_id\":\"alice\",\"subject_id\":\"user:alice\",\"body\":\"Alice dislikes loud music\",\"fact_type\":\"preference\"}\
              ]}",
         );
         let policy = IngestPolicy::default();
@@ -14996,7 +15002,7 @@ mod tests {
     /// An atomic message yields a single-element
     /// `extractions` array — the canonical shape, not a fallback to the
     /// legacy top-level fields. Exactly one fact is filed, with the
-    /// per-extraction owner honoured. Locks in "a message that states one
+    /// per-extraction subject honoured. Locks in "a message that states one
     /// thing produces an array with ONE element".
     #[tokio::test]
     async fn ingest_single_atomic_fact_files_one_via_array() {
@@ -15006,7 +15012,7 @@ mod tests {
         let llm = FakeLlmBackend::new(
             "fake",
             "{\"intent\":\"capture\",\"extractions\":[\
-               {\"target_wiki_id\":\"alice\",\"owner_id\":\"user:alice\",\"body\":\"Alice vive a Bologna\",\"fact_type\":\"bio\",\"topics\":[\"bologna\"]}\
+               {\"target_wiki_id\":\"alice\",\"subject_id\":\"user:alice\",\"body\":\"Alice vive a Bologna\",\"fact_type\":\"bio\",\"topics\":[\"bologna\"]}\
              ]}",
         );
         let policy = IngestPolicy::default();
@@ -15094,7 +15100,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("index.md"),
             body: "alice prefers coffee black".into(),
-            owner: Principal::User("alice".into()),
+            subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("preference".into()),
@@ -15114,7 +15120,7 @@ mod tests {
         let hallucinated = "018f9999-9999-7999-9999-999999999999";
         let llm_resp = format!(
             "{{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\
-             \"target_page\":\"index.md\",\"owner_id\":\"user:alice\",\
+             \"target_page\":\"index.md\",\"subject_id\":\"user:alice\",\
              \"body\":\"alice now prefers tea\",\
              \"fact_type\":\"preference\",\"topics\":[\"tea\"],\
              \"supersede_target\":\"{hallucinated}\",\
@@ -15169,7 +15175,7 @@ mod tests {
             wiki_id: WikiId::parse("alice").unwrap(),
             page: PathBuf::from("index.md"),
             body: "alice prefers coffee black".into(),
-            owner: Principal::User("alice".into()),
+            subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("preference".into()),
@@ -15254,13 +15260,13 @@ mod tests {
     #[tokio::test]
     async fn ingest_invalid_capture_plan_demotes_to_skip() {
         let (dir, tree, pool) = setup_workdir().await;
-        // A capture whose `owner_id` is not a principal at all: the plan
+        // A capture whose `subject_id` is not a principal at all: the plan
         // cannot be validated, so the turn demotes to skip with the fallback
         // seed. (A missing `target_wiki_id` no longer qualifies — it is the
         // normal shape now, and the wiki is derived from the subject.)
         let llm = FakeLlmBackend::new(
             "fake",
-            "{\"intent\":\"capture\",\"body\":\"orphan fact\",\"owner_id\":\"not a principal\"}",
+            "{\"intent\":\"capture\",\"body\":\"orphan fact\",\"subject_id\":\"not a principal\"}",
         );
         let policy = IngestPolicy::default();
         let resp = wiki_ingest_message(
@@ -15838,18 +15844,18 @@ mod tests {
     }
 
     #[test]
-    fn nav_seeds_unions_unit_topics_and_parses_owners() {
+    fn nav_seeds_unions_unit_topics_and_parses_subjects() {
         let json = "{\"intent\":\"capture\",\"extractions\":[\
-            {\"target_wiki_id\":\"alice\",\"body\":\"a\",\"owner_id\":\"user:alice\",\
+            {\"target_wiki_id\":\"alice\",\"body\":\"a\",\"subject_id\":\"user:alice\",\
              \"topics\":[\"health\",\"food\"]},\
-            {\"target_wiki_id\":\"alice\",\"body\":\"b\",\"owner_id\":\"user:alice\",\
+            {\"target_wiki_id\":\"alice\",\"body\":\"b\",\"subject_id\":\"user:alice\",\
              \"topics\":[\"food\"]},\
-            {\"target_wiki_id\":\"alice\",\"body\":\"c\",\"owner_id\":\"not a principal\",\
+            {\"target_wiki_id\":\"alice\",\"body\":\"c\",\"subject_id\":\"not a principal\",\
              \"topics\":[]}]}";
         let plan = parse_plan(json).expect("plan parses");
         let seeds = nav_seeds(&plan);
         assert_eq!(seeds.topics, vec!["health".to_owned(), "food".to_owned()]);
-        assert_eq!(seeds.owners, vec![Principal::User("alice".into())]);
+        assert_eq!(seeds.subjects, vec![Principal::User("alice".into())]);
     }
 
     #[tokio::test]
@@ -15879,7 +15885,7 @@ mod tests {
             region_end: None,
             text: "alice lives in Bologna".to_owned(),
             embedding: vec![0.9, -0.3, 0.2, -0.1],
-            owner_id: Principal::User("alice".into()),
+            subject_id: Principal::User("alice".into()),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: Some("bio".to_owned()),
@@ -15972,7 +15978,7 @@ mod tests {
             region_end: None,
             text: "dentist appointment".to_owned(),
             embedding: vec![0.9, -0.3, 0.2, -0.1],
-            owner_id: Principal::User("alice".into()),
+            subject_id: Principal::User("alice".into()),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: Some("commitment".to_owned()),
@@ -16057,7 +16063,7 @@ mod tests {
             text: "dentist appointment".to_owned(),
             // cosine ≈ 0.09 against the fixed query embedding [0.1, 0.2, 0.3, 0.4]
             embedding: vec![0.9, -0.3, 0.2, -0.1],
-            owner_id: Principal::User("alice".into()),
+            subject_id: Principal::User("alice".into()),
             allow_ids: Vec::new(),
             sender_id: None,
             fact_type: Some("commitment".to_owned()),
@@ -16106,8 +16112,13 @@ mod tests {
 
     // ---------- media attachments (the media pipeline) ----------
 
-    async fn seed_photo(pool: &SqlitePool, workdir: &Path, owner: &str, bytes: &[u8]) -> CatalogId {
-        seed_photo_typed(pool, workdir, owner, bytes, "image/jpeg").await
+    async fn seed_photo(
+        pool: &SqlitePool,
+        workdir: &Path,
+        subject: &str,
+        bytes: &[u8],
+    ) -> CatalogId {
+        seed_photo_typed(pool, workdir, subject, bytes, "image/jpeg").await
     }
 
     /// Same, with the MIME type the consumer declared — the interesting
@@ -16115,7 +16126,7 @@ mod tests {
     async fn seed_photo_typed(
         pool: &SqlitePool,
         workdir: &Path,
-        owner: &str,
+        subject: &str,
         bytes: &[u8],
         mime: &str,
     ) -> CatalogId {
@@ -16126,7 +16137,7 @@ mod tests {
                 bytes: bytes.to_vec(),
                 kind: crate::media::kind::PHOTO.to_owned(),
                 mime: mime.to_owned(),
-                owner: owner.parse().unwrap(),
+                subject: subject.parse().unwrap(),
                 uploaded_by_consumer: None,
                 caption: None,
                 description: None,
@@ -16163,7 +16174,7 @@ mod tests {
         let json = format!(
             "{{\"intent\":\"capture\",\"extractions\":[{{\
              \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
-             \"owner_id\":\"user:alice\",\"allow_ids\":[\"group:famiglia\"],\
+             \"subject_id\":\"user:alice\",\"allow_ids\":[\"group:famiglia\"],\
              \"requested_container\":true,\
              \"body\":\"Foto di Frodo e Sam al cancello del giardino.\",\
              \"attachments\":[\"{cid}\"]}}],\"suggested_seed\":\"Bella foto!\"}}"
@@ -16292,7 +16303,7 @@ mod tests {
             seed_photo_typed(&pool, dir.path(), "user:alice", b"heicbytes", "image/heic").await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
              \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
-             \"owner_id\":\"user:alice\",\"allow_ids\":[],\
+             \"subject_id\":\"user:alice\",\"allow_ids\":[],\
              \"body\":\"Frodo al cancello del giardino.\"}],\
              \"suggested_seed\":\"Bella foto!\"}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -16384,7 +16395,7 @@ mod tests {
         let cid = seed_photo(&pool, dir.path(), "user:alice", b"jpegbytes").await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
              \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
-             \"owner_id\":\"user:alice\",\"requested_container\":true,\
+             \"subject_id\":\"user:alice\",\"requested_container\":true,\
              \"body\":\"Una foto qualunque.\",\
              \"attachments\":[\"c-2020-01-01-photo-999.jpg\"]}]}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -16449,7 +16460,7 @@ mod tests {
         let json = format!(
             "{{\"intent\":\"capture\",\"extractions\":[{{\
              \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
-             \"owner_id\":\"user:alice\",\"requested_container\":true,\
+             \"subject_id\":\"user:alice\",\"requested_container\":true,\
              \"body\":\"Una foto {{{{embed={cid}}}}} qualunque.\"}}]}}"
         );
         let llm = FakeLlmBackend::new("fake", &json);
