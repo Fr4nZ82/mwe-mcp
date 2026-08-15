@@ -16,7 +16,8 @@
 //! The three are independent axes, not synonyms: `subject` is the fact's
 //! **subject** (who it is *about*), `allow` is the **audience** (who else
 //! may read), and `sender_of_region` is the **provenance** (who captured
-//! it). `subject` is named for the data-subject-governs-their-fact model
+//! it). `subject` names who the fact is ABOUT; that the data subject also
+//! governs their own fact follows from the axis
 //! (see the engineering wiki `concepts/identity-and-acl.md`), never for
 //! authorship or visibility — both of which live on the other two axes.
 //!
@@ -246,9 +247,9 @@ pub fn is_public(subject: &Principal, allow: &[Principal], sender: Option<&Princ
 /// Whether `sender` has SUBJECT authority over a region (ACL change / chat edit).
 ///
 /// Distinct from `principal_matches` (read authority): the builtin `global`
-/// group grants read to everyone but subject authority to no one, so a world fact
-/// (`subject=global`) is not editable from chat. Subject authority is the sender being the
-/// owning user, or a member of a non-global owning group.
+/// group grants read to everyone but makes nobody a subject, so a world fact
+/// (`subject=global`) is not editable from chat. Being the subject means being
+/// the named user, or a member of the named non-global group.
 #[must_use]
 pub fn sender_is_subject(subject: &Principal, sender_id: &str, sender_groups: &[String]) -> bool {
     match subject {
@@ -643,7 +644,7 @@ mod tests {
 
     #[test]
     fn can_delete_non_sender_user_refused() {
-        // A different non-admin user — even if they were the subject/subject —
+        // A different non-admin user — even if they were the fact's subject —
         // is refused the direct act; their path is a request → vote.
         let alice = Principal::User("alice".into());
         assert!(!can_delete(Some(&alice), "bob", false));

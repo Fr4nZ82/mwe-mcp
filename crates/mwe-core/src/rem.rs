@@ -9218,11 +9218,11 @@ mod tests {
     /// Mirrors `write_wiki` but for `wiki-companion` (companion = true;
     /// renamed from `wiki-project-companion`).
     /// Returns the wiki id so callers can plant facts in it.
-    fn write_smart_wiki(tree: &WikiTree, slug: &str, title: &str, subject: &str) {
+    fn write_smart_wiki(tree: &WikiTree, slug: &str, title: &str, owner: &str) {
         let dir = tree.wikis_dir().join(slug);
         std::fs::create_dir_all(&dir).unwrap();
         let frontmatter = format!(
-            "---\nwiki_id: {slug}\nwiki_type: wiki-companion\nslug: {slug}\ntitle: {title}\nacl_default: 'user:{subject}'\nsmart: true\n---\n",
+            "---\nwiki_id: {slug}\nwiki_type: wiki-companion\nslug: {slug}\ntitle: {title}\nacl_default: 'user:{owner}'\nsmart: true\n---\n",
         );
         std::fs::write(dir.join("_meta.md"), frontmatter).unwrap();
         std::fs::write(dir.join("index.md"), "# placeholder companion\n").unwrap();
@@ -9374,7 +9374,7 @@ mod tests {
     #[tokio::test]
     async fn backlink_reciprocity_emits_when_smart_wiki_lacks_inverse() {
         let (dir, mut tree, pool) = setup_workdir().await;
-        // Standard wiki "alice" + smart wiki "alice-lnprint" (same subject).
+        // Standard wiki "alice" + smart wiki "alice-lnprint" (same owner).
         write_wiki(&tree, "alice", "Alice", "wiki-user");
         write_smart_wiki(&tree, "alice-lnprint", "lnprint companion", "alice");
         tree = WikiTree::open(dir.path()).unwrap();
@@ -9445,7 +9445,7 @@ mod tests {
         plant_section(
             &pool,
             "alice-lnprint",
-            "Back-reference to [[alice]] on the subject wiki.",
+            "Back-reference to [[alice]] on the owner's own wiki.",
         )
         .await;
 

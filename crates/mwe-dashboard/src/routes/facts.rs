@@ -1763,7 +1763,7 @@ fn rendered_fact_body(state: &DashboardState, row: &FactIndexRow) -> Markup {
 }
 
 /// The read-only "current state" summary of the fact: the full record —
-/// placement (`wiki_id`), the three ACL axes (`subject` subject, `sender`
+/// placement (`wiki_id`), the three ACL axes (`subject` who it is about, `sender`
 /// provenance, `allow` audience), taxonomy, validity bounds, document
 /// provenance (`source_ref`) — followed by the canonical text rendered
 /// as prose (see [`rendered_fact_body`]). `section.meta` picks up the
@@ -2410,7 +2410,7 @@ mod tests {
             !sender_or_admin(&session("dave", false), &row),
             "non-sender non-admin refused"
         );
-        // The subject/subject is NOT the author → refused the direct delete (her
+        // The subject is NOT the author → refused the direct delete (her
         // path is a request → vote, opened from the dashboard).
         assert!(
             !sender_or_admin(&session("alice", false), &row),

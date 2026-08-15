@@ -155,7 +155,7 @@ struct WikiSeedInfo {
 /// (empty today). The call is deterministic and read-only — safe to run on
 /// every turn, with no side effect on recall counters.
 ///
-/// **There is no subject/subject channel any more.** It existed to seed a
+/// **There is no subject channel any more.** It existed to seed a
 /// principal's identity wiki, and a wiki is not a door: whose turn it is, and
 /// whom it is about, reach the block by being *served* — deterministically,
 /// as a card — not by the navigator being pointed at a person.
@@ -178,7 +178,7 @@ pub async fn gather_entry_points(
 ) -> Result<Vec<EntryPoint>> {
     // Reader-relative card: the topic union the sender can actually read on
     // each wiki, recomputed from `fact_index` per turn so a seed never matches
-    // a denied fact's theme (the subject-tier `.md` keywords would leak it).
+    // a denied fact's theme (the owner-tier `.md` keywords would leak it).
     let reader_card =
         meta_annotate::build_reader_card(pool, tree, &sender.sender_id, &sender.sender_groups)
             .await
@@ -821,7 +821,7 @@ pub async fn navigate(
 
     // Reader-relative card for the prompt-facing surface (the candidate page
     // cards): topics the sender can read, descriptions gated to the wiki's
-    // default visibility — never the subject-tier `.md`. Wiki-keyed because that
+    // default visibility — never the owner-tier `.md`. Wiki-keyed because that
     // is how the ACL is derived, not because anything renders a wiki.
     let reader_card =
         meta_annotate::build_reader_card(pool, tree, &sender.sender_id, &sender.sender_groups)
@@ -1712,7 +1712,7 @@ fn reader_page_keywords(
 /// falls back to opening the page, which is never wrong; the table is a
 /// cache and an empty one degrades to exactly the previous behaviour.
 ///
-/// The description is read from the **subject-tier** testata but shown only
+/// The description is read from the **owner-tier** testata but shown only
 /// where the reader is inside the wiki's default visibility
 /// (`summary_visible`) — the same gate as before, moved, not relaxed. A page
 /// whose card cannot be read (vanished, unparseable) is marked read with no
@@ -2162,7 +2162,7 @@ mod tests {
         forge_user(&tree, "bob");
         let pool = make_pool().await;
         // A PRIVATE fact on bob's wiki: only bob can read "celiachia" (subject
-        // bob, no allow). The subject-tier `.md` card would carry the topic to
+        // bob, no allow). The owner-tier `.md` card would carry the topic to
         // anyone; the reader-relative card must not.
         seed_fact(
             &pool,

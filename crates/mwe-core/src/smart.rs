@@ -307,8 +307,8 @@ pub async fn bootstrap(
         if !d.meta.smart {
             continue;
         }
-        let subject = tree.resolve_scope_principal(&d.meta)?;
-        if subject != caller_principal {
+        let owner = tree.resolve_scope_principal(&d.meta)?;
+        if owner != caller_principal {
             continue;
         }
 

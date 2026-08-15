@@ -316,7 +316,7 @@ Per buffered capture, in order:
    the threshold as write-time territory). Sub-threshold paraphrases
    stay the REM night's job (the Revisor sub-job). Same-subject scoping
    also means the same text about two subjects promotes as two facts —
-   per-fragment subject authority is never folded across principals. The
+   one fragment's subject is never folded into another principal's. The
    capture is excluded from its own comparison, so a retry after a
    partial promotion does not skip a capture against the fact it itself
    minted. Still no LLM here — the scan is pure CPU. A fold is also the

@@ -816,9 +816,9 @@ mod tests {
         );
     }
 
-    /// Subject authority discipline at promotion (the direct path's same-subject
+    /// Subject discipline at promotion (the direct path's same-subject
     /// scope, ported): the SAME text under two different subjects is two
-    /// facts — per-fragment subject authority is never folded across principals.
+    /// facts — one fragment's subject is never folded into another principal's.
     #[tokio::test]
     async fn same_text_different_subject_is_not_folded() {
         let (_dir, tree, pool) = setup().await;

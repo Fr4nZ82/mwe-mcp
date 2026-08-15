@@ -47,7 +47,7 @@
 //! and **idempotent** (a `_meta` already matching the computed value is left
 //! untouched, so a steady-state compile rewrites nothing).
 //!
-//! The compile-time card those passes write is **subject-tier** (the
+//! The compile-time card those passes write is **owner-tier** (the
 //! [`fact_at_default_visibility`] boundary) — the operator's Obsidian view. The
 //! serve-time counterpart lives here too: [`build_reader_card`] recomputes the
 //! card **per reader** from `fact_index` for the recall navigator, so a reader
@@ -226,9 +226,9 @@ async fn collect_page_topics(
 // ---------------------------------------------------------------------
 // Reader-relative card (serve-time, navigator-facing).
 //
-// The passes above WRITE the subject-tier card into the `.md` at compile
+// The passes above WRITE the owner-tier card into the `.md` at compile
 // time (the `fact_at_default_visibility` boundary). At serve time the
-// recall navigator must NOT hand that subject-tier card to a reader who
+// recall navigator must NOT hand that owner-tier card to a reader who
 // cannot read the underlying facts — a reader denied a page's body facts
 // could otherwise infer their themes from the card's topics. So the
 // navigator rebuilds the card PER READER from `fact_index`: topics are the
@@ -335,7 +335,7 @@ fn fact_readable_by(
 ///
 /// Topics are recomputed from `fact_index` (the union over the reader's
 /// readable facts, the [`fact_readable_by`] boundary), NOT read from the
-/// subject-tier `.md` — so a reader never sees the topic of a fact they cannot
+/// owner-tier `.md` — so a reader never sees the topic of a fact they cannot
 /// read, while every topic they CAN read still surfaces (filter, not drop, so
 /// recall does not silently narrow). The abstract is gated separately: a
 /// reader sees a wiki's `summary` / page `description` only when their read-set

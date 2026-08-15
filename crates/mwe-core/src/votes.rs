@@ -4,7 +4,7 @@
 //!
 //! "ACL lives only in the fact." A fact's **sender** (its author) deletes their
 //! own contribution directly ([`crate::acl::can_delete`]); an admin acts on any
-//! fact. But a non-sender **`subject`** — the fact's *subject*, or a member of an
+//! fact. But a non-sender **`subject`** — the person the fact is about, or a member of an
 //! owning group — who did not author it has no such authority. Their path is a
 //! **request the fact's audience votes on**, built here.
 //!
@@ -358,7 +358,7 @@ pub enum ForgetRequestError {
         requester: String,
     },
     /// The requester is not authorized to open a forget request: not an admin,
-    /// not the fact's `subject` (subject), and not a member of an owning group.
+    /// not the fact's `subject`, and not a member of a group named as the subject.
     #[error("requester {requester} not authorized to request forgetting {fact_id}")]
     NotAuthorized {
         /// The fact id.
@@ -418,7 +418,7 @@ pub async fn open_forget_request(
         });
     }
 
-    // Only the subject (subject) or an owning-group member — or an admin — may
+    // Only the subject — or a member of a group named as the subject, or an admin — may
     // open the request.
     if !is_admin && !subject_authorizes(pool, &row.subject_id, requester).await? {
         return Err(ForgetRequestError::NotAuthorized {
@@ -481,7 +481,7 @@ pub async fn open_forget_request(
     })
 }
 
-/// Whether `requester` is the fact's `subject` (subject) or a member of an owning
+/// Whether `requester` is the fact's `subject` or a member of a group named as the
 /// group — the request-authorization predicate (the sender / admin paths are
 /// handled by the caller). The builtin `global` group authorizes no one (a
 /// public fact has no specific subject to request on its behalf).

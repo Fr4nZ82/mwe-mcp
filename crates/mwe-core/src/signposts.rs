@@ -7,7 +7,7 @@
 //! user never *names* is invisible to their standard agent — the memory
 //! cannot connect a dot it cannot see.
 //!
-//! A signpost is the dot. It is a short fact in the subject's own standard
+//! A signpost is the dot. It is a short fact in the owner's own standard
 //! wiki, and there are two kinds, on **two reserved pages**:
 //!
 //! - **one description per project**, on [`crate::wiki::PROJECTS_FILENAME`]
@@ -159,12 +159,12 @@ pub enum SignpostError {
     /// The caller does not own the project wiki. Same rule as
     /// `wiki_admin_push`: a smart consumer writes only its own user's
     /// wikis.
-    #[error("wiki {wiki_id} belongs to {subject}, not to {caller}")]
+    #[error("wiki {wiki_id} belongs to {owner}, not to {caller}")]
     NotOwner {
         /// The offending wiki.
         wiki_id: String,
         /// Its owning user.
-        subject: String,
+        owner: String,
         /// The calling user.
         caller: String,
     },
@@ -199,7 +199,7 @@ pub enum SignpostError {
         got: String,
     },
 
-    /// A user id is not a usable wiki id — the subject has no standard wiki
+    /// A user id is not a usable wiki id — the owner has no standard wiki
     /// this channel could write into.
     #[error("{got:?} is not a usable wiki id: {detail}")]
     BadWikiId {
@@ -275,7 +275,7 @@ impl SignpostOutcome {
 /// Outcome of one [`write`].
 #[derive(Debug, Clone)]
 pub struct SignpostReport {
-    /// The subject's standard wiki the signposts landed in.
+    /// The owner's standard wiki the signposts landed in.
     pub owner_wiki_id: String,
     /// Workdir-relative path of the reserved page.
     pub source_path: String,
@@ -289,7 +289,7 @@ pub struct SignpostReport {
     pub active_days: usize,
 }
 
-/// Write a project's signposts into its subject's reserved page.
+/// Write a project's signposts into its owner's reserved page.
 ///
 /// `caller` is the bare user id from the token (`"alice"`, not
 /// `"user:alice"`) — the same identity `wiki_admin_push` gates on.
@@ -428,7 +428,7 @@ pub async fn last_activity_day(
 /// What a project's signposts look like right now.
 #[derive(Debug, Clone)]
 pub struct SignpostStatus {
-    /// Workdir-relative path of the subject's reserved page.
+    /// Workdir-relative path of the owner's reserved page.
     pub page: String,
     /// Whether the project has a description signpost at all.
     pub has_description: bool,
@@ -457,7 +457,7 @@ pub struct ProjectionReport {
 }
 
 /// Project every project's `smart_wikis.description` into a signpost fact
-/// on its subject's `projects.md`, so ordinary flat recall can find it.
+/// on its owner's `projects.md`, so ordinary flat recall can find it.
 ///
 /// **Why a projection and not the thing itself.** A standard consumer's
 /// per-turn recall reads the fact corpus only, so a description that lives
@@ -475,7 +475,7 @@ pub struct ProjectionReport {
 /// largest undescribed corpus was 1 477 sections with none. A nudge fired
 /// on every push and was ignored, because a nudge is advice.
 ///
-/// Idempotent, and cheap when nothing moved: one scan of each subject's
+/// Idempotent, and cheap when nothing moved: one scan of each owner's
 /// signpost page, then a write only where the text actually differs.
 /// Removing the line from `_meta.md` retires the fact — otherwise a door
 /// would stay open onto a project that had stopped describing itself.
@@ -499,7 +499,7 @@ pub async fn project_descriptions(
             continue;
         };
         let target = match target_owner(tree, &project_wiki_id)
-            .and_then(|subject| target_for(tree, &project_wiki_id, subject))
+            .and_then(|owner| target_for(tree, &project_wiki_id, owner))
         {
             Ok(t) => t,
             Err(e) => {
@@ -591,7 +591,7 @@ pub async fn project_descriptions(
     Ok(report)
 }
 
-/// Rewrite the subject's door-sign page as a page a human can read.
+/// Rewrite the owner's door-sign page as a page a human can read.
 ///
 /// The page is a run of `{{f=…}}` fact regions appended in write order —
 /// no title, projects interleaved, and a blank-line scar wherever a
@@ -666,14 +666,14 @@ async fn render_page(pool: &SqlitePool, tree: &WikiTree, source_path: &str) -> R
 /// Read a project's signpost state, for the staleness nudge
 /// `wiki_admin_push` returns.
 ///
-/// Read-only and caller-agnostic: it reports on the subject resolved from
+/// Read-only and caller-agnostic: it reports on the owner resolved from
 /// the tree, so it never needs the write path's ownership gate. A wiki
-/// that is not smart, whose subject is a group, or that is **not bound to
+/// that is not smart, whose owner is a group, or that is **not bound to
 /// a project** simply has no signposts.
 ///
 /// "Not a project" means the wiki is an **agent's own**: the consumer's
 /// operational wiki, forged by the sign-in flow, is private working memory
-/// and signposting it would only add noise to the subject's `projects.md` —
+/// and signposting it would only add noise to the owner's `projects.md` —
 /// observed live on `franz-ubestia-cc`, where the nudge fired twice and
 /// was correctly ignored twice. The test is deliberately that property and
 /// not "has a `project_id`": `project_id` is optional on create, so a
@@ -703,10 +703,10 @@ pub async fn status(
     if project.meta().is_agent || project.meta().wiki_type == crate::wiki::AGENT_WIKI_TYPE {
         return Ok(None);
     }
-    let Principal::User(subject) = tree.resolve_scope_principal(project.meta())? else {
+    let Principal::User(owner) = tree.resolve_scope_principal(project.meta())? else {
         return Ok(None);
     };
-    let (Ok(page), Ok(diary)) = (page_path(tree, &subject), diary_page_path(tree, &subject)) else {
+    let (Ok(page), Ok(diary)) = (page_path(tree, &owner), diary_page_path(tree, &owner)) else {
         return Ok(None);
     };
     // Two pages now, one question each: the door sign is on `projects.md`
@@ -795,18 +795,18 @@ struct Target {
 }
 
 /// Resolve the project wiki, check the caller owns it, and locate the
-/// subject's own standard wiki — the signpost is a fact about the subject's
+/// owner's own standard wiki — the signpost is a fact about the owner's
 /// world, so it lives where their facts live, not in the project.
 fn resolve_target(tree: &WikiTree, caller: &str, project_wiki_id: &WikiId) -> Result<Target> {
-    let subject = target_owner(tree, project_wiki_id)?;
-    if subject != caller {
+    let owner = target_owner(tree, project_wiki_id)?;
+    if owner != caller {
         return Err(SignpostError::NotOwner {
             wiki_id: project_wiki_id.as_str().to_owned(),
-            subject,
+            owner,
             caller: caller.to_owned(),
         });
     }
-    target_for(tree, project_wiki_id, subject)
+    target_for(tree, project_wiki_id, owner)
 }
 
 /// The user a project's signposts belong to — the same check
@@ -819,7 +819,7 @@ fn target_owner(tree: &WikiTree, project_wiki_id: &WikiId) -> Result<String> {
         });
     }
     match tree.resolve_scope_principal(project.meta())? {
-        Principal::User(subject) => Ok(subject),
+        Principal::User(owner) => Ok(owner),
         Principal::Group(_) => Err(SignpostError::GroupOwned {
             wiki_id: project_wiki_id.as_str().to_owned(),
         }),
@@ -830,11 +830,11 @@ fn target_owner(tree: &WikiTree, project_wiki_id: &WikiId) -> Result<String> {
 /// [`resolve_target`] so the **server** can write a projection for a wiki
 /// nobody is currently calling on behalf of — the ownership check is a
 /// property of a *caller*, and there is no caller here.
-fn target_for(tree: &WikiTree, project_wiki_id: &WikiId, subject: String) -> Result<Target> {
+fn target_for(tree: &WikiTree, project_wiki_id: &WikiId, owner: String) -> Result<Target> {
     let project = tree.locate(project_wiki_id)?;
     // The scope principal of a root identity wiki IS its wiki id, so the
-    // subject's standard wiki is reachable by that name.
-    let owner_wiki_id = owner_wiki_id(&subject)?;
+    // owner's standard wiki is reachable by that name.
+    let owner_wiki_id = owner_wiki_id(&owner)?;
     let owner_handle = tree.locate(&owner_wiki_id)?;
     let source_path = crate::wiki::workdir_relative_source_path(
         tree.workdir(),
@@ -848,7 +848,7 @@ fn target_for(tree: &WikiTree, project_wiki_id: &WikiId, subject: String) -> Res
     );
     Ok(Target {
         owner_wiki_id,
-        owner_principal: Principal::User(subject),
+        owner_principal: Principal::User(owner),
         source_path,
         diary_source_path,
         title: project_title(project.meta()),

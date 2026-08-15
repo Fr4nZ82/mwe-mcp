@@ -2125,7 +2125,7 @@ async fn inherit_audience(pool: &SqlitePool, successor: &FactId, allow: &[Princi
 /// its own sender: a supersede does not move the subject either. Alice
 /// retiring "Alice is at the dentist Thursday" by saying "it is Bob who goes"
 /// mints a fact owned by Bob — and a reader set is `subject ∪ allow ∪ sender`,
-/// so carrying Alice's subjecthood across would take the fact about Bob away
+/// so carrying Alice over as the subject would take the fact about Bob away
 /// from Bob while Alice was trying to tell him. Where the subject does not
 /// change (a restated wifi password) the subject was already the same, which is
 /// why this was invisible.
@@ -6594,12 +6594,12 @@ pub async fn wiki_ingest_message(
                     continue;
                 }
 
-                // Engine floor of the 2026-06-30 subject-subject ruling (the
-                // dangling-principal incident): the `known_users`
-                // roster in the prompt steers the classifier away from
-                // coining a subject for a non-enrolled subject, but nothing
-                // enforced it — a dangling `user:<x>` subject matches no
-                // reader and splits the subject across homes on re-ingest.
+                // Engine floor of the 2026-06-30 subject-must-be-a-principal
+                // ruling (the dangling-principal incident): the `known_users`
+                // roster in the prompt steers the classifier away from coining a
+                // principal for a person the deployment does not enrol, but
+                // nothing enforced it — a dangling `user:<x>` subject matches no
+                // reader and splits the fact across homes on re-ingest.
                 // Clearing the field routes the unit through the sender
                 // default in the validators below, the ruling's own
                 // fallback. Fail-open on a DB error: the guard protects
@@ -10784,11 +10784,10 @@ mod tests {
         drop(dir);
     }
 
-    /// Engine floor of the 2026-06-30 subject-subject ruling (the
-    /// dangling-principal incident): a classifier-emitted subject
-    /// that enrollment does not back is re-owned to the sender — the
-    /// ruling's own fallback — instead of minting a principal no reader
-    /// matches.
+    /// Engine floor of the 2026-06-30 subject-must-be-a-principal ruling (the
+    /// dangling-principal incident): a classifier-emitted subject that
+    /// enrollment does not back is re-filed onto the sender — the ruling's own
+    /// fallback — instead of minting a principal no reader matches.
     #[tokio::test]
     async fn ingest_unenrolled_subject_reowns_to_sender() {
         let (dir, tree, pool) = setup_workdir().await;
@@ -10821,9 +10820,9 @@ mod tests {
     }
 
     /// Counterpart of [`ingest_unenrolled_subject_reowns_to_sender`]: an
-    /// enrolled third-party subject is a legitimate subject (the subject
-    /// axis — reciprocal relationship facts, a fact filed for another
-    /// family member) and must pass the guard untouched.
+    /// enrolled third-party person is a legitimate subject (reciprocal
+    /// relationship facts, a fact filed for another family member) and must
+    /// pass the guard untouched.
     #[tokio::test]
     async fn ingest_enrolled_third_party_subject_is_kept() {
         let (dir, tree, pool) = setup_workdir().await;

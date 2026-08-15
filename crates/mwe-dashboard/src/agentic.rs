@@ -1596,7 +1596,7 @@ async fn dispatch_wiki_supersede(
     }
     // Superseding a smart section row would write a marker-wrapped fact into
     // the consumer's plain-markdown page — refuse before the subject gate (a
-    // smart row's subject is the scope principal, which the operator may match).
+    // smart row's owner is the scope principal, which the operator may match).
     ensure_standard_wiki(ctx, AgenticTool::WikiSupersede.name(), &old_row.wiki_id)?;
     // Editing the CONTENT of a fact is an *update* — the subject's act (the
     // write-authority model): the **subject** (subject, or a member of an

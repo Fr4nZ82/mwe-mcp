@@ -194,7 +194,7 @@ pub async fn delete_page_direct(
     let mut evacuated_to: BTreeSet<String> = BTreeSet::new();
     for row in &rows {
         // The principal responsible for the fact: its sender (provenance) when
-        // materialized, else its subject (subject) — the sender-gone fallback.
+        // materialized, else its subject — the sender-gone fallback.
         // Admin "delete all" collapses every fact onto the tombstone arm.
         let responsible = row.sender_id.as_ref().unwrap_or(&row.subject_id);
         let action = match policy.mode {

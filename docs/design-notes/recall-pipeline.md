@@ -905,14 +905,14 @@ Three invariants:
 - **Reader-relative cards.** Topic/situational seeds match a card recomputed
   per turn for the sender by `meta_annotate::build_reader_card`: the union of
   `topics` over the facts in a wiki (and on a page) the sender can read
-  (`acl::can_read`), **not** the subject-tier `_meta`/testata keywords the
+  (`acl::can_read`), **not** the owner-tier `_meta`/testata keywords the
   [keyword sync](narrative-compiler.md#keyword-sync--fact-topics-into-_meta-and-the-page-testate-recall-navigation)
   writes into the `.md` for the operator's Obsidian view. So a fact the sender
   cannot read never contributes its theme — a restricted fact's topic words can
   neither act as an entry-point nor surface in the candidate cards the
   navigator LLM sees. This is the serve-time enforcement of the
   [ACL card boundary](../concepts/identity-and-acl.md#the-acl-card-boundary--what-card-metadata-may-carry):
-  the compile-time `.md` card stays subject-tier, the served card is reader-relative.
+  the compile-time `.md` card stays owner-tier, the served card is reader-relative.
   The wiki's one-line abstract (`summary`/page `description`) is gated separately —
   served only to a reader whose read-set covers the wiki's default visibility
   (i.e. matches its resolved `scope`).

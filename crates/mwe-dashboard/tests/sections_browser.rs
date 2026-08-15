@@ -81,18 +81,13 @@ async fn login_as_admin(app: &Router) -> String {
 }
 
 /// Register a smart wiki and index one page of sections into it.
-async fn seed_sections(
-    pool: &SqlitePool,
-    wiki_id: &str,
-    subject: &str,
-    shared_with: Vec<Principal>,
-) {
+async fn seed_sections(pool: &SqlitePool, wiki_id: &str, owner: &str, shared_with: Vec<Principal>) {
     sections::upsert_smart_wiki(
         pool,
         &SmartWikiRow {
             wiki_id: wiki_id.to_owned(),
             slug: wiki_id.rsplit('-').next().unwrap_or(wiki_id).to_owned(),
-            owner_id: subject.parse().expect("subject principal"),
+            owner_id: owner.parse().expect("owner principal"),
             shared_with,
             project_id: Some("abc123".to_owned()),
             wiki_type: "project".to_owned(),

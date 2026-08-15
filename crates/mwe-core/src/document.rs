@@ -625,7 +625,7 @@ pub async fn enqueue(
     .map_err(|e| DocumentError::Invalid(format!("allow_ids: {e}")))?;
     // Mirror the capture-path invariant: sender is always materialized
     // (= subject when absent) and kept distinct from subject, so a later
-    // subject authority change never rebinds the original provenance.
+    // a subject change never rebinds the original provenance.
     let sender = req.sender.clone().or_else(|| Some(req.subject.clone()));
     let ts = now();
     sqlx::query(
@@ -2197,8 +2197,8 @@ async fn process_job(
             // extractor's `allow_ids` (group/wiki scope + document cues).
             let fact_subject_fallback = sender.clone().unwrap_or_else(|| subject.clone());
             let (fact_subject, fact_allow) = candidate_acl(cand, &fact_subject_fallback);
-            // Engine floor of the 2026-06-30 subject-subject ruling (the
-            // dangling principal of that incident was coined on THIS
+            // Engine floor of the 2026-06-30 subject-must-be-a-principal
+            // ruling (the dangling principal of that incident was coined on THIS
             // path): the extractor prompt carries the `known_users`
             // roster, but nothing enforced that the subject it emits is
             // enrollment-backed. An unknown subject falls back to the
@@ -2888,8 +2888,8 @@ mod tests {
         let wikis = dir.path().join("wikis");
         std::fs::create_dir_all(&wikis).unwrap();
         write_wiki(&wikis, "alice", "Alice", "wiki-user");
-        // The extracted fact below is owned by Gimli: subject subjects must be
-        // enrollment-backed (the engine re-owns a coined principal to the
+        // The extracted fact below has Gimli as its subject, and a subject must
+        // be enrollment-backed (the engine re-files a coined principal onto the
         // uploader — see `dossier_unenrolled_subject_falls_back_to_uploader`).
         sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('gimli', 0)")
             .execute(&pool)
@@ -2994,7 +2994,7 @@ mod tests {
         assert_eq!(
             buffered[0].subject,
             "user:gimli".parse::<Principal>().unwrap(),
-            "extracted fact's subject is the LLM-decided subject, not the job subject"
+            "the extracted fact's subject is the one the LLM decided, not the job's uploader"
         );
         assert_eq!(
             buffered[0].allow,
@@ -3021,10 +3021,10 @@ mod tests {
         drop(dir);
     }
 
-    /// Engine floor of the 2026-06-30 subject-subject ruling on the document
-    /// path — the one where the original dangling principal was
+    /// Engine floor of the 2026-06-30 subject-must-be-a-principal ruling on the
+    /// document path — the one where the original dangling principal was
     /// coined: an extractor-emitted subject that enrollment does not back is
-    /// re-owned to the uploader instead of minting a principal no reader
+    /// re-filed onto the uploader instead of minting a principal no reader
     /// matches.
     #[tokio::test]
     async fn dossier_unenrolled_subject_falls_back_to_uploader() {

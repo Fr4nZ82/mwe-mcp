@@ -1127,14 +1127,14 @@ async fn submit_process_refuses_standard_wiki_comment() {
 }
 
 /// The page view renders the body but never the **testata** (the
-/// frontmatter card): its subject-tier `keywords`/`description` must not leak
+/// frontmatter card): its owner-tier `keywords`/`description` must not leak
 /// into the dashboard, exactly as `wiki_read` strips it for a consumer
 /// (the card-exposure fix, dashboard half — roadmap 25b).
 #[tokio::test]
 async fn page_view_strips_the_testata_so_card_topics_never_leak() {
     let (app, _pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
-    // A page whose testata carries subject-tier card topics + a description.
+    // A page whose testata carries owner-tier card topics + a description.
     let page = "---\n\
                 title: Health\n\
                 keywords:\n  topics: celiachia, gravidanza\n\

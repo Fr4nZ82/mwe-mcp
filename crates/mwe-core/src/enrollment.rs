@@ -274,13 +274,13 @@ pub const GLOBAL_GROUP_ID: &str = "global";
 
 /// Default `scope` shipped for the builtin [`GLOBAL_GROUP_ID`] group.
 ///
-/// The admin can override it from the dashboard. Frames `global` subject authority
+/// The admin can override it from the dashboard. Frames a `global` subject
 /// as WORLD facts, explicitly NOT as "a public personal fact" (that is the
 /// `allow` visibility axis), so the classifier does not collapse public
 /// profile facts onto `subject=global`.
 pub const DEFAULT_GLOBAL_SCOPE: &str = "General, public-domain facts that are true for everyone and \
 belong to no single user or group (e.g. common knowledge, weather, public events). NOT for making a \
-personal fact public — that is visibility (put `global` in a fact's allow-list), not subject authority.";
+personal fact public — that is visibility (put `global` in a fact's allow-list), not a change of subject.";
 
 /// Whether `id` is the builtin universal group.
 #[must_use]
@@ -678,7 +678,7 @@ pub async fn is_system_user(pool: &SqlitePool, user_id: &str) -> Result<bool, sq
 ///   present. This is the security-critical guard: issuing a standard token
 ///   for a human *with a login account* would let a multi-user bot
 ///   read/write as that one human → a cross-user recall/ACL leak.
-/// - **`smart`** ⇒ Pattern A. The sender is the human subject; this side is a
+/// - **`smart`** ⇒ Pattern A. The sender is the human owner; this side is a
 ///   convention, not a hard gate. A smart token is mono-user (no act-as), so
 ///   it is harmless regardless of sender, and "is this a bot or a
 ///   not-yet-onboarded human" is not reliably distinguishable by credentials
@@ -1673,7 +1673,7 @@ mod tests {
     #[tokio::test]
     async fn token_identity_rejects_guest_for_any_class() {
         // The builtin guest pseudo-identity never holds a token — not as
-        // a standard bot sender, not as a smart human subject. It is only
+        // a standard bot sender, not as a smart human owner. It is only
         // ever reached via X-MWE-Act-As under a delegation grant.
         let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
 

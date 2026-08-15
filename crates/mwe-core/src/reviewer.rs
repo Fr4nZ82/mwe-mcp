@@ -590,7 +590,7 @@ mod tests {
     }
 
     /// The identity index of `franz` (a `wiki-user`) planned with facts of
-    /// every subject authority shape: only the foreign SUBJECTS are flagged —
+    /// every subject shape: only the foreign SUBJECTS are flagged —
     /// another user's fact and a fact of a group franz is NOT in. His own
     /// facts, a group he belongs to (his own shared context), and global
     /// world context are all clean.

@@ -333,7 +333,7 @@ pub async fn store_media(
         .bind(&allow_json)
         // sender_id = subject: media has no distinct capturer concept today,
         // so provenance is materialized to the subject (never NULL-at-birth),
-        // keeping it frozen if subject authority is ever transferred.
+        // keeping it frozen if the subject is ever changed.
         .bind(&subject_wire)
         .bind(&media.uploaded_by_consumer)
         .bind(&media.caption)

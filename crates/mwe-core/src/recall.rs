@@ -909,7 +909,7 @@ impl SearchHit {
 ///
 /// This is the whole point of moving the ACL off the rows: read access to
 /// a smart wiki is one decision about one wiki, not one decision per
-/// indexed section. The effective set is the same `subject ∪ shared_with`
+/// indexed section. The effective set is the same `owner ∪ shared_with`
 /// the per-row check used to evaluate, so visibility is unchanged.
 async fn readable_smart_wikis(
     pool: &SqlitePool,

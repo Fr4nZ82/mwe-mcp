@@ -284,7 +284,7 @@ pub struct LinkOutcome {
 ///   adding to a shared `group:` page collapse to one item (same
 ///   subject), but per-user facts that merely share a wiki (an agent's
 ///   behaviour rules, each owned by the user who dictated it) never
-///   collide. Preserves per-fragment subject authority.
+///   collide. Each fragment keeps its own subject.
 /// - **Never across the channel-page boundary** ([`crate::wiki::is_channel_page`]:
 ///   both sides on a reserved channel page, or neither): a new behaviour
 ///   rule must not be skipped as a duplicate of an ordinary fact that

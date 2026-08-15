@@ -76,8 +76,9 @@ pub struct FactIndexRow {
     pub embedding: Vec<f32>,
     /// The fact's **subject** — who/what it is *about* (`user:<id>` |
     /// `group:<id>` | `global`). NOT its author (that is `sender_id`) and
-    /// NOT its audience (that is `allow_ids`); "subject" because the subject
-    /// governs their own fact's ACL. Persisted in the `subject_id` column.
+    /// NOT its audience (that is `allow_ids`). The subject also governs their own
+    /// fact's ACL, which is a consequence of the axis, not its definition.
+    /// Persisted in the `subject_id` column.
     /// See the engineering wiki (`concepts/identity-and-acl.md`).
     pub subject_id: Principal,
     /// Additional principals the region's `allow=` extension grants

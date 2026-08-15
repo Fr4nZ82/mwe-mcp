@@ -217,7 +217,7 @@ in the roadmap):
 | Not done | Why |
 |---|---|
 | **WAL applicative wrap** | Not needed: the `fact_index` insert is the capture's **commit point** (step 6 above). A failed page write compensates by tombstoning the row; a crash between insert and write leaves a pending render (offsets NULL) that the next compile re-emits and the reindex sweep never mistakes for an orphan. Multi-step structural writes elsewhere (the REM proposal kinds) keep their `proposal_ops_log` journaling. |
-| **Cross-user attribution enforcement** | Per the [memory model](../concepts/memory-model.md), when `sender ≠ subject`, the sender must have read access to the wiki that subject owns. The agent composing the call today is the trusted writer surface; the preventive check is not yet wired into the dashboard/server-side caller composition. |
+| **Cross-user attribution enforcement** | Per the [memory model](../concepts/memory-model.md), when `sender ≠ subject`, the sender must have read access to the subject's own wiki — the two axes meet here: a fact about someone is written into a wiki that someone owns. The agent composing the call today is the trusted writer surface; the preventive check is not yet wired into the dashboard/server-side caller composition. |
 | **In-place region edit** | `wiki_capture` only appends. Editing an existing region in place (preserving its `fact_id`) — so `wiki_ingest_message` could refine a just-captured paragraph — is not supported. |
 
 ## Error surface (`CaptureError`)

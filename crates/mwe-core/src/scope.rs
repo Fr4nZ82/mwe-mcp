@@ -11,7 +11,7 @@
 //!
 //! This is a composite operation (filesystem + DB), so it lives in
 //! its own module rather than inside [`crate::wiki`] which is the
-//! single subject of the on-disk tree and explicitly does not touch
+//! single owner of the on-disk tree and explicitly does not touch
 //! the fact index.
 //!
 //! ## Scope of this operation
