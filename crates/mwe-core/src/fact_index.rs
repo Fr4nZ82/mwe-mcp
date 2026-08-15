@@ -2999,6 +2999,29 @@ mod tests {
     const SAMPLE_UUID_V7_3: &str = "018f1234-5678-7abc-9def-0123456789ad";
     const SAMPLE_UUID_V7_4: &str = "018f1234-5678-7abc-9def-0123456789ae";
 
+    /// The dashboard sort token, both spellings, and the column each resolves to.
+    ///
+    /// `owner_id` is the pre-rename token and is still accepted: a bookmarked or
+    /// shared URL carrying it would otherwise fall back to the default sort, and
+    /// the page would look like it ignored the click — no error anywhere.
+    ///
+    /// The third case is the control: without it, the first two could pass for
+    /// some reason other than the alias being read.
+    #[test]
+    fn the_sort_token_is_read_under_both_spellings() {
+        assert_eq!(
+            FactSortKey::from_token("subject_id"),
+            Some(FactSortKey::SubjectId)
+        );
+        assert_eq!(
+            FactSortKey::from_token("owner_id"),
+            Some(FactSortKey::SubjectId)
+        );
+        assert_eq!(FactSortKey::from_token("proprietor_id"), None);
+        // And whichever spelling arrived, the SQL names the column that exists.
+        assert_eq!(FactSortKey::SubjectId.order_expr(), "subject_id");
+    }
+
     fn sample_new_fact(fact_id_str: &str, wiki: &str, subject: &str, text: &str) -> NewFact {
         NewFact {
             authored_refs: Vec::new(),

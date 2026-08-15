@@ -7961,6 +7961,40 @@ mod tests {
 
     // ---------- plan parsing ----------
 
+    /// A classifier reply in the pre-rename shape must still name the subject.
+    ///
+    /// This is the alias whose absence is worst. Every field on the plan is
+    /// `#[serde(default)]`, so an unrecognised key is not an error: `subject_id`
+    /// simply arrives as `None`, and `validate_capture_plan` then defaults the
+    /// subject to the SENDER. Alice, speaking about Bob, would file a fact whose
+    /// subject is Alice — Bob could not read a fact about himself, Alice would
+    /// govern its disclosure, and a search for Bob's facts would never return
+    /// it. Nothing errors and nothing is logged; the raw plan is not persisted.
+    ///
+    /// It is reachable on any deployment that ran `init` before this release:
+    /// `<workdir>/prompts/*.md` overrides win over the bundled prompt and are
+    /// never re-seeded, so the model keeps being told to emit the old key.
+    #[test]
+    fn a_classifier_reply_in_the_pre_rename_shape_still_names_the_subject() {
+        let raw = r#"{"intent":"capture","body":"Bob changed jobs.",
+                      "owner_id":"user:bob","allow_ids":[]}"#;
+        let plan = parse_plan(raw).expect("plan must parse");
+        assert_eq!(
+            plan.subject_id.as_deref(),
+            Some("user:bob"),
+            "the pre-rename key must still reach the subject axis"
+        );
+
+        // Control: an unrecognised spelling is silently dropped, not refused —
+        // which is exactly why the alias above has to be right.
+        let bogus = r#"{"intent":"capture","body":"x","proprietor_id":"user:bob"}"#;
+        let plan = parse_plan(bogus).expect("unknown keys are ignored, not rejected");
+        assert_eq!(
+            plan.subject_id, None,
+            "an unknown key leaves the subject unset"
+        );
+    }
+
     #[test]
     fn parse_plan_extracts_pure_json() {
         let raw = r#"{"intent":"skip","suggested_seed":"ok"}"#;

@@ -3945,6 +3945,41 @@ fn parse_json<T: serde::de::DeserializeOwned>(raw: &str) -> Option<T> {
 mod tests {
     use super::*;
 
+    /// A `compilation-plan.json` written before the rename must still parse.
+    ///
+    /// `FactForPage.subject` carries no `#[serde(default)]`, so without the
+    /// alias the whole plan file fails to deserialize — and `load_previous_plan`
+    /// maps any parse error to `Ok(None)`, i.e. "there was never a plan". The
+    /// engine then resets its fingerprints and recompiles every page through the
+    /// Cronista: one metered LLM call per page, with no error and nothing to
+    /// attribute the cost to. The alias is the only thing between an upgrade and
+    /// that bill, and a typo in it would be invisible.
+    #[test]
+    fn a_plan_file_written_before_the_rename_still_parses() {
+        let legacy = serde_json::json!({
+            "fact_id": crate::types::SAMPLE_UUID_V7,
+            "text": "Alice prefers coffee black",
+            "fact_type": "preference",
+            "owner": "user:alice",
+            "sender": "user:alice",
+            "source_wiki_id": "alice",
+        });
+        let f: FactForPage = serde_json::from_value(legacy).expect("the pre-rename key must parse");
+        assert_eq!(f.subject, Principal::User("alice".into()));
+
+        // Control: an unrecognised key really would leave the field unset, so
+        // the assertion above cannot pass for some other reason.
+        let bogus = serde_json::json!({
+            "fact_id": crate::types::SAMPLE_UUID_V7,
+            "text": "x",
+            "fact_type": null,
+            "proprietor": "user:alice",
+            "sender": null,
+            "source_wiki_id": "alice",
+        });
+        assert!(serde_json::from_value::<FactForPage>(bogus).is_err());
+    }
+
     fn fact(id_seed: u8, text: &str, subject: &str, src: &str) -> FactForPage {
         // Deterministic UUIDv7-shaped ids for tests.
         let id = format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{id_seed:02x}");

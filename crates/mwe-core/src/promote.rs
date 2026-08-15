@@ -4746,6 +4746,48 @@ pub async fn apply_pages_move_wiki_direct(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An `acl_change` receipt written before the rename must still revert.
+    ///
+    /// `prev_subject_id` is the ONLY surviving copy of the pre-change ACL, it
+    /// lives as JSON inside `structure_proposals.spec` — where `ALTER TABLE`
+    /// cannot reach it — and both fields are non-`Option`, so without the
+    /// aliases deserialization fails outright and the undo button stops working
+    /// for every change made before the deploy, for the whole revert window.
+    #[test]
+    fn an_acl_change_receipt_written_before_the_rename_still_reverts() {
+        let legacy = serde_json::json!({
+            "fact_id": crate::types::SAMPLE_UUID_V7,
+            "new_owner_id": "group:famiglia",
+            "new_allow_ids": ["global"],
+            "new_sender_id": "user:alice",
+            "prev_owner_id": "user:alice",
+            "prev_allow_ids": [],
+            "prev_sender_id": "user:alice",
+            "audit_id": 7,
+            "widening": true,
+        });
+        let r: AclChangeRecord =
+            serde_json::from_value(legacy).expect("a receipt in the pre-rename shape must parse");
+        assert_eq!(
+            r.prev_subject_id, "user:alice",
+            "the ACL to restore survives"
+        );
+        assert_eq!(r.new_subject_id, "group:famiglia");
+
+        // Control: the fields are required, so an unrecognised spelling fails.
+        let bogus = serde_json::json!({
+            "fact_id": crate::types::SAMPLE_UUID_V7,
+            "new_proprietor_id": "group:famiglia",
+            "new_allow_ids": [],
+            "prev_proprietor_id": "user:alice",
+            "prev_allow_ids": [],
+            "audit_id": 7,
+            "widening": false,
+        });
+        assert!(serde_json::from_value::<AclChangeRecord>(bogus).is_err());
+    }
+
     use crate::capture::{CaptureAction, CaptureRequest, wiki_capture};
     use crate::embedder::{Embedder, FakeEmbedder};
     use crate::types::Principal;
