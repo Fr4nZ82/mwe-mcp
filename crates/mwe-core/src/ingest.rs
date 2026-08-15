@@ -14045,7 +14045,7 @@ mod tests {
         let index_md = std::fs::read_to_string(dir.path().join("wikis/alice/index.md")).unwrap();
         assert!(
             !index_md.contains("{{subject=")
-                && !index_md.contains("{{owner=")
+                && !index_md.contains("{{subject=")
                 && !index_md.contains("alice loves pasta"),
             "standard-wiki ingest must not write a marker or the claim into the page"
         );

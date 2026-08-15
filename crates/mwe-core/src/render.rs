@@ -557,9 +557,9 @@ mod tests {
     fn modello_memoria_5_input() -> String {
         format!(
             "# Controller API edit-composition\n\n\
-{{{{owner=global f={SAMPLE_UUID_V7}}}}}\nEndpoint del Widget Pro che gestisce \
+{{{{subject=global f={SAMPLE_UUID_V7}}}}}\nEndpoint del Widget Pro che gestisce \
 l'edit di una composition utente.\n{{{{/}}}}\n\n\
-{{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}\n## Implementazione\n[codice + design \
+{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}\n## Implementazione\n[codice + design \
 decision storico]\n{{{{/}}}}\n\n\
 {{{{allow=group:team sender=user:alice f={SAMPLE_UUID_V7}}}}}\nQuando alice dice \"sto sistemando \
 l'edit composition\" parla di questa cosa.\n{{{{/}}}}\n"
@@ -650,8 +650,8 @@ l'edit composition\" parla di questa cosa.\n{{{{/}}}}\n"
         // that is the whole point of the inline granularity (and the
         // reason a prose-filtering acl_default would be wrong here).
         let input = format!(
-            "Alice pesa {{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} \
-al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
+            "Alice pesa {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} \
+al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
         );
         let out = render_for_sender(
             &input,
@@ -738,6 +738,9 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
         //
         // The sibling test above covers the orphan region (no subject at all);
         // this one covers the case that actually carries someone else's datum.
+        // Deliberately the LEGACY spelling: this is the redaction engine's only
+        // fixture that still feeds `owner=`, so the permanent read alias is
+        // exercised through the whole render path and not only in the parser.
         let input =
             format!("before {{{{owner=user:bob f={SAMPLE_UUID_V7}}}}}bob's weight{{{{/}}}} after");
         let wiki_principal = Principal::User("alice".into());
@@ -764,7 +767,7 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
         // it). Family members reread via the sender shortcut even when
         // `famiglia` is NOT in `allow=`. Outsiders stay out.
         let input = format!(
-            "{{{{owner=user:gollum sender=group:famiglia f={SAMPLE_UUID_V7}}}}}\
+            "{{{{subject=user:gollum sender=group:famiglia f={SAMPLE_UUID_V7}}}}}\
 Sméagol stamattina ha brontolato a colazione.{{{{/}}}}"
         );
         let acl_default = Principal::global();
@@ -806,7 +809,7 @@ Sméagol stamattina ha brontolato a colazione.{{{{/}}}}"
         // Region subject = user:gollum, sender = user:galadriel.
         // Galadriel must be able to reread even with no other access.
         let input = format!(
-            "{{{{owner=user:gollum sender=user:galadriel allow=group:famiglia f={SAMPLE_UUID_V7}}}}}\
+            "{{{{subject=user:gollum sender=user:galadriel allow=group:famiglia f={SAMPLE_UUID_V7}}}}}\
 Sméagol oggi era stanco.{{{{/}}}}"
         );
         let acl_default = Principal::global();
@@ -830,8 +833,8 @@ Sméagol oggi era stanco.{{{{/}}}}"
         // callout ("non leakare il count esatto"). The
         // collapse is observable only via `text` itself.
         let input = format!(
-            "{{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}body 1{{{{/}}}}\n\n\
-{{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}body 2{{{{/}}}}\n"
+            "{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 1{{{{/}}}}\n\n\
+{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 2{{{{/}}}}\n"
         );
         let out = render_for_sender(
             &input,
@@ -854,8 +857,8 @@ Sméagol oggi era stanco.{{{{/}}}}"
         // collapsed to the callout, the user sees the heading plus two
         // inline `[redacted]` markers.
         let input = format!(
-            "# Heading\n\n{{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}body 1{{{{/}}}}\n\n\
-{{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}body 2{{{{/}}}}\n"
+            "# Heading\n\n{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 1{{{{/}}}}\n\n\
+{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 2{{{{/}}}}\n"
         );
         let out = render_for_sender(
             &input,
@@ -919,7 +922,7 @@ Sméagol oggi era stanco.{{{{/}}}}"
         // behavior — without it the file would collapse to the
         // total-redaction callout instead.
         let input = format!(
-            "prose before {{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}\
+            "prose before {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}\
 caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         );
         let out = render_for_sender(&input, &no_db(), &Principal::global(), "bob", &[]);
@@ -939,7 +942,7 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         // Tightening: the marker still says global (stale inline copy)
         // but the DB says owner=user:alice → bob must NOT read.
         let input =
-            format!("anchor {{{{owner=global f={SAMPLE_UUID_V7}}}}}the body{{{{/}}}} prose");
+            format!("anchor {{{{subject=global f={SAMPLE_UUID_V7}}}}}the body{{{{/}}}} prose");
         let map = db_acl("user:alice", &[], None);
         let out = render_for_sender(&input, &map, &Principal::global(), "bob", &[]);
         assert!(!out.text.contains("the body"));
@@ -950,7 +953,7 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         // global (e.g. the ACL was widened via the dashboard and the
         // file rewrite has not landed yet) → bob reads.
         let input =
-            format!("anchor {{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}the body{{{{/}}}} prose");
+            format!("anchor {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}the body{{{{/}}}} prose");
         let map = db_acl("global", &[], None);
         let out = render_for_sender(&input, &map, &Principal::User("alice".into()), "bob", &[]);
         assert!(out.text.contains("the body"));
@@ -1017,7 +1020,7 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         // keep gating it during the transition.
         let other_key = "018f1234-5678-7abc-9def-9999999999aa";
         let input =
-            format!("anchor {{{{owner=user:alice f={other_key}}}}}inline body{{{{/}}}} prose");
+            format!("anchor {{{{subject=user:alice f={other_key}}}}}inline body{{{{/}}}} prose");
         let map = db_acl("global", &[], None); // keyed on SAMPLE_UUID_V7, not other_key
         let out = render_for_sender(&input, &map, &Principal::global(), "bob", &[]);
         assert!(
@@ -1122,8 +1125,8 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         // 10 maggio …" — bob cannot read the alice-owned fragment, so the
         // reveal wraps it inline (span), keeping the sentence flowing.
         let input = format!(
-            "Alice pesa {{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} \
-al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
+            "Alice pesa {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} \
+al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
         );
         let out = render_admin_reveal(
             &input,
@@ -1146,7 +1149,7 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
         // A region on its own lines is revealed as a block so its inner
         // markdown still renders. The div is blank-line padded.
         let input = format!(
-            "# Heading\n\n{{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}\n## Secret\nbody\n{{{{/}}}}\n"
+            "# Heading\n\n{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}\n## Secret\nbody\n{{{{/}}}}\n"
         );
         let out = render_admin_reveal(
             &input,
@@ -1174,8 +1177,8 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
         // callout for a normal sender, but the operator always sees the
         // bodies.
         let input = format!(
-            "{{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}body 1{{{{/}}}}\n\n\
-{{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}body 2{{{{/}}}}\n"
+            "{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 1{{{{/}}}}\n\n\
+{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 2{{{{/}}}}\n"
         );
         let out = render_admin_reveal(
             &input,
@@ -1195,7 +1198,7 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
     #[test]
     fn segments_readable_region_carries_fact_id_and_connective_prose_none() {
         let input = format!(
-            "Alice pesa {{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} al 10 maggio."
+            "Alice pesa {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} al 10 maggio."
         );
         let map = db_acl("user:alice", &[], None);
         let seg = render_for_sender_segments(&input, &map, &Principal::global(), "alice", &[]);
@@ -1226,7 +1229,7 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
     #[test]
     fn segments_redacted_region_is_factless_filler() {
         let input = format!(
-            "Alice pesa {{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} al 10 maggio."
+            "Alice pesa {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} al 10 maggio."
         );
         let map = db_acl("user:alice", &[], None);
         let seg = render_for_sender_segments(&input, &map, &Principal::global(), "bob", &[]);
@@ -1251,7 +1254,7 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
         // the DB map does not know the key, so there is no record to link
         // to and the segment stays fact-less.
         let input =
-            format!("anchor {{{{owner=global f={SAMPLE_UUID_V7}}}}}public body{{{{/}}}} prose");
+            format!("anchor {{{{subject=global f={SAMPLE_UUID_V7}}}}}public body{{{{/}}}} prose");
         let seg = render_for_sender_segments(&input, &no_db(), &Principal::global(), "carol", &[]);
         assert_eq!(seg.text(), "anchor public body prose");
         assert!(
@@ -1263,7 +1266,7 @@ al 10 maggio, ha {{{{owner=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}
 
     #[test]
     fn segments_total_redaction_collapses_to_one_factless_callout() {
-        let input = format!("{{{{owner=user:alice f={SAMPLE_UUID_V7}}}}}body{{{{/}}}}\n");
+        let input = format!("{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body{{{{/}}}}\n");
         let map = db_acl("user:alice", &[], None);
         let seg = render_for_sender_segments(&input, &map, &Principal::global(), "bob", &[]);
         assert_eq!(

@@ -1045,7 +1045,7 @@ mod tests {
         assert!(matches!(validate_body(""), Err(CaptureError::EmptyBody)));
         assert!(matches!(validate_body("   "), Err(CaptureError::EmptyBody)));
         assert!(matches!(
-            validate_body("hello {{owner=user:a}}foo{{/}}"),
+            validate_body("hello {{subject=user:a}}foo{{/}}"),
             Err(CaptureError::BodyContainsMarker)
         ));
         assert!(matches!(

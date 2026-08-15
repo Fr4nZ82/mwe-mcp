@@ -575,7 +575,7 @@ mod tests {
         let f = fid(2);
         std::fs::write(
             wikis.join("alice/secrets.md"),
-            format!("---\ntitle: Secrets\n---\n\n{{{{owner=user:alice f={f}}}}}Alice has a private condition.{{{{/}}}}\n"),
+            format!("---\ntitle: Secrets\n---\n\n{{{{subject=user:alice f={f}}}}}Alice has a private condition.{{{{/}}}}\n"),
         )
         .unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();

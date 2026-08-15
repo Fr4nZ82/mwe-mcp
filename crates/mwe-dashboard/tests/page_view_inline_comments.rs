@@ -1189,7 +1189,7 @@ const BOB_OWNED_PAGE: &str = "# Secret page\n\
                               \n\
                               Intro prose.\n\
                               \n\
-                              {{owner=user:bob f=018f1234-5678-7abc-9def-000000000001}}\n\
+                              {{subject=user:bob f=018f1234-5678-7abc-9def-000000000001}}\n\
                               TOPSECRET body line\n\
                               {{/}}\n";
 

@@ -22,13 +22,19 @@ const SAMPLE_UUID_V7: &str = "018f1234-5678-7abc-9def-0123456789ab";
 
 /// Build a corpus of approximately `target_bytes` made of repeated
 /// realistic chunks: prose, a region with ACL + sender + `fact_id`,
+///
+/// "Realistic" is the whole point of the fixture, so the markers carry the
+/// attribute spelling the engine actually writes (`subject=`). The parser also
+/// accepts the deprecated `owner=`, but measuring that path would measure an
+/// input no current writer produces — and a benchmark asserts nothing, so
+/// unlike a test it exercises no alias by carrying one.
 /// more prose, an embed, more prose. The chunk is ~1 KB so the marker
 /// density is "natural" rather than pathological.
 fn build_corpus(target_bytes: usize) -> String {
     let chunk = format!(
         "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do \
 eiusmod tempor incididunt ut labore et dolore magna aliqua. \
-{{{{owner=user:alice sender=user:galadriel allow=group:famiglia f={SAMPLE_UUID_V7}}}}}\
+{{{{subject=user:alice sender=user:galadriel allow=group:famiglia f={SAMPLE_UUID_V7}}}}}\
 Galadriel ha notato che Sméagol oggi era stanco e nervoso dopo scuola — \
 probabilmente per il compito di matematica di domani.{{{{/}}}} \
 Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut \
@@ -36,7 +42,7 @@ aliquip ex ea commodo consequat. {{{{embed=c-2026-05-10-foto-001.jpg}}}} \
 Duis aute irure dolor in reprehenderit in voluptate velit esse cillum \
 dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non \
 proident, sunt in culpa qui officia deserunt mollit anim id est laborum. \
-{{{{owner=global f={SAMPLE_UUID_V7}}}}}Decisione presa nel meeting: rilascio \
+{{{{subject=global f={SAMPLE_UUID_V7}}}}}Decisione presa nel meeting: rilascio \
 v2 entro luglio.{{{{/}}}} \
 "
     );

@@ -605,7 +605,7 @@ mod tests {
         let (pool, tree, _td) = fresh_pool_and_tree().await;
         let wiki_dir = tree.wikis_dir().join("alice");
         write_meta(&wiki_dir, "alice", "alice");
-        std::fs::write(wiki_dir.join("notes.md"), "stuff {{owner=user:alice").unwrap();
+        std::fs::write(wiki_dir.join("notes.md"), "stuff {{subject=user:alice").unwrap();
 
         let r = run(
             &pool,
@@ -699,7 +699,7 @@ mod tests {
         )
         .unwrap();
         let body = format!(
-            "{{{{owner=user:alice f={id}}}}}hello{{{{/}}}}",
+            "{{{{subject=user:alice f={id}}}}}hello{{{{/}}}}",
             id = fact_id.as_str()
         );
         std::fs::write(wiki_dir.join("notes.md"), &body).unwrap();

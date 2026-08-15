@@ -464,10 +464,10 @@ async fn wiki_read_projects_acl_per_sender() {
     // UUIDv7-shaped fact ids — any well-formed value works, the parser
     // only validates the marker grammar here.
     let body = "# Alice\n\n\
-                {{owner=global f=01900000-0000-7000-8000-000000000001}}\n\
+                {{subject=global f=01900000-0000-7000-8000-000000000001}}\n\
                 Endpoint visible to everyone.\n\
                 {{/}}\n\n\
-                {{owner=user:alice f=01900000-0000-7000-8000-000000000002}}\n\
+                {{subject=user:alice f=01900000-0000-7000-8000-000000000002}}\n\
                 Alice's private decision history.\n\
                 {{/}}\n\n\
                 {{allow=group:famiglia f=01900000-0000-7000-8000-000000000003}}\n\
@@ -561,6 +561,11 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
         .expect("write index.md");
     // A non-index page with one subject-only region — proves the ACL map is
     // resolved for the *page read*, not for `index.md`.
+    // Deliberately the LEGACY `owner=` spelling: a page as an older engine wrote
+    // it, carried all the way through `wiki_read` to the redacted response. This
+    // region has no `fact_index` row, which is what makes the spelling matter —
+    // where a row exists the DB ACL wins and the marker's wording is inert. Do
+    // not tidy it: with the read alias removed, this test and two others fail.
     std::fs::write(
         wiki_dir.join("recipes").join("pasta.md"),
         "# Pasta\n\nFree prose anyone can read.\n\
@@ -677,7 +682,7 @@ async fn wiki_read_strips_frontmatter_so_card_topics_never_leak() {
         wiki_dir.join("salute.md"),
         "---\ntitle: Salute\ndescription: \"Note di salute di Alice\"\n\
          keywords:\n  topics: celiachia, intolleranze\n---\n\n\
-         Alice {{owner=user:alice f=01900000-0000-7000-8000-0000000000bb}}\
+         Alice {{subject=user:alice f=01900000-0000-7000-8000-0000000000bb}}\
          è celiaca{{/}} dal 2020.\n",
     )
     .expect("write salute.md");

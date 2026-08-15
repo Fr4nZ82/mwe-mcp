@@ -3020,7 +3020,7 @@ mod tests {
         let f_full = fresh_fact_id();
         let f_bare = fresh_fact_id();
         let body = format!(
-            "{{{{owner=global f={f1}}}}}pasted{{{{/}}}}\n{{{{f={f2}}}}}residue{{{{/}}}}\n",
+            "{{{{subject=global f={f1}}}}}pasted{{{{/}}}}\n{{{{f={f2}}}}}residue{{{{/}}}}\n",
             f1 = f_full.as_str(),
             f2 = f_bare.as_str(),
         );
@@ -3300,7 +3300,7 @@ mod tests {
         let embedder = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
 
         // ACL-only wrapper, no `f=` attribute.
-        let body = "{{owner=user:alice allow=user:bob}}wrapper body{{/}}\n";
+        let body = "{{subject=user:alice allow=user:bob}}wrapper body{{/}}\n";
         let page = wiki_dir.join("intro.md");
         write_page(&wiki_dir, "intro.md", body);
         let report = reindex_file(&pool, &tree, embedder.clone(), &page)
@@ -3351,7 +3351,7 @@ mod tests {
         // Standard wiki: a rendered marker the compiler chain owns.
         let f_narr = fresh_fact_id();
         let body_narr = format!(
-            "{{{{owner=user:alice f={f}}}}}standard-wiki note{{{{/}}}}\n",
+            "{{{{subject=user:alice f={f}}}}}standard-wiki note{{{{/}}}}\n",
             f = f_narr.as_str()
         );
         write_page(&dir.path().join("wikis/alice"), "intro.md", &body_narr);

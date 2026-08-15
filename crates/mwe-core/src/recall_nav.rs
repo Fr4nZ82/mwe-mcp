@@ -2787,7 +2787,7 @@ mod tests {
             "notes.md",
             &format!(
                 "---\ntitle: \"Notes\"\n---\n\nShared prose.\n\n\
-                 {{{{owner=user:alice f={UUID_1}}}}}secret{{{{/}}}}\n"
+                 {{{{subject=user:alice f={UUID_1}}}}}secret{{{{/}}}}\n"
             ),
         );
         // One hop is the whole walk here, and that is the shipped behaviour:
@@ -2858,7 +2858,7 @@ mod tests {
             &tree,
             "alice",
             "notes.md",
-            &format!("Shared prose.\n\n{{{{owner=global f={UUID_1}}}}}secret{{{{/}}}}\n"),
+            &format!("Shared prose.\n\n{{{{subject=global f={UUID_1}}}}}secret{{{{/}}}}\n"),
         );
         let pool = make_pool().await;
         fact_index::insert(
