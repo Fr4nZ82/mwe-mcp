@@ -4749,11 +4749,15 @@ mod tests {
 
     /// An `acl_change` receipt written before the rename must still revert.
     ///
-    /// `prev_subject_id` is the ONLY surviving copy of the pre-change ACL, it
-    /// lives as JSON inside `structure_proposals.spec` — where `ALTER TABLE`
-    /// cannot reach it — and both fields are non-`Option`, so without the
-    /// aliases deserialization fails outright and the undo button stops working
-    /// for every change made before the deploy, for the whole revert window.
+    /// `prev_subject_id` is the only copy any code reads back. `disclosure_audit`
+    /// stores an independent one (`prev_subject_id` / `prev_allow_ids` /
+    /// `prev_sender_id`, migration 0043), but nothing ever selects those columns
+    /// — every read of that table takes `audit_id`, `widening` or `reverted_at`
+    /// — so the restore comes from this JSON, which lives inside
+    /// `structure_proposals.spec` where `ALTER TABLE` cannot reach it. Both
+    /// fields are non-`Option`, so without the aliases deserialization fails
+    /// outright and the undo button stops working for every change made before
+    /// the deploy, for the whole revert window.
     #[test]
     fn an_acl_change_receipt_written_before_the_rename_still_reverts() {
         let legacy = serde_json::json!({

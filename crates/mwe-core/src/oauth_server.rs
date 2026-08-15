@@ -222,7 +222,8 @@ pub struct AuthCodeGrant {
     pub redirect_uri: String,
     /// PKCE S256 challenge captured at `/authorize`.
     pub code_challenge: String,
-    /// The approving human user (becomes the token's `sender_id` / `owner_id`).
+    /// The approving human user (becomes the token's `sender_id`; there is no
+    /// `owner_id` claim — see `jwt::TokenClaims`).
     pub sender_id: String,
     /// The named connection (becomes the token's `consumer_id` / device label).
     pub consumer_id: String,

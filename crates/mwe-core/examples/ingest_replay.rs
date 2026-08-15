@@ -643,11 +643,13 @@ const CORE_EXTRACTION_FIELDS: &[&str] = &["target_wiki_id"];
 /// raw-field comparison scored them as a disagreement.
 fn audience(extraction: &Value, sender: &str) -> Vec<String> {
     let mut set: BTreeSet<String> = BTreeSet::new();
-    // The baseline side of a differential is the PREVIOUS prompt, pulled out of
-    // git — and before 2026-08-15 that prompt emitted `owner_id`. The comparison
-    // runs on the model's raw JSON, so the engine's `#[serde(alias)]` never applies
-    // here: without this fallback the baseline loses its subject axis entirely and
-    // the field tops the disagreement histogram on every capturing record.
+    // Same fold as [`field_value`], and for the same one documented case: a
+    // `--prompt-file` run makes a PREVIOUS prompt the baseline, and one from
+    // before 2026-08-15 emits `owner_id`. Normally both sides run today's
+    // prompt and this is inert. The comparison reads the model's raw JSON, so
+    // the engine's `#[serde(alias)]` never applies here; `compare` reports how
+    // many answers per side carried the legacy key, so the fold cannot pass
+    // for agreement.
     if let Some(subject) = extraction
         .get("subject_id")
         .or_else(|| extraction.get("owner_id"))

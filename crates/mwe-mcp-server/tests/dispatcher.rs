@@ -1043,7 +1043,7 @@ async fn wiki_ingest_message_guest_turn_is_ephemeral_on_the_wire() {
         Some("sam-bot"),
         fake_ingest_llm_config(
             r#"{"intent":"capture","extractions":[{"target_wiki_id":"alice",
-                "target_page":"note.md","owner_id":"user:alice","fact_type":"other",
+                "target_page":"note.md","subject_id":"user:alice","fact_type":"other",
                 "body":"must never file","topics":[]}]}"#,
         ),
     )
