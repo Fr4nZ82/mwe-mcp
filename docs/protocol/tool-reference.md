@@ -167,10 +167,14 @@ the per-tool sections below. The full enum is the source of truth in
 - **`subject`** — the principal a **fact** is *about*
   (`fact_index.subject_id`, the `subject=` region marker). It is not the
   fact's `sender` (who wrote it) and not its `allow` list (who may read
-  it). It is also **not** a wiki's `owner`, which on this surface always
-  means the proprietor a whole memory wiki belongs to: a fact whose
-  subject is `user:franz` can live in a wiki owned by `group:famiglia`.
-  Two independent axes.
+  it). It is also **not** a wiki's `owner`: on this surface the bare word
+  `owner` is the proprietor a whole memory wiki belongs to — the key on
+  `wiki_read` / `wiki_get_meta`, and `owner_wiki_id`. A fact whose subject
+  is `user:franz` can live in a wiki owned by `group:famiglia`. Two
+  independent axes. The only places `owner` names *this* axis are the
+  deprecated argument spellings kept accepted for compatibility and marked
+  as such where each tool documents them (`scope.owner_ids`, `owners`,
+  `owner_user`).
 - `wiki_id` — opaque canonical id of a wiki. **Never a filesystem path.**
 - `fact_id` — UUIDv7, lowercase with dashes
   (`018f1234-5678-7abc-9def-0123456789ab`).

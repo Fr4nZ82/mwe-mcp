@@ -2139,8 +2139,9 @@ fn render_comment_form(
 /// comment" notice) — so the UI never shows a link the endpoint would
 /// then 403. Admin reveal deliberately does **not** unlock commenting:
 /// reveal is a read lens, while a comment is a write REM later turns into
-/// fact ops on the owner's memory (carrying no commenter provenance), so
-/// it stays scoped to the page's read-set.
+/// fact ops on the facts of the page it is anchored to, so it stays scoped
+/// to the **wiki's** read-set — this gate calls `resolve_read_access`, which
+/// answers per wiki, not per page.
 async fn can_comment_on(
     pool: &sqlx::SqlitePool,
     memory: &crate::state::MemoryHandles,
