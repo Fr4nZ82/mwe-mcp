@@ -392,7 +392,7 @@ mod tests {
         write_meta(&tree.wikis_dir().join(id), &meta(id, wiki_type, None));
     }
 
-    /// Capture a fact into `wiki` owned by `user:<owner_user>` (sender unset, so
+    /// Capture a fact into `wiki` whose SUBJECT is `user:<subject_user>` (sender unset, so
     /// the subject is the responsible principal the evacuation keys on) — writes
     /// the page on disk so the refile can read it.
     async fn capture_with_subject(
@@ -400,7 +400,7 @@ mod tests {
         pool: &SqlitePool,
         emb: Arc<dyn Embedder>,
         wiki: &str,
-        owner_user: &str,
+        subject_user: &str,
         body: &str,
     ) -> FactId {
         let req = CaptureRequest {
@@ -408,7 +408,7 @@ mod tests {
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: PathBuf::from("index.md"),
             body: body.to_owned(),
-            subject: format!("user:{owner_user}").parse::<Principal>().unwrap(),
+            subject: format!("user:{subject_user}").parse::<Principal>().unwrap(),
             allow: vec![],
             sender: None,
             fact_type: None,
@@ -521,7 +521,7 @@ mod tests {
         let pool = crate::db::open_or_init(db_dir.path()).await.unwrap();
         let emb = embedder();
 
-        // bob owns a note in his own wiki (so bob/index.md exists as a dest),
+        // a note about bob lives in his own wiki (so bob/index.md exists as a dest),
         // plus a fact that landed in acme; franz (the deleter) has one too.
         capture_with_subject(&tree, &pool, emb.clone(), "bob", "bob", "Bob's own note").await;
         let bob_fact =

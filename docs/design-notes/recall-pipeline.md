@@ -1162,11 +1162,11 @@ the walk as if it had opened them, so they are never offered as a candidate,
 never opened, and never charged to the character budget — the guarantee holds
 on every route in, because it is the one `visited` set that `prune_pool`
 filters by and `open_target` refuses on. **So `index.md` is not a navigation
-destination for its own owner**: its prose is in the block whatever the
+destination for its own subject**: its prose is in the block whatever the
 navigator does, and the founder's ruling (2026-08-03) is that the hub's
 routing is not needed when the recalled facts already name the pages that
-answer the turn. A *subject's* identity page is untouched by this — nothing
-has served it. `wiki_navigate` passes nothing: it builds no block. The
+answer the turn. *Another* person's identity page is untouched by this —
+nothing has served it. `wiki_navigate` passes nothing: it builds no block. The
 assembled role-labelled `context_snippet` (`WHO YOU ARE` → `WHO IS
 SPEAKING` → `YOUR RECENT HISTORY WITH THIS USER` → `RELEVANT MEMORY` →
 `NAVIGATED PAGES` → `UPCOMING`) is documented in

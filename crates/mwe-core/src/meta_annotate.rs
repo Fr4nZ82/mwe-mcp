@@ -674,7 +674,7 @@ fn apply_topics_keyword(keywords: &mut serde_yaml::Mapping, topics: &[String]) -
 /// `value = Some(v)` inserts or updates `key → v`; `value = None` clears it.
 /// Returns `true` iff the mapping actually changed, so a caller can skip a
 /// no-op write. The single mutation point for `keywords` entries so every
-/// subject (topics, lifecycle params, …) shares one idempotent, sibling-safe
+/// writer (topics, lifecycle params, …) shares one idempotent, sibling-safe
 /// implementation.
 fn apply_keyword(keywords: &mut serde_yaml::Mapping, key: &str, value: Option<&str>) -> bool {
     let key = serde_yaml::Value::String(key.to_owned());

@@ -104,7 +104,8 @@ pub struct MediaRow {
     pub mime: String,
     /// Blob size in bytes.
     pub size_bytes: i64,
-    /// Owning principal — explicit, never inherited.
+    /// The fact's **subject** — who or what it is *about* (not its author
+    /// `sender`, not its audience `allow`). Explicit, never inherited.
     pub subject_id: Principal,
     /// Additional principals granted read (grows by [`widen_acl`]).
     pub allow_ids: Vec<Principal>,
@@ -135,7 +136,12 @@ pub struct NewMedia {
     pub kind: String,
     /// Declared MIME type; empty falls back to `application/octet-stream`.
     pub mime: String,
-    /// Owning principal (the act-as-resolved authenticated sender).
+    /// The fact's **subject** — who or what it is *about* (not its author
+    /// `sender`, not its audience `allow`).
+    ///
+    /// Defaults to the act-as-resolved authenticated sender at upload —
+    /// media has no distinct capturer today — but that is this path's
+    /// default, not the definition of the axis.
     pub subject: Principal,
     /// The uploading consumer's id (token claim), for audit.
     pub uploaded_by_consumer: Option<String>,

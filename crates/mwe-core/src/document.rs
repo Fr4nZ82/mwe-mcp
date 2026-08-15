@@ -529,7 +529,8 @@ pub struct EnqueueRequest {
     /// The document's semantic clock (ISO-8601); relative dates inside the
     /// document resolve against it.
     pub occurred_at: Option<String>,
-    /// Owning principal of everything the job writes.
+    /// The fact's **subject** — who or what it is *about* (not its author
+    /// `sender`, not its audience `allow`). Applies to everything the job writes.
     pub subject: Principal,
     /// `allow=` extension list (inherited from the source catalog row).
     pub allow: Vec<Principal>,
@@ -625,7 +626,7 @@ pub async fn enqueue(
     .map_err(|e| DocumentError::Invalid(format!("allow_ids: {e}")))?;
     // Mirror the capture-path invariant: sender is always materialized
     // (= subject when absent) and kept distinct from subject, so a later
-    // a subject change never rebinds the original provenance.
+    // subject change never rebinds the original provenance.
     let sender = req.sender.clone().or_else(|| Some(req.subject.clone()));
     let ts = now();
     sqlx::query(
@@ -687,7 +688,8 @@ pub struct DocumentJob {
     pub format_requested: Option<String>,
     /// The document's semantic clock.
     pub occurred_at: Option<String>,
-    /// Owning principal (string form).
+    /// The fact's **subject** — who or what it is *about* (not its author
+    /// `sender`, not its audience `allow`). String form.
     pub subject_id: String,
     /// JSON array of allow principals.
     pub allow_ids: Option<String>,
@@ -1201,7 +1203,8 @@ pub struct ClassifyInput<'a> {
     pub forced_disposition: Option<Disposition>,
     /// Caller-forced format (overrides the proposal).
     pub forced_format: Option<DocFormat>,
-    /// Owning principal — its identity wiki is the routing fallback.
+    /// The fact's **subject** — who or what it is *about* (not its author
+    /// `sender`, not its audience `allow`). Their identity wiki is the routing fallback.
     pub subject: &'a Principal,
     /// The rendered `LANGUAGE` directive for the `{locale}` placeholder:
     /// the title and summary this phase coins are memory a person reads,

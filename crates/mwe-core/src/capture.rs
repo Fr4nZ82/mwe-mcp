@@ -152,7 +152,8 @@ pub struct CaptureRequest {
     /// with the bare runtime form `{{f=…}}body{{/}}` (the ACL goes into
     /// the `fact_index` columns, not the marker).
     pub body: String,
-    /// Owning principal.
+    /// The fact's **subject** — who or what it is *about* (not its author
+    /// `sender`, not its audience `allow`).
     pub subject: Principal,
     /// Additional principals granted read access via `allow=`.
     pub allow: Vec<Principal>,

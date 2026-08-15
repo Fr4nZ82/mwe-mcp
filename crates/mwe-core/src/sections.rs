@@ -17,7 +17,11 @@
 //! |---|---|---|
 //! | origin | captured from a conversation | derived from a file on disk |
 //! | if lost | gone (back it up) | re-derived by the next reindex |
-//! | read access | per fragment (`owner` / `allow` / `sender`) | the **wiki's**, from `smart_wikis` |
+//! | read access | per fragment (`subject` / `allow` / `sender`) | the **wiki's** `owner_id` + `shared_with`, from `smart_wikis` |
+//!
+//! The two columns spell two different axes on purpose: a fact's `subject` is
+//! who it is ABOUT, while `smart_wikis.owner_id` is the wiki's proprietor. A
+//! section inherits the wiki's answer and carries no per-fragment ACL at all.
 //! | lifecycle | supersede / forget / validity | none — it exists while its page does |
 //!
 //! Keeping both in one table left most fact columns permanently NULL on

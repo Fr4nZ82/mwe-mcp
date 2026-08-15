@@ -3353,7 +3353,7 @@ mod tests {
     async fn seed_smart_wiki(
         pool: &SqlitePool,
         wiki_id: &str,
-        subject: &str,
+        owner: &str,
         shared_with: Vec<Principal>,
     ) {
         sections::upsert_smart_wiki(
@@ -3361,7 +3361,7 @@ mod tests {
             &sections::SmartWikiRow {
                 wiki_id: wiki_id.to_owned(),
                 slug: wiki_id.rsplit('-').next().unwrap_or(wiki_id).to_owned(),
-                owner_id: subject.parse().unwrap(),
+                owner_id: owner.parse().unwrap(),
                 shared_with,
                 project_id: None,
                 wiki_type: "project".to_owned(),
@@ -4071,7 +4071,7 @@ mod tests {
         .await;
 
         let alice = SenderContext::user("alice");
-        let subject_hits = search_sections(
+        let owner_hits = search_sections(
             &pool,
             embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),
             "q",
@@ -4080,7 +4080,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(subject_hits.len(), 2, "the subject reads both");
+        assert_eq!(owner_hits.len(), 2, "the wiki's owner reads both");
 
         let bob = SenderContext {
             sender_id: "bob".to_owned(),

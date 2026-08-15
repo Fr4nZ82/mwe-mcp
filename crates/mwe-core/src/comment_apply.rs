@@ -31,7 +31,8 @@
 //!   `[]`, with `sender` = the human who left the comment (`author_sender_id`).
 //!   It never copies an arbitrary existing fact's (possibly broader) subject. A
 //!   `move` keeps the fact's ACL and refuses a destination wiki with a different
-//!   subject.
+//!   OWNER (the destination's resolved scope principal — not the fact's subject,
+//!   which the move never looks at).
 //!
 //! Unlike `correct` / `remove` / `add` (which apply bare), a `move` is
 //! **born-applied + revertible** — the `promote::*_direct` wrappers mint a
@@ -886,10 +887,10 @@ fn page_wiki_relative(handle: &WikiHandle, source_path: &str) -> String {
 
 /// Describe the destinations a `move` op may target, for the prompt's
 /// `{destinations}` placeholder. Two bounded lists for the source wiki's
-/// **subject** (`subject` is the page's resolved `acl_default`):
+/// **owner** (`owner` is the page's resolved scope principal):
 ///
-/// - **other wikis** the subject can write — every **non-smart** wiki whose
-///   resolved `acl_default` equals `subject`, except the source wiki itself
+/// - **other wikis** that owner can write — every **non-smart** wiki whose
+///   resolved scope principal equals `owner`, except the source wiki itself
 ///   (cross-wiki moves; a fact always lands on the dest wiki's buffer page);
 /// - **this wiki's other pages** (same-wiki page moves), the source page
 ///   excluded.
@@ -901,7 +902,7 @@ fn describe_destinations(
     tree: &WikiTree,
     wiki_id: &WikiId,
     source_path: &str,
-    subject: &Principal,
+    owner: &Principal,
 ) -> String {
     let mut wikis: Vec<String> = Vec::new();
     if let Ok(discovered) = tree.walk() {
@@ -909,10 +910,14 @@ fn describe_destinations(
             if &d.meta.wiki_id == wiki_id || d.meta.smart {
                 continue;
             }
-            // Only wikis the same subject controls — never a cross-subject target.
+            // Only wikis the same OWNER controls — never a cross-owner target.
+            // Note the vocabulary trap: "cross-subject" elsewhere in this tree
+            // means two FACTS have different subjects. This gate is not that —
+            // it never reads a fact's subject at all, only the two wikis'
+            // resolved scope principals.
             if tree
                 .resolve_scope_principal(&d.meta)
-                .is_ok_and(|p| &p == subject)
+                .is_ok_and(|p| &p == owner)
             {
                 wikis.push(format!("{} · {}", d.meta.wiki_id.as_str(), d.meta.title));
             }
@@ -1584,7 +1589,7 @@ mod tests {
 
     /// `setup()` + two destination wikis under the same workdir, both
     /// children of `alice` so the scope-principal derivation makes them
-    /// `user:alice` (the SAME subject as `alice`):
+    /// `user:alice` (the SAME owner as `alice`):
     /// - `salute` (standard — a cross-wiki move into it is allowed);
     /// - `proj` (a SMART wiki — a cross-wiki move into it must be refused
     ///   because it is the consumer's container).

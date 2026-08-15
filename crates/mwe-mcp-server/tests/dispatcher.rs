@@ -730,7 +730,7 @@ async fn wiki_read_strips_frontmatter_so_card_topics_never_leak() {
     );
 
     // The subject reads the same page: the fact is visible, but the raw
-    // frontmatter is still stripped (title/subject ride the structured JSON).
+    // frontmatter is still stripped (title/owner ride the structured JSON).
     let out = call(
         &state,
         &identity,

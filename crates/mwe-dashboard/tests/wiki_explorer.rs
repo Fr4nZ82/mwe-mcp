@@ -443,7 +443,7 @@ async fn dashboard_sharing_forbidden_on_standard_wiki() {
 
     // Seed a STANDARD wiki by hand (no `smart:` key → defaults to false),
     // with a valid `acl_default` so the only thing that can refuse the
-    // sharing surface is the new family guard, not the subject/acl_default check.
+    // sharing surface is the new family guard, not the owner/acl_default check.
     let dir = tree.wikis_dir().join("projstd");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -620,7 +620,7 @@ async fn dashboard_describe_round_trips_and_preserves_siblings() {
     let html = body_string(view).await;
     assert!(
         html.contains("what goes here"),
-        "subject page view must surface the describe affordance: {html}"
+        "the owner's page view must surface the describe affordance: {html}"
     );
 }
 
@@ -673,8 +673,10 @@ async fn dashboard_describe_forbidden_on_smart_wiki() {
     );
 }
 
-/// A non-subject non-admin is refused (`404`) on the describe editor — the gate
-/// is subject-or-admin, and the page is left untouched.
+/// A non-owner non-admin is refused (`404`) on the describe editor — the gate
+/// is owner-or-admin on the WIKI (`may_edit_page_meta` →
+/// `is_owner_equivalent`), not the per-fact `subject_or_admin`. The page is
+/// left untouched.
 #[tokio::test]
 async fn dashboard_describe_refused_for_non_owner_non_admin() {
     let (app, _pool, tree, _dir) = make_app_with_memory().await;
@@ -696,13 +698,13 @@ async fn dashboard_describe_refused_for_non_owner_non_admin() {
     assert_eq!(
         post.status(),
         StatusCode::NOT_FOUND,
-        "non-subject describe POST"
+        "non-owner describe POST"
     );
     let abs = tree.wikis_dir().join("notes").join("health.md");
     assert_eq!(
         mwe_core::meta_annotate::read_page_description(&abs).unwrap(),
         None,
-        "non-subject must not have written a description"
+        "a non-owner must not have written a description"
     );
 }
 

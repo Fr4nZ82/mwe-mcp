@@ -1673,9 +1673,15 @@ The `subject_id` instructions in the bundled prompt body tell the model to
 compare the *meaning* of the fact against each group's scope and reach for
 `group:<id>` when it falls inside that domain — even when the message
 never names the group — while honouring any exclusions the scope states.
-The scope drives the **audience** (`allow_ids`) unless the collective itself
-is what the fact is about, which is the only case that makes a group the
-`subject_id`. Without `enrollment_groups.scope` reaching the classifier, family facts
+The scope drives the **audience** (`allow_ids`) rather than the subject in
+the ordinary case. Two cases do make a group the `subject_id`: the collective
+itself is what the fact is about, or the fact is about a **non-enrolled**
+individual and the group whose scope covers them is the governing principal —
+the system has no `user:` for someone it does not enrol, and minting one would
+leave a dangling principal no reader matches (see
+[identity-and-acl.md](../concepts/identity-and-acl.md)). A fact about an
+**enrolled** individual keeps that individual as its subject however well the
+group's scope fits. Without `enrollment_groups.scope` reaching the classifier, family facts
 fall back to private captures unless the message echoes a prompt few-shot
 near-verbatim; injecting the scope is what lets the model route on meaning.
 

@@ -268,7 +268,9 @@ pub struct FactForPage {
     pub text: String,
     /// Optional taxonomy hint.
     pub fact_type: Option<String>,
-    /// Owning principal (`global` / `user:<id>` / `group:<id>`).
+    /// The fact's **subject** — who or what it is *about* (not its author
+    /// `sender`, not its audience `allow`).
+    /// `global` / `user:<id>` / `group:<id>`.
     #[serde(alias = "owner")]
     pub subject: Principal,
     /// Extra read principals.

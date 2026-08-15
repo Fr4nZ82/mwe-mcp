@@ -4511,9 +4511,10 @@ async fn capture_agent_self_fact(
 /// safety bound; in practice a user holds a handful of standing directives.
 const BEHAVIOUR_RULES_RECALL_CAP: usize = 50;
 
-/// Pull the behaviour-rule facts a principal OWNS on the agent's `rules.md`
+/// Pull the behaviour-rule facts whose SUBJECT is this principal, on the
+/// agent's `rules.md`
 /// page (roadmap 29c), via [`fact_index::find_behaviour_rules`]. Page-scoped
-/// on purpose: an `subject = agent` query would otherwise drag in the agent's
+/// on purpose: a `subject = agent` query would otherwise drag in the agent's
 /// self-facts, which live on its content pages, not here. The
 /// rules-page predicate sits **in the SQL, before the cap**, so unrelated
 /// facts under the same subject can never starve old rules out of the LIMIT

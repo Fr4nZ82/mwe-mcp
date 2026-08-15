@@ -146,7 +146,8 @@ pub struct BufferedCapture {
     pub target_page: PathBuf,
     /// Captured claim prose, verbatim, no markers.
     pub body: String,
-    /// Owning principal.
+    /// The fact's **subject** — who or what it is *about* (not its author
+    /// `sender`, not its audience `allow`).
     pub subject: Principal,
     /// Extra principals granted read access via `allow=`.
     pub allow: Vec<Principal>,

@@ -389,7 +389,7 @@ pub struct RemCycleReport {
     pub archive_detector: ArchiveDetectorReport,
     /// Briefing dispatcher sub-job report — scans smart-wiki
     /// wikis for stale drafts + recall-hot facts and posts items to the
-    /// subject's `_briefing.md` via [`crate::briefing::notify_as_rem`].
+    /// wiki owner's `_briefing.md` via [`crate::briefing::notify_as_rem`].
     pub briefing_dispatcher: BriefingDispatcherReport,
     /// Backlink reciprocity detector sub-job report — flags
     /// `[[wiki:<smart-wiki>#...]]` links from standard wikis that
@@ -607,7 +607,7 @@ pub struct MapWriterReport {
 /// Sub-report for the Briefing dispatcher.
 ///
 /// Walks every wiki of the smart family looking for stale drafts and
-/// recall-hot facts; per finding posts a single item to the subject's
+/// recall-hot facts; per finding posts a single item to the wiki owner's
 /// `_briefing.md` via [`crate::briefing::notify_as_rem`]. Per-wiki cap
 /// = [`RemPolicy::briefing_notify_cap`], idempotency window =
 /// [`RemPolicy::briefing_dedup_window`].
@@ -677,7 +677,7 @@ pub struct BriefingProcessorReport {
 ///
 /// Walks every wiki *outside* the smart family, scans active fact
 /// bodies for `[[wiki:<id>...]]` references whose target is a smart wiki
-/// of the same subject, and emits a notify on the smart wiki when the
+/// of the same owner, and emits a notify on the smart wiki when the
 /// reciprocal link is missing.
 #[derive(Debug, Clone, Default)]
 pub struct BacklinkReciprocityReport {

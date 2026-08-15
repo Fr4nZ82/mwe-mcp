@@ -208,9 +208,9 @@ pub fn validate(file: &EnrollmentFile) -> Result<ValidationReport, EnrollmentErr
         // Alias collisions are soft — the alias still works, but the
         // operator should know the resolution may be ambiguous.
         for alias in &user.aliases {
-            if let Some(prev_subject) = alias_seen.insert(alias.clone(), user.id.clone()) {
+            if let Some(prev_user) = alias_seen.insert(alias.clone(), user.id.clone()) {
                 report.warnings.push(format!(
-                    "alias {alias:?} is shared by users {prev_subject} and {}",
+                    "alias {alias:?} is shared by users {prev_user} and {}",
                     user.id
                 ));
             }

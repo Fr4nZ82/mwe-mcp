@@ -1330,7 +1330,16 @@ fn status_cell(row: &FactRow) -> Markup {
 /// flipping direction when it is already active and showing a ↑/↓ marker.
 /// Sorting always resets to page 1.
 fn sort_header(filters: &FactsFilters, page_size: usize, token: &str, label: &str) -> Markup {
-    let active = filters.sort.as_deref().map(str::trim) == Some(token);
+    // Compare the RESOLVED key, not the raw string: `from_token` accepts the
+    // pre-rename `owner_id` so an old bookmark keeps sorting, and a raw compare
+    // would then sort by subject while every header rendered inactive — which
+    // looks exactly like the arrow-free default (created_at DESC).
+    let active = filters
+        .sort
+        .as_deref()
+        .map(str::trim)
+        .and_then(FactSortKey::from_token)
+        == FactSortKey::from_token(token);
     let active_desc = active && filters.dir.as_deref() != Some("asc");
     // Clicking an inactive column starts descending; an active one flips.
     let next_dir = if active && active_desc { "asc" } else { "desc" };

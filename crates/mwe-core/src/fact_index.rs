@@ -1816,7 +1816,7 @@ pub enum FactSortKey {
     FactType,
     /// `wiki_id` — containing wiki (lexical).
     WikiId,
-    /// `subject_id` — owning principal (lexical).
+    /// `subject_id` — the fact's subject (lexical).
     SubjectId,
     /// `salience` — ranked by semantic order `high < normal < low`, not lexically.
     Salience,
