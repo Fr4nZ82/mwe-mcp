@@ -1565,6 +1565,53 @@ mod tests {
         assert_eq!(p.embedding, None);
     }
 
+    /// The rebuild path, end to end, from a journal file written by an OLDER
+    /// version — planted on disk verbatim, not rendered by the code under test.
+    ///
+    /// `reindex_rebuilds_index_from_journal_after_db_wipe` above cannot catch a
+    /// codec break: it writes with the current writer and reads with the current
+    /// reader, so both halves move together and it stays green while every file
+    /// already on disk stops loading. This test supplies the half that does not
+    /// move.
+    ///
+    /// The entry below is the pre-rename spelling (`owner=`) with none of the
+    /// attributes added since. If the read alias were ever dropped, `parse_entry`
+    /// would return `None` and this rebuild would report a clean **zero** —
+    /// which is what makes the loss silent rather than loud.
+    #[tokio::test]
+    async fn a_rebuild_replays_a_journal_written_by_an_older_version() {
+        let (dir, _tree, pool) = setup().await;
+        let abs = dir.path().join("wikis/alice");
+        std::fs::create_dir_all(&abs).unwrap();
+        std::fs::write(
+            abs.join(crate::wiki::CAPTURES_FILENAME),
+            "<!-- mwe-capture id=018f1234-5678-7abc-9def-0123456789ab \
+             ts=2026-05-01T10:00:00+00:00 page=index.md type=bio status=buffered \
+             owner=user:alice allow=user:bob sender=user:carol sup= topics=peso -->\n\
+             Alice pesa 72 kg.\n\
+             <!-- /mwe-capture -->\n",
+        )
+        .unwrap();
+
+        let n = reindex_capture_journal(&pool, &WikiId::parse("alice").unwrap(), &abs)
+            .await
+            .unwrap();
+        assert_eq!(
+            n, 1,
+            "a journal from an older version must replay, not vanish"
+        );
+
+        let buffered = find_buffered_in_wiki(&pool, "alice").await.unwrap();
+        assert_eq!(buffered.len(), 1);
+        assert_eq!(buffered[0].body, "Alice pesa 72 kg.");
+        assert_eq!(
+            buffered[0].subject,
+            Principal::User("alice".into()),
+            "the pre-rename key names the subject"
+        );
+        assert_eq!(buffered[0].sender, Some(Principal::User("carol".into())));
+    }
+
     #[test]
     fn a_legacy_journal_entry_still_parses() {
         // The journal is the durable source of truth a `rm engine.db` rebuild
