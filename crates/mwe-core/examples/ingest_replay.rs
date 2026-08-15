@@ -712,11 +712,20 @@ const DEFAULT_EMPTY_LIST: &[&str] = &["allow_ids", "attachments"];
 /// schema default, and set-valued fields lose their member order.
 /// Read one comparison field, honouring the pre-rename spelling.
 ///
-/// A differential's baseline side is the PREVIOUS prompt pulled out of git, and
-/// before 2026-08-15 that prompt emitted `owner_id` where the current one emits
-/// `subject_id`. The comparison runs on the model's raw JSON, so the engine's
-/// `#[serde(alias)]` never reaches it: without this, the baseline reads Null on
-/// every capturing record and the rename alone tops the disagreement histogram.
+/// Both sides of a differential normally run today's prompt, so this fallback
+/// is usually inert. It exists for the one documented case where they do not:
+/// `--prompt-file` replays an arbitrary prompt so that *a previous version
+/// becomes the baseline* (see the flag table above), and a prompt from before
+/// 2026-08-15 emits `owner_id` where the current one emits `subject_id`. The
+/// comparison runs on the model's raw JSON, so the engine's `#[serde(alias)]`
+/// never reaches it: without this the old side reads Null on every capturing
+/// record and the rename alone tops the disagreement histogram.
+///
+/// Folding the two keys is right — the two prompts AGREE about the subject and
+/// differ only in what they call it — but it must never be silent, or a run
+/// where one side is unexpectedly pre-rename (a stale `<workdir>/prompts`
+/// override, say) would report agreement it did not earn. [`compare`] counts
+/// the legacy key per side and says so.
 fn field_value<'a>(obj: &'a Value, field: &str) -> Option<&'a Value> {
     obj.get(field).or_else(|| {
         (field == "subject_id")
@@ -921,9 +930,23 @@ fn pct(part: usize, whole: usize) -> f64 {
 }
 
 /// Print the differential report for two result files.
+/// How many answers on one side still carry the pre-rename `owner_id` key.
+///
+/// Reported by [`compare`] so that folding the two spellings can never pass for
+/// agreement: a side with a non-zero count was produced by a prompt older than
+/// 2026-08-15 (or by a stale prompt override), which is a fact about the run the
+/// reader has to know before trusting any number below it.
+fn legacy_subject_key_count(results: &BTreeMap<String, Value>) -> usize {
+    results
+        .values()
+        .filter(|row| serde_json::to_string(row).is_ok_and(|raw| raw.contains("\"owner_id\"")))
+        .count()
+}
+
 fn compare(left: &Path, right: &Path) -> Result<(), String> {
     let a = load_results(left)?;
     let b = load_results(right)?;
+    let (legacy_a, legacy_b) = (legacy_subject_key_count(&a), legacy_subject_key_count(&b));
     let t = tally(&a, &b);
     if t.shared == 0 {
         return Err("the two result files share no timestamps".to_owned());
@@ -946,6 +969,13 @@ fn compare(left: &Path, right: &Path) -> Result<(), String> {
     println!("  shared records      {n}");
     println!("  unparsable answer   {unparsed}");
     println!("  replayed text-only  {lossy}  (spool dropped the image bytes — read with care)");
+    if legacy_a > 0 || legacy_b > 0 {
+        println!(
+            "  PRE-RENAME KEY      left {legacy_a}, right {legacy_b}  \
+             (`owner_id`, folded into `subject_id` for the comparison — a \
+             non-zero side ran a prompt older than 2026-08-15)"
+        );
+    }
     if comparable > 0 {
         println!(
             "  SAME DECISION       {identical}/{comparable}  ({:.1}%)   every compared field",
