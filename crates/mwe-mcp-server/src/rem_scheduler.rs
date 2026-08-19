@@ -53,10 +53,6 @@ use tracing::{info, warn};
 /// Public because the CLI `rem run-cycle` escape hatch reuses the same
 /// constructor + adapter to drive a single cycle from a child process.
 pub struct OwnedRemLlms {
-    /// `hub_writer` slot — required for any meaningful cycle (without it
-    /// the compiler cannot write a hub page, and several proposal kinds
-    /// that need an apply-time LLM cannot auto-apply).
-    pub hub_writer: Box<dyn LlmBackend>,
     /// `rem_dedup_semantic` slot — required for the revisor sub-job.
     pub revisor: Box<dyn LlmBackend>,
     /// `rem_promotions` slot — optional; absence disables the
@@ -83,7 +79,6 @@ impl OwnedRemLlms {
     #[must_use]
     pub fn as_borrow(&self) -> RemLlms<'_> {
         RemLlms {
-            hub_writer: self.hub_writer.as_ref(),
             revisor: self.revisor.as_ref(),
             auto_promote: self.auto_promote.as_deref(),
             apply: self.apply.as_deref(),
@@ -101,7 +96,7 @@ impl OwnedRemLlms {
 /// Build [`OwnedRemLlms`] from the configured `llm.*` slots.
 ///
 /// Returns `Ok(None)` if the operator did not configure the mandatory
-/// `hub_writer` or `rem_dedup_semantic` slots — the caller logs a hint
+/// `rem_dedup_semantic` slot — the caller logs a hint
 /// and skips spawning the scheduler instead of erroring out (the server
 /// should still boot so the dashboard can be used to fix the config).
 ///
@@ -110,15 +105,9 @@ impl OwnedRemLlms {
 /// Surfaces the underlying `ConfigError` when a configured slot exists
 /// but cannot be materialised (unsupported backend, build failure).
 pub fn build_backends(llm: &LlmConfig) -> Result<Option<OwnedRemLlms>> {
-    let Some(hub) = llm.slot(LlmFunction::HubWriter) else {
-        return Ok(None);
-    };
     let Some(rev) = llm.slot(LlmFunction::RemDedupSemantic) else {
         return Ok(None);
     };
-    let hub_writer = hub
-        .build_backend(LlmFunction::HubWriter)
-        .context("building rem hub_writer backend")?;
     let revisor = rev
         .build_backend(LlmFunction::RemDedupSemantic)
         .context("building rem rem_dedup_semantic backend")?;
@@ -151,7 +140,6 @@ pub fn build_backends(llm: &LlmConfig) -> Result<Option<OwnedRemLlms>> {
         None => None,
     };
     Ok(Some(OwnedRemLlms {
-        hub_writer,
         revisor,
         auto_promote,
         apply,
@@ -295,7 +283,6 @@ async fn fire_once(
                     (outcome.cycle.ended_at - outcome.cycle.started_at).num_milliseconds(),
                 compiled_leaves = outcome.compile.leaves,
                 compiled_lists = outcome.compile.lists,
-                compiled_hubs = outcome.compile.hubs,
                 "rem scheduler: full dream complete (cycle + compile)"
             );
             // Nightly / interval full runs always make the journal — they are
@@ -377,7 +364,7 @@ async fn journal_run(
 /// dream skips it.) Skips entirely when the `cronista`
 /// slot is unconfigured. The Cartografo uses the `rem_promotions` slot, the
 /// Conciliatore the `rem_dedup_semantic` slot, the Cronista its own slot, and
-/// the Hub Writer the `hub_writer` slot.
+/// the Conciliatore the `rem_dedup_semantic` slot.
 ///
 /// # Errors
 ///
@@ -578,7 +565,6 @@ mod tests {
 
     fn fake_llms() -> OwnedRemLlms {
         OwnedRemLlms {
-            hub_writer: Box::new(FakeLlmBackend::new("fake", "noop")),
             revisor: Box::new(FakeLlmBackend::new("fake", "noop")),
             auto_promote: None,
             apply: None,
@@ -689,7 +675,6 @@ mod tests {
             .await
             .expect("compile pass must succeed on an empty workdir");
         assert_eq!(report.leaves, 0);
-        assert_eq!(report.hubs, 0);
     }
 
     #[tokio::test]

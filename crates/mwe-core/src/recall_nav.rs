@@ -1476,25 +1476,6 @@ fn take_budget(text: String, budget: usize) -> (String, bool) {
     (text[..cut].to_owned(), true)
 }
 
-/// The page a bare `[[wiki_id]]` rail resolves to: the wiki's **foundation
-/// page**, never its map.
-///
-/// Two reserved names can hold one, and which of them a wiki has is a
-/// property of the wiki, not of the link — a person or a group has a card
-/// ([`wiki::PROFILE_FILENAME`]), a theme wiki has only its buffer
-/// ([`wiki::NOTES_FILENAME`]). Decided on disk rather than from the
-/// compilation plan because the funnel has no plan: the file is the fact.
-/// `None` when the wiki has neither, which is a wiki with nothing authored
-/// yet — the rail is then dropped.
-fn foundation_slug(d: &DiscoveredWiki) -> Option<String> {
-    for name in [wiki::PROFILE_FILENAME, wiki::NOTES_FILENAME] {
-        if d.abs_dir.join(name).is_file() {
-            return Some(name.trim_end_matches(".md").to_owned());
-        }
-    }
-    None
-}
-
 /// Destinations reachable via `[[wikilinks]]` from freshly collected prose,
 /// following the link grammar
 /// (recall-pipeline.md §Link grammar).
@@ -1557,13 +1538,18 @@ fn linked_wiki_candidates(
         if !reader_card.reader_can_read_in(link.wiki_id.as_str()) {
             continue;
         }
-        // `[[wiki]]` names a wiki, and recall opens pages, not wikis. It used
-        // to be dropped outright. But dropping it deletes the commonest rail
-        // the corpus holds: `[[franz]]`, `[[carol]]`, `[[bob]]` are 20 %
-        // of every link written on a content page. What the prose means by
-        // `[[franz]]` is *the person*, so the bare form resolves to the wiki's
-        // **foundation page** — the card if it has one, else the buffer.
-        let page_slug = link.page.clone().or_else(|| foundation_slug(d));
+        // `[[wiki]]` names a wiki, and **recall opens pages, not wikis**
+        // (founder, restated 2026-08-19: *«il navigatore non deve essere
+        // indirizzato verso una wiki, solo verso altre pagine»*). So the bare
+        // form leads nowhere and is dropped here.
+        //
+        // It used to resolve to the wiki's foundation page, justified by a
+        // count of how many bare links the corpus held — a corpus that has
+        // since been deleted, so the justification cannot be checked and the
+        // rule outranks it anyway. The Cronista's prompt has forbidden writing
+        // one for longer than this branch existed: *«NEVER write a link that
+        // names a wiki alone»*.
+        let page_slug = link.page.clone();
         if let Some(slug) = page_slug {
             let rel = PathBuf::from(format!("{slug}.md"));
             // Vet the page half: safe path + the file actually exists
@@ -2892,13 +2878,15 @@ mod tests {
         assert!(out.trace[0].opened.is_empty());
     }
 
-    /// Founder, 2026-08-03 — *«il recall non entra in una wiki»*. A bare
-    /// `[[bob]]` rail names a wiki, and recall opens pages: it resolves to
-    /// bob's foundation page (his card, else his buffer). A page hop
-    /// (`[[bob/hobbies]]`) is a door as it stands — the rail that names
-    /// content, arrived at by reading a page rather than by choosing a wiki.
+    /// Founder, 2026-08-03 and restated 2026-08-19 — *«il navigatore non deve
+    /// essere indirizzato verso una wiki, solo verso altre pagine»*. A bare
+    /// `[[bob]]` rail names a wiki, so it names no destination and is **not
+    /// offered at all**. A page hop (`[[bob/hobbies]]`) is the only door.
+    ///
+    /// It used to resolve to the wiki's foundation page. That was the read
+    /// side treating a wiki as a place, which is the thing the rule forbids.
     #[tokio::test]
-    async fn a_bare_wiki_rail_resolves_to_the_foundation_page() {
+    async fn a_bare_wiki_rail_is_not_a_door() {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
         forge_user(&tree, "bob");
@@ -2951,7 +2939,7 @@ mod tests {
         assert_eq!(out.fragments[1].wiki_id, "bob");
         assert_eq!(out.fragments[1].page, PathBuf::from("hobbies.md"));
         assert!(out.fragments[1].text.contains("Bob sails."));
-        // The bare rail IS a door — onto bob's card.
+        // The bare rail is NOT a door: only the page hop is offered.
         let offered: Vec<&str> = out.trace[1]
             .candidates
             .iter()
@@ -2959,8 +2947,12 @@ mod tests {
             .filter_map(|c| c.page.as_deref())
             .collect();
         assert!(
-            offered.contains(&wiki::PROFILE_FILENAME),
-            "`[[bob]]` must be offered as bob's foundation page: {offered:?}"
+            !offered.contains(&wiki::PROFILE_FILENAME),
+            "`[[bob]]` names a wiki, and a wiki is not a destination: {offered:?}"
+        );
+        assert!(
+            offered.contains(&"hobbies.md"),
+            "the page hop is the only door: {offered:?}"
         );
         // The navigator asked for the wiki with no page at all — that shape
         // is still not a target, it is what the rail resolved *away from*.
@@ -2977,7 +2969,7 @@ mod tests {
         forge_user(&tree, "alice");
         forge_user(&tree, "bob");
         // Bob has content but nothing authored as his foundation: no card,
-        // no buffer. There is nothing for `[[bob]]` to mean, so the rail is
+        // no parking page. There is nothing for `[[bob]]` to mean, so the rail is
         // dropped rather than falling back onto the wiki itself.
         write_page(&tree, "alice", "rails.md", "# Rails\n\nSee [[bob]].\n");
         write_page(&tree, "bob", "hobbies.md", "# Hobbies\n\nBob sails.\n");

@@ -489,7 +489,7 @@ three sides:
 - **It never touches `can_read`.** `render_admin_reveal` still *calls*
   `can_read` per region — only to decide which fragments to highlight,
   then shows them anyway; the `/facts` fetches pass an explicit `reveal`
-  flag into `recall::wiki_facts_full_for` / `wiki_buffered_full_for` that
+  flag into `recall::wiki_facts_full_for` / `parking_pageed_full_for` that
   skips the per-row gate. The predicate itself keeps its no-admin-bypass
   invariant (and the `admin_does_not_bypass` test stays green).
 - **It is gated server-side on the admin role, and the deployment can

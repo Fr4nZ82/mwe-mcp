@@ -36,9 +36,8 @@ keep only the design log (changelog, narrative, pending items).
 search for `prompts::render("agentic-chat-panel", …)`. The chat
 backend is resolved by `MemoryHandles.backend_for_chat()`, which
 prefers the dedicated `LlmFunction::OperatorChat` slot and falls back
-to `LlmFunction::HubWriter` when it is unconfigured — so an operator
-can give the chat a stronger tool-calling model without perturbing the
-compiler's hub pass, the other consumer of `hub_writer`.
+— it has no fallback, so an operator gives the chat the tool-calling model
+it needs and nothing else borrows it.
 
 **Placeholders**:
 
@@ -169,7 +168,7 @@ NEVER call `wiki_supersede` without having shown the candidate AND the proposed 
 4. On confirmation, call `wiki_change_scope`. If the tool returns an error, relay it to the operator — do NOT try workarounds.
 5. Report the new path and how many facts were rebased.
 Never move a wiki under itself or one of its descendants; the tool rejects it anyway, but don't propose it.
-- `wiki_move_fact(fact_id, dest_wiki_id?, dest_page?)` — move ONE fact, following the operator's instruction ("move this fact to health", "this belongs on the work page", "this is really about work"). To move it to another PAGE of the same wiki, pass `dest_page` and omit `dest_wiki_id`. To move it into ANOTHER WIKI, pass `dest_wiki_id` (it lands on that wiki's buffer page, `@notes.md`, and that wiki's next nightly pass files it onto the right page). The move is act-first and revertable from the dashboard. Smart wikis are refused as both source and destination (their governance is wiki-level). Flow:
+- `wiki_move_fact(fact_id, dest_wiki_id?, dest_page?)` — move ONE fact, following the operator's instruction ("move this fact to health", "this belongs on the work page", "this is really about work"). To move it to another PAGE of the same wiki, pass `dest_page` and omit `dest_wiki_id`. To move it into ANOTHER WIKI, pass `dest_wiki_id` (it lands on that wiki's parking page, `@notes.md`, and that wiki's next nightly pass files it onto the right page). The move is act-first and revertable from the dashboard. Smart wikis are refused as both source and destination (their governance is wiki-level). Flow:
 1. `wiki_recall(query)` (or `wiki_facts_for(...)`) to surface the fact and show the operator its current body and wiki (no id). If several candidates are close, STOP and ask which one (by ordinal or description) — do not guess.
 2. Confirm the destination explicitly: "Shall I move this fact to `<wiki/page>`?". Use `wiki_get_meta` if you need to verify a destination wiki id.
 3. On a confirming reply: call `wiki_move_fact`. Report where it landed (the `dest_wiki_id` / `dest_page`) and that the move is undoable from the dashboard.

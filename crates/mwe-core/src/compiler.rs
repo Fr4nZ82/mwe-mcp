@@ -95,7 +95,7 @@ use crate::fact_index::{self, FactIndexError};
 use crate::llm::{CompletionRequest, LlmBackend, LlmError};
 use crate::meta_annotate;
 use crate::parser::{self, ParseEvent};
-use crate::planner::{self, CompilationPlan, FactForPage, PagePlan, PageType};
+use crate::planner::{self, CompilationPlan, FactForPage, PagePlan};
 use crate::prompts::{self, PromptError};
 use crate::types::{FactId, Principal};
 use crate::wiki::{WikiError, WikiTree, workdir_relative_source_path};
@@ -108,23 +108,6 @@ pub const BUNDLED_CRONISTA_MD: &str = include_str!("../prompts/cronista.md");
 // exactly one definition (63 §8c's stated rule, which this file was quietly
 // breaking).
 use crate::wiki::INDEX_FILENAME as INDEX_PAGE;
-
-/// Bundled default for the `regenerate-index` system prompt — the prose
-/// writer for a plan's `ConceptHub` pages.
-///
-/// **The name is historical and is kept deliberately.** It was REM's
-/// `index.md` regenerator, and this compiler stage borrowed it; the hub page
-/// has been its only caller since 2026-08-03, and since 2026-08-15 there is
-/// no `index.md` to regenerate at all. Renaming the file would orphan every
-/// operator override at `<workdir>/prompts/regenerate-index.md`, which is
-/// the exact failure the prompt-drift work exists to avoid — so the name
-/// stays wrong and this comment stays right.
-///
-/// The verbatim body lives in `crates/mwe-core/prompts/regenerate-index.md`
-/// and is loaded through [`prompts::render`]; an operator override wins when
-/// present. Referenced from [`prompts::BUNDLED`] so `mwe-mcp init`
-/// materialises it under the workdir.
-pub const BUNDLED_REGENERATE_INDEX_MD: &str = include_str!("../prompts/regenerate-index.md");
 
 /// Errors raised by the compiler. Per-page LLM/parse failures are collected
 /// into the report (soft); infrastructure failures bubble.
@@ -152,15 +135,13 @@ pub type Result<T> = std::result::Result<T, CompilerError>;
 pub struct CompileReport {
     /// What the queue did on the way in: claims screened, folded as
     /// duplicates, written, superseded. Filled by
-    /// [`crate::dream::run_compile`], which screens the buffer before planning
+    /// [`crate::dream::run_compile`], which screens the parking page before planning
     /// and writes the placed claims before compiling — default when the
     /// compile ran without a queue (a test calling `compile_dirty_pages`
     /// directly).
     pub queue: crate::dream_light::LightCycleReport,
     /// Leaf pages (re)written as prose by Il Cronista (`prosa` / `prosa-tecnica`).
     pub leaves: usize,
-    /// Hub pages (re)written.
-    pub hubs: usize,
     /// `lista`-style leaf pages rendered as atomic records, bypassing the
     /// strong-model Cronista.
     pub lists: usize,
@@ -252,7 +233,6 @@ pub async fn compile_dirty_pages(
     tree: &WikiTree,
     plan: &CompilationPlan,
     cronista: &dyn LlmBackend,
-    hub: &dyn LlmBackend,
     now: &str,
 ) -> Result<CompileReport> {
     let mut report = CompileReport::default();
@@ -295,7 +275,6 @@ pub async fn compile_dirty_pages(
             plan,
             page,
             cronista,
-            hub,
             &mut tone_cache,
             &mut locale_cache,
             &page_index,
@@ -305,11 +284,6 @@ pub async fn compile_dirty_pages(
         {
             Ok(PageOutcome::Leaf(notes)) => {
                 report.leaves += 1;
-                report.record_notes(slug, &notes);
-                note_page_success(pool, tree, page).await;
-            },
-            Ok(PageOutcome::Hub(notes)) => {
-                report.hubs += 1;
                 report.record_notes(slug, &notes);
                 note_page_success(pool, tree, page).await;
             },
@@ -359,7 +333,6 @@ pub async fn compile_dirty_pages(
     report.orphan_files_swept = sweep_orphan_page_files(pool, tree, plan).await;
     tracing::info!(
         leaves = report.leaves,
-        hubs = report.hubs,
         lists = report.lists,
         unchanged = report.unchanged,
         orphan_files_swept = report.orphan_files_swept,
@@ -453,7 +426,7 @@ async fn note_page_failure(pool: &SqlitePool, tree: &WikiTree, page: &PagePlan, 
 ///
 /// - its path is not in the plan's page set for that wiki,
 /// - it is not a reserved page (`@rules.md`, any `_`-prefixed file). The card
-///   and the buffer need no exemption: they are plan nodes, so they are
+///   and the parking page need no exemption: they are plan nodes, so they are
 ///   always in the plan's page set for their wiki. An `index.md` left over
 ///   from the retired index writer is NOT exempt — that is how the leftovers
 ///   leave, one compile after the writer was deleted (2026-08-15),
@@ -529,9 +502,6 @@ enum PageOutcome {
     /// report about itself ([`PageNotes`]) — success plus warnings, never
     /// one instead of the other.
     Leaf(PageNotes),
-    /// An overview page written by the Hub Writer, carrying the same notes:
-    /// a group's foundation page is a card too, and its children are rails.
-    Hub(PageNotes),
     List,
     Unchanged,
     /// The Cronista failed twice and the page fell back to the guard-only
@@ -620,26 +590,20 @@ async fn compile_page(
     plan: &CompilationPlan,
     page: &PagePlan,
     cronista: &dyn LlmBackend,
-    hub: &dyn LlmBackend,
     tone_cache: &mut HashMap<String, String>,
     locale_cache: &mut HashMap<String, String>,
     page_index: &PageIndex,
     now: &str,
 ) -> Result<PageOutcome> {
-    // A wiki's buffer rides the same dispatch: it renders as prose while it
+    // A wiki's parking page rides the same dispatch: it renders as prose while it
     // still carries facts and flips to a bare overview once REM's reorg has
     // drained them onto children — which is what is meant to happen to
     // everything that lands there.
-    let is_hub = page.primary_facts.is_empty()
-        && !page.child_leaves.is_empty()
-        && matches!(
-            page.page_type,
-            PageType::ConceptHub | PageType::GroupTheme | PageType::WikiBuffer
-        );
-    if is_hub {
-        let language = cached_language_directive(pool, tree, &page.wiki_id, locale_cache).await;
-        return compile_hub_page(tree, plan, page, hub, &language, now).await;
-    }
+    // **No page lists other pages** (founder, 2026-08-19). A group's card was
+    // the last one that did, and it is gone — the same reasoning that deleted
+    // `index.md`: an index has to be maintained, while the list of pages with
+    // their cards is something the engine already gets by reading the files.
+    // A page with no facts is empty, and renders as its card.
     // Il Cronista a 3 stili. A leaf whose ingest-decided style (`page.style`) is
     // `lista` holds atomic-record data (a shopping list, a filmography), not
     // prose: render it deterministically as ACL-markered records (cheap, NO LLM),
@@ -647,7 +611,7 @@ async fn compile_page(
     // Cronista below. The Cronista never emits `lista` itself (cronista.md
     // §STYLE), so `page.style` is the sole source of a record page — which is what
     // lets the testata read `lista` over a record body rather than prose.
-    if normalize_style(page.style.as_deref()) == "lista" {
+    if style_or_default(page.style) == crate::wiki::PageStyle::Lista {
         return compile_list_page(pool, tree, page, now).await;
     }
     // A leaf with NO facts never reaches the LLM: the Cronista, handed an
@@ -711,7 +675,7 @@ fn compile_empty_leaf(tree: &WikiTree, page: &PagePlan, now: &str) -> Result<Pag
         page,
         &body,
         &page.description,
-        normalize_style(page.style.as_deref()),
+        style_or_default(page.style),
         &created,
         now,
     );
@@ -830,7 +794,10 @@ async fn compile_leaf_page(
         page,
         &merged_body,
         &body.description,
-        normalize_style(page.style.as_deref().or(body.style.as_deref())),
+        style_or_default(
+            page.style
+                .or_else(|| crate::wiki::PageStyle::parse_lenient(body.style.as_deref())),
+        ),
         &created,
         now,
     );
@@ -861,7 +828,7 @@ async fn compile_leaf_page(
 
 /// Refresh the wiki's one-line abstract in `_meta` from the page that answers
 /// *what is this wiki* — its **foundation** node: an actor's card, or a topic
-/// wiki's buffer.
+/// wiki's parking page.
 ///
 /// 🚨 **The abstract has no reader on the read side, and never had one after
 /// 2026-08-03.** This doc used to claim it is «what the entry fan and the
@@ -877,7 +844,7 @@ async fn compile_leaf_page(
 ///
 /// Best-effort: a `_meta` hiccup must not fail a page that already wrote.
 fn sync_foundation_summary(page: &PagePlan, abs_dir: &std::path::Path, description: &str) {
-    if !page.page_type.is_foundation() {
+    if !page.is_foundation() {
         return;
     }
     if let Err(e) = meta_annotate::sync_wiki_summary(abs_dir, description.trim()) {
@@ -1315,7 +1282,7 @@ async fn compile_degraded_leaf(
                 page,
                 &regions,
                 &page.description,
-                normalize_style(page.style.as_deref()),
+                style_or_default(page.style),
                 &preserved_created(&existing, now),
                 now,
             )
@@ -1572,11 +1539,7 @@ pub async fn refresh_list_page(
     };
     // Only a `lista` page renders as records; anything else is the Cronista's
     // and is not this function's to touch.
-    if crate::meta_annotate::parse_page_card(&existing)
-        .style
-        .as_deref()
-        .map(str::trim)
-        != Some("lista")
+    if crate::meta_annotate::parse_page_card(&existing).style != Some(crate::wiki::PageStyle::Lista)
     {
         return Ok(false);
     }
@@ -1648,7 +1611,7 @@ async fn compile_list_page(
         page,
         &body,
         &page.description,
-        normalize_style(page.style.as_deref()),
+        style_or_default(page.style),
         &created,
         now,
     );
@@ -1675,7 +1638,7 @@ async fn compile_list_page(
     }
 
     // Recall navigation: a record page that IS its wiki's foundation node
-    // (a `lista`-styled card or buffer) still owns the wiki's abstract.
+    // (a `lista`-styled card or parking page) still owns the wiki's abstract.
     sync_foundation_summary(page, handle.abs_dir(), &page.description);
 
     Ok(PageOutcome::List)
@@ -1708,140 +1671,6 @@ fn closure_cue(decay_reason: Option<&str>, valid_to: Option<&str>) -> Option<Str
         .and_then(|t| t.get(..10))
         .map_or_else(String::new, |d| format!(" {d}"));
     Some(format!(" · {glyph}{date}"))
-}
-
-// ---------- the Hub Writer (hub) ----------
-
-async fn compile_hub_page(
-    tree: &WikiTree,
-    plan: &CompilationPlan,
-    page: &PagePlan,
-    llm: &dyn LlmBackend,
-    language_directive: &str,
-    now: &str,
-) -> Result<PageOutcome> {
-    // A hub's children ARE its rails: they are the only route from this page
-    // to the detail underneath it. Kept as links (not pre-formatted) so the
-    // same list can be checked against the prose the model returns.
-    let child_links: Vec<String> = page
-        .child_leaves
-        .iter()
-        .filter_map(|s| plan.pages.get(s).and_then(plan_page_wikilink))
-        .collect();
-    let children = child_links
-        .iter()
-        .map(|l| format!("- {l}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let snippet = page
-        .child_leaves
-        .iter()
-        .filter_map(|s| {
-            plan.pages
-                .get(s)
-                .map(|c| format!("- {}: {}", c.slug, c.description))
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    // Reuse the existing Hub Writer prompt (regenerate-index), fed from the plan.
-    // A hub of an agent's wiki is a page of that agent's autobiography like any
-    // other, so it carries the same first-person directive the REM regenerator
-    // passes — resolved from the wiki, not from the page (a hub has no subject
-    // of its own). An unresolvable wiki simply gets the default voice.
-    let subject = tree
-        .locate(&parse_wiki_id(&page.wiki_id))
-        .map_or("", |h| crate::wiki::subject_directive(h.meta()));
-    let prompt = prompts::render(
-        "regenerate-index",
-        tree.workdir(),
-        BUNDLED_REGENERATE_INDEX_MD,
-        &[
-            ("locale", language_directive),
-            ("title", page.title.as_str()),
-            ("wiki_type", "hub"),
-            ("wiki_id", page.slug.as_str()),
-            ("subject", subject),
-            ("children", children.as_str()),
-            ("snippet", snippet.as_str()),
-        ],
-    )?;
-    let resp = llm
-        .complete(
-            CompletionRequest::new(prompt)
-                .with_temperature(0.2)
-                .with_max_tokens(2_000),
-        )
-        .await;
-    let raw = match resp {
-        Ok(r) => r.text,
-        Err(e) => return Err(soft(&format!("Hub Writer LLM failed: {e}"))),
-    };
-    // The Hub Writer answers in the Cronista's shape (v1.7) so a hub gets a
-    // written CARD like every other page. It used to write the planner's
-    // literal `description`, so a group's foundation page presented itself to
-    // the navigator as `Group famiglia` while a person's said «celiachia,
-    // intolleranza al lattosio, gravidanza in corso» — and since a group root
-    // is a door like any other, those two useless words were all the navigator
-    // had to decide on.
-    //
-    // Tolerant on purpose: an operator override written against v1.6 still
-    // returns bare markdown, and so does any reply that is not JSON at all.
-    // Then the whole reply IS the body and the card falls back to the plan's
-    // literal — exactly what this function did before, so the worst case is
-    // the old behaviour rather than a failed page.
-    let (mut prose, card) = match parse_cronista(&raw) {
-        Some(o) if !o.merged_body.trim().is_empty() && !o.description.trim().is_empty() => (
-            o.merged_body.trim().to_owned(),
-            o.description.trim().to_owned(),
-        ),
-        _ => {
-            tracing::warn!(
-                slug = %page.slug,
-                "compiler: hub reply carries no card — body as prose, card from the plan"
-            );
-            (raw.trim().to_owned(), page.description.clone())
-        },
-    };
-    // The rail floor, hub half: a hub's children are the only route to the
-    // detail under it, and the prompt has asked for every one of them since
-    // v1.6 with nothing checking. No rewrite here — the hub call is a
-    // single-shot on the cheap slot, and a hub that lost a child is a page
-    // whose whole job it failed at, so the link goes on rather than costing
-    // a second call to maybe arrive.
-    let rails_appended = missing_rails(&child_links, &prose);
-    if !rails_appended.is_empty() {
-        tracing::warn!(
-            slug = %page.slug,
-            rails = rails_appended.len(),
-            children = child_links.len(),
-            "compiler: hub prose dropped children — appending (rail completeness floor)"
-        );
-        append_missing_rails(&mut prose, &rails_appended);
-    }
-
-    let handle = tree.locate(&parse_wiki_id(&page.wiki_id))?;
-    let page_path = std::path::Path::new(&page.page_path);
-    let existing = handle.read_page(page_path).unwrap_or_default();
-    let created = preserved_created(&existing, now);
-    // The testata: a hub is an overview/navigation page, always `prosa`.
-    let contents = render_page_file(page, &prose, &card, "prosa", &created, now);
-    if contents == existing {
-        return Ok(PageOutcome::Unchanged);
-    }
-    handle.write_page(page_path, &contents)?;
-
-    // Recall navigation: a `GroupTheme` card or a drained `WikiBuffer` reaches
-    // THIS function once its facts have moved onto children, so the foundation
-    // nodes whose abstract nobody else refreshes are exactly the ones landing
-    // here — which is why the written card matters twice over.
-    sync_foundation_summary(page, handle.abs_dir(), &card);
-
-    Ok(PageOutcome::Hub(PageNotes {
-        // A group's foundation page is an identity card by `page_kind`, and
-        // the read path cuts it at the same ceiling whoever wrote it.
-        over_budget_chars: card_over_budget(page, &contents),
-        rails_appended,
-    }))
 }
 
 // ---------- helpers ----------
@@ -2348,7 +2177,7 @@ fn render_page_file(
     page: &PagePlan,
     body: &str,
     description: &str,
-    style: &str,
+    style: crate::wiki::PageStyle,
     created: &str,
     now: &str,
 ) -> String {
@@ -2360,16 +2189,9 @@ fn render_page_file(
     let _ = writeln!(fm, "title: \"{title}\"");
     let _ = writeln!(fm, "created: {created}");
     let _ = writeln!(fm, "updated: {date}");
-    // No `page_type:` line. It was written here and **read by nothing** —
-    // `meta_annotate::parse_page_card` reads `description` / `keywords` /
-    // `style` and never it — while sitting one line above `style`, identical
-    // in form. Two labels side by side, of which only `style` is a property of
-    // the page: `PageType` is a plan-internal marker of which reserved page a
-    // node is (card / buffer / ordinary), inherited from the pre-Rust engine's
-    // flat page taxonomy and never a design of this one. Printing it into every
-    // compiled page taught every reader — the founder included — that a page
-    // carries two parallel classifications. It does not (founder, 2026-08-17:
-    // *«tipo di pagina quando mai è stato discusso?»*).
+    // No `page_type:` line. It was written here and **read by nothing** — and
+    // the field it mirrored is gone too (2026-08-19): what kind of page this is
+    // is its file name.
     let _ = writeln!(fm, "style: {style}");
     let desc = description.replace(['"', '\n'], " ");
     let desc = desc.trim();
@@ -2385,16 +2207,14 @@ fn render_page_file(
     fm
 }
 
-/// Coerce a Cronista-emitted style into the closed palette
-/// (`prosa` / `prosa-tecnica` / `lista`). An absent / unrecognised value falls
-/// back to `prosa`: a compiled standard page is prose by default, and the tag is
-/// a recall read-hint, never a hard gate.
-pub(crate) fn normalize_style(style: Option<&str>) -> &'static str {
-    match style.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
-        Some("prosa-tecnica") => "prosa-tecnica",
-        Some("lista") => "lista",
-        _ => "prosa",
-    }
+/// The style a page is written in when nobody proposed one.
+///
+/// Prose: a compiled standard page is prose by default, and the tag is a recall
+/// read-hint, never a hard gate. The coercion this replaced is gone with the
+/// free-text column — since 2026-08-19 a style is one of three by type
+/// ([`crate::wiki::PageStyle`]), so there is nothing left to coerce.
+pub(crate) fn style_or_default(style: Option<crate::wiki::PageStyle>) -> crate::wiki::PageStyle {
+    style.unwrap_or(crate::wiki::PageStyle::Prosa)
 }
 
 /// The autobiography voice: the wiki's subject is an agent and it is writing
@@ -2465,7 +2285,7 @@ pub const IDENTITY_CARD_CEILING_CHARS: usize = 2_500;
 /// the model "this is served on every turn" about an ordinary page would be a
 /// lie that costs prose.
 fn page_kind(page: &PagePlan) -> &'static str {
-    if page.page_type.is_identity_card() && page.page_path == crate::wiki::PROFILE_FILENAME {
+    if page.is_identity_card() {
         "identity_card"
     } else {
         "leaf"
@@ -2542,10 +2362,6 @@ fn parse_cronista(raw: &str) -> Option<CronistaOutput> {
         return None;
     }
     serde_json::from_str::<CronistaOutput>(&raw[start..=end]).ok()
-}
-
-fn soft(msg: &str) -> CompilerError {
-    CompilerError::Io(std::io::Error::other(msg.to_owned()))
 }
 
 #[cfg(test)]
@@ -2632,20 +2448,16 @@ mod tests {
     fn only_a_person_node_on_its_reserved_page_is_an_identity_card() {
         let mut page = page_with_subjects("alice", &["user:alice"]);
 
-        page.page_type = PageType::Person;
         page.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
         assert_eq!(page_kind(&page), "identity_card");
 
-        page.page_type = PageType::GroupTheme;
         assert_eq!(page_kind(&page), "identity_card");
 
         // Right type, wrong page.
-        page.page_type = PageType::Person;
         page.page_path = "viaggi.md".to_owned();
         assert_eq!(page_kind(&page), "leaf");
 
-        // Right page, wrong type — the buffer is not a card.
-        page.page_type = PageType::WikiBuffer;
+        // Right page, wrong type — the parking page is not a card.
         page.page_path = crate::wiki::NOTES_FILENAME.to_owned();
         assert_eq!(page_kind(&page), "leaf");
     }
@@ -2697,8 +2509,6 @@ mod tests {
             title: "Pagina".to_owned(),
             description: String::new(),
             style: None,
-            page_type: PageType::ConceptLeaf,
-            owner_scope: None,
             parent_hub: None,
             child_leaves: Vec::new(),
             primary_facts: subjects
@@ -2898,8 +2708,6 @@ mod tests {
                 title: slug.to_owned(),
                 description: String::new(),
                 style: None,
-                page_type: PageType::ConceptLeaf,
-                owner_scope: None,
                 parent_hub: None,
                 child_leaves: Vec::new(),
                 primary_facts: vec![fact],
@@ -3035,6 +2843,39 @@ mod tests {
         .unwrap();
     }
 
+    /// The wiki's abstract comes from the wiki's OWN page — its card — and
+    /// from nowhere else. What decides that is the page's file name.
+    #[tokio::test]
+    async fn only_a_wikis_own_page_writes_its_abstract() {
+        let (dir, tree, pool) = setup().await;
+        let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d77").unwrap();
+        plant_fact_at(
+            &pool,
+            &fid,
+            "user:alice",
+            "Alice loves pasta",
+            "wikis/alice/appunti_vari.md",
+            None,
+            None,
+        )
+        .await;
+        let mut plan = leaf_plan(&fid);
+        let card = plan.pages.get_mut("alice").expect("page");
+        card.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
+        let body = "{\"mergedBody\":\"Chi è Alice.\",\"description\":\"d\"}".to_owned();
+        let cronista = FakeLlmBackend::new("fake", &body);
+        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-05-31T00:00:00Z")
+            .await
+            .expect("compile");
+
+        let meta = std::fs::read_to_string(dir.path().join("wikis/alice/_meta.md")).unwrap();
+        assert!(
+            meta.contains("summary: d"),
+            "the card's description became the wiki's abstract: {meta}"
+        );
+        drop(dir);
+    }
+
     fn leaf_plan(fid: &FactId) -> CompilationPlan {
         let mut pages = BTreeMap::new();
         pages.insert(
@@ -3044,8 +2885,6 @@ mod tests {
                 title: "Alice".to_owned(),
                 description: "Alice".to_owned(),
                 style: None,
-                page_type: PageType::Person,
-                owner_scope: None,
                 parent_hub: None,
                 child_leaves: Vec::new(),
                 primary_facts: vec![FactForPage {
@@ -3089,7 +2928,7 @@ mod tests {
     async fn cronista_writes_prose_with_marker_and_repoints_fact() {
         let (dir, tree, pool) = setup().await;
         let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d77").unwrap();
-        // Plant the fact in fact_index pointing at the buffer journal.
+        // Plant the fact in fact_index pointing at the parking page journal.
         fact_index::insert(
             &pool,
             &crate::fact_index::NewFact {
@@ -3125,12 +2964,10 @@ mod tests {
             "{\"mergedBody\":\"A proposito di pasta. <f1>Alice ama la pasta.</f1>\",\"description\":\"d\"}"
                 .to_owned();
         let cronista = FakeLlmBackend::new("fake", &body);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
         let plan = leaf_plan(&fid);
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-05-31T00:00:00Z")
-                .await
-                .expect("compile");
+        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-05-31T00:00:00Z")
+            .await
+            .expect("compile");
         assert_eq!(report.leaves, 1);
 
         // The compiled page exists with the marker.
@@ -3145,12 +2982,15 @@ mod tests {
             row.text, "Alice loves pasta",
             "canonical claim text preserved"
         );
-        // The foundation page's Cronista `description` became the wiki's
-        // `_meta` abstract — write-side vocabulary; no reader is shown it.
+        // No wiki abstract: this page is `cucina.md`, an ordinary page, and
+        // only a wiki's OWN page carries its abstract. The fixture used to
+        // declare itself a foundation node while sitting on `cucina.md` — the
+        // kind of disagreement that stopped being possible when a page became
+        // its file name (2026-08-19). The abstract has its own test below.
         let meta = std::fs::read_to_string(dir.path().join("wikis/alice/_meta.md")).unwrap();
         assert!(
-            meta.contains("summary: d"),
-            "wiki abstract persisted to _meta: {meta}"
+            !meta.contains("summary: d"),
+            "an ordinary page does not speak for its wiki: {meta}"
         );
         drop(dir);
     }
@@ -3193,9 +3033,8 @@ mod tests {
         let body = "{\"mergedBody\":\"Pasta. <f1>Alice ama la pasta.</f1>\",\"description\":\"d\"}"
             .to_owned();
         let cronista = FakeLlmBackend::new("fake", &body);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
         let plan = leaf_plan(&fid);
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-05-31T00:00:00Z")
+        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-05-31T00:00:00Z")
             .await
             .expect("compile");
 
@@ -3297,9 +3136,8 @@ mod tests {
 
         let body = "{\"mergedBody\":\"<f1>Alice ama la pasta.</f1>\",\"description\":\"Cosa piace ad Alice\",\"style\":\"prosa-tecnica\"}".to_owned();
         let cronista = FakeLlmBackend::new("fake", &body);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
         let plan = leaf_plan(&fid);
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-06-06T00:00:00Z")
+        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-06T00:00:00Z")
             .await
             .expect("compile");
 
@@ -3352,11 +3190,10 @@ mod tests {
 
         let body = "{\"mergedBody\":\"<f1>Alice ama la pasta.</f1>\",\"description\":\"Cosa piace ad Alice\",\"style\":\"prosa\"}".to_owned();
         let cronista = FakeLlmBackend::new("fake", &body);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
         let mut plan = leaf_plan(&fid);
         // The ingest classifier proposed `prosa-tecnica` for this page.
-        plan.pages.get_mut("alice").unwrap().style = Some("prosa-tecnica".to_owned());
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-06-06T00:00:00Z")
+        plan.pages.get_mut("alice").unwrap().style = Some(crate::wiki::PageStyle::ProsaTecnica);
+        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-06T00:00:00Z")
             .await
             .expect("compile");
 
@@ -3387,9 +3224,7 @@ mod tests {
                 slug: "spesa".to_owned(),
                 title: "Spesa".to_owned(),
                 description: "La lista della spesa".to_owned(),
-                style: Some("lista".to_owned()),
-                page_type: PageType::ConceptLeaf,
-                owner_scope: None,
+                style: Some(crate::wiki::PageStyle::Lista),
                 parent_hub: None,
                 child_leaves: Vec::new(),
                 primary_facts: vec![f1.clone(), f2.clone()],
@@ -3418,11 +3253,9 @@ mod tests {
             "fake",
             "{\"mergedBody\":\"PROSE_FROM_CRONISTA\",\"description\":\"d\"}",
         );
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-06-07T00:00:00Z")
-                .await
-                .expect("compile");
+        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-07T00:00:00Z")
+            .await
+            .expect("compile");
 
         assert_eq!(report.lists, 1, "counted as a list page");
         assert_eq!(report.leaves, 0, "the Cronista leaf path was not taken");
@@ -3476,8 +3309,6 @@ mod tests {
                 title: "Alice".to_owned(),
                 description: "Identity wiki for alice.".to_owned(),
                 style: None,
-                page_type: PageType::Person,
-                owner_scope: None,
                 parent_hub: None,
                 child_leaves: Vec::new(),
                 primary_facts: Vec::new(),
@@ -3505,11 +3336,9 @@ mod tests {
             "fake",
             "{\"mergedBody\":\"INVENTED_LORE\",\"description\":\"d\"}",
         );
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-06-11T00:00:00Z")
-                .await
-                .expect("compile");
+        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
+            .await
+            .expect("compile");
         assert_eq!(report.leaves, 1, "rendered, counted as a leaf");
 
         let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
@@ -3524,10 +3353,9 @@ mod tests {
         assert!(!page.contains("{{f="), "no markers without facts: {page}");
 
         // Idempotent: the same compile re-run is a no-op.
-        let report2 =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-06-11T00:00:00Z")
-                .await
-                .expect("compile 2");
+        let report2 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
+            .await
+            .expect("compile 2");
         assert_eq!(report2.unchanged, 1, "second render matches byte-for-byte");
         drop(dir);
     }
@@ -3548,9 +3376,7 @@ mod tests {
                 slug: "spesa".to_owned(),
                 title: "Spesa".to_owned(),
                 description: "La lista della spesa".to_owned(),
-                style: Some("lista".to_owned()),
-                page_type: PageType::ConceptLeaf,
-                owner_scope: None,
+                style: Some(crate::wiki::PageStyle::Lista),
                 parent_hub: None,
                 child_leaves: Vec::new(),
                 primary_facts: vec![f1.clone()],
@@ -3607,11 +3433,9 @@ mod tests {
         std::fs::write(alice_dir.join("index.md"), "# Alice\n\n- [[alice/spesa]]\n").unwrap();
 
         let cronista = FakeLlmBackend::new("fake", "unused — lista path");
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-06-11T00:00:00Z")
-                .await
-                .expect("compile");
+        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
+            .await
+            .expect("compile");
 
         assert_eq!(
             report.orphan_files_swept, 2,
@@ -3666,9 +3490,7 @@ mod tests {
                 slug: "spesa".to_owned(),
                 title: "Spesa".to_owned(),
                 description: "La lista della spesa".to_owned(),
-                style: Some("lista".to_owned()),
-                page_type: PageType::ConceptLeaf,
-                owner_scope: None,
+                style: Some(crate::wiki::PageStyle::Lista),
                 parent_hub: None,
                 child_leaves: Vec::new(),
                 primary_facts: vec![open.clone(), bought.clone(), dropped, expired],
@@ -3692,8 +3514,7 @@ mod tests {
         };
 
         let cronista = FakeLlmBackend::new("fake", "unused — lista path has no LLM");
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-06-11T00:00:00Z")
+        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
             .await
             .expect("compile");
 
@@ -3724,22 +3545,36 @@ mod tests {
         drop(dir);
     }
 
+    /// **A style is one of three, and nothing else can be one** (founder,
+    /// 2026-08-19). The coercion this test used to check is gone with the free
+    /// text: a value that is not one of the three never becomes a style at all,
+    /// and a page with no style compiles as prose.
     #[test]
-    fn normalize_style_coerces_to_closed_palette() {
-        assert_eq!(normalize_style(None), "prosa", "absent → default prosa");
-        assert_eq!(normalize_style(Some("prosa")), "prosa");
+    fn a_style_is_one_of_three_or_nothing() {
+        use crate::wiki::PageStyle;
+        assert_eq!(PageStyle::parse("prosa"), Some(PageStyle::Prosa));
         assert_eq!(
-            normalize_style(Some(" Prosa-Tecnica ")),
-            "prosa-tecnica",
-            "trimmed + case-folded"
+            PageStyle::parse(" Prosa-Tecnica "),
+            Some(PageStyle::ProsaTecnica),
+            "trimmed and case-folded — the same value written loosely"
         );
-        assert_eq!(normalize_style(Some("lista")), "lista");
+        assert_eq!(PageStyle::parse("lista"), Some(PageStyle::Lista));
         assert_eq!(
-            normalize_style(Some("bullets")),
-            "prosa",
-            "unrecognised → default prosa, never a hard reject"
+            PageStyle::parse("bullets"),
+            None,
+            "not one of the three is NOT a style — it is dropped, never coerced"
         );
-        assert_eq!(normalize_style(Some("")), "prosa");
+        assert_eq!(PageStyle::parse(""), None);
+        assert_eq!(PageStyle::parse_lenient(None), None);
+
+        // The wire form round-trips: what is written is what parses back.
+        for s in [PageStyle::Prosa, PageStyle::ProsaTecnica, PageStyle::Lista] {
+            assert_eq!(PageStyle::parse(s.as_str()), Some(s));
+        }
+
+        // A page nobody described compiles as prose.
+        assert_eq!(style_or_default(None), PageStyle::Prosa);
+        assert_eq!(style_or_default(Some(PageStyle::Lista)), PageStyle::Lista);
     }
 
     #[tokio::test]
@@ -3748,7 +3583,7 @@ mod tests {
         let (dir, tree, pool) = setup().await;
         let fid1 = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d01").unwrap();
         let fid2 = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d02").unwrap();
-        // Both facts are promoted (pointing at the buffer journal). fid2 is a
+        // Both facts are promoted (pointing at the parking page journal). fid2 is a
         // non-global (group) fact — exactly the `missing_acl_markers` case.
         plant_fact(&pool, &fid1, "user:alice", "Alice loves pasta").await;
         plant_fact(
@@ -3764,7 +3599,6 @@ mod tests {
             "{\"mergedBody\":\"A proposito di pasta. <f1>Alice ama la pasta.</f1>\",\"description\":\"d\"}"
                 .to_owned();
         let cronista = FakeLlmBackend::new("fake", &body);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
 
         // Plan: both facts assigned to alice's leaf page.
         let mut pages = BTreeMap::new();
@@ -3775,8 +3609,6 @@ mod tests {
                 title: "Alice".to_owned(),
                 description: "Alice".to_owned(),
                 style: None,
-                page_type: PageType::Person,
-                owner_scope: None,
                 parent_hub: None,
                 child_leaves: Vec::new(),
                 primary_facts: vec![
@@ -3833,10 +3665,9 @@ mod tests {
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
         };
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-06-01T00:00:00Z")
-                .await
-                .expect("compile");
+        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-01T00:00:00Z")
+            .await
+            .expect("compile");
         assert_eq!(report.leaves, 1);
 
         let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
@@ -3878,9 +3709,7 @@ mod tests {
                 slug: slug.to_owned(),
                 title: slug.to_owned(),
                 description: "d".to_owned(),
-                style: style.map(str::to_owned),
-                page_type: PageType::ConceptLeaf,
-                owner_scope: None,
+                style: crate::wiki::PageStyle::parse_lenient(style),
                 parent_hub: None,
                 child_leaves: Vec::new(),
                 primary_facts: vec![f],
@@ -3931,11 +3760,9 @@ mod tests {
         // (the fake returns the same unparseable reply on the retry too).
         let plan = concept_leaf_plan(f.clone(), "karate", None);
         let cronista = FakeLlmBackend::new("fake", "NOT JSON");
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-06-11T00:00:00Z")
-                .await
-                .expect("compile");
+        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
+            .await
+            .expect("compile");
         assert!(
             report.errors.is_empty(),
             "no hard failure: {:?}",
@@ -3994,11 +3821,9 @@ mod tests {
         let body =
             "{\"mergedBody\":\"<f1>Matteo fa karate il lunedì.</f1>\",\"description\":\"d\"}";
         let cronista = FakeLlmBackend::new("fake", body);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-06-11T00:00:00Z")
-                .await
-                .expect("compile");
+        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
+            .await
+            .expect("compile");
         assert_eq!(report.leaves, 1);
 
         let row = fact_index::find_by_id(&pool, &f.fact_id)
@@ -4062,8 +3887,7 @@ mod tests {
         let body =
             "{\"mergedBody\":\"<f1>Matteo fa karate il lunedì.</f1>\",\"description\":\"d\"}";
         let cronista = FakeLlmBackend::new("fake", body);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-06-11T00:00:00Z")
+        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
             .await
             .expect("compile");
 
@@ -4087,10 +3911,9 @@ mod tests {
         plant_fact(&pool, &f.fact_id, "user:alice", "latte").await;
         let plan = concept_leaf_plan(f.clone(), "spesa", Some("lista"));
         let cronista = FakeLlmBackend::new("fake", "unused — lista path has no LLM");
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
 
         // First compile writes the record page and stamps offsets.
-        let r1 = compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-06-11T00:00:00Z")
+        let r1 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
             .await
             .expect("compile 1");
         assert_eq!(r1.lists, 1);
@@ -4103,7 +3926,7 @@ mod tests {
 
         // The identical plan renders byte-identical content → Unchanged, but
         // the repoint must still stamp the offsets.
-        let r2 = compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-06-11T00:00:00Z")
+        let r2 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
             .await
             .expect("compile 2");
         assert_eq!(r2.unchanged, 1);
@@ -4190,7 +4013,7 @@ mod tests {
         // A fact with a validity window gets a `(validity: …)` hint the
         // Cronista phrases into prose; a durable fact (both bounds None) gets none.
         // NOTE: today every narrative-compiled fact has NULL validity (the
-        // buffer→promote path drops it), so this path is exercised at the unit
+        // parking page→promote path drops it), so this path is exercised at the unit
         // level — it lights up end-to-end once that gap is threaded.
         let now = "2026-06-08T12:00:00Z";
         let mut closed = ffp(1, "dentist appointment");
@@ -4321,8 +4144,6 @@ mod tests {
                     title: slug.to_owned(),
                     description: format!("{slug} desc"),
                     style: None,
-                    page_type: PageType::ConceptLeaf,
-                    owner_scope: None,
                     parent_hub: None,
                     child_leaves: Vec::new(),
                     primary_facts: Vec::new(),
@@ -4428,8 +4249,6 @@ mod tests {
                     title: s.to_owned(),
                     description: format!("{s} desc"),
                     style: None,
-                    page_type: PageType::Person,
-                    owner_scope: None,
                     parent_hub: None,
                     child_leaves: Vec::new(),
                     primary_facts: vec![ffp(2, "secret bob fact")],
@@ -4480,8 +4299,6 @@ mod tests {
             title: slug.to_owned(),
             description: format!("{slug} desc"),
             style: None,
-            page_type: PageType::ConceptLeaf,
-            owner_scope: None,
             parent_hub: None,
             child_leaves: Vec::new(),
             primary_facts: Vec::new(),
@@ -4604,7 +4421,6 @@ mod tests {
         let (dir, tree, pool) = setup().await;
         let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5daa").unwrap();
         plant_degraded_fact(&pool, &fid).await;
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
         let plan = leaf_plan(&fid);
 
         for make in [
@@ -4613,7 +4429,7 @@ mod tests {
         ] {
             let cronista = RefusingCronista::new(make);
             let report =
-                compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-05-31T00:00:00Z")
+                compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-05-31T00:00:00Z")
                     .await
                     .expect("compile");
             assert_eq!(
@@ -4643,9 +4459,8 @@ mod tests {
         let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5dbb").unwrap();
         plant_degraded_fact(&pool, &fid).await;
         let cronista = RefusingCronista::new(LlmError::Transport as fn(String) -> LlmError);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
         let plan = leaf_plan(&fid);
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-05-31T00:00:00Z")
+        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-05-31T00:00:00Z")
             .await
             .expect("compile");
         assert_eq!(cronista.calls(), 2, "transport flakiness earns one retry");
@@ -4750,8 +4565,6 @@ mod tests {
                 title: neighbour.to_owned(),
                 description: "il vicino".to_owned(),
                 style: None,
-                page_type: PageType::ConceptLeaf,
-                owner_scope: None,
                 parent_hub: None,
                 child_leaves: Vec::new(),
                 primary_facts: Vec::new(),
@@ -4765,141 +4578,6 @@ mod tests {
             .insert(slug.to_owned(), vec![neighbour.to_owned()]);
         plan.compilation_order.push(neighbour.to_owned());
         plan
-    }
-
-    /// A group's foundation page: no facts of its own, one child leaf, and
-    /// it is the only dirty page — so the hub backend is the only one called.
-    fn hub_plan() -> CompilationPlan {
-        let mut pages = BTreeMap::new();
-        for (slug, page_type, path, children) in [
-            (
-                "famiglia",
-                PageType::GroupTheme,
-                "@profile.md",
-                vec!["salute".to_owned()],
-            ),
-            ("salute", PageType::ConceptLeaf, "salute.md", Vec::new()),
-        ] {
-            pages.insert(
-                slug.to_owned(),
-                PagePlan {
-                    slug: slug.to_owned(),
-                    title: slug.to_owned(),
-                    // The planner's literal — what the card used to be.
-                    description: format!("Group {slug}"),
-                    style: None,
-                    page_type,
-                    owner_scope: None,
-                    parent_hub: None,
-                    child_leaves: children,
-                    primary_facts: Vec::new(),
-                    outgoing_links: Vec::new(),
-                    incoming_links: Vec::new(),
-                    wiki_id: "alice".to_owned(),
-                    page_path: path.to_owned(),
-                },
-            );
-        }
-        CompilationPlan {
-            pages,
-            merged_pages: Vec::new(),
-            link_graph: BTreeMap::new(),
-            compilation_order: vec!["famiglia".to_owned(), "salute".to_owned()],
-            generated_at: "t".to_owned(),
-            fact_count: 0,
-            dirty_pages: vec!["famiglia".to_owned()],
-            force_dirty: Vec::new(),
-            refile_candidates: Vec::new(),
-            reopen_pages: Vec::new(),
-        }
-    }
-
-    /// A hub's card is WRITTEN, like every other page's. It used to be the
-    /// planner's literal, so a group's foundation page introduced itself to
-    /// the navigator as `Group famiglia` — two words, on a page that is a
-    /// door like any other.
-    #[tokio::test]
-    async fn a_hub_card_is_written_by_the_model_not_taken_from_the_plan() {
-        let (dir, tree, pool) = setup().await;
-        let plan = hub_plan();
-        let hub = FakeLlmBackend::new(
-            "fake",
-            "{\"mergedBody\":\"La famiglia, con la [[alice/salute]].\",\
-              \"description\":\"Nucleo familiare: salute, spese comuni, casa\"}",
-        );
-        let cronista = ScriptedCronista::new(vec![]);
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
-                .await
-                .expect("compile");
-        assert_eq!(report.hubs, 1);
-        assert!(report.rails_appended.is_empty(), "the child link was woven");
-
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/@profile.md")).unwrap();
-        assert!(
-            page.contains("description: \"Nucleo familiare: salute, spese comuni, casa\""),
-            "the model's card is the testata line: {page}"
-        );
-        assert!(
-            !page.contains("Group famiglia"),
-            "the planner's literal is gone: {page}"
-        );
-        drop(dir);
-    }
-
-    /// A reply that is not the JSON shape — a v1.6 operator override, or a
-    /// model that ignored the schema — degrades to exactly the pre-v1.7
-    /// behaviour: the whole reply is the body, the card is the plan's. Never
-    /// a failed page.
-    #[tokio::test]
-    async fn a_hub_reply_without_the_json_shape_keeps_the_plan_card() {
-        let (dir, tree, pool) = setup().await;
-        let plan = hub_plan();
-        let hub = FakeLlmBackend::new("fake", "# La famiglia\n\nVedi [[alice/salute]].");
-        let cronista = ScriptedCronista::new(vec![]);
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
-                .await
-                .expect("compile");
-        assert_eq!(report.hubs, 1, "a bare-markdown reply still writes a page");
-
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/@profile.md")).unwrap();
-        assert!(page.contains("# La famiglia"), "reply as body: {page}");
-        assert!(
-            page.contains("description: \"Group famiglia\""),
-            "card falls back to the plan's literal: {page}"
-        );
-        drop(dir);
-    }
-
-    /// A hub that drops a child has failed at its one job — the children are
-    /// the only route to the detail under it — so the link is appended rather
-    /// than bought back with a second call on the cheap slot.
-    #[tokio::test]
-    async fn a_hub_that_drops_a_child_gets_it_appended_and_reported() {
-        let (dir, tree, pool) = setup().await;
-        let plan = hub_plan();
-        let hub = FakeLlmBackend::new(
-            "fake",
-            "{\"mergedBody\":\"La famiglia, e nient'altro.\",\"description\":\"Nucleo familiare\"}",
-        );
-        let cronista = ScriptedCronista::new(vec![]);
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
-                .await
-                .expect("compile");
-        assert_eq!(report.hubs, 1);
-        assert_eq!(
-            report.rails_appended,
-            vec!["famiglia: [[alice/salute]]".to_owned()],
-        );
-
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/@profile.md")).unwrap();
-        assert!(
-            page.trim_end().ends_with("[[alice/salute]]"),
-            "the child is reachable from its hub: {page}"
-        );
-        drop(dir);
     }
 
     /// The guard reads the PROSE, not the plan — the whole point of the
@@ -4941,11 +4619,9 @@ mod tests {
             "{\"mergedBody\":\"<f1>Alice ama la pasta</f1>, che compra in [[alice/spesa]].\",\
               \"description\":\"d\"}",
         )]);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
-                .await
-                .expect("compile");
+        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
+            .await
+            .expect("compile");
         assert_eq!(cronista.remaining(), 0, "exactly one call");
         assert_eq!(report.leaves, 1);
         assert!(report.rails_appended.is_empty(), "nothing to append");
@@ -4969,11 +4645,9 @@ mod tests {
                  \"description\":\"d\"}",
             ),
         ]);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
-                .await
-                .expect("compile");
+        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
+            .await
+            .expect("compile");
         assert_eq!(cronista.remaining(), 0, "one rewrite, no more");
         assert_eq!(report.leaves, 1);
         assert!(
@@ -5011,11 +4685,9 @@ mod tests {
                  \"description\":\"d\"}",
             ),
         ]);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
-                .await
-                .expect("compile");
+        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
+            .await
+            .expect("compile");
         assert_eq!(cronista.remaining(), 0, "asked twice, never a third time");
         assert_eq!(report.leaves, 1, "an under-linked page is still a success");
         assert_eq!(
@@ -5058,11 +4730,9 @@ mod tests {
         let plan = concept_leaf_plan(f.clone(), "cucina", None);
 
         let cronista = ScriptedCronista::new(vec![Ok("NOT JSON"), Ok(GOOD_CRONISTA)]);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
-                .await
-                .expect("compile");
+        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
+            .await
+            .expect("compile");
         assert_eq!(cronista.remaining(), 0, "exactly one retry happened");
         assert_eq!(report.leaves, 1, "clean compile after the retry");
         assert!(report.degraded.is_empty(), "no degradation recorded");
@@ -5095,11 +4765,9 @@ mod tests {
         planner::save_plan(&tree, &plan).expect("persist plan");
 
         let cronista = ScriptedCronista::new(vec![Ok("NOT JSON"), Err("boom: 500")]);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
-                .await
-                .expect("compile");
+        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
+            .await
+            .expect("compile");
         assert_eq!(cronista.remaining(), 0);
         assert_eq!(report.leaves, 0);
         assert_eq!(report.degraded.len(), 1, "degraded outcome recorded");
@@ -5160,10 +4828,9 @@ mod tests {
         // Always-unparseable Cronista: both the attempt and the retry fail on
         // every run.
         let cronista = FakeLlmBackend::new("fake", "NOT JSON");
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
 
         // Run 1: degraded append (streak 1, no notice).
-        let r1 = compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
+        let r1 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
             .await
             .expect("compile 1");
         assert_eq!(r1.degraded.len(), 1);
@@ -5176,7 +4843,7 @@ mod tests {
 
         // Run 2: idempotent (byte-identical page, still exactly one marker),
         // streak 2 ⇒ the notice fires.
-        let r2 = compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T01:00:00Z")
+        let r2 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T01:00:00Z")
             .await
             .expect("compile 2");
         assert_eq!(r2.degraded.len(), 1, "still degraded, never settles clean");
@@ -5195,7 +4862,7 @@ mod tests {
         assert_eq!(streak_notices(&pool).await, 1, "notice at exactly 2");
 
         // Run 3: streak 3 — between thresholds, NO second notice.
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T02:00:00Z")
+        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T02:00:00Z")
             .await
             .expect("compile 3");
         assert_eq!(
@@ -5242,8 +4909,7 @@ mod tests {
             Ok("STILL NOT JSON"),
             Ok(GOOD_CRONISTA),
         ]);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
-        let r1 = compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
+        let r1 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
             .await
             .expect("compile 1");
         assert_eq!(r1.degraded.len(), 1);
@@ -5254,7 +4920,7 @@ mod tests {
                 .is_some()
         );
 
-        let r2 = compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T01:00:00Z")
+        let r2 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T01:00:00Z")
             .await
             .expect("compile 2");
         assert_eq!(cronista.remaining(), 0);
@@ -5313,11 +4979,9 @@ mod tests {
 
         // Both Cronista attempts die on transport; the lista page needs no LLM.
         let cronista = ScriptedCronista::new(vec![Err("connection refused"), Err("timeout")]);
-        let hub = FakeLlmBackend::new("fake", "# hub\n");
-        let report =
-            compile_dirty_pages(&pool, &tree, &plan, &cronista, &hub, "2026-07-02T00:00:00Z")
-                .await
-                .expect("one flaky page must not abort the pass");
+        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
+            .await
+            .expect("one flaky page must not abort the pass");
         assert_eq!(report.degraded.len(), 1, "the flaky page degraded");
         assert_eq!(report.lists, 1, "the other page still compiled");
         assert!(report.errors.is_empty());

@@ -35,9 +35,8 @@ async fn make_app_with_fake_rem() -> (Router, tempfile::TempDir) {
     std::fs::create_dir_all(dir.path().join("wikis")).expect("wikis dir");
     let tree = WikiTree::open(dir.path()).expect("open tree");
     let fake: Arc<dyn LlmBackend> = Arc::new(FakeLlmBackend::new("fake", "noop"));
-    let overrides = LlmBackendOverrides::default()
-        .with(LlmFunction::HubWriter, Arc::clone(&fake))
-        .with(LlmFunction::RemDedupSemantic, Arc::clone(&fake));
+    let overrides =
+        LlmBackendOverrides::default().with(LlmFunction::RemDedupSemantic, Arc::clone(&fake));
     let memory = MemoryHandles {
         tree,
         embedder: Arc::new(FakeEmbedder::new("fake-bge-m3", 8)),

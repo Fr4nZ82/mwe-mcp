@@ -858,7 +858,7 @@ by a `[[wikilink]]`.
 
 **Groups seed no door either.** `principal` once meant "any wiki tied to a
 principal", which swept in the sender's group memberships and each subject's
-groups. A group root is a directory (`page_type: group_theme`, a members list,
+groups. A group root is a directory (its card at `@profile.md`, a members list,
 links to every child), it holds one identity-core fact against a person's
 fifteen to twenty-two, and it contributed roughly 40 candidates every time it
 was opened against a pool cap of 16. On the measured corpus `famiglia`'s root
@@ -1122,7 +1122,7 @@ Every mechanical emitter writes the canonical forms —
 links, the Hub Writer children — a page hop everywhere, and `None` for
 `index.md`, so a legacy plan node still sitting on that name contributes no
 link at all rather than a dead one). The prose-writing prompts
-(`cronista`, `regenerate-index`) carry the copy-verbatim instruction: a
+(`cronista`) carries the copy-verbatim instruction: a
 model never mints or restyles a link target. There is no mechanical corpus
 rewriter — the verbatim-copied legacy links simply stay navigable through
 the read-side fallback above.

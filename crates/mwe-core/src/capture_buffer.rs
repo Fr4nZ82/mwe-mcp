@@ -48,9 +48,9 @@
 //!
 //! ## Id stability
 //!
-//! Each capture is minted a `UUIDv7` `capture_id` at buffer time and that id is
+//! Each capture is minted a `UUIDv7` `capture_id` at parking page time and that id is
 //! reused verbatim as the `fact_id` when the light dream promotes it. A claim
-//! therefore keeps one stable id across buffer → fact → compiled-page — the
+//! therefore keeps one stable id across parking page → fact → compiled-page — the
 //! correctness hinge for incremental compilation (fingerprints key on
 //! `fact_id`s).
 
@@ -140,7 +140,7 @@ impl CaptureStatus {
 /// promotion is a straight copy.
 ///
 /// **It says nothing about where the claim will be written**, and that is the
-/// point of the buffer: this is the queue of claims waiting to be *sorted* and
+/// point of the parking page: this is the queue of claims waiting to be *sorted* and
 /// then written as prose, and the sorting is the light dream's, taken against
 /// the memory as it stands when it reads the queue (founder, 2026-08-18 —
 /// migration `0071_capture_buffer_no_destination`). Everything here describes
@@ -189,7 +189,7 @@ pub struct BufferedCapture {
     pub valid_from: Option<String>,
     /// End of the validity interval; `None` = OPEN. See [`Self::valid_from`].
     pub valid_to: Option<String>,
-    /// Why the staged validity window was closed — `None` at buffer time (a
+    /// Why the staged validity window was closed — `None` at parking page time (a
     /// fresh capture is alive); set only when a **closure gesture lands while
     /// the capture is still buffered** (the same-day flow: the item is bought
     /// before the light dream promotes it). [`close_validity`] stamps it
@@ -202,7 +202,7 @@ pub struct BufferedCapture {
     /// testata from it. A *rendering* hint, not a destination: it says how the
     /// page that ends up holding this claim should read, never which page that
     /// is. `None` = the classifier proposed nothing.
-    pub style: Option<String>,
+    pub style: Option<crate::wiki::PageStyle>,
     /// Per-fact salience the classifier deduced, staged here so
     /// [`promote_one`](crate::dream_light) copies it onto the fact
     /// (`fact_index.salience`), where `high` facts are routed to the
@@ -214,7 +214,7 @@ pub struct BufferedCapture {
     /// consolidation links instead of duplicating (roadmap group 17). Empty
     /// for a pure-standard capture.
     pub authored_refs: Vec<String>,
-    /// The capture's embedding, computed **once** at buffer time over the
+    /// The capture's embedding, computed **once** at parking page time over the
     /// marker-stripped body — the same text, by the same rule, that
     /// [`promote_one`](crate::dream_light) would embed at promotion and that
     /// [`crate::recall::recall_fresh_captures`] would embed to rank it.
@@ -225,7 +225,7 @@ pub struct BufferedCapture {
     /// pending capture, and was the expensive one.
     ///
     /// `None` is a first-class state, not a fault to repair eagerly: a
-    /// transient embedder fault at buffer time must not cost the capture, and
+    /// transient embedder fault at parking page time must not cost the capture, and
     /// a row written before this column existed has none. Both readers fall
     /// back to computing it — which is exactly the pre-existing behaviour.
     /// Like `status` / `processed_at` /
@@ -245,7 +245,7 @@ pub struct BufferedCapture {
     /// as well as by TTL.
     ///
     /// A hash rather than the text: an origin may be a long paste, and the
-    /// buffer must not become a second transcript. Unlike the vector beside
+    /// parking page must not become a second transcript. Unlike the vector beside
     /// it, it cannot be recomputed from anything the row holds.
     pub origin_message_hash: Option<String>,
 }
@@ -270,7 +270,7 @@ pub fn origin_fingerprint(message: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Material computed for a capture at buffer time, beside the claim itself.
+/// Material computed for a capture at parking page time, beside the claim itself.
 ///
 /// Both fields are optional and both default to absent, so a caller with
 /// neither an embedder nor an originating message stages nothing and the row
@@ -286,7 +286,7 @@ pub struct BufferStaging {
 impl BufferStaging {
     /// Compute the staging for a capture about to be buffered.
     ///
-    /// The one place that turns a claim into a vector for the buffer, so the
+    /// The one place that turns a claim into a vector for the parking page, so the
     /// "which text gets embedded" rule cannot drift from the one promotion and
     /// the fresh slot apply: the **marker-stripped** body, because a catalog
     /// id is a key and not prose.
@@ -327,7 +327,7 @@ pub struct BufferOutcome {
 
 // ---------- write path ----------
 
-/// Buffer a classified capture for a **standard** wiki.
+/// Parking page a classified capture for a **standard** wiki.
 ///
 /// Inserts it into the `capture_buffer` table, which is where a pending
 /// capture lives — there and nowhere else. The published `.md` is left
@@ -417,7 +417,7 @@ pub async fn buffer_capture_with_source(
         topics,
         dedup_threshold: _,
         // Thread the per-fact validity interval through the standard-wiki
-        // buffer→promote path (closing the gap). Staged on the buffer here,
+        // parking page→promote path (closing the gap). Staged on the parking page here,
         // copied into fact_index by promote_one (dream_light.rs).
         valid_from,
         valid_to,
@@ -426,7 +426,7 @@ pub async fn buffer_capture_with_source(
         // alongside it so promote_one copies the whole placement onto the fact
         // and the light cadence can settle it without re-running the Cartografo.
         style,
-        // Per-fact salience, staged on the buffer so promote_one copies it onto
+        // Per-fact salience, staged on the parking page so promote_one copies it onto
         // the fact.
         salience,
         // Group-17 provenance breadcrumbs threaded from the ingest turn.
@@ -516,7 +516,7 @@ pub async fn count_buffered(pool: &SqlitePool) -> Result<i64> {
 /// light dream's global drain query — one pass per cycle rather than per wiki.
 ///
 /// Oldest-first is the *drain's* order and only the drain's: a queue is served
-/// from the front. Anything that **reads** the buffer to answer a question
+/// from the front. Anything that **reads** the parking page to answer a question
 /// about now wants [`find_recent_buffered`] instead — see the note there.
 ///
 /// # Errors
@@ -542,9 +542,9 @@ pub async fn find_all_buffered(pool: &SqlitePool, limit: i64) -> Result<Vec<Buff
 /// just said and is not on a page yet* — the recall bridge, the reconciliation
 /// stage, the dashboard's consolidating list. Serving those from the drain's
 /// oldest-first order threw away exactly the rows they exist for, and only
-/// once the buffer grew past the cap: invisible on a quiet deployment, wrong
+/// once the parking page grew past the cap: invisible on a quiet deployment, wrong
 /// on a busy one, and wrong hardest when the light dream is lagging — which is
-/// precisely when the buffer matters most.
+/// precisely when the parking page matters most.
 ///
 /// # Errors
 ///
@@ -653,11 +653,11 @@ pub async fn mark_skipped_dup(
 }
 
 /// Close the staged validity window of a still-**buffered** capture:
-/// stamp `valid_to` + `decay_reason` on the buffer row.
+/// stamp `valid_to` + `decay_reason` on the parking page row.
 ///
 /// The buffered half of the closure verb — a closure gesture whose target
 /// has not been promoted yet (the same-day flow: "buy the milk" →
-/// "I bought the milk" within one buffer window). Promotion then
+/// "I bought the milk" within one parking page window). Promotion then
 /// carries both onto the fact. Rows already `promoted`/`skipped_dup` are
 /// left alone (their fact row is the closure target — the id is stable
 /// across promotion, so the fact-side verb hits first).
@@ -697,7 +697,7 @@ pub async fn close_validity(
     Ok(Some(crate::fact_index::ClosedValidity {
         prev_valid_to,
         prev_decay_reason,
-        // The buffer stages no successor pointer — closures land it on the
+        // The parking page stages no successor pointer — closures land it on the
         // fact row only (the id is stable across promotion).
         prev_successor_fact_id: None,
     }))
@@ -732,7 +732,7 @@ pub async fn restore_validity(
 }
 
 /// Correct the staged validity *interval* of a still-**buffered** capture:
-/// set `valid_from` and/or `valid_to` on the buffer row, **leaving
+/// set `valid_from` and/or `valid_to` on the parking page row, **leaving
 /// `decay_reason` untouched**.
 ///
 /// The buffered half of the validity-edit verb — the fact-side
@@ -811,11 +811,11 @@ pub async fn restore_validity_interval(
 }
 
 /// Replace the ACL columns of a still-**buffered** capture: set
-/// `subject_id`, `allow_ids`, and `sender_id` on the buffer row.
+/// `subject_id`, `allow_ids`, and `sender_id` on the parking page row.
 ///
 /// The buffered half of the acl-change verb — the fact-side
 /// [`crate::fact_index::set_acl`] probes first; this catches a target
-/// whose capture has not been promoted yet. The buffer's `subject_id` is
+/// whose capture has not been promoted yet. The parking page's `subject_id` is
 /// NOT NULL and `allow_ids` defaults to `'[]'`, so both always carry a
 /// value.
 ///
@@ -872,7 +872,7 @@ pub async fn set_acl(
 /// `subject_id` and `sender_id` are left untouched — the buffered twin of
 /// [`crate::fact_index::inherit_allow`], for a successor the promoter has not
 /// moved into the fact store yet. The capture id is stable across promotion,
-/// so correcting the buffer row is correcting the fact.
+/// so correcting the parking page row is correcting the fact.
 ///
 /// Returns `false` when the capture is unknown or no longer `buffered`.
 ///
@@ -993,7 +993,7 @@ fn decode(r: BufferRow) -> Result<BufferedCapture> {
         valid_from: r.valid_from,
         valid_to: r.valid_to,
         decay_reason: r.decay_reason,
-        style: r.style,
+        style: crate::wiki::PageStyle::parse_lenient(r.style.as_deref()),
         salience: r.salience,
         authored_refs: serde_json::from_str(&r.authored_refs).unwrap_or_default(),
         // A blob that does not decode is treated as absent, not as an error:
@@ -1047,7 +1047,7 @@ async fn insert_row(pool: &SqlitePool, cap: &BufferedCapture) -> Result<u64> {
     .bind(cap.valid_from.clone())
     .bind(cap.valid_to.clone())
     .bind(cap.decay_reason.clone())
-    .bind(cap.style.clone())
+    .bind(cap.style.map(crate::wiki::PageStyle::as_str))
     .bind(cap.salience.clone())
     .bind(authored_refs_json)
     // `embedding_dim` rides alongside the blob purely as the same
@@ -1107,7 +1107,7 @@ mod tests {
     }
 
     /// A capture request. `wiki_id`/`page` are the LIVE route's fields (the
-    /// struct is shared with [`crate::capture::capture_fact`]); the buffer
+    /// struct is shared with [`crate::capture::capture_fact`]); the parking page
     /// drops them, which is what `no_destination_reaches_the_row` checks.
     fn req(wiki: &str, body: &str, subject: &str) -> CaptureRequest {
         CaptureRequest {
@@ -1173,7 +1173,7 @@ mod tests {
         assert_eq!(count_buffered(&pool).await.unwrap(), 1);
     }
 
-    /// **A claim waiting in the buffer says nothing about where it will go.**
+    /// **A claim waiting in the parking page says nothing about where it will go.**
     /// The request the plan hands over still carries a wiki and a page — it is
     /// the struct the live route shares — and both stop at this boundary:
     /// where a claim goes is decided when the light dream reads the queue

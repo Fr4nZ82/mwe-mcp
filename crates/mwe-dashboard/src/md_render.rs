@@ -229,7 +229,7 @@ where
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 let level_num = heading_level_to_u8(level);
-                // Buffer the inner events + accumulate the visible
+                // Parking page the inner events + accumulate the visible
                 // text so the slug derivation sees a clean string.
                 // Inner text runs go through the same rewriter (a
                 // wikilink inside a heading still clicks through); the

@@ -198,7 +198,6 @@ pub struct PendingClaudeLogin {
 /// backend over many iterations).
 #[derive(Clone, Default)]
 pub struct LlmBackendOverrides {
-    pub hub_writer: Option<Arc<dyn LlmBackend>>,
     pub ingest: Option<Arc<dyn LlmBackend>>,
     pub operator_chat: Option<Arc<dyn LlmBackend>>,
     pub rem_promotions: Option<Arc<dyn LlmBackend>>,
@@ -214,7 +213,6 @@ impl LlmBackendOverrides {
     #[must_use]
     pub fn get(&self, slot: LlmFunction) -> Option<Arc<dyn LlmBackend>> {
         match slot {
-            LlmFunction::HubWriter => self.hub_writer.clone(),
             LlmFunction::Ingest => self.ingest.clone(),
             LlmFunction::OperatorChat => self.operator_chat.clone(),
             LlmFunction::RemPromotions => self.rem_promotions.clone(),
@@ -228,7 +226,6 @@ impl LlmBackendOverrides {
     #[must_use]
     pub fn with(mut self, slot: LlmFunction, backend: Arc<dyn LlmBackend>) -> Self {
         match slot {
-            LlmFunction::HubWriter => self.hub_writer = Some(backend),
             LlmFunction::Ingest => self.ingest = Some(backend),
             LlmFunction::OperatorChat => self.operator_chat = Some(backend),
             LlmFunction::RemPromotions => self.rem_promotions = Some(backend),
@@ -331,37 +328,30 @@ impl MemoryHandles {
             .cloned()
     }
 
-    /// Resolve the backend for the dashboard's operational agentic chat:
-    /// prefer the dedicated [`LlmFunction::OperatorChat`] slot, falling
-    /// back to [`LlmFunction::HubWriter`] when it is unconfigured. The
-    /// chat is a distinct workload from the narrative compiler's
-    /// `ConceptHub` prose writer, which also rides `hub_writer`
-    /// (interactive, multi-step function-calling, faithful fact-id
-    /// handling), so an operator can point it at a stronger model without
-    /// inflating the hub-prose cost — but the fallback keeps deployments that never set
-    /// `operator_chat` working exactly as before, with no new YAML key.
+    /// Resolve the backend for the dashboard's operational agentic chat —
+    /// the dedicated [`LlmFunction::OperatorChat`] slot, and **nothing else**
+    /// (founder, 2026-08-19: *«la chat operativa deve avere il suo modello
+    /// dedicato»*).
     ///
-    /// Only [`BackendForError::SlotMissing`] on the dedicated slot falls
-    /// through: a `BuildFailed` is a real misconfiguration and is
-    /// surfaced, not masked by silently reaching for `hub_writer`.
+    /// It used to fall back to `hub_writer`. That slot existed to write the
+    /// prose of pages that listed other pages; when those pages went, what
+    /// was left was a mandatory setting for a job that no longer existed, so
+    /// it went too. A chat this one — interactive, multi-step function
+    /// calling, faithful fact-id handling — deserves a model chosen for it.
     ///
     /// # Errors
     /// See [`BackendForError`]. `SlotMissing` here means **both** slots
     /// are unconfigured.
     pub fn backend_for_chat(&self) -> Result<Arc<dyn LlmBackend>, BackendForError> {
-        match self.backend_for(LlmFunction::OperatorChat) {
-            Err(BackendForError::SlotMissing(_)) => self.backend_for(LlmFunction::HubWriter),
-            other => other,
-        }
+        self.backend_for(LlmFunction::OperatorChat)
     }
 
     /// Per-slot default knobs for the operational chat, mirroring
     /// [`Self::backend_for_chat`]'s fallback: the `operator_chat` slot's
-    /// defaults when configured, otherwise `hub_writer`'s.
+    /// defaults, and nothing else.
     #[must_use]
     pub fn chat_defaults(&self) -> Option<LlmFunctionConfig> {
         self.defaults_for(LlmFunction::OperatorChat)
-            .or_else(|| self.defaults_for(LlmFunction::HubWriter))
     }
 
     /// Replace the live `LlmConfig` in place. Used by the admin

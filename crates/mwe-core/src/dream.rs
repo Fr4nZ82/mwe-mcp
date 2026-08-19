@@ -157,8 +157,7 @@ fn placement_for<'a>(
 /// [`Cadence::Full`] each stage uses its own configured slot — the Cartografo
 /// the strong `rem_promotions` slot (`llms.auto_promote`), the Conciliatore the
 /// `rem_dedup_semantic` slot (`llms.revisor` — the low binary-classifier
-/// confirmer tier), the Cronista its own slot, the Hub Writer the `hub_writer`
-/// slot. In [`Cadence::Light`] every stage runs on the cheap ingest-tier
+/// confirmer tier) and the Cronista its own slot. In [`Cadence::Light`] every stage runs on the cheap ingest-tier
 /// (Flash) backend via [`tier_backend`], the Cartografo included
 /// ([`NewFactPlacement::NamedThenCartografo`], which reaches only the facts the
 /// user did not name a page for); the strong tier is REM-only.
@@ -185,7 +184,6 @@ pub async fn run_compile(
     // configured strong (Pro) slots.
     let flash = llms.apply;
     let cronista = tier_backend(cadence, cronista_strong, flash);
-    let hub_writer = tier_backend(cadence, llms.hub_writer, flash);
     // Placement of NEW facts per cadence.
     //
     // LIGHT honours every page the USER named — a list, a container asked for
@@ -193,7 +191,7 @@ pub async fn run_compile(
     // on the cheap ingest tier. The second half is what gives the write side
     // its structure back: since the classifier stopped proposing a page for
     // prose, a fact with no name of its own had nowhere to go but the wiki's
-    // buffer, and the strong Cartografo only ever looked at it the next night
+    // parking page, and the strong Cartografo only ever looked at it the next night
     // — by which time the light build had already settled it there, so the
     // carry-over kept it. With no ingest slot wired there is no cheap tier to
     // run it on, and the light pass degrades to the deterministic half alone.
@@ -230,7 +228,7 @@ pub async fn run_compile(
     dream_light::materialise(pool, tree, &embedder, &mut queue, &plan)
         .await
         .context("light dream: materialise")?;
-    let mut report = compiler::compile_dirty_pages(pool, tree, &plan, cronista, hub_writer, now)
+    let mut report = compiler::compile_dirty_pages(pool, tree, &plan, cronista, now)
         .await
         .context("compiler")?;
     report.queue = queue.report;
@@ -289,7 +287,7 @@ pub async fn run_compile(
 /// - each `cross_subject_bloat` fact → a **refile candidate** (the refile
 ///   judge still decides, and refuses what does not apply);
 /// - each `cross_subject_bloat` page, each topology-anomalous page
-///   (`leaf_with_children`, `hub_with_facts`), each `oversized` page, plus
+///   (`leaf_with_children`), each `oversized` page, plus
 ///   every page failing its compile repeatedly (the ledger's streak) → a
 ///   **placement re-open**, so the Cartografo re-judges the carried
 ///   placements with the mass + identity + container signals live
@@ -316,7 +314,6 @@ async fn park_bridge_signals(
         .map(|(slug, _, _)| slug.clone())
         .collect();
     reopen.extend(r.leaf_with_children.iter().map(|(s, _)| s.clone()));
-    reopen.extend(r.hub_with_facts.iter().map(|(s, _)| s.clone()));
     reopen.extend(r.oversized_pages.iter().map(|(s, _)| s.clone()));
     // Pages failing their compile twice in a row re-open too. Map the
     // ledger's source_path key back to a plan slug via the same helper
@@ -511,14 +508,13 @@ pub fn summarize_light(out: &LightOutcome) -> String {
         },
         |c| {
             format!(
-                "promoted {} · superseded {} · skip-dup {} · scanned {} — then compiled {} pages ({} lists, {} hubs, {} unchanged){}",
+                "promoted {} · superseded {} · skip-dup {} · scanned {} — then compiled {} pages ({} lists, {} unchanged){}",
                 out.light.promoted,
                 out.light.superseded,
                 out.light.skipped_dup,
                 out.light.scanned,
                 c.leaves,
                 c.lists,
-                c.hubs,
                 c.unchanged,
                 failure_note(c),
             )
@@ -530,10 +526,9 @@ pub fn summarize_light(out: &LightOutcome) -> String {
 #[must_use]
 pub fn summarize_compile(report: &CompileReport) -> String {
     format!(
-        "compiled {} pages · {} lists · {} hubs · {} unchanged{}",
+        "compiled {} pages · {} lists · {} unchanged{}",
         report.leaves,
         report.lists,
-        report.hubs,
         report.unchanged,
         failure_note(report),
     )
@@ -549,7 +544,7 @@ pub fn summarize_full(out: &FullOutcome) -> String {
         format!(" · husk-gc {}", out.cycle.husk_gc.removed.len())
     };
     format!(
-        "cycle {} · dedup {} · auto-promote {} · comments applied {}{husks} — then compiled {} pages ({} lists, {} hubs){}",
+        "cycle {} · dedup {} · auto-promote {} · comments applied {}{husks} — then compiled {} pages ({} lists){}",
         out.cycle.cycle_id,
         out.cycle.revisor.applied.len(),
         out.cycle.auto_promote.applied.len(),
@@ -559,7 +554,6 @@ pub fn summarize_full(out: &FullOutcome) -> String {
             + out.cycle.briefing_processor.facts_moved,
         out.compile.leaves,
         out.compile.lists,
-        out.compile.hubs,
         failure_note(&out.compile),
     )
 }
@@ -580,9 +574,8 @@ mod tests {
         (dir, tree, pool)
     }
 
-    fn bag<'a>(hub: &'a FakeLlmBackend, rev: &'a FakeLlmBackend) -> RemLlms<'a> {
+    fn bag(rev: &FakeLlmBackend) -> RemLlms<'_> {
         RemLlms {
-            hub_writer: hub,
             revisor: rev,
             auto_promote: None,
             apply: None,
@@ -599,20 +592,18 @@ mod tests {
     #[tokio::test]
     async fn run_compile_is_a_clean_noop_without_cronista() {
         let (_dir, tree, pool) = setup().await;
-        let hub = FakeLlmBackend::new("hub", "# index\n");
         let rev = FakeLlmBackend::new("rev", "noop");
         let report = run_compile(
             &pool,
             &tree,
             Arc::new(FakeEmbedder::new("fake", 4)),
-            &bag(&hub, &rev),
+            &bag(&rev),
             Cadence::Full,
             "2026-05-31T00:00:00Z",
         )
         .await
         .expect("compile must succeed on an empty workdir");
         assert_eq!(report.leaves, 0);
-        assert_eq!(report.hubs, 0);
     }
 
     /// The Conciliatore runs at BOTH cadences (placement-time near-synonym
@@ -645,7 +636,7 @@ mod tests {
     /// the remainder to the Cartografo on the cheap ingest tier. Before this
     /// it settled only what the classifier had already named, which — since
     /// the classifier stopped naming a page for prose — meant every prose fact
-    /// sat on its wiki's buffer until the next REM.
+    /// sat on its wiki's parking page until the next REM.
     ///
     /// Both degradations are part of the policy: no ingest slot ⇒ the light
     /// pass keeps the deterministic half alone; no strong slot ⇒ the full pass

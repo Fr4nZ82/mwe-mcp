@@ -187,13 +187,13 @@ pub struct CaptureRequest {
     /// path can place the fact on the right subject page. `style` =
     /// `prosa` | `prosa-tecnica` | `lista`; the dominant writing register of the
     /// target page. Inert pass-through for now — no consumer until later
-    /// stages wire it through buffer→promote→compile.
-    pub style: Option<String>,
+    /// stages wire it through parking page→promote→compile.
+    pub style: Option<crate::wiki::PageStyle>,
     /// Per-page "what goes here" one-liner that aids future placement. See
     /// [`Self::style`]. Inert pass-through for now.
     pub page_description: Option<String>,
     /// Per-fact salience the ingest classifier deduced,
-    /// threaded into [`fact_index::NewFact`] (direct path) and onto the buffer
+    /// threaded into [`fact_index::NewFact`] (direct path) and onto the parking page
     /// (standard-wiki path). `high | normal | low`; `None` = unspecified. Opaque
     /// pass-through to storage here; the promote step routes `high` facts to
     /// the subject's identity card.
@@ -576,11 +576,7 @@ pub async fn wiki_capture_with_source(
     // From here it is written once, where the reader and the compile both
     // look: the file's testata, mirrored into `page_card` by the reindex
     // sweep, adopted into the plan by `planner::heal_page_cards`.
-    seed_page_card(
-        &abs_page,
-        req.page_description.as_deref(),
-        req.style.as_deref(),
-    );
+    seed_page_card(&abs_page, req.page_description.as_deref(), req.style);
     let (new_contents, region_start, region_end) = append_region(&abs_page, &marker)?;
 
     // DB row FIRST, file second: the insert is the capture's commit
@@ -817,7 +813,7 @@ pub async fn wiki_forget(
 ///
 /// The link is rendered as a plain Obsidian-compatible wikilink:
 /// `[[target_wiki/target_page]]` — always a **page**, never a wiki alone.
-/// With no `target_page` it names that wiki's buffer (`notes`), the page a
+/// With no `target_page` it names that wiki's parking page (`notes`), the page a
 /// fact with no home belongs on and the only readable page every wiki has.
 /// Returns the byte offsets of the new link
 /// so a caller that wants to drop a fact-id marker around it can do
@@ -864,16 +860,16 @@ pub fn wiki_link(
     }
     let link_target = target_page.map_or_else(
         // No page named ⇒ the wiki's BUFFER, never the wiki alone (founder,
-        // 2026-08-05: a link on a page names a page). The buffer is the right
+        // 2026-08-05: a link on a page names a page). The parking page is the right
         // page and not merely an available one: it is by definition where a
         // fact with no page belongs, and it is the only readable page every
         // wiki has — a card exists only for an enrolled person or group, and
         // the map is refused by every route of the read path.
         || {
-            let buffer = crate::wiki::NOTES_FILENAME
+            let parking = crate::wiki::NOTES_FILENAME
                 .strip_suffix(".md")
                 .unwrap_or(crate::wiki::NOTES_FILENAME);
-            format!("[[{target_wiki}/{buffer}]]")
+            format!("[[{target_wiki}/{parking}]]")
         },
         |p| {
             let p_str = p.to_string_lossy().replace('\\', "/");
@@ -1036,12 +1032,15 @@ pub fn render_full_marker(
 /// Best-effort by contract: the capture's commit point is the `fact_index`
 /// row, and a page that starts without a card gets one at its first compile.
 /// Failing the capture over a testata would lose the fact to keep a label.
-fn seed_page_card(abs_page: &Path, description: Option<&str>, style: Option<&str>) {
+fn seed_page_card(
+    abs_page: &Path,
+    description: Option<&str>,
+    style: Option<crate::wiki::PageStyle>,
+) {
     if abs_page.exists() {
         return;
     }
     let description = description.map(str::trim).filter(|d| !d.is_empty());
-    let style = style.map(str::trim).filter(|s| !s.is_empty());
     if description.is_none() && style.is_none() {
         return;
     }
@@ -1055,7 +1054,7 @@ fn seed_page_card(abs_page: &Path, description: Option<&str>, style: Option<&str
     if let Some(st) = style {
         fm.insert(
             serde_yaml::Value::String("style".to_owned()),
-            serde_yaml::Value::String(st.to_owned()),
+            serde_yaml::Value::String(st.as_str().to_owned()),
         );
     }
     let rendered = match serde_yaml::to_string(&serde_yaml::Value::Mapping(fm)) {
@@ -1862,7 +1861,7 @@ mod tests {
 
         let intro = std::fs::read_to_string(dir.path().join("wikis/alice/intro.md")).unwrap();
         // Never a wiki alone: with no page named, the link points at that
-        // wiki's buffer — the page a fact with no home belongs on, and the
+        // wiki's parking page — the page a fact with no home belongs on, and the
         // only readable page every wiki has.
         assert!(intro.contains("[[alice-acmecorp/@notes]]"), "{intro}");
         assert!(!intro.contains("[[alice-acmecorp]]"), "{intro}");

@@ -277,7 +277,7 @@ struct FactRow {
     allow_ids: Vec<String>,
     topics: Vec<String>,
     salience: Option<String>,
-    style: Option<String>,
+    style: Option<mwe_core::wiki::PageStyle>,
     body: String,
     valid_from: Option<String>,
     valid_to: Option<String>,
@@ -293,7 +293,7 @@ struct FactRow {
     successor_fact_id: Option<String>,
     deleted_at: Option<String>,
     deleted_reason: Option<String>,
-    /// Un-promoted buffer capture (vs a durable `fact_index` fact).
+    /// Un-promoted parking page capture (vs a durable `fact_index` fact).
     fresh: bool,
     /// Active = neither superseded nor deleted (always true for a fresh row).
     active: bool,
@@ -335,7 +335,7 @@ impl FactRow {
     fn from_capture(c: BufferedCapture) -> Self {
         Self {
             fact_id: c.capture_id.as_str().to_owned(),
-            // Empty on purpose: a capture waiting in the buffer is in no wiki
+            // Empty on purpose: a capture waiting in the parking page is in no wiki
             // yet — the light dream decides where it goes when it sorts the
             // queue. The table renders the blank as a dash.
             wiki_id: String::new(),
@@ -410,9 +410,9 @@ async fn index(
     // operator view does not silently lag the agent's knowledge. Both calls
     // pull the FULL row (every column), ACL-filtered, honouring the same
     // filters incl. `sort` / `include_inactive`.
-    let fresh = recall::wiki_buffered_full_for(&state.pool, &core_filters, &sender_ctx, reveal)
+    let fresh = recall::parking_pageed_full_for(&state.pool, &core_filters, &sender_ctx, reveal)
         .await
-        .map_err(|e| DashboardError::Internal(format!("wiki_buffered_full_for: {e}")))?;
+        .map_err(|e| DashboardError::Internal(format!("parking_pageed_full_for: {e}")))?;
     let promoted = recall::wiki_facts_full_for(&state.pool, &core_filters, &sender_ctx, reveal)
         .await
         .map_err(|e| DashboardError::Internal(format!("wiki_facts_full_for: {e}")))?;
@@ -1437,7 +1437,7 @@ fn render_index(
                                     None => { span.muted { "—" } }
                                 }
                             }
-                            td { (opt_cell(row.style.as_deref())) }
+                            td { (opt_cell(row.style.map(mwe_core::wiki::PageStyle::as_str))) }
                             td { (opt_cell(row.source_ref.as_deref())) }
                             td { (list_cell(&row.authored_refs)) }
                             td { (ts_cell(row.superseded_at.as_deref())) }

@@ -113,7 +113,7 @@ async fn page_renders_6_slots_and_api_key_panel_for_admin() {
     // routes/llm_config.rs silently wiped the prose compiler on every
     // save, so it is configured here too (it keeps its deprecated marker).
     for slot in &[
-        "hub_writer",
+        "operator_chat",
         "ingest",
         "rem_promotions",
         "cronista",
@@ -148,7 +148,7 @@ async fn save_writes_yaml_and_backs_up_previous_config() {
     .expect("seed");
 
     // Submit a form that wires ingest to ollama + qwen.
-    let form_body = "hub_writer__backend=&ingest__backend=ollama&ingest__model=qwen3.5:9b-q8_0\
+    let form_body = "operator_chat__backend=&ingest__backend=ollama&ingest__model=qwen3.5:9b-q8_0\
         &ingest__api_key_env=&ingest__temperature=0.3&ingest__max_tokens=512\
         &ingest__reasoning_effort=&ingest__base_url=\
         &rem_promotions__backend=&rem_dedup_semantic__backend=&cronista__backend=";
@@ -178,7 +178,7 @@ async fn save_writes_yaml_and_backs_up_previous_config() {
     assert_eq!(ingest.temperature, Some(0.3));
     assert_eq!(ingest.max_tokens, Some(512));
     // Other slots stayed unwired.
-    assert!(parsed.llm.hub_writer.is_none());
+    assert!(parsed.llm.operator_chat.is_none());
     assert!(parsed.llm.cronista.is_none());
 
     // The previous YAML is in the .bak slot.
@@ -196,9 +196,9 @@ async fn save_anthropic_derives_api_key_env_from_provider() {
     // default (key) mode derives ANTHROPIC_API_KEY on save — no rejection.
     let (app, _pool, workdir, _dir) = make_app().await;
     let cookie = login_as_admin(&app).await;
-    let form_body = "hub_writer__backend=anthropic&hub_writer__model=claude-opus-4-8\
-        &hub_writer__temperature=&hub_writer__max_tokens=\
-        &hub_writer__reasoning_effort=&hub_writer__base_url=\
+    let form_body = "operator_chat__backend=anthropic&operator_chat__model=claude-opus-4-8\
+        &operator_chat__temperature=&operator_chat__max_tokens=\
+        &operator_chat__reasoning_effort=&operator_chat__base_url=\
         &ingest__backend=&rem_promotions__backend=&rem_dedup_semantic__backend=";
     let response = send(
         &app,
@@ -213,7 +213,7 @@ async fn save_anthropic_derives_api_key_env_from_provider() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let cfg = Config::load(&workdir).expect("load");
-    let hw = cfg.llm.hub_writer.as_ref().expect("hub_writer wired");
+    let hw = cfg.llm.operator_chat.as_ref().expect("operator_chat wired");
     assert_eq!(hw.backend, "anthropic");
     assert_eq!(hw.api_key_env.as_deref(), Some("ANTHROPIC_API_KEY"));
 }
@@ -326,9 +326,9 @@ async fn save_hot_reloads_llm_config_into_memory_handles() {
     let (app, _pool, workdir, _dir) = make_app().await;
     let cookie = login_as_admin(&app).await;
 
-    let form_body = "hub_writer__backend=ollama&hub_writer__model=qwen3.5:9b-q8_0\
-        &hub_writer__api_key_env=&hub_writer__temperature=0.42&hub_writer__max_tokens=4096\
-        &hub_writer__reasoning_effort=&hub_writer__base_url=\
+    let form_body = "operator_chat__backend=ollama&operator_chat__model=qwen3.5:9b-q8_0\
+        &operator_chat__api_key_env=&operator_chat__temperature=0.42&operator_chat__max_tokens=4096\
+        &operator_chat__reasoning_effort=&operator_chat__base_url=\
         &ingest__backend=&rem_promotions__backend=&rem_dedup_semantic__backend=&cronista__backend=";
     let response = send(
         &app,
@@ -355,7 +355,7 @@ async fn save_hot_reloads_llm_config_into_memory_handles() {
     // panicked. To prove the in-memory side specifically, we ask
     // Config::load to round-trip the file the route just wrote.
     let cfg = mwe_core::config::Config::load(&workdir).expect("load");
-    let hw = cfg.llm.hub_writer.as_ref().expect("hub_writer");
+    let hw = cfg.llm.operator_chat.as_ref().expect("operator_chat");
     assert_eq!(hw.model, "qwen3.5:9b-q8_0");
     assert_eq!(hw.temperature, Some(0.42));
     assert_eq!(hw.max_tokens, Some(4096));
@@ -404,8 +404,8 @@ async fn set_api_key_hot_reloads_overrides_and_surfaces_origin_label() {
 #[tokio::test]
 async fn save_then_immediate_backend_for_returns_new_anthropic_slot() {
     // End-to-end check of the hot-reload chain: POST a YAML config
-    // that wires hub_writer to anthropic, then ask MemoryHandles for
-    // the hub_writer backend and assert we get a live AnthropicBackend
+    // that wires operator_chat to anthropic, then ask MemoryHandles for
+    // the operator_chat backend and assert we get a live AnthropicBackend
     // — not the SlotMissing error a stale clone would throw.
     use mwe_core::config::LlmFunction;
 
@@ -428,9 +428,9 @@ async fn save_then_immediate_backend_for_returns_new_anthropic_slot() {
     .await;
     assert!(set.status().is_redirection());
 
-    let form_body = "hub_writer__backend=anthropic&hub_writer__model=claude-haiku-4-5-20251001\
-        &hub_writer__api_key_env=ANTHROPIC_API_KEY&hub_writer__temperature=&hub_writer__max_tokens=\
-        &hub_writer__reasoning_effort=&hub_writer__base_url=\
+    let form_body = "operator_chat__backend=anthropic&operator_chat__model=claude-haiku-4-5-20251001\
+        &operator_chat__api_key_env=ANTHROPIC_API_KEY&operator_chat__temperature=&operator_chat__max_tokens=\
+        &operator_chat__reasoning_effort=&operator_chat__base_url=\
         &ingest__backend=&rem_promotions__backend=&rem_dedup_semantic__backend=&cronista__backend=";
     let save = send(
         &app,
@@ -447,15 +447,15 @@ async fn save_then_immediate_backend_for_returns_new_anthropic_slot() {
 
     // Re-open the workdir via a fresh DashboardState (simulating "an
     // independent reader") — the route handler does the same. The
-    // assertion that MemoryHandles::backend_for(HubWriter) constructs
+    // assertion that MemoryHandles::backend_for(OperatorChat) constructs
     // a live backend is the direct hot-reload guarantee: without the
     // override the closure would return None for ANTHROPIC_API_KEY
     // and build_backend would raise MissingApiKeyEnv.
     let cfg = mwe_core::config::Config::load(&workdir).expect("load");
-    let slot = cfg.llm.slot(LlmFunction::HubWriter).expect("slot");
+    let slot = cfg.llm.slot(LlmFunction::OperatorChat).expect("slot");
     let envs: std::collections::HashMap<&str, &str> =
         std::iter::once(("ANTHROPIC_API_KEY", "sk-ant-fake-for-construction")).collect();
-    slot.build_backend_with_env(LlmFunction::HubWriter, |k| {
+    slot.build_backend_with_env(LlmFunction::OperatorChat, |k| {
         envs.get(k).map(|s| (*s).to_owned())
     })
     .expect("backend constructs");

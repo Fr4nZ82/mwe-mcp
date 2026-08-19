@@ -522,7 +522,6 @@ async fn run_dream(
 /// `Arc<dyn LlmBackend>` (vs the server scheduler's owned `Box`), so it keeps
 /// its own holder rather than reusing the scheduler's `OwnedRemLlms`.
 struct DreamBackends {
-    hub: Arc<dyn LlmBackend>,
     revisor: Arc<dyn LlmBackend>,
     auto_promote: Option<Arc<dyn LlmBackend>>,
     apply: Option<Arc<dyn LlmBackend>>,
@@ -531,19 +530,15 @@ struct DreamBackends {
 }
 
 impl DreamBackends {
-    /// Resolve the bag. `hub_writer` + `rem_dedup_semantic` are mandatory
-    /// (the reorg and the Conciliatore need them); the rest are best-effort.
+    /// Resolve the bag. Only `rem_dedup_semantic` is mandatory (the
+    /// Conciliatore needs it); the rest are best-effort.
     fn resolve(memory: &MemoryHandles) -> Result<Self> {
-        let hub = memory
-            .backend_for(LlmFunction::HubWriter)
-            .map_err(|e| DashboardError::Internal(format!("dream: hub_writer slot: {e}")))?;
         let revisor = memory
             .backend_for(LlmFunction::RemDedupSemantic)
             .map_err(|e| {
                 DashboardError::Internal(format!("dream: rem_dedup_semantic slot: {e}"))
             })?;
         Ok(Self {
-            hub,
             revisor,
             auto_promote: memory.backend_for(LlmFunction::RemPromotions).ok(),
             apply: memory.backend_for(LlmFunction::Ingest).ok(),
@@ -554,7 +549,6 @@ impl DreamBackends {
 
     fn bag(&self) -> RemLlms<'_> {
         RemLlms {
-            hub_writer: &*self.hub,
             revisor: &*self.revisor,
             auto_promote: self.auto_promote.as_deref(),
             apply: self.apply.as_deref(),

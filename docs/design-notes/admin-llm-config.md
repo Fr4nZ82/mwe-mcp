@@ -54,7 +54,7 @@ What is enforced **today**, verified against
 | Role | Enforced? | How |
 |---|---|---|
 | `ingest` | **yes** | Onboarding step 1 below: the admin cannot leave this page for the profile primer until the role resolves to a usable backend, and the banner says so. |
-| `cronista`, `hub_writer`, `rem_dedup_semantic`, `rem_promotions` | **not yet** | Nothing blocks an admin who wires `ingest` and stops. The engine then degrades — the compile is skipped, claims keep waiting — which is *safe* but is not the product working. |
+| `cronista`, `cronista`, `rem_dedup_semantic`, `rem_promotions` | **not yet** | Nothing blocks an admin who wires `ingest` and stops. The engine then degrades — the compile is skipped, claims keep waiting — which is *safe* but is not the product working. |
 
 So a doc line that presents a missing slot as ordinary behaviour is describing
 the gap, not a feature. The gap is one place (`ingest_ready`, which asks about
@@ -116,7 +116,7 @@ the daemon's installed tags — see [Section 2](#section-2--roles).
 
 One card per LLM slot — **every**
 [`LlmFunction`](../../crates/mwe-core/src/config.rs) variant: `ingest`,
-`hub_writer`, `operator_chat`, `rem_promotions`, `cronista`, `navigator`,
+`operator_chat`, `rem_promotions`, `cronista`, `navigator`,
 `rem_dedup_semantic`, in that UX order. `cronista` (the narrative prose
 compiler, invoked by the dream compile pass) is surfaced like every other
 slot: `save()` rebuilds the config from exactly this card set, so leaving
@@ -125,7 +125,7 @@ a fresh setup then captured facts but never rendered readable pages. It
 keeps its `#[deprecated]` marker (pending graduation to a full REM sub-job)
 but is configured normally. `operator_chat` is the dashboard's operational
 agentic-chat slot; unlike the others, leaving it **disabled is benign** —
-the chat falls back to `hub_writer` (`backend_for_chat`), so the card is
+the chat falls back to its own slot alone (`backend_for_chat`), so the card is
 how an operator *opts in* to a stronger chat model, not a slot that breaks
 when unset. Each card pairs a one-line description
 with a **capability-tier hint** (the operator-facing guidance that is the

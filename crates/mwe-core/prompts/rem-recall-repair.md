@@ -47,7 +47,7 @@ Rules:
 - Be CONSERVATIVE. Propose a move ONLY when the fact plainly belongs in one of the candidate wikis — when its subject matter is that wiki's subject and its current home is why the query could not reach it. When in doubt, answer "stay" (a common, fine answer: not every miss has a filing cause).
 - A fact belongs in the wiki whose SUBJECT it is primarily about — whose subject/topic the claim is fundamentally a fact OF, not merely a fact that references it.
 - `dest_wiki_id` MUST be a wiki_id copied EXACTLY from the candidate list. Never invent one, and never name the home wiki.
-- You choose only the destination WIKI, not a page: the fact lands on that wiki's buffer page (`@notes.md`, where everything unplaced waits) and the wiki's own next dream files it onto the right page.
+- You choose only the destination WIKI, not a page: the fact lands on that wiki's parking page (`@notes.md`, where everything unplaced waits) and the wiki's own next dream files it onto the right page.
 - Your verdict is a CANDIDATE only: a replay gate will verify that the move actually makes the fact reachable for this query without regressing anything, and only then does it commit (act-first, revertable from the dashboard).
 
 QUERY (what the user asked — the turn that missed):

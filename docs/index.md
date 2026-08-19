@@ -251,7 +251,7 @@ If you are new, read in this order:
   tray, omnipresent chat.
 - [agentic-chat.md](design-notes/agentic-chat.md) — the registry contract
   for the dashboard chat panel: the `AgenticTool` variants (read + write),
-  `MAX_AGENTIC_ITERATIONS`, system prompt structure, the `hub_writer`
+  `MAX_AGENTIC_ITERATIONS`, system prompt structure, the `operator_chat`
   dependency.
 - [admin-llm-config.md](design-notes/admin-llm-config.md) — the admin-only
   LLM config editor at `/dashboard/admin/llm-config`: the LLM-slot table

@@ -130,8 +130,7 @@ pub struct SlotHealth {
     deprecated,
     reason = "Cronista is deprecated but a legacy YAML may still wire it; probe it like any other slot."
 )]
-pub const LLM_FUNCTIONS: [LlmFunction; 7] = [
-    LlmFunction::HubWriter,
+pub const LLM_FUNCTIONS: [LlmFunction; 6] = [
     LlmFunction::Ingest,
     LlmFunction::OperatorChat,
     LlmFunction::RemPromotions,

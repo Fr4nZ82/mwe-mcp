@@ -151,16 +151,9 @@ const ROLE_GUIDES: &[RoleGuide] = &[
         tier: "workhorse — a local 9B is fine; for structural judgements a mid-tier model is better (Sonnet / Gemini Flash)",
     },
     RoleGuide {
-        slot: LlmFunction::HubWriter,
-        title: "Overview pages",
-        blurb: "Writes the prose of a page that has no facts of its own and \
-                only lists its child pages.",
-        tier: "workhorse — a local 9B is fine",
-    },
-    RoleGuide {
         slot: LlmFunction::OperatorChat,
         title: "Operator chat",
-        blurb: "Powers this dashboard's operational chat — multi-step tool calls (recall, forget, move, supersede) that must handle fact ids faithfully. Leave disabled to reuse «Index summaries» (hub_writer).",
+        blurb: "Powers this dashboard's operational chat — multi-step tool calls (recall, forget, move, supersede) that must handle fact ids faithfully. It has no fallback: with this unset the chat is unavailable.",
         tier: "strong, with reliable function-calling (Sonnet / Gemini Pro / a 32B+ local); the 9B struggles with multi-tool reasoning and ids",
     },
     RoleGuide {
@@ -211,7 +204,6 @@ const REASONING_EFFORTS: &[&str] = &["low", "medium", "high", "extra-high"];
     reason = "Cronista is surfaced as a configurable slot despite its deprecated marker"
 )]
 const SLOTS: &[LlmFunction] = &[
-    LlmFunction::HubWriter,
     LlmFunction::Ingest,
     LlmFunction::OperatorChat,
     LlmFunction::RemPromotions,
@@ -1199,7 +1191,6 @@ fn derive_api_key_env(backend: &str, anthropic_login: bool) -> Option<String> {
 #[allow(deprecated, reason = "Cronista arm kept for YAML backward compat")]
 const fn slot_mut(llm: &mut LlmConfig, slot: LlmFunction) -> &mut Option<LlmFunctionConfig> {
     match slot {
-        LlmFunction::HubWriter => &mut llm.hub_writer,
         LlmFunction::Ingest => &mut llm.ingest,
         LlmFunction::OperatorChat => &mut llm.operator_chat,
         LlmFunction::RemPromotions => &mut llm.rem_promotions,
@@ -1537,7 +1528,6 @@ mod tests {
         let prior = LlmConfig::default();
         let parsed = parse_form_into_llm_config(&form, &prior).expect("parse");
         assert!(parsed.ingest.is_none());
-        assert!(parsed.hub_writer.is_none());
     }
 
     #[test]
@@ -1659,15 +1649,21 @@ mod tests {
     #[test]
     fn parse_form_round_trips_full_slot() {
         let mut form: HashMap<String, String> = HashMap::new();
-        form.insert("hub_writer__backend".into(), "anthropic".into());
-        form.insert("hub_writer__model".into(), "claude-opus-4-7".into());
-        form.insert("hub_writer__temperature".into(), "0.4".into());
-        form.insert("hub_writer__max_tokens".into(), "2048".into());
-        form.insert("hub_writer__reasoning_effort".into(), "extra-high".into());
-        form.insert("hub_writer__base_url".into(), "https://example.test".into());
+        form.insert("operator_chat__backend".into(), "anthropic".into());
+        form.insert("operator_chat__model".into(), "claude-opus-4-7".into());
+        form.insert("operator_chat__temperature".into(), "0.4".into());
+        form.insert("operator_chat__max_tokens".into(), "2048".into());
+        form.insert(
+            "operator_chat__reasoning_effort".into(),
+            "extra-high".into(),
+        );
+        form.insert(
+            "operator_chat__base_url".into(),
+            "https://example.test".into(),
+        );
         let prior = LlmConfig::default();
         let parsed = parse_form_into_llm_config(&form, &prior).expect("parse");
-        let hw = parsed.hub_writer.as_ref().expect("hub_writer");
+        let hw = parsed.operator_chat.as_ref().expect("operator_chat");
         assert_eq!(hw.backend, "anthropic");
         assert_eq!(hw.model, "claude-opus-4-7");
         // `api_key_env` is derived from the provider, not the form.

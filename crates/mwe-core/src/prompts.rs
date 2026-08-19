@@ -253,10 +253,6 @@ pub const BUNDLED: &[(&str, &str)] = &[
         crate::rem::BUNDLED_REM_PAGE_GROUPING_MD,
     ),
     (
-        "regenerate-index",
-        crate::compiler::BUNDLED_REGENERATE_INDEX_MD,
-    ),
-    (
         "document-classify",
         crate::document::BUNDLED_DOCUMENT_CLASSIFY_MD,
     ),
@@ -321,7 +317,6 @@ pub const PROSE_REGISTRY: &[(&str, PromptOutput)] = &[
     // --- writes memory a person reads ---
     ("ingest", PromptOutput::Prose),
     ("cronista", PromptOutput::Prose),
-    ("regenerate-index", PromptOutput::Prose),
     ("cartografo", PromptOutput::Prose),
     ("conciliatore", PromptOutput::Prose),
     ("comment-apply", PromptOutput::Prose),

@@ -150,7 +150,7 @@ pub struct FactIndexRow {
     /// Proposed page writing style (closed palette `prosa` | `prosa-tecnica` |
     /// `lista`) that seeds a freshly-created page's testata. `None` =
     /// unproposed. See [`Self::target_page`].
-    pub style: Option<String>,
+    pub style: Option<crate::wiki::PageStyle>,
     /// Provenance of an extracted fact: the media-catalog id or URL of the
     /// source document (document ingest).
     /// `None` for ordinary conversational captures. DB-authoritative
@@ -231,7 +231,7 @@ pub struct NewFact {
     /// [`FactIndexRow::target_page`]. `None` = unproposed.
     pub target_page: Option<String>,
     /// Ingest-proposed page style. See [`FactIndexRow::style`].
-    pub style: Option<String>,
+    pub style: Option<crate::wiki::PageStyle>,
     /// Source-document provenance. See [`FactIndexRow::source_ref`].
     /// `None` for conversational captures (the overwhelmingly common case).
     pub source_ref: Option<String>,
@@ -450,7 +450,7 @@ where
         .bind(&fact.valid_from)
         .bind(&fact.valid_to)
         .bind(&fact.target_page)
-        .bind(&fact.style)
+        .bind(fact.style.map(crate::wiki::PageStyle::as_str))
         .bind(&fact.salience)
         .bind(&fact.source_ref)
         .bind(&authored_refs_json)
@@ -803,7 +803,7 @@ pub async fn set_acl(
 /// subject with Alice's principal takes the fact about Bob away from Bob.
 ///
 /// Returns `false` when `fact_id` has no active row (unknown or tombstoned),
-/// so the caller can fall through to the capture buffer.
+/// so the caller can fall through to the capture parking page.
 ///
 /// # Errors
 ///
@@ -2489,7 +2489,7 @@ type ListPageAccumulator = std::collections::BTreeMap<(String, String), (Option<
 /// liste, sia di crearle che di aggiungere/togliere/modificare elementi»*).
 /// Until then this query also unioned `capture_buffer`, to catch a list
 /// created minutes ago that the hourly promotion had not reached yet; that
-/// state cannot happen any more, and the buffer names no page to find one by.
+/// state cannot happen any more, and the parking page names no page to find one by.
 ///
 /// `principals` is [`crate::acl::reader_principals`] for the sender; an
 /// empty slice returns nothing rather than everything, because unlike a
@@ -2578,7 +2578,7 @@ pub async fn list_pages_readable_by(
 /// `sqlx::Error`.
 pub async fn count_list_pages_in_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<usize> {
     let rows = sqlx::query_as::<_, (String, Option<String>)>(
-        // `fact_index` alone: a `lista` never waits in the buffer — it is
+        // `fact_index` alone: a `lista` never waits in the parking page — it is
         // written live, page and row together, in the turn. See
         // [`list_pages_readable_by`].
         "SELECT source_path, target_page FROM fact_index \
@@ -2975,7 +2975,7 @@ fn decode_row(raw: RawFactRow) -> Result<FactIndexRow> {
         decay_reason: raw.decay_reason,
         salience: raw.salience,
         target_page: raw.target_page,
-        style: raw.style,
+        style: crate::wiki::PageStyle::parse_lenient(raw.style.as_deref()),
         source_ref: raw.source_ref,
         authored_refs,
     })
@@ -3067,7 +3067,7 @@ mod tests {
         // A compiled list of the family's, readable by the family.
         let mut shopping = sample_new_fact(SAMPLE_UUID_V7_1, "famiglia", "group:famiglia", "latte");
         shopping.source_path = "wikis/famiglia/spesa.md".to_owned();
-        shopping.style = Some("lista".to_owned());
+        shopping.style = Some(crate::wiki::PageStyle::Lista);
         insert_if_absent(&pool, &shopping).await.unwrap();
         // The `holds` line is the PAGE's card, read from `page_card` — not a
         // column repeated on each of the page's facts.
@@ -3078,7 +3078,7 @@ mod tests {
                 wiki_id: "famiglia".to_owned(),
                 description: Some("what the family still needs to buy".to_owned()),
                 keywords: Vec::new(),
-                style: Some("lista".to_owned()),
+                style: Some(crate::wiki::PageStyle::Lista),
                 file_mtime_ms: None,
                 file_size: None,
             },
@@ -3089,19 +3089,19 @@ mod tests {
         // A second item on the SAME list — one page, not two entries.
         let mut bread = sample_new_fact(SAMPLE_UUID_V7_2, "famiglia", "group:famiglia", "pane");
         bread.source_path = "wikis/famiglia/spesa.md".to_owned();
-        bread.style = Some("lista".to_owned());
+        bread.style = Some(crate::wiki::PageStyle::Lista);
         insert_if_absent(&pool, &bread).await.unwrap();
 
         // A prose fact on the same wiki — not a list, must not appear.
         let mut prose = sample_new_fact(SAMPLE_UUID_V7_3, "famiglia", "group:famiglia", "vacanze");
         prose.source_path = "wikis/famiglia/vacanze.md".to_owned();
-        prose.style = Some("prosa".to_owned());
+        prose.style = Some(crate::wiki::PageStyle::Prosa);
         insert_if_absent(&pool, &prose).await.unwrap();
 
         // Carol's own list — she is in no group here, so the family may not see it.
         let mut carols = sample_new_fact(SAMPLE_UUID_V7_4, "carol", "user:carol", "Dune");
         carols.source_path = "wikis/carol/da_leggere.md".to_owned();
-        carols.style = Some("lista".to_owned());
+        carols.style = Some(crate::wiki::PageStyle::Lista);
         carols.allow_ids = Vec::new();
         carols.sender_id = Some("user:carol".parse().unwrap());
         insert_if_absent(&pool, &carols).await.unwrap();
@@ -3138,7 +3138,7 @@ mod tests {
         let plant = async |id: &str, wiki: &str, page: &str, at: &str| {
             let mut f = sample_new_fact(id, wiki, "user:bob", "x");
             f.source_path = format!("wikis/{wiki}/{page}");
-            f.style = Some("lista".to_owned());
+            f.style = Some(crate::wiki::PageStyle::Lista);
             f.subject_id = "user:bob".parse().unwrap();
             f.sender_id = Some("user:bob".parse().unwrap());
             insert_if_absent(&pool, &f).await.unwrap();
@@ -3171,9 +3171,9 @@ mod tests {
     }
 
     /// A list added to minutes ago is offered immediately, and it does not
-    /// need the buffer to be: a `lista` item is written live, page and row
+    /// need the parking page to be: a `lista` item is written live, page and row
     /// together, in the turn that said it. What is still waiting in the
-    /// buffer names no page at all — that is what waiting means — so the
+    /// parking page names no page at all — that is what waiting means — so the
     /// inventory is `fact_index` and nothing else.
     ///
     /// The gap this guards is the one that mints a SECOND shopping list when
@@ -3201,7 +3201,7 @@ mod tests {
                 valid_from: None,
                 valid_to: None,
                 target_page: Some("spesa.md".into()),
-                style: Some("lista".into()),
+                style: Some(crate::wiki::PageStyle::Lista),
                 salience: None,
                 source_ref: None,
                 authored_refs: Vec::new(),
@@ -3217,14 +3217,14 @@ mod tests {
                 wiki_id: "famiglia".to_owned(),
                 description: Some("what the family still needs to buy".to_owned()),
                 keywords: Vec::new(),
-                style: Some("lista".to_owned()),
+                style: Some(crate::wiki::PageStyle::Lista),
                 file_mtime_ms: None,
                 file_size: None,
             },
         )
         .await
         .unwrap();
-        // A claim waiting in the buffer, `lista`-styled or not, contributes
+        // A claim waiting in the parking page, `lista`-styled or not, contributes
         // nothing: it has no destination to contribute.
         sqlx::query(
             "INSERT INTO capture_buffer \

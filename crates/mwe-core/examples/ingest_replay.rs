@@ -115,7 +115,7 @@ const BUNDLED_INGEST_PROMPT_MD: &str = include_str!("../prompts/ingest.md");
 
 /// Opening of the ingest classifier's system prompt. The spool labels a
 /// record by **slot**, and the `ingest` slot is shared with `cronista`,
-/// `conciliatore`, `regenerate-index` and `ingest-closures` — filtering on
+/// `conciliatore` and `ingest-closures` — filtering on
 /// `function` alone over-counts by ~75%. This marker is the real filter.
 const INGEST_MARKER: &str = "You are the `ingest` classifier inside mwe-mcp";
 

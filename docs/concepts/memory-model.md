@@ -138,7 +138,7 @@ wikis/
   alice/                      (wiki-user)
     _meta.md
     @profile.md                (Alice's identity card)
-    @notes.md                  (buffer — facts with no page yet)
+    @notes.md                  (parking page — facts nobody placed yet)
     lavoro.md                 (leaf page)
     acmecorp/                 (sub-wiki, emerged from promotion)
       _meta.md
@@ -152,7 +152,7 @@ each one honest:
 | page | answers | who reads it |
 |---|---|---|
 | `@profile.md` | *who is this actor?* | recall **serves** it verbatim in its own block slot; the funnel never navigates to it |
-| `@notes.md` | *nothing yet* | the buffer a fact lands on when no page fits; REM's reorg drains it onto real pages |
+| `@notes.md` | *nothing yet* | the **parking page** a fact lands on when the placement pass declines to place it; REM's reorg drains it onto real pages |
 | `@rules.md` | *what has this actor asked for?* | the rules channel only — outside every structural sweep |
 
 **There is no `index.md`.** Until 2026-08-15 REM assembled one per wiki
@@ -393,7 +393,7 @@ family:
   `wiki-group`, and every emerged sub-wiki): the DB is the
   **authoritative fact store**. `fact_index` owns the facts, their ACL
   and their lifecycle; the published pages are its **prose render** (the
-  nightly compiler's output). The reindex pipeline keeps render and index
+  compile's output — hourly, and again at night). The reindex pipeline keeps render and index
   aligned after external edits — offsets are repaired, and a hand-deleted
   marker or page is honoured as the operator's forget gesture — but rows
   are **never created or rewritten from disk markers**
@@ -645,7 +645,7 @@ decides *where each fact lives*) and rewrites every page the plan marks dirty.
 Per page it dispatches:
 
 - **A hub** — a page with no facts of its own but one or more child pages
-  (a `concept_hub` or `group_theme`) — goes to the **Hub Writer**, a cheap
+  (a group's card, or a wiki's parking page once its facts are drained) — goes to the **Hub Writer**, a cheap
   model that emits a short overview citing every child as a `[[wikilink]]`.
   A hub has no facts, so it carries no ACL markers.
 - **Everything else** — a leaf page — goes to **Il Cronista**, run on the

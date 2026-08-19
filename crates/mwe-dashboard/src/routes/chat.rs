@@ -410,7 +410,7 @@ pub struct AgenticTurn {
 }
 
 /// Run an agentic submission through the operational chat LLM backend
-/// (the `operator_chat` slot, falling back to `hub_writer` — see
+/// (the `operator_chat` slot — see
 /// [`crate::state::MemoryHandles::backend_for_chat`])
 /// (agentic chat) with the dashboard's
 /// whitelisted tool registry.
@@ -442,9 +442,9 @@ pub struct AgenticTurn {
 ///
 /// # Errors
 /// Returns [`DashboardError::Internal`] when `memory` is not wired,
-/// [`DashboardError::Validation`] when **neither** the `llm.operator_chat`
-/// nor the `llm.hub_writer` fallback slot is configured (same UX
-/// treatment as the `llm.ingest` slot in [`process_submission`]), or when
+/// [`DashboardError::Validation`] when the `llm.operator_chat` slot is not
+/// configured (same UX treatment as the `llm.ingest` slot in
+/// [`process_submission`]), or when
 /// the chat backend itself surfaces an unrecoverable error.
 #[allow(clippy::too_many_lines, reason = "one linear LLM-orchestration setup")]
 pub async fn agentic_submission(
@@ -457,14 +457,15 @@ pub async fn agentic_submission(
     let memory = state.memory.as_ref().ok_or_else(|| {
         DashboardError::Internal("memory handles not wired — start with `mwe-mcp serve`".into())
     })?;
-    // The operational chat prefers its dedicated `operator_chat` slot and
-    // falls back to `hub_writer` when it is unconfigured — see
-    // `MemoryHandles::backend_for_chat`.
+    // The operational chat has its own slot and no fallback (founder,
+    // 2026-08-19: *«la chat operativa deve avere il suo modello dedicato»*).
+    // It used to borrow `hub_writer`, which stopped meaning anything when the
+    // compiler stopped writing pages that list other pages.
     let backend = memory.backend_for_chat().map_err(|e| match e {
         BackendForError::SlotMissing(_) => DashboardError::Validation(
             "The dashboard-chat LLM is not configured in mwe-mcp.config.yaml. \
-             Configure the `llm.operator_chat` slot (or `llm.hub_writer`, used \
-             as the fallback) for the agentic loop before continuing."
+             Configure the `llm.operator_chat` slot for the agentic loop \
+             before continuing."
                 .into(),
         ),
         BackendForError::BuildFailed { slot, detail } => {
@@ -543,7 +544,7 @@ pub async fn agentic_submission(
         let response = backend
             .chat(request)
             .await
-            .map_err(|e| DashboardError::Internal(format!("hub_writer chat: {e}")))?;
+            .map_err(|e| DashboardError::Internal(format!("operator_chat: {e}")))?;
 
         if response.message.tool_calls.is_empty() {
             // No tool calls — this is the model's final textual reply.

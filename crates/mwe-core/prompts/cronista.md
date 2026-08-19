@@ -1,7 +1,7 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.30
+version: 1.31
 default_version_at_bootstrap: v1.30
 ---
 
@@ -22,7 +22,7 @@ The system prompt for **Il Cronista** (compiler stage 3,
   to the `cronista` slot when no ingest slot is configured. The slot's quality
   is a deployment choice: the API-backed profiles pin a strong model on
   `cronista`, the all-local profile the local workhorse.
-- **Placeholders**: `{title}`, `{slug}`, `{parent_hub}`, `{page_kind}` (`identity_card` when the plan node is a `Person`/`GroupTheme` sitting on its reserved `@profile.md`, `leaf` otherwise — it switches on the IDENTITY CARD section of the brief), `{tone}` (resolved
+- **Placeholders**: `{title}`, `{slug}`, `{parent_hub}`, `{page_kind}` (`identity_card` when the plan node sits on its wiki's reserved `@profile.md`, `leaf` otherwise — it switches on the IDENTITY CARD section of the brief), `{tone}` (resolved
   by `compiler::resolve_tone` from the wiki's `is_agent` marker first — an
   agent's own wiki is its autobiography and gets the first-person voice — then
   from its `wiki_type`, and finally narrowed per page by

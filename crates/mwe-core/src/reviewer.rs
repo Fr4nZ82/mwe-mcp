@@ -38,7 +38,7 @@ use thiserror::Error;
 
 use crate::enrollment;
 use crate::parser::{self, ParseEvent};
-use crate::planner::{CompilationPlan, PagePlan, PageType};
+use crate::planner::{CompilationPlan, PagePlan};
 use crate::recall;
 use crate::types::{Principal, WikiId};
 use crate::wiki::{IDENTITY_WIKI_TYPE, WikiError, WikiTree};
@@ -53,7 +53,7 @@ pub const PROSE_DUP_THRESHOLD: f32 = 0.20;
 /// page's placements with the split-by-mass lever live), never a gate: the
 /// LLM alone decides whether the page still reads as one page. This is the
 /// missing redistribution leg of two shipped designs — the refile sweep
-/// deliberately lands cross-wiki moves on the destination buffer `@notes.md`
+/// deliberately lands cross-wiki moves on the destination parking page `@notes.md`
 /// expecting "that wiki's own dream re-files them", and a grown-but-clean
 /// page otherwise never re-enters the Cartografo at all.
 pub const OVERSIZED_PAGE_THRESHOLD: usize = 30;
@@ -151,9 +151,6 @@ pub struct ReviewReport {
     /// parked as a placement re-open so the Cartografo re-homes its facts
     /// (once emptied, the assembly normalises its type to hub).
     pub leaf_with_children: Vec<(String, usize)>,
-    /// `(slug, facts)` — hub pages (`concept_hub` / `group_theme`) carrying
-    /// facts. Hubs hold no facts; parked as a placement re-open.
-    pub hub_with_facts: Vec<(String, usize)>,
     /// `(slug, facts)` — fact-bearing pages at/over
     /// [`OVERSIZED_PAGE_THRESHOLD`]; parked as a placement re-open so
     /// split-by-mass becomes reachable for a clean grown page.
@@ -171,7 +168,6 @@ impl ReviewReport {
             + self.missing_acl_markers.len()
             + self.cross_subject_bloat.len()
             + self.leaf_with_children.len()
-            + self.hub_with_facts.len()
             + self.oversized_pages.len()
     }
 
@@ -252,13 +248,6 @@ pub fn review(
     // Collect (slug, stripped_body) for leaf pages that have a compiled file.
     let mut leaf_bodies: Vec<(String, String)> = Vec::new();
     for (slug, page) in &plan.pages {
-        // Hubs are excluded from prose-dup (overview narrative naturally overlaps);
-        // the ACL-marker check is leaf-only too (hubs carry no facts/markers).
-        let is_hub = page.primary_facts.is_empty()
-            && matches!(page.page_type, PageType::ConceptHub | PageType::GroupTheme);
-        if is_hub {
-            continue;
-        }
         let Some(contents) = read_page(tree, &page.wiki_id, &page.page_path) else {
             continue; // not compiled yet
         };
@@ -323,7 +312,6 @@ pub fn review(
         missing_acl_markers = report.missing_acl_markers.len(),
         cross_subject_bloat = report.cross_subject_bloat.len(),
         leaf_with_children = report.leaf_with_children.len(),
-        hub_with_facts = report.hub_with_facts.len(),
         oversized_pages = report.oversized_pages.len(),
         "reviewer: review done"
     );
@@ -333,7 +321,7 @@ pub fn review(
 /// The per-page shape checks of the plan-level pass: empty leaf, two-rank
 /// topology (leaf-with-children / hub-with-facts), oversized nomination.
 fn check_page_shape(slug: &str, page: &PagePlan, report: &mut ReviewReport) {
-    if page.page_type == PageType::ConceptLeaf && page.primary_facts.is_empty() {
+    if !page.is_foundation() && page.primary_facts.is_empty() {
         report.empty_leaves.push(slug.to_owned());
     }
     // Two-rank topology: leaves hold facts and parent nothing; hubs
@@ -341,18 +329,15 @@ fn check_page_shape(slug: &str, page: &PagePlan, report: &mut ReviewReport) {
     // is normalised to hub by the assembly itself — what reaches this
     // check is the fact-bearing container, which needs its facts
     // re-homed first.)
-    if page.page_type == PageType::ConceptLeaf && !page.child_leaves.is_empty() {
+    if !page.is_foundation() && !page.child_leaves.is_empty() {
         report
             .leaf_with_children
             .push((slug.to_owned(), page.child_leaves.len()));
     }
-    if matches!(page.page_type, PageType::ConceptHub | PageType::GroupTheme)
-        && !page.primary_facts.is_empty()
-    {
-        report
-            .hub_with_facts
-            .push((slug.to_owned(), page.primary_facts.len()));
-    }
+    // The `hub_with_facts` check went with the page it was about: a group's
+    // card was the only overview page, and a group wiki has no card any more
+    // (2026-08-19). Nothing lists pages, so nothing can list them and hold
+    // facts at the same time.
     // Oversized nomination: mass alone re-opens nothing today, so a
     // clean grown page could never split (see the const's doc).
     if page.primary_facts.len() >= OVERSIZED_PAGE_THRESHOLD {
@@ -403,8 +388,6 @@ mod tests {
             title: slug.to_owned(),
             description: slug.to_owned(),
             style: None,
-            page_type: PageType::ConceptLeaf,
-            owner_scope: None,
             parent_hub: None,
             child_leaves: Vec::new(),
             primary_facts: facts,
@@ -473,15 +456,17 @@ mod tests {
 
     #[test]
     fn flags_two_rank_topology_violations_and_oversized_pages() {
-        // `cucina`: a fact-bearing leaf other pages parent under (container);
-        // `hub`: a concept_hub carrying a fact; `pile`: a subject-clean leaf
-        // at the oversized nomination threshold. All three park as placement
+        // `cucina`: a fact-bearing page other pages parent under (container);
+        // `famiglia`: a GROUP's card carrying a fact — the card links its
+        // children and holds none of its own; `pile`: a subject-clean page at
+        // the oversized nomination threshold. All three park as placement
         // re-opens via the findings→healing bridge.
+        //
+        // The middle case used to be a `concept_hub`, the retired "page that
+        // contains pages". It went with the page-type enum on 2026-08-19, so
+        // the only overview page left is a group's card.
         let mut cucina = leaf("cucina", vec![ffp(0x40, "user:alice")]);
         cucina.child_leaves = vec!["cucina_tecniche".to_owned()];
-        let mut hub = leaf("hub", vec![ffp(0x41, "user:alice")]);
-        hub.page_type = PageType::ConceptHub;
-        hub.child_leaves = vec!["cucina".to_owned()];
         let pile_facts: Vec<FactForPage> = (0..OVERSIZED_PAGE_THRESHOLD)
             .map(|i| ffp(u8::try_from(i).unwrap(), "user:alice"))
             .collect();
@@ -489,7 +474,6 @@ mod tests {
         let plan = plan_with(
             vec![
                 cucina,
-                hub,
                 pile,
                 leaf("cucina_tecniche", vec![ffp(0x42, "user:alice")]),
             ],
@@ -503,11 +487,6 @@ mod tests {
             r.leaf_with_children,
             vec![("cucina".to_owned(), 1)],
             "a fact-bearing leaf with children is the two-rank topology violated"
-        );
-        assert_eq!(
-            r.hub_with_facts,
-            vec![("hub".to_owned(), 1)],
-            "hubs hold no facts"
         );
         assert_eq!(
             r.oversized_pages,
@@ -612,7 +591,6 @@ mod tests {
                 ffp(5, "global"),           // world context — clean.
             ],
         );
-        page.page_type = PageType::Person;
         page.wiki_id = "franz".to_owned();
         page.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
         let plan = plan_with(vec![page], BTreeMap::new());
@@ -658,7 +636,6 @@ mod tests {
         // The famiglia GROUP wiki's index holding bruno's fact: not a
         // wiki-user wiki (absent from `user_wikis`).
         let mut group_index = leaf("famiglia", vec![ffp(3, "user:bruno")]);
-        group_index.page_type = PageType::GroupTheme;
         group_index.wiki_id = "famiglia".to_owned();
         group_index.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
 
@@ -707,7 +684,6 @@ mod tests {
         );
 
         let mut page = leaf("hermes1", vec![ffp(6, "user:franz")]);
-        page.page_type = PageType::Person;
         page.wiki_id = "hermes1".to_owned();
         page.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
         let plan = plan_with(vec![page], BTreeMap::new());

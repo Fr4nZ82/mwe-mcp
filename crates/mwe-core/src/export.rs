@@ -452,7 +452,7 @@ mod tests {
 
     /// Seed `alice` (+ nested `garden`, + sibling `bob`) with captured
     /// facts, one hand-appended unindexed region on `alice/cucina.md`,
-    /// and a capture-buffer file that must never travel.
+    /// and a capture-parking page file that must never travel.
     async fn seed_subtree_fixture(
         dir: &Path,
         tree: &WikiTree,
@@ -511,7 +511,7 @@ mod tests {
         index_raw.push_str("}}mystery prose{{/}}\n");
         std::fs::write(&index_path, index_raw).unwrap();
 
-        // Capture-buffer state must not travel.
+        // Capture-parking page state must not travel.
         // A leftover engine file: excluded by the underscore rule, whatever
         // it is called.
         std::fs::write(dir.join("wikis/alice/_leftover.md"), "engine\n").unwrap();
@@ -525,7 +525,7 @@ mod tests {
 
     /// The core round-trip: captured facts export as full markers
     /// carrying the DB ACL; an unindexed region stays bare; the capture
-    /// buffer never travels; sibling wikis stay out; descendant wikis
+    /// parking page never travels; sibling wikis stay out; descendant wikis
     /// come along.
     #[tokio::test]
     async fn export_round_trips_db_acl_into_full_markers() {
@@ -540,7 +540,7 @@ mod tests {
         assert_eq!(export.root_dir, "alice");
         let entries = untar(&export.tar_bytes);
 
-        // Layout: root + descendant travel, sibling and buffer do not.
+        // Layout: root + descendant travel, sibling and parking page do not.
         assert!(entries.contains_key("alice/_meta.md"), "{entries:?}");
         assert!(entries.contains_key("alice/cucina.md"), "{entries:?}");
         assert!(entries.contains_key("alice/garden/_meta.md"), "{entries:?}");

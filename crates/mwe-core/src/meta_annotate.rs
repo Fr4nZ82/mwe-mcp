@@ -480,7 +480,7 @@ pub(crate) struct PageCard {
     /// Read by REM's mass floor, which is style-dependent: a `lista` is
     /// consulted rather than read, so splitting it by size destroys the one
     /// thing it is for (founder, 2026-08-04).
-    pub style: Option<String>,
+    pub style: Option<crate::wiki::PageStyle>,
 }
 
 /// Read a page's testata card — the read side of [`sync_page_keywords`].
@@ -523,12 +523,8 @@ pub(crate) fn parse_page_card(raw: &str) -> PageCard {
         Some(serde_yaml::Value::Mapping(kw)) => wiki::flatten_keywords_mapping(kw),
         _ => Vec::new(),
     };
-    let style = fm
-        .get("style")
-        .and_then(serde_yaml::Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
+    let style =
+        crate::wiki::PageStyle::parse_lenient(fm.get("style").and_then(serde_yaml::Value::as_str));
     PageCard {
         description,
         keywords,

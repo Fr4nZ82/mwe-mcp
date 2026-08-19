@@ -307,7 +307,6 @@ frequency, so they are tuned separately:
 | Function | Fires when | Quality needed |
 |---|---|---|
 | `ingest` | per conversational turn (`wiki_ingest_message`) + the dashboard chat | low-medium |
-| `hub_writer` | the narrative compiler's `ConceptHub` prose | low-medium |
 | `rem_promotions` | nightly cron, capped per night | **high** |
 | `rem_dedup_semantic` | nightly cron, after jaccard pre-filter | low |
 | `cronista` | the narrative prose compiler, once per dirty standard-wiki leaf | **high** (strong) |
@@ -324,7 +323,7 @@ UI surfaces it like the other slots.
 The shipped `LlmBackend` implementations (`crates/mwe-core/src/llm.rs`)
 are `OllamaBackend`, `AnthropicBackend`, and `GeminiBackend`. The
 operator picks a profile at setup — *all-local* (zero API cost),
-*hybrid* (local for the high-volume `ingest`/`hub_writer`, an API model
+*hybrid* (local for the high-volume `ingest`, an API model
 for the quality-critical REM), or *all-API*. Because the trait
 contract is uniform, the profile is a config choice with no code impact.
 

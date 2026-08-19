@@ -220,7 +220,7 @@ impl LogLevel {
 /// `MWE_LLM_<UPPER>_BACKEND`.
 ///
 /// **Variants today**: all six are dashboard-configurable role cards —
-/// `HubWriter`, `Ingest`, `OperatorChat`, `RemPromotions`, `Cronista`,
+/// `Ingest`, `OperatorChat`, `RemPromotions`, `Cronista`,
 /// `RemDedupSemantic`, `Navigator`. `Cronista` drives the narrative
 /// compiler ([`crate::compiler::compile_leaf_page`], via the dream
 /// compile pass) that rewrites each dirty standard-wiki leaf from its
@@ -236,9 +236,6 @@ impl LogLevel {
 /// `llm.cronista:` section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmFunction {
-    /// `hub_writer` — the prose of a compiled page that has no facts of its
-    /// own and only lists its child pages.
-    HubWriter,
     /// `ingest` — backs `wiki_ingest_message` and the dashboard's
     /// non-agentic consumer-style turn (the welcome-wizard primer).
     Ingest,
@@ -275,7 +272,6 @@ impl LlmFunction {
     #[must_use]
     pub const fn yaml_key(self) -> &'static str {
         match self {
-            Self::HubWriter => "hub_writer",
             Self::Ingest => "ingest",
             Self::OperatorChat => "operator_chat",
             Self::RemPromotions => "rem_promotions",
@@ -667,9 +663,6 @@ pub struct LlmConfig {
     /// not enforced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
-    /// `hub_writer` slot.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hub_writer: Option<LlmFunctionConfig>,
     /// `ingest` slot — required when `wiki_ingest_message` is in use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingest: Option<LlmFunctionConfig>,
@@ -781,7 +774,6 @@ impl LlmProfile {
             // cap_promote default (5) stays the same.
             Self::AllLocal => LlmConfig {
                 profile: Some("all-local".into()),
-                hub_writer: Some(ollama("qwen3.5:9b-q8_0")),
                 ingest: Some(ollama("qwen3.5:9b-q8_0")),
                 // Falls back to `hub_writer` (the local workhorse) unless
                 // the operator wires a stronger tool-calling model.
@@ -799,7 +791,6 @@ impl LlmProfile {
             // don't open a second VRAM tenant just for yes/no.
             Self::Hybrid => LlmConfig {
                 profile: Some("hybrid".into()),
-                hub_writer: Some(ollama("qwen3.5:9b-q8_0")),
                 ingest: Some(ollama("qwen3.5:9b-q8_0")),
                 // Falls back to `hub_writer` (the local workhorse) unless
                 // the operator wires a stronger tool-calling model.
@@ -818,7 +809,6 @@ impl LlmProfile {
             // stays on Haiku — single-provider deploys are simpler.
             Self::AllApi => LlmConfig {
                 profile: Some("all-api".into()),
-                hub_writer: Some(anthropic("claude-haiku-4-5-20251001", "ANTHROPIC_API_KEY")),
                 ingest: Some(anthropic("claude-sonnet-4-6", "ANTHROPIC_API_KEY")),
                 // Falls back to `hub_writer` unless wired; a strong
                 // tool-calling model is the right pick when set.
@@ -969,7 +959,6 @@ impl LlmConfig {
     #[must_use]
     pub const fn slot(&self, function: LlmFunction) -> Option<&LlmFunctionConfig> {
         match function {
-            LlmFunction::HubWriter => self.hub_writer.as_ref(),
             LlmFunction::Ingest => self.ingest.as_ref(),
             LlmFunction::OperatorChat => self.operator_chat.as_ref(),
             LlmFunction::RemPromotions => self.rem_promotions.as_ref(),
@@ -981,7 +970,6 @@ impl LlmConfig {
 
     const fn slot_mut(&mut self, function: LlmFunction) -> &mut Option<LlmFunctionConfig> {
         match function {
-            LlmFunction::HubWriter => &mut self.hub_writer,
             LlmFunction::Ingest => &mut self.ingest,
             LlmFunction::OperatorChat => &mut self.operator_chat,
             LlmFunction::RemPromotions => &mut self.rem_promotions,
@@ -1001,8 +989,7 @@ impl LlmConfig {
     where
         F: FnMut(&str) -> Option<String>,
     {
-        const FUNCTIONS: [LlmFunction; 7] = [
-            LlmFunction::HubWriter,
+        const FUNCTIONS: [LlmFunction; 6] = [
             LlmFunction::Ingest,
             LlmFunction::OperatorChat,
             LlmFunction::RemPromotions,
@@ -1605,7 +1592,7 @@ pub struct RecallConfig {
     #[serde(default)]
     pub ingest_timezone: Option<String>,
     /// Override `IngestPolicy::recent_window_entries` — per-user cap of the
-    /// cross-consumer recent window's buffer (default 32; `0` disables the
+    /// cross-consumer recent window's parking page (default 32; `0` disables the
     /// window entirely).
     #[serde(default)]
     pub recent_window_entries: Option<usize>,
@@ -2729,7 +2716,6 @@ mod tests {
         let cfg = LlmProfile::AllLocal.build();
         assert_eq!(cfg.profile.as_deref(), Some("all-local"));
         for func in [
-            LlmFunction::HubWriter,
             LlmFunction::Ingest,
             LlmFunction::RemPromotions,
             LlmFunction::RemDedupSemantic,
@@ -2750,7 +2736,6 @@ mod tests {
         // extra-high reasoning effort on the structural decisions.
         let cfg = LlmProfile::Hybrid.build();
         assert_eq!(cfg.ingest.as_ref().unwrap().backend, "ollama");
-        assert_eq!(cfg.hub_writer.as_ref().unwrap().backend, "ollama");
         assert_eq!(cfg.rem_dedup_semantic.as_ref().unwrap().backend, "ollama");
         let rem = cfg.rem_promotions.as_ref().unwrap();
         assert_eq!(rem.backend, "anthropic");
@@ -2802,7 +2787,6 @@ mod tests {
     #[test]
     fn llm_profile_custom_returns_empty_slots() {
         let cfg = LlmProfile::Custom.build();
-        assert!(cfg.hub_writer.is_none());
         assert!(cfg.ingest.is_none());
         assert!(cfg.rem_promotions.is_none());
         assert!(cfg.rem_dedup_semantic.is_none());
@@ -3283,7 +3267,6 @@ mod tests {
             LlmFunction::RemDedupSemantic.env_prefix(),
             "MWE_LLM_REM_DEDUP_SEMANTIC"
         );
-        assert_eq!(LlmFunction::HubWriter.env_prefix(), "MWE_LLM_HUB_WRITER");
     }
 
     #[test]
@@ -3320,7 +3303,6 @@ mod tests {
             ..LlmConfig::default()
         };
         assert!(llm.slot(LlmFunction::Ingest).is_some());
-        assert!(llm.slot(LlmFunction::HubWriter).is_none());
     }
 
     #[test]
@@ -3610,11 +3592,7 @@ mod tests {
         }
         // The non-anthropic slots stay Ollama and still build without
         // any env injection.
-        for func in [
-            LlmFunction::HubWriter,
-            LlmFunction::Ingest,
-            LlmFunction::RemDedupSemantic,
-        ] {
+        for func in [LlmFunction::Ingest, LlmFunction::RemDedupSemantic] {
             let slot = cfg.slot(func).unwrap_or_else(|| panic!("{func:?} missing"));
             assert_eq!(slot.backend, "ollama");
             slot.build_backend_with_env(func, |_| None)
@@ -3628,7 +3606,6 @@ mod tests {
         let envs: std::collections::HashMap<&str, &str> =
             std::iter::once(("ANTHROPIC_API_KEY", "sk-ant-fake")).collect();
         for func in [
-            LlmFunction::HubWriter,
             LlmFunction::Ingest,
             LlmFunction::RemPromotions,
             LlmFunction::RemDedupSemantic,

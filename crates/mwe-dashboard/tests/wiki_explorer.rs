@@ -1259,13 +1259,13 @@ async fn chat_panel_embeds_elements_required_by_chat_js() {
     }
 }
 
-/// The agentic endpoint surfaces the missing `llm.hub_writer`
-/// slot as a 422 with an italian actionable message. Same UX contract
-/// the wizard relies on for the `llm.ingest` slot — operators should
-/// see a clear "go wire the slot in the YAML" notice, not a generic
-/// 500.
+/// The agentic endpoint surfaces the missing `llm.operator_chat` slot as a
+/// 422 with an actionable message. Same UX contract the wizard relies on for
+/// the `llm.ingest` slot — an operator should see a clear "go wire the slot in
+/// the YAML" notice, not a generic 500. Since 2026-08-19 that slot has no
+/// fallback, so this is the only way the chat can be missing a model.
 #[tokio::test]
-async fn chat_agentic_returns_422_when_hub_writer_slot_missing() {
+async fn chat_agentic_returns_422_when_the_chat_slot_is_missing() {
     let (app, _pool, _tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
 
@@ -1283,7 +1283,7 @@ async fn chat_agentic_returns_422_when_hub_writer_slot_missing() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body = body_string(response).await;
     assert!(
-        body.contains("llm.hub_writer`"),
+        body.contains("llm.operator_chat`"),
         "validation body should name the missing slot: {body}"
     );
 }
@@ -1773,8 +1773,8 @@ async fn chat_agentic_loop_dispatches_tool_then_returns_final_message() {
         },
     ]);
 
-    let overrides =
-        mwe_dashboard::LlmBackendOverrides::default().with(LlmFunction::HubWriter, Arc::new(fake));
+    let overrides = mwe_dashboard::LlmBackendOverrides::default()
+        .with(LlmFunction::OperatorChat, Arc::new(fake));
     let (app, _pool, _tree, _dir) = make_app_with_overrides(overrides).await;
     let cookie = login_as_admin(&app).await;
 
@@ -1955,8 +1955,8 @@ async fn chat_agentic_loop_applies_dedup_proposal_end_to_end() {
         },
     ]);
 
-    let overrides =
-        mwe_dashboard::LlmBackendOverrides::default().with(LlmFunction::HubWriter, Arc::new(fake));
+    let overrides = mwe_dashboard::LlmBackendOverrides::default()
+        .with(LlmFunction::OperatorChat, Arc::new(fake));
     let (app, pool, tree, _dir) = make_app_with_overrides(overrides).await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
@@ -2080,8 +2080,8 @@ async fn chat_agentic_batch_forgets_three_facts_end_to_end() {
 
     let fake = mwe_core::llm::FakeLlmBackend::new("fake-hub", "fallback")
         .with_chat_script(batch_forget_chat_script(&[f1, f2, f3]));
-    let overrides =
-        mwe_dashboard::LlmBackendOverrides::default().with(LlmFunction::HubWriter, Arc::new(fake));
+    let overrides = mwe_dashboard::LlmBackendOverrides::default()
+        .with(LlmFunction::OperatorChat, Arc::new(fake));
     let secret = TokenSecret::new(vec![0xEFu8; 32]).expect("secret");
     let blacklist = Arc::new(BlacklistCache::new());
     let delegations = Arc::new(DelegationCache::new());
@@ -2224,8 +2224,8 @@ async fn chat_agentic_supersedes_single_fact_with_corrected_body_end_to_end() {
         supersede_correction_chat_script(&old_fact, "ho deciso mercoledì alle 14"),
     );
 
-    let overrides =
-        mwe_dashboard::LlmBackendOverrides::default().with(LlmFunction::HubWriter, Arc::new(fake));
+    let overrides = mwe_dashboard::LlmBackendOverrides::default()
+        .with(LlmFunction::OperatorChat, Arc::new(fake));
     let secret = TokenSecret::new(vec![0xEFu8; 32]).expect("secret");
     let blacklist = Arc::new(BlacklistCache::new());
     let delegations = Arc::new(DelegationCache::new());
@@ -2362,8 +2362,8 @@ async fn chat_agentic_supersede_refuses_already_tombstoned_fact() {
         },
     ]);
 
-    let overrides =
-        mwe_dashboard::LlmBackendOverrides::default().with(LlmFunction::HubWriter, Arc::new(fake));
+    let overrides = mwe_dashboard::LlmBackendOverrides::default()
+        .with(LlmFunction::OperatorChat, Arc::new(fake));
     let secret = TokenSecret::new(vec![0xEFu8; 32]).expect("secret");
     let blacklist = Arc::new(BlacklistCache::new());
     let delegations = Arc::new(DelegationCache::new());
@@ -2527,8 +2527,8 @@ async fn chat_agentic_changes_wiki_scope_under_new_parent_end_to_end() {
     let fake = mwe_core::llm::FakeLlmBackend::new("fake-hub", "fallback")
         .with_chat_script(change_scope_chat_script("alice-acmecorp", Some("lavoro")));
 
-    let overrides =
-        mwe_dashboard::LlmBackendOverrides::default().with(LlmFunction::HubWriter, Arc::new(fake));
+    let overrides = mwe_dashboard::LlmBackendOverrides::default()
+        .with(LlmFunction::OperatorChat, Arc::new(fake));
     let secret = TokenSecret::new(vec![0xEFu8; 32]).expect("secret");
     let blacklist = Arc::new(BlacklistCache::new());
     let delegations = Arc::new(DelegationCache::new());
@@ -2625,8 +2625,8 @@ async fn open_in_chat_primes_panel_with_proposal_summary() {
             usage: CompletionUsage::default(),
         },
     ]);
-    let overrides =
-        mwe_dashboard::LlmBackendOverrides::default().with(LlmFunction::HubWriter, Arc::new(fake));
+    let overrides = mwe_dashboard::LlmBackendOverrides::default()
+        .with(LlmFunction::OperatorChat, Arc::new(fake));
     let (app, pool, tree, _dir) = make_app_with_overrides(overrides).await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
@@ -2686,8 +2686,8 @@ async fn in_flight_chat_turn_returns_overview_json() {
             usage: CompletionUsage::default(),
         },
     ]);
-    let overrides =
-        mwe_dashboard::LlmBackendOverrides::default().with(LlmFunction::HubWriter, Arc::new(fake));
+    let overrides = mwe_dashboard::LlmBackendOverrides::default()
+        .with(LlmFunction::OperatorChat, Arc::new(fake));
     let (app, _pool, _tree, _dir) = make_app_with_overrides(overrides).await;
     let cookie = login_as_admin(&app).await;
 
@@ -2939,8 +2939,8 @@ async fn facts_edit_submit_composes_message_and_primes_chat_panel() {
             usage: CompletionUsage::default(),
         },
     ]);
-    let overrides =
-        mwe_dashboard::LlmBackendOverrides::default().with(LlmFunction::HubWriter, Arc::new(fake));
+    let overrides = mwe_dashboard::LlmBackendOverrides::default()
+        .with(LlmFunction::OperatorChat, Arc::new(fake));
     let (app, pool, tree, _dir) = make_app_with_overrides(overrides).await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);

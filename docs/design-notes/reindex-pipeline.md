@@ -463,4 +463,4 @@ roadmap):
 |---|---|
 | Startup full re-scan (warm cache) as a config knob | Operators on slow Ollama would block startup |
 | Cross-platform watcher tests (macOS, Windows) | Linux-primary platform note |
-| Coalescing burst edits (Hub Writer debounce) | The pipeline survives N successive reindexes; debouncing is a Hub Writer concern |
+| Coalescing burst edits | The pipeline survives N successive reindexes; debouncing is the compile's concern |

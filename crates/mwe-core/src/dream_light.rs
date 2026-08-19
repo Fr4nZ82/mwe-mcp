@@ -30,10 +30,10 @@
 //! page**, and judged by the placement stage beside the facts already on pages.
 //!
 //! **[`materialise`] — the moment a claim becomes a memory.** For each claim
-//! the plan placed: embed (normally already staged at buffer time), insert into
+//! the plan placed: embed (normally already staged at parking page time), insert into
 //! `fact_index` addressed to `wikis/<wiki>/<page>`, stamp a closure reason
 //! staged while it waited, apply the classifier's `supersede_hint`, and stamp
-//! the buffer row `promoted`. A claim the plan could not place keeps waiting —
+//! the parking page row `promoted`. A claim the plan could not place keeps waiting —
 //! it is not a fact nobody renders.
 //!
 //! The offsets stay `NULL` until the compile writes the page moments later and
@@ -131,7 +131,7 @@ pub struct LightCycleReport {
 /// The queue as the compile is about to see it.
 ///
 /// Produced by [`screen_queue`], consumed by [`materialise`]. `for_plan` is
-/// what the placement stage judges; `rows` are the buffer rows behind them,
+/// what the placement stage judges; `rows` are the parking page rows behind them,
 /// kept so materialisation does not re-read the table between the two.
 pub struct WaitingQueue {
     /// The surviving claims, projected for [`crate::planner::build_wiki_plan`].
@@ -143,7 +143,7 @@ pub struct WaitingQueue {
 
 /// Screen the queue: drop the duplicates, project the rest for the plan.
 ///
-/// **Nothing becomes a fact here.** A claim waiting in the buffer is waiting to
+/// **Nothing becomes a fact here.** A claim waiting in the parking page is waiting to
 /// be *sorted*, and this pass only answers the question that needs no
 /// destination — *is this already remembered?* — so the placement stage right
 /// after judges a queue with no duplicates in it. The claims that survive
@@ -347,7 +347,7 @@ async fn miss_check(
 ///   queue that grows for ever while the recall fresh slot (a ranked top-K)
 ///   quietly stops offering the older half of it;
 /// * a test that wants a buffered claim readable as a fact, by the path the
-///   product actually takes rather than by reaching into the buffer.
+///   product actually takes rather than by reaching into the parking page.
 ///
 /// The pages are not written: each row lands addressed to its page with NULL
 /// offsets — the same *pending render* state a live capture passes through —
@@ -452,7 +452,7 @@ async fn screen_one(
         report.skipped_dup += 1;
         // The judge-free restated-known-fact miss signal
         // ([`crate::recall_log`]): the user restated a fact memory already
-        // held — did the ORIGINAL turn's recall surface it? The buffer row
+        // held — did the ORIGINAL turn's recall surface it? The parking page row
         // carries the turn linkage; a row without one is skipped, and the whole
         // check is best-effort telemetry — a failure never touches the queue.
         // Channel-page facts are out of scope: a rule is channel-delivered and
@@ -491,7 +491,7 @@ async fn screen_one(
         // No page: nobody has placed this claim, which is exactly why it is
         // in front of the placement stage.
         target_page: None,
-        style: cap.style.clone(),
+        style: cap.style,
         salience: cap.salience.clone(),
         authored_refs: cap.authored_refs.clone(),
     }))
@@ -539,13 +539,13 @@ async fn write_placed(
         sender_id: cap.sender.clone(),
         fact_type: cap.fact_type.clone(),
         topics: cap.topics.clone(),
-        // The validity interval the classifier deduced and the buffer staged.
+        // The validity interval the classifier deduced and the parking page staged.
         valid_from: cap.valid_from.clone(),
         valid_to: cap.valid_to.clone(),
         // The page is where the plan just put it, so the carried placement IS
         // that page: a later build reads it back instead of re-judging.
         target_page: Some(page_path.to_owned()),
-        style: cap.style.clone(),
+        style: cap.style,
         // Per-fact salience the classifier deduced.
         salience: cap.salience.clone(),
         // Source-document provenance (the document-ingest path) — audit and
@@ -558,7 +558,7 @@ async fn write_placed(
     fact_index::insert_if_absent(pool, &new).await?;
 
     // A closure gesture that landed while the claim was still waiting staged
-    // its decay reason on the buffer (the closing `valid_to` already rode the
+    // its decay reason on the parking page (the closing `valid_to` already rode the
     // validity copy above); stamp the WHY onto the fresh fact. The insert
     // itself keeps its fresh-fact invariant.
     if let Some(reason) = &cap.decay_reason {
@@ -616,7 +616,7 @@ fn wikis_on_disk(tree: &WikiTree) -> Result<HashMap<String, bool>> {
 /// a page that does not exist yet, whose wiki does that page join? (The plan
 /// takes a new page's wiki from the first fact assigned to it.)
 ///
-/// Derived, never remembered: the buffer carries no destination at all
+/// Derived, never remembered: the parking page carries no destination at all
 /// (migration `0071_capture_buffer_no_destination`). The answer comes from the
 /// one thing about a fact that never moves, its **subject** — an identity
 /// wiki's id IS its principal's id, so the subject's own wiki is a lookup and
@@ -743,7 +743,7 @@ mod tests {
         );
         assert_eq!(row.subject_id, "user:alice".parse::<Principal>().unwrap());
 
-        // The buffer row is now promoted, not pending.
+        // The parking page row is now promoted, not pending.
         assert_eq!(capture_buffer::count_buffered(&pool).await.unwrap(), 0);
     }
 
@@ -798,7 +798,7 @@ mod tests {
     #[tokio::test]
     async fn promotion_carries_validity_into_fact_index() {
         // The validity interval the classifier deduced (carried on the
-        // CaptureRequest) must survive buffer → journal → promote and land in
+        // CaptureRequest) must survive parking page → journal → promote and land in
         // fact_index — the gap on the standard-wiki path.
         let (_dir, tree, pool) = setup().await;
         let mut req = cap_req("Sono a Berlino questa settimana.");
@@ -826,15 +826,15 @@ mod tests {
     /// `style` says what shape the material has — list, prose, technical prose
     /// — and survives the wait onto the fact, where a page takes its style from
     /// the majority of its facts. The page the turn happened to name does NOT
-    /// survive: the buffer holds no destination, and placing the claim is the
+    /// survive: the parking page holds no destination, and placing the claim is the
     /// dream's call at the moment it reads the queue (founder, 2026-08-18).
     #[tokio::test]
     async fn a_claim_carries_its_style_and_gets_its_page_from_the_plan() {
         let (_dir, tree, pool) = setup().await;
         let mut req = cap_req("Alice preferisce il tè.");
-        // The live route's field. The buffer drops it; asserted below.
+        // The live route's field. The parking page drops it; asserted below.
         req.page = PathBuf::from("preferenze.md");
-        req.style = Some("prosa-tecnica".to_owned());
+        req.style = Some(crate::wiki::PageStyle::ProsaTecnica);
         req.page_description = Some("Le preferenze di Alice".to_owned());
         let buffered = capture_buffer::buffer_capture(&pool, req, None)
             .await
@@ -859,14 +859,14 @@ mod tests {
             "and it is a real page in the subject's own wiki"
         );
         assert_eq!(
-            row.style.as_deref(),
-            Some("prosa-tecnica"),
+            row.style,
+            Some(crate::wiki::PageStyle::ProsaTecnica),
             "how the material READS survives the wait; where it goes does not"
         );
     }
 
     /// The parking spot is the SUBJECT's wiki, never the one the classifier
-    /// happened to name: the buffer names none, and the subject is the one
+    /// happened to name: the parking page names none, and the subject is the one
     /// thing about a fact that never moves.
     #[tokio::test]
     async fn promotion_parks_the_fact_in_the_subjects_own_wiki() {
@@ -1132,7 +1132,7 @@ mod tests {
     async fn promotion_carries_a_buffered_closure_onto_the_fact() {
         // The same-day flow: a closure gesture lands while its target is
         // still buffered ("compra il latte" → "comprato" before the light
-        // dream). The buffer staged valid_to + decay_reason; the promoted
+        // dream). The parking page staged valid_to + decay_reason; the promoted
         // fact must carry both.
         let (_dir, tree, pool) = setup().await;
         let buffered = capture_buffer::buffer_capture(&pool, cap_req("Serve il latte."), None)

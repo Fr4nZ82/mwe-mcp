@@ -340,7 +340,7 @@ pub struct IngestResponse {
     /// (`RECENT EXCHANGES ON YOUR OTHER CHANNELS …`) the consumer injects
     /// verbatim, like [`rules`](Self::rules): entries carry their relative
     /// age and origin surface, oldest first, newest kept under the char
-    /// budget. `None` when the buffer has nothing for this user, when the
+    /// budget. `None` when the parking page has nothing for this user, when the
     /// only exchanges are the requesting surface's own, or when the knobs
     /// disable the window.
     pub recent_window: Option<String>,
@@ -511,7 +511,7 @@ pub struct IngestPolicy {
     /// on biographies.
     pub max_mentioned_cards: usize,
     /// Page within the target wiki used when the LLM plan does not
-    /// supply one: the buffer, [`wiki::NOTES_FILENAME`] — never the wiki's
+    /// supply one: the parking page, [`wiki::NOTES_FILENAME`] — never the wiki's
     /// map. REM's reorg sweep drains it onto real pages.
     pub default_page: PathBuf,
     /// Canned `suggested_seed` returned on every fallback path. Short
@@ -706,9 +706,9 @@ struct LlmIngestPlan {
     /// The classifier flags an
     /// **explicitly requested container** (a list, a collection, a named note
     /// the user asked to keep). A requested container is created and written
-    /// **live** at ingest via the direct path, bypassing the narrative buffer so
+    /// **live** at ingest via the direct path, bypassing the narrative parking page so
     /// it is there immediately (a shopping list cannot wait for the dream);
-    /// accumulated knowledge — no explicit request — stays buffer→dream
+    /// accumulated knowledge — no explicit request — stays parking page→dream
     /// (the live exception). The classifier decides; there
     /// is no hard-coded gate. Plan-level mirror for the legacy single-fact
     /// fallback; the per-fact value lives on [`LlmExtraction`].
@@ -961,7 +961,7 @@ struct CaptureUnit<'a> {
     salience: Option<&'a str>,
     /// Requested-container routing flag
     /// (see [`LlmIngestPlan::requested_container`]). `true` → the fact is written
-    /// live even into a standard wiki, bypassing the buffer.
+    /// live even into a standard wiki, bypassing the parking page.
     requested_container: bool,
     /// Engine-rule routing flag (see
     /// [`LlmIngestPlan::engine_rule`]). `true` → the body is appended to the
@@ -1159,7 +1159,7 @@ enum CapturePlanError {
 /// segment: lowercase, non-alphanumeric runs → `_`), then require the
 /// result to pass [`is_safe_page_path`]; anything that still fails
 /// (empty segment, traversal) falls back to the wiki's default page
-/// (the buffer, `@notes.md`) so a normal message can never crash ingest. The
+/// (the parking page, `@notes.md`) so a normal message can never crash ingest. The
 /// classifier prompt shows neither wikis nor page names — the one exception
 /// being the `list_pages` inventory, whose entries are exact names to be
 /// copied — so canonicalising here is fighting a name the model **coined**,
@@ -1328,13 +1328,13 @@ fn is_list_shaped(unit: &CaptureUnit<'_>) -> bool {
 /// of, live, in front of the user.
 pub const MAX_LIST_PAGES_PER_WIKI: usize = 32;
 
-/// Send a capture that would mint the wiki's 33rd list to the buffer instead.
+/// Send a capture that would mint the wiki's 33rd list to the parking page instead.
 ///
 /// **Growth only, and never a lost fact.** An existing list stays addable-to
 /// however many the wiki holds — the check fires only for a name the wiki
 /// does not already have. And the refusal downgrades the *destination*, not
 /// the capture: with its page taken away the claim is one nobody has placed,
-/// so it waits in the buffer with the rest and the placement pass settles it
+/// so it waits in the parking page with the rest and the placement pass settles it
 /// like any other unplaced prose (the router reads the page for exactly that
 /// — see `route_to_buffer`). Refusing the whole extraction would throw away
 /// what the person said in order to enforce a filing limit.
@@ -1401,7 +1401,7 @@ fn validate_capture_plan(
     //   partial one — so it must land on the page it belongs to, by its exact
     //   name, which is what the `list_pages` inventory exists to supply.
     // - **A requested container** (the user asked *now* for a list, a
-    //   collection, a named note). That write bypasses the buffer and reaches
+    //   collection, a named note). That write bypasses the parking page and reaches
     //   disk inside the turn, so the page has to exist inside the turn too.
     //   Deliberately independent of `style`: a note someone asks you to keep
     //   can be prose, and it still needs the name they gave it.
@@ -1409,7 +1409,7 @@ fn validate_capture_plan(
     // Everything else waits, and waiting is what makes the name unnecessary:
     // no single page is the right answer at capture time, the classifier is
     // shown no prose pages to check against, and any name it proposes is a
-    // guess the consolidation would have to undo. Those take the wiki's buffer
+    // guess the consolidation would have to undo. Those take the wiki's parking page
     // page ([`IngestPolicy::default_page`]) — the designed holding place
     // placement settles from later.
     //
@@ -1420,10 +1420,10 @@ fn validate_capture_plan(
         let coined = normalize_capture_page(unit.target_page, &policy.default_page);
         // The guarantee the prompt makes — «a capture aimed at a reserved page
         // is not filed there» — enforced, not asked for. A model that names
-        // `@rules.md` gets the buffer page here, which the router then reads
+        // `@rules.md` gets the parking page here, which the router then reads
         // as "this claim knows no page": it waits, and the placement pass
         // settles it like any other unplaced prose. Without that reading a
-        // refused `lista` was written live onto the buffer page itself.
+        // refused `lista` was written live onto the parking page itself.
         if wiki::names_reserved_page(&coined) {
             tracing::warn!(
                 page = %coined.display(),
@@ -1539,7 +1539,7 @@ fn validate_capture_plan(
         // `style` is a property of the FACT — is this list-shaped material or
         // prose — and survives whoever ends up choosing the page; the compiler
         // takes a page's style from the majority of the facts on it.
-        style: unit.style.map(str::to_owned),
+        style: crate::wiki::PageStyle::parse_lenient(unit.style),
         // `page_description` describes the TARGET PAGE, so it only means
         // anything when this extraction actually named one. On the prose path
         // it would describe a page nobody chose.
@@ -1776,7 +1776,7 @@ async fn load_attachment_images(
 
 /// Body for an unclaimed attachment's fallback fact: the consumer
 /// description, else the caption. `None` — file nothing — when neither
-/// carries text, or when the text would break the buffer validators
+/// carries text, or when the text would break the parking page validators
 /// (marker braces / the journal's comment delimiter; it survives on
 /// the catalog row either way).
 fn unclaimed_attachment_body(att: &IngestAttachment) -> Option<String> {
@@ -1817,7 +1817,7 @@ async fn file_unclaimed_attachments(
     if unclaimed.is_empty() {
         return None;
     }
-    // The precondition, not a destination: these captures wait in the buffer,
+    // The precondition, not a destination: these captures wait in the parking page,
     // which names no wiki, and promotion parks them in the SUBJECT's own wiki
     // — here the sender's, since an unclaimed attachment is filed about
     // whoever sent it. So the sender having an identity wiki is what decides
@@ -2254,7 +2254,7 @@ async fn apply_reconciled_supersedes(
 /// The fact store is the normal case. `0` rows there means one of two things,
 /// and the second one used to be silently mistaken for the first: the target
 /// is already closed, **or** it was never promoted and is still a buffered
-/// capture — `mark_superseded`'s `WHERE fact_id = ?` matches no buffer row, so
+/// capture — `mark_superseded`'s `WHERE fact_id = ?` matches no parking page row, so
 /// the applier reported *«already closed»* for a retirement that had not
 /// happened. On the same-day flow (a claim captured this morning, corrected
 /// this afternoon, before the light dream ran) that is every supersede.
@@ -2263,7 +2263,7 @@ async fn apply_reconciled_supersedes(
 /// `contradicted` reason, exactly as the closure verb's buffered half does
 /// ([`capture_buffer::close_validity`]); promotion then carries the closed
 /// window onto the fact. No successor pointer is staged, by the same standing
-/// rule that applies to closures — the buffer stages none, and the id is
+/// rule that applies to closures — the parking page stages none, and the id is
 /// stable across promotion.
 ///
 /// Returns whether a live row was actually retired. Soft on both stores, like
@@ -4458,7 +4458,7 @@ async fn capture_behaviour_rule(
         dedup_threshold: None,
         valid_from: None,
         valid_to: None,
-        style: Some("prosa-tecnica".to_owned()),
+        style: Some(crate::wiki::PageStyle::ProsaTecnica),
         // The behaviour-rules page's own card, written on its testata the
         // first time the page is created (`capture::seed_page_card`).
         page_description: Some(page_description.to_owned()),
@@ -4583,7 +4583,7 @@ async fn capture_agent_self_fact(
         // `fact_index`'s lexicographically-compared columns.
         valid_from: normalize_capture_bound(unit.valid_from, "valid_from"),
         valid_to: normalize_capture_bound(unit.valid_to, "valid_to"),
-        style: unit.style.map(str::to_owned),
+        style: crate::wiki::PageStyle::parse_lenient(unit.style),
         page_description: unit.page_description.map(str::to_owned).or_else(|| {
             Some("The agent's own memory: who it is and its history with each user.".to_owned())
         }),
@@ -6073,7 +6073,7 @@ pub async fn wiki_ingest_message(
     // light dream stays recall-able. Soft-fails to no fresh hits — never kills
     // the turn. Scoped to the ingest (conversational) path on purpose:
     // `wiki_recall` stays promoted-only for the dashboard, whose edit/locate
-    // flows assume published-page offsets the buffer lacks.
+    // flows assume published-page offsets the parking page lacks.
     let fresh_hits = match recall::recall_fresh_captures(
         pool,
         embedder.as_ref(),
@@ -6129,7 +6129,7 @@ pub async fn wiki_ingest_message(
     // guest sender context (the ACL grants guest only the public slice —
     // the `global` arm is the only principal it can ever match), but no
     // classifier runs and nothing is written: no capture, no closures, no
-    // behaviour rules, no buffer row. An identity boundary like redaction,
+    // behaviour rules, no parking page row. An identity boundary like redaction,
     // not a semantic gate — what the *consumer* says this turn stays the
     // consumer's judgment, steered by the `rules` directive below.
     if enrollment::is_guest(&request.sender_id) {
@@ -6784,7 +6784,7 @@ pub async fn wiki_ingest_message(
                 // destination: the parking page holds prose waiting to be
                 // placed, and a list item on it turns it into a shopping list.
                 //
-                // Nor may the item wait in the buffer: it would be placed an
+                // Nor may the item wait in the parking page: it would be placed an
                 // hour later by a pass that has no list to place it on, and
                 // land on the parking page anyway. So the extraction is
                 // REFUSED and the user is told. A list is a set — silently
@@ -6896,7 +6896,7 @@ pub async fn wiki_ingest_message(
                     cap_req.sender.clone(),
                 );
 
-                // Standard wikis buffer the capture for the nightly compiler;
+                // Standard wikis parking page the capture for the hourly round;
                 // a smart-wiki target would keep the direct-write path,
                 // but smart wikis are filtered out of `available` above so in
                 // practice every reachable target is a standard wiki. `standard` =
@@ -6916,7 +6916,7 @@ pub async fn wiki_ingest_message(
                 // non ci passano … il classificatore riceve appositamente tutte
                 // le liste che l'utente vede e aggiunge l'elemento direttamente
                 // lì»*). Until then only `requested_container` bypassed the
-                // buffer, so **creating** a shopping list was live while
+                // parking page, so **creating** a shopping list was live while
                 // **adding to it** waited up to a dream interval — and the
                 // reasoning that kept the exception alive was about lists, not
                 // about creation. It was written for a list and hung on the
@@ -6950,9 +6950,9 @@ pub async fn wiki_ingest_message(
                 // re-deriving the two shapes keeps one answer where there
                 // were two. `capture_request_for` already resolved it: a
                 // claim that names its own page carries it, everything else
-                // carries the wiki's buffer page — and so does a name that
+                // carries the wiki's parking page — and so does a name that
                 // was REFUSED, either as a reserved page or as the wiki's
-                // 33rd list. A claim sitting on the buffer page is a claim
+                // 33rd list. A claim sitting on the parking page is a claim
                 // nobody has placed, which is exactly what waiting means.
                 // (Deriving it from `style`/`requested_container` instead
                 // wrote a refused `lista` live ONTO `@notes.md`.)
@@ -6960,7 +6960,7 @@ pub async fn wiki_ingest_message(
 
                 // Cleared when the direct path's write-time dedup proves
                 // nothing new filed — a restated fact is no news to its
-                // beneficiary. Buffer-time dedup resolves later in the
+                // beneficiary. Parking page-time dedup resolves later in the
                 // light dream, so a buffered capture always counts.
                 let mut filed_fresh = true;
                 // Snapshotted before `cap_req` is consumed by either write
@@ -7621,11 +7621,11 @@ pub async fn wiki_ingest_message(
         suggested_seed = Some(policy.fallback_suggested_seed.clone());
     }
 
-    // The write half of the cross-consumer recent window (group 43): buffer
+    // The write half of the cross-consumer recent window (group 43): parking page
     // this turn for the user's other surfaces — the thread of discourse
     // follows the user. It stays HERE, after everything the turn serves, so a
     // requester can never be handed back the very message it just sent (the
-    // fetch ran at the top of the turn). Best-effort: a buffer hiccup never
+    // fetch ran at the top of the turn). Best-effort: a parking page hiccup never
     // touches the turn.
     let surface_channel = request.metadata.channel.clone().unwrap_or_default();
     if let Err(e) = crate::recent_window::record_exchange(
@@ -7841,7 +7841,7 @@ mod tests {
         ))
     }
 
-    /// Drain the capture buffer the way the light dream does, so a test can go
+    /// Drain the capture parking page the way the light dream does, so a test can go
     /// on asserting about `fact_index`.
     ///
     /// Ingest buffers **every** standard capture now (founder, 2026-08-05 — the
@@ -7850,10 +7850,10 @@ mod tests {
     /// turn. A test that is about WHAT ends up filed — the subject, the validity
     /// window, the provenance, the inherited audience — still wants to read
     /// the fact, and reading it through the promotion is better than reaching
-    /// into the buffer and re-deriving by hand what promotion would have
+    /// into the parking page and re-deriving by hand what promotion would have
     /// copied: it exercises the path the product actually takes.
     ///
-    /// Tests that are about the BUFFERING itself assert on the buffer
+    /// Tests that are about the BUFFERING itself assert on the parking page
     /// directly and never call this.
     async fn promote_buffer(pool: &SqlitePool, tree: &WikiTree) {
         crate::dream_light::drain_deterministically(
@@ -8214,12 +8214,12 @@ mod tests {
     /// Two independent switches reach that state and both must work: LIST
     /// material (a set — half a shopping list is a wrong answer, not a partial
     /// one) and a REQUESTED CONTAINER (the user asked now, the write bypasses
-    /// the buffer, so the page has to exist now — whatever its style, since a
+    /// the parking page, so the page has to exist now — whatever its style, since a
     /// note someone asks you to keep can be prose).
     ///
     /// Everything else has no right page at capture time and the classifier is
     /// shown none to check against, so a name it proposes is a guess that would
-    /// become a real file on disk. Those take the wiki's buffer page instead.
+    /// become a real file on disk. Those take the wiki's parking page instead.
     #[test]
     fn a_page_name_is_honoured_only_when_the_write_cannot_wait() {
         let request = req("qualcosa", "alice");
@@ -10196,7 +10196,7 @@ mod tests {
         std::fs::write(
             wikis.join("alice").join("@profile.md"),
             format!(
-                "---\ntitle: Alice\npage_type: person\nkeywords:\n  topics: bio, city, craft\n---\n\n\
+                "---\ntitle: Alice\nkeywords:\n  topics: bio, city, craft\n---\n\n\
                  {{{{f={ALICE_FACT_A}}}}}Alice lives in Bologna.{{{{/}}}}\n\n\
                  She binds books by hand. {{{{f={ALICE_FACT_B}}}}}Alice is allergic to walnuts.{{{{/}}}}\n\n\
                  Her workshop is written up on [[alice/hobbies]].\n"
@@ -10405,7 +10405,7 @@ mod tests {
         assert!(card.section.contains("Alice is allergic to walnuts."));
         assert!(card.section.contains("She binds books by hand."));
         // Testata, markers and link syntax all stay out of the block.
-        assert!(!card.section.contains("page_type"), "{}", card.section);
+        assert!(!card.section.contains("keywords"), "{}", card.section);
         assert!(!card.section.contains("{{f="), "{}", card.section);
         assert!(!card.section.contains("[["), "{}", card.section);
         assert!(
@@ -10955,8 +10955,8 @@ mod tests {
         // `requested_container: true` takes the live direct-write path so
         // the fact lands in `fact_index` immediately. Every
         // non-smart wiki is a standard wiki, so a plain capture would
-        // buffer for the dream instead (covered by
-        // `ingest_standard_wiki_buffers_instead_of_writing_md`).
+        // parking page for the dream instead (covered by
+        // `ingest_standard_parking_pages_instead_of_writing_md`).
         let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"user:alice\",\"body\":\"alice prefers coffee black\",\"fact_type\":\"preference\",\"topics\":[\"coffee\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
@@ -11361,7 +11361,7 @@ mod tests {
     /// An extraction the classifier marks
     /// as an engine-rule (a standing governance directive) is appended to the
     /// sender's `@rules.md` as prose and is NEVER filed in `fact_index` or the
-    /// capture buffer. `setup_workdir` does not seed a `@rules.md`, so this also
+    /// capture parking page. `setup_workdir` does not seed a `@rules.md`, so this also
     /// exercises the missing-file path (the helper seeds from the default body).
     #[tokio::test]
     async fn ingest_engine_rule_appends_to_rules_md_not_fact_index() {
@@ -12224,7 +12224,7 @@ mod tests {
         assert_eq!(buffered.len(), 1, "exactly the one ordinary fact buffers");
         assert_eq!(buffered[0].capture_id, cid);
         assert_eq!(buffered[0].body, "Alice lives in Bologna.");
-        // The rule went to rules.md, not the buffer.
+        // The rule went to rules.md, not the parking page.
         let rules = std::fs::read_to_string(
             tree.wikis_dir()
                 .join("alice")
@@ -12272,7 +12272,7 @@ mod tests {
         // the planted row. The new body contradicts the recalled fact.
         // `requested_container: true` keeps the live direct-write path so
         // the supersede routes to `wiki_supersede` (a plain
-        // capture into the standard `alice` wiki would buffer instead).
+        // capture into the standard `alice` wiki would parking page instead).
         let llm_resp = format!(
             "{{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\
              \"target_page\":\"preferenze.md\",\"subject_id\":\"user:alice\",\
@@ -12620,8 +12620,8 @@ mod tests {
     }
 
     /// The same-day flow: the closure's target is still in the captures
-    /// buffer (surfaced by the fresh-capture recall slot). The closure must
-    /// land on the buffer row — `valid_to` + `decay_reason` staged — so the
+    /// parking page (surfaced by the fresh-capture recall slot). The closure must
+    /// land on the parking page row — `valid_to` + `decay_reason` staged — so the
     /// promotion carries them onto the fact.
     #[tokio::test]
     async fn ingest_closure_lands_on_a_buffered_capture() {
@@ -12640,7 +12640,7 @@ mod tests {
             dedup_threshold: None,
             valid_from: None,
             valid_to: None,
-            style: Some("lista".into()),
+            style: Some(crate::wiki::PageStyle::Lista),
             salience: None,
         };
         let buffered = capture_buffer::buffer_capture(&pool, cap_req, None)
@@ -12668,7 +12668,7 @@ mod tests {
         .expect("ingest");
         assert_eq!(resp.intent, IntentKind::Capture);
 
-        // The buffer row carries the staged closure.
+        // The parking page row carries the staged closure.
         let rows = capture_buffer::find_all_buffered(&pool, 100)
             .await
             .expect("buffered");
@@ -12683,7 +12683,7 @@ mod tests {
 
     /// A guest turn is ephemeral: recall runs on the public slice only, the
     /// classifier never fires (a scripted-empty LLM would panic if called),
-    /// nothing lands in the buffer, and the `rules` channel carries the
+    /// nothing lands in the parking page, and the `rules` channel carries the
     /// reserved-behaviour directive (roadmap 40).
     #[tokio::test]
     async fn guest_turn_is_ephemeral_and_recalls_public_slice_only() {
@@ -13275,7 +13275,7 @@ mod tests {
     ///
     /// The same-day flow: a claim captured this morning, corrected this
     /// afternoon, before the light dream promoted anything.
-    /// `fact_index::mark_superseded` matches no buffer row, so this used to
+    /// `fact_index::mark_superseded` matches no parking page row, so this used to
     /// touch nothing and log *«already closed»* — a retirement an operator
     /// would read as done.
     #[tokio::test]
@@ -14158,13 +14158,13 @@ mod tests {
         drop(dir);
     }
 
-    // ---------- standard-wiki captures route to the buffer ----------
+    // ---------- standard-wiki captures route to the parking page ----------
 
     /// A capture into a NARRATIVE wiki (wiki-user) must land in the captures
     /// buffer (the `capture_buffer` row), NOT in `fact_index` or the
-    /// published `.md`. The nightly compiler is what eventually writes the page.
+    /// published `.md`. The hourly round is what places it and writes the page.
     #[tokio::test]
-    async fn ingest_standard_wiki_buffers_instead_of_writing_md() {
+    async fn ingest_standard_parking_pages_instead_of_writing_md() {
         let (dir, tree, pool) = setup_workdir().await;
 
         let llm = FakeLlmBackend::new(
@@ -14281,7 +14281,7 @@ mod tests {
     /// was taken away and nothing is left to file the item on. It must not
     /// land on the parking page (that page holds prose waiting to be placed,
     /// and a list item turns it into a shopping list) and it must not wait in
-    /// the buffer either (an hour later there would still be no list). So the
+    /// the parking page either (an hour later there would still be no list). So the
     /// extraction is dropped **and the turn tells the user**: a list is a set,
     /// and one silently missing item is a wrong answer.
     #[tokio::test]
@@ -14355,7 +14355,7 @@ mod tests {
                     dedup_threshold: None,
                     valid_from: None,
                     valid_to: None,
-                    style: Some("lista".to_owned()),
+                    style: Some(crate::wiki::PageStyle::Lista),
                     salience: None,
                     authored_refs: Vec::new(),
                 },
@@ -14455,9 +14455,9 @@ mod tests {
     /// The LIVE exception. A capture the classifier flagged as a REQUESTED
     /// CONTAINER (`requested_container: true`) is written live via the direct
     /// path even into a standard wiki — it lands in `fact_index` + the page
-    /// marker immediately, NOT in the buffer (a shopping list cannot wait for
+    /// marker immediately, NOT in the parking page (a shopping list cannot wait for
     /// the dream). Inverse of
-    /// `ingest_standard_wiki_buffers_instead_of_writing_md`.
+    /// `ingest_standard_parking_pages_instead_of_writing_md`.
     ///
     /// Removing it was proposed on 2026-08-05 and rejected: the fresh slot
     /// makes a buffered claim *recallable*, which is enough for a fact and not
@@ -14523,7 +14523,7 @@ mod tests {
     /// Why the live path is not redundant with the fresh slot: a list added to
     /// faster than the dream drains would be served **incomplete**.
     ///
-    /// Buffer more items than `recall_fresh_top_k` and ask for the list. The
+    /// Parking page more items than `recall_fresh_top_k` and ask for the list. The
     /// slot returns its top K by similarity and the rest are simply absent —
     /// which is the right shape for "the most relevant things memory knows"
     /// and the wrong shape for "everything on the list". The live path exists
@@ -14547,7 +14547,7 @@ mod tests {
                     dedup_threshold: None,
                     valid_from: None,
                     valid_to: None,
-                    style: Some("lista".to_owned()),
+                    style: Some(crate::wiki::PageStyle::Lista),
                     page_description: None,
                     salience: None,
                 },
@@ -16706,7 +16706,7 @@ mod tests {
 
     /// A skip plan with a CAPTIONED attachment in flight: the
     /// deterministic fallback files the media into the sender's identity
-    /// wiki buffer (caption as body + marker) — described media is never
+    /// wiki parking page (caption as body + marker) — described media is never
     /// dead. (A text-less one stays catalogued-unfiled — see
     /// `textless_unclaimed_attachment_stays_catalogued_unfiled`.)
     #[tokio::test]

@@ -65,7 +65,7 @@ use crate::events::EventsError;
 use crate::events::{self, EventKind};
 use crate::fact_index::{self, FactIndexRow};
 use crate::llm::{CompletionRequest, LlmBackend};
-use crate::planner::{CompilationPlan, PagePlan, PageType};
+use crate::planner::{CompilationPlan, PagePlan};
 use crate::promote::{self, PageMergeParams, ParagraphToFileHints};
 use crate::prompts;
 use crate::proposals::{self, ProposalsError};
@@ -756,12 +756,6 @@ pub struct AutoPromoteReport {
 /// handles so adding a new sub-job (auto-promote, archive, cronista…)
 /// does not grow the public signature of `run_cycle` linearly.
 pub struct RemLlms<'a> {
-    /// `hub_writer` slot — the **narrative compiler's** `ConceptHub` prose
-    /// ([`crate::compiler`]), which is the slot's only remaining REM-side
-    /// consumer: the sub-job that used to regenerate a wiki's `index.md`
-    /// through it was made model-free in 2026-08-03 and deleted in
-    /// 2026-08-15.
-    pub hub_writer: &'a dyn LlmBackend,
     /// `rem_dedup_semantic` slot — confirms suspicious dedup pairs.
     pub revisor: &'a dyn LlmBackend,
     /// `rem_promotions` slot — decides paragraph/file/wiki promotion.
@@ -1929,14 +1923,19 @@ fn over_mass_floor(
     let style = wiki_relative_page(d, path)
         .and_then(|rel| crate::meta_annotate::read_page_card(&d.abs_dir.join(rel)).ok())
         .and_then(|card| card.style);
-    mass_floor_for_style(style.as_deref(), policy).is_some_and(|floor| mass >= floor)
+    mass_floor_for_style(style, policy).is_some_and(|floor| mass >= floor)
 }
 
-fn mass_floor_for_style(style: Option<&str>, policy: &RemPolicy) -> Option<usize> {
-    match style.map(str::trim) {
-        Some("lista") => None,
-        Some("prosa-tecnica") => Some(policy.auto_promote_min_page_facts_technical),
-        _ => Some(policy.auto_promote_min_page_facts),
+const fn mass_floor_for_style(
+    style: Option<crate::wiki::PageStyle>,
+    policy: &RemPolicy,
+) -> Option<usize> {
+    use crate::wiki::PageStyle;
+    match style {
+        // A list is a set: it is never split for size.
+        Some(PageStyle::Lista) => None,
+        Some(PageStyle::ProsaTecnica) => Some(policy.auto_promote_min_page_facts_technical),
+        Some(PageStyle::Prosa) | None => Some(policy.auto_promote_min_page_facts),
     }
 }
 
@@ -2609,7 +2608,7 @@ async fn run_page_grouping_for_wiki(
     // Candidate pages: every page carrying mass except the wiki's own map
     // ([`wiki::INDEX_FILENAME`] holds no facts by rule; this filter stays as
     // the belt to that braces). [`wiki::NOTES_FILENAME`] is *not* excluded and
-    // must not be: it is the buffer a fact lands on when nothing better fits,
+    // must not be: it is the parking page a fact lands on when nothing better fits,
     // and draining it onto real pages — or letting a new page emerge out of
     // it — is exactly this sweep's job.
     let mut candidates: Vec<(String, &str, usize)> = page_mass
@@ -2774,7 +2773,7 @@ async fn run_page_grouping_for_wiki(
                     &pages,
                     slug,
                     title.as_deref(),
-                    style.as_deref(),
+                    style.map(crate::wiki::PageStyle::as_str),
                     description.as_deref(),
                     &hints,
                     recipient.clone(),
@@ -2972,7 +2971,7 @@ enum GroupAction {
         title: Option<String>,
         /// Dominant style **default** for the newborn wiki's `_meta`, or
         /// `None` when genuinely mixed. A hint, not a gate.
-        style: Option<String>,
+        style: Option<crate::wiki::PageStyle>,
         /// Free-text "what goes in here" for the newborn wiki's `_meta`.
         description: Option<String>,
     },
@@ -3024,7 +3023,7 @@ fn parse_page_groups(raw: &str) -> Option<Vec<PageGroup>> {
                 GroupAction::Create {
                     slug,
                     title: str_field("title"),
-                    style: str_field("style"),
+                    style: crate::wiki::PageStyle::parse_lenient(str_field("style").as_deref()),
                     description: str_field("description"),
                 }
             },
@@ -3089,7 +3088,7 @@ fn merge_candidates(
     fn eligible<'p>(plan: &'p CompilationPlan, slug: &str) -> Option<&'p PagePlan> {
         plan.pages
             .get(slug)
-            .filter(|p| p.page_type == PageType::ConceptLeaf && !p.primary_facts.is_empty())
+            .filter(|p| !p.is_foundation() && !p.primary_facts.is_empty())
     }
     let same_family = |a: &str, b: &str| match (family.get(a), family.get(b)) {
         (Some(fa), Some(fb)) => fa == fb,
@@ -3127,7 +3126,7 @@ fn merge_candidates(
     let mut leaves: Vec<&PagePlan> = plan
         .pages
         .values()
-        .filter(|p| p.page_type == PageType::ConceptLeaf && !p.primary_facts.is_empty())
+        .filter(|p| !p.is_foundation() && !p.primary_facts.is_empty())
         .collect();
     leaves.sort_by_key(|p| std::cmp::Reverse(p.primary_facts.len()));
     for (i, p) in leaves.iter().enumerate() {
@@ -3205,7 +3204,7 @@ fn describe_merge_page(p: &PagePlan) -> String {
         p.slug,
         p.title,
         p.description,
-        p.style.as_deref().unwrap_or("—"),
+        p.style.map_or("—", |s| s.as_str()),
     )
 }
 
@@ -3430,7 +3429,7 @@ async fn run_page_merge(
             fact_ids: &fact_ids,
             husk_title: husk.title.as_str(),
             husk_description: husk.description.as_str(),
-            husk_style: husk.style.as_deref(),
+            husk_style: husk.style.map(crate::wiki::PageStyle::as_str),
             reason: Some(format!(
                 "LLM confirmed same concept ({signal}): {}",
                 verdict.reason.as_deref().unwrap_or("no reason given"),
@@ -4245,12 +4244,12 @@ async fn judge_refile_case(
         );
         return Ok(None);
     };
-    // Destination page: ALWAYS the dest wiki's buffer page. The compilation
+    // Destination page: ALWAYS the dest wiki's parking page page. The compilation
     // plan keys pages by a bare slug across the whole forest, so landing a
     // fact on a NAMED page of a foreign wiki can collide with a same-slug
     // page already homed in another wiki — the rehome would attach the fact
     // to the WRONG wiki's page and the next compile would strand
-    // `wiki_id != source_path` (a cross-wiki leak). The buffer page is the
+    // `wiki_id != source_path` (a cross-wiki leak). The parking page is the
     // one destination every wiki has and nothing else claims, so it is
     // collision-safe: the fact crosses into the right wiki and that wiki's
     // own dream (auto_promote / page_merge) re-files it onto the right page.
@@ -5010,7 +5009,7 @@ async fn repair_one_miss(
 
     // Proven — commit for real, act-first, same paper trail as the
     // refile sweep (born-applied receipt + structure_applied notice), and
-    // onto the same buffer page: the gate proved the flip against THAT
+    // onto the same parking page page: the gate proved the flip against THAT
     // destination, so committing to any other page would ship a move the
     // replay never judged.
     let op_id = wal::begin_rem_op(pool, cycle_id, "recall_repair_apply", Some(home_id), None)
@@ -6508,11 +6507,10 @@ mod tests {
     use crate::llm::FakeLlmBackend;
     use crate::types::{FactId, Principal, WikiId};
 
-    /// Bundle two LLMs the way the existing tests want (only hub+revisor;
+    /// Bundle the one LLM the existing tests want (the revisor;
     /// auto-promote and auto-apply default disabled).
-    fn test_llms<'a>(hub: &'a FakeLlmBackend, revisor: &'a FakeLlmBackend) -> RemLlms<'a> {
+    fn test_llms(revisor: &FakeLlmBackend) -> RemLlms<'_> {
         RemLlms {
-            hub_writer: hub,
             revisor,
             auto_promote: None,
             apply: None,
@@ -6876,17 +6874,10 @@ mod tests {
             revisor_jaccard_max: 0.99,
             ..RemPolicy::default()
         };
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": true}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .unwrap();
+        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .unwrap();
         assert!(
             report.revisor.pairs_examined >= 1,
             "must examine the pair, got {report:?}"
@@ -6960,17 +6951,10 @@ mod tests {
             revisor_jaccard_max: 0.99,
             ..RemPolicy::default()
         };
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .unwrap();
+        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .unwrap();
         assert_eq!(report.revisor.pairs_confirmed, 0);
         assert!(report.revisor.applied.is_empty());
         drop(dir);
@@ -6997,18 +6981,11 @@ mod tests {
             revisor_jaccard_max: 0.99,
             ..RemPolicy::default()
         };
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
 
-        let first = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .unwrap();
+        let first = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .unwrap();
         assert!(
             first.revisor.pairs_examined > 0,
             "the pair must be judged the first time"
@@ -7018,15 +6995,9 @@ mod tests {
             "the negative verdict must be recorded"
         );
 
-        let second = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .unwrap();
+        let second = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .unwrap();
         assert_eq!(
             second.revisor.pairs_examined, 0,
             "a settled pair must not be re-asked, and must not eat the cap"
@@ -7054,9 +7025,8 @@ mod tests {
             revisor_jaccard_max: 0.99,
             ..RemPolicy::default()
         };
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let llms = test_llms(&hub_llm, &rev_llm);
+        let llms = test_llms(&rev_llm);
 
         run_cycle(&pool, &tree, fake_embedder(), &llms, &policy)
             .await
@@ -7112,17 +7082,10 @@ mod tests {
             revisor_jaccard_max: 0.99,
             ..RemPolicy::default()
         };
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": true}");
-        run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .unwrap();
+        run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .unwrap();
         let (count,): (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM rem_ops_log WHERE cycle_id = ? AND status = 'done'",
         )
@@ -7253,8 +7216,6 @@ mod tests {
                     title: (*slug).to_owned(),
                     description: format!("about {slug}"),
                     style: None,
-                    page_type: PageType::ConceptLeaf,
-                    owner_scope: None,
                     parent_hub: None,
                     child_leaves: Vec::new(),
                     primary_facts: facts,
@@ -7468,8 +7429,6 @@ mod tests {
             title: slug.to_owned(),
             description: String::new(),
             style: None,
-            page_type: PageType::ConceptLeaf,
-            owner_scope: None,
             parent_hub: None,
             child_leaves: Vec::new(),
             primary_facts: facts,
@@ -7606,8 +7565,6 @@ mod tests {
                     title: slug.to_owned(),
                     description: String::new(),
                     style: None,
-                    page_type: crate::planner::PageType::ConceptLeaf,
-                    owner_scope: None,
                     parent_hub: None,
                     child_leaves: Vec::new(),
                     primary_facts: Vec::new(),
@@ -7690,16 +7647,16 @@ mod tests {
     fn a_list_is_never_split_by_mass_and_technical_prose_takes_twice_the_room() {
         let p = RemPolicy::default();
         assert_eq!(
-            mass_floor_for_style(Some("lista"), &p),
+            mass_floor_for_style(Some(crate::wiki::PageStyle::Lista), &p),
             None,
             "a lista is consulted, and half a list answers nothing"
         );
         assert_eq!(
-            mass_floor_for_style(Some("prosa-tecnica"), &p),
+            mass_floor_for_style(Some(crate::wiki::PageStyle::ProsaTecnica), &p),
             Some(p.auto_promote_min_page_facts_technical)
         );
         assert_eq!(
-            mass_floor_for_style(Some("prosa"), &p),
+            mass_floor_for_style(Some(crate::wiki::PageStyle::Prosa), &p),
             Some(p.auto_promote_min_page_facts)
         );
         // Absent or drifted → the prose floor. Drifting toward "may be split"
@@ -7708,10 +7665,9 @@ mod tests {
             mass_floor_for_style(None, &p),
             Some(p.auto_promote_min_page_facts)
         );
-        assert_eq!(
-            mass_floor_for_style(Some("something-else"), &p),
-            Some(p.auto_promote_min_page_facts)
-        );
+        // There is no fourth style to pass here any more: `PageStyle` has three
+        // values and nothing else parses into one (2026-08-19). `None` above
+        // covers what "something else" used to mean.
         assert!(
             p.auto_promote_min_page_facts_technical > p.auto_promote_min_page_facts,
             "scanning tolerates more mass than following a thread"
@@ -7727,13 +7683,12 @@ mod tests {
         // when no rem_promotions LLM is wired.
         plant_distinct(&tree, &pool, "alice", 3, "alice").await;
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let report = run_cycle(
             &pool,
             &tree,
             fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
+            &test_llms(&rev_llm),
             &mass_policy(),
         )
         .await
@@ -7748,13 +7703,8 @@ mod tests {
 
     /// Bundle the `run_cycle` LLMs for the split tests: the promote slot
     /// returns `response` verbatim.
-    fn split_llms<'a>(
-        hub: &'a FakeLlmBackend,
-        rev: &'a FakeLlmBackend,
-        promote: &'a FakeLlmBackend,
-    ) -> RemLlms<'a> {
+    fn split_llms<'a>(rev: &'a FakeLlmBackend, promote: &'a FakeLlmBackend) -> RemLlms<'a> {
         RemLlms {
-            hub_writer: hub,
             revisor: rev,
             auto_promote: Some(promote),
             apply: None,
@@ -7774,7 +7724,6 @@ mod tests {
         let facts = plant_distinct(&tree, &pool, "alice", 3, "alice").await;
         bump_recall(&pool, &facts[0], 7).await;
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         // The verdict names the real fact id — built after planting.
         let promote_llm = FakeLlmBackend::new(
@@ -7788,7 +7737,7 @@ mod tests {
             &pool,
             &tree,
             fake_embedder(),
-            &split_llms(&hub_llm, &rev_llm, &promote_llm),
+            &split_llms(&rev_llm, &promote_llm),
             &mass_policy(),
         )
         .await
@@ -7869,7 +7818,6 @@ mod tests {
         tree = WikiTree::open(dir.path()).unwrap();
         let facts = plant_distinct(&tree, &pool, "alice", 3, "alice").await;
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         // Bracketed, as the prompt renders them — the resolver strips them.
         let promote_llm = FakeLlmBackend::new(
@@ -7880,7 +7828,7 @@ mod tests {
             &pool,
             &tree,
             fake_embedder(),
-            &split_llms(&hub_llm, &rev_llm, &promote_llm),
+            &split_llms(&rev_llm, &promote_llm),
             &mass_policy(),
         )
         .await
@@ -7917,7 +7865,6 @@ mod tests {
         tree = WikiTree::open(dir.path()).unwrap();
         plant_distinct(&tree, &pool, "alice", 2, "alice").await;
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let promote_llm = FakeLlmBackend::new(
             "rp",
@@ -7927,7 +7874,7 @@ mod tests {
             &pool,
             &tree,
             fake_embedder(),
-            &split_llms(&hub_llm, &rev_llm, &promote_llm),
+            &split_llms(&rev_llm, &promote_llm),
             &mass_policy(),
         )
         .await
@@ -7946,14 +7893,13 @@ mod tests {
         tree = WikiTree::open(dir.path()).unwrap();
         plant_distinct(&tree, &pool, "alice", 3, "alice").await;
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let promote_llm = FakeLlmBackend::new("rp", "{\"split\": false}");
         let report = run_cycle(
             &pool,
             &tree,
             fake_embedder(),
-            &split_llms(&hub_llm, &rev_llm, &promote_llm),
+            &split_llms(&rev_llm, &promote_llm),
             &mass_policy(),
         )
         .await
@@ -7974,7 +7920,6 @@ mod tests {
         tree = WikiTree::open(dir.path()).unwrap();
         let facts = plant_distinct(&tree, &pool, "alice", 3, "alice").await;
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let all_ids = facts
             .iter()
@@ -7989,7 +7934,7 @@ mod tests {
             &pool,
             &tree,
             fake_embedder(),
-            &split_llms(&hub_llm, &rev_llm, &promote_llm),
+            &split_llms(&rev_llm, &promote_llm),
             &mass_policy(),
         )
         .await
@@ -8011,7 +7956,6 @@ mod tests {
         let facts = plant_distinct(&tree, &pool, "alice", 3, "alice").await;
         bump_recall(&pool, &facts[0], 7).await;
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let promote_llm = FakeLlmBackend::new(
             "rp",
@@ -8020,7 +7964,7 @@ mod tests {
                 facts[0].as_str()
             ),
         );
-        let llms = split_llms(&hub_llm, &rev_llm, &promote_llm);
+        let llms = split_llms(&rev_llm, &promote_llm);
         let r1 = run_cycle(&pool, &tree, fake_embedder(), &llms, &mass_policy())
             .await
             .unwrap();
@@ -8054,7 +7998,6 @@ mod tests {
         plant_on_page(&tree, &pool, "alice", "@projects_diary.md", 12, "alice").await;
         plant_on_page(&tree, &pool, "alice", "cucina.md", 12, "alice").await;
 
-        let hub_llm = FakeLlmBackend::new("hub", "# hub\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         // The scorer says "split" to anything it is shown, so whatever reaches
         // it gets split — which is exactly what makes the absence visible.
@@ -8067,7 +8010,7 @@ mod tests {
             &pool,
             &tree,
             fake_embedder(),
-            &grouping_llms(&hub_llm, &rev_llm, &promote_llm),
+            &grouping_llms(&rev_llm, &promote_llm),
             &policy,
         )
         .await
@@ -8164,13 +8107,8 @@ mod tests {
         }
     }
 
-    fn grouping_llms<'a>(
-        hub: &'a FakeLlmBackend,
-        rev: &'a FakeLlmBackend,
-        promote: &'a FakeLlmBackend,
-    ) -> RemLlms<'a> {
+    fn grouping_llms<'a>(rev: &'a FakeLlmBackend, promote: &'a FakeLlmBackend) -> RemLlms<'a> {
         RemLlms {
-            hub_writer: hub,
             revisor: rev,
             auto_promote: Some(promote),
             apply: None,
@@ -8192,7 +8130,6 @@ mod tests {
             plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
         }
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let promote_llm = FakeLlmBackend::new(
             "rp",
@@ -8200,7 +8137,7 @@ mod tests {
              \"style\":\"prosa\",\"description\":\"Everything about the garden\",\
              \"pages\":[\"orto.md\",\"potatura.md\",\"compost.md\"]}]}",
         );
-        let llms = grouping_llms(&hub_llm, &rev_llm, &promote_llm);
+        let llms = grouping_llms(&rev_llm, &promote_llm);
         let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
             .await
             .unwrap();
@@ -8269,7 +8206,6 @@ mod tests {
             plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
         }
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         // The model cut a two-page group; the floor is three. A wiki is
         // never born for a pair — they stay where they are.
@@ -8278,7 +8214,7 @@ mod tests {
             "{\"groups\":[{\"action\":\"create\",\"slug\":\"giardino\",\"title\":\"Giardino\",\
              \"pages\":[\"orto.md\",\"potatura.md\"]}]}",
         );
-        let llms = grouping_llms(&hub_llm, &rev_llm, &promote_llm);
+        let llms = grouping_llms(&rev_llm, &promote_llm);
         let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
             .await
             .unwrap();
@@ -8301,7 +8237,6 @@ mod tests {
         tree = WikiTree::open(dir.path()).unwrap();
         plant_on_page(&tree, &pool, "alice", "orto.md", 2, "alice").await;
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         // One stray page whose subject already has a home. No floor
         // applies — the home exists, so there is nothing to justify.
@@ -8310,7 +8245,7 @@ mod tests {
             "{\"groups\":[{\"action\":\"move\",\"target\":\"alice-giardino\",\
              \"pages\":[\"orto.md\"]}]}",
         );
-        let llms = grouping_llms(&hub_llm, &rev_llm, &promote_llm);
+        let llms = grouping_llms(&rev_llm, &promote_llm);
         let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
             .await
             .unwrap();
@@ -8352,14 +8287,13 @@ mod tests {
             plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
         }
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let promote_llm = FakeLlmBackend::new(
             "rp",
             "{\"groups\":[{\"action\":\"create\",\"slug\":\"giardino\",\
              \"pages\":[\"orto.md\",\"potatura.md\"]}]}",
         );
-        let llms = grouping_llms(&hub_llm, &rev_llm, &promote_llm);
+        let llms = grouping_llms(&rev_llm, &promote_llm);
         let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
             .await
             .unwrap();
@@ -8382,7 +8316,6 @@ mod tests {
         }
         plant_distinct(&tree, &pool, "alice", 2, "alice").await;
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         // `index.md` is not a page of a standard wiki, so naming it
         // invalidates the whole group rather than decapitating the parent.
@@ -8391,7 +8324,7 @@ mod tests {
             "{\"groups\":[{\"action\":\"create\",\"slug\":\"giardino\",\"title\":\"Giardino\",\
              \"pages\":[\"orto.md\",\"potatura.md\",\"index.md\"]}]}",
         );
-        let llms = grouping_llms(&hub_llm, &rev_llm, &promote_llm);
+        let llms = grouping_llms(&rev_llm, &promote_llm);
         let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
             .await
             .unwrap();
@@ -8414,11 +8347,10 @@ mod tests {
             plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
         }
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         // A tidy wiki: the model finds nothing worth grouping.
         let promote_llm = FakeLlmBackend::new("rp", "{\"groups\":[]}");
-        let llms = grouping_llms(&hub_llm, &rev_llm, &promote_llm);
+        let llms = grouping_llms(&rev_llm, &promote_llm);
         let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
             .await
             .unwrap();
@@ -8456,13 +8388,12 @@ mod tests {
             .await
             .unwrap();
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let report = run_cycle(
             &pool,
             &tree,
             fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
+            &test_llms(&rev_llm),
             &RemPolicy::default(),
         )
         .await
@@ -8489,13 +8420,12 @@ mod tests {
         write_wiki(&tree, "alice", "Alice", "wiki-user");
         tree = WikiTree::open(dir.path()).unwrap();
         plant_fact(&tree, &pool, "alice", "fresh bio", "alice").await;
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let report = run_cycle(
             &pool,
             &tree,
             fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
+            &test_llms(&rev_llm),
             &RemPolicy::default(),
         )
         .await
@@ -8531,13 +8461,12 @@ mod tests {
             .await
             .unwrap();
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let report = run_cycle(
             &pool,
             &tree,
             fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
+            &test_llms(&rev_llm),
             &RemPolicy::default(),
         )
         .await
@@ -8608,7 +8537,6 @@ mod tests {
             .await
             .unwrap();
 
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
 
         // Cycle 1: auto-apply lands the row on applied_pending_confirm.
@@ -8616,7 +8544,7 @@ mod tests {
             &pool,
             &tree,
             fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
+            &test_llms(&rev_llm),
             &RemPolicy::default(),
         )
         .await
@@ -8634,7 +8562,7 @@ mod tests {
             &pool,
             &tree,
             fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
+            &test_llms(&rev_llm),
             &RemPolicy::default(),
         )
         .await
@@ -8769,17 +8697,10 @@ mod tests {
             briefing_stale_draft_age: chrono::Duration::nanoseconds(-1),
             ..RemPolicy::default()
         };
-        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .expect("cycle");
+        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .expect("cycle");
 
         assert_eq!(report.briefing_dispatcher.wikis_examined, 1);
         assert_eq!(
@@ -8819,30 +8740,17 @@ mod tests {
             briefing_stale_draft_age: chrono::Duration::nanoseconds(-1),
             ..RemPolicy::default()
         };
-        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
 
-        let r1 = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .expect("cycle 1");
+        let r1 = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .expect("cycle 1");
         assert_eq!(r1.briefing_dispatcher.notifications_emitted.len(), 1);
         assert_eq!(r1.briefing_dispatcher.deduplicated, 0);
 
-        let r2 = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .expect("cycle 2");
+        let r2 = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .expect("cycle 2");
         assert_eq!(
             r2.briefing_dispatcher.notifications_emitted.len(),
             0,
@@ -8881,17 +8789,10 @@ mod tests {
             briefing_stale_draft_age: chrono::Duration::nanoseconds(-1),
             ..RemPolicy::default()
         };
-        let hub_llm = FakeLlmBackend::new("hub", "# x\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .unwrap();
+        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .unwrap();
         assert_eq!(report.briefing_dispatcher.wikis_examined, 0);
         assert!(report.briefing_dispatcher.notifications_emitted.is_empty());
         drop(dir);
@@ -8916,17 +8817,10 @@ mod tests {
         // The smart wiki has no fact mentioning [[alice]] ⇒ inverse missing.
 
         let policy = RemPolicy::default();
-        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .expect("cycle");
+        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .expect("cycle");
 
         assert_eq!(report.backlink_reciprocity.smart_wikis_known, 1);
         assert!(report.backlink_reciprocity.incoming_links >= 1);
@@ -8976,17 +8870,10 @@ mod tests {
         .await;
 
         let policy = RemPolicy::default();
-        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .expect("cycle");
+        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .expect("cycle");
         assert!(
             report.backlink_reciprocity.notifications_emitted.is_empty(),
             "reciprocal back-link present ⇒ no notify, got {:?}",
@@ -9014,18 +8901,10 @@ mod tests {
         plant_fact(&tree, &pool, parent, "active fact body", "alice").await;
 
         let policy = RemPolicy::default();
-        let hub_llm =
-            FakeLlmBackend::new("hub", "# REGEN — MUST NEVER BE WRITTEN OVER COMPANION\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .expect("cycle");
+        run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .expect("cycle");
 
         let index = std::fs::read_to_string(parent_dir.join("index.md")).unwrap();
         assert!(
@@ -9080,17 +8959,10 @@ mod tests {
         .await;
 
         let policy = RemPolicy::default();
-        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .expect("cycle");
+        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .expect("cycle");
 
         assert_eq!(
             report.briefing_processor.items_examined, 1,
@@ -9162,7 +9034,6 @@ mod tests {
         .await;
 
         let policy = RemPolicy::default();
-        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
         let applier = FakeLlmBackend::new(
             "ingest",
@@ -9172,7 +9043,6 @@ mod tests {
             ),
         );
         let llms = RemLlms {
-            hub_writer: &hub_llm,
             revisor: &rev_llm,
             auto_promote: None,
             apply: None,
@@ -9211,17 +9081,10 @@ mod tests {
                 .await;
 
         let policy = RemPolicy::default();
-        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .expect("cycle");
+        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .expect("cycle");
 
         assert_eq!(
             report.briefing_processor.items_examined, 0,
@@ -9254,17 +9117,10 @@ mod tests {
             insert_pending_briefing_row(&pool, "alice", chrono::Duration::minutes(5), None).await;
 
         let policy = RemPolicy::default();
-        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .expect("cycle");
+        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .expect("cycle");
 
         assert_eq!(
             report.briefing_processor.items_examined, 0,
@@ -9293,17 +9149,10 @@ mod tests {
             briefing_processor_enabled: false,
             ..RemPolicy::default()
         };
-        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .expect("cycle");
+        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .expect("cycle");
 
         assert_eq!(report.briefing_processor.items_examined, 0);
         assert_eq!(report.briefing_processor.items_processed, 0);
@@ -9608,7 +9457,7 @@ mod tests {
 
         // The model even names a specific dest page — which the engine
         // deliberately IGNORES, forcing the fact onto the dest wiki's
-        // collision-safe buffer page. (A named cross-wiki page can collide
+        // collision-safe parking page page. (A named cross-wiki page can collide
         // with a same-slug page already homed in another wiki under the
         // bare-slug plan keyspace, stranding wiki_id != source_path — the
         // regression this asserts.) The move must still land on bob/@notes.md.
@@ -9932,17 +9781,10 @@ mod tests {
             revisor_jaccard_max: 0.99,
             ..RemPolicy::default()
         };
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": true}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .unwrap();
+        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .unwrap();
         assert_eq!(
             report.revisor.pairs_examined, 0,
             "the mixed rule/non-rule pair must be filtered before the LLM: {report:?}"
@@ -9997,17 +9839,10 @@ mod tests {
             revisor_jaccard_max: 0.99,
             ..RemPolicy::default()
         };
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": true}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .unwrap();
+        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .unwrap();
 
         assert_eq!(
             report.revisor.pairs_examined, 0,
@@ -10062,17 +9897,10 @@ mod tests {
             revisor_jaccard_max: 0.99,
             ..RemPolicy::default()
         };
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": true}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .unwrap();
+        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .unwrap();
 
         assert!(
             report.revisor.pairs_examined > 0,
@@ -10122,17 +9950,10 @@ mod tests {
             revisor_jaccard_max: 0.99,
             ..RemPolicy::default()
         };
-        let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": true}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .unwrap();
+        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
+            .await
+            .unwrap();
         assert!(
             report.revisor.pairs_examined >= 1,
             "rule-vs-rule must still be examined: {report:?}"
@@ -10666,7 +10487,7 @@ mod tests {
         .await;
         // The destination wiki has a readable fact whose topic makes its
         // card match the turn's seed ("ricette") for the gather fan.
-        // On `@notes.md` — the buffer, which is where a cross-wiki refile
+        // On `@notes.md` — the parking page, which is where a cross-wiki refile
         // lands, so opening it is what lets the gate see the moved fact.
         plant_topic_fact(
             &tree,
@@ -10740,7 +10561,7 @@ mod tests {
             .expect("moved fact");
         assert_eq!(
             moved.source_path, "wikis/ricette/@notes.md",
-            "the fact landed on the destination's buffer page"
+            "the fact landed on the destination's parking page"
         );
         let misses = crate::recall_log::recent_misses(&pool, 10).await.unwrap();
         assert_eq!(misses[0].status, "repaired");
@@ -11937,8 +11758,6 @@ mod tests {
                 title: "Pianificata".to_owned(),
                 description: String::new(),
                 style: None,
-                page_type: PageType::ConceptLeaf,
-                owner_scope: None,
                 parent_hub: None,
                 child_leaves: Vec::new(),
                 primary_facts: Vec::new(),

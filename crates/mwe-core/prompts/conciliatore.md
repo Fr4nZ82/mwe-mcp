@@ -1,7 +1,7 @@
 ---
 name: conciliatore
 description: planner stage 1.5 — folds semantically-duplicate proposed concept pages into existing ones (dedup with redirect bias)
-version: 1.8
+version: 1.9
 default_version_at_bootstrap: v1.8
 ---
 
@@ -69,7 +69,7 @@ You are the Conciliatore (Conciliator) of a personal wiki memory. New pages have
 
 TASK — for EACH proposed page:
 - If it is semantically equivalent to an EXISTING page (same topic even under a different slug — e.g. "sport" vs "sport_and_leisure", "health" vs "health_and_wellbeing"), put it in "redirects" as { "<proposed_slug>": "<existing_slug>" }. Its facts will be re-routed to the existing page.
-- If it is a genuinely new topic, put it in "accepted_new", preserving slug / title / description / page_type / parent_hub.
+- If it is a genuinely new topic, put it in "accepted_new", preserving slug / title / description / parent_hub.
 
 RULES:
 - "sport" and "sport_and_leisure" → same topic → ALWAYS redirect.
@@ -84,7 +84,7 @@ RULES:
 OUTPUT — one strict JSON object, no prose around it:
 {
   "redirects":    { "<proposed_slug>": "<existing_slug>", ... },
-  "accepted_new": [ { "slug": "...", "title": "...", "description": "...", "page_type": "concept_leaf", "parent_hub": "..." }, ... ]
+  "accepted_new": [ { "slug": "...", "title": "...", "description": "...", "parent_hub": "..." }, ... ]
 }
 
 EXISTING PAGES:

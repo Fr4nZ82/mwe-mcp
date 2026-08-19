@@ -427,7 +427,7 @@ The chat panel is the single LLM chokepoint for the dashboard, and its
 *role* is deliberately narrow: it is an
 **operative tool on the memory itself**, not a Q&A system. It composes
 `_internal.*` operations of `mwe-core` through an in-process agentic
-loop (Ollama function calling, `hub_writer` slot) and is the place
+loop (Ollama function calling, `operator_chat` slot) and is the place
 where structural intents that don't have a dedicated page land —
 proposal questionnaires (`wiki_promote`, `dedup_merge`, `bundle`),
 batch ops on facts, hierarchical
@@ -456,7 +456,7 @@ tool-call trace in the panel, backed by `LlmBackend::chat` /
   *(The current set is canonical in [agentic-chat.md](agentic-chat.md).)*
 
 `structure_proposal_apply` is wired into the chassis;
-`AgenticContext.hub_writer` is threaded through to `apply_proposal` for
+`AgenticContext`'s chat backend is threaded through to `apply_proposal` for
 kinds that need an LLM at apply time. `wiki_supersede` inherits subject /
 ACL / `fact_type` / topics from the targeted fact, so the chat only has
 to surface a `fact_id` (via `wiki_recall`) plus the corrected body; the
@@ -541,7 +541,7 @@ badged `superato` / `eliminato`; those, like fresh rows, omit the
 
 The page also reads **un-promoted captures** still in `capture_buffer`
 (which the light dream has not consolidated yet) via
-`recall::wiki_buffered_full_for` — the same ACL projection and filter set,
+`recall::parking_pageed_full_for` — the same ACL projection and filter set,
 but no semantic ranking (it is a list, not a search, so it needs no
 embedder). Those buffered rows lead the listing, carry an **`in
 consolidamento`** badge (`badge-fresh`), show a dash in the `wiki_id`
@@ -634,7 +634,7 @@ The edit form carries **three** surfaces, split by how they apply:
   `move` op (REM, batched) and the operative-chat `wiki_move_fact` tool both
   reuse the same engine (`promote::apply_paragraph_to_file_direct` for a
   same-wiki page→page move, `promote::apply_fact_refile_direct` for a
-  cross-wiki move onto the destination wiki's buffer page `@notes.md`), each minting a
+  cross-wiki move onto the destination wiki's parking page `@notes.md`), each minting a
   born-applied + revertible receipt. ACL / validity stay structured because
   no LLM judgment is involved; a move follows an operator's stated *intent*,
   so it rides the intent-driven channels, never a `<select>`.

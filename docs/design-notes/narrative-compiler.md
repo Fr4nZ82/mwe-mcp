@@ -1,5 +1,5 @@
 ---
-title: Narrative compiler — planner + the Cronista, Hub Writer & Record Writer
+title: Narrative compiler — planner + the Cronista & the Record Writer
 area: design-notes
 status: partial
 last_review: "2026-08-06"
@@ -74,8 +74,8 @@ graph from three deterministic sources — no LLM, no facts. From
 `owner_scope`); for each enrolled user one `person` card (slug = the user
 id), wiring `parent_hub` to the user's **first** known group and
 `outgoing_links` to all of them. Groups are built first so a person can
-link to them. From the **tree** (`seed_wiki_buffers`): **every** standard
-wiki — identity wikis included — gets a `wiki_buffer` node on its
+link to them. From the **tree** (`seed_parking_pages`): **every** standard
+wiki — identity wikis included — gets a `parking_page` node on its
 `@notes.md` (slug = `<wiki slug>__notes`, `parent_hub` = its own card when
 it has one else the parent wiki's foundation slug, description = the
 `_meta` `scope` prose). Smart wikis never qualify: their consumer is the
@@ -90,7 +90,7 @@ nodes are not interchangeable, because two different things arrive at the
 | node | file | receives |
 |---|---|---|
 | `person` / `group_theme` — the **card** | `@profile.md` | the always-on identity core an ingest `salience: "high"` reserves |
-| `wiki_buffer` — the **buffer** | `@notes.md` | every other fact with no page yet; REM's reorg drains it onto real pages |
+| `parking_page` — the **parking page** | `@notes.md` | every other fact with no page yet; REM's reorg drains it onto real pages |
 
 A topic wiki gets only the buffer: its subject is a topic — a person, a
 pet, a project — never a user (maintainer 2026-07-05), so there is no
@@ -131,12 +131,12 @@ the day it is true. What is measured is the upper bound of what any reader is
 served: per-reader redaction only removes more.
 
 Foundation pages are **never garbage-collected**
-([`PageType::is_foundation`](../../crates/mwe-core/src/planner.rs)) — an
+([`PagePlan::is_foundation`](../../crates/mwe-core/src/planner.rs)) — an
 enrolled user always has a card even with zero facts, and a buffer
 survives its facts being drained onto sub-pages, which is what is supposed
 to happen to everything that lands there. A slug collision is skipped with
 a warning (enrollment wins over a topic wiki; the group wins over a
-person), so the graph never has two pages on one slug — and the buffer's
+person), so the graph never has two pages on one slug — and the parking page's
 `__` separator is **unreachable by `slugify`**, so no classifier-proposed
 page name can ever claim a buffer's key. The same property is why the two
 places that canonicalise a proposed slug (`build_compilation_plan` step 4
@@ -163,7 +163,7 @@ reading it** (the `{birth_floor}` block, `planner::birth_floor_directive`).
 
 - **Hourly (cheap tier).** *Park rather than guess.* A fact is assigned only to
   a page that is a **strong** match; when none is, the fact is **omitted** and
-  the orphan pass parks it on the wiki's buffer page. And a new page may be
+  the orphan pass parks it on the wiki's parking page. And a new page may be
   proposed only when it groups at least
   [`PAGE_BIRTH_FLOOR`](../../crates/mwe-core/src/planner.rs) = **5** facts on
   one theme — enforced in code by `hold_to_birth_floor`, which drops an
@@ -175,7 +175,7 @@ reading it** (the `{birth_floor}` block, `planner::birth_floor_directive`).
   judgement is the point.
 
 The floor works **only together with the re-offer**: at every light build each
-wiki's buffer page re-enters the to-place pool (`build_wiki_plan`'s `reopen`
+wiki's parking page re-enters the to-place pool (`build_wiki_plan`'s `reopen`
 set), so a parked fact is judged again next hour and a pile that has grown can
 finally earn its page. Carried over instead, it would sit until the nightly pass
 read it and the floor could never be reached. Neither half does anything alone.
@@ -362,7 +362,7 @@ Two halves, in this order, and the order is the design:
 2. **Everything the classifier left unplaced goes to the Cartografo on the
    cheap ingest tier.** That is every prose fact, and it is the reason this
    stage runs hourly at all: without it a prose fact has no page of its own,
-   takes the orphan fallback to its wiki's buffer (`@notes.md`), and is then
+   takes the orphan fallback to its wiki's parking page (`@notes.md`), and is then
    *carried over* by every later build — so the strong nightly Cartografo
    never sees it as new either, and the buffer only drains when REM's split or
    the reviewer's oversize nomination reaches it.
@@ -429,12 +429,12 @@ well-populated pages beat many scattered ones.
 **Foundation pages are never offered and never accepted as merge targets.** A
 card holds who a subject is and a buffer is where a fact waits until it has a
 home; neither is a topic a page can become part of. They used to be rendered
-*first* in the list, the buffer node wearing its wiki's own title and scope as
+*first* in the list, the parking node wearing its wiki's own title and scope as
 its description, under that same redirect bias.
 
 **Nothing the stage returns is trusted.** `vet_accepted` and `vet_redirects`
 run over both halves of its output before either reaches the plan or the
-concept registry, because the model is asked to re-emit `slug` / `page_type` /
+concept registry, because the model is asked to re-emit `slug` /
 `parent_hub` as free-form JSON while it decides merges:
 
 | what comes back | what happens |
@@ -442,7 +442,7 @@ concept registry, because the model is asked to re-emit `slug` / `page_type` /
 | redirect onto a slug that is neither an existing concept page nor a page accepted this run | dropped — the plan builder's fallback would otherwise mint a blank, style-less page under that name, turning *merge into X* into *create an empty X* |
 | redirect onto a foundation page, or onto itself | dropped |
 | accepted page named `index` / `rules` / `projects` / `profile` / `notes` | dropped — it would compile onto the file the wiki's card or buffer already owns |
-| accepted page of any other `page_type` | filed as a `concept_leaf` — *a container is a wiki* |
+| accepted page parented under a page | the parent is dropped — *a container is a wiki* |
 | `parent_hub` naming no foundation page | cleared, and `resolve_page_wiki` homes the page by its facts |
 
 A dropped redirect loses nothing: the proposal stays its own page and the next
@@ -532,7 +532,7 @@ materialises the final plan deterministically, top to bottom:
    outgoing), make it **symmetric** (every edge gets its inverse), sort,
    and sync `outgoing_links` / `incoming_links` back onto each page.
 9. **Compilation order**: hubs → persons → leaves
-   ([`PageType::order_rank`](../../crates/mwe-core/src/planner.rs)), ties
+   ([`PagePlan::order_rank`](../../crates/mwe-core/src/planner.rs)), ties
    broken by slug, so a hub is always written after its children are
    placed.
 
@@ -554,15 +554,15 @@ Two of these steps deserve calling out:
   the same wiki — mwe-mcp's tree is a **forest** of top-level wikis with no
   materialised root.)
 - **Fixpoint GC** (step 7). Empty concept pages are removed
-  (`concept_leaf` with no facts, `concept_hub` with no children) — but in a
+  (an ordinary page with no facts) — but in a
   **loop until no removals**, not a single pass. A single pass would leave a
   stranded hub whose only child was an empty leaf removed *in that same
   pass*; the fixpoint catches the cascade — remove the empty leaf, the hub
   becomes childless, remove the hub too. Each iteration first
-  **normalises** the shape the sweep must not eat: an emptied leaf that
-  other pages still parent under **flips to `concept_hub`** (plan page +
-  registry entry) instead of being removed — removal would orphan every
-  child's `parent_hub` (the dangling-pointer factory step 6 heals after) —
+  **normalises** the shape the sweep must not eat: an emptied page that
+  other pages still parent under is **kept** instead of being removed —
+  removal would orphan every child's `parent_hub` (the dangling-pointer
+  factory step 6 heals after) —
   which is how a fact-bearing container drained by a placement re-open
   settles into its real hub role; the type flip alone marks the page dirty
   (`compute_dirty_pages` compares the type beside the fingerprint, since
@@ -584,30 +584,37 @@ Two of these steps deserve calling out:
 All types live in [`planner.rs`](../../crates/mwe-core/src/planner.rs);
 the definitions there are the SSOT.
 
-- **[`PageType`]** — **which reserved page a plan node is**, and nothing more.
-  `Person` and `GroupTheme` both resolve to the wiki's identity **card**
-  (`@profile.md`); `WikiBuffer` to its **buffer** (`@notes.md`); those three are
-  foundation, never GC'd. `ConceptLeaf` means "an ordinary page" and is
-  GC-eligible when it holds no facts. `ConceptHub` is retired (founder,
-  2026-08-04: *«un contenitore è una wiki»*) and survives only so a plan
-  written before that date still loads.
+- **What kind of page a plan node is — nobody stores it.** It is the page's
+  **file name**: `@profile.md` is the wiki's identity card, `@notes.md` its
+  parking page, anything else an ordinary page. `PagePlan` answers with
+  `is_identity_card()` / `is_parking_page()` / `is_foundation()`, all derived
+  from `page_path`, and `prompt_kind()` renders the word the placement prompt
+  needs (`person` / `group_theme` / `parking_page` / `concept_leaf`) at the
+  moment it is shown. The wiki's own pages are never garbage-collected; an
+  ordinary page goes when it holds no facts.
 
-  ⚠️ **It is not a classification of pages, and calling it one is a defect
-  with a history.** The four values are the page taxonomy of the **pre-Rust
-  engine** — a flat `pages/<topic>.md` space with `person` / `group_theme` /
-  `concept_hub` / `concept_leaf` — carried over verbatim when the planner was
-  ported on 2026-05-31. The migration plan of the time said what should have
-  happened to them instead: *«I "concept_hub/group_theme" del vecchio
+  The one thing a file name cannot say is whether a card belongs to a **person
+  or a group** — same name, different wikis — so `PagePlan` carries a single
+  boolean, `group_wiki`, stamped once per build from the foundation set. It is
+  a fact about the wiki, not a role for the page.
+
+  ⚠️ **There used to be a `PageType` enum here, and removing it on 2026-08-19
+  is the point of this section.** Its five values were the page taxonomy of the
+  **pre-Rust engine** — a flat `pages/<topic>.md` space with `person` /
+  `group_theme` / `concept_hub` / `concept_leaf` — carried over verbatim when
+  the planner was ported on 2026-05-31. The migration plan of the time said
+  what should have happened instead: *«I "concept_hub/group_theme" del vecchio
   diventano nodi wiki. I "concept_leaf" diventano pagine / sub-wiki»* — they
-  were meant to dissolve into the wiki tree. That conversion was never
-  finished; retiring `ConceptHub` in 2026-08-04 completed one quarter of it.
-  What WAS confirmed with the founder in the porting commit is narrower and
-  unrelated: that a concept page is a `.md` inside its wiki and that
-  escalation reuses `wiki_promote`. **The only classification of a page the
-  founder designed is [`style`](#the-testata--per-page-style--description--keywords)**
-  (`prosa` / `prosa-tecnica` / `lista`, 2026-06-05). Do not present the two as
-  parallel axes; `render_page_file` printed them one line apart in every
-  page's frontmatter until 2026-08-17, which is how the confusion spread.
+  were meant to dissolve into the wiki tree. What the enum actually held was a
+  restatement of the file name, and the code showed it: one compiler branch
+  asked the type AND the name together, and the planner ran a watchdog that
+  logged an error whenever the two disagreed. Both are gone with it, along with
+  the retired `ConceptHub`, which nothing had minted since 2026-08-04
+  (*«un contenitore è una wiki»*).
+
+  **The only classification of a page the founder designed is
+  [`style`](#the-testata--per-page-style--description--keywords)**
+  (`prosa` / `prosa-tecnica` / `lista`, 2026-06-05).
 - **[`FactForPage`]** — a fact materialised onto a page. It carries the
   verbatim claim text, the classifier's `fact_type`, the full ACL triple
   (`subject` / `allow` / `sender`), the `source_wiki_id`, the optional
@@ -621,12 +628,13 @@ the definitions there are the SSOT.
   [id-stability invariant](narrative-buffer.md#id-stability) carried
   through `capture → fact → page`).
 - **[`PagePlan`]** — one page's record: `slug` (the plan key), `title`,
-  `description`, `page_type`, optional `owner_scope` (group prose) and
+  `description`, `group_wiki`, optional `owner_scope` (group prose) and
   `parent_hub`, `child_leaves`, `primary_facts`, the symmetric
   `outgoing_links` / `incoming_links`, and the page's **tree home** —
-  `wiki_id` + `page_path` (a foundation node uses its type's reserved page —
-  `@profile.md` for a card, `@notes.md` for a buffer; a `concept_leaf` uses
-  `<slug>.md`; **never** `index.md`, a name no plan node may claim).
+  `wiki_id` + `page_path`. That last one is also what says which kind of page
+  this is: `@profile.md` for a card, `@notes.md` for a parking page,
+  `<slug>.md` for an ordinary one; **never** `index.md`, a name no plan node
+  may claim.
 - **[`CompilationPlan`]** — the persisted artifact: `pages` (keyed by slug
   in a `BTreeMap`, sorted for determinism), `merged_pages` (the GC/redirect
   audit), `link_graph`, `compilation_order`, `generated_at`, `fact_count`,
@@ -667,8 +675,8 @@ carried-over fact's render content drifted.
 plan, pages absent from the prior plan, and pages present in the prior plan
 but gone from the next (so the Cronista can delete their `.md`). On a first
 build (no prior plan) every page is dirty. This is the lever that keeps the
-nightly compile cheap: the Cronista regenerates only the dirty set, not the
-whole tree.
+compile cheap — and it runs every hour, not only at night: the Cronista
+regenerates only the dirty set, not the whole tree.
 
 ## Incremental orchestration
 
@@ -715,7 +723,7 @@ seeding the page and a registry entry when the plan does not know it yet (a
 form** for a cross-wiki refile, which maps the destination page to its plan
 key through `plan_slug_for_page` — a wiki's reserved pages are foundation
 nodes keyed per wiki, so `@profile.md` resolves to the card's slug and
-`@notes.md` to the buffer's, never to a forest-wide `profile` / `notes` key)
+`@notes.md` to the parking page's, never to a forest-wide `profile` / `notes` key)
 — and drops any husk page a merge removed (plan + registry, audited in
 `merged_pages`).
 
@@ -743,7 +751,7 @@ guarantees a re-homed fact fingerprints identically to a gathered one — no
 permanent dirty churn.
 
 The seam's seeded page is a **bridge only**: at the next plan build the
-Fonditore's buffer pass owns the slug with a `wiki_buffer` foundation node
+Fonditore's buffer pass owns the slug with a `parking_page` foundation node
 (path pinned to `@notes.md`, never garbage-collected), the staleness GC
 drops the seam's transitional registry entry, and the carried facts follow
 the slug onto the foundation node — so a registry round-trip can never
@@ -778,12 +786,13 @@ the maintainer (2026-05-31):
 - **Foundation pages are the identity wikis.** A `person` page *is* the
   user's `wiki-user` wiki; a `group_theme` *is* the group's `wiki-group`
   wiki. Either way the page is that wiki's **card** (`@profile.md`), and its
-  buffer (`@notes.md`) is the other foundation node.
+  parking page (`@notes.md`) is the other foundation node.
 - **A `concept_leaf` is a `.md` page** within the relevant standard wiki. A
   routine emergent concept page is *content the Cronista writes* — a new
   `.md` inside an existing wiki — and therefore needs **no
-  `structure_proposal`**. (`concept_hub` was retired on 2026-08-04: a page
-  that contains pages is what a wiki is for.)
+  `structure_proposal`**. (The "page that contains pages" was retired on
+  2026-08-04 — that is what a wiki is for — and the last trace of it went with
+  the page-type enum on 2026-08-19.)
 - **A sub-wiki emerges from a GROUP of pages, never from one page.** The
   rung above a page reuses the **existing**
   [`wiki_promote` / `pages_to_subwiki`](proposal-apply-engine.md) machinery —
@@ -834,7 +843,7 @@ the **cheap** tier, over the remainder only — while the Conciliatore runs at
 REM".** The strong tier above applies to the [`Cadence::Full`](../../crates/mwe-core/src/dream.rs)
 compile (nightly REM + operator-driven compiles). Every LLM stage of the
 frequent, cheap **light dream** (`Cadence::Light`) — Cartografo, Conciliatore,
-Cronista, Hub Writer — runs on the cheap **ingest-tier (Flash)** backend (the
+Cronista — runs on the cheap **ingest-tier (Flash)** backend (the
 same model the classifier runs on; it reaches `run_compile` as the bag's `apply`
 slot), falling back to the strong slot only when no `ingest` slot is configured.
 The Cartografo is the one that does not fall back: with no `ingest` slot the
@@ -844,7 +853,7 @@ light dream never touches the Pro tier; the nightly REM recompiles the same
 pages at full quality — and re-judges the placements the reviewer nominated,
 which the light pass never touches.
 No new operator config — the slots already exist (`ingest` = Flash, `cronista` /
-`rem_promotions` = strong, `hub_writer` = workhorse — see
+`rem_promotions` = strong — see
 [LLM functions](llm-functions.md)); `run_compile` just selects per cadence
 via the `tier_backend` helper.
 
@@ -865,7 +874,7 @@ set, and the end-to-end `build_wiki_plan` incremental-idempotency
 (first build homes the fact, an unchanged second build yields zero dirty
 pages).
 
-## The compiler — Il Cronista + the Hub Writer
+## The compiler — Il Cronista + the Record Writer
 
 [`mwe-core::compiler`](../../crates/mwe-core/src/compiler.rs) is the **prose
 stage**: it consumes the [`CompilationPlan`](../../crates/mwe-core/src/planner.rs)
@@ -885,16 +894,11 @@ Every failed or degraded page also feeds the
 [per-page failure ledger](rem-cycle.md#per-page-compile-failure-surfacing)
 that surfaces persistent failures to the operator.
 
-### The dispatcher — hub vs `lista` vs prose
+### The dispatcher — `lista` vs prose
 
-[`compile_page`](../../crates/mwe-core/src/compiler.rs) routes each page in two
-steps:
+[`compile_page`](../../crates/mwe-core/src/compiler.rs) routes each page:
 
-1. A page is a **hub** when it has **zero facts**, **at least one child**, and a
-   `page_type` of `concept_hub`, `group_theme` or `wiki_buffer` → the
-   **Hub Writer** (the buffer rides both arms: prose while it still
-   carries facts, hub overview once they moved onto its children).
-2. Otherwise, a leaf whose ingest-decided `style` (`page.style`) is
+1. A leaf whose ingest-decided `style` (`page.style`) is
    **`lista`** → the **Record Writer** (atomic records, no LLM); a leaf with
    **no facts at all** (a foundation page whose facts have not arrived yet —
    empty *concept* leaves never get here, the planner GCs them) →
@@ -902,7 +906,7 @@ steps:
    description one-liner, **no LLM**: handed an empty fact list the Cronista
    invents colour prose from the wikilinks alone — the dogfood re-run compiled
    Tolkien lore onto a zero-fact identity index); everything else
-   — prose leaves, and a `person` / `wiki_buffer` page carrying facts —
+   — prose leaves, and a `person` / `parking_page` page carrying facts —
    goes to **Il Cronista**.
 
 The three writers target different config slots (the Cronista on the strong
@@ -1373,42 +1377,31 @@ later work (it is born with emergence), not this one.
 
 [`render_page_file`](../../crates/mwe-core/src/compiler.rs) writes both into the
 frontmatter (`description` is omitted when empty, quotes / newlines flattened).
-It does **not** write `page_type`: that line was read by nothing and sat one
-above `style`, teaching every reader that a page carries two parallel
-classifications. It carries one — `style` — and `PageType` is a plan-internal
-marker of which reserved page a node is (see
-[the data model](#the-data-model)). The `style` tag records the page's **dominant**
+It does **not** write a `page_type` line: that line was read by nothing and sat
+one above `style`, teaching every reader that a page carries two parallel
+classifications. It carries one — `style`. What kind of page it is, is its file
+name (see [the data model](#the-data-model)). The `style` tag records the page's **dominant**
 read-strategy, and it matches the body: a `lista` testata
 sits over a [record body](#the-record-writer--lista-pages-no-llm), never prose.
 
-### The Hub Writer — the overview (cheap model)
+### No page lists other pages
 
-[`compile_hub_page`](../../crates/mwe-core/src/compiler.rs) writes a hub's
-overview on the cheap `HubWriter` slot, through the
-[`regenerate-index`](../../crates/mwe-core/prompts/regenerate-index.md) prompt
-(the name is historical — REM's index writer stopped calling a model in
-2026-08-03, so the hub pass is its only caller left). It is fed the plan's
-children, each as its canonical `plan_page_wikilink` + `description`, and
-carries **no ACL markers** — a hub holds no facts, so there is nothing to mark
-or repoint.
+There used to be a third writer here, the **Hub Writer**: it wrote the overview
+of a page that had no facts of its own and only children, citing each one. By
+2026-08-19 the only such page left was a **group's card**, and that card went
+the way `index.md` went, for the same reason (founder): *«perché dovrei avere un
+elenco di pagine? Dalle wiki utente lo abbiamo già tolto … l'elenco delle pagine,
+ognuna col suo biglietto, arriva al motore leggendo i file e i frontmatter, non
+serve un indice che poi va pure mantenuto.»*
 
-It returns the Cronista's JSON shape minus `style` (v1.7):
-`{ mergedBody, description }`. The `description` matters more here than
-anywhere: it used to be the **planner's literal**, so a group's foundation page
-introduced itself to the navigator as `Group famiglia` while a person's card
-said what she actually needs remembering — and since a group root is a door
-like any other, those two words were the whole basis for opening it or not.
-The card brief is the Cronista's, adapted: say what a reader will find under
-here, in the words somebody looking would use, and make it distinguish from
-the neighbours.
+So the compiler has **two** writers — the Cronista for prose, the record
+renderer for `lista` pages — and a page with no facts renders as its card. What
+a group is lives in its `_meta.md`: its title, its `scope` prose (which the
+ingest classifier reads as a placement signal) and its one-line abstract. Its
+only foundation node is its parking page, the same shape a topic wiki has always
+had.
 
-Parsing is **tolerant** (`parse_cronista`, first `{` to last `}`). A reply that
-is not JSON — an operator override still written against v1.6, or a model that
-ignored the schema — degrades to *whole reply as the body, card from the plan*,
-which is exactly the pre-v1.7 behaviour: there is no parse-failure path that
-costs a page. The children are then checked against the body by
-[the rail guard](#the-rail-guard--a-recommended-link-that-never-reached-the-prose),
-which appends any the prose dropped.
+The `regenerate-index` prompt is deleted with the pass it fed.
 
 ### The Record Writer — `lista` pages (no LLM)
 
@@ -1512,7 +1505,7 @@ as the foundation node lived there. Every foundation node then moved off that
 name, and the condition matched **nothing** — the abstract would
 have frozen at whatever it last said, on every wiki, with no error anywhere to
 notice it by. It keys on
-[`PageType::is_foundation`](../../crates/mwe-core/src/planner.rs) now, which is
+[`PagePlan::is_foundation`](../../crates/mwe-core/src/planner.rs) now, which is
 the property that was actually meant.
 
 The write is **best-effort** (a
@@ -1698,7 +1691,7 @@ fields are the roster):
   container case never reaches the reviewer — the Architetto's GC
   normalises it to hub). Parked as a placement re-open so the Cartografo
   re-homes its facts; once drained, the flip settles it.
-- **hub with facts** — a `concept_hub` / `group_theme` carrying facts
+- **hub with facts** — a group's card carrying facts
   (hubs hold no facts; the shape a degraded orphan-fallback build or an
   old plan can leave). Parked as a placement re-open.
 - **oversized page** — a fact-bearing page at/over
@@ -1784,7 +1777,7 @@ configuration onboarding is meant to prevent
 dream then drains the queue deterministically so it does not grow for ever, and
 the prose waits. The two LLM stages map onto
 existing strong-tier REM slots: Cartografo → `rem_promotions`, Conciliatore →
-`rem_dedup_semantic`, Cronista → `cronista`, Hub Writer → `hub_writer`. The CLI
+`rem_dedup_semantic`, Cronista → `cronista`. The CLI
 hatch `mwe-mcp rem run-compile` drives one pass out of band.
 
 ## Human edits on compiled pages

@@ -74,8 +74,8 @@ pub struct PageCardRow {
     /// reader-relative topic union recall matches on
     /// (`meta_annotate::build_reader_card`).
     pub keywords: Vec<String>,
-    /// Writing style from the testata, verbatim and un-normalised.
-    pub style: Option<String>,
+    /// Writing style from the testata — one of the three, or nothing.
+    pub style: Option<crate::wiki::PageStyle>,
     /// Validity stamp of the file this row was read from.
     pub file_mtime_ms: Option<i64>,
     /// Second half of the stamp.
@@ -110,8 +110,8 @@ pub struct NewPageCard {
     pub description: Option<String>,
     /// Owner-tier testata keywords.
     pub keywords: Vec<String>,
-    /// Writing style, verbatim.
-    pub style: Option<String>,
+    /// Writing style — one of the three, or nothing.
+    pub style: Option<crate::wiki::PageStyle>,
     /// Stamp of the file it was read from, when it could be stat'ed.
     pub file_mtime_ms: Option<i64>,
     /// Second half of the stamp.
@@ -174,7 +174,7 @@ pub async fn upsert(pool: &SqlitePool, card: &NewPageCard) -> Result<u64> {
     .bind(&card.wiki_id)
     .bind(card.description.as_deref())
     .bind(&keywords)
-    .bind(card.style.as_deref())
+    .bind(card.style.map(crate::wiki::PageStyle::as_str))
     .bind(card.file_mtime_ms)
     .bind(card.file_size)
     .bind(&now)
@@ -242,7 +242,9 @@ fn row_of(row: &sqlx::sqlite::SqliteRow) -> PageCardRow {
         wiki_id: row.get("wiki_id"),
         description: row.get("description"),
         keywords: serde_json::from_str(&keywords).unwrap_or_default(),
-        style: row.get("style"),
+        style: crate::wiki::PageStyle::parse_lenient(
+            row.get::<Option<String>, _>("style").as_deref(),
+        ),
         file_mtime_ms: row.get("file_mtime_ms"),
         file_size: row.get("file_size"),
         // A blob that will not decode is a vector from another embedder or a
@@ -312,7 +314,7 @@ mod tests {
             wiki_id: "alice".to_owned(),
             description: desc.map(str::to_owned),
             keywords: vec!["cucina".to_owned()],
-            style: Some("prosa".to_owned()),
+            style: Some(crate::wiki::PageStyle::Prosa),
             file_mtime_ms: Some(1_000),
             file_size: Some(42),
         }
@@ -340,7 +342,7 @@ mod tests {
             .expect("row");
         assert_eq!(row.description.as_deref(), Some("what gets cooked"));
         assert_eq!(row.keywords, vec!["cucina".to_owned()]);
-        assert_eq!(row.style.as_deref(), Some("prosa"));
+        assert_eq!(row.style, Some(crate::wiki::PageStyle::Prosa));
     }
 
     /// The vector encodes one sentence. Keeping it across a rewritten card

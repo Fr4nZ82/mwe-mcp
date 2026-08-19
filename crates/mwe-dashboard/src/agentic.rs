@@ -51,7 +51,7 @@
 //!   salute") — to another page of the same wiki
 //!   ([`mwe_core::promote::apply_paragraph_to_file_direct`]) or into another
 //!   wiki ([`mwe_core::promote::apply_fact_refile_direct`], always landing on
-//!   the destination wiki's buffer page). It reuses the same act-first engine
+//!   the destination wiki's parking page page). It reuses the same act-first engine
 //!   the REM cross-wiki refile sweep and the comment-apply `move` op use, so
 //!   the dashboard, the dream, and the chat all mint the same born-applied +
 //!   revertible receipt. Admin-only (a move is structure authority —
@@ -159,7 +159,7 @@ pub enum AgenticTool {
     /// sweep + the comment-apply `move` op use:
     /// [`mwe_core::promote::apply_paragraph_to_file_direct`] for a same-wiki
     /// page→page move, [`mwe_core::promote::apply_fact_refile_direct`] for a
-    /// cross-wiki move (which always lands on the destination wiki's buffer
+    /// cross-wiki move (which always lands on the destination wiki's parking page
     /// page — the compilation plan keys pages by bare slug forest-wide, so a
     /// named cross-wiki page would collide; the dest wiki re-homes it on its
     /// next compile). Admin-only (structure authority), standard-wikis only (a smart
@@ -626,7 +626,7 @@ fn move_fact_tool_descriptors() -> Vec<Tool> {
                 },
                 "dest_page": {
                     "type": "string",
-                    "description": "Destination page (e.g. \"salute.md\") for a SAME-WIKI page move. Ignored for a cross-wiki move (which always lands on the destination wiki's buffer page)."
+                    "description": "Destination page (e.g. \"salute.md\") for a SAME-WIKI page move. Ignored for a cross-wiki move (which always lands on the destination wiki's parking page)."
                 }
             },
             "required": ["fact_id"]
@@ -1803,7 +1803,7 @@ async fn dispatch_wiki_change_scope(
 // ---------------------------------------------------------------------------
 
 /// Landing page for a cross-wiki move — always the destination wiki's
-/// buffer page, because the compilation plan keys pages by bare slug
+/// parking page page, because the compilation plan keys pages by bare slug
 /// forest-wide and a named cross-wiki page would collide; the dest wiki
 /// re-homes the fact on its next compile.
 const MOVE_FACT_CROSS_WIKI_DEST_PAGE: &str = mwe_core::wiki::NOTES_FILENAME;
@@ -2073,7 +2073,7 @@ async fn dispatch_wiki_delete_page(
 }
 
 /// Cross-wiki branch of [`dispatch_wiki_move_fact`]: validate the destination
-/// wiki (locates, not smart), then refile the fact onto its buffer page.
+/// wiki (locates, not smart), then refile the fact onto its parking page.
 #[allow(
     clippy::too_many_arguments,
     reason = "the cross-wiki branch carries the ctx, fact, source wiki/page, dest wiki, recipient, and reason"
@@ -3456,7 +3456,7 @@ mod tests {
     }
 
     /// Happy path: the chat moves a fact cross-wiki (alice → salute). The
-    /// dispatcher refiles it onto salute's buffer page and returns a `moved`
+    /// dispatcher refiles it onto salute's parking page page and returns a `moved`
     /// payload with the born-applied receipt id.
     #[tokio::test]
     async fn dispatch_wiki_move_fact_moves_cross_wiki() {
@@ -3493,7 +3493,7 @@ mod tests {
         assert_eq!(moved["dest_wiki_id"], "salute");
         assert_eq!(
             moved["dest_page"], "@notes.md",
-            "a cross-wiki move lands on the destination's buffer page"
+            "a cross-wiki move lands on the destination's parking page"
         );
         assert_eq!(moved["cross_wiki"], true);
         assert!(

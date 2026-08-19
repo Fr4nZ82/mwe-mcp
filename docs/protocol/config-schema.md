@@ -150,9 +150,8 @@ YAML means "this function is not wired in this deployment".
 
 | Slot | YAML key | What it does | Status |
 |---|---|---|---|
-| Hub Writer | `hub_writer` | Writes the prose of a compiled **hub page** — a plan page with no facts of its own and one or more child pages, rendered as a short overview citing every child. Also the **fallback** backend for the operational chat when `operator_chat` is unset. | active |
 | Ingest | `ingest` | Backs `wiki_ingest_message` and the dashboard chat's plain (non-agentic) path — intent classification + multi-fact capture plan. Required whenever `wiki_ingest_message` is in use. The recommendation is to point this slot at a **strong** model (see the note below). | active |
-| Operator Chat | `operator_chat` | The dashboard's **operational agentic chat** (the maintainer's tool on their own memory): a multi-step tool-calling loop. Wants a **strong** model with reliable function-calling (faithful fact-id handling). **Optional** — unset falls back to `hub_writer`, so existing deployments need no new key. | active |
+| Operator Chat | `operator_chat` | The dashboard's **operational agentic chat** (the maintainer's tool on their own memory): a multi-step tool-calling loop. Wants a **strong** model with reliable function-calling (faithful fact-id handling). **Its own model, and mandatory for the chat**: with it unset the dashboard chat is unavailable (2026-08-19 — it used to borrow the retired `hub_writer` slot). | active |
 | REM Promotions | `rem_promotions` | The nightly "strong" structural slot: paragraph→file / file→wiki / wiki promotions, forge clustering, archive decisions. | active |
 | REM Dedup (semantic) | `rem_dedup_semantic` | The yes/no semantic-equivalence classifier that runs **after** the cheap jaccard pre-pass during REM dedup. | active |
 | Cronista | `cronista` | The narrative prose compiler: rewrites each dirty standard-wiki leaf from its facts into prose. | active — invoked by the compiler, not dashboard-exposed |
@@ -275,15 +274,12 @@ Each slot accepts:
 ```yaml
 llm:
   profile: hybrid                     # informational label; not enforced
-  hub_writer:
-    backend: ollama
-    model: qwen3.5:9b-q8_0
   ingest:
     backend: ollama
     model: qwen3.5:9b-q8_0
-  # operator_chat:                      # optional — the dashboard agentic chat;
-  #   backend: anthropic                # unset falls back to hub_writer. Wants a
-  #   model: claude-sonnet-4-6          # strong tool-calling model.
+  # operator_chat:                      # the dashboard agentic chat — its own
+  #   backend: anthropic                # model, no fallback. Wants a strong
+  #   model: claude-sonnet-4-6          # tool-calling model.
   #   api_key_env: ANTHROPIC_API_KEY
   rem_promotions:
     backend: anthropic
@@ -1081,18 +1077,17 @@ below are the **current defaults in code** — they may drift as models are
 re-pinned, so the YAML the init writer emits is always the source of
 truth for a given install.
 
-| Profile | hub_writer | ingest | rem_promotions | rem_dedup_semantic | cronista | navigator |
-|---|---|---|---|---|---|---|
-| **all-local** | ollama | ollama | ollama (`extra-high`) | ollama | ollama | ollama |
-| **hybrid** *(default)* | ollama | ollama | anthropic (`extra-high`) | ollama | anthropic | anthropic (Haiku) |
-| **all-api** | anthropic (Haiku) | anthropic (Sonnet) | anthropic (Opus, `extra-high`) | anthropic (Haiku) | anthropic (Opus) | anthropic (Haiku) |
-| **custom** | — | — | — | — | — | — |
+| Profile | ingest | rem_promotions | rem_dedup_semantic | cronista | navigator |
+|---|---|---|---|---|---|
+| **all-local** | ollama | ollama (`extra-high`) | ollama | ollama | ollama |
+| **hybrid** *(default)* | ollama | anthropic (`extra-high`) | ollama | anthropic | anthropic (Haiku) |
+| **all-api** | anthropic (Sonnet) | anthropic (Opus, `extra-high`) | anthropic (Haiku) | anthropic (Opus) | anthropic (Haiku) |
+| **custom** | — | — | — | — | — |
 
-`operator_chat` is **omitted from every preset** (it falls back to
-`hub_writer`), so the operational chat works out of the box on the
-profile's `hub_writer` model. Set it explicitly — from the dashboard
-Roles section or YAML — only to give the chat a stronger tool-calling
-model than `hub_writer`.
+`operator_chat` is **omitted from every preset**, and since 2026-08-19 it has
+no fallback: the dashboard chat stays unavailable until it is set, from the
+dashboard's Roles section or from YAML. It wants a strong tool-calling model,
+which is why no preset guesses one for it.
 
 The rationale baked into the presets:
 
@@ -1100,7 +1095,7 @@ The rationale baked into the presets:
   uniform Qwen 3.5 9B Q8 fits ~10 GB VRAM alongside the bge-m3 embedder
   (~5 GB) on a 16 GB GPU.
 - **hybrid (recommended default)** — the conversational and frequent
-  slots (`hub_writer`, `ingest`) stay on the local workhorse for zero
+  slots (`ingest`, `rem_dedup_semantic`) stay on the local workhorse for zero
   latency and zero API cost; the nightly *structural* decisions
   (`rem_promotions`) go to a strong API model with `extra-high` effort
   where quality is worth the cost; `rem_dedup_semantic` reuses the local
@@ -1111,7 +1106,7 @@ The rationale baked into the presets:
   [recommendation](#the-canonical-functions) above; override the
   `ingest` slot when classification quality matters more than latency.
 - **all-api** — single-provider deployment: a cheap model for the
-  bandwidth-heavy `hub_writer`, a mid model for `ingest`, a strong model
+  bandwidth-heavy `ingest`, a mid model for `rem_dedup_semantic`, a strong model
   for the structural slots, and the cheap model again for dedup.
 - **custom** — an empty skeleton; the operator wires every slot by hand.
 - `navigator` (all profiles) — strong-but-cheap tier: it runs on every
@@ -1277,7 +1272,6 @@ logging:
 llm:
   profile: hybrid             # all-local | hybrid | all-api | custom (label only)
 
-  hub_writer:                 # prose of a hub page (no facts, only children)
     backend: ollama
     model: qwen3.5:9b-q8_0
     base_url: http://localhost:11434   # default; shown for clarity

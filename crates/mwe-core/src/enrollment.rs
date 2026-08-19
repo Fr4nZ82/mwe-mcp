@@ -1055,7 +1055,7 @@ pub async fn remove_user(
             .rows_affected();
     }
 
-    // The user's cross-consumer recent window buffer (group 43) goes with
+    // The user's cross-consumer recent window parking page (group 43) goes with
     // them — it is per-user conversational data, TTL'd but not yet expired.
     sqlx::query("DELETE FROM recent_exchanges WHERE user_id = ?")
         .bind(user_id)

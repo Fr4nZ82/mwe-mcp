@@ -1122,7 +1122,7 @@ pub async fn reindex_full(
     let mut report = ReindexFullReport::default();
     refresh_smart_projections(pool, tree, &embedder).await;
     // Standard wikis are compiler OUTPUT — their fact_index is owned by
-    // the buffer→promote→compile chain. `reindex_file` is standard-wiki-safe
+    // the parking page→promote→compile chain. `reindex_file` is standard-wiki-safe
     // per event (offset-and-existence repair only), but the periodic tick
     // must still SKIP standard pages: unlike the watcher it has no
     // own-write suppression, so it can observe a mid-compile window (a
@@ -1133,7 +1133,7 @@ pub async fn reindex_full(
     // retired.
     let discovered = tree.walk()?;
     for d in &discovered {
-        // No captures-buffer rebuild here any more. This loop used to re-read
+        // No captures-parking page rebuild here any more. This loop used to re-read
         // every wiki's captures journal on every pass — every five minutes,
         // the whole history — to re-insert rows that already existed. That file
         // is gone (2026-08-18) and `capture_buffer` is the source of truth.
@@ -2036,7 +2036,10 @@ mod tests {
             card.description.as_deref(),
             Some("what gets cooked and when")
         );
-        assert_eq!(card.style.as_deref(), Some("prosa"));
+        assert_eq!(
+            card.style.map(crate::wiki::PageStyle::as_str),
+            Some("prosa")
+        );
         assert_eq!(card.wiki_id, "alice");
         assert!(
             card.matches_file(&wiki_dir.join("cucina.md")),
@@ -2285,7 +2288,7 @@ mod tests {
     /// page's retired rows are settled it stops being a candidate.
     #[tokio::test]
     async fn sweep_cleans_non_plan_pages_and_skips_plan_pages() {
-        use crate::planner::{CompilationPlan, PagePlan, PageType, save_plan};
+        use crate::planner::{CompilationPlan, PagePlan, save_plan};
         use std::collections::BTreeMap;
 
         let dir = tempdir().unwrap();
@@ -2342,8 +2345,6 @@ mod tests {
                 title: "Topic".to_owned(),
                 description: "a plan page".to_owned(),
                 style: None,
-                page_type: PageType::ConceptLeaf,
-                owner_scope: None,
                 parent_hub: None,
                 child_leaves: Vec::new(),
                 primary_facts: Vec::new(),
@@ -2651,7 +2652,7 @@ mod tests {
         // heading whose body starts on the NEXT LINE — a changelog entry,
         // a table, a dense list — which makes heading and body a single
         // paragraph. Shape (2) used to bypass the cap entirely: the
-        // heading branch pushed its trailing lines into the buffer
+        // heading branch pushed its trailing lines into the parking page
         // without splitting them, which is how a 6 994-char section got
         // indexed.
         let body = format!(
@@ -3304,7 +3305,7 @@ mod tests {
     async fn reindex_full_section_indexes_smart_skips_standard() {
         // `reindex_full` section-indexes SMART wikis (content-indexed) but
         // SKIPS standard wikis — their fact_index is owned by the
-        // buffer→promote→compile chain, so re-reading page markers would
+        // parking page→promote→compile chain, so re-reading page markers would
         // overwrite the canonical claim text with compiled prose.
         let dir = tempdir().unwrap();
         write_smart_wiki_meta(&dir.path().join("wikis/acme"), "acme");

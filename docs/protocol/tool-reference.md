@@ -1642,7 +1642,7 @@ The registered `AgenticTool` variants (read the live set off
 | `wiki_get_meta` | read | `_meta.md` view of one wiki (title, type, slug, `scope`, parent). |
 | `structure_proposal_list` | read | List proposals (internal cap 20). |
 | `structure_proposal_get` | read | Full row of one proposal. |
-| `structure_proposal_apply` | write | Apply a proposal with answers (threads `hub_writer` for forge kinds). |
+| `structure_proposal_apply` | write | Apply a proposal with answers. |
 | `wiki_facts_for` | read | Filtered fact listing (wiki / topic / fact_type / date). |
 | `wiki_forget` | write | Tombstone a single fact — authority-routed (sender-direct; a non-sender subject is steered to the dashboard). |
 | `wiki_supersede` | write | Replace a fact in place, inheriting subject / ACL / fact_type / topics. |

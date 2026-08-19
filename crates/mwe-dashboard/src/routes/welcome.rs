@@ -35,7 +35,7 @@
 //!
 //! So the primer reaches the card **through a classifier judgement** rather
 //! than by assertion: a primer fact the model marks `normal` lands on the
-//! buffer instead. **That is deliberate, not a gap to close** (founder,
+//! parking page instead. **That is deliberate, not a gap to close** (founder,
 //! 2026-08-04): not everything a person types into the form is essential, and
 //! deciding what earns a place on the identity card is exactly what REM does
 //! continuously afterwards. Asserting placement here would build a special

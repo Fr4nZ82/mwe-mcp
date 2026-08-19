@@ -41,7 +41,7 @@ construction.
  5. page_merge                   plan/reviewer signals nominate → rem_dedup_semantic LLM confirms → direct apply + `structure_applied` notice (page_merge)
  6. completion_sweep             fresh evidence × similar open items → rem-completion LLM confirms → close_validity + `validity_close` receipt + notice *[skips smart]*
  7. contradiction_sweep          freshly contradicted seeds × similar open items → rem-contradiction LLM confirms → satellites close as contradicted, same paper trail *[skips smart]*
- 8. refile_sweep                 cosine pre-filter nominates misfiled facts → rem-refile LLM picks a dest wiki → cross-wiki move onto the dest wiki's buffer page `@notes.md` + `fact_refile` receipt + notice *[skips smart both ends]*
+ 8. refile_sweep                 cosine pre-filter nominates misfiled facts → rem-refile LLM picks a dest wiki → cross-wiki move onto the dest wiki's parking page `@notes.md` + `fact_refile` receipt + notice *[skips smart both ends]*
  8b. recall_repair               pending recall misses → rem-recall-repair LLM proposes a re-file → gold-set gate replays it on a scratch snapshot → commit only on proven flip (same mover/receipt as 8) else discard/queue operator notice *[skips smart + rules pages]*
  9. provenance_hygiene           deterministic trailing-`([[…]])` detector → pointer moved into `authored_refs`, suffix stripped, text re-embedded (no LLM) *[skips smart]*
 10. date_normalizer              deictic lexicon flags → rem-dates LLM rewrites relative→absolute on canonical text + re-embed *[skips smart]*
@@ -108,14 +108,13 @@ pub async fn run_cycle(
 ) -> Result<RemCycleReport>;
 ```
 
-`RemLlms` carries the per-sub-job model handles — `hub_writer` (the
-narrative compiler's `ConceptHub` prose, no longer the index) and
-`revisor` are mandatory `&dyn LlmBackend`, `auto_promote` and `apply`
+`RemLlms` carries the per-sub-job model handles — `revisor` is the only
+mandatory `&dyn LlmBackend`, `auto_promote` and `apply`
 are `Option<&dyn LlmBackend>` — wired from the operator's
 `mwe-mcp.config.yaml > llm`: per the
 [REM LLM functions](llm-functions.md) and the
-[runtime topology](../architecture/runtime-topology.md), `hub_writer`
-and `apply` take the workhorse (Qwen 7-9B locally is fine), `revisor`
+[runtime topology](../architecture/runtime-topology.md), `apply` takes the
+workhorse (Qwen 7-9B locally is fine), `revisor`
 takes a small model, and `auto_promote` takes the strong model. A `None`
 optional slot **gates** the matching sub-job to a
 short-circuited no-op (with `disabled_reason` populated) rather than
@@ -438,7 +437,7 @@ whole wiki (not one per page):
    recorded and one `structure_applied` notice emitted (`variant:
    pages_to_subwiki` / `pages_move_wiki`). A newborn wiki gets its
    `_meta.md` and the carried pages, nothing else — its `@notes.md` is a
-   plan-owned `wiki_buffer` node the
+   plan-owned `parking_page` node the
    [narrative compiler](narrative-compiler.md) authors, so the handler
    must not invent prose the compiler would then fight over. The
    `style` + `description` ride in the receipt **context** and are
@@ -786,7 +785,7 @@ the safety net).
    — the `fact_refile` `wiki_promote` variant repoints the row's
    `wiki_id` (`fact_index::move_to_wiki`, the only primitive that touches
    `wiki_id`), splices the marker off A's page and weaves it onto **B's
-   buffer page `@notes.md`** — always the buffer, because the plan keys
+   parking page `@notes.md`** — always the buffer, because the plan keys
    pages by a bare slug across the whole forest, so landing on a *named*
    page of a foreign wiki could collide with a same-slug page homed
    elsewhere (a cross-wiki leak); the buffer is the one destination every
@@ -899,7 +898,7 @@ repair, and **nothing commits on an LLM's opinion alone**.
    the [`rem-recall-repair`](../../crates/mwe-core/prompts/rem-recall-repair.md)
    prompt sees the missed query, the fact, its home, and the non-smart
    wiki roster, and proposes a **re-file** (destination wiki only —
-   landing on its buffer page `@notes.md`, the refile sweep's own
+   landing on its parking page `@notes.md`, the refile sweep's own
    discipline) or `stay`. Conservative by instruction; anti-hallucination
    vets the destination against the roster.
 3. **The gold-set gate** ([`recall_gate::gate_repair`](../../crates/mwe-core/src/recall_gate.rs)):
@@ -1139,7 +1138,7 @@ picks a destination from a bounded list of the wiki owner's other non-smart wiki
 + this wiki's other pages, and the fact moves act-first via the same engine the
 [cross-wiki refile sweep](#cross-wiki-refile-sweep-sub-job) uses
 (`promote::apply_paragraph_to_file_direct` same-wiki, `promote::apply_fact_refile_direct`
-cross-wiki onto the dest wiki's buffer page `@notes.md`) — born-applied + revertible, unlike the bare
+cross-wiki onto the dest wiki's parking page `@notes.md`) — born-applied + revertible, unlike the bare
 `correct` / `remove` / `add`. Containment + ACL invariants are described in
 [the compiler note](narrative-compiler.md#human-edits-on-compiled-pages). This
 is the batched dream applying the parked comments together — the maintainer's
@@ -1285,7 +1284,7 @@ retries.
 
 The **compile pass** is the exception to the abort row: `run_compile`'s
 writers treat both categories per page (the Cronista through the
-retry→degraded ladder, the Hub Writer as a plain soft error), so a
+retry→degraded ladder), so a
 transport failure there costs at most one page's rewrite, never the pass
 (see the
 [degraded mode](narrative-compiler.md#degraded-mode--the-guard-only-rewrite)
@@ -1338,7 +1337,7 @@ The plumbing that calls `run_cycle` (the full cycle) has two entry points:
 
 - **Long-lived HTTP server.** [`cmd_serve_http`](../../crates/mwe-mcp-server/src/main.rs)
   builds an [`OwnedRemLlms`](../../crates/mwe-mcp-server/src/rem_scheduler.rs)
-  bag (`hub_writer` + `rem_dedup_semantic` mandatory, `rem_promotions`
+  bag (`rem_dedup_semantic` mandatory, `rem_promotions`
   + `ingest` optional) once at startup, then calls
   `rem_scheduler::spawn(...)` to fire one cycle after
   `rem.schedule.initial_delay_secs` and another every

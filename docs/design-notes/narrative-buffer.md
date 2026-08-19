@@ -159,7 +159,7 @@ What it did buy, honestly: between the capture and the compile, a claim's
 structured fields (subject, audience, sender, validity, type) existed nowhere
 on disk but the journal, since the page did not exist yet. That window is now
 covered the same way as everything else the DB holds — the tombstones of
-forgotten facts, the recall traces, the vectors, the buffer's own status — by
+forgotten facts, the recall traces, the vectors, the parking page's own status — by
 the [workdir snapshot](../../crates/mwe-core/src/backup.rs), which takes the
 DB image and the file tree together precisely because neither reconstructs the
 other.

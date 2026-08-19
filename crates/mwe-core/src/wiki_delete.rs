@@ -332,7 +332,7 @@ pub async fn delete_wiki_subtree(
                                 Some(DELETE_REASON),
                             )
                             .await?;
-                            // The DESTINATION's buffer, not the source page:
+                            // The DESTINATION's parking page, not the source page:
                             // the refile engine has already re-homed the fact
                             // onto that node, so it is the only slug whose
                             // re-open can still free it.
@@ -767,8 +767,6 @@ mod tests {
                     title: "Dossier".to_owned(),
                     description: String::new(),
                     style: None,
-                    page_type: crate::planner::PageType::WikiBuffer,
-                    owner_scope: None,
                     parent_hub: None,
                     child_leaves: Vec::new(),
                     primary_facts: Vec::new(),
@@ -950,7 +948,7 @@ mod tests {
                 wiki_id: "dossier".to_owned(),
                 description: Some("What we cook.".to_owned()),
                 keywords: vec!["cucina".to_owned()],
-                style: Some("prosa".to_owned()),
+                style: Some(crate::wiki::PageStyle::Prosa),
                 file_mtime_ms: Some(1_000),
                 file_size: Some(42),
             },

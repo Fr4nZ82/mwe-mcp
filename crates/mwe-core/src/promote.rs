@@ -1891,7 +1891,7 @@ async fn revert_page_merge(
         slug: husk_slug,
         title: spec.husk_title.clone(),
         description: spec.husk_description.clone(),
-        style: spec.husk_style.clone(),
+        style: crate::wiki::PageStyle::parse_lenient(spec.husk_style.as_deref()),
         wiki_id: spec.source_wiki_id.clone(),
         page_path: None,
     };
@@ -2692,7 +2692,7 @@ async fn rehome_grouped_page(
 /// are one subject area becomes a dedicated sub-wiki, each page carried
 /// over under its own name.
 ///
-/// What the narrative compiler owns in the new wiki is its `@notes.md` buffer
+/// What the narrative compiler owns in the new wiki is its `@notes.md` parking page
 /// node plus the carried pages, so this handler invents no prose it would
 /// then fight over.
 ///
@@ -2843,7 +2843,7 @@ fn subwiki_meta_extra(context: &Value) -> serde_yaml::Mapping {
 /// fact the revert would have nowhere to put.
 ///
 /// The reserved pages are the compiler's to seed on its own schedule:
-/// `planner::seed_wiki_buffers` gives every non-smart wiki a buffer node on
+/// `planner::seed_parking_pages` gives every non-smart wiki a parking node on
 /// `@notes.md`, and a wiki born by promotion is force-dirtied at birth — so the
 /// **next hourly compile** writes `@notes.md` into it. A guard that lists the
 /// receipt's own files and nothing else therefore refused every revert from
@@ -3807,7 +3807,7 @@ struct ValidityCloseSpec {
 /// still-buffered capture.
 ///
 /// The revert does not need it (it probes the fact first, then the
-/// buffer — the id is stable across promotion), but the receipt records
+/// parking page — the id is stable across promotion), but the receipt records
 /// it for the audit trail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClosureSurface {
@@ -5351,7 +5351,7 @@ mod tests {
     #[tokio::test]
     async fn file_to_subwiki_rehomes_the_persisted_plan_and_back() {
         use crate::planner::{
-            CompilationPlan, FactForPage, PagePlan, PageType, load_previous_plan, save_plan,
+            CompilationPlan, FactForPage, PagePlan, load_previous_plan, save_plan,
         };
         let (_dir, tree, pool) = setup().await;
         let emb = embedder();
@@ -5372,8 +5372,6 @@ mod tests {
                 title: "Giardinaggio".to_owned(),
                 description: "garden notes".to_owned(),
                 style: None,
-                page_type: PageType::ConceptLeaf,
-                owner_scope: None,
                 parent_hub: None,
                 child_leaves: Vec::new(),
                 primary_facts: facts,
@@ -6281,7 +6279,7 @@ Un'altra pagina: [[bruno/orto]].
     #[tokio::test]
     async fn pages_to_subwiki_moves_each_page_node_into_the_new_wiki() {
         use crate::planner::{
-            CompilationPlan, FactForPage, PagePlan, PageType, load_previous_plan, save_plan,
+            CompilationPlan, FactForPage, PagePlan, load_previous_plan, save_plan,
         };
         let (_dir, tree, pool) = setup().await;
         let emb = embedder();
@@ -6299,8 +6297,6 @@ Un'altra pagina: [[bruno/orto]].
                     title: slug.clone(),
                     description: String::new(),
                     style: None,
-                    page_type: PageType::ConceptLeaf,
-                    owner_scope: None,
                     parent_hub: None,
                     child_leaves: Vec::new(),
                     primary_facts: vec![FactForPage::from_row(&row)],

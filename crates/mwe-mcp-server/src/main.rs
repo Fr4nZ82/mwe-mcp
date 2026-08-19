@@ -764,10 +764,9 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
         report.cycle.archive_detector.proposals_emitted.len(),
     );
     println!(
-        "compile        : leaves={} lists={} hubs={} unchanged={} errors={}",
+        "compile        : leaves={} lists={} unchanged={} errors={}",
         report.compile.leaves,
         report.compile.lists,
-        report.compile.hubs,
         report.compile.unchanged,
         report.compile.errors.len(),
     );
@@ -827,10 +826,9 @@ async fn cmd_rem_run_light(workdir: &Path, config: &Config) -> Result<()> {
     );
     if let Some(compile) = &report.compile {
         println!(
-            "compile        : leaves={} lists={} hubs={} unchanged={} errors={}",
+            "compile        : leaves={} lists={} unchanged={} errors={}",
             compile.leaves,
             compile.lists,
-            compile.hubs,
             compile.unchanged,
             compile.errors.len(),
         );
@@ -879,10 +877,9 @@ async fn cmd_rem_run_compile(workdir: &Path, config: &Config) -> Result<()> {
     .context("compile pass")?;
 
     println!(
-        "compile        : leaves={} lists={} hubs={} unchanged={} errors={}",
+        "compile        : leaves={} lists={} unchanged={} errors={}",
         report.leaves,
         report.lists,
-        report.hubs,
         report.unchanged,
         report.errors.len(),
     );

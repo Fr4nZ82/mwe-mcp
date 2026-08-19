@@ -109,7 +109,80 @@ pub const INDEX_FILENAME: &str = "index.md";
 /// answering both made every identity card a landing area.
 pub const PROFILE_FILENAME: &str = "@profile.md";
 
-/// Filename of a wiki's **buffer page** (`<wiki_dir>/@notes.md`).
+/// How a page is written, and therefore how it is read back.
+///
+/// **The only classification a page has** (founder, 2026-06-05), and since
+/// 2026-08-19 a closed type rather than free text: *«gli stili di pagina sono
+/// prosa, prosa tecnica, lista. Basta. Quella proprietà deve poter avere
+/// soltanto questi tre valori, non altro.»* It used to be an `Option<String>`
+/// carried through a dozen structs and checked in one place, so a producer that
+/// wrote `narrativo` was nobody's error until a reader silently treated it as
+/// prose.
+///
+/// Not a taxonomy of the page's SUBJECT and not where it lives — those are the
+/// fact's business and the file name's. This says what shape the material has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PageStyle {
+    /// Continuous prose: the value is the thread tying the facts together, and
+    /// a page is too big once there is no thread left (floor: 8 facts).
+    Prosa,
+    /// Technical prose: short bullets with brief descriptions, scanned by
+    /// points rather than read in order — so it tolerates about twice the mass
+    /// (floor: 16 facts).
+    #[serde(rename = "prosa-tecnica")]
+    ProsaTecnica,
+    /// A set: the shopping list, the films seen. Its value is being complete in
+    /// one place, so half of it is a wrong answer, not a partial one — it is
+    /// **never** split for size, and it is written by code with no model.
+    Lista,
+}
+
+impl PageStyle {
+    /// The wire form — what a model emits, what the testata carries, what the
+    /// `style` column stores. One mapping, so a value can never be written in a
+    /// spelling a reader will not recognise.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Prosa => "prosa",
+            Self::ProsaTecnica => "prosa-tecnica",
+            Self::Lista => "lista",
+        }
+    }
+
+    /// Read a style back, tolerating case and surrounding space — anything else
+    /// is **not a style**, and `None` says so rather than guessing.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "prosa" => Some(Self::Prosa),
+            "prosa-tecnica" => Some(Self::ProsaTecnica),
+            "lista" => Some(Self::Lista),
+            _ => None,
+        }
+    }
+
+    /// Read a style back, logging what was discarded — the boundary form, for
+    /// a value arriving from a model or from an older row.
+    #[must_use]
+    pub fn parse_lenient(raw: Option<&str>) -> Option<Self> {
+        let raw = raw.map(str::trim).filter(|s| !s.is_empty())?;
+        let parsed = Self::parse(raw);
+        if parsed.is_none() {
+            tracing::warn!(style = %raw, "not one of the three page styles — dropped");
+        }
+        parsed
+    }
+}
+
+impl std::fmt::Display for PageStyle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Filename of a wiki's **parking page** (`<wiki_dir>/@notes.md`).
 ///
 /// Where a fact lands when it has a wiki but no page yet: the ingest
 /// classifier's fallback placement, and the destination of every cross-wiki
@@ -204,7 +277,7 @@ pub const PROJECTS_FILENAME: &str = "@projects.md";
 /// True when `stem` (a page name without its `.md`) names one of the five
 /// **reserved pages** no classifier may aim a capture at.
 ///
-/// The wiki's card and its buffer ([`PROFILE_FILENAME`] / [`NOTES_FILENAME`],
+/// The wiki's card and its parking page ([`PROFILE_FILENAME`] / [`NOTES_FILENAME`],
 /// per-wiki foundation nodes the planner owns), the three deterministic
 /// channels ([`RULES_FILENAME`] / [`PROJECTS_FILENAME`] /
 /// [`PROJECT_DIARY_FILENAME`], each written by its own code path), and `index`
@@ -266,11 +339,11 @@ pub fn is_reserved_page_stem(stem: &str) -> bool {
 /// extractor's per-fact target and its per-segment plan
 /// (`crate::document`), the Cartografo's coined slug
 /// (`planner::new_page_to_plan`), and REM's split target
-/// (`rem::run_auto_promote`). Each falls back to the wiki's **buffer** — the
+/// (`rem::run_auto_promote`). Each falls back to the wiki's **parking page** — the
 /// designed holding place a placement settles from — never to the map.
 ///
 /// Only the *last* segment is judged: `spesa/@notes.md` is a page inside a
-/// folder, not the wiki's buffer. Case- and extension-insensitive, because a
+/// folder, not the wiki's parking page. Case- and extension-insensitive, because a
 /// coined name is a guess at a spelling.
 #[must_use]
 pub fn names_reserved_page(page: &Path) -> bool {
@@ -2266,7 +2339,7 @@ mod tests {
         }
         // A page inside a folder called after a reserved name is a page.
         assert!(!names_reserved_page(Path::new("notes/spesa.md")));
-        // …but the wiki's own buffer is, wherever it is addressed from.
+        // …but the wiki's own parking page is, wherever it is addressed from.
         assert!(names_reserved_page(Path::new("spesa/@notes.md")));
         assert!(!names_reserved_page(Path::new("lista_spesa.md")));
         assert!(!names_reserved_page(Path::new("indexing.md")));

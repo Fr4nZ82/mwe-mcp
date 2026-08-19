@@ -16,12 +16,12 @@ chat is a tool, the user is the agent"; see
 gymnastics) because it lives in-process: a whitelisted subset of
 `mwe-core`'s internal APIs is exposed to a function-calling LLM loop
 running against the operator-chat backend (the `operator_chat` slot,
-falling back to `hub_writer`). ACLs are enforced row-level via
+its own slot, no fallback). ACLs are enforced row-level via
 the connected user's `SenderContext`, the same way an external
 consumer agent's calls would be ACL-filtered.
 
 This page documents the registry shape, the loop architecture, the
-read/write split, and the dependency on the `hub_writer` slot.
+read/write split, and the dependency on the `operator_chat` slot.
 
 ## Where it lives
 
@@ -51,7 +51,7 @@ agentic_submission(state, user, text, history):
    ctx := AgenticContext {
        pool, tree, embedder,
        sender_ctx: SenderContext::user(user.sender_id),
-       backend := MemoryHandles::backend_for_chat()  // operator_chat, else hub_writer
+       backend := MemoryHandles::backend_for_chat()  // operator_chat, no fallback
    }
    messages := [system_prompt, ...history (user/assistant pairs), user_message]
    trace := []
@@ -166,7 +166,7 @@ touchpoint for one is its briefing (see
 | `WikiForget` | **write** | Tombstone a single fact (DB tombstone — the marker stays on disk for `wiki_lint` to flag later). **Sender-direct**: only the fact's author (its `sender`) or an admin may forget it (`acl::can_delete`); a non-sender subject is refused and pointed at `WikiRequestForget` (the request → vote path). A smart-wiki target is refused (smart section rows are not fact-governed — the consumer's next push would undo the tombstone). |
 | `WikiSupersede` | **write** | Replace an existing fact with a corrected body in-place. Inherits subject / ACL / `fact_type` / topics from the targeted fact. **Subject-direct** (`acl::sender_is_subject` ‖ admin): editing content is an *update* — the subject's act, the same axis as the ingest supersede guard (`SupersedeCrossSubject`) and `acl_change`. Only the destructive `WikiForget` keys on `sender`. A smart-wiki target is refused (a supersede would write a marker-wrapped fact into the consumer's plain-markdown page). |
 | `WikiChangeScope` | **write** | Re-parent a wiki (and its subtree) — renames the directory, rebases each fact's `source_path`; `wiki_id` stays stable so cross-links keep resolving. A move re-files **structure only**: it never rewrites a subject and never changes who can read a fact (ACL lives on the fact, independent of the wiki's place in the tree). A smart source wiki is refused — its wiki-level read audience derives from its position in the tree, so a re-parent would change effective read access on the next reindex/push; the core [`scope::wiki_change_scope`](../../crates/mwe-core/src/scope.rs) primitive carries the same guard. See [`scope-change.md`](scope-change.md). |
-| `WikiMoveFact` | **write** | Move ONE fact on the operator's instruction — to another page of the same wiki (`promote::apply_paragraph_to_file_direct`) or into another wiki (`promote::apply_fact_refile_direct`, landing on the dest wiki's buffer page `@notes.md`). Same act-first engine the REM cross-wiki refile sweep + the comment-apply `move` op use. **Admin-only** (`enforce_move_admin`): a move re-categorises — it neither destroys the fact nor changes who can read it — so it is the operator's / REM's structure act, not the subject's. Smart source/dest refused. |
+| `WikiMoveFact` | **write** | Move ONE fact on the operator's instruction — to another page of the same wiki (`promote::apply_paragraph_to_file_direct`) or into another wiki (`promote::apply_fact_refile_direct`, landing on the dest wiki's parking page `@notes.md`). Same act-first engine the REM cross-wiki refile sweep + the comment-apply `move` op use. **Admin-only** (`enforce_move_admin`): a move re-categorises — it neither destroys the fact nor changes who can read it — so it is the operator's / REM's structure act, not the subject's. Smart source/dest refused. |
 | `WikiDeletePage` | **write** | Delete a page, governed by the per-fragment **sender**: the deleter's own facts are tombstoned; a foreign-authored fact evacuates intact to its sender's home wiki when one exists, falling back to its subject's — a fact whose sender and subject both lack a home wiki is tombstoned ([`page::decide`](../../crates/mwe-core/src/page.rs)) — all wrapped in one revertible [`bundle`](proposal-apply-engine.md#bundle-handler). **Admin-only** — deleting structure (a page or wiki) is the operator's act; smart wikis refused. There is **no member vote** over a deletion (the admin/deleter's dashboard undo is the only post-deletion lever). The disposition is **move** (the sender-keyed default) or **tombstone all** (`delete_all_facts`, informed confirmation required); `dissolve` is whole-wiki only (a page cannot be dissolved — that is what the REM split/merge passes already do page by page) and the verb refuses it. **The verb disposes of the page's facts, not of the page file**: the husk is kept on purpose so the `bundle` has something to be reverted into, and the [nightly husk-GC](rem-cycle.md) drops it on the first cycle after every row is tombstoned past `proposals::REVERT_WINDOW` (a floor — that sweep is capped per cycle). So the report carries `page_file_retained_days`, and the prompt requires the answer to state both halves: recall stops now, the page stays in the explorer until the undo window runs out. Without that datum the model summarises a tombstone count as *"page deleted"* while the operator is looking at the page — the memory telling them something the screen contradicts. |
 | `WikiRequestForget` | **write** | Open a **fact-forget request** for ONE fact the signed-in user does **not** author — the non-sender subject's path (the `fact_forget` [proposal kind](proposal-apply-engine.md#fact-forget-handler)). Caller must be the fact's `subject` — a group subject admits its members — or an admin; a **sender** is refused and pointed at `WikiForget`. **Propose-first**: the fact stays active while its [`audience`](../../crates/mwe-core/src/acl.rs) votes (`StructureProposalVote`) — a NO-majority blocks it, silence forgets it; a sole-reader request forgets immediately. A smart-wiki target is refused (forget votes are per-fact governance; smart governance is wiki-level). [`votes::open_forget_request`](../../crates/mwe-core/src/votes.rs). |
 | `StructureProposalRevert` | **write** | Undo a previously-applied proposal — the inverse of `StructureProposalApply`. Reuses the [`revert_proposal`](proposal-apply-engine.md) chassis. Headline: undo an applied `wiki_promote` — e.g. a group of pages the REM regrouped into a sub-wiki, refused when that wiki has since grown a page of its own or a fact landed on one of the carried pages (`revert_pages_to_subwiki`'s in-use guards). Also the deleter's / admin's undo of a page-deletion `bundle`. |
@@ -195,9 +195,9 @@ selection exactly:
   `status == "applied_pending_confirm"` → `RevertAuth::Caller { sender,
   is_admin }`; anything else → `InvalidArguments` ("not in a revertable
   status").
-- The chat's `hub_writer` is threaded through for forward-compat, but
-  the revert kind handlers ignore the LLM (`dispatch_revert_kind`'s
-  `_llm` is unused today).
+- The chat's backend is threaded through for forward-compat, but the
+  revert kind handlers ignore the LLM (`dispatch_revert_kind`'s `_llm` is
+  unused today).
 - `RevertError` mapping: the user-actionable / refusal variants (a
   per-kind guard refusing via `HandlerData`) map to `InvalidArguments` so
   the model relays them as an ordinary refusal; the two infra variants
@@ -298,26 +298,23 @@ the admin-only dashboard editor `/dashboard/prompts` with
 atomic save + `.bak` backup + reset-to-bundled + drift banner
 against `default_version_at_bootstrap`.
 
-## Dependency on the `operator_chat` slot (with `hub_writer` fallback)
+## Dependency on the `operator_chat` slot (with no fallback)
 
 The loop runs against a single `LlmBackend`, resolved at
-`agentic_submission` entry by `MemoryHandles::backend_for_chat()`: it
-prefers the dedicated `llm.operator_chat` slot and falls back to
-`llm.hub_writer` when `operator_chat` is unconfigured. The chat is a
-distinct workload from the compiler's `ConceptHub` prose writer that also
-rides `hub_writer` — interactive, multi-step function-calling, faithful
-fact-id handling — so an operator can point it at a **strong**
-tool-calling model without inflating the hub-prose cost. The fallback
-keeps deployments that never set `operator_chat` working exactly as
-before, with no new YAML key (only `SlotMissing` on the dedicated slot
-falls through; a `BuildFailed` is surfaced, not masked). The per-slot
-default knobs follow the same fallback via `chat_defaults()`. No
+`agentic_submission` entry by `MemoryHandles::backend_for_chat()`: the
+dedicated `llm.operator_chat` slot, and **nothing else** (founder,
+2026-08-19: *«la chat operativa deve avere il suo modello dedicato»*). It
+used to fall back to `llm.hub_writer`, a slot that existed to write pages
+listing other pages; when those pages went, that slot went too. This
+workload — interactive, multi-step function-calling, faithful fact-id
+handling — wants a **strong** tool-calling model chosen for it. The per-slot
+default knobs come from the same slot via `chat_defaults()`. No
 proposal kind needs an LLM at apply time today, so the dispatcher
 applies proposals without threading a backend through `AgenticContext`.
 
-A missing chat backend — **both** `llm.operator_chat` and the
-`llm.hub_writer` fallback unconfigured — is a **hard refuse**: the chat
-surfaces a validation error rather than degrading to a non-agentic turn.
+A missing chat backend — `llm.operator_chat` unconfigured — is a **hard
+refuse**: the chat surfaces a validation error rather than degrading to a
+non-agentic turn.
 The same treatment applies to the `llm.ingest` slot for the
 consumer-side `process_submission` route.
 

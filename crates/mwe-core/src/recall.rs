@@ -61,7 +61,7 @@ pub const DEFAULT_DEDUP_THRESHOLD: f32 = 0.85;
 
 /// Cap on buffered captures embedded per recall turn for the mid-range
 /// "fresh" slot (see [`recall_fresh_captures`]). The light dream drains the
-/// buffer at its backlog threshold, so the pending set is normally a handful;
+/// parking page at its backlog threshold, so the pending set is normally a handful;
 /// this bounds the worst case. PROVISIONAL: the optimisation (embed once at
 /// capture time, store the vector — option C) is a tracked follow-up.
 const FRESH_CANDIDATE_CAP: i64 = 32;
@@ -476,8 +476,8 @@ pub enum RecallError {
     #[error("recall db: {0}")]
     Db(#[from] sqlx::Error),
 
-    /// Underlying capture-buffer error — the mid-range "fresh" slot reads
-    /// the un-promoted buffer via [`recall_fresh_captures`].
+    /// Underlying capture-parking page error — the mid-range "fresh" slot reads
+    /// the un-promoted parking page via [`recall_fresh_captures`].
     #[error("recall capture_buffer: {0}")]
     CaptureBuffer(#[from] CaptureBufferError),
 
@@ -606,7 +606,7 @@ impl RecallHit {
     ///
     /// **No address of any kind**, and both halves are empty strings because
     /// there is genuinely nothing to name: a waiting claim has no page (nothing
-    /// is written yet) and no wiki (the buffer names none — where it goes is
+    /// is written yet) and no wiki (the parking page names none — where it goes is
     /// settled when the light dream sorts the queue). The navigator never
     /// follows a fresh hit ([`crate::recall_nav`]), which is why there is
     /// nothing to point it at.
@@ -1855,7 +1855,7 @@ pub async fn wiki_facts_full_for(
 /// the "fresh / consolidating" slot.
 ///
 /// Sibling of [`wiki_facts_full_for`], but reads `capture_buffer` instead of
-/// `fact_index`. A freshly-ingested claim sits in the buffer until the light
+/// `fact_index`. A freshly-ingested claim sits in the parking page until the light
 /// dream promotes it (≈ one cadence later); the facts table reads only
 /// `fact_index`, so without this it lags the agent's own recall — which
 /// already sees those captures via [`recall_fresh_captures`]. Surfacing them
@@ -1868,7 +1868,7 @@ pub async fn wiki_facts_full_for(
 /// `fact_type`, `topics_any`, and `created_*` fields of `filters`.
 ///
 /// A `wiki_id` filter is **ignored here, and cannot be otherwise**: a buffered
-/// capture is in no wiki (the buffer names no destination — see
+/// capture is in no wiki (the parking page names no destination — see
 /// [`capture_buffer::BufferedCapture`]), so there is nothing to match it
 /// against. The consolidating list is the same list on every wiki's page.
 /// The dashboard renders these with a `fresh` flag of its own.
@@ -1879,7 +1879,7 @@ pub async fn wiki_facts_full_for(
 /// # Errors
 ///
 /// As [`capture_buffer::find_recent_buffered`].
-pub async fn wiki_buffered_full_for(
+pub async fn parking_pageed_full_for(
     pool: &SqlitePool,
     filters: &fact_index::FactFilters,
     sender: &SenderContext,
@@ -1898,13 +1898,13 @@ pub async fn wiki_buffered_full_for(
         sender_id = sender.sender_id,
         reveal,
         returned = visible.len(),
-        "recall: wiki_buffered_full_for done"
+        "recall: parking_pageed_full_for done"
     );
     Ok(visible)
 }
 
 /// In-process mirror of the `fact_index` SQL filters for the un-promoted
-/// buffer, which has no equivalent query helper. `wiki_id` is already applied
+/// parking page, which has no equivalent query helper. `wiki_id` is already applied
 /// at fetch time; the rest are matched here. `valid_at` and `limit` are
 /// deliberately ignored — a buffered capture is alive by definition (no closed
 /// window yet) and the candidate set is already capped.
@@ -1970,7 +1970,7 @@ pub async fn wiki_recall(
 
 // ---------- mid-range bridge: the "fresh" (un-promoted) slot ----------
 
-/// Recall over the **un-promoted capture buffer** — the mid-range bridge.
+/// Recall over the **un-promoted capture parking page** — the mid-range bridge.
 ///
 /// [`wiki_search`] only sees promoted facts (`fact_index`). Material a
 /// consumer captured but the light dream has not promoted yet lives in
@@ -2655,9 +2655,9 @@ mod tests {
     ///
     /// The slot exists for the fact captured minutes ago that no page carries
     /// yet. It reused the light dream's **drain** query — oldest first — so
-    /// once the buffer held more rows than the cap, the newest capture was the
+    /// once the parking page held more rows than the cap, the newest capture was the
     /// one thrown away: invisible while the light dream keeps up, wrong exactly
-    /// when it is lagging, which is when the buffer matters most.
+    /// when it is lagging, which is when the parking page matters most.
     #[tokio::test]
     async fn the_fresh_slot_offers_the_newest_captures_not_the_oldest() {
         use crate::capture::CaptureRequest;
@@ -2917,10 +2917,10 @@ mod tests {
         );
     }
 
-    // ---------- wiki_buffered_full_for (dashboard fresh slot) ----------
+    // ---------- parking_pageed_full_for (dashboard fresh slot) ----------
 
     #[tokio::test]
-    async fn wiki_buffered_full_for_lists_unpromoted_acl_scoped_and_filtered() {
+    async fn parking_pageed_full_for_lists_unpromoted_acl_scoped_and_filtered() {
         use crate::capture::CaptureRequest;
         use crate::capture_buffer::buffer_capture;
         use crate::types::WikiId;
@@ -2999,9 +2999,10 @@ mod tests {
 
         // No filter: alice sees both her buffered captures; bob's is
         // ACL-filtered out — no embedder involved.
-        let all = wiki_buffered_full_for(&pool, &fact_index::FactFilters::default(), &alice, false)
-            .await
-            .expect("buffered list");
+        let all =
+            parking_pageed_full_for(&pool, &fact_index::FactFilters::default(), &alice, false)
+                .await
+                .expect("buffered list");
         assert_eq!(all.len(), 2, "alice sees only her two buffered captures");
         assert!(
             all.iter().all(|c| c.subject == alice_subject),
@@ -3009,7 +3010,7 @@ mod tests {
         );
 
         // The `fact_type` filter applies in-process, just like the promoted path.
-        let plans = wiki_buffered_full_for(
+        let plans = parking_pageed_full_for(
             &pool,
             &fact_index::FactFilters {
                 fact_type: Some("plan".to_owned()),

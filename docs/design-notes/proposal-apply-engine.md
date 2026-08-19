@@ -443,14 +443,14 @@ field in `answers` (default `paragraph_to_file`):
   is derived via [`WikiId::child_of`] (parent + child slug joined with
   `-`); the new directory lives at `<parent_abs_dir>/<child_slug>/` and
   holds its `_meta.md` plus the carried pages, nothing else — the compiler
-  authors its `@notes.md` buffer node on the next pass. Refuses `index.md`,
+  authors its `@notes.md` parking node on the next pass. Refuses `index.md`,
   a page with no active fact, and a page whose markers on disk disagree
   with `fact_index`. The **page-count floor**
   lives in the REM caller (`auto_promote_group_min_pages`), not here.
 
   Its **revert** (and `file_to_subwiki`'s) may find more in the newborn
   directory than the receipt put there, and that is not a defect of the wiki:
-  `planner::seed_wiki_buffers` gives every non-smart wiki a buffer node on
+  `planner::seed_parking_pages` gives every non-smart wiki a parking node on
   `@notes.md`, and a wiki born by promotion is force-dirtied at birth, so the
   next hourly compile writes one. `compiler_seeded_pages` accounts for the
   reserved pages the compiler owns — while they carry **no facts**, since the

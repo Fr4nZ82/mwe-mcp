@@ -41,7 +41,7 @@ use crate::proposals::{self, EmitParams, ProposalsError, kind};
 use crate::types::{Principal, WikiId};
 use crate::wiki::{WikiError, WikiTree};
 
-/// Cross-wiki evacuations land on the destination wiki's **buffer**
+/// Cross-wiki evacuations land on the destination wiki's **parking page**
 /// ([`crate::wiki::NOTES_FILENAME`]) — the same page the four other cross-wiki
 /// paths use (REM's refile confirmer and recall repair, `comment_apply`, the
 /// agentic single-fact move). The plan keys pages by bare slug forest-wide, so
@@ -53,21 +53,21 @@ use crate::wiki::{WikiError, WikiTree};
 /// plan key — so a deleted page's facts were filed onto somebody's identity
 /// card, the one page that carries a single subject by design and is served
 /// whole into every turn. The constant's own comment claimed it mirrored the
-/// agentic move, which had always used the buffer.
+/// agentic move, which had always used the parking page.
 ///
 /// Shared with the whole-wiki evacuation
 /// ([`crate::wiki_delete::delete_wiki_subtree`] in `SenderKeyed` mode).
 pub(crate) const EVACUATION_DEST_PAGE: &str = crate::wiki::NOTES_FILENAME;
 
-/// Nominate a destination wiki's buffer for **placement re-open**, so the next
+/// Nominate a destination wiki's parking page for **placement re-open**, so the next
 /// strong pass re-judges the facts an evacuation just parked there.
 ///
-/// The buffer is the right landing pad and the wrong resting place: a fact that
+/// The parking page is the right landing pad and the wrong resting place: a fact that
 /// settles there is not re-judged by the hourly build (`reopen_consumable` is
 /// deliberately the strong pass's alone, after a light build undid a considered
 /// cross-wiki move within three hours on 2026-07-04), so without this an
 /// evacuated fact waits for REM's mass floor to notice the page grew. Parking
-/// the buffer hands those facts to the nightly Cartografo instead, with the
+/// the parking page hands those facts to the nightly Cartografo instead, with the
 /// receipt that pass leaves.
 ///
 /// Best-effort: a plan that cannot be read or written costs the re-judgement,
@@ -84,7 +84,7 @@ fn nominate_buffers_for_reopen(tree: &WikiTree, dest_wikis: &BTreeSet<String>) {
     match crate::planner::park_bridge_signals(tree, &[], &slugs) {
         Ok(n) if n > 0 => tracing::info!(
             parked = n,
-            "evacuation: destination buffers nominated for placement re-open"
+            "evacuation: destination parking pages nominated for placement re-open"
         ),
         Ok(_) => {},
         Err(e) => tracing::warn!(error = %e, "evacuation: re-open nomination failed"),

@@ -39,9 +39,8 @@ under `llm:` and as the suffix of the env-var override convention
 
 | Slot (`LlmFunction`) | YAML key | Status in code |
 |---|---|---|
-| `HubWriter` | `hub_writer` | Active — the narrative compiler's `ConceptHub` prose, plus the operational-chat fallback (see below). |
 | `Ingest` | `ingest` | Active — `wiki_ingest_message` + the dashboard chat's plain (non-agentic) path. |
-| `OperatorChat` | `operator_chat` | Active — the dashboard's operational agentic chat. Optional: unset falls back to `hub_writer`. |
+| `OperatorChat` | `operator_chat` | Active — the dashboard's operational agentic chat. **Its own model, no fallback**: with it unset the chat is unavailable. |
 | `RemPromotions` | `rem_promotions` | Active — REM auto-promote. |
 | `RemDedupSemantic` | `rem_dedup_semantic` | Active — REM revisor (semantic dedup). |
 | `Cronista` | `cronista` | Active — the narrative prose compiler. |
@@ -139,44 +138,12 @@ estimate a prompt change from its byte count — replay it and read
 [`ingest_replay`](../../crates/mwe-core/examples/ingest_replay.rs), see
 [ingest-pipeline.md](ingest-pipeline.md#the-replay-differential--measuring-a-prompt-change).
 
-### 1.1 `hub_writer` — `ConceptHub` prose (+ operational-chat fallback)
-
-`hub_writer`'s consumer is the **narrative compiler's hub-page writer**;
-it is also the **fallback** backend for the operational chat (§1.1b) when
-the dedicated `operator_chat` slot is unset.
-
-**It no longer writes a wiki's `index.md`.** Until 2026-08-03 that was its
-primary job: REM's Hub Writer sub-job composed an index out of the twenty
-most recent fact bodies. That sub-job was made model-free in 2026-08-03
-and deleted outright on 2026-08-15 — a standard wiki has no `index.md` at
-all. The slot stays because two other consumers still need it.
-
-**Narrative compiler, `ConceptHub` pages.** When the compilation plan has
-a hub over child leaves, the compiler renders the `regenerate-index`
-prompt from the plan (title, children, one line per child leaf) and issues
-a single `complete` against this backend. The prompt body lives in
-[`crates/mwe-core/prompts/regenerate-index.md`](../../crates/mwe-core/prompts/regenerate-index.md);
-its `## Runtime contract` pins `temperature: 0.2` and `max_tokens: 800`
-(target output is 6-12 lines of reference prose). **The prompt's file name
-is historical and kept on purpose**: renaming it would orphan every
-operator override at `<workdir>/prompts/regenerate-index.md` — an upgrade
-that silently keeps serving the old body is the failure mode the whole
-override-drift surface exists to prevent.
-
-| Property | Value |
-|---|---|
-| Trigger | Compile pass, a plan page of type `ConceptHub`. |
-| Quality tier | Workhorse (low-to-medium — short summaries). |
-| Runtime params | `temperature 0.2`, `max_tokens 800` (pinned by the prompt's runtime contract). |
-| `think:false` | **Mandatory** for the local Qwen workhorse (see §4). |
-| Fallback role | When `operator_chat` is unset, also backs the operational chat (§1.1b). |
-
-### 1.1b `operator_chat` — the dashboard operational chat
+### 1.1 `operator_chat` — the dashboard operational chat
 
 The dashboard's **operational agentic chat** (the maintainer's tool on
 their own memory) runs against `LlmFunction::OperatorChat`, resolved by
-`MemoryHandles::backend_for_chat()` which falls back to `hub_writer`
-(§1.1) when the dedicated slot is unconfigured. When an operator types a
+`MemoryHandles::backend_for_chat()`, which resolves that slot and nothing
+else. When an operator types a
 structural command ("merge these two facts", "elimina il fatto `<id>`",
 "move this wiki"), the `agentic_submission` handler in
 [`crates/mwe-dashboard/src/routes/chat.rs`](../../crates/mwe-dashboard/src/routes/chat.rs)
@@ -192,13 +159,13 @@ chat is operational, not conversational — it operates *on* the memory
 > The same chat route has a **second**, separate entry point:
 > `process_submission` (the plain `wiki_ingest_message` path) resolves
 > `LlmFunction::Ingest`, not the chat slot. Only the tool-calling agentic
-> loop uses `operator_chat` / `hub_writer`.
+> loop uses `operator_chat`.
 
 Why a dedicated slot? The chat is a different workload from hub prose:
 interactive, multi-step function-calling, and it must handle fact ids
-faithfully. It wants a **strong** tool-calling model, whereas a hub page is
-a cost-bound summary. Decoupling lets an operator raise the chat's tier
-without inflating the nightly compile cost; the fallback keeps existing
+faithfully. It wants a **strong** tool-calling model, whereas this slot's
+historical job was a cost-bound summary. Decoupling lets an operator raise the chat's tier
+without inflating the compile's cost; the fallback keeps existing
 deployments unchanged with no new YAML key.
 
 | Property | Value |
@@ -313,7 +280,6 @@ The REM scheduler builds one backend per slot in
 
 | `RemLlms` field | Config slot | REM sub-jobs |
 |---|---|---|
-| `hub_writer` | `hub_writer` | the compile pass's `ConceptHub` prose. **Mandatory** — without it `build_backends` returns `None` and the scheduler is skipped. |
 | `revisor` | `rem_dedup_semantic` | revisor (semantic dedup). **Mandatory.** |
 | `auto_promote` | `rem_promotions` | auto-promote (REM). Optional. |
 | `apply` | `ingest` | the workhorse/Flash-tier backend the **light dream**'s compile pass reuses (`dream.rs`: `let flash = llms.apply`). Optional. |
@@ -348,7 +314,7 @@ Conversational and frequent slots stay on the local workhorse (zero
 latency, no API cost); the irreversible nightly structural decisions go
 to a cloud model:
 
-- `hub_writer`, `ingest`, `rem_dedup_semantic` → local
+- `ingest`, `rem_dedup_semantic` → local
   `qwen3.5:9b-q8_0`. (`rem_dedup_semantic` reuses the already-loaded
   workhorse rather than opening a second VRAM tenant for a yes/no
   classifier.)
@@ -358,7 +324,7 @@ to a cloud model:
 
 ### `all-api` — maximum quality, single provider
 
-Every slot on Anthropic: Haiku for the bandwidth-heavy `hub_writer`,
+Every slot on Anthropic: Haiku for the bandwidth-heavy `ingest`,
 Sonnet for `ingest` (intent classification benefits from the bigger
 model), Opus 4.7 with `extra-high` effort for the strong slots, Haiku
 for the cheap dedup pass.
@@ -462,7 +428,7 @@ things:
 
 | resolver | used by | the language of record |
 | --- | --- | --- |
-| `locale::memory_directive_for_wiki` / `…_for_wiki_meta` | `cronista`, `regenerate-index`, `comment-apply`, `rem-page-grouping`, `cartografo`, `conciliatore`, `rem-dates` | the target wiki's **scope principal** — a `wiki-user` line speaks its owner's declared locale; a `wiki-group` line speaks the one **every** member declared, and has none when they disagree or anyone left it blank (`enrollment::locale_for_principal`) |
+| `locale::memory_directive_for_wiki` / `…_for_wiki_meta` | `cronista`, `comment-apply`, `rem-page-grouping`, `cartografo`, `conciliatore`, `rem-dates` | the target wiki's **scope principal** — a `wiki-user` line speaks its owner's declared locale; a `wiki-group` line speaks the one **every** member declared, and has none when they disagree or anyone left it blank (`enrollment::locale_for_principal`) |
 | `locale::memory_directive_for_user` | `document-classify`, `document-extract`, `document-merge` | the person who submitted the document — which is why an English PDF read by an Italian user lands in memory in Italian |
 
 Both are best-effort: an unresolvable scope chain or a DB failure logs
@@ -524,7 +490,7 @@ free-text body and a page's description follow the user's locale.
 
 **Smart family is excluded from REM write-jobs.** A `smart: true`
 wiki is deliberately *not* a target of the REM write-jobs (auto-promote,
-Hub Writer, archive detector). The smart consumer owns the authorship of
+archive detector). The smart consumer owns the authorship of
 its smart wikis and pushes already-shaped markdown via
 `wiki_admin_push`; REM must not silently rewrite it. See
 [`smart-wikis.md`](smart-wikis.md) and
@@ -691,6 +657,6 @@ Dataset filtering and the distillation run itself remain outside the tree.
 
 One trap the spool sets for every consumer: **a record is labelled by
 slot, not by prompt.** The `ingest` slot also carries `cronista`,
-`conciliatore`, `regenerate-index` and `ingest-closures`, so filtering on
+`conciliatore` and `ingest-closures`, so filtering on
 `function == "ingest"` over-counts the classifier by ~75% (591 records vs
 335 real ones over nine days). Filter on a marker in the system prompt.

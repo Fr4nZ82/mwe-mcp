@@ -304,7 +304,7 @@ description, as up to two lines, each omitted when empty:
 | `holds:` | the **compiled abstract** — "what it actually holds" | the compiler, from the card the wiki's own foundation page was written with (`_meta.extra["summary"]`), seeded at emergence from the promoting model's description |
 
 They are kept as **two keys, not merged**: they are different claims with
-different authors, and folding them together would have the nightly compile
+different authors, and folding them together would have the compile
 overwrite an operator's authored line. A wiki with neither renders
 `about: (not described yet)` — the honest answer, and shorter than two
 empty keys.
@@ -501,7 +501,7 @@ and what the user *did* name — a `lista`, a container asked for by name — is
 settled before the model is called and never shown to it.
 
 So `@notes.md` is no longer a place a fact passes through on its way in: while
-it waits, a claim is in the buffer and on no page. `@notes.md` keeps its other
+it waits, a claim is in the captures queue and on no page. `@notes.md` keeps its other
 job, the one it was designed for — the holding place for anything the
 Cartografo declines to place, which REM's reorg then drains onto real pages.
 
@@ -739,8 +739,8 @@ durable but the consumer only ever sees one audit id per turn. A
 per-extraction `body` is **required** (`CapturePlanError::MissingBody`):
 the raw-message fallback applies only to the legacy single unit, because
 filing the whole message under every extraction would duplicate it.
-A standard-wiki capture is durably **buffered**; the light dream promotes it
-to a recallable fact and the nightly compiler renders the prose — see
+A standard-wiki capture is durably **buffered**; the hourly round places it,
+writes its `fact_index` row and renders the prose — see
 [narrative-buffer.md](narrative-buffer.md) and
 [rem-cycle.md](rem-cycle.md).
 
@@ -1510,7 +1510,7 @@ or single-fact:
   REM auto-promote target shares the same chokepoint
   ([rem-cycle.md](rem-cycle.md)) — and anything that still fails
   `is_safe_page_path` (a traversal-laden name, a segment that slugifies
-  to nothing) falls back to `policy.default_page` (`@notes.md`, the buffer page).
+  to nothing) falls back to `policy.default_page` (`@notes.md`, the parking page).
   **A name that survives canonicalisation but is one of the five reserved pages
   falls back too** ([`wiki::names_reserved_page`](../../crates/mwe-core/src/wiki.rs)):
   the prompt promises *«a capture aimed at one is not filed there»*, and until
@@ -1932,7 +1932,7 @@ perimeter, exactly as they all skip smart wikis:
   ([`planner::gather_standard_facts`](../../crates/mwe-core/src/planner.rs))
   skips every `@rules.md` fact — otherwise a behaviour-rule fact (written by the
   direct path, so absent from the persisted plan) would look *new* on the next
-  dream and orphan-fall-back onto the subject's buffer page;
+  dream and orphan-fall-back onto the subject's parking page;
 - the **REM refile sweep** never *nominates* a `@rules.md` fact (a per-user rule
   naturally embeds toward its user's wiki — a confirmed move would land it on a
   foreign wiki's buffer); rules facts still count in the similarity pools;
@@ -2036,7 +2036,7 @@ The alias is unambiguous by construction — the agent principal resolves only o
 a turn the agent authored, so on a user turn a subject naming the agent keeps its
 ordinary meaning. **The engine chooses the page too**
 ([`agent_self_fact_page`](../../crates/mwe-core/src/ingest.rs)): an identity
-self-fact lands on the agent's buffer page, from which the next compile's
+self-fact lands on the agent's parking page, from which the next compile's
 `orphan_target` lifts it onto the agent's `@profile.md` card (`salience: high`)
 and the REM consolidates the autobiography; a relationship self-fact lands on `esperienze_<served-user>.md`
 (through the same `normalize_capture_page` chokepoint). The classifier's own
@@ -2174,7 +2174,7 @@ optional string in the existing `metadata` object alongside
 
 [`mwe-core::config`](../../crates/mwe-core/src/config.rs) parses
 the `llm:` section in addition to `logging:`. Five canonical slots
-(`hub_writer`, `ingest`, `rem_promotions`, `rem_dedup_semantic`,
+(`ingest`, `operator_chat`, `rem_promotions`, `rem_dedup_semantic`,
 `cronista`) each carry `{backend, model, api_key_env?, base_url?}`.
 Five backends are wired in
 [`LlmFunctionConfig::build_backend`]: `ollama` (local, no key),
@@ -2251,7 +2251,7 @@ signature stays stable as the policy grows:
 | `max_recent_message_chars` | 280 | One tweet-length per turn keeps the prompt compact. |
 | `max_list_pages_in_prompt` | 32 | Lists are few by nature; this bounds a pathological corpus, not an ordinary one. The inventory is ordered newest-touched first, so past the cap the list dropped is the one nobody has written to in longest. |
 | `max_group_scope_chars` | 1000 | Per-group `scope` truncation — large enough to keep the scope's exclusion clause, bounded so a pathological scope can't blow the prompt budget. |
-| `default_page` | `@notes.md` | The **buffer page** — where a fact lands when no page fits. REM's reorg sweep drains `@notes.md` onto real pages. |
+| `default_page` | `@notes.md` | The **parking page** — where a fact lands when the placement pass declines to place it. REM's reorg sweep drains `@notes.md` onto real pages. |
 | `fallback_suggested_seed` | `"I've noted that."` | English placeholder; operator-overridable per deployment. |
 | `structural_suggested_seed` | `"This looks like a structural change — open the dashboard to continue."` | Same. |
 | `nav` | `recall_nav::NavigatorPolicy::default()` | The navigator funnel's resource knobs (hops, pages/hop, char budget, candidate cap) — see [recall-pipeline.md](recall-pipeline.md). Inert when no navigator backend is wired. |
