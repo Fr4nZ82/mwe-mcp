@@ -21,8 +21,8 @@
 //!   verbatim and counted in the [`ExportReport`]. Importers resolve such
 //!   regions at the destination wiki's `acl_default` — fail-closed on
 //!   both sides.
-//! - `_meta.md` travels verbatim; `_captures.md` is **excluded**
-//!   (unpromoted buffer state is engine-internal, not interchange).
+//! - `_meta.md` travels verbatim; every other `_`-prefixed file is
+//!   **excluded** — those belong to the engine, not to the wiki.
 //! - **Referenced media travels too**: every `{{embed=…}}` in the
 //!   exported pages (standalone or inside a region body) pulls its
 //!   blob from the content-addressed store into `_media/<catalog_id>`
@@ -50,8 +50,7 @@ use crate::media;
 use crate::parser::{ParseEvent, collect_embeds, parse};
 use crate::types::{CatalogId, WikiId};
 use crate::wiki::{
-    CAPTURES_FILENAME, META_FILENAME, WikiError, WikiTree, list_wiki_pages,
-    workdir_relative_source_path,
+    META_FILENAME, WikiError, WikiTree, list_wiki_pages, workdir_relative_source_path,
 };
 
 /// Errors surfaced by [`export_wiki_subtree`].
@@ -138,7 +137,7 @@ pub async fn export_wiki_subtree(
     let root = tree.locate(wiki_id)?;
     let root_rel: PathBuf = root.rel_dir().to_path_buf();
     // Archive entries are rooted at the exported wiki's directory name:
-    // exporting `wikis/alice` yields `alice/index.md`, …; exporting the
+    // exporting `wikis/alice` yields `alice/cucina.md`, …; exporting the
     // nested `wikis/alice/garden` yields `garden/…`.
     let strip_base = root_rel
         .parent()
@@ -171,14 +170,13 @@ pub async fn export_wiki_subtree(
         report.pages += 1;
 
         // Pages of this wiki only (sub-wikis come up as their own walk
-        // nodes); `list_wiki_pages` already excludes `_meta.md` and
-        // `_captures.md`.
+        // nodes); `list_wiki_pages` excludes every `_`-prefixed file, which
+        // is the whole rule for what belongs to the engine rather than the
+        // wiki (founder, 2026-08-18).
         for page in list_wiki_pages(&d.abs_dir)? {
             debug_assert!(
-                page.rel_path
-                    .file_name()
-                    .is_none_or(|n| n != CAPTURES_FILENAME),
-                "page enumeration must never surface the capture buffer"
+                !crate::wiki::names_engine_file(&page.rel_path),
+                "page enumeration must never surface an engine file"
             );
             let raw = std::fs::read_to_string(&page.abs_path)?;
             let source_path = workdir_relative_source_path(tree.workdir(), &page.abs_path);
@@ -453,7 +451,7 @@ mod tests {
     const ORPHAN_KEY: &str = "018f1234-5678-7abc-9def-0123456789ab";
 
     /// Seed `alice` (+ nested `garden`, + sibling `bob`) with captured
-    /// facts, one hand-appended unindexed region on `alice/index.md`,
+    /// facts, one hand-appended unindexed region on `alice/cucina.md`,
     /// and a capture-buffer file that must never travel.
     async fn seed_subtree_fixture(
         dir: &Path,
@@ -468,7 +466,7 @@ mod tests {
             pool,
             tree,
             "alice",
-            "index.md",
+            "cucina.md",
             "Alice likes tea",
             vec![],
             None,
@@ -478,7 +476,7 @@ mod tests {
             pool,
             tree,
             "alice",
-            "index.md",
+            "cucina.md",
             "Shared secret with Bob",
             vec!["user:bob".parse().unwrap()],
             Some("user:carol".parse().unwrap()),
@@ -488,7 +486,7 @@ mod tests {
             pool,
             tree,
             "alice-garden",
-            "notes.md",
+            "@notes.md",
             "Tomatoes in June",
             vec![],
             None,
@@ -498,7 +496,7 @@ mod tests {
             pool,
             tree,
             "bob",
-            "index.md",
+            "cucina.md",
             "Bob's own fact",
             vec![],
             None,
@@ -506,7 +504,7 @@ mod tests {
         .await;
 
         // An unindexed bare region: appended by hand, never captured.
-        let index_path = dir.join("wikis/alice/index.md");
+        let index_path = dir.join("wikis/alice/cucina.md");
         let mut index_raw = std::fs::read_to_string(&index_path).unwrap();
         index_raw.push_str("{{f=");
         index_raw.push_str(ORPHAN_KEY);
@@ -514,7 +512,9 @@ mod tests {
         std::fs::write(&index_path, index_raw).unwrap();
 
         // Capture-buffer state must not travel.
-        std::fs::write(dir.join("wikis/alice/_captures.md"), "buffered\n").unwrap();
+        // A leftover engine file: excluded by the underscore rule, whatever
+        // it is called.
+        std::fs::write(dir.join("wikis/alice/_leftover.md"), "engine\n").unwrap();
 
         SubtreeFixture {
             plain: f_plain,
@@ -542,12 +542,18 @@ mod tests {
 
         // Layout: root + descendant travel, sibling and buffer do not.
         assert!(entries.contains_key("alice/_meta.md"), "{entries:?}");
-        assert!(entries.contains_key("alice/index.md"), "{entries:?}");
+        assert!(entries.contains_key("alice/cucina.md"), "{entries:?}");
         assert!(entries.contains_key("alice/garden/_meta.md"), "{entries:?}");
-        assert!(entries.contains_key("alice/garden/notes.md"), "{entries:?}");
         assert!(
-            entries.keys().all(|k| !k.contains(CAPTURES_FILENAME)),
-            "capture buffer must be excluded: {entries:?}"
+            entries.contains_key("alice/garden/@notes.md"),
+            "{entries:?}"
+        );
+        assert!(
+            entries.keys().all(
+                |k| !k.rsplit('/').next().is_some_and(|n| n.starts_with('_'))
+                    || k.ends_with("_meta.md")
+            ),
+            "no engine file but `_meta.md` may be exported: {entries:?}"
         );
         assert!(
             entries.keys().all(|k| k.starts_with("alice/")),
@@ -561,7 +567,7 @@ mod tests {
 
         // Every DB-known region was rewritten to a full marker carrying
         // the DB ACL; the orphan region stayed bare.
-        let exported_index = &entries["alice/index.md"];
+        let exported_index = &entries["alice/cucina.md"];
         let parsed = parse(exported_index);
         let mut seen = BTreeMap::new();
         for ev in &parsed.events {
@@ -604,7 +610,7 @@ mod tests {
         assert_eq!(orphan_body, "mystery prose");
 
         // Descendant page rewritten too.
-        let garden = &entries["alice/garden/notes.md"];
+        let garden = &entries["alice/garden/@notes.md"];
         assert!(
             garden.contains("subject=user:alice") && garden.contains(fx.garden.as_str()),
             "{garden}"
@@ -627,12 +633,21 @@ mod tests {
 
         write_user_wiki_meta(&dir.path().join("wikis/alice"), "alice");
         write_user_wiki_meta(&dir.path().join("wikis/alice/garden"), "alice-garden");
-        capture_fact(&pool, &tree, "alice", "index.md", "Root fact", vec![], None).await;
+        capture_fact(
+            &pool,
+            &tree,
+            "alice",
+            "cucina.md",
+            "Root fact",
+            vec![],
+            None,
+        )
+        .await;
         capture_fact(
             &pool,
             &tree,
             "alice-garden",
-            "notes.md",
+            "@notes.md",
             "Nested fact",
             vec![],
             None,
@@ -645,7 +660,7 @@ mod tests {
         assert_eq!(export.root_dir, "garden");
         let entries = untar(&export.tar_bytes);
         assert!(entries.contains_key("garden/_meta.md"), "{entries:?}");
-        assert!(entries.contains_key("garden/notes.md"), "{entries:?}");
+        assert!(entries.contains_key("garden/@notes.md"), "{entries:?}");
         assert!(
             entries.keys().all(|k| k.starts_with("garden/")),
             "ancestor pages must stay out: {entries:?}"
@@ -697,13 +712,13 @@ mod tests {
             &pool,
             &tree,
             "alice",
-            "index.md",
+            "cucina.md",
             &format!("Photo of the gate {{{{embed={cid}}}}}"),
             vec![],
             None,
         )
         .await;
-        let index_path = dir.path().join("wikis/alice/index.md");
+        let index_path = dir.path().join("wikis/alice/cucina.md");
         let mut raw = std::fs::read_to_string(&index_path).unwrap();
         raw.push_str("\n{{embed=c-2020-01-01-photo-001.jpg}}\n");
         std::fs::write(&index_path, raw).unwrap();

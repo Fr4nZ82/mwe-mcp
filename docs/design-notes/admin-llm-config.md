@@ -39,6 +39,28 @@ the Claude Code OAuth routes live in
 [`routes::claude_login`](../../crates/mwe-dashboard/src/routes/claude_login.rs)
 and are merged alongside.
 
+## The models are mandatory
+
+**A deployment with no model does not work, and this page is where that is
+enforced** (founder's ruling, restated 2026-08-18). It is not a degradation
+mode to design around: the memory is written by models — the classifier reads
+every message, the placement stage decides where a claim goes, the Cronista
+writes the prose — so "no model configured" is a half-installed product, not a
+lean one.
+
+What is enforced **today**, verified against
+[`llm_config.rs`](../../crates/mwe-dashboard/src/routes/llm_config.rs):
+
+| Role | Enforced? | How |
+|---|---|---|
+| `ingest` | **yes** | Onboarding step 1 below: the admin cannot leave this page for the profile primer until the role resolves to a usable backend, and the banner says so. |
+| `cronista`, `hub_writer`, `rem_dedup_semantic`, `rem_promotions` | **not yet** | Nothing blocks an admin who wires `ingest` and stops. The engine then degrades — the compile is skipped, claims keep waiting — which is *safe* but is not the product working. |
+
+So a doc line that presents a missing slot as ordinary behaviour is describing
+the gap, not a feature. The gap is one place (`ingest_ready`, which asks about
+one role); widening it to every role the product needs is a change to make, not
+an assumption to write around.
+
 ## Onboarding step 1
 
 This page doubles as **step 1 of first-run onboarding**. The `/dashboard/setup`

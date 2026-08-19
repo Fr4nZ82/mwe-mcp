@@ -1272,7 +1272,7 @@ mod tests {
             project_id: None,
             description: None,
             pages: vec![PushPage {
-                path: "index.md".into(),
+                path: "cucina.md".into(),
                 content: "# lnprint\n".into(),
             }],
             deletes: Vec::new(),

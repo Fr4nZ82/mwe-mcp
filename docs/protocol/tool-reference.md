@@ -289,8 +289,8 @@ never as an `Err`.
   `context_snippet`** (ingest pipeline):
   it carries the standing behaviour directives in force for the served user —
   agent-wide, then the user's **user-global** rules (the ones they set for
-  every assistant, recalled from their own identity-wiki `rules.md`), then
-  their per-user rules for this agent (the agent's own `rules.md`) — plus,
+  every assistant, recalled from their own identity-wiki `@rules.md`), then
+  their per-user rules for this agent (the agent's own `@rules.md`) — plus,
   leading, any one-shot governance notice (e.g. an agent-wide change refused
   for a non-admin this turn). The consumer
   **applies** these as instructions, never relays them. Privacy/sharing
@@ -512,13 +512,23 @@ through `wiki_ingest_message`.
 Read a **named** page of a wiki, with ACL redaction applied for the sender.
 See `redaction-policy.md`.
 
-There is **no default page and no way to reach the map**. `path` is required,
-and `index.md` is refused (`404`, `wiki::names_map_page` — the same rule the
-navigator asks). The map holds no facts: its content is the wiki's own
-structure, the sub-wiki list plus every page as a `[[wikilink]]`. It used to be
-the advertised default, so the read tool's own description told a consumer
-model to ask for the catalogue of wikis — the thing the 2026-08-04 ruling
-deleted. Founder, 2026-08-14: *«la struttura va tolta dal messaggio di risposta
+There is **no default page**. `path` is required, and the **only** paths
+refused are the engine's own files — the leading-underscore set `_meta.md` /
+`_briefing.md` and any other `_`-prefixed name (`wiki::names_engine_file`
+— the leading underscore is the whole rule), which are
+bookkeeping rather than memory. Every other page of the wiki can be named,
+gated by ACL like any other; an unknown name is `404`.
+
+Until 2026-08-16 the refusal was the other way round: those files were served
+to anyone who named one, while `index.md` was blocked — a leftover of the
+standard-wiki page listing deleted the day before, which by then could only hit
+a **smart** wiki, where that page is documentation its consumer authored.
+Founder's ruling: *«non ci interessa come sono fatte e nessun file dev'essere
+vietato o trattato in modo diverso, tranne quelli che crea il motore come ad
+esempio il briefing»*. A default page was dropped earlier still, for its own
+reason: it returned the wiki's structure — the sub-wiki list plus every page as
+a `[[wikilink]]` — so the read tool's own description told a consumer model to
+ask for the catalogue of wikis, the thing the 2026-08-04 ruling deleted. Founder, 2026-08-14: *«la struttura va tolta dal messaggio di risposta
 al consumer, al consumer interessa solo l'informazione relativamente al
 messaggio che ha inviato l'utente»*. A page path a consumer legitimately holds
 came from a `wiki_search` hit or a `wiki_navigate` fragment.
@@ -529,7 +539,7 @@ came from a `wiki_search` hit or a `wiki_navigate` fragment.
 |---|---|---|---|
 | `wiki_id` | string | yes | Opaque id. |
 | `sender_id` | string | no | Validated against the token. |
-| `path` | string | **yes** | Page path relative to the wiki dir (e.g. `recipes/pasta.md`). Omitted → `400 invalid_input`; `index.md` → `404 not_found` (the map is not memory); `is_safe_page_path`-validated (bad → `400 invalid_input`); unknown page → `404 not_found`. The body and the per-fact ACL map resolve to the *same* page. |
+| `path` | string | **yes** | Page path relative to the wiki dir (e.g. `recipes/pasta.md`). Omitted → `400 invalid_input`; an engine file (any `_`-prefixed name, e.g. `_meta.md` / `_briefing.md`) → `404 not_found`; `is_safe_page_path`-validated (bad → `400 invalid_input`); unknown page → `404 not_found`. The body and the per-fact ACL map resolve to the *same* page. |
 | `include_archived` | boolean | no (default `false`) | **Accepted but not honoured** — the archive surface is not yet implemented. |
 | `format` | enum `markdown` \| `json_blocks` | no (default `markdown`) | **Accepted but not honoured** — the floor always returns continuous-text markdown. |
 
@@ -1106,7 +1116,7 @@ after a bulk import.
 
 Tell the owner's **standard** memory that this project exists. Writes
 short *signposts* — a description of what the project is, and one
-activity line per day — onto the owner's reserved `projects.md`.
+activity line per day — onto the owner's reserved `@projects.md`.
 
 A signpost is a **pointer, not a record**: a conversational turn recalls
 facts only, so a project the user never names is invisible to their

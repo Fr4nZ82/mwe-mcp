@@ -259,7 +259,7 @@ async fn cite_resolver_is_anonymous_accessible() {
     // enforcement lives on the destination `/dashboard/wiki/...` page,
     // not on the resolver.
     let (app, pool, _dir) = make_app_with_memory().await;
-    let id = seed_briefing_row(&pool, "alice", Some("wiki://alice/index.md#welcome")).await;
+    let id = seed_briefing_row(&pool, "alice", Some("wiki://alice/@profile.md#welcome")).await;
 
     let response = send(
         &app,
@@ -277,7 +277,7 @@ async fn cite_resolver_is_anonymous_accessible() {
     );
     assert_eq!(
         redirect_location(&response),
-        "/dashboard/wiki/alice/view/index.md#welcome"
+        "/dashboard/wiki/alice/view/@profile.md#welcome"
     );
 
     // And the same route is reachable via the discoverable

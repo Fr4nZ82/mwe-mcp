@@ -346,16 +346,6 @@ pub async fn user_required(pool: &SqlitePool, user_id: &str) -> Result<bool> {
     Ok(matches!(row, Some((n,)) if n != 0))
 }
 
-/// Set the per-user require flag.
-pub async fn set_user_required(pool: &SqlitePool, user_id: &str, required: bool) -> Result<()> {
-    sqlx::query("UPDATE enrollment_users SET require_2fa = ? WHERE user_id = ?")
-        .bind(i64::from(required))
-        .bind(user_id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 /// The deployment-wide "require 2FA for all non-system users" toggle.
 pub async fn global_required(pool: &SqlitePool) -> Result<bool> {
     Ok(mwe_core::db::meta_get(pool, GLOBAL_REQUIRE_KEY)

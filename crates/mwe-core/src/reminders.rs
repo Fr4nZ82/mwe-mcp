@@ -335,7 +335,7 @@ mod tests {
             r#"INSERT INTO fact_index
                  (fact_id, wiki_id, source_path, "text", embedding, embedding_dim,
                   subject_id, fact_type, created_at, updated_at, valid_to)
-               VALUES (?, 'alice', 'alice/index.md', 'dentist at nine', X'00000000', 1,
+               VALUES (?, 'alice', 'alice/cucina.md', 'dentist at nine', X'00000000', 1,
                        ?, ?, '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z', ?)"#,
         )
         .bind(fact_id)

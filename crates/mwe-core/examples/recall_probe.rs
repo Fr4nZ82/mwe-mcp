@@ -113,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ---- the wiki-level gate: would a per-wiki card decide before the scan? --
     // Two candidate signals per readable smart wiki:
-    //   card     — what the wiki says it is (`_meta.md` title + `index.md` head)
+    //   card     — what the wiki says it is (`_meta.md` title + `cucina.md` head)
     //   centroid — the mean of its own section embeddings, needing no authoring
     let mut gate: Vec<(String, Vec<f32>, Vec<f32>, Vec<f32>)> = Vec::new();
     for w in &all_wikis {
@@ -132,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
         for c in &mut centroid {
             *c /= secs.len() as f32;
         }
-        // The card: title from `_meta.md`, plus the opening of `index.md`.
+        // The card: title from `_meta.md`, plus the opening of `cucina.md`.
         let dir = secs[0]
             .source_path
             .rsplit_once('/')
@@ -148,7 +148,7 @@ async fn main() -> anyhow::Result<()> {
                     for l in meta.lines().filter(|l| l.starts_with("title:")) {
                         card.push_str(l.trim_start_matches("title:").trim());
                     }
-                    if let Ok(idx) = std::fs::read_to_string(up.join("index.md")) {
+                    if let Ok(idx) = std::fs::read_to_string(up.join("cucina.md")) {
                         card.push_str(". ");
                         card.push_str(&idx.chars().take(600).collect::<String>());
                     }
@@ -326,12 +326,12 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // THE PRODUCTION GATE, as it actually works: a signpost is a FACT on the
-        // owner's reserved `projects.md`. The project corpus opens only when one
+        // owner's reserved `@projects.md`. The project corpus opens only when one
         // SURFACES in this turn's own fact recall — then the classifier judges.
         {
             let pos = facts
                 .iter()
-                .position(|h| h.source_path.ends_with("projects.md"));
+                .position(|h| h.source_path.ends_with("@projects.md"));
             match pos {
                 Some(p) if p < 5 => println!(
                     "  [gate signpost] un signpost esce al posto {} del richiamo fatti (top_k ingest = 5) → LE WIKI DI PROGETTO SI APRONO (score {:.4})",

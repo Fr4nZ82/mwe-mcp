@@ -391,7 +391,7 @@ async fn wiki_read_returns_not_found_for_unknown_wiki() {
         &state,
         &identity,
         "wiki_read",
-        json!({"wiki_id": "nope", "path": "notes.md"}),
+        json!({"wiki_id": "nope", "path": "@notes.md"}),
     )
     .await
     .expect_err("must reject");
@@ -450,9 +450,8 @@ async fn wiki_read_projects_acl_per_sender() {
 
     // Plant a three-region wiki on disk. `wikis/alice` already exists
     // implicitly from `WikiTree::open`; create the `_meta.md` and the
-    // A memory page with three markers carrying distinct subjects. NOT the
-    // map: `wiki_read` refuses `index.md` — it holds no facts, only the
-    // wiki's own structure.
+    // A memory page with three markers carrying distinct subjects. Not
+    // `index.md`: `wiki_read` refuses that name.
     let wiki_dir = dir.path().join("wikis").join("alice");
     std::fs::create_dir_all(&wiki_dir).expect("mkdir alice");
     std::fs::write(
@@ -544,7 +543,9 @@ async fn wiki_read_projects_acl_per_sender() {
 }
 
 /// `wiki_read` serves the page named by `path`, projecting the ACL of *that*
-/// page — and rejects unsafe / missing pages, an omitted `path`, and the map.
+/// page — and rejects unsafe / missing pages and an omitted `path`. Which
+/// names are refused outright is
+/// [`wiki_read_refuses_only_the_engines_own_files`].
 #[tokio::test]
 async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
     let (state, identity, dir) = fixture(false, None).await;
@@ -578,9 +579,9 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
     let state = McpState { tree, ..state };
 
     // No default page: `path` is required. It used to default to `index.md`,
-    // so the ADVERTISED default of the read tool handed back the wiki's map —
-    // the sub-wiki list and every page as a link, i.e. the catalogue of wikis
-    // the read side is not supposed to have.
+    // so the ADVERTISED default of the read tool handed back a list of the
+    // wiki's pages and sub-wikis — the catalogue of containers the read side
+    // is not supposed to have.
     let err = call(&state, &identity, "wiki_read", json!({"wiki_id": "alice"}))
         .await
         .expect_err("no default page");
@@ -588,18 +589,6 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
         err.contains("invalid_input") && err.contains("path"),
         "{err}"
     );
-
-    // And naming the map explicitly is refused too — one rule, whichever
-    // route asks (`wiki::names_map_page`, the same one the navigator uses).
-    let err = call(
-        &state,
-        &identity,
-        "wiki_read",
-        json!({"wiki_id": "alice", "path": "index.md"}),
-    )
-    .await
-    .expect_err("the map is not a memory page");
-    assert!(err.contains("not_found") && err.contains("map"), "{err}");
 
     // The subject (alice) reads the subpage in full.
     let out = call(
@@ -617,7 +606,7 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
     assert_eq!(out["redacted_count"], json!(0));
 
     // A non-subject reads the subpage: prose passes, the subject-only region is
-    // redacted — i.e. the page's *own* ACL is applied, not index.md's.
+    // redacted — i.e. the page's *own* ACL is applied, not the wiki's.
     let bob = IdentityProfile {
         sender_id: "bob".into(),
         ..identity.clone()
@@ -1032,6 +1021,70 @@ async fn wiki_ingest_message_omits_pending_attention_when_no_proposals_in_flight
     );
 }
 
+/// The one refusal `wiki_read` makes: the engine's own files.
+///
+/// Founder, 2026-08-16, on how a smart wiki is read — *«non ci interessa come
+/// sono fatte e nessun file dev'essere vietato o trattato in modo diverso,
+/// tranne quelli che crea il motore come ad esempio il briefing»*. Before that
+/// the rule ran backwards: `_meta.md` and `_briefing.md` were served to anyone
+/// who named one, while `index.md` was blocked — a leftover of the
+/// standard-wiki page listing deleted on 2026-08-15, which by then could only
+/// hit a smart wiki, where that page is documentation its consumer authored.
+#[tokio::test]
+async fn wiki_read_refuses_only_the_engines_own_files() {
+    let (state, identity, dir) = fixture(false, None).await;
+    let wiki_dir = dir.path().join("wikis").join("alice");
+    std::fs::create_dir_all(&wiki_dir).expect("mkdir alice");
+    std::fs::write(
+        wiki_dir.join("_meta.md"),
+        "---\nwiki_id: alice\nwiki_type: wiki-user\nparent_wiki_id: null\n\
+         slug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
+    )
+    .expect("write _meta.md");
+    std::fs::write(wiki_dir.join("_briefing.md"), "# Inbox\n\n- item\n").expect("write briefing");
+    std::fs::write(wiki_dir.join("index.md"), "# Alice\n\nLanding page.\n")
+        .expect("write index.md");
+    let tree = WikiTree::open(dir.path()).expect("reopen");
+    let state = McpState { tree, ..state };
+
+    // Bookkeeping, not memory — whoever asks, and whether or not the file is
+    // on disk (`_anything.md` is not, here — the rule is the prefix, not a
+    // list of known names).
+    for engine_file in ["_meta.md", "_briefing.md", "_anything.md"] {
+        let err = call(
+            &state,
+            &identity,
+            "wiki_read",
+            json!({"wiki_id": "alice", "path": engine_file}),
+        )
+        .await
+        .expect_err("an engine file is not a page");
+        assert!(
+            err.contains("not_found") && err.contains("engine"),
+            "{engine_file}: {err}"
+        );
+    }
+
+    // And nothing else is special: a page named `index.md` is read like any
+    // other. No standard wiki writes one any more, but a smart consumer may
+    // author one, and refusing it hid a page somebody wrote on purpose.
+    let out = call(
+        &state,
+        &identity,
+        "wiki_read",
+        json!({"wiki_id": "alice", "path": "index.md"}),
+    )
+    .await
+    .expect("a page named index.md is a page like any other");
+    assert_eq!(out["page"], json!("index.md"));
+    assert!(
+        out["content_rendered_for_sender"]
+            .as_str()
+            .is_some_and(|body| body.contains("Landing page")),
+        "the page body must be served: {out}"
+    );
+}
+
 /// Guest wire shape (roadmap 40): the turn succeeds, the `rules` channel
 /// carries the reserved-behaviour directive, nothing is filed, and the
 /// governance blocks stay absent even with a proposal in flight — the
@@ -1290,7 +1343,7 @@ async fn wiki_admin_push_records_the_activity_line_in_the_owners_diary() {
     // the door-sign page, and with no second call from the consumer.
     let day = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let diary: Vec<String> = sqlx::query_scalar(
-        "SELECT text FROM fact_index WHERE source_path = 'wikis/alice/project_diary.md' \
+        "SELECT text FROM fact_index WHERE source_path = 'wikis/alice/@projects_diary.md' \
          AND valid_to IS NULL",
     )
     .fetch_all(&state.pool)
@@ -1301,7 +1354,7 @@ async fn wiki_admin_push_records_the_activity_line_in_the_owners_diary() {
     assert!(diary[0].contains(&day), "the server stamps the day");
 
     let signs: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM fact_index WHERE source_path = 'wikis/alice/projects.md' \
+        "SELECT count(*) FROM fact_index WHERE source_path = 'wikis/alice/@projects.md' \
          AND valid_to IS NULL",
     )
     .fetch_one(&state.pool)
@@ -1332,7 +1385,7 @@ async fn wiki_admin_push_without_an_activity_line_writes_no_diary_entry() {
 
     assert_eq!(out["diary"], json!(null), "silence is a legitimate answer");
     let rows: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM fact_index WHERE source_path = 'wikis/alice/project_diary.md'",
+        "SELECT count(*) FROM fact_index WHERE source_path = 'wikis/alice/@projects_diary.md'",
     )
     .fetch_one(&state.pool)
     .await
@@ -1357,7 +1410,7 @@ async fn wiki_admin_push_queues_section_indexing_when_reindex_channel_is_wired()
         json!({
             "mode": "upsert",
             "wiki_id": wiki_id.as_str(),
-            "pages": [{"path": "notes.md", "content": "# Notes\n"}],
+            "pages": [{"path": "@notes.md", "content": "# Notes\n"}],
         }),
     )
     .await
@@ -1370,7 +1423,7 @@ async fn wiki_admin_push_queues_section_indexing_when_reindex_channel_is_wired()
     );
     match rx.try_recv().expect("one queued change") {
         mwe_core::watcher::WatchedChange::Touched(p) => {
-            assert!(p.ends_with("notes.md"), "queued path: {}", p.display());
+            assert!(p.ends_with("@notes.md"), "queued path: {}", p.display());
         },
         other => panic!("expected Touched, got {other:?}"),
     }
@@ -1387,7 +1440,7 @@ async fn wiki_admin_push_indexes_inline_without_reindex_channel() {
         json!({
             "mode": "upsert",
             "wiki_id": wiki_id.as_str(),
-            "pages": [{"path": "notes.md", "content": "# Notes\n"}],
+            "pages": [{"path": "@notes.md", "content": "# Notes\n"}],
         }),
     )
     .await
@@ -1737,7 +1790,6 @@ async fn insert_forget_fact(
             valid_to: None,
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         },

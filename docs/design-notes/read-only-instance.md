@@ -79,10 +79,7 @@ None of them is the "real" one with the others as decoration.
 A request-level refusal says nothing to a background scheduler. On a
 frozen deployment the REM cycle, the light dream, the document worker and
 the automatic backup **do not start** — a dream that recompiles pages
-overnight would falsify the mode's name while nobody was watching. The
-boot-time refresh of the operator's `wikis/index.md` collector is skipped
-for the same reason: "nothing changes" has to include the bytes the
-server would write itself.
+overnight would falsify the mode's name while nobody was watching.
 
 The reindex watcher stays armed. It derives the index from files that no
 longer change, so it is a no-op — and if one ever does change, the safety

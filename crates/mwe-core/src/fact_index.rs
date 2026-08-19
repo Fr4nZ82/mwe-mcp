@@ -19,8 +19,6 @@
 //! recall pipeline (semantic similarity ranking, multi-modal recall,
 //! REM jobs) builds on top of these primitives.
 
-use std::collections::HashSet;
-
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqlitePool};
 use thiserror::Error;
@@ -139,7 +137,7 @@ pub struct FactIndexRow {
     /// set is `high | normal | low`, deduced by the ingest classifier (no
     /// hardcoded gate, enforced at the producer like [`Self::fact_type`]).
     /// `high` = "must be known in every interaction" → routed to the actor-wiki
-    /// `index.md` base context.
+    /// always-on base context on the subject's card.
     pub salience: Option<String>,
     /// The page the ingest classifier
     /// proposed this fact be placed on (a slug or `.md` path). A *hint*, not the
@@ -153,9 +151,6 @@ pub struct FactIndexRow {
     /// `lista`) that seeds a freshly-created page's testata. `None` =
     /// unproposed. See [`Self::target_page`].
     pub style: Option<String>,
-    /// Proposed "cosa ci va dentro" one-liner that seeds the page's
-    /// testata description. `None` = unproposed. See [`Self::target_page`].
-    pub page_description: Option<String>,
     /// Provenance of an extracted fact: the media-catalog id or URL of the
     /// source document (document ingest).
     /// `None` for ordinary conversational captures. DB-authoritative
@@ -176,7 +171,7 @@ impl FactIndexRow {
     /// relate to others* (`fact_type = "bio"` AND `salience = "high"`).
     ///
     /// The identity core is the small always-on set the ingest classifier
-    /// routes to the subject's `index.md`: name/aliases, **role(s) and the
+    /// routes to the subject's card: name/aliases, **role(s) and the
     /// people they are tied to (relations)**, birthdate, place, contacts.
     /// It is deliberately **stable** — automatic background reorganisation
     /// (the REM dedup revisor) must never silently retire one of these
@@ -237,9 +232,6 @@ pub struct NewFact {
     pub target_page: Option<String>,
     /// Ingest-proposed page style. See [`FactIndexRow::style`].
     pub style: Option<String>,
-    /// Ingest-proposed page description. See
-    /// [`FactIndexRow::page_description`].
-    pub page_description: Option<String>,
     /// Source-document provenance. See [`FactIndexRow::source_ref`].
     /// `None` for conversational captures (the overwhelmingly common case).
     pub source_ref: Option<String>,
@@ -425,18 +417,18 @@ where
             fact_id, wiki_id, source_path, region_start, region_end, "text",
             embedding, embedding_dim, subject_id, allow_ids, sender_id,
             fact_type, topics, created_at, updated_at,
-            valid_from, valid_to, target_page, style, page_description,
+            valid_from, valid_to, target_page, style,
             salience, source_ref, authored_refs, recall_count_30d
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         ON CONFLICT(fact_id) DO NOTHING"#
     } else {
         r#"INSERT INTO fact_index (
             fact_id, wiki_id, source_path, region_start, region_end, "text",
             embedding, embedding_dim, subject_id, allow_ids, sender_id,
             fact_type, topics, created_at, updated_at,
-            valid_from, valid_to, target_page, style, page_description,
+            valid_from, valid_to, target_page, style,
             salience, source_ref, authored_refs, recall_count_30d
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)"#
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)"#
     };
 
     let res = sqlx::query(sql)
@@ -459,7 +451,6 @@ where
         .bind(&fact.valid_to)
         .bind(&fact.target_page)
         .bind(&fact.style)
-        .bind(&fact.page_description)
         .bind(&fact.salience)
         .bind(&fact.source_ref)
         .bind(&authored_refs_json)
@@ -1350,7 +1341,7 @@ pub async fn latest_page_activity(
 /// globally. A file may legitimately hold regions whose home `wiki_id`
 /// differs from the wiki that owns the file — the narrative compiler
 /// weaves a related fact from another wiki into a page (a `famiglia` fact
-/// cited inside a person's `index.md`). Keying on `wiki_id` too would drop
+/// cited inside a person's card). Keying on `wiki_id` too would drop
 /// those foreign-home regions from the map, so they fall through to the
 /// attribute-less inline marker and redact for **everyone**, including the
 /// fact's own subject/sender. `fact_id` is the primary key, so widening the
@@ -1548,6 +1539,35 @@ pub async fn find_active_in_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<Vec
     rows.into_iter().map(decode_row).collect()
 }
 
+/// Fetch every active row **about one subject**, across the whole forest,
+/// ordered by `created_at` ascending — the input set for the duplicate check.
+///
+/// **The scope is the subject, never the wiki** (founder, 2026-08-18: *«le wiki
+/// e sottowiki sono struttura … non sono da considerarsi contenitori stagni, un
+/// fatto può essere duplicato anche tra più wiki, non ha senso controllare i
+/// doppioni solo in una wiki»*). A duplicate is the same claim about the same
+/// subject; where each copy happens to be filed is free and provisional — the
+/// wiki is derived from the subject at capture and re-homed later by the
+/// placement stage or by REM's refile sweep, while the subject is decided once
+/// and never moves. Drawing candidates from one wiki therefore missed every
+/// duplicate that had drifted, or been captured, into another.
+///
+/// Backed by `idx_fact_subject` (migration 0070).
+///
+/// # Errors
+///
+/// `sqlx::Error` + decode errors on the embedding / JSON columns.
+pub async fn find_active_by_subject(
+    pool: &SqlitePool,
+    subject: &Principal,
+) -> Result<Vec<FactIndexRow>> {
+    let rows = sqlx::query_as::<_, RawFactRow>(SELECT_ACTIVE_BY_SUBJECT)
+        .bind(subject.to_string())
+        .fetch_all(pool)
+        .await?;
+    rows.into_iter().map(decode_row).collect()
+}
+
 /// Whether `wiki_id` **surfaces** to a reader under derived visibility.
 ///
 /// The enforcement of the
@@ -1611,7 +1631,7 @@ pub async fn find_recently_contradicted(
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
-           target_page, style, page_description, salience, source_ref, authored_refs
+           target_page, style, salience, source_ref, authored_refs
       FROM fact_index
      WHERE wiki_id = ?
        AND deleted_at IS NULL
@@ -1659,7 +1679,7 @@ pub async fn find_due_between(
                   fact_type, topics, created_at, updated_at, superseded_at,
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
-                  target_page, style, page_description, salience, source_ref, authored_refs
+                  target_page, style, salience, source_ref, authored_refs
              FROM fact_index
             WHERE superseded_at IS NULL AND deleted_at IS NULL
               AND valid_to IS NOT NULL
@@ -1691,27 +1711,6 @@ pub async fn count_active_in_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<i6
            WHERE wiki_id = ? AND superseded_at IS NULL AND deleted_at IS NULL",
     )
     .bind(wiki_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(n)
-}
-
-/// Count how many active rows are homed on one page.
-///
-/// `source_path` is the workdir-relative `wikis/<id>/…` form the rows
-/// store. Used by the map writer as its refusal test: a page the fact
-/// index still points at is a page whose bytes are load-bearing, whatever
-/// its name.
-///
-/// # Errors
-///
-/// As [`sqlx::Error`].
-pub async fn count_active_on_page(pool: &SqlitePool, source_path: &str) -> Result<i64> {
-    let n: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM fact_index
-           WHERE source_path = ? AND superseded_at IS NULL AND deleted_at IS NULL",
-    )
-    .bind(source_path)
     .fetch_one(pool)
     .await?;
     Ok(n)
@@ -1895,7 +1894,7 @@ pub async fn find_by_filters(
                   fact_type, topics, created_at, updated_at, superseded_at,
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
-                  target_page, style, page_description, salience, source_ref, authored_refs
+                  target_page, style, salience, source_ref, authored_refs
              FROM fact_index"#,
     );
 
@@ -2028,12 +2027,12 @@ pub async fn find_behaviour_rules(
                   fact_type, topics, created_at, updated_at, superseded_at,
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
-                  target_page, style, page_description, salience, source_ref, authored_refs
+                  target_page, style, salience, source_ref, authored_refs
              FROM fact_index
             WHERE wiki_id = ?
               AND subject_id = ?
               AND superseded_at IS NULL AND deleted_at IS NULL
-              AND source_path LIKE ?
+              AND (source_path LIKE ? OR source_path LIKE ?)
               AND (valid_from IS NULL OR datetime(valid_from) <= datetime(?))
               AND (valid_to IS NULL OR datetime(valid_to) > datetime(?))
             ORDER BY created_at DESC"#,
@@ -2045,7 +2044,15 @@ pub async fn find_behaviour_rules(
     let rows = sqlx::query_as::<_, RawFactRow>(&sql)
         .bind(wiki_id)
         .bind(subject.to_string())
+        // Both spellings: the marked name every write produces, and the bare
+        // one a row written before 2026-08-18 carries — a rule the channel
+        // stopped finding would sit on disk unread. Same stance as
+        // `wiki::is_rules_page`.
         .bind(format!("%/{}", crate::wiki::RULES_FILENAME))
+        .bind(format!(
+            "%/{}",
+            crate::wiki::RULES_FILENAME.trim_start_matches('@')
+        ))
         .bind(valid_at)
         .bind(valid_at)
         .fetch_all(pool)
@@ -2061,22 +2068,6 @@ pub async fn find_behaviour_rules(
         }
     }
     Ok(out)
-}
-
-/// Return the set of source paths the index knows about under the
-/// given wiki. Used by re-index housekeeping ("which files do I
-/// already cover").
-///
-/// # Errors
-///
-/// As [`sqlx::Error`].
-pub async fn distinct_source_paths(pool: &SqlitePool, wiki_id: &str) -> Result<HashSet<String>> {
-    let rows: Vec<(String,)> =
-        sqlx::query_as("SELECT DISTINCT source_path FROM fact_index WHERE wiki_id = ?")
-            .bind(wiki_id)
-            .fetch_all(pool)
-            .await?;
-    Ok(rows.into_iter().map(|(s,)| s).collect())
 }
 
 /// Fetch every active (not superseded, not deleted) row whose
@@ -2492,11 +2483,13 @@ type ListPageAccumulator = std::collections::BTreeMap<(String, String), (Option<
 /// one that can be dropped without inventing a duplicate. Ties fall back to
 /// `(wiki_id, page)` so the result is stable for a given corpus.
 ///
-/// Both halves are needed and neither is redundant: `fact_index` holds the
-/// lists that already exist on disk, and `capture_buffer` holds a list
-/// created minutes ago that the light dream has not promoted yet. Serving
-/// only the first is precisely the gap that mints a second shopping list
-/// when someone adds two items in the same hour.
+/// `fact_index` alone is the whole inventory, because a list never waits: a
+/// `lista` item is written live — the page and the row together, in the turn
+/// that said it (founder, 2026-08-18: *«il classificatore si occupa delle
+/// liste, sia di crearle che di aggiungere/togliere/modificare elementi»*).
+/// Until then this query also unioned `capture_buffer`, to catch a list
+/// created minutes ago that the hourly promotion had not reached yet; that
+/// state cannot happen any more, and the buffer names no page to find one by.
 ///
 /// `principals` is [`crate::acl::reader_principals`] for the sender; an
 /// empty slice returns nothing rather than everything, because unlike a
@@ -2514,24 +2507,24 @@ pub async fn list_pages_readable_by(
         return Ok(Vec::new());
     }
     let acl_facts = readable_by_sql("fact_index", principals.len());
-    let acl_buffer = readable_by_sql("capture_buffer", principals.len());
     // `source_path` is the truth for a page that exists (a live-written list
-    // is compiled in place); `target_page` is the intent for one that does
-    // not yet. Both are selected and resolved in Rust — SQLite has no
-    // basename, and the precedence is a judgement, not a string operation.
+    // is compiled in place); `target_page` is the intent for a fact staged
+    // towards a page the compile has not built yet. Both are selected and
+    // resolved in Rust — SQLite has no basename, and the precedence is a
+    // judgement, not a string operation.
+    // The `holds` line comes from the PAGE's card (`page_card`), never from a
+    // fact: what belongs on a page is a property of the page (founder,
+    // 2026-08-18). A list whose page has no card yet simply has no `holds`.
     let sql = format!(
-        "SELECT wiki_id, source_path, target_page, page_description, updated_at \
+        "SELECT fact_index.wiki_id, fact_index.source_path, fact_index.target_page, \
+                page_card.description, fact_index.updated_at \
            FROM fact_index \
-          WHERE style = 'lista' AND superseded_at IS NULL AND deleted_at IS NULL \
-            AND {acl_facts} \
-          UNION ALL \
-         SELECT wiki_id, '', target_page, page_description, captured_at \
-           FROM capture_buffer \
-          WHERE style = 'lista' AND status = 'buffered' \
-            AND {acl_buffer}"
+           LEFT JOIN page_card ON page_card.source_path = fact_index.source_path \
+          WHERE fact_index.style = 'lista' AND fact_index.superseded_at IS NULL \
+            AND fact_index.deleted_at IS NULL AND {acl_facts}"
     );
     let mut q = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, String)>(&sql);
-    for _ in 0..6 {
+    for _ in 0..3 {
         for p in principals {
             q = q.bind(p.clone());
         }
@@ -2585,14 +2578,13 @@ pub async fn list_pages_readable_by(
 /// `sqlx::Error`.
 pub async fn count_list_pages_in_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<usize> {
     let rows = sqlx::query_as::<_, (String, Option<String>)>(
+        // `fact_index` alone: a `lista` never waits in the buffer — it is
+        // written live, page and row together, in the turn. See
+        // [`list_pages_readable_by`].
         "SELECT source_path, target_page FROM fact_index \
           WHERE style = 'lista' AND superseded_at IS NULL AND deleted_at IS NULL \
-            AND wiki_id = ? \
-         UNION ALL \
-         SELECT '', target_page FROM capture_buffer \
-          WHERE style = 'lista' AND status = 'buffered' AND wiki_id = ?",
+            AND wiki_id = ?",
     )
-    .bind(wiki_id)
     .bind(wiki_id)
     .fetch_all(pool)
     .await?;
@@ -2603,16 +2595,17 @@ pub async fn count_list_pages_in_wiki(pool: &SqlitePool, wiki_id: &str) -> Resul
     Ok(names.len())
 }
 
-/// The compiled `source_path` wins when it points at a real page: that is
-/// where the list actually is. A row still sitting in the buffer — or one
-/// promoted but not yet compiled, whose `source_path` is the captures
-/// journal — falls back to the proposed `target_page`. Reserved pages are
-/// refused: none of them is a list a capture may be aimed at.
+/// The `source_path` wins: it is where the list actually is, and since
+/// 2026-08-18 a row never has anything else — a fact is written knowing its
+/// page. `target_page` is the fallback for a row written before that, or one
+/// whose address is an engine file (`_`-prefixed, so never a list). Reserved
+/// pages are refused either way: none of them is a list a capture may be
+/// aimed at.
 fn list_page_name(source_path: &str, target_page: Option<&str>) -> Option<String> {
     let from_source = std::path::Path::new(source_path)
         .file_name()
         .and_then(|n| n.to_str())
-        .filter(|n| *n != crate::wiki::CAPTURES_FILENAME)
+        .filter(|n| !n.starts_with('_'))
         .map(str::to_owned);
     let name = from_source.or_else(|| {
         std::path::Path::new(target_page?)
@@ -2826,9 +2819,23 @@ const SELECT_ALL_COLUMNS_WHERE_ID: &str = r#"
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
-           target_page, style, page_description, salience, source_ref, authored_refs
+           target_page, style, salience, source_ref, authored_refs
       FROM fact_index
      WHERE fact_id = ?
+"#;
+
+const SELECT_ACTIVE_BY_SUBJECT: &str = r#"
+    SELECT fact_id, wiki_id, source_path, region_start, region_end,
+           "text", embedding, embedding_dim, subject_id, allow_ids, sender_id,
+           fact_type, topics, created_at, updated_at, superseded_at,
+           superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
+           recall_count_30d, valid_from, valid_to, decay_reason,
+           target_page, style, salience, source_ref, authored_refs
+      FROM fact_index
+     WHERE subject_id = ?
+       AND superseded_at IS NULL
+       AND deleted_at IS NULL
+     ORDER BY created_at ASC
 "#;
 
 const SELECT_ACTIVE_IN_WIKI: &str = r#"
@@ -2837,7 +2844,7 @@ const SELECT_ACTIVE_IN_WIKI: &str = r#"
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
-           target_page, style, page_description, salience, source_ref, authored_refs
+           target_page, style, salience, source_ref, authored_refs
       FROM fact_index
      WHERE wiki_id = ?
        AND superseded_at IS NULL
@@ -2851,7 +2858,7 @@ const SELECT_ACTIVE_BY_SOURCE_PATH: &str = r#"
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
-           target_page, style, page_description, salience, source_ref, authored_refs
+           target_page, style, salience, source_ref, authored_refs
       FROM fact_index
      WHERE source_path = ?
        AND superseded_at IS NULL
@@ -2889,7 +2896,6 @@ struct RawFactRow {
     decay_reason: Option<String>,
     target_page: Option<String>,
     style: Option<String>,
-    page_description: Option<String>,
     salience: Option<String>,
     source_ref: Option<String>,
     authored_refs: Option<String>,
@@ -2970,7 +2976,6 @@ fn decode_row(raw: RawFactRow) -> Result<FactIndexRow> {
         salience: raw.salience,
         target_page: raw.target_page,
         style: raw.style,
-        page_description: raw.page_description,
         source_ref: raw.source_ref,
         authored_refs,
     })
@@ -3043,7 +3048,6 @@ mod tests {
             // classifier placement proposal to carry.
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         }
@@ -3053,25 +3057,39 @@ mod tests {
 
     /// The inventory answers the one question the classifier cannot answer
     /// from anything else in its prompt: what is the shopping list called.
-    /// It must therefore see a `lista` page wherever it currently is — on
-    /// disk, or still sitting in the buffer minutes after it was created —
-    /// and it must obey the ACL, because a list is a page like any other.
+    /// One entry per list page however many items sit on it, prose excluded,
+    /// and the ACL obeyed — a list is a page like any other, and a list
+    /// somebody may not read is not offered to them as a destination.
     #[tokio::test]
-    async fn list_inventory_serves_compiled_and_buffered_lists_and_honours_the_acl() {
+    async fn list_inventory_serves_one_entry_per_page_and_honours_the_acl() {
         let pool = make_pool().await;
 
         // A compiled list of the family's, readable by the family.
         let mut shopping = sample_new_fact(SAMPLE_UUID_V7_1, "famiglia", "group:famiglia", "latte");
         shopping.source_path = "wikis/famiglia/spesa.md".to_owned();
         shopping.style = Some("lista".to_owned());
-        shopping.page_description = Some("what the family still needs to buy".to_owned());
         insert_if_absent(&pool, &shopping).await.unwrap();
+        // The `holds` line is the PAGE's card, read from `page_card` — not a
+        // column repeated on each of the page's facts.
+        crate::page_card::upsert(
+            &pool,
+            &crate::page_card::NewPageCard {
+                source_path: "wikis/famiglia/spesa.md".to_owned(),
+                wiki_id: "famiglia".to_owned(),
+                description: Some("what the family still needs to buy".to_owned()),
+                keywords: Vec::new(),
+                style: Some("lista".to_owned()),
+                file_mtime_ms: None,
+                file_size: None,
+            },
+        )
+        .await
+        .unwrap();
 
         // A second item on the SAME list — one page, not two entries.
         let mut bread = sample_new_fact(SAMPLE_UUID_V7_2, "famiglia", "group:famiglia", "pane");
         bread.source_path = "wikis/famiglia/spesa.md".to_owned();
         bread.style = Some("lista".to_owned());
-        bread.page_description = None;
         insert_if_absent(&pool, &bread).await.unwrap();
 
         // A prose fact on the same wiki — not a list, must not appear.
@@ -3152,22 +3170,70 @@ mod tests {
         );
     }
 
-    /// A list created minutes ago is still in the buffer, and its fact's
-    /// `source_path` is the captures journal, not a page. Serving only the
-    /// compiled half is exactly the gap that mints a second shopping list
-    /// when someone adds two items inside one light-dream interval.
+    /// A list added to minutes ago is offered immediately, and it does not
+    /// need the buffer to be: a `lista` item is written live, page and row
+    /// together, in the turn that said it. What is still waiting in the
+    /// buffer names no page at all — that is what waiting means — so the
+    /// inventory is `fact_index` and nothing else.
+    ///
+    /// The gap this guards is the one that mints a SECOND shopping list when
+    /// somebody adds two items in a row: a list the classifier cannot see is
+    /// a list it recreates.
     #[tokio::test]
-    async fn list_inventory_reaches_a_list_that_is_still_pending() {
+    async fn list_inventory_is_served_by_the_live_write_not_by_the_buffer() {
         let pool = make_pool().await;
+        // What the turn wrote a minute ago: the fact IS on the page.
+        insert_if_absent(
+            &pool,
+            &NewFact {
+                fact_id: FactId::parse(SAMPLE_UUID_V7_1).unwrap(),
+                wiki_id: "famiglia".into(),
+                source_path: "wikis/famiglia/spesa.md".into(),
+                region_start: None,
+                region_end: None,
+                text: "latte".into(),
+                embedding: vec![0.0; 4],
+                subject_id: "group:famiglia".parse().unwrap(),
+                allow_ids: Vec::new(),
+                sender_id: Some("user:bob".parse().unwrap()),
+                fact_type: None,
+                topics: Vec::new(),
+                valid_from: None,
+                valid_to: None,
+                target_page: Some("spesa.md".into()),
+                style: Some("lista".into()),
+                salience: None,
+                source_ref: None,
+                authored_refs: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        // The list's `holds` line is the PAGE's card.
+        crate::page_card::upsert(
+            &pool,
+            &crate::page_card::NewPageCard {
+                source_path: "wikis/famiglia/spesa.md".to_owned(),
+                wiki_id: "famiglia".to_owned(),
+                description: Some("what the family still needs to buy".to_owned()),
+                keywords: Vec::new(),
+                style: Some("lista".to_owned()),
+                file_mtime_ms: None,
+                file_size: None,
+            },
+        )
+        .await
+        .unwrap();
+        // A claim waiting in the buffer, `lista`-styled or not, contributes
+        // nothing: it has no destination to contribute.
         sqlx::query(
             "INSERT INTO capture_buffer \
-               (capture_id, wiki_id, target_page, body, subject_id, allow_ids, sender_id, \
-                status, captured_at, source_kind, style, page_description) \
-             VALUES (?, 'famiglia', 'spesa.md', 'latte', 'group:famiglia', '[]', \
-                     'user:bob', 'buffered', '2026-08-06T10:00:00Z', 'ingest', \
-                     'lista', 'what the family still needs to buy')",
+               (capture_id, body, subject_id, allow_ids, sender_id, \
+                status, captured_at, source_kind, style) \
+             VALUES (?, 'pane', 'group:famiglia', '[]', \
+                     'user:bob', 'buffered', '2026-08-06T10:00:00Z', 'ingest', 'lista')",
         )
-        .bind(SAMPLE_UUID_V7_1)
+        .bind(SAMPLE_UUID_V7_2)
         .execute(&pool)
         .await
         .unwrap();
@@ -3177,6 +3243,10 @@ mod tests {
         assert_eq!(pages.len(), 1, "{pages:?}");
         assert_eq!(pages[0].page, "spesa.md");
         assert_eq!(pages[0].wiki_id, "famiglia");
+        assert_eq!(
+            pages[0].description.as_deref(),
+            Some("what the family still needs to buy")
+        );
     }
 
     /// A reserved page is never a destination a classifier may name, so it is
@@ -3189,12 +3259,12 @@ mod tests {
             "a compiled page is where the list actually is"
         );
         assert_eq!(
-            list_page_name("wikis/famiglia/_captures.md", Some("spesa.md")),
+            list_page_name("wikis/famiglia/_meta.md", Some("spesa.md")),
             Some("spesa.md".to_owned()),
-            "a promoted-but-uncompiled fact falls back to the proposed page"
+            "an engine file is never a list — fall back to the proposed page"
         );
-        assert_eq!(list_page_name("", Some("notes.md")), None);
-        assert_eq!(list_page_name("wikis/famiglia/profile.md", None), None);
+        assert_eq!(list_page_name("", Some("@notes.md")), None);
+        assert_eq!(list_page_name("wikis/famiglia/@profile.md", None), None);
         assert_eq!(list_page_name("", None), None);
     }
 
@@ -3509,14 +3579,14 @@ mod tests {
         // Open rule (oldest), closed rule, other-subject rule, and a NEWEST
         // non-rules crowder under the same subject.
         let mut open_rule = sample_new_fact(SAMPLE_UUID_V7_1, "agent", "user:bob", "Dammi del tu.");
-        open_rule.source_path = "wikis/agent/rules.md".to_owned();
+        open_rule.source_path = "wikis/agent/@rules.md".to_owned();
         let mut closed_rule =
             sample_new_fact(SAMPLE_UUID_V7_2, "agent", "user:bob", "Chiamami Sam.");
-        closed_rule.source_path = "wikis/agent/rules.md".to_owned();
+        closed_rule.source_path = "wikis/agent/@rules.md".to_owned();
         closed_rule.valid_to = Some("2026-07-01T00:00:00Z".to_owned()); // past `at`
         let mut foreign_rule =
             sample_new_fact(SAMPLE_UUID_V7_3, "agent", "user:alice", "Dai del lei.");
-        foreign_rule.source_path = "wikis/agent/rules.md".to_owned();
+        foreign_rule.source_path = "wikis/agent/@rules.md".to_owned();
         let crowder = sample_new_fact(SAMPLE_UUID_V7_4, "agent", "user:bob", "self-fact");
         for f in [&open_rule, &closed_rule, &foreign_rule, &crowder] {
             insert(&pool, f).await.expect("insert");
@@ -4086,7 +4156,7 @@ mod tests {
     async fn insert_preserves_salience() {
         // An always-on fact (identity / health) carries `high`, and the
         // insert round-trips it so it can be routed to the actor-wiki
-        // index.md base context.
+        // always-on base context.
         let pool = make_pool().await;
         let mut f = sample_new_fact(SAMPLE_UUID_V7_1, "galadriel", "user:galadriel", "coeliac");
         f.salience = Some("high".to_owned());
@@ -4345,21 +4415,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn distinct_source_paths_returns_set() {
-        let pool = make_pool().await;
-        let mut f1 = sample_new_fact(SAMPLE_UUID_V7_1, "alice", "user:alice", "a");
-        let mut f2 = sample_new_fact(SAMPLE_UUID_V7_2, "alice", "user:alice", "b");
-        f1.source_path = "wikis/alice/intro.md".into();
-        f2.source_path = "wikis/alice/recipes.md".into();
-        insert(&pool, &f1).await.unwrap();
-        insert(&pool, &f2).await.unwrap();
-        let paths = distinct_source_paths(&pool, "alice").await.expect("paths");
-        assert_eq!(paths.len(), 2);
-        assert!(paths.contains("wikis/alice/intro.md"));
-        assert!(paths.contains("wikis/alice/recipes.md"));
-    }
-
-    #[tokio::test]
     async fn count_active_in_wiki_ignores_tombstones() {
         let pool = make_pool().await;
         let f1 = sample_new_fact(SAMPLE_UUID_V7_1, "alice", "user:alice", "a");
@@ -4524,7 +4579,7 @@ mod tests {
         let mut f1 = sample_new_fact(SAMPLE_UUID_V7_1, "alice", "user:alice", "a");
         f1.source_path = "wikis/alice/intro.md".into();
         let mut f2 = sample_new_fact(SAMPLE_UUID_V7_2, "alice", "user:alice", "b");
-        f2.source_path = "wikis/alice/notes.md".into();
+        f2.source_path = "wikis/alice/@notes.md".into();
         // A row that must NOT match — sibling with shared prefix bytes.
         let mut f3 = sample_new_fact(SAMPLE_UUID_V7_3, "alice-bis", "user:alice", "c");
         f3.source_path = "wikis/alice-bis/intro.md".into();
@@ -4540,7 +4595,7 @@ mod tests {
         let row1 = find_by_id(&pool, &f1.fact_id).await.unwrap().unwrap();
         assert_eq!(row1.source_path, "wikis/bob/family/alice/intro.md");
         let row2 = find_by_id(&pool, &f2.fact_id).await.unwrap().unwrap();
-        assert_eq!(row2.source_path, "wikis/bob/family/alice/notes.md");
+        assert_eq!(row2.source_path, "wikis/bob/family/alice/@notes.md");
         // The sibling stays untouched — its prefix differs after the trailing slash.
         let row3 = find_by_id(&pool, &f3.fact_id).await.unwrap().unwrap();
         assert_eq!(row3.source_path, "wikis/alice-bis/intro.md");

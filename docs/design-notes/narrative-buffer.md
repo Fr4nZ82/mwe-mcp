@@ -11,9 +11,12 @@ last_review: "2026-08-06"
 is the **write side** of the narrative compiler. For a
 **narrative** wiki, [`wiki_ingest_message`](ingest-pipeline.md) does not
 write the classified claim into the published `.md` page; it stages the
-claim in a per-wiki captures buffer and returns. The nightly compiler
-turns the buffer into prose later. This page documents the buffer write
-path and its captures-journal invariant, and the
+claim in the captures buffer and returns. The buffer is the queue of claims
+waiting to be **sorted and then written as prose**, and it holds **no
+destination**: which wiki and which page a claim belongs on is decided when
+the light dream reads the queue, against the memory as it stands at that
+moment (founder, 2026-08-18; migration `0071`). This page documents the buffer
+write path and the
 [light-dream drain](#promotion--the-light-dream) that promotes
 buffered captures into recallable facts; the prose compiler itself
 is still pending (see [Not yet](#not-yet)).
@@ -101,180 +104,126 @@ beside the fact's own fields, both optional and both absent-tolerant:
 - the **embedding**, computed once here over the marker-stripped body. It is
   read by the fresh recall slot and by promotion, which previously computed
   the same vector over the same text independently — the read side once per
-  turn per pending capture. It is deliberately **not** journalled: a binary
-  blob has no place in a human-readable journal and the vector is derivable,
-  so a journal-rebuilt row simply has none and its two readers recompute.
+  turn per pending capture. `NULL` is a first-class state: a transient
+  embedder fault must not cost the capture, and both readers fall back to
+  computing it.
 - the **origin fingerprint** — a hash of the conversational turn the claim
   was extracted from, so the fresh slot can avoid restating, as a fact,
   something the agent is already reading in the message that produced it (see
   [recall-pipeline.md](recall-pipeline.md#the-mid-range-bridge--the-fresh-slot)).
-  This one **is** journalled (`omsg=`): nothing else on the entry could
-  reconstruct it.
 
 The crucial asymmetry is the supersede. On the direct-write path a
 supersede happens *now* (it rewrites the page and chains the `fact_index`
 rows). On the standard-wiki path the supersede target is only **recorded as a
-hint** on the buffered capture; the actual supersede is deferred to
-[promotion time](#promotion--the-light-dream), because there is no
-`fact_index` row to chain against until the claim is promoted. Dedup is the
-same scan on both paths — one function, `capture::best_dedup_candidate`,
-called at write time on one and at promotion on the other.
+hint** on the waiting claim; the actual supersede is deferred to the
+[drain](#promotion--the-light-dream), because there is no `fact_index` row to
+chain against until the claim is written. Dedup is the same scan on both paths
+— one function, `capture::best_dedup_candidate`, called at write time on one
+and at screening time on the other.
 
 Either way the ingest call returns a `capture_id` that anchors the
 consumer's audit row — for standard wikis that id is the buffered
 capture's id (which, by the [id-stability](#id-stability) invariant, is
 also the future fact id).
 
-## The `_captures.md` journal — durable SSOT
+## The retired `_captures.md` journal
 
-The durable source of truth for a buffered capture is a per-wiki on-disk
-journal, `<wiki_dir>/_captures.md`
-([`crate::wiki::CAPTURES_FILENAME`](../../crates/mwe-core/src/wiki.rs)).
-This keeps the buffer aligned with the storage model: the engine
-index is authoritative for facts, pages are the human-readable surface,
-and every on-disk write is crash-safe. The journal is written through the same
-`atomic_write` protocol as every other page
-(tempfile + persist + parent-dir fsync + `WriteMarker` guard).
+Until 2026-08-18 every capture was **also** appended to a per-wiki on-disk
+journal, `<wiki_dir>/_captures.md`, declared the durable source of truth with
+the `capture_buffer` table as its rebuildable cache. It is gone: nothing writes
+one, nothing reads one, and `capture_buffer` is the source of truth.
 
-The file is YAML frontmatter followed by one entry per capture; each
-entry is delimited by HTML comments, with the body held verbatim
-(possibly multi-line) between an open and a close comment:
+**Why it went** (founder, 2026-08-18). The rule it embodied belongs to the
+file-authoritative era. The product's principle has since been the opposite —
+*authority follows the author*: engine-curated memory is DB-authoritative and
+the pages are its render, only consumer-authored documentation is
+file-authoritative ([memory-model.md](../concepts/memory-model.md)). A capture
+is engine-curated: the classifier extracted it. And the journal had stopped
+delivering what it claimed:
 
-```markdown
----
-kind: capture_journal
-wiki_id: alice
----
+- **Every capture rewrote the whole file.** `append_entry` read the journal,
+  appended one entry and rewrote all of it atomically; the thousandth capture
+  rewrote a thousand entries.
+- **Nothing ever pruned it.** No rotation, no removal on promotion — entries
+  from months back, whose facts had long been compiled onto pages carrying the
+  same data inline, stayed for ever.
+- **It was written once and never updated.** Each entry carried a `status=`
+  attribute frozen at `buffered`: the light dream stamped promotion on the
+  table, never on the file. The declared source of truth was therefore stale
+  for every capture it had ever processed, while the real state lived in what
+  the doc called the cache.
+- **The five-minute safety-net reindex re-parsed all of it**, per wiki, to
+  re-insert rows that already existed.
 
-<!-- mwe-capture id=0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d40 ts=2026-05-31T10:00:00+00:00 page=index.md type=preference status=buffered subject=user:alice allow= sender=user:alice sup= topics=food vf=2026-05-31T10:00:00+00:00 vt= style=prosa desc=Cosa%20piace%20ad%20Alice -->
-Alice loves pasta.
-<!-- /mwe-capture -->
+What it did buy, honestly: between the capture and the compile, a claim's
+structured fields (subject, audience, sender, validity, type) existed nowhere
+on disk but the journal, since the page did not exist yet. That window is now
+covered the same way as everything else the DB holds — the tombstones of
+forgotten facts, the recall traces, the vectors, the buffer's own status — by
+the [workdir snapshot](../../crates/mwe-core/src/backup.rs), which takes the
+DB image and the file tree together precisely because neither reconstructs the
+other.
 
-<!-- mwe-capture id=0190f3c2-9b71-7d88-a4e0-7c2b9f0a1e22 ts=2026-05-31T10:01:12+00:00 page=recipes/dinner.md type=plan status=buffered subject=group:famiglia allow=user:bob sender=user:alice sup= topics=dinner vf=2026-05-31T10:01:12+00:00 vt=2026-06-05T19:00:00+00:00 style=prosa-tecnica desc=Cene%20coi%20Brandibuck -->
-Cena con i Brandibuck venerdì sera.
-<!-- /mwe-capture -->
-```
+A leftover `_captures.md` in an old workdir is inert: still excluded from
+`WikiHandle::list_pages`, from the reindex marker sweep and from the export,
+so it is never published, indexed or shipped. Deleting it by hand is safe.
 
-The open-comment attributes carry the classifier's full output: the
-capture `id`, the timestamp `ts`, the proposed `page`, the fact `type`,
-the lifecycle `status`, the `subject` / `allow` / `sender` ACL triple, the
-`sup` supersede hint, the `topics` CSV, and the per-fact validity
-interval `vf` / `vt` (`valid_from` / `valid_to`,
-ISO-8601, whitespace-free; empty `vt` = an OPEN horizon), and the ingest
-placement style axis `style` / `desc` (the proposed
-page `style` rides as a bare enum token; the free-text `page_description`
-is percent-escaped into `desc` so it stays one token in this
-whitespace-delimited list). Empty optional
-fields are written as bare `key=` (see `allow=`, `sup=`,
-`vt=` above). Because
-the comment grammar is structural, a body may not contain `{{`, `}}`, or
-`<!--`; `buffer_capture` rejects such a body with `BodyContainsReserved`
-(and an empty body with `EmptyBody`), mirroring the capture path's
-validation. As in `wiki_capture`, `sender` is always **materialized**: a
-claim whose classifier output names no distinct sender is written with
-`sender` equal to its `subject`, and the two stay separate attributes, so
-a later subject change never rebinds the original provenance. An empty
-`sender=` is the degenerate scrubbed state (a deleted user) and falls
-back to the subject at read.
+## The `capture_buffer` table — where a pending capture lives
 
-`subject=` names the fact's **subject** — who or what the claim is
-*about*, as distinct from `allow` (its audience) and `sender` (who
-captured it). The parser also accepts `owner=` for that attribute, and
-**always will**: this journal is the durable record a `rm engine.db`
-rebuild replays, so it holds entries written by every version the
-deployment has ever run, and the attribute is required — an entry
-carrying neither spelling is dropped whole by `parse_entry`, silently,
-with no warning and no counter. Withdrawing the alias would therefore
-not raise an error; it would report a clean rebuild that had lost facts.
-Nothing writes `owner=`, and an entry that somehow carries both is read
-as `subject=`.
+Migration 0031 adds the `capture_buffer` table; 0034 adds the `valid_from` /
+`valid_to` validity columns, 0035 the `style` column,
+0038 the `decay_reason` closure column, 0068 the `embedding` /
+`embedding_dim` / `origin_message_hash` staging columns, and **0071 takes the
+destination away** — `wiki_id` and `target_page` are gone, and with them the
+`idx_capture_buffer_wiki` index.
 
-## The `capture_buffer` table — a rebuildable index
+**The table is the source of truth for a pending capture**; there is no second
+copy of it anywhere. Its columns mirror the `fact_index` classifier/ACL columns
+so promotion can be a straight copy: `capture_id` (primary key), `body`,
+`subject_id`, `allow_ids` (JSON), `sender_id`, `fact_type`, `topics` (JSON),
+`supersede_hint`, `status`, `captured_at`, `processed_at`, `resolved_fact_id`,
+`source_kind`, `source_ref`, the validity interval `valid_from` / `valid_to`,
+and `style`.
 
-Migration 0031 adds the `capture_buffer` table; migration 0034 adds the
-`valid_from` / `valid_to` validity columns, 0035
-the `style` / `page_description` placement columns, 0038 the
-`decay_reason` closure column, and 0068 the `embedding` /
-`embedding_dim` / `origin_message_hash` staging columns.
-**It is a cache/index over the journal, not the SSOT.** Its columns mirror
-the `fact_index` classifier/ACL columns so promotion can be a straight copy:
-`capture_id` (primary key), `wiki_id`, `target_page`, `body`,
-`subject_id`, `allow_ids` (JSON), `sender_id`, `fact_type`, `topics`
-(JSON), `supersede_hint`, `status`, `captured_at`, `processed_at`,
-`resolved_fact_id`, `source_kind`, `source_ref`, the validity
-interval `valid_from` / `valid_to` (mirrored in the journal as `vf` /
-`vt`), and the placement style axis `style` / `page_description` (mirrored
-as `style` / `desc`) — all so `rm engine.db` + reindex regenerates them.
+Every one of those describes the **claim**. `style` is the closest thing to
+placement left, and it is not placement: it says what shape the *material* has
+— a list, technical prose, ordinary prose — never which page holds it. A page
+takes its style from the majority of the facts on it, so the arrow points the
+other way.
 
-The two staging columns divide on exactly that last test — *can a reindex
-rebuild it?*
+The page's **card** — the one-line `description:` saying what belongs on it —
+went with the destination (migration `0072`): it is a property of the page, it
+lives on the page's testata and in `page_card`, and a claim with no page has
+none to describe.
 
-- `embedding` / `embedding_dim` **cannot go in the journal** (a binary blob
-  in a human-readable file) and **do not need to**: the vector is derivable
-  from the body. A rebuilt row is `NULL` here, and its two readers — the
-  fresh recall slot and `promote_one` — compute it, which is what both did
-  before the column existed. Same DB-only durability class as `status` /
-  `processed_at` / `decay_reason`.
-- `origin_message_hash` **is** journalled, as the `omsg=` attribute, for the
-  opposite reason: it is a fingerprint of the conversational turn the claim
-  came from, and nothing on the entry could reconstruct it. Absent (an older
-  journal) → `None`, and the capture simply never gets suppressed as
-  already-in-context — the safe direction, since showing a fact twice costs
-  characters and hiding one costs the fact.
+`decay_reason` is the one **post-capture mutation**: it stays `NULL` at buffer
+time (a fresh capture is alive) and is stamped — together with the closing
+`valid_to` — only when a **closure gesture lands while the target is still
+buffered** (the same-day flow: the item is bought before the light dream
+promotes it; `capture_buffer::close_validity`).
+[`promote_one`](../../crates/mwe-core/src/dream_light.rs) stamps the staged
+reason onto the freshly promoted fact right after the insert (the insert itself
+keeps its fresh-fact invariant).
 
-`decay_reason` is the one **post-capture mutation** among them: it stays
-`NULL` at buffer time (a fresh capture is alive) and is stamped — together
-with the closing `valid_to` — only when a **closure gesture lands while
-the target is still buffered** (the same-day flow: the item is bought
-before the light dream promotes it; `capture_buffer::close_validity`).
-Like `status` / `processed_at` it is DB-only, never written back to the
-journal: a full `rm engine.db` rebuild regenerates the row as alive, the
-normal reindex (`ON CONFLICT … DO NOTHING`) keeps the closed row.
-[`promote_one`](../../crates/mwe-core/src/dream_light.rs) stamps the
-staged reason onto the freshly promoted fact right after the insert (the
-insert itself keeps its fresh-fact invariant).
-Two indexes serve
-the drain: `idx_capture_buffer_wiki` (per-wiki lookup) and a partial
-`idx_capture_buffer_pending` over `status` filtered
-`WHERE status = 'buffered'` (the pending backlog). The `status` column is
-one of `buffered` / `promoted` / `skipped_dup`, decoded through
-`CaptureStatus`.
+`embedding` / `embedding_dim` stage the vector computed once at buffer time,
+over the marker-stripped body; both readers — the fresh recall slot and
+`promote_one` — recompute when it is `NULL`, so the column is an optimisation
+and never part of what makes a capture valid. `origin_message_hash` fingerprints
+the conversational turn the claim came from, so a capture already quoted in the
+current context is not offered back to it.
 
-Note there is **no `journal_path` column**: a capture for wiki `W` always
-lives in `W`'s `_captures.md`, so the journal location is derived from
-the tree, never stored.
+One index serves the drain: the partial `idx_capture_buffer_pending` over
+`status` filtered `WHERE status = 'buffered'`. The `status` column is one of
+`buffered` / `promoted` / `skipped_dup`, decoded through `CaptureStatus`.
 
-The read side exposes `find_all_buffered` (the light-dream drain query,
-oldest first, capped at the cycle limit), `find_buffered_in_wiki`
-(per-wiki lookup), and `count_buffered` (the global pending backlog — the
-threshold signal for the light dream). The write side adds `mark_promoted`
-and `mark_skipped_dup`, the two terminal status transitions the light
-dream stamps.
-
-### Captures-journal invariant
-
-The table is regenerable from the journals alone. `buffer_capture`
-writes the journal entry first, then upserts the table row with
-`ON CONFLICT(capture_id) DO NOTHING`, so the journal is the durable
-record and the row is a derived projection. On a cold start,
-[`reindex::reindex_full`](reindex-pipeline.md) calls
-`capture_buffer::reindex_capture_journal` per wiki, which reads
-`_captures.md`, parses each entry, and re-inserts the rows (idempotently;
-malformed individual entries are skipped, not fatal). The practical
-consequence: **`rm engine.db` followed by `serve` regenerates every
-buffered row from disk** — a guarantee specific to the buffer: the
-published `fact_index` is NOT rebuilt from disk (the DB is the
-authoritative fact store; see
-[`reindex-pipeline.md`](reindex-pipeline.md)), which is why buffered
-captures get this extra durability leg while published facts get
-backups.
-
-Conversely, the journal must never be mistaken for published content.
-`_captures.md` is excluded from
-`WikiHandle::list_pages` and from the reindex
-marker sweep: `reindex::is_capture_journal` guards both
-`enumerate_pages` and `reindex_file`, so the journal's entries are never
-indexed as facts and never surface as a page.
+The read side exposes `find_all_buffered` (the light-dream drain query, oldest
+first, capped at the cycle limit), `find_recent_buffered` (newest first — every
+reader that asks *what was just said and is not on a page yet*: the recall
+fresh slot, the dashboard's consolidating list), and `count_buffered` (the
+global pending backlog — the threshold signal for the light dream). There is no
+per-wiki query, and there cannot be one: a buffered capture is in no wiki. The
+write side adds `mark_promoted` and `mark_skipped_dup`, the two terminal status
+transitions the light dream stamps.
 
 ## Id stability
 
@@ -289,16 +238,24 @@ claim landed" without re-reading prose.
 
 ## Promotion — the light dream
 
-The buffer's read side is drained by the **light dream**,
-[`mwe-core::dream_light::run_light_cycle`](../../crates/mwe-core/src/dream_light.rs)
-— the frequent, cheap half of the "two dream" cadence (the
-nightly REM full reorg, [`rem::run_cycle`](rem-cycle.md), is the other).
-It promotes each `buffered` capture into a `fact_index` row, after which
-the capture is **recallable**. Promotion is fully deterministic: it
-embeds and copies, applies the classifier's recorded decision, and never
-calls an LLM. Semantic judgement is left to the REM night.
+The buffer's read side is drained by the **light dream**
+([`mwe-core::dream_light`](../../crates/mwe-core/src/dream_light.rs)) — the
+frequent, cheap half of the "two dream" cadence (the nightly REM full reorg,
+[`rem::run_cycle`](rem-cycle.md), is the other). It runs in **two halves with
+the compilation plan between them**, because a claim becomes a fact only once
+somebody has decided which page it goes on:
 
-Per buffered capture, in order:
+```text
+screen_queue → build_wiki_plan → materialise → compile_dirty_pages
+ (dedup)        (which page?)     (the rows)      (the prose)
+```
+
+Both halves are fully deterministic — they embed, copy, and apply the
+classifier's recorded decision, and never call an LLM. Semantic judgement is
+left to the placement stage and to the REM night.
+
+Per waiting claim, in order — steps 1 in `screen_queue`, steps 2-4 in
+`materialise`:
 
 1. **Dedup skip — the direct path's own scan, deferred.** The same
    jaccard 6-gram scan a live
@@ -319,17 +276,28 @@ Per buffered capture, in order:
    one fragment's subject is never folded into another principal's. The
    capture is excluded from its own comparison, so a retry after a
    partial promotion does not skip a capture against the fact it itself
-   minted. Still no LLM here — the scan is pure CPU. A fold is also the
+   minted.
+
+   **And against the other claims in the same queue.** None of them is a
+   `fact_index` row yet — they become rows only after the plan — so the DB scan
+   cannot see them, and two identical claims arriving in one interval would
+   both be written. The intra-queue comparison uses the same jaccard 6-gram
+   over the marker-stripped body, the same audience test (`same_audience`), and
+   the same embed-set guard.
+
+   Still no LLM here — the scan is pure CPU. A fold is also the
    **offline half of the restated-known-fact miss signal**: when the
    buffered row carries its turn's `recall_log_id` linkage and that turn
    never surfaced the survivor, one `recall_misses` row lands
    (best-effort telemetry — see
    [recall-pipeline.md](recall-pipeline.md#the-hindsight-log--the-judge-free-miss-signal)).
-2. **Embed + insert.** Otherwise the body is embedded (bge-m3) and
-   inserted through
-   [`fact_index::insert_if_absent`](capture-and-dedup.md) as a fact whose
-   `fact_id` **is** the `capture_id` — the [id-stability](#id-stability)
-   invariant made concrete.
+2. **Embed + insert, on the page the plan chose.** Otherwise the body is
+   embedded (bge-m3 — normally already staged at buffer time) and inserted
+   through [`fact_index::insert_if_absent`](capture-and-dedup.md) as a fact
+   whose `fact_id` **is** the `capture_id` — the
+   [id-stability](#id-stability) invariant made concrete — addressed to
+   `wikis/<wiki>/<page>`, the page the plan just gave it. A claim the plan
+   could not place is **not** inserted: it keeps waiting.
 3. **Supersede hint.** If the buffered capture carried a `supersede_hint`
    (the classifier's `supersede_target`, recorded at ingest) and that
    target fact is **still active**, it is marked superseded by the new
@@ -345,7 +313,7 @@ Per buffered capture, in order:
    (`resolved_fact_id` = the new `capture_id`) or `skipped_dup`.
 
 `LightPolicy` caps one cycle at `max_promotions_per_cycle` captures (a
-cost guard on the embedder) and carries the promotion-time
+cost guard on the embedder) and carries the
 `dedup_threshold` (default `recall::DEFAULT_DEDUP_THRESHOLD`, the same
 knob as the direct path's `CaptureRequest::dedup_threshold`); the
 overflow stays `buffered` for the next cycle. The cycle returns a `LightCycleReport`
@@ -355,26 +323,40 @@ that vanished between buffering and promotion, leaves that capture
 `buffered` and is collected into `errors`; only infrastructure failures
 (DB, tree walk) bubble and abort the cycle.
 
-### Where the promoted-but-uncompiled fact lives
+### A fact is born knowing its page
 
-A fact promoted by the light dream has **no published page yet** — the
-Cronista writes pages later. So its `source_path` points at the
-wiki's `_captures.md` journal and its `region_start` / `region_end`
-offsets are `NULL`. Because the journal is excluded from the reindex
-marker sweep ([`reindex::is_capture_journal`](reindex-pipeline.md)),
-these facts are never orphaned by a page reindex; recall serves them
-straight from `fact_index.text`. When the Cronista compiles a fact into a
-page it repoints `source_path` + offsets onto the published `.md`.
+There is no *promoted-but-unplaced* state any more, and there is no phantom
+file to name it with (migration `0072`, founder 2026-08-18: *«è illogico
+scriverci `_pending.md`, un file che non esiste; io credo sia giusto scrivere
+l'entry nel db dei fatti quando si è già deciso dove mettere il fatto in
+attesa, parallelamente alla scrittura sulla prosa»*).
+
+The three steps run in this order, with the compilation plan in the middle:
+
+1. **`screen_queue`** — the claims minus the duplicates, projected for the plan
+   with no page.
+2. **`build_wiki_plan`** — the placement stage judges them beside the facts
+   already on pages, and gives each one a page.
+3. **`materialise`** — each placed claim becomes a `fact_index` row addressed
+   to `wikis/<wiki>/<page>`, moments before the compile writes that page.
+
+So a row's `source_path` is always a real page's, from birth. What it does *not*
+have yet is `region_start` / `region_end`: those stay `NULL` until the compile
+writes the page and `repoint_facts` stamps them — the same *pending render*
+state a live capture passes through between its insert and its page write.
+Recall serves such a fact straight from `fact_index.text`, and the reindex
+existence sweep exempts offset-less rows.
+
+A claim the plan could **not** place (no home page at all) keeps waiting in the
+buffer. It is not made into a fact nobody renders, and the recall fresh slot
+keeps offering it meanwhile.
 
 ### Idempotency & crash-safety
 
 The light dream only ever advances `buffered` rows; the insert is
 `insert_if_absent`, `mark_superseded` no-ops on an already-superseded
 row, and the status updates are guarded on `status = 'buffered'`. So a
-crash mid-cycle, or a re-run after `rm engine.db` — which rebuilds the
-buffer rows as `buffered` from the journal (the
-[captures-journal invariant](#captures-journal-invariant)) — simply
-re-promotes idempotently. The stable `capture_id == fact_id` is what
+crash mid-cycle simply re-promotes idempotently. The stable `capture_id == fact_id` is what
 makes that safe: a second promotion of the same capture finds the fact
 already present and the row already `promoted`, and does nothing.
 
@@ -387,8 +369,18 @@ In the long-lived HTTP server,
 the buffered backlog has reached `light_backlog_threshold` (the early
 trigger; `0` disables it). It is wired in `cmd_serve_http` alongside the
 REM full-cycle scheduler and **shares `rem.schedule.mode`** — `disabled`
-turns both off. Because promotion is deterministic it needs no LLM bag,
-so the light dream runs even when the REM LLM slots are unconfigured.
+turns both off.
+
+**The models are not optional** — see
+[admin-llm-config.md](admin-llm-config.md#the-models-are-mandatory): a
+deployment without them is a half-installed product, and the `ingest` role is
+enforced at onboarding. What the light dream *does* survive is a missing prose
+writer: with no `cronista` slot it drains the queue deterministically
+(`dream_light::drain_deterministically` — every page the user's own turn named,
+the parking page for the rest, renders pending), because the alternative is a
+queue that grows for ever while the recall fresh slot, a ranked top-K, quietly
+stops offering the older half of it. That is damage control, not a supported
+configuration.
 The full cycle's `interval_secs` (default 24h) is unchanged; the light
 dream is the far more frequent of the two. Operators driving REM
 externally run one cycle synchronously with `mwe-mcp rem run-light`
@@ -412,8 +404,8 @@ remaining stage is tracked in the roadmap:
 
 | Stage | What it adds | Status |
 |---|---|---|
-| **light dream (promotion)** | Drains `buffered` captures into `fact_index` (`fact_id == capture_id`), applying the `supersede_hint` and the capture-parity dedup skip (jaccard ≥ threshold, same-subject); flips `status` to `promoted` / `skipped_dup`. | **landed** ([above](#promotion--the-light-dream)) |
-| **Cronista (compilation)** | Compiles the promoted facts into the published prose `.md` pages on the nightly cadence. The `.md` becomes the compiler's output, and `source_path` + offsets are repointed off `_captures.md` onto it. | **landed** ([`narrative-compiler.md`](narrative-compiler.md)) |
+| **light dream (drain)** | Screens `buffered` claims (capture-parity dedup, jaccard ≥ threshold, same-subject, plus intra-queue), lets the plan place the survivors, then writes each as a `fact_index` row (`fact_id == capture_id`) addressed to its page and applies the `supersede_hint`; flips `status` to `promoted` / `skipped_dup`. | **landed** ([above](#promotion--the-light-dream)) |
+| **Cronista (compilation)** | Compiles the promoted facts into the published prose `.md` pages on the nightly cadence. The `.md` becomes the compiler's output, and `source_path` + offsets are repointed off the *no page yet* address onto it. | **landed** ([`narrative-compiler.md`](narrative-compiler.md)) |
 | **recall over compiled prose** | Recall navigates and serves the compiled standard pages rather than the raw promoted fact body. | planned |
 
 The `source_kind` values beyond `ingest` (e.g. `shadow_diff` for the

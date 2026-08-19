@@ -248,7 +248,7 @@ silent-deadline `fact_forget` sweep — carry no tree/embedder and do not
 strip; their residue is picked up by the light dream's **retirement hygiene
 sweep** (`reindex::sweep_retired_regions`, [rem-cycle.md](rem-cycle.md)),
 which strips retired regions from pages **outside the compilation plan**
-(`rules.md`, husks — where residue would otherwise be permanent; plan pages
+(`@rules.md`, husks — where residue would otherwise be permanent; plan pages
 self-clean at their next compile). The reindex pipeline's own
 file-removed / marker-removed tombstones are deliberately **not** strip
 sites — there the disappearance of the file or marker is the trigger, not a

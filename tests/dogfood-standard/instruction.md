@@ -146,11 +146,10 @@ they shape what to test and how to read the results.
   to pass them, and that is what the base corpus measures.
 - **Standard capture never forges wikis.** New wikis are meant to
   emerge from an explicit user request → `structural` intent → a nudge
-  to the dashboard. `target_page` is normalised server-side now
-  (append `.md`, fall back to `index.md` if unsafe — F-B fix).
-- **`wiki_read` reads `index.md` only** — regions captured into other
-  pages of a wiki are findable via `wiki_search` but invisible to
-  `wiki_read`.
+  to the dashboard. `target_page` is normalised server-side (append `.md`;
+  a reserved or unsafe name falls through to the wiki's buffer).
+- **`wiki_read` names the page it reads** — `path` is required, and
+  `index.md` is refused.
 - **Transport**: Streamable HTTP, **stateless** (no `Mcp-Session-Id`),
   Bearer JWT. **Group membership is resolved server-side** from
   `enrollment_groups` on every call — it is **not** in the JWT.

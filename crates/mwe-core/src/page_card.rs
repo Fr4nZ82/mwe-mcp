@@ -215,6 +215,12 @@ pub async fn drop_page(pool: &SqlitePool, source_path: &str) -> Result<u64> {
 
 /// Drop every card of one wiki.
 ///
+/// Called where the per-page sweep cannot reach: the admin delete
+/// ([`crate::wiki_delete::delete_wiki_subtree`]) and the moment a wiki turns
+/// smart ([`crate::reindex`]). Both leave the wiki outside the sweep's walk —
+/// it only visits wikis still discovered as standard — so without this the
+/// rows, embeddings included, sit in the table forever.
+///
 /// # Errors
 ///
 /// `sqlx::Error`.
@@ -286,17 +292,6 @@ pub async fn list_all(pool: &SqlitePool) -> Result<Vec<PageCardRow>> {
     let sql = format!("SELECT {SELECT_COLS} FROM page_card ORDER BY source_path");
     let rows = sqlx::query(&sql).fetch_all(pool).await?;
     Ok(rows.iter().map(row_of).collect())
-}
-
-/// How many cards are stored — the input to the card selection's threshold.
-///
-/// # Errors
-///
-/// `sqlx::Error`.
-pub async fn count(pool: &SqlitePool) -> Result<i64> {
-    Ok(sqlx::query_scalar("SELECT count(*) FROM page_card")
-        .fetch_one(pool)
-        .await?)
 }
 
 #[cfg(test)]

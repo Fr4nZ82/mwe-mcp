@@ -746,7 +746,7 @@ mod tests {
     }
 
     async fn insert_fact(pool: &SqlitePool, uuid: &str, wiki: &str, topics: &[&str]) {
-        insert_fact_at(pool, uuid, wiki, "index.md", topics).await;
+        insert_fact_at(pool, uuid, wiki, "cucina.md", topics).await;
     }
 
     async fn insert_fact_at(
@@ -787,7 +787,6 @@ mod tests {
             // proposal to carry.
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         };
@@ -823,7 +822,6 @@ mod tests {
             valid_to: None,
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         };
@@ -1139,7 +1137,7 @@ mod tests {
         );
 
         // Facts on two different pages of the same wiki: each page gets its
-        // own union, not the wiki-wide one. (The bootstrap `index.md` has no
+        // own union, not the wiki-wide one. (A page with no
         // testata yet — the compiler writes it on first compile — so the pass
         // leaves it alone; that path is covered by the skip test below.)
         insert_fact_at(&pool, UUID_1, "alice", "travel.md", &["places"]).await;
@@ -1218,23 +1216,25 @@ mod tests {
         write_page(
             &tree,
             "alice",
-            "notes.md",
+            "@notes.md",
             "---\ntitle: \"Notes\"\nstyle: prosa\n---\n\nBody.\n",
         );
 
         // alice's wiki (acl_default user:alice): her own fact and a global
         // fact contribute; bob's cross-user region must not leak its topic
         // words onto either card.
-        insert_fact_with_subject(&pool, UUID_1, "alice", "notes.md", "user:alice", &["food"]).await;
-        insert_fact_with_subject(&pool, UUID_2, "alice", "notes.md", "global", &["public"]).await;
-        insert_fact_with_subject(&pool, UUID_3, "alice", "notes.md", "user:bob", &["secret"]).await;
+        insert_fact_with_subject(&pool, UUID_1, "alice", "@notes.md", "user:alice", &["food"])
+            .await;
+        insert_fact_with_subject(&pool, UUID_2, "alice", "@notes.md", "global", &["public"]).await;
+        insert_fact_with_subject(&pool, UUID_3, "alice", "@notes.md", "user:bob", &["secret"])
+            .await;
 
         sync_wiki_keywords(&pool, &tree).await.unwrap();
         sync_page_keywords(&pool, &tree).await.unwrap();
 
         assert_eq!(read_topics(&tree, "alice").as_deref(), Some("food, public"));
         assert_eq!(
-            read_page_topics(&tree, "alice", "notes.md").as_deref(),
+            read_page_topics(&tree, "alice", "@notes.md").as_deref(),
             Some("food, public")
         );
     }
@@ -1251,7 +1251,7 @@ mod tests {
             &pool,
             UUID_1,
             "alice",
-            "index.md",
+            "cucina.md",
             "user:alice",
             &[],
             &["celiachia"],
@@ -1261,7 +1261,7 @@ mod tests {
             &pool,
             UUID_2,
             "alice",
-            "index.md",
+            "cucina.md",
             "user:alice",
             &["user:bob"],
             &["viaggio"],
@@ -1271,7 +1271,7 @@ mod tests {
             &pool,
             UUID_3,
             "alice",
-            "index.md",
+            "cucina.md",
             "global",
             &[],
             &["ricette"],
@@ -1295,7 +1295,7 @@ mod tests {
         assert_eq!(topics(&carol_card, "alice"), ["ricette"]);
         // Page-level projection mirrors the wiki-level filtering.
         assert_eq!(
-            bob_card.pages("alice").unwrap()["wikis/alice/index.md"],
+            bob_card.pages("alice").unwrap()["wikis/alice/cucina.md"],
             ["ricette", "viaggio"]
         );
 

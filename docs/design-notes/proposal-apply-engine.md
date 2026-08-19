@@ -266,7 +266,7 @@ The compilation planner ([`crate::planner`](../../crates/mwe-core/src/planner.rs
 documented in [`narrative-compiler.md`](narrative-compiler.md)) mints
 **emergent concept pages** when the Cartografo decides a cluster of facts
 deserves its own page. A routine emergent concept page is **content the
-Cronista writes** — a new `.md` page (or `index.md` hub) inside an
+Cronista writes** — a new `.md` page inside an
 **existing** standard wiki — so it does **not** raise a
 `structure_proposal` at all; it is a normal compiled write, not a gated
 structural change. The one structural rung above a page is a **sub-wiki**,
@@ -441,22 +441,20 @@ field in `answers` (default `paragraph_to_file`):
   are already the same subject area and turn them into a new dedicated
   sub-wiki, each page carried over under its own name. The new wiki id
   is derived via [`WikiId::child_of`] (parent + child slug joined with
-  `-`); the new directory lives at `<parent_abs_dir>/<child_slug>/`, and
-  its `index.md` is born as a bare title stub because the front page is
-  a plan-owned `wiki_buffer` node on its `notes.md` that the compiler
-  authors; the new wiki's `index.md` is the REM hub writer's. Refuses the
-  parent's own `index.md`, a page with no active fact, and a page whose
-  markers on disk disagree with `fact_index`. The **page-count floor**
+  `-`); the new directory lives at `<parent_abs_dir>/<child_slug>/` and
+  holds its `_meta.md` plus the carried pages, nothing else — the compiler
+  authors its `@notes.md` buffer node on the next pass. Refuses `index.md`,
+  a page with no active fact, and a page whose markers on disk disagree
+  with `fact_index`. The **page-count floor**
   lives in the REM caller (`auto_promote_group_min_pages`), not here.
 
   Its **revert** (and `file_to_subwiki`'s) may find more in the newborn
   directory than the receipt put there, and that is not a defect of the wiki:
   `planner::seed_wiki_buffers` gives every non-smart wiki a buffer node on
-  `notes.md`, and a wiki born by promotion is force-dirtied at birth, so the
+  `@notes.md`, and a wiki born by promotion is force-dirtied at birth, so the
   next hourly compile writes one. `compiler_seeded_pages` accounts for the
-  reserved pages the compiler owns — while they carry **no facts**, the rule
-  `index.md` always had, since the revert would have nowhere to put a fact
-  that landed on one. Listing only the receipt's own files closed the undo
+  reserved pages the compiler owns — while they carry **no facts**, since the
+  revert would have nowhere to put a fact that landed on one. Listing only the receipt's own files closed the undo
   window one compile after the promotion: regroup at 03:00, compile at 04:00,
   click Undo at 09:00 → refused, on a wiki nobody had touched.
 - **`pages_move_wiki`** — the same move into a sub-wiki that **already
@@ -465,16 +463,15 @@ field in `answers` (default `paragraph_to_file`):
   files content into somebody else's.
 - **`file_to_subwiki`** — the single-page emergence: one whole page
   becomes a sub-wiki of its own, **carried over under its own name**,
-  bytes verbatim (so every marker keeps its offsets). The new wiki's
-  `index.md` is born a bare title stub and is the map, the REM map
-  writer's to author — the handler never puts content there, which it
-  used to: a wiki born that way started with its founding facts on the
-  one page the read path refuses. Refuses to promote a wiki's own
-  `index.md` — a map is not a subject. The wiki's «what goes in here»
-  goes on `_meta` (`extra["summary"]`), never on the map. **No emitter
-  reaches this variant** (REM's live emergence is `pages_to_subwiki`);
-  it is applied by an operator choosing the variant on the dashboard's
-  apply form. A receipt written before the map rule carries no
+  bytes verbatim (so every marker keeps its offsets). The new wiki gets
+  its `_meta.md` and the carried page, nothing else — it used to be born
+  with its founding facts on an `index.md`, the one page the read path
+  refused. A promotion naming `index.md` is refused: that is not a page of
+  a standard wiki. The wiki's «what goes in here» goes on `_meta`
+  (`extra["summary"]`). **No emitter reaches this variant** (REM's live
+  emergence is `pages_to_subwiki`); it is applied by an operator choosing
+  the variant on the dashboard's apply form. A receipt written before
+  2026-08-03 carries no
   `carried_page` in its spec, and the revert reads that absence as "the
   carried page was `index.md`", so those stay undoable unchanged.
 - **`page_merge`** — move **every** active fact of one concept page (the
@@ -531,12 +528,9 @@ moment the husk was deleted. A bare `[[wiki_id]]` names the wiki and
 is never touched by a page move. Not cosmetic: an inbound link somebody
 wrote is one of only three ways to reach a page at all — beside a fact hit
 and a match on the page's own card — so a link left behind strands its
-neighbourhood. Two companions —
-the wiki's **map** needs no repair (the REM map writer regenerates it from
-the filenames on disk and cannot name a page that is not there), while
-both wikis' **cards** are parked on `force_dirty`, because a card is
-written prose about what lives here and the compiler copies it into
-`_meta`, which the map then quotes.
+neighbourhood. Its companion: both wikis' **cards** are parked on
+`force_dirty`, because a card is written prose about what lives here and
+the compiler copies it into `_meta`.
 
 ### Paragraph → file
 
@@ -550,7 +544,7 @@ same before and after. See
 auto-promotion REM job):
 
 - `context.source_wiki_id` — wiki the facts currently live in.
-- `context.source_page` — page within the wiki (e.g. `index.md`).
+- `context.source_page` — page within the wiki (e.g. `lavoro.md`).
 - `context.fact_ids` — ordered list of `UUIDv7` facts to move. Order
   is preserved when assembling the appended block on the target page.
 

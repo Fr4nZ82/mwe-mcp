@@ -129,7 +129,7 @@ explaining the split.
 | capture / supersede / forget / link + jaccard dedup | [design-notes/capture-and-dedup.md](design-notes/capture-and-dedup.md) |
 | recall pipeline (search / facts_for / recall / navigate / multi-hop) | [design-notes/recall-pipeline.md](design-notes/recall-pipeline.md) |
 | ingest pipeline (`wiki_ingest_message` LLM router) | [design-notes/ingest-pipeline.md](design-notes/ingest-pipeline.md) |
-| narrative captures buffer (`_captures.md` + `capture_buffer`) | [design-notes/narrative-buffer.md](design-notes/narrative-buffer.md) |
+| narrative captures buffer (`capture_buffer`) | [design-notes/narrative-buffer.md](design-notes/narrative-buffer.md) |
 | narrative compiler topology planner (`CompilationPlan`) | [design-notes/narrative-compiler.md](design-notes/narrative-compiler.md) |
 | REM nightly cycle (orchestrator + sub-jobs) | [design-notes/rem-cycle.md](design-notes/rem-cycle.md) |
 | DDL + migrations ledger + `engine.db` | [design-notes/engine-db-and-migrations.md](design-notes/engine-db-and-migrations.md) |

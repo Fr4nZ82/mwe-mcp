@@ -494,12 +494,6 @@ impl WikiId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-
-    /// True if this id refers to the root wiki.
-    #[must_use]
-    pub fn is_root(&self) -> bool {
-        self.0 == Self::ROOT
-    }
 }
 
 impl fmt::Display for WikiId {
@@ -749,7 +743,6 @@ mod tests {
     #[test]
     fn wiki_id_root_constants() {
         let r = WikiId::root();
-        assert!(r.is_root());
         assert_eq!(r.as_str(), "root");
         assert_eq!(WikiId::ROOT, "root");
     }
@@ -760,7 +753,6 @@ mod tests {
         let alice = WikiSlug::parse("alice").unwrap();
         let id = WikiId::child_of(&root, &alice);
         assert_eq!(id.as_str(), "alice");
-        assert!(!id.is_root());
     }
 
     #[test]

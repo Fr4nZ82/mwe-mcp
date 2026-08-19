@@ -55,7 +55,7 @@ fn destructive(t: Tool) -> Tool {
 ///   consumers, project signposts into the owner's standard memory, +
 ///   briefing inbox open to any reader).
 /// - I — `skill_list`, `skill_fetch` (server-served skill catalog;
-///   bundled skills are public, custom skills are owner-scoped).
+///   every skill is bundled, and public).
 /// - K — `smart_bootstrap`, `recall_core_global` (atomic primitives for
 ///   the Claude Code hook bundle: deterministic smart-wiki resume on
 ///   session start + canonical transversal recall on every user prompt.
@@ -248,7 +248,7 @@ fn events_ack() -> Tool {
 fn wiki_read() -> Tool {
     read_only(materialize(
         "wiki_read",
-        "Read the rendered content of a **specific page** of a wiki for the given sender, with ACL applied. `path` is **required** — name the page you want; there is no default, and `index.md` (the wiki's map) is refused, because it holds no facts and only describes the wiki's own structure. A page path comes from a `wiki_search` hit or a `wiki_navigate` fragment. Must be a safe relative path; an unknown page is `not_found`. Returns `content_rendered_for_sender` plus `redacted_count`, behind the wiki-level visibility gate. For a **standard** wiki, marked regions are redacted per the per-fragment ACL while prose passes; a **smart** wiki is markerless, so the wiki-level gate alone governs and the page passes whole. The `format` and `include_archived` arguments are accepted but not yet honored.",
+        "Read the rendered content of a **specific page** of a wiki for the given sender, with ACL applied. `path` is **required** — name the page you want; there is no default. Any page of the wiki can be named; the only paths refused are the engine's own files — **any** name starting with `_` (`_meta.md`, `_briefing.md`, …) — which are bookkeeping rather than memory. A page path comes from a `wiki_search` hit or a `wiki_navigate` fragment. Must be a safe relative path; an unknown page is `not_found`. Returns `content_rendered_for_sender` plus `redacted_count`, behind the wiki-level visibility gate. For a **standard** wiki, marked regions are redacted per the per-fragment ACL while prose passes; a **smart** wiki is markerless, so the wiki-level gate alone governs and the page passes whole. The `format` and `include_archived` arguments are accepted but not yet honored.",
         json!({
             "type": "object",
             "required": ["wiki_id", "path"],
@@ -256,7 +256,7 @@ fn wiki_read() -> Tool {
             "properties": {
                 "wiki_id": { "type": "string" },
                 "sender_id": { "type": "string" },
-                "path": { "type": "string", "description": "Page path relative to the wiki directory, e.g. `recipes/pasta.md`. Required; never `index.md`. Safe relative paths only (`[A-Za-z0-9._-]` components, no traversal)." },
+                "path": { "type": "string", "description": "Page path relative to the wiki directory, e.g. `recipes/pasta.md`. Required; never one of the engine's own `_`-prefixed files. Safe relative paths only (`[A-Za-z0-9._-]` components, no traversal)." },
                 "include_archived": { "type": "boolean", "default": false },
                 "format": { "type": "string", "enum": ["markdown", "json_blocks"], "default": "markdown" }
             }

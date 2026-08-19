@@ -2220,9 +2220,8 @@ async fn process_job(
                 fact_subject_fallback.clone()
             };
             // Same guard as the live capture path, on the same class of name:
-            // one the extractor coined. The buffer is the fallback, not the
-            // map — a fact landing on `index.md` lands on the one page no
-            // reader may open.
+            // one the extractor coined. A reserved name falls through to the
+            // buffer.
             let coined = normalize_capture_page(
                 cand.target_page.as_deref(),
                 Path::new(crate::wiki::NOTES_FILENAME),
@@ -2267,7 +2266,6 @@ async fn process_job(
             let staging =
                 capture_buffer::BufferStaging::build(embedder.as_ref(), &body, None).await;
             let buffered = capture_buffer::buffer_capture_with_source(
-                tree,
                 pool,
                 CaptureRequest {
                     wiki_id,
@@ -2282,7 +2280,7 @@ async fn process_job(
                     valid_from: cand.valid_from.clone(),
                     valid_to: cand.valid_to.clone(),
                     style: cand.style.clone(),
-                    page_description: cand.page_description.clone(),
+                    page_description: None,
                     salience: cand.salience.clone(),
                     authored_refs,
                 },
@@ -2678,7 +2676,7 @@ mod tests {
         assert!(shape.chars > 25_000, "a genuinely long page: {shape:?}");
         assert_eq!(shape.oversize_blocks, 0);
         assert!(!shape.needs_repair());
-        assert!(shape.warning("notes.md").is_none());
+        assert!(shape.warning("@notes.md").is_none());
         // It still splits into many sections — that is packing, not damage.
         assert!(shape.sections > 10);
         assert!(shape.sections_sharing_a_heading > 0);
@@ -2880,7 +2878,7 @@ mod tests {
             "---\nwiki_id: {slug}\nwiki_type: {wiki_type}\nslug: {slug}\ntitle: {title}\nacl_default: 'user:{slug}'\n---\n",
         );
         std::fs::write(dir.join("_meta.md"), &frontmatter).unwrap();
-        std::fs::write(dir.join("index.md"), "# index\n").unwrap();
+        std::fs::write(dir.join("cucina.md"), "# index\n").unwrap();
     }
 
     #[tokio::test]
@@ -2955,19 +2953,23 @@ mod tests {
                 .expect("anchor exists");
         assert_eq!(row.wiki_id, "alice");
         assert!(row.source_path.ends_with("meeting_x.md"));
-        // The document page's testata is seeded from the classify plan: the
-        // anchor fact carries the plan's style / page_description / topics
-        // (they ride the anchor capture, not just the job-row checkpoint).
+        // The document page's testata is seeded from the classify plan. The
+        // style rides the anchor fact; the CARD is written on the page itself
+        // — what belongs on a page is the page's, never a column repeated on
+        // each of its facts (`capture::seed_page_card`).
         assert_eq!(row.style.as_deref(), Some("prosa"));
-        assert_eq!(row.page_description.as_deref(), Some("dossier del meeting"));
         assert_eq!(row.topics, vec!["meeting".to_owned()]);
         let page = std::fs::read_to_string(wikis.join("alice").join("meeting_x.md")).unwrap();
         assert!(page.contains("Riunione sul viaggio in Norvegia."));
+        assert!(
+            page.contains("description: dossier del meeting"),
+            "the page carries its own card: {page}"
+        );
 
         // The extracted fact sits in the buffer with document provenance:
         // the claim text stays clean (no trailing `([[…]])` link suffix) and
         // the pointer to the dossier page rides `authored_refs` instead.
-        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+        let buffered = capture_buffer::find_all_buffered(&pool, 100)
             .await
             .expect("buffered");
         assert_eq!(buffered.len(), 1);
@@ -3068,7 +3070,7 @@ mod tests {
             .await
             .expect("run");
         assert!(ran);
-        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+        let buffered = capture_buffer::find_all_buffered(&pool, 100)
             .await
             .expect("buffered");
         assert_eq!(buffered.len(), 1);
@@ -3167,12 +3169,12 @@ mod tests {
             subject_id: Some("user:gimli".into()),
             allow_ids: vec!["group:team".into()],
             fact_type: Some("commitment".into()),
+            page_description: Some("il viaggio in Norvegia".into()),
             topics: vec!["viaggio".into()],
             valid_from: Some("2026-06-12T00:00:00Z".into()),
             valid_to: Some("2026-06-19T00:00:00Z".into()),
             salience: Some("high".into()),
             style: Some("lista".into()),
-            page_description: Some("il viaggio in Norvegia".into()),
         };
         let second = CandidateFact {
             body: "Gimli si occupa della prenotazione del viaggio.".into(),

@@ -159,7 +159,7 @@ live in `fact_index` — it has its own pair of tables
   per-turn recall reads the *fact* corpus only, so a door that lived just
   in a column would be invisible to the ranking that fills the block.
   [`signposts::project_descriptions`](../../crates/mwe-core/src/signposts.rs)
-  therefore mirrors each description onto the owner's `projects.md` as an
+  therefore mirrors each description onto the owner's `@projects.md` as an
   ordinary signpost fact, on every full sweep, right after the registry
   refresh. Idempotent: a write happens only where the text actually
   moved, an unchanged description is a no-op, and withdrawing the line
@@ -171,10 +171,10 @@ live in `fact_index` — it has its own pair of tables
   and the fact are both derived from it.
 
   **The diary lives on its own page.** A project's day-by-day activity
-  lines go to `project_diary.md`, never to `projects.md`, because the two
+  lines go to `@projects_diary.md`, never to `@projects.md`, because the two
   have opposite lifecycles: the door signs are *derived* and rebuilt by
   every sweep, the diary is *accumulated*, windowed, and irreplaceable if
-  lost. Keeping them apart is what lets `projects.md` be regenerable in
+  lost. Keeping them apart is what lets `@projects.md` be regenerable in
   full — there is nothing on it a faulty writer could destroy that the
   next sweep would not restore — and it means no consumer writes that page
   at all. For **delivery** the two are equivalent: a fact surfacing from
@@ -578,7 +578,7 @@ output: { owner_wiki_id, page, description, activity, retired, active_days }
 ```
 
 Writes **signposts** — short facts on the *owner's* reserved
-`projects.md` saying that this project exists and what happened lately.
+`@projects.md` saying that this project exists and what happened lately.
 Logic in [`signposts.rs`](../../crates/mwe-core/src/signposts.rs).
 
 Why the tool exists: a standard consumer's per-turn recall is
@@ -606,10 +606,10 @@ with dedup *off*: a signpost's identity is its topic key (project, and
 day for an activity line), not similarity — two projects described in
 similar words stay two signposts. Going through the ordinary ingest path
 would hand placement to the classifier, and placement is exactly what
-must be guaranteed here. `projects.md` is a **reserved channel page**
+must be guaranteed here. `@projects.md` is a **reserved channel page**
 ([`wiki::is_channel_page`](../../crates/mwe-core/src/wiki.rs)), fenced
 out of the compiler, the REM refile and the contradiction sweeps the way
-`rules.md` is — but, unlike `rules.md`, it stays recallable, which is
+`@rules.md` is — but, unlike `@rules.md`, it stays recallable, which is
 the entire point.
 
 **The nudge (48f)**: every `wiki_admin_push` response carries
@@ -1279,6 +1279,28 @@ through `WikiMeta::to_yaml`.
    items that landed in the gap from REM or another consumer), diffs
    vs local, `wiki_admin_push mode: "upsert"` with the delta.
    Realignment complete.
+
+## Deleting a smart wiki
+
+A smart wiki deleted is deleted. The admin delete offers three
+dispositions — dissolve, return-to-author, tombstone-all — but all three
+partition **facts** by authorship, and a smart wiki has none: its content
+lives in `wiki_sections`, whose ACL sits at wiki level in `_meta.md`, so
+there is no per-fragment sender to hand a fragment back to. So
+[`delete_wiki_subtree`](../../crates/mwe-core/src/wiki_delete.rs) hard-drops
+every section row and the `smart_wikis` registry row of every wiki in the
+subtree, **in every mode**, and reports the count as `sections_dropped`.
+
+Dropping the registry row *at delete time* is the part that matters
+operationally: the readable-wiki filter every recall path builds is a query
+over that table, so a surviving row means recall keeps serving a deleted
+wiki's content until the next safety-net tick. The drop closes that window.
+
+This is not harsher than the standard-wiki delete, because both tables are
+**projections** of the `.md` files. The directory still goes to
+`<workdir>/trash/` rather than being erased, and moving it back lets the
+watcher rebuild the sections and the registry row exactly as it built them
+the first time — the same undo a standard wiki gets.
 
 ## Maturity
 

@@ -137,9 +137,8 @@ wikis as sub-directories, with no depth cap.**
 wikis/
   alice/                      (wiki-user)
     _meta.md
-    index.md                  (the wiki's MAP — where a fact belongs)
-    profile.md                (Alice's identity card)
-    notes.md                  (buffer — facts with no page yet)
+    @profile.md                (Alice's identity card)
+    @notes.md                  (buffer — facts with no page yet)
     lavoro.md                 (leaf page)
     acmecorp/                 (sub-wiki, emerged from promotion)
       _meta.md
@@ -147,36 +146,25 @@ wikis/
         _meta.md
 ```
 
-Four of those names are **reserved**, and the reservation is what keeps
+Three of those names are **reserved**, and the reservation is what keeps
 each one honest:
 
 | page | answers | who reads it |
 |---|---|---|
-| `index.md` | *where does a fact belong here?* | whoever is **filing** a fact — the write path, and a human — **never the read path** |
-| `profile.md` | *who is this actor?* | recall **serves** it verbatim in its own block slot; the funnel never navigates to it |
-| `notes.md` | *nothing yet* | the buffer a fact lands on when no page fits; REM's reorg drains it onto real pages |
-| `rules.md` | *what has this actor asked for?* | the rules channel only — outside every structural sweep |
+| `@profile.md` | *who is this actor?* | recall **serves** it verbatim in its own block slot; the funnel never navigates to it |
+| `@notes.md` | *nothing yet* | the buffer a fact lands on when no page fits; REM's reorg drains it onto real pages |
+| `@rules.md` | *what has this actor asked for?* | the rules channel only — outside every structural sweep |
 
-The first one is the load-bearing separation. A map that also held facts
-would be both the answer to "where does this go" and a place things go,
-and every actor's map would slowly become the page nothing ever leaves.
-Keeping it fact-free is why **nothing may re-home a fact onto `index.md`**
-— a fact parked there is one the navigator can never open, because the
-read path filters the map out of every offer.
-
-**Who writes it, and who it is for.** It is written by the nightly
-[map writer](../design-notes/rem-cycle.md#map-writer-sub-job), which
-assembles it from the pages on disk with no model involved. It exists for
-**whoever is filing a fact** and has to decide where it goes — which is
-why it lists what is here rather than summarising it, and why the read
-path never opens it.
-
-The deciding consumer is the **ingest classifier**, and it does not have
-the map yet: the document extractor's window gives it each wiki's `wiki_id / title /
-type / scope` and nothing more, which is why it names a `target_page` it
-cannot check against anything. Handing it the map is a prompt change. The
-other write-side reader, REM's reorg sweep, does not need the file — it
-derives its candidate pages from the fact index directly.
+**There is no `index.md`.** Until 2026-08-15 REM assembled one per wiki
+every night — a "map" listing the pages, on the theory that whoever files
+a fact would read it to decide where the fact goes. Nothing ever read it:
+the placement side (the Cartografo) is handed the pages one line each out
+of the compilation plan and the `page_cards` table, both of which carry
+the same information, are written on **every** page change rather than
+once a night, and cost no file. Founder, 2026-08-15: *«quello che non
+serve va tolto»*. The name stays reserved (`wiki::is_reserved_page_stem`)
+so nothing coins a page called `index` that is not one; on a **smart**
+wiki `index.md` is an ordinary content page its consumer authors.
 
 There are **no slots and no compatibility checks**: a wiki can host any
 kind of sub-wiki. The system does not block placement — it suggests.
@@ -239,7 +227,7 @@ wiki" below), `wiki-group`, `wiki-companion`
 and has no behavioural type at all. Several attributes are decided at
 capture. **Per fact**: its temporal **validity** (`valid_from`/`valid_to`)
 and its **salience** (`high` / `normal` / `low` — a `high` fact joins the
-subject's always-on base context, routed to its `profile.md` card rather
+subject's always-on base context, routed to its `@profile.md` card rather
 than a topic page, and is kept scarce). **Per placement**: which page the fact
 lands on (`target_page`) and the page's **physical form** (line → page →
 folder). **Per target page** (repeated across facts sharing a page): a
@@ -454,36 +442,33 @@ recalls facts only, a project the user never *names* would be invisible
 to their everyday agent — the memory cannot connect a dot it cannot see.
 So a smart consumer writes **signposts** into its owner's own wiki: a
 short description of what the project is, plus one line per day of what
-happened, on the reserved page `projects.md`
+happened, on the reserved page `@projects.md`
 ([`signposts`](../../crates/mwe-core/src/signposts.rs)). They are facts,
 governed like any other, and they are deliberately *pointers rather than
 records* — when one surfaces in a turn, recall opens that project's
 sections for that turn; what was actually done stays in the project
-wiki. Both reserved pages, `rules.md` and `projects.md`, are **channel
+wiki. Both reserved pages, `@rules.md` and `@projects.md`, are **channel
 pages**: written by a dedicated deterministic path and fenced out of
 every structural sweep, so nothing reorganises them behind their
 channel's back.
 
-The surface is not only the published pages. For a **standard** wiki
-(see [`narrative-buffer.md`](../design-notes/narrative-buffer.md)),
-an incoming capture is first staged in a per-wiki on-disk **captures
-journal**, `<wiki_dir>/_captures.md`: the journal is the durable record
-and `engine.db`'s `capture_buffer` table is a rebuildable projection over
-it, so buffered-but-not-yet-promoted captures survive a DB loss. The
-journal is *excluded* from page enumeration and the marker re-index
-sweep, so its entries are never indexed as published facts. The published
-pages of a standard wiki are themselves *also* excluded from any
-marker-driven row creation, because they are compiler output (see
+For a **standard** wiki (see
+[`narrative-buffer.md`](../design-notes/narrative-buffer.md)) an incoming
+capture is first staged in `engine.db`'s `capture_buffer` table, which is where
+a pending capture lives — there and nowhere else, as *authority follows the
+author* requires. (Until 2026-08-18 it was also appended to a per-wiki on-disk
+journal declared the durable record; that journal is gone.) The published pages
+of a standard wiki are excluded from any marker-driven row creation, because
+they are compiler output (see
 [the prose compiler](#the-prose-compiler--facts-become-published-prose)).
 See [the region-level fact model](#the-region-level-fact-model)
 for where buffered captures sit relative to facts.
 
 A few invariants worth internalising here:
 
-- **A buffered capture writes the journal before the buffer row.**
-  `buffer_capture` appends the `_captures.md` entry first, then upserts
-  the `capture_buffer` row — the journal is the durable record, the row a
-  derived projection, and a cold start replays the journal idempotently
+- **A buffered capture writes no file.** `buffer_capture` inserts the
+  `capture_buffer` row and touches nothing on disk: the published `.md` is
+  the compiler's output, produced later from the fact the capture becomes
   (narrative-buffer).
 - **Forget tombstones the index, then strips the file.** `wiki_forget`
   marks `deleted_at` in `fact_index` (the authoritative half) and then
@@ -616,8 +601,7 @@ registry) — and "standard" simply means "not smart":
 For a standard wiki, `wiki_ingest_message` classifies the message and —
 instead of calling `wiki_capture` — hands the classified claim to the
 **captures buffer** ([`crate::capture_buffer`](../../crates/mwe-core/src/capture_buffer.rs)).
-The claim is appended to the wiki's durable `_captures.md` journal and
-indexed in the rebuildable `capture_buffer` table. Each buffered claim is
+The claim is inserted into the `capture_buffer` table. Each buffered claim is
 minted a `UUIDv7` `capture_id` that is **reused verbatim as its `fact_id`
 on promotion**, so a claim keeps one stable id across buffer → fact →
 compiled page. The classifier's supersede proposal rides along as a
@@ -705,8 +689,7 @@ The write is idempotent (compute → compare → write only on change) and the
 Because standard pages are now compiler *output*, the re-index pipeline
 treats them specially: `reindex_full`
 ([`crate::reindex`](../../crates/mwe-core/src/reindex.rs)) **skips the marker
-sweep** on a standard wiki's pages (it still rebuilds that wiki's captures
-buffer from the `_captures.md` journal). Re-running the full marker re-index
+sweep** on a standard wiki's pages. Re-running the full marker re-index
 over compiled prose would overwrite the canonical claim text with the prose
 body of the marker region — so the sweep is reserved for **smart**
 wikis, whose pages are still hand-authored and keep the full marker reindex.

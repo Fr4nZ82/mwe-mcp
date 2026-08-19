@@ -45,6 +45,24 @@
 //! the sender-scrub invariant) and that flow can never be re-run for it, so
 //! the admin may delete it here like any other wiki.
 //!
+//! ## A smart wiki is deleted, not disposed of
+//!
+//! The three modes partition **facts** by authorship. A smart wiki has none:
+//! its content lives in `wiki_sections`, whose ACL sits at wiki level in
+//! `_meta.md`, so there is no per-fragment sender to hand a fragment back to
+//! and nothing to evacuate. Deleting one therefore hard-drops every section
+//! row and its `smart_wikis` registry row, **in every mode** — a smart wiki
+//! deleted is deleted, it does not inherit the standard wiki's disposal
+//! choice.
+//!
+//! Two things make that safe rather than harsh. Both tables are
+//! **projections** of the `.md` files ([`crate::sections`]), so moving the
+//! directory back out of the trash lets the watcher rebuild them — the same
+//! undo a standard wiki gets. And dropping the registry row is what makes the
+//! deletion take effect for readers *at once*: the readable-wiki filter is
+//! built from that table, so a surviving row would keep serving a deleted
+//! wiki's content until the next safety-net tick.
+//!
 //! Sub-wikis travel with their parent — the disposition pass and the directory
 //! move both cover every wiki id under the target. The trash root is a sibling
 //! of `<workdir>/wikis/`, so a trashed subtree never reappears in
@@ -59,6 +77,7 @@ use crate::fact_index;
 use crate::page::{self, Action, DeletionMode};
 use crate::planner;
 use crate::promote::{self, DirectPromoteError};
+use crate::sections;
 use crate::types::{Principal, WikiId};
 use crate::wiki::{
     DiscoveredWiki, GROUP_IDENTITY_WIKI_TYPE, IDENTITY_WIKI_TYPE, WikiError, WikiTree,
@@ -91,6 +110,13 @@ pub struct WikiDeleteReport {
     /// placement re-opened, so the next Cartografo build re-decides where each
     /// belongs. Non-zero only in `Dissolve` mode.
     pub facts_unplaced: u64,
+    /// Number of `wiki_sections` rows hard-dropped across the subtree — a
+    /// smart wiki's whole content. Disposal-independent: the modes partition
+    /// facts by authorship, which a section does not have.
+    pub sections_dropped: u64,
+    /// Number of `page_card` rows dropped across the subtree — the standard
+    /// wiki's twin of `sections_dropped`, and a projection in the same sense.
+    pub page_cards_dropped: u64,
     /// Where the directory subtree now lives under `<workdir>/trash/`.
     pub trash_dir: PathBuf,
 }
@@ -122,6 +148,12 @@ pub enum WikiDeleteError {
     /// `SenderKeyed` move arm) failed.
     #[error("evacuating a fact: {0}")]
     Refile(#[from] DirectPromoteError),
+    /// Dropping the subtree's smart-wiki sections or registry rows failed.
+    #[error("wiki sections: {0}")]
+    Sections(#[from] sections::SectionError),
+    /// Dropping the subtree's page cards failed.
+    #[error("page cards: {0}")]
+    PageCards(#[from] crate::page_card::PageCardError),
     /// Moving the directory into the trash failed.
     #[error("moving {path} to trash: {source}")]
     Move {
@@ -229,6 +261,8 @@ pub async fn delete_wiki_subtree(
     let mut facts_tombstoned = 0u64;
     let mut facts_evacuated = 0u64;
     let mut facts_unplaced = 0u64;
+    let mut sections_dropped = 0u64;
+    let mut page_cards_dropped = 0u64;
     let mut reopen_slugs: Vec<String> = Vec::new();
     for d in &subtree {
         let wiki_id = d.meta.wiki_id.as_str();
@@ -312,6 +346,19 @@ pub async fn delete_wiki_subtree(
                 }
             },
         }
+
+        // Whatever the mode just did to the facts, a smart wiki's own content
+        // goes with it — see the module docs. Unconditional on purpose: on a
+        // standard wiki both calls are no-ops, and on one that *used* to be
+        // smart they collect the rows a `smart: false` edit stranded. The
+        // registry row goes here, not at the next sweep, so recall stops
+        // serving the wiki the moment it is deleted.
+        sections_dropped += sections::drop_wiki_sections(pool, wiki_id).await?;
+        sections::remove_smart_wiki(pool, wiki_id).await?;
+        // The standard wiki's twin of the same rule: its page cards are a
+        // projection too, and the card sweep only walks wikis still on disk,
+        // so nothing else would ever collect them.
+        page_cards_dropped += crate::page_card::drop_wiki(pool, wiki_id).await?;
     }
 
     // Park the placement re-opening *after* the evacuations: the refile
@@ -356,6 +403,8 @@ pub async fn delete_wiki_subtree(
         facts_tombstoned,
         facts_evacuated,
         facts_unplaced,
+        sections_dropped,
+        page_cards_dropped,
         trash_dir,
     })
 }
@@ -406,7 +455,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: body.to_owned(),
             subject: format!("user:{subject_user}").parse::<Principal>().unwrap(),
             allow: vec![],
@@ -507,7 +556,7 @@ mod tests {
     #[test]
     fn page_basename_is_the_last_path_component() {
         assert_eq!(page_basename("wikis/famiglia/vacanze.md"), "vacanze.md");
-        assert_eq!(page_basename("index.md"), "index.md");
+        assert_eq!(page_basename("cucina.md"), "cucina.md");
     }
 
     #[tokio::test]
@@ -521,7 +570,7 @@ mod tests {
         let pool = crate::db::open_or_init(db_dir.path()).await.unwrap();
         let emb = embedder();
 
-        // a note about bob lives in his own wiki (so bob/index.md exists as a dest),
+        // a note about bob lives in his own wiki (so bob/cucina.md exists as a dest),
         // plus a fact that landed in acme; franz (the deleter) has one too.
         capture_with_subject(&tree, &pool, emb.clone(), "bob", "bob", "Bob's own note").await;
         let bob_fact =
@@ -726,7 +775,7 @@ mod tests {
                     outgoing_links: Vec::new(),
                     incoming_links: Vec::new(),
                     wiki_id: "dossier".to_owned(),
-                    page_path: "index.md".to_owned(),
+                    page_path: "cucina.md".to_owned(),
                 },
             ))
             .collect(),
@@ -791,5 +840,141 @@ mod tests {
         assert_eq!(report.facts_tombstoned, 1, "counted, not hidden");
         let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
         assert!(row.deleted_at.is_some());
+    }
+
+    /// One section of a smart wiki's page, with a stand-in vector — the
+    /// content itself is what the assertion is about, not its ranking.
+    fn section(wiki_id: &str, ord: i64, text: &str) -> crate::sections::NewSection {
+        crate::sections::NewSection {
+            wiki_id: wiki_id.to_owned(),
+            source_path: format!("wikis/{wiki_id}/index.md"),
+            section_ord: ord,
+            heading_path: None,
+            text: text.to_owned(),
+            embedding: vec![0.1, 0.2, 0.3, 0.4],
+        }
+    }
+
+    /// A smart wiki holds its content in `wiki_sections`, which carries no
+    /// sender and no ACL — so none of the three disposal modes applies to it,
+    /// and deleting one drops its sections and its registry row outright.
+    /// `Dissolve` is the sharp case: it is the mode that keeps **every** fact,
+    /// and it must still take the sections, because they are not facts.
+    ///
+    /// The registry row is asserted separately and on purpose. It is what the
+    /// readable-wiki filter is built from, so a row surviving the delete is
+    /// not bookkeeping — it is recall still serving a wiki the operator just
+    /// deleted, until the next safety-net tick.
+    #[tokio::test]
+    async fn deleting_a_smart_wiki_drops_its_sections_and_its_registry_row() {
+        let dir = tempdir().unwrap();
+        let db_dir = tempdir().unwrap();
+        let pool = crate::db::open_or_init(db_dir.path()).await.unwrap();
+        fs::create_dir_all(dir.path().join("wikis")).unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed(&tree, "progetto", "wiki-tech");
+        let tree = WikiTree::open(dir.path()).unwrap();
+
+        crate::sections::replace_page_sections(
+            &pool,
+            "wikis/progetto/index.md",
+            &[
+                section("progetto", 0, "What the shop does"),
+                section("progetto", 1, "How orders are taken"),
+            ],
+        )
+        .await
+        .expect("seed sections");
+        crate::sections::upsert_smart_wiki(
+            &pool,
+            &crate::sections::SmartWikiRow {
+                wiki_id: "progetto".to_owned(),
+                slug: "progetto".to_owned(),
+                owner_id: "user:owner".parse().unwrap(),
+                shared_with: Vec::new(),
+                project_id: None,
+                wiki_type: "wiki-tech".to_owned(),
+                description: Some("The print shop.".to_owned()),
+            },
+        )
+        .await
+        .expect("seed registry");
+
+        let report = delete_wiki_subtree(
+            &pool,
+            &tree,
+            &WikiId::parse("progetto").unwrap(),
+            &Principal::User("admin".to_owned()),
+            DeletionMode::Dissolve,
+        )
+        .await
+        .expect("delete");
+
+        assert_eq!(report.sections_dropped, 2, "counted, never silent");
+        assert!(
+            crate::sections::find_wiki_sections(&pool, "progetto")
+                .await
+                .unwrap()
+                .is_empty(),
+            "a deleted smart wiki keeps no sections, in any disposal mode"
+        );
+        assert!(
+            !crate::sections::list_smart_wikis(&pool)
+                .await
+                .unwrap()
+                .iter()
+                .any(|w| w.wiki_id == "progetto"),
+            "the registry row goes at delete time, not at the next sweep"
+        );
+    }
+
+    /// The standard wiki's twin of the case above. A page card is a
+    /// projection of its page, and the card sweep only ever walks wikis still
+    /// discovered on disk — so once the directory is in the trash nothing
+    /// visits that wiki again and nothing collects its rows, embeddings
+    /// included. The delete takes them, or nobody does.
+    #[tokio::test]
+    async fn deleting_a_standard_wiki_drops_its_page_cards() {
+        let dir = tempdir().unwrap();
+        let db_dir = tempdir().unwrap();
+        let pool = crate::db::open_or_init(db_dir.path()).await.unwrap();
+        fs::create_dir_all(dir.path().join("wikis")).unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed(&tree, "dossier", "wiki-tech");
+        let tree = WikiTree::open(dir.path()).unwrap();
+
+        crate::page_card::upsert(
+            &pool,
+            &crate::page_card::NewPageCard {
+                source_path: "wikis/dossier/cucina.md".to_owned(),
+                wiki_id: "dossier".to_owned(),
+                description: Some("What we cook.".to_owned()),
+                keywords: vec!["cucina".to_owned()],
+                style: Some("prosa".to_owned()),
+                file_mtime_ms: Some(1_000),
+                file_size: Some(42),
+            },
+        )
+        .await
+        .expect("seed card");
+
+        let report = delete_wiki_subtree(
+            &pool,
+            &tree,
+            &WikiId::parse("dossier").unwrap(),
+            &Principal::User("admin".to_owned()),
+            DeletionMode::Dissolve,
+        )
+        .await
+        .expect("delete");
+
+        assert_eq!(report.page_cards_dropped, 1, "counted, never silent");
+        assert!(
+            crate::page_card::list_for_wiki(&pool, "dossier")
+                .await
+                .unwrap()
+                .is_empty(),
+            "a deleted wiki keeps no page cards"
+        );
     }
 }

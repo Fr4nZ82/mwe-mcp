@@ -144,9 +144,13 @@ pub const REASON_FILE_WRITE_FAILED: &str = "capture_file_write_failed";
 /// Input to [`wiki_capture`].
 #[derive(Debug, Clone)]
 pub struct CaptureRequest {
-    /// Target wiki.
+    /// Target wiki — **the live route's**. A claim written inside the turn
+    /// ([`capture_fact`]) goes here; a claim that waits does not carry one at
+    /// all, and [`crate::capture_buffer::buffer_capture`] drops this field on
+    /// the floor. See [`crate::capture_buffer::BufferedCapture`].
     pub wiki_id: WikiId,
-    /// Page within the wiki (relative to the wiki directory).
+    /// Page within the wiki (relative to the wiki directory) — **the live
+    /// route's**, exactly as [`Self::wiki_id`].
     pub page: PathBuf,
     /// Prose body of the new region. No markers — capture wraps it
     /// with the bare runtime form `{{f=…}}body{{/}}` (the ACL goes into
@@ -192,7 +196,7 @@ pub struct CaptureRequest {
     /// threaded into [`fact_index::NewFact`] (direct path) and onto the buffer
     /// (standard-wiki path). `high | normal | low`; `None` = unspecified. Opaque
     /// pass-through to storage here; the promote step routes `high` facts to
-    /// `index.md`.
+    /// the subject's identity card.
     pub salience: Option<String>,
     /// Project-wiki pages this fact's turn authored, as plain
     /// `[[wiki_id/page]]` wikilinks ([`fact_index::NewFact::authored_refs`]).
@@ -289,9 +293,9 @@ pub struct LinkOutcome {
 /// - **Never across the channel-page boundary** ([`crate::wiki::is_channel_page`]:
 ///   both sides on a reserved channel page, or neither): a new behaviour
 ///   rule must not be skipped as a duplicate of an ordinary fact that
-///   happens to restate it (the rule would then never reach `rules.md`, so
+///   happens to restate it (the rule would then never reach `@rules.md`, so
 ///   the behaviour-rules channel would never serve it), and the same holds
-///   for a project signpost on `projects.md`. Rule-vs-rule and
+///   for a project signpost on `@projects.md`. Rule-vs-rule and
 ///   signpost-vs-signpost still dedup.
 /// - `exclude` skips one fact id — a light-dream retry after a partial
 ///   promotion must not dedup a capture against its own fact.
@@ -300,9 +304,69 @@ pub struct LinkOutcome {
 /// catalog id is a key, not prose). The EMBED-SET guard — two different
 /// photos with near-identical captions are two facts, not a duplicate —
 /// stays with the caller, which decides what a hit means.
+/// Who may read a fact — the whole set, not just its subject.
+///
+/// **Two facts are the same fact only when this matches.** Founder's ruling,
+/// 2026-07-28: *«a fact that reached two users by two private routes, each
+/// holding it privately, must stay two facts»* — merging hands each of them
+/// something they were never told, and it cannot be undone afterwards. Same
+/// content is a *candidate* signal, never a sufficient one.
+///
+/// Built 2026-08-18, when the founder said it again (*«i duplicati possono
+/// esistere … se due utenti hanno detto la stessa cosa ma con acl diversa»*)
+/// and the check turned out to compare the **subject alone**: two identical
+/// claims about the same person, one private and one shared with the family,
+/// collapsed into whichever arrived first, and the audience of the other was
+/// lost. The three fields together are exactly what [`crate::acl::can_read`]
+/// resolves, so equal here means *readable by exactly the same people* — and
+/// then merging tells nobody anything new.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Audience<'a> {
+    /// Who or what the fact is about.
+    pub subject: &'a Principal,
+    /// Who else may read it.
+    pub allow: &'a [Principal],
+    /// Who reported it (`None` ⇒ the subject).
+    pub sender: Option<&'a Principal>,
+}
+
+impl Audience<'_> {
+    /// Order-insensitive equality against a stored row.
+    ///
+    /// **`sender` is compared as it is stored — no fallback.** Founder,
+    /// 2026-08-18: *«"chi l'ha detto" dev'essere sempre specificato, non voglio
+    /// scorciatoie che possono rompere le cose altrove … è l'unica cosa che non
+    /// può mai cambiare, il fatto proviene da una fonte e quella rimarrà sempre
+    /// legata al fatto»*. Every write site already materialises it — see
+    /// [`normalize_sender_attribution`], *"provenance is frozen at birth as a
+    /// distinct field, never collapsed to NULL"* — and that runs **before**
+    /// this comparison, so an incoming `None` cannot reach here.
+    ///
+    /// A stored `None` therefore means a row written before that rule, or one
+    /// whose sender was scrubbed. It matches nothing, and that is the right
+    /// direction: keeping two facts apart is recoverable, merging them is not.
+    /// Resolving it to the subject here would re-introduce the shortcut on the
+    /// read side and quietly bless a row that breaks the invariant.
+    fn same_as_row(&self, row: &FactIndexRow) -> bool {
+        if &row.subject_id != self.subject {
+            return false;
+        }
+        if row.sender_id.as_ref() != self.sender {
+            return false;
+        }
+
+        // `allow` is a small hand-written list — a linear contains beats
+        // building two sorted copies, and it is order-insensitive by
+        // construction.
+        row.allow_ids.len() == self.allow.len()
+            && self.allow.iter().all(|p| row.allow_ids.contains(p))
+            && row.allow_ids.iter().all(|p| self.allow.contains(p))
+    }
+}
+
 pub(crate) fn best_dedup_candidate<'a>(
     candidates: &'a [FactIndexRow],
-    subject: &Principal,
+    audience: &Audience<'_>,
     on_channel_page: bool,
     body: &str,
     exclude: Option<&FactId>,
@@ -316,7 +380,7 @@ pub(crate) fn best_dedup_candidate<'a>(
         if exclude.is_some_and(|id| id == &row.fact_id) {
             continue;
         }
-        if &row.subject_id != subject {
+        if !audience.same_as_row(row) {
             continue;
         }
         if crate::wiki::is_channel_page(&row.source_path) != on_channel_page {
@@ -436,9 +500,19 @@ pub async fn wiki_capture_with_source(
         .dedup_threshold
         .unwrap_or(DEFAULT_DEDUP_THRESHOLD)
         .max(0.0);
-    let candidates = fact_index::find_active_in_wiki(pool, &wiki_id_str).await?;
+    // Candidates are every active fact **about this subject**, wherever it is
+    // filed — not this wiki's facts (founder, 2026-08-18: the wikis are
+    // structure, not watertight containers, so the same claim can already sit
+    // in another one). A duplicate is the same claim about the same subject;
+    // the wiki each copy lives in is provisional and moves.
+    let candidates = fact_index::find_active_by_subject(pool, &req.subject).await?;
     let on_channel_page = crate::wiki::is_channel_page(&req.page.to_string_lossy());
-    let best = best_dedup_candidate(&candidates, &req.subject, on_channel_page, &req.body, None);
+    let audience = Audience {
+        subject: &req.subject,
+        allow: &req.allow,
+        sender: req.sender.as_ref(),
+    };
+    let best = best_dedup_candidate(&candidates, &audience, on_channel_page, &req.body, None);
     tracing::debug!(
         wiki_id = %wiki_id_str,
         candidates = candidates.len(),
@@ -490,6 +564,23 @@ pub async fn wiki_capture_with_source(
     let fact_id = new_fact_id()?;
     let marker = render_marker(&fact_id, &req.body);
     let abs_page = handle.abs_dir().join(&req.page);
+    // A page BORN here gets its card written now, before the region is
+    // appended, so the offsets below are measured against the finished file.
+    //
+    // The card — the testata's one-line `description:`, what belongs on this
+    // page — is a property of the PAGE and lives on the page (founder,
+    // 2026-08-18: *«se il motore ha bisogno di sapere "cosa ci va dentro" sta
+    // richiedendo i dati di una pagina, non di un fatto»*). It used to ride
+    // every fact of the page as a `fact_index` column, repeated per fact and
+    // needing maintenance whenever REM edited the page or moved the fact.
+    // From here it is written once, where the reader and the compile both
+    // look: the file's testata, mirrored into `page_card` by the reindex
+    // sweep, adopted into the plan by `planner::heal_page_cards`.
+    seed_page_card(
+        &abs_page,
+        req.page_description.as_deref(),
+        req.style.as_deref(),
+    );
     let (new_contents, region_start, region_end) = append_region(&abs_page, &marker)?;
 
     // DB row FIRST, file second: the insert is the capture's commit
@@ -524,9 +615,8 @@ pub async fn wiki_capture_with_source(
         // the live-creation path that seeds a page's testata from it.
         target_page: Some(req.page.to_string_lossy().into_owned()),
         style: req.style,
-        page_description: req.page_description,
         // Per-fact salience, opaque pass-through onto the
-        // fact (the promote step routes `high` facts to the actor-wiki index.md).
+        // fact (the promote step routes `high` facts to the subject's card).
         salience: req.salience,
         source_ref,
         // Group-17 provenance breadcrumbs threaded from the ingest turn.
@@ -637,7 +727,7 @@ pub async fn wiki_supersede(
             // DB tombstone already excludes it from recall and
             // `page_acl_map_active` redacts any residue, so a strip failure
             // must not fail the supersede. This is the one path that also
-            // cleans `rules.md`, which the narrative compiler never rewrites.
+            // cleans `@rules.md`, which the narrative compiler never rewrites.
             if let Err(e) =
                 crate::reindex::strip_fact_region(pool, tree, embedder.clone(), old_fact_id).await
             {
@@ -678,7 +768,7 @@ pub async fn wiki_supersede(
 /// The DB tombstone (`deleted_at`) is the authoritative half and lands
 /// first; the disk half then strips the region's bytes from the page via
 /// [`crate::reindex::strip_fact_region`] — the same pattern as
-/// [`wiki_supersede`], and the one cleanup that also reaches `rules.md`,
+/// [`wiki_supersede`], and the one cleanup that also reaches `@rules.md`,
 /// which the narrative compiler never rewrites. The strip is
 /// **best-effort**: a failure is logged and never fails the forget (the
 /// tombstone already excludes the fact from recall, and the active ACL
@@ -936,6 +1026,50 @@ pub fn render_full_marker(
 ///
 /// Reads the page from disk if it exists; treats a missing page as an
 /// empty body. The page's frontmatter (if any) is preserved verbatim.
+/// Write a freshly-born page's testata — its **card** and its writing style —
+/// from what the turn that created it proposed.
+///
+/// Only for a page that does not exist yet: an existing page's card is its
+/// own, hand-authored or compiler-written, and a new fact landing on it never
+/// re-describes it. No-op when the turn proposed neither.
+///
+/// Best-effort by contract: the capture's commit point is the `fact_index`
+/// row, and a page that starts without a card gets one at its first compile.
+/// Failing the capture over a testata would lose the fact to keep a label.
+fn seed_page_card(abs_page: &Path, description: Option<&str>, style: Option<&str>) {
+    if abs_page.exists() {
+        return;
+    }
+    let description = description.map(str::trim).filter(|d| !d.is_empty());
+    let style = style.map(str::trim).filter(|s| !s.is_empty());
+    if description.is_none() && style.is_none() {
+        return;
+    }
+    let mut fm = serde_yaml::Mapping::new();
+    if let Some(d) = description {
+        fm.insert(
+            serde_yaml::Value::String("description".to_owned()),
+            serde_yaml::Value::String(d.to_owned()),
+        );
+    }
+    if let Some(st) = style {
+        fm.insert(
+            serde_yaml::Value::String("style".to_owned()),
+            serde_yaml::Value::String(st.to_owned()),
+        );
+    }
+    let rendered = match serde_yaml::to_string(&serde_yaml::Value::Mapping(fm)) {
+        Ok(y) => format!("---\n{y}---\n\n"),
+        Err(e) => {
+            tracing::warn!(error = %e, page = %abs_page.display(), "capture: page card not seeded");
+            return;
+        },
+    };
+    if let Err(e) = crate::wiki::atomic_write(abs_page, rendered.as_bytes()) {
+        tracing::warn!(error = %e, page = %abs_page.display(), "capture: page card not seeded");
+    }
+}
+
 fn append_region(abs_page: &Path, region: &str) -> Result<(String, usize, usize)> {
     let raw = read_page_or_empty(abs_page)?;
     let needs_newline = !raw.is_empty() && !raw.ends_with('\n');
@@ -1387,6 +1521,72 @@ mod tests {
 
     // ---------- dedup ----------
 
+    /// **The same claim with a different audience is a different fact.**
+    ///
+    /// Founder, 2026-07-28 and again 2026-08-18 (*«i duplicati possono
+    /// esistere … se due utenti hanno detto la stessa cosa ma con acl
+    /// diversa»*): merging two rows that are not readable by the same people
+    /// hands somebody something they were never told, and it cannot be undone.
+    /// Until 2026-08-18 the check compared the **subject alone**, so these two
+    /// collapsed into whichever landed first.
+    #[tokio::test]
+    async fn the_same_claim_with_a_wider_audience_stays_a_second_fact() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed_alice(&tree);
+        let pool = make_pool().await;
+
+        // Private: readable by its subject alone.
+        let private = sample_request("andiamo in Norvegia a luglio");
+        wiki_capture(&tree, &pool, embedder(), private)
+            .await
+            .unwrap();
+
+        // The same words, shared with the family.
+        let mut shared = sample_request("andiamo in Norvegia a luglio");
+        shared.allow = vec!["group:famiglia".parse().unwrap()];
+        let second = wiki_capture(&tree, &pool, embedder(), shared)
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(second.action, CaptureAction::Captured { .. }),
+            "a wider audience is not a duplicate: {:?}",
+            second.action
+        );
+        assert_eq!(
+            fact_index::count_active_in_wiki(&pool, "alice")
+                .await
+                .unwrap(),
+            2,
+            "dropping either one loses an audience that cannot be recovered"
+        );
+    }
+
+    /// The other half of the same rule: identical words, identical audience —
+    /// so merging tells nobody anything new, and the second is a duplicate.
+    #[tokio::test]
+    async fn the_same_claim_with_the_same_audience_is_still_a_duplicate() {
+        let dir = tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+        seed_alice(&tree);
+        let pool = make_pool().await;
+
+        let mut first = sample_request("andiamo in Norvegia a luglio");
+        first.allow = vec!["group:famiglia".parse().unwrap()];
+        wiki_capture(&tree, &pool, embedder(), first).await.unwrap();
+
+        let mut again = sample_request("Andiamo in Norvegia a luglio.");
+        again.allow = vec!["group:famiglia".parse().unwrap()];
+        let second = wiki_capture(&tree, &pool, embedder(), again).await.unwrap();
+
+        assert!(
+            matches!(second.action, CaptureAction::Skipped { .. }),
+            "same words, same audience: {:?}",
+            second.action
+        );
+    }
+
     #[tokio::test]
     async fn capture_dedups_near_paraphrase() {
         let dir = tempdir().unwrap();
@@ -1449,9 +1649,9 @@ mod tests {
     }
 
     /// Dedup never crosses the rules-page boundary (both-or-neither): a new
-    /// behaviour rule on `rules.md` is NOT skipped as a duplicate of an
+    /// behaviour rule on `@rules.md` is NOT skipped as a duplicate of an
     /// ordinary same-subject fact that restates it — a skip would keep the rule
-    /// off `rules.md` and out of the behaviour-rules channel — while
+    /// off `@rules.md` and out of the behaviour-rules channel — while
     /// rule-vs-rule on the page still dedups.
     #[tokio::test]
     async fn capture_dedup_never_crosses_the_rules_page_boundary() {
@@ -1470,7 +1670,7 @@ mod tests {
         .await
         .unwrap();
 
-        // The same words as a behaviour rule on `rules.md`: with a
+        // The same words as a behaviour rule on `@rules.md`: with a
         // threshold-0.0 probe (everything same-page would match) the
         // cross-page pair must still NOT pair — the rule captures.
         let mut rule = sample_request("Rispondi sempre in modo conciso.");
@@ -1664,7 +1864,7 @@ mod tests {
         // Never a wiki alone: with no page named, the link points at that
         // wiki's buffer — the page a fact with no home belongs on, and the
         // only readable page every wiki has.
-        assert!(intro.contains("[[alice-acmecorp/notes]]"), "{intro}");
+        assert!(intro.contains("[[alice-acmecorp/@notes]]"), "{intro}");
         assert!(!intro.contains("[[alice-acmecorp]]"), "{intro}");
     }
 

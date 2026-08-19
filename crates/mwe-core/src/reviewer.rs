@@ -24,7 +24,7 @@
 //!   page whose compiled body carries no `{{… f=<fact_id>}}` marker for it, or
 //!   whose marker is public. This is the ACL-leak guard the old engine lacked:
 //!   an owned claim rendered as unmarked prose would be readable by everyone.
-//! - **cross-subject bloat** — an identity card (a `wiki-user`'s `profile.md`;
+//! - **cross-subject bloat** — an identity card (a `wiki-user`'s `@profile.md`;
 //!   the agent wiki included) whose plan carries a **foreign-subject** fact:
 //!   subject is a different user, or a group the page's user is not a member of
 //!   (a group they belong to is their own shared context, never foreign).
@@ -53,7 +53,7 @@ pub const PROSE_DUP_THRESHOLD: f32 = 0.20;
 /// page's placements with the split-by-mass lever live), never a gate: the
 /// LLM alone decides whether the page still reads as one page. This is the
 /// missing redistribution leg of two shipped designs — the refile sweep
-/// deliberately lands cross-wiki moves on the destination buffer `notes.md`
+/// deliberately lands cross-wiki moves on the destination buffer `@notes.md`
 /// expecting "that wiki's own dream re-files them", and a grown-but-clean
 /// page otherwise never re-enters the Cartografo at all.
 pub const OVERSIZED_PAGE_THRESHOLD: usize = 30;
@@ -74,7 +74,7 @@ pub type Result<T> = std::result::Result<T, ReviewerError>;
 
 /// Enrollment context for the cross-subject check.
 ///
-/// Carries which wikis are `wiki-user` **identity wikis** (their `profile.md`
+/// Carries which wikis are `wiki-user` **identity wikis** (their `@profile.md`
 /// is an identity index — the agent wiki included, it is a normal
 /// `wiki-user`) and which groups each of those users belongs to. Group
 /// wikis and emergent sub-wikis carry other `wiki_type`s and never qualify.
@@ -143,7 +143,7 @@ pub struct ReviewReport {
     /// compiled page.
     pub missing_acl_markers: Vec<(String, String)>,
     /// `(slug, fact_id, subject)` foreign-subject facts the plan places on an
-    /// identity card (a `wiki-user`'s `profile.md`) — the identity-page
+    /// identity card (a `wiki-user`'s `@profile.md`) — the identity-page
     /// discipline violated. Observability only, never a gate.
     pub cross_subject_bloat: Vec<(String, String, String)>,
     /// `(slug, children)` — `concept_leaf` pages other pages parent under.
@@ -210,9 +210,9 @@ pub fn review(
         // `wiki-user` and the page is its card), so topic pages, group wikis
         // and buffers never qualify.
         //
-        // ⚠️ This keyed on `index.md` until 2026-08-04, from before the 63 §8
-        // split moved the card to `profile.md`. No plan node may claim
-        // `index.md` any more — the planner refuses to mint one and the seal
+        // ⚠️ This keyed on `cucina.md` until 2026-08-04, from before the 63 §8
+        // split moved the card to `@profile.md`. No plan node may claim
+        // `cucina.md` any more — the planner refuses to mint one and the seal
         // logs an error if one appears — so the check had gone permanently
         // empty and this guard silently stopped reporting anything.
         let is_identity_card = page.page_path == crate::wiki::PROFILE_FILENAME
@@ -431,7 +431,6 @@ mod tests {
             successor_fact_id: None,
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
         }
     }
@@ -671,7 +670,7 @@ mod tests {
         let r = review(&tree, &plan, &identity).unwrap();
         assert!(
             r.cross_subject_bloat.is_empty(),
-            "topic pages and group-wiki indexes are outside the identity discipline"
+            "topic pages and group-wiki cards are outside the identity discipline"
         );
     }
 

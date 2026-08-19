@@ -411,7 +411,7 @@ mod tests {
         // The deviating fact lives in the prose, dissimilar to the query — on
         // a content page, since the wiki root is a map recall never opens.
         std::fs::write(
-            wikis.join("profile.md"),
+            wikis.join("@profile.md"),
             "# Alice\n\nAlice is celiac and avoids gluten everywhere.\n",
         )
         .unwrap();
@@ -424,7 +424,7 @@ mod tests {
             authored_refs: Vec::new(),
             fact_id: FactId::parse(id).unwrap(),
             wiki_id: "alice".to_owned(),
-            source_path: "wikis/alice/profile.md".to_owned(),
+            source_path: "wikis/alice/@profile.md".to_owned(),
             region_start: None,
             region_end: None,
             text: text.to_owned(),
@@ -439,7 +439,6 @@ mod tests {
             salience: None,
             target_page: None,
             style: None,
-            page_description: None,
             source_ref: None,
         }
     }
@@ -482,7 +481,7 @@ mod tests {
         // collide with — and `open_target` vets verbatim.
         let nav = FakeLlmBackend::new(
             "fake-nav",
-            "{\"open\":[{\"wiki_id\":\"alice\",\"page\":\"profile.md\"}],\"done\":true}",
+            "{\"open\":[{\"wiki_id\":\"alice\",\"page\":\"@profile.md\"}],\"done\":true}",
         );
         let policy = IngestPolicy::default();
 

@@ -284,7 +284,14 @@ pub async fn drop_page_sections(pool: &SqlitePool, source_path: &str) -> Result<
     Ok(res.rows_affected())
 }
 
-/// Drop every section of one wiki. Returns the row count.
+/// Drop every section of one wiki — its whole content. Returns the row count.
+///
+/// Called wherever a wiki stops being addressable: the admin delete
+/// ([`crate::wiki_delete::delete_wiki_subtree`], in every disposal mode) and
+/// the registry sweep in [`crate::reindex`] when a wiki leaves the registry.
+/// Always a hard drop, never a tombstone — a section carries no ACL and no
+/// sender, so there is no disposal choice to make, and the table is a
+/// projection the watcher rebuilds if the `.md` files come back.
 ///
 /// # Errors
 ///
@@ -313,6 +320,24 @@ pub async fn find_page_sections(pool: &SqlitePool, source_path: &str) -> Result<
         .fetch_all(pool)
         .await?;
     raw.into_iter().map(decode_section).collect()
+}
+
+/// How many sections one wiki holds.
+///
+/// The blast radius the dashboard shows before a delete: for a smart wiki the
+/// fact count is ~0 by construction, so without this the confirmation page
+/// implies there is nothing to lose.
+///
+/// # Errors
+///
+/// `sqlx::Error`.
+pub async fn count_in_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT count(*) FROM wiki_sections WHERE wiki_id = ?")
+            .bind(wiki_id)
+            .fetch_one(pool)
+            .await?,
+    )
 }
 
 /// Every section of one wiki, ordered by page then position.
@@ -895,22 +920,6 @@ pub async fn list_smart_wikis(pool: &SqlitePool) -> Result<Vec<SmartWikiRow>> {
     raw.into_iter().map(decode_smart_wiki).collect()
 }
 
-/// One registry row, when the wiki is smart.
-///
-/// # Errors
-///
-/// `sqlx::Error` + principal decode failures.
-pub async fn find_smart_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<Option<SmartWikiRow>> {
-    let raw = sqlx::query_as::<_, RawSmartWikiRow>(
-        "SELECT wiki_id, slug, owner_id, shared_with, project_id, wiki_type, description \
-         FROM smart_wikis WHERE wiki_id = ?",
-    )
-    .bind(wiki_id)
-    .fetch_optional(pool)
-    .await?;
-    raw.map(decode_smart_wiki).transpose()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,7 +1204,7 @@ mod tests {
             description: Some("The print-shop ordering system.".to_owned()),
         };
         upsert_smart_wiki(&pool, &row).await.unwrap();
-        let read = find_smart_wiki(&pool, "alice-proj").await.unwrap().unwrap();
+        let read = list_smart_wikis(&pool).await.unwrap().pop().unwrap();
         assert_eq!(read, row);
         assert_eq!(
             read.description.as_deref(),
@@ -1209,17 +1218,12 @@ mod tests {
             ..row
         };
         upsert_smart_wiki(&pool, &revoked).await.unwrap();
-        let read = find_smart_wiki(&pool, "alice-proj").await.unwrap().unwrap();
+        let read = list_smart_wikis(&pool).await.unwrap().pop().unwrap();
         assert!(read.shared_with.is_empty());
         assert_eq!(list_smart_wikis(&pool).await.unwrap().len(), 1);
 
         assert_eq!(remove_smart_wiki(&pool, "alice-proj").await.unwrap(), 1);
-        assert!(
-            find_smart_wiki(&pool, "alice-proj")
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(list_smart_wikis(&pool).await.unwrap().is_empty());
     }
 
     // ---------- lexical search ----------
@@ -1396,7 +1400,7 @@ mod tests {
     #[tokio::test]
     async fn the_lexical_index_tracks_edits_and_deletions() {
         let (_workdir, pool) = pool().await;
-        let page = "wikis/alice/proj/notes.md";
+        let page = "wikis/alice/proj/@notes.md";
         let readable = vec!["alice-proj".to_owned()];
         replace_page_sections(&pool, page, &[section(page, 0, "the pineapple protocol")])
             .await

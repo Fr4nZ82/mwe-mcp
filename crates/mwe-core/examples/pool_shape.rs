@@ -27,7 +27,7 @@
 //! dedup — is the production code path, called, not re-implemented.
 //!
 //! One thing the harness asserts rather than derives: the ingest turn serves
-//! the sender's `index.md` in `WHO IS SPEAKING` and hands it to the funnel as
+//! the sender's `cucina.md` in `WHO IS SPEAKING` and hands it to the funnel as
 //! already delivered (roadmap 69a/69b), so the walk never opens it. This runs
 //! with that exclusion in place, because the ingest funnel is what is being
 //! measured. The engine additionally checks that the page carries a readable
@@ -317,7 +317,7 @@ async fn main() -> anyhow::Result<()> {
         let fan = recall_nav::gather_entry_points(&pool, &tree, &ctx, &[], &hits, &[]).await?;
         // What the ingest turn passes: the sender's identity card, already in
         // the block, so the funnel neither offers nor opens it.
-        let served = [(turn.sender.clone(), PathBuf::from("index.md"))];
+        let served = [(turn.sender.clone(), PathBuf::from("cucina.md"))];
         let outcome = recall_nav::navigate(
             &pool,
             &tree,

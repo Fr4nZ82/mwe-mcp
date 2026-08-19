@@ -101,7 +101,8 @@ pub struct Skill {
     pub depends_on: Vec<String>,
     /// Content hash, `sha256(content)[..32]` hex.
     pub etag: String,
-    /// Whether this is a bundled or custom skill.
+    /// Where the skill came from — always bundled today; see
+    /// [`SkillSource`].
     pub source: SkillSource,
 }
 

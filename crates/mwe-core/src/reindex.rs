@@ -292,7 +292,7 @@ pub async fn reindex_file(
     embedder: Arc<dyn Embedder>,
     abs_path: &Path,
 ) -> Result<ReindexFileReport> {
-    // Reserved underscore-pages are not indexable content: `_captures.md`
+    // Reserved underscore-pages are not indexable content: `_meta.md`
     // (rebuilt by `capture_buffer::reindex_capture_journal`), `_meta.md`
     // (wiki config), and `_briefing.md` / `_briefing.archive.md` (the smart
     // consumer's feedback INBOX, not knowledge it authored). The standard
@@ -654,7 +654,7 @@ pub async fn strip_retired_regions_on_page(
 /// The light-dream **retirement hygiene sweep**.
 ///
 /// Excises retired-fact regions left on pages **outside the current
-/// compilation plan** — `rules.md` (the compiler never rewrites it) and
+/// compilation plan** — `@rules.md` (the compiler never rewrites it) and
 /// husk pages — where residue is otherwise permanent. Pages the plan owns
 /// are skipped: the compiler rewrites them from the active fact set at
 /// their next compile, so their residue self-cleans.
@@ -884,10 +884,17 @@ pub async fn project_smart_wiki_registry(
 
     for row in sections::list_smart_wikis(pool).await? {
         if !live.contains(&row.wiki_id) {
+            // The content leaves with the registry row. A wiki that fell out
+            // of the registry is either gone or no longer smart, and the
+            // per-page sweep cannot reach it either way — it only walks the
+            // wikis `discovered` still reports as smart. Without this leg the
+            // sections sit in the table forever, unreachable by every reader.
+            let dropped = sections::drop_wiki_sections(pool, &row.wiki_id).await?;
             sections::remove_smart_wiki(pool, &row.wiki_id).await?;
             report.removed += 1;
             tracing::info!(
                 wiki_id = %row.wiki_id,
+                sections_dropped = dropped,
                 "smart registry: row dropped — wiki gone or no longer smart"
             );
         }
@@ -1120,31 +1127,17 @@ pub async fn reindex_full(
     // must still SKIP standard pages: unlike the watcher it has no
     // own-write suppression, so it can observe a mid-compile window (a
     // fact moved off page A whose row is repointed only when page B
-    // compiles) and would tombstone a live row. We rebuild the captures
-    // buffer from the journal for every wiki, then section-index only
+    // compiles) and would tombstone a live row. So it section-indexes only
     // smart wikis (smart-consumer-owned, content-indexed plain markdown);
     // "standard" = "not smart" now that the `wiki_type` registry is
     // retired.
     let discovered = tree.walk()?;
     for d in &discovered {
-        // Captures-journal recovery: rebuild the captures buffer DB index
-        // from the durable per-wiki `_captures.md` journal. Best-effort — a
-        // malformed journal must not abort the marker reindex.
-        match crate::capture_buffer::reindex_capture_journal(pool, &d.meta.wiki_id, &d.abs_dir)
-            .await
-        {
-            Ok(n) if n > 0 => tracing::info!(
-                wiki_id = %d.meta.wiki_id,
-                rebuilt = n,
-                "reindex_full: captures buffer rebuilt from journal"
-            ),
-            Ok(_) => {},
-            Err(e) => tracing::warn!(
-                error = %e,
-                wiki_id = %d.meta.wiki_id,
-                "reindex_full: captures-journal rebuild error"
-            ),
-        }
+        // No captures-buffer rebuild here any more. This loop used to re-read
+        // every wiki's captures journal on every pass — every five minutes,
+        // the whole history — to re-insert rows that already existed. That file
+        // is gone (2026-08-18) and `capture_buffer` is the source of truth.
+        //
         // Standard wikis: skip the content sweep (compiler output — see above).
         if !d.meta.smart {
             continue;
@@ -1245,8 +1238,18 @@ async fn refresh_page_cards(
 ) -> usize {
     let mut written = 0_usize;
     for d in discovered {
-        // Smart wikis sync no testata and are not funnel-navigable.
+        // Smart wikis sync no testata and are not funnel-navigable. A wiki
+        // that just turned smart may still carry cards from its standard
+        // life, and this sweep is the only thing that ever visits it — the
+        // `continue` below is exactly why they would otherwise never go.
         if d.meta.smart {
+            if let Err(e) = crate::page_card::drop_wiki(pool, d.meta.wiki_id.as_str()).await {
+                tracing::warn!(
+                    wiki_id = %d.meta.wiki_id,
+                    error = %e,
+                    "reindex_full: page cards of a now-smart wiki not dropped"
+                );
+            }
             continue;
         }
         let Ok(pages) = enumerate_pages(&d.abs_dir) else {
@@ -1297,9 +1300,9 @@ async fn refresh_page_cards(
 /// Whether a page can ever be **offered** to a reader, and therefore whether
 /// its card is worth storing.
 ///
-/// The wiki's map is refused by the read path outright, and a channel page
-/// (`rules.md`, `projects.md`) is its own pipeline's perimeter. Neither is a
-/// destination, so a card for them would only pad the selection.
+/// A channel page (`@rules.md`, `@projects.md`) is its own pipeline's
+/// perimeter, never a destination, so a card for one would only pad the
+/// selection.
 /// Store one page's card from bytes already read. Returns the rows written
 /// (0 when the page is not offerable, or when the write failed).
 ///
@@ -1365,10 +1368,7 @@ async fn refresh_one_card(
 }
 
 fn offerable_page(source_path: &str) -> bool {
-    let is_map = Path::new(source_path)
-        .file_name()
-        .is_some_and(|n| n == crate::wiki::INDEX_FILENAME);
-    !is_map && !crate::wiki::is_channel_page(source_path)
+    !crate::wiki::is_channel_page(source_path)
 }
 
 // ---------- watcher loop ----------
@@ -1579,40 +1579,17 @@ fn is_markdown_page(p: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
 }
 
-/// The captures journal (`_captures.md`) is a `.md` file but NOT a
-/// publishable page: it carries buffered-capture entries, not `{{f=…}}` fact
-/// regions. The marker reindex must never index it into `fact_index` (its
-/// own rebuild path is `crate::capture_buffer::reindex_capture_journal`).
-fn is_capture_journal(p: &Path) -> bool {
-    p.file_name()
-        .and_then(std::ffi::OsStr::to_str)
-        .is_some_and(|n| n == crate::wiki::CAPTURES_FILENAME)
-}
-
-/// `_meta.md` is the wiki's config frontmatter, never an indexable page —
-/// the section-indexer must skip it so its YAML never becomes fact rows.
-fn is_meta_file(p: &Path) -> bool {
-    p.file_name()
-        .and_then(std::ffi::OsStr::to_str)
-        .is_some_and(|n| n == crate::wiki::META_FILENAME)
-}
-
-/// The smart consumer's feedback INBOX (`_briefing.md` + its rotated
-/// `_briefing.archive.md`) — addressed TO the consumer, not knowledge it
-/// authored, so the section-indexer must never turn it into recallable
-/// facts. (`_briefing.md` is smart-wiki-only; skipping it on a standard
-/// wiki is harmless — that path never indexes from disk anyway.)
-fn is_briefing_file(p: &Path) -> bool {
-    p.file_name()
-        .and_then(std::ffi::OsStr::to_str)
-        .is_some_and(|n| n == crate::briefing::BRIEFING_FILENAME || n == "_briefing.archive.md")
-}
-
-/// Underscore-prefixed pages reserved by the engine — never indexable
-/// content. Centralised so a newly-reserved page can't be missed by one
-/// reindex path (the watcher fast path **and** the periodic full sweep).
+/// Reserved by the engine, and never indexable content: **any file whose
+/// name starts with `_`** ([`crate::wiki::names_engine_file`]).
+///
+/// One rule instead of a list (founder, 2026-08-18). It used to name three
+/// files — `_meta.md`, the retired captures journal, and the smart consumer's
+/// `_briefing.md` + its archive — which meant every newly-reserved name had to
+/// be remembered here, and a forgotten one would have its bytes turned into
+/// recallable facts. Centralised so the watcher fast path and the periodic
+/// full sweep can never disagree.
 fn is_reserved_page(p: &Path) -> bool {
-    is_capture_journal(p) || is_meta_file(p) || is_briefing_file(p)
+    crate::wiki::names_engine_file(p)
 }
 
 fn enumerate_pages(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -2010,7 +1987,6 @@ mod tests {
             valid_to: None,
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         };
@@ -2023,11 +1999,10 @@ mod tests {
     /// the refresh here is what keeps the cache from needing a write-through
     /// at every site that can rewrite a page.
     ///
-    /// The exclusions are the other half of the contract: the table holds
-    /// cards of pages a reader can be *offered*, so the wiki's map (which the
-    /// read path refuses outright) and the channel pages (`rules.md`,
-    /// `projects.md`, their own pipelines' perimeter) get no row — a card for
-    /// them would only pad the selection built on top of this.
+    /// The exclusion is the other half of the contract: the table holds
+    /// cards of pages a reader can be *offered*, so the channel pages
+    /// (`@rules.md`, `@projects.md`, their own pipelines' perimeter) get no
+    /// row — a card for them would only pad the selection built on top.
     #[tokio::test]
     async fn reindex_stores_a_pages_card_and_drops_it_with_the_page() {
         let dir = tempdir().unwrap();
@@ -2044,15 +2019,10 @@ mod tests {
         );
         write_page(
             &wiki_dir,
-            "index.md",
-            "---\ntitle: \"map\"\ndescription: \"the map\"\n---\n\nlinks\n",
-        );
-        write_page(
-            &wiki_dir,
-            "rules.md",
+            "@rules.md",
             "---\ntitle: \"rules\"\ndescription: \"policy\"\n---\n\nrules\n",
         );
-        for page in ["cucina.md", "index.md", "rules.md"] {
+        for page in ["cucina.md", "@rules.md"] {
             reindex_file(&pool, &tree, embedder.clone(), &wiki_dir.join(page))
                 .await
                 .expect("reindex");
@@ -2072,15 +2042,13 @@ mod tests {
             card.matches_file(&wiki_dir.join("cucina.md")),
             "the row is stamped against the file it was read from"
         );
-        for excluded in ["wikis/alice/index.md", "wikis/alice/rules.md"] {
-            assert!(
-                crate::page_card::get(&pool, excluded)
-                    .await
-                    .expect("get")
-                    .is_none(),
-                "{excluded} is not a destination, so it gets no card"
-            );
-        }
+        assert!(
+            crate::page_card::get(&pool, "wikis/alice/@rules.md")
+                .await
+                .expect("get")
+                .is_none(),
+            "a channel page is not a destination, so it gets no card"
+        );
 
         // The page goes; its card is derived from it, so it goes too — there
         // is nothing to tombstone.
@@ -2262,11 +2230,11 @@ mod tests {
             region(&b, "wrong rule"),
             region(&c, "live rule"),
         );
-        write_page(&wiki_dir, "rules.md", &body);
+        write_page(&wiki_dir, "@rules.md", &body);
         // A: retired, offsets deliberately STALE (point at the wrong span).
-        seed_fact(&pool, &a, "wikis/alice/rules.md", "old rule", Some((0, 8))).await;
+        seed_fact(&pool, &a, "wikis/alice/@rules.md", "old rule", Some((0, 8))).await;
         // B: retired, offsets never stamped (NULL) — still excised by parse.
-        seed_fact(&pool, &b, "wikis/alice/rules.md", "wrong rule", None).await;
+        seed_fact(&pool, &b, "wikis/alice/@rules.md", "wrong rule", None).await;
         // C: active with correct offsets.
         let span_c = region(&c, "live rule");
         let lo = i64::try_from(body.find(&span_c).unwrap()).unwrap();
@@ -2274,7 +2242,7 @@ mod tests {
         seed_fact(
             &pool,
             &c,
-            "wikis/alice/rules.md",
+            "wikis/alice/@rules.md",
             "live rule",
             Some((lo, hi)),
         )
@@ -2289,13 +2257,13 @@ mod tests {
             .unwrap();
 
         let (stripped, settled) =
-            strip_retired_regions_on_page(&pool, &tree, embedder.clone(), "wikis/alice/rules.md")
+            strip_retired_regions_on_page(&pool, &tree, embedder.clone(), "wikis/alice/@rules.md")
                 .await
                 .expect("page strip");
         assert_eq!(stripped, 2, "both retired regions excised");
         assert_eq!(settled, 1, "A's stale offsets settled (B had none)");
 
-        let after = std::fs::read_to_string(wiki_dir.join("rules.md")).unwrap();
+        let after = std::fs::read_to_string(wiki_dir.join("@rules.md")).unwrap();
         assert!(!after.contains(a.as_str()) && !after.contains("old rule"));
         assert!(!after.contains(b.as_str()) && !after.contains("wrong rule"));
         assert!(after.contains(c.as_str()) && after.contains("live rule"));
@@ -2306,14 +2274,14 @@ mod tests {
 
         // Converged: a second pass finds nothing to excise or settle.
         let (again_stripped, again_settled) =
-            strip_retired_regions_on_page(&pool, &tree, embedder, "wikis/alice/rules.md")
+            strip_retired_regions_on_page(&pool, &tree, embedder, "wikis/alice/@rules.md")
                 .await
                 .expect("second page strip");
         assert_eq!((again_stripped, again_settled), (0, 0));
     }
 
     /// The light-dream hygiene sweep strips residue from NON-plan pages
-    /// (`rules.md`) but leaves plan pages to their next compile; once a
+    /// (`@rules.md`) but leaves plan pages to their next compile; once a
     /// page's retired rows are settled it stops being a candidate.
     #[tokio::test]
     async fn sweep_cleans_non_plan_pages_and_skips_plan_pages() {
@@ -2331,7 +2299,7 @@ mod tests {
         let b = FactId::parse("018f1234-5678-7abc-9def-00000000bbbb").unwrap();
         let region = |id: &FactId, body: &str| format!("{{{{f={}}}}}{body}{{{{/}}}}", id.as_str());
         let rules_body = format!("# Rules\n\n- {}\n", region(&a, "retired rule"));
-        write_page(&wiki_dir, "rules.md", &rules_body);
+        write_page(&wiki_dir, "@rules.md", &rules_body);
         let topic_body = format!("# Topic\n\n{}\n", region(&b, "retired claim"));
         write_page(&wiki_dir, "topic.md", &topic_body);
 
@@ -2345,7 +2313,7 @@ mod tests {
         seed_fact(
             &pool,
             &a,
-            "wikis/alice/rules.md",
+            "wikis/alice/@rules.md",
             "retired rule",
             Some(span(&rules_body, &region(&a, "retired rule"))),
         )
@@ -2410,7 +2378,7 @@ mod tests {
         assert_eq!(report.pages_skipped_plan, 1);
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
 
-        let rules_after = std::fs::read_to_string(wiki_dir.join("rules.md")).unwrap();
+        let rules_after = std::fs::read_to_string(wiki_dir.join("@rules.md")).unwrap();
         assert!(!rules_after.contains(a.as_str()), "rules residue excised");
         let topic_after = std::fs::read_to_string(wiki_dir.join("topic.md")).unwrap();
         assert_eq!(
@@ -2451,7 +2419,6 @@ mod tests {
             valid_to: None,
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         };
@@ -2489,12 +2456,12 @@ mod tests {
             &pool,
             &nested_ok,
             "famiglia-bruno-battaglia",
-            "wikis/famiglia/bruno-battaglia/index.md",
+            "wikis/famiglia/bruno-battaglia/cucina.md",
         )
         .await;
-        seed_fact_in(&pool, &parent_ok, "famiglia", "wikis/famiglia/index.md").await;
+        seed_fact_in(&pool, &parent_ok, "famiglia", "wikis/famiglia/cucina.md").await;
         // Under no known wiki: left alone (WARN).
-        seed_fact_in(&pool, &stray, "famiglia", "trash/famiglia/index.md").await;
+        seed_fact_in(&pool, &stray, "famiglia", "trash/famiglia/cucina.md").await;
         // Retired + divergent: not an ACTIVE row, so out of scope.
         seed_fact_in(
             &pool,
@@ -2578,7 +2545,7 @@ mod tests {
         seed_fact(
             &pool,
             &fresh_fact_id(),
-            "alice/index.md",
+            "alice/cucina.md",
             "ciao",
             Some((0, 4)),
         )
@@ -2900,9 +2867,11 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
 
-        let registered = sections::find_smart_wiki(&pool, "alice")
+        let registered = sections::list_smart_wikis(&pool)
             .await
             .unwrap()
+            .into_iter()
+            .find(|w| w.wiki_id == "alice")
             .expect("smart wiki projected");
         assert_eq!(registered.owner_id, "user:alice".parse().unwrap());
         assert_eq!(registered.shared_with, vec!["user:bob".parse().unwrap()]);
@@ -2919,10 +2888,11 @@ mod tests {
         let report = project_smart_wiki_registry(&pool, &tree).await.unwrap();
         assert_eq!(report.projected, 1);
         assert!(
-            sections::find_smart_wiki(&pool, "alice")
+            sections::list_smart_wikis(&pool)
                 .await
                 .unwrap()
-                .is_some()
+                .iter()
+                .any(|w| w.wiki_id == "alice")
         );
 
         // The operator flips the flag off by hand in `_meta.md` — the
@@ -2933,10 +2903,11 @@ mod tests {
         assert_eq!(report.projected, 0);
         assert_eq!(report.removed, 1);
         assert!(
-            sections::find_smart_wiki(&pool, "alice")
+            !sections::list_smart_wikis(&pool)
                 .await
                 .unwrap()
-                .is_none()
+                .iter()
+                .any(|w| w.wiki_id == "alice")
         );
     }
 
@@ -3374,16 +3345,18 @@ mod tests {
         );
         // The sweep also refreshed the registry for the smart wiki only.
         assert!(
-            sections::find_smart_wiki(&pool, "acme")
+            sections::list_smart_wikis(&pool)
                 .await
                 .unwrap()
-                .is_some()
+                .iter()
+                .any(|w| w.wiki_id == "acme")
         );
         assert!(
-            sections::find_smart_wiki(&pool, "alice")
+            !sections::list_smart_wikis(&pool)
                 .await
                 .unwrap()
-                .is_none()
+                .iter()
+                .any(|w| w.wiki_id == "alice")
         );
     }
 

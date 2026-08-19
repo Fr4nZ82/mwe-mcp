@@ -338,7 +338,7 @@ fn dedup_context(winner: &FactId, loser: &FactId, hints: &DedupMergeHints) -> Va
 /// fails the merge; residue redacts fail-closed and the light-dream
 /// hygiene sweep picks it up). A later revert reactivates the loser as a
 /// clean pending render (NULL offsets): plan pages re-render it at the
-/// next compile; on `rules.md` the behaviour-rules channel keeps serving
+/// next compile; on `@rules.md` the behaviour-rules channel keeps serving
 /// it from the DB — only the page prose waits.
 ///
 /// # Errors
@@ -437,7 +437,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: body.to_owned(),
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: vec![],
@@ -469,7 +469,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: refs.to_vec(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: body.to_owned(),
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: vec![],
@@ -733,7 +733,7 @@ mod tests {
         .await
         .expect("direct apply");
 
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/index.md")).unwrap();
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
         assert!(
             !page.contains(loser.as_str()),
             "loser marker must be excised: {page}"
@@ -760,7 +760,7 @@ mod tests {
         let (dir, tree, pool) = setup().await;
         let loser = capture_one(&tree, &pool, "Alice pesa 62").await;
         let winner = capture_one(&tree, &pool, "Alice pesa adesso 62").await;
-        std::fs::remove_file(dir.path().join("wikis/alice/index.md")).unwrap();
+        std::fs::remove_file(dir.path().join("wikis/alice/cucina.md")).unwrap();
 
         apply_dedup_merge_direct(
             &pool,

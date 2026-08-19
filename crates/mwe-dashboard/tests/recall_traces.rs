@@ -135,7 +135,7 @@ fn sample_trace() -> RecallTrace {
         flat_hits: vec![TraceHit {
             fact_id: "0197fa00-0000-7000-8000-000000000001".to_owned(),
             wiki_id: "galadriel".to_owned(),
-            source_path: "wikis/galadriel/index.md".to_owned(),
+            source_path: "wikis/galadriel/cucina.md".to_owned(),
             region_start: Some(120),
             region_end: Some(180),
             text: "Galadriel è celiaca — cucinare senza glutine.".to_owned(),
@@ -153,7 +153,7 @@ fn sample_trace() -> RecallTrace {
             },
             TraceEntryPoint {
                 wiki_id: "galadriel".to_owned(),
-                page: Some("index.md".to_owned()),
+                page: Some("cucina.md".to_owned()),
                 origin: "rag".to_owned(),
                 weight: 0.83,
             },
@@ -161,7 +161,7 @@ fn sample_trace() -> RecallTrace {
         hops: vec![HopTrace {
             candidates: vec![CandidateCard {
                 wiki_id: "galadriel".to_owned(),
-                page: Some("index.md".to_owned()),
+                page: Some("cucina.md".to_owned()),
                 origin: "rag".to_owned(),
                 keywords: vec!["cucina".to_owned(), "salute".to_owned()],
                 summary: Some("Galadriel — identity page".to_owned()),
@@ -169,7 +169,7 @@ fn sample_trace() -> RecallTrace {
             requested: vec![
                 RequestedOpen {
                     wiki_id: "galadriel".to_owned(),
-                    page: Some("index.md".to_owned()),
+                    page: Some("cucina.md".to_owned()),
                     opened: true,
                 },
                 RequestedOpen {
@@ -182,7 +182,7 @@ fn sample_trace() -> RecallTrace {
             note: Some("the guest's page holds the dietary constraints".to_owned()),
             opened: vec![OpenedPage {
                 wiki_id: "galadriel".to_owned(),
-                page: "index.md".to_owned(),
+                page: "cucina.md".to_owned(),
                 chars: 420,
                 excerpt: "Galadriel è celiaca…".to_owned(),
                 discovered: 3,

@@ -45,7 +45,7 @@ MCP. In one server:
 - one conversational entry point, **`wiki_ingest_message`**, where a single
   internal-LLM call classifies and routes each message;
 - a **nightly REM cycle** that self-reorganises the memory (dedup,
-  promotion, archival, hub regeneration);
+  promotion, archival, page compilation);
 - **smart wikis** for smart consumers (authoritative writes, a
   `_briefing.md` handoff channel, cooperative leases, an op-log with
   revert);
@@ -166,11 +166,12 @@ If you are new, read in this order:
   deterministic segmentation, map/reduce extraction, `source_ref`
   provenance.
 - [narrative-buffer.md](design-notes/narrative-buffer.md) — the captures
-  buffer: for a standard wiki, ingest stages the classified
-  claim in the per-wiki `_captures.md` journal (durable SSOT) +
-  `capture_buffer` rebuildable index instead of the published `.md`;
-  the wiki families (standard / structured / smart); id
-  stability into the future fact (`mwe-core::capture_buffer`).
+  buffer: for a standard wiki, ingest stages the classified claim in the
+  `capture_buffer` table instead of the published `.md`, carrying **no
+  destination** — and it does not become a fact until the compilation plan has
+  given it a page, at which point the row and the prose land together; the wiki
+  families (standard / structured / smart); id stability into the future fact
+  (`mwe-core::capture_buffer`).
 - [narrative-compiler.md](design-notes/narrative-compiler.md) — the
   compilation planner: the five-stage topology pass (Fonditore →
   Cartografo → Conciliatore → Architetto → incremental orchestrator) that

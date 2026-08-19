@@ -1103,7 +1103,23 @@ pub async fn pull(
     };
     let policy = crate::document::DocumentPolicy::for_sections();
     let mut pages: Vec<PullPage> = Vec::new();
-    for info in handle.list_pages()? {
+    // The consumer's own inbox rides the pull, and it has to be named
+    // explicitly: since 2026-08-18 `list_pages` excludes every `_`-prefixed
+    // file (the engine's, not the wiki's), and `_briefing.md` is the one such
+    // file the smart consumer both reads and writes — others notify it there
+    // and it administers it with an ordinary push. That is the **admin**
+    // surface reading its own wiki, not a reader opening a page of the
+    // memory, so it is an exception here and nowhere else.
+    let mut enumerated: Vec<crate::wiki::PageInfo> = handle.list_pages()?;
+    let briefing_abs = handle.abs_dir().join(crate::briefing::BRIEFING_FILENAME);
+    if briefing_abs.is_file() {
+        enumerated.push(crate::wiki::PageInfo {
+            rel_path: std::path::PathBuf::from(crate::briefing::BRIEFING_FILENAME),
+            size: std::fs::metadata(&briefing_abs).map_or(0, |m| m.len()),
+            abs_path: briefing_abs,
+        });
+    }
+    for info in enumerated {
         let rel = info
             .rel_path
             .to_str()
@@ -1888,8 +1904,8 @@ fn write_pages(
         let pb = PathBuf::from(&page.path);
         let abs = dir.join(&pb);
         // Byte-exact, not `exists()`: on a case-folding filesystem the
-        // latter says `Index.md` is already there when the file on disk is
-        // `index.md`, which turned a rejected collision into a silent
+        // latter says `Setup.md` is already there when the file on disk is
+        // `setup.md`, which turned a rejected collision into a silent
         // overwrite of somebody else's page.
         let existed = crate::wiki::page_exists_byte_exact(dir, &pb);
         if existed && !allow_overwrite {
@@ -3311,7 +3327,7 @@ mod tests {
                 smart: false,
                 project_id: None,
                 description: None,
-                pages: vec![page("notes.md", "# bob's edit\n")],
+                pages: vec![page("@notes.md", "# bob's edit\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
                 expected_op_log_head: None,
@@ -3375,7 +3391,7 @@ mod tests {
                 smart: false,
                 project_id: None,
                 description: None,
-                pages: vec![page("notes.md", "# laptop edit\n")],
+                pages: vec![page("@notes.md", "# laptop edit\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
                 expected_op_log_head: None,
@@ -3413,7 +3429,7 @@ mod tests {
                 smart: false,
                 project_id: None,
                 description: None,
-                pages: vec![page("notes.md", "# laptop edit\n")],
+                pages: vec![page("@notes.md", "# laptop edit\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
                 expected_op_log_head: None,
@@ -3455,7 +3471,7 @@ mod tests {
                 smart: false,
                 project_id: None,
                 description: None,
-                pages: vec![page("notes.md", "# self edit\n")],
+                pages: vec![page("@notes.md", "# self edit\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
                 expected_op_log_head: None,
@@ -3509,7 +3525,7 @@ mod tests {
                 smart: false,
                 project_id: None,
                 description: None,
-                pages: vec![page("notes.md", "# dashboard-typed note\n")],
+                pages: vec![page("@notes.md", "# dashboard-typed note\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
                 expected_op_log_head: None,
@@ -3559,7 +3575,7 @@ mod tests {
                 smart: false,
                 project_id: None,
                 description: None,
-                pages: vec![page("notes.md", "# smart attempt\n")],
+                pages: vec![page("@notes.md", "# smart attempt\n")],
                 deletes: Vec::new(),
                 mark_processed: Vec::new(),
                 expected_op_log_head: None,

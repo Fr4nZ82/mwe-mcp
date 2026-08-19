@@ -150,7 +150,7 @@ YAML means "this function is not wired in this deployment".
 
 | Slot | YAML key | What it does | Status |
 |---|---|---|---|
-| Hub Writer | `hub_writer` | Regenerates `index.md` hub summaries when a wiki's children change (and as the last REM sub-job). Also the **fallback** backend for the operational chat when `operator_chat` is unset. | active |
+| Hub Writer | `hub_writer` | Writes the prose of a compiled **hub page** — a plan page with no facts of its own and one or more child pages, rendered as a short overview citing every child. Also the **fallback** backend for the operational chat when `operator_chat` is unset. | active |
 | Ingest | `ingest` | Backs `wiki_ingest_message` and the dashboard chat's plain (non-agentic) path — intent classification + multi-fact capture plan. Required whenever `wiki_ingest_message` is in use. The recommendation is to point this slot at a **strong** model (see the note below). | active |
 | Operator Chat | `operator_chat` | The dashboard's **operational agentic chat** (the maintainer's tool on their own memory): a multi-step tool-calling loop. Wants a **strong** model with reliable function-calling (faithful fact-id handling). **Optional** — unset falls back to `hub_writer`, so existing deployments need no new key. | active |
 | REM Promotions | `rem_promotions` | The nightly "strong" structural slot: paragraph→file / file→wiki / wiki promotions, forge clustering, archive decisions. | active |
@@ -405,7 +405,6 @@ contract of a cycle. Defaults verified against `RemPolicy::default()`:
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `map_writer_cap` | 200 | Max wikis whose `index.md` is rewritten as a map per cycle. A plain I/O cap since the map writer stopped calling a model; it was `10` when the sub-job was the priciest one per call, and that number silently starved every wiki past the tenth. |
 | `revisor_cap` | 30 | Max **act-first** `dedup_merge` merges the semantic revisor applies per cycle (born-applied receipt + 7-day revert window — see rem-cycle.md). |
 | `revisor_jaccard_min` | 0.45 | Lower bound of the jaccard pre-pass band: pairs below are dismissed without asking the LLM. |
 | `revisor_jaccard_max` | `recall::DEFAULT_DEDUP_THRESHOLD` | Upper bound: pairs at/above were already deduped at capture time, so the revisor works the **interesting band** in between. |
@@ -1278,7 +1277,7 @@ logging:
 llm:
   profile: hybrid             # all-local | hybrid | all-api | custom (label only)
 
-  hub_writer:                 # regenerates index.md hub summaries
+  hub_writer:                 # prose of a hub page (no facts, only children)
     backend: ollama
     model: qwen3.5:9b-q8_0
     base_url: http://localhost:11434   # default; shown for clarity

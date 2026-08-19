@@ -749,7 +749,7 @@ fn render(
             strong { "Danger zone." } " Wipes every memory: facts, wikis, media, "
             "captures, proposals, recall history, the training spool. Keeps the "
             "installation: accounts, enrollment, consumers and their tokens, "
-            "2FA, OAuth state, custom skills, config, env and prompt overrides. "
+            "2FA, OAuth state, config, env and prompt overrides. "
             "Identity wikis are re-scaffolded empty and every user goes through "
             "the welcome wizard again. Staged like a restore: it applies at the "
             "next server start, after an automatic safety snapshot."

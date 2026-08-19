@@ -135,7 +135,7 @@ fn untar(bytes: &[u8]) -> BTreeMap<String, String> {
 async fn export_serves_tar_attachment_to_admin() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
-    capture_fact(&pool, &tree, "index.md", "Alice likes tea").await;
+    capture_fact(&pool, &tree, "cucina.md", "Alice likes tea").await;
 
     let response = send(
         &app,
@@ -164,7 +164,7 @@ async fn export_serves_tar_attachment_to_admin() {
 
     let entries = untar(&body_bytes(response).await);
     assert!(entries.contains_key("alice/_meta.md"), "{entries:?}");
-    let index = entries.get("alice/index.md").expect("index page travels");
+    let index = entries.get("alice/cucina.md").expect("index page travels");
     assert!(
         index.contains("subject=user:alice") && index.contains("Alice likes tea"),
         "captured region must travel as a full marker: {index}"

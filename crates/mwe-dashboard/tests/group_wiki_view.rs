@@ -40,7 +40,8 @@ async fn group_owned_wiki_page_view_renders_instead_of_500() {
     let cookie = setup_admin_and_login(&app).await;
 
     // Provision a group-owned wiki — its `_meta.md` carries
-    // `acl_default: group:famiglia` (no single user owner) and a seeded index.md.
+    // `acl_default: group:famiglia` (no single user owner) and a seeded
+    // `@rules.md`.
     let create = send(
         &app,
         Request::builder()
@@ -74,11 +75,13 @@ async fn group_owned_wiki_page_view_renders_instead_of_500() {
 
     // The leaf-page view (`view_page`, not the wiki overview) is the handler
     // that runs the affordance read-access checks. Before the fix this 500-ed.
+    // Any real page of the wiki exercises it; a new wiki is seeded with its
+    // `@rules.md`.
     let view = send(
         &app,
         Request::builder()
             .method("GET")
-            .uri("/wiki/famiglia/view/index.md")
+            .uri("/wiki/famiglia/view/@rules.md")
             .header(header::COOKIE, &cookie)
             .body(Body::empty())
             .unwrap(),

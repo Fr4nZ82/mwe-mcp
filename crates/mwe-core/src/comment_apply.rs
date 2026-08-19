@@ -66,14 +66,13 @@ pub const BUNDLED_COMMENT_APPLY_MD: &str = include_str!("../prompts/comment-appl
 const REASON_COMMENT_REMOVE: &str = "dashboard_comment";
 
 /// Landing page for a cross-wiki `move`: a fact refiled into another wiki
-/// always lands on that wiki's `notes.md`. The compilation plan keys pages by
+/// always lands on that wiki's `@notes.md`. The compilation plan keys pages by
 /// bare slug forest-wide, so a named cross-wiki page would collide; the
 /// destination wiki's own compile pass then re-homes the fact onto the right
 /// page. Same contract as the REM cross-wiki refile sweep.
 ///
-/// **Not the wiki root.** `index.md` is the map — where a fact *belongs* —
-/// and it holds no facts of its own (founder, 2026-08-03); a fact landing
-/// there would also be invisible to the read path, which never opens it.
+/// **Not `cucina.md`.** That name is not a page of a standard wiki at all
+/// (`wiki::INDEX_FILENAME`), and nothing may file a fact onto it.
 const CROSS_WIKI_DEST_PAGE: &str = crate::wiki::NOTES_FILENAME;
 
 /// Cap on the comment excerpt woven into a move receipt's `reason` so the
@@ -560,9 +559,17 @@ async fn apply_add(
     let mut candidates = fact_index::find_active_in_wiki(pool, wiki_id.as_str()).await?;
     candidates.retain(|c| !batch_removals.contains(c.fact_id.as_str()));
     let on_channel_page = crate::wiki::is_channel_page(source_path);
-    if let Some((dup, score)) =
-        crate::capture::best_dedup_candidate(&candidates, &subject_id, on_channel_page, text, None)
-        && score >= crate::recall::DEFAULT_DEDUP_THRESHOLD
+    if let Some((dup, score)) = crate::capture::best_dedup_candidate(
+        &candidates,
+        &crate::capture::Audience {
+            subject: &subject_id,
+            allow: &allow_ids,
+            sender: commenter,
+        },
+        on_channel_page,
+        text,
+        None,
+    ) && score >= crate::recall::DEFAULT_DEDUP_THRESHOLD
     {
         if crate::parser::collect_embeds(&dup.text) == crate::parser::collect_embeds(text) {
             tracing::info!(
@@ -606,7 +613,6 @@ async fn apply_add(
         // proposal to carry.
         target_page: None,
         style: None,
-        page_description: None,
         salience: None,
         source_ref: None,
         // Dashboard comment-apply is not a smart-consumer authoring turn.
@@ -1149,7 +1155,11 @@ mod tests {
             "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        std::fs::write(wikis.join("alice/index.md"), "# Alice\n\n## bio\n\nbody.\n").unwrap();
+        std::fs::write(
+            wikis.join("alice/cucina.md"),
+            "# Alice\n\n## bio\n\nbody.\n",
+        )
+        .unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         (dir, tree, pool)
     }
@@ -1169,14 +1179,18 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: FactId::parse(id).unwrap(),
                 wiki_id: "alice".to_owned(),
-                source_path: "wikis/alice/index.md".to_owned(),
+                source_path: "wikis/alice/cucina.md".to_owned(),
                 region_start: Some(10),
                 region_end: Some(40),
                 text: text.to_owned(),
                 embedding: vec![0.1, 0.2],
                 subject_id: subject.parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
-                sender_id: None,
+                // Materialised, like every real write: provenance is frozen at
+                // birth and never collapsed to NULL
+                // (`capture::normalize_sender_attribution`). A fixture planting
+                // NULL builds a row no capture path can produce.
+                sender_id: Some(subject.parse::<Principal>().unwrap()),
                 fact_type: None,
                 topics: Vec::new(),
                 valid_from: None,
@@ -1185,7 +1199,6 @@ mod tests {
                 // proposal to carry.
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -1217,7 +1230,7 @@ mod tests {
         insert_fact(&pool, &id, "Alice was born in 1985").await;
         let bi = insert_comment(
             &pool,
-            Some("wiki://alice/index.md#bio"),
+            Some("wiki://alice/cucina.md#bio"),
             "the birth year is wrong, she was born in 1986",
         )
         .await;
@@ -1268,7 +1281,7 @@ mod tests {
         let on_page = fid_str(0x21);
         insert_fact(&pool, &on_page, "Alice likes tea").await;
         let stranger = fid_str(0x99); // never inserted on this page
-        let bi = insert_comment(&pool, Some("wiki://alice/index.md#bio"), "fix it").await;
+        let bi = insert_comment(&pool, Some("wiki://alice/cucina.md#bio"), "fix it").await;
 
         let llm = FakeLlmBackend::new(
             "fake",
@@ -1352,7 +1365,7 @@ mod tests {
         insert_fact_with_subject(&pool, &fid_str(0x42), "Alice prefers tea", "user:alice").await;
         let bi = insert_comment(
             &pool,
-            Some("wiki://alice/index.md#bio"),
+            Some("wiki://alice/cucina.md#bio"),
             "also note she has a cat",
         )
         .await;
@@ -1378,7 +1391,7 @@ mod tests {
         .expect("apply");
 
         assert_eq!(report.facts_added, 1);
-        let facts = fact_index::find_active_by_source_path(&pool, "wikis/alice/index.md")
+        let facts = fact_index::find_active_by_source_path(&pool, "wikis/alice/cucina.md")
             .await
             .unwrap();
         let added = facts
@@ -1412,7 +1425,7 @@ mod tests {
         insert_fact(&pool, &fid_str(0x51), "Alice likes tea").await;
         let bi = insert_comment(
             &pool,
-            Some("wiki://alice/index.md#bio"),
+            Some("wiki://alice/cucina.md#bio"),
             "Bob changed jobs — the family should know",
         )
         .await;
@@ -1437,7 +1450,7 @@ mod tests {
         .expect("apply");
 
         assert_eq!(report.facts_added, 1);
-        let facts = fact_index::find_active_by_source_path(&pool, "wikis/alice/index.md")
+        let facts = fact_index::find_active_by_source_path(&pool, "wikis/alice/cucina.md")
             .await
             .unwrap();
         let added = facts
@@ -1476,7 +1489,7 @@ mod tests {
         .await;
         let bi = insert_comment(
             &pool,
-            Some("wiki://alice/index.md#bio"),
+            Some("wiki://alice/cucina.md#bio"),
             "note that she has a cat",
         )
         .await;
@@ -1508,7 +1521,7 @@ mod tests {
             "a verbatim restatement is deduped at write time, not inserted"
         );
         assert_eq!(report.facts_deduped, 1, "the dedup skip is counted");
-        let facts = fact_index::find_active_by_source_path(&pool, "wikis/alice/index.md")
+        let facts = fact_index::find_active_by_source_path(&pool, "wikis/alice/cucina.md")
             .await
             .unwrap();
         assert_eq!(facts.len(), 1, "no duplicate row was inserted");
@@ -1537,10 +1550,10 @@ mod tests {
             sim >= crate::recall::DEFAULT_DEDUP_THRESHOLD,
             "premise: texts must be near-duplicates (got {sim})"
         );
-        let fid = capture_marker(&tree, &pool, embedder.clone(), "index.md", old_text).await;
+        let fid = capture_marker(&tree, &pool, embedder.clone(), "cucina.md", old_text).await;
         let bi = insert_comment(
             &pool,
-            Some("wiki://alice/index.md#bio"),
+            Some("wiki://alice/cucina.md#bio"),
             "the adoption year is wrong, it was 2021",
         )
         .await;
@@ -1577,7 +1590,7 @@ mod tests {
         );
         assert_eq!(report.facts_removed, 1, "the old fact is tombstoned");
         assert_eq!(report.comments_processed, 1);
-        let facts = fact_index::find_active_by_source_path(&pool, "wikis/alice/index.md")
+        let facts = fact_index::find_active_by_source_path(&pool, "wikis/alice/cucina.md")
             .await
             .unwrap();
         assert_eq!(facts.len(), 1, "exactly the corrected fact survives");
@@ -1657,13 +1670,13 @@ mod tests {
             &tree,
             &pool,
             embedder.clone(),
-            "index.md",
+            "cucina.md",
             "Alice takes lisinopril for blood pressure",
         )
         .await;
         let bi = insert_comment(
             &pool,
-            Some("wiki://alice/index.md#bio"),
+            Some("wiki://alice/cucina.md#bio"),
             "this belongs on the salute wiki",
         )
         .await;
@@ -1692,10 +1705,10 @@ mod tests {
         assert_eq!(report.facts_moved, 1, "{:?}", report.errors);
         assert_eq!(report.comments_processed, 1);
 
-        // The fact moved cross-wiki onto salute's index.md.
+        // The fact moved cross-wiki onto salute's buffer page.
         let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
         assert_eq!(row.wiki_id, "salute");
-        assert_eq!(row.source_path, "wikis/salute/notes.md");
+        assert_eq!(row.source_path, "wikis/salute/@notes.md");
 
         // A born-applied wiki_promote receipt (revertible) was minted.
         let receipts: i64 = sqlx::query_scalar(
@@ -1723,13 +1736,13 @@ mod tests {
             &tree,
             &pool,
             embedder.clone(),
-            "index.md",
+            "cucina.md",
             "Alice has a standup every morning at the office",
         )
         .await;
         let bi = insert_comment(
             &pool,
-            Some("wiki://alice/index.md#bio"),
+            Some("wiki://alice/cucina.md#bio"),
             "move this to the work page",
         )
         .await;
@@ -1773,13 +1786,13 @@ mod tests {
             &tree,
             &pool,
             embedder.clone(),
-            "index.md",
+            "cucina.md",
             "Alice has a standup every morning at the office",
         )
         .await;
         let bi = insert_comment(
             &pool,
-            Some("wiki://alice/index.md#bio"),
+            Some("wiki://alice/cucina.md#bio"),
             "move this to the work page",
         )
         .await;
@@ -1814,9 +1827,9 @@ mod tests {
             "refusal must cite the missing page: {:?}",
             report.errors
         );
-        // The fact stayed on index.md, and the page was not created.
+        // The fact stayed where it was, and the page was not created.
         let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
-        assert_eq!(row.source_path, "wikis/alice/index.md", "fact untouched");
+        assert_eq!(row.source_path, "wikis/alice/cucina.md", "fact untouched");
         assert!(
             !dir.path().join("wikis/alice/nowhere.md").exists(),
             "no page was conjured"
@@ -1841,14 +1854,14 @@ mod tests {
             &tree,
             &pool,
             embedder.clone(),
-            "index.md",
+            "cucina.md",
             "Alice likes tea",
         )
         .await;
         let stranger = fid_str(0x99);
         let bi = insert_comment(
             &pool,
-            Some("wiki://alice/index.md#bio"),
+            Some("wiki://alice/cucina.md#bio"),
             "move it to salute",
         )
         .await;
@@ -1896,13 +1909,13 @@ mod tests {
             &tree,
             &pool,
             embedder.clone(),
-            "index.md",
+            "cucina.md",
             "Alice uses Rust on the backend",
         )
         .await;
         let bi = insert_comment(
             &pool,
-            Some("wiki://alice/index.md#bio"),
+            Some("wiki://alice/cucina.md#bio"),
             "this is really a project note",
         )
         .await;

@@ -320,6 +320,7 @@ async fn run_dream_core(
             let report = mwe_core::dream::run_compile(
                 &state.pool,
                 &memory.tree,
+                Arc::clone(&memory.embedder),
                 &backends.bag(),
                 mwe_core::dream::Cadence::Full,
                 &now,
@@ -461,6 +462,7 @@ async fn run_dream(
             let report = mwe_core::dream::run_compile(
                 &state.pool,
                 &memory.tree,
+                Arc::clone(&memory.embedder),
                 &backends.bag(),
                 mwe_core::dream::Cadence::Full,
                 &now,

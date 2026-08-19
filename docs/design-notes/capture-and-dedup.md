@@ -24,7 +24,7 @@ and the dashboard ultimately call.
 `wiki_supersede` and `wiki_forget` both own the retirement **disk half**:
 after the authoritative DB tombstone lands, `reindex::strip_fact_region`
 excises the retired region's bytes from its page (the one cleanup that
-also reaches `rules.md`, which the compiler never rewrites) and settles
+also reaches `@rules.md`, which the compiler never rewrites) and settles
 the row's offsets to NULL. The strip is **best-effort** — it refuses an
 active row, soft-skips a missing page, and a failure is logged without
 failing the caller; residue redacts fail-closed meanwhile and the
@@ -37,14 +37,16 @@ compile re-renders its prose from the DB-authoritative claim text.
 
 The four operations above are *direct-write* primitives: each touches the
 published `.md` and the `fact_index` synchronously. On the ingest path
-they fire only for the **live exception**: an explicitly **requested
-container** (a list / collection / note the user asked to keep — the
-classifier sets the `requested_container` flag, no hard-coded gate) is
-written live via `wiki_capture` so it is there immediately. Every other
-classified claim is **standard**: the ingest router stages it in the
-per-wiki [narrative captures buffer](narrative-buffer.md) instead, and
-the published `.md` becomes the compiler's *output* rather than
-the ingest path's.
+they fire only for the **live exception**: a claim that already knows which
+page it goes on is written now. Two shapes qualify — a `lista` item (adding to
+a list, or creating one) and an explicitly **requested container** (a
+collection / note the user asked to keep — the classifier sets the
+`requested_container` flag, no hard-coded gate) — and both are written live via
+`wiki_capture`, page and `fact_index` row together, so they are there
+immediately. Every other classified claim is **standard**: the ingest router
+stages it in the [narrative captures buffer](narrative-buffer.md), with **no
+destination attached**, and the published `.md` becomes the compiler's *output*
+rather than the ingest path's.
 
 Collapsing the two — buffering the containers as well — was proposed on
 2026-08-05 and rejected: the fresh recall slot is a *ranked top-K*, which
@@ -58,16 +60,15 @@ in `_meta.md` (`smart: bool`, legacy alias `companion:`); see
 unaffected**: smart wikis are filtered out upstream and keep their own
 admin-tool write path.
 
-`wiki_capture` / `wiki_supersede` stay load-bearing on both sides of the
-fork. On the direct path they remain the ingest write for requested
-containers. On the standard-wiki path they are the **promotion primitive**
-the light dream reuses to turn a buffered capture into a `fact_index`
-fact — so this page's step-by-step still describes what a standard-wiki
-capture *becomes* once it is promoted, just not when it is written. A
-buffered capture is already recallable before promotion through the
-fresh-captures slot ([recall-pipeline.md](recall-pipeline.md)); the
-buffer write side is documented in
-[narrative-buffer.md](narrative-buffer.md).
+`wiki_capture` / `wiki_supersede` stay load-bearing on the direct path: they
+are the ingest write for a `lista` item and a requested container. On the
+standard-wiki path the light dream does the equivalent work itself
+(`dream_light::write_placed`), once the compilation plan has told it which page
+the claim goes on — so this page's step-by-step still describes what a
+standard-wiki claim *becomes*, just not when or by whom it is written. A
+waiting claim is already recallable through the fresh-captures slot
+([recall-pipeline.md](recall-pipeline.md)); the buffer write side is documented
+in [narrative-buffer.md](narrative-buffer.md).
 
 ## `wiki_capture` step-by-step
 
@@ -92,9 +93,9 @@ buffer write side is documented in
    that merely share a wiki, like an agent's behaviour rules whose subject is the
    user who dictated each one, stay distinct), **never crossing the rules-page
    boundary** (candidates pair only when both the new fact's page and the
-   candidate's are `rules.md`, or neither is — a behaviour rule dedups
+   candidate's are `@rules.md`, or neither is — a behaviour rule dedups
    rule-vs-rule; a rule skipped as a "duplicate" of an ordinary fact would
-   never reach `rules.md`, so the behaviour-rules channel would never serve
+   never reach `@rules.md`, so the behaviour-rules channel would never serve
    it, see [ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-by-scope-outside-fact-memory)),
    then compute jaccard 6-gram of `body` vs `row.text`, take the max score.
    - If `max ≥ dedup_threshold` (default
@@ -106,8 +107,8 @@ buffer write side is documented in
 
    The candidate scan is the shared
    [`capture::best_dedup_candidate`](../../crates/mwe-core/src/capture.rs);
-   the light dream re-runs it verbatim at promotion, so a buffered
-   capture gets exactly the dedup a live write gets
+   the light dream re-runs it verbatim when it screens the queue, so a
+   waiting claim gets exactly the dedup a live write gets
    ([narrative-buffer §promotion](narrative-buffer.md#promotion--the-light-dream)).
 5. **Render marker**: the bare runtime form `{{f=<UUIDv7>}}body{{/}}` —
    region key only. The ACL is **not** written into the marker: it goes

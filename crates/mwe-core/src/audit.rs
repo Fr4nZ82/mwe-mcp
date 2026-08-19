@@ -39,10 +39,6 @@ pub enum AuditError {
 /// Result alias for this module.
 pub type Result<T> = std::result::Result<T, AuditError>;
 
-/// Outcome flag stored in the `error` column: `None` ⇒ row was a
-/// successful call, `Some` ⇒ error class string.
-pub type ErrorClass = Option<String>;
-
 /// One write request from the dispatcher boundary. Field shape matches
 /// engine DB & migrations one-to-one.
 #[derive(Debug, Clone)]

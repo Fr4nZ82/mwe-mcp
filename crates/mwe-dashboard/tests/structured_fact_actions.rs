@@ -144,7 +144,7 @@ async fn acl_action_changes_engine_column_mints_receipt_and_redirects() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
-    let fid = capture_fact(&pool, &tree, "alice", "index.md", "Alice usa la bici").await;
+    let fid = capture_fact(&pool, &tree, "alice", "cucina.md", "Alice usa la bici").await;
 
     let response = send(
         &app,
@@ -221,7 +221,7 @@ async fn validity_action_sets_bounds_and_redirects() {
         &pool,
         &tree,
         "alice",
-        "index.md",
+        "cucina.md",
         "Alice lavora alla startup",
     )
     .await;
@@ -277,7 +277,7 @@ async fn validity_action_requires_at_least_one_bound() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
-    let fid = capture_fact(&pool, &tree, "alice", "index.md", "Alice ha un cane").await;
+    let fid = capture_fact(&pool, &tree, "alice", "cucina.md", "Alice ha un cane").await;
 
     let response = send(
         &app,
@@ -309,7 +309,7 @@ async fn structured_actions_are_refused_on_smart_wikis() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_smart_wiki(&tree);
-    let fid = capture_fact(&pool, &tree, "proj", "index.md", "Il progetto usa Rust").await;
+    let fid = capture_fact(&pool, &tree, "proj", "cucina.md", "Il progetto usa Rust").await;
 
     // ACL refused.
     let acl = send(
@@ -375,7 +375,7 @@ async fn acl_action_receipt_reverts_via_proposals_route() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
-    let fid = capture_fact(&pool, &tree, "alice", "index.md", "Alice va in montagna").await;
+    let fid = capture_fact(&pool, &tree, "alice", "cucina.md", "Alice va in montagna").await;
 
     // Apply an ACL change.
     let response = send(
@@ -445,11 +445,11 @@ async fn delete_action_strips_the_regions_bytes_from_disk() {
         &pool,
         &tree,
         "alice",
-        "index.md",
+        "cucina.md",
         "Alice usa il monopattino",
     )
     .await;
-    let page_abs = dir.path().join("wikis/alice/index.md");
+    let page_abs = dir.path().join("wikis/alice/cucina.md");
     assert!(
         std::fs::read_to_string(&page_abs)
             .unwrap()
@@ -550,7 +550,7 @@ async fn facts_list_hides_other_users_facts_until_admin_reveal() {
         &pool,
         &tree,
         "bob",
-        "index.md",
+        "cucina.md",
         "Bob private secret note",
         "user:bob",
     )

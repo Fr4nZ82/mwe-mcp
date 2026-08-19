@@ -219,14 +219,14 @@ pub async fn gather_entry_points(
             continue;
         };
         // A door is a page to read. A `fresh` hit has no published page yet,
-        // and a hit homed on the channel-only `rules.md` or on the wiki's map
-        // names no readable page either — all three surface through the flat
-        // slot and seed nothing here.
+        // and a hit homed on the channel-only `@rules.md` names no readable
+        // page either — both surface through the flat slot and seed nothing
+        // here.
         if hit.fresh {
             continue;
         }
-        let Some(page) = page_within(&info.wiki.rel_dir, &hit.source_path)
-            .filter(|p| !is_rules_page_path(p) && !is_root_page_path(p))
+        let Some(page) =
+            page_within(&info.wiki.rel_dir, &hit.source_path).filter(|p| !is_rules_page_path(p))
         else {
             continue;
         };
@@ -311,9 +311,6 @@ fn gather_card_seeds(
                 let Some(rel_path) = page_within(&info.wiki.rel_dir, source_path) else {
                     continue;
                 };
-                if is_root_page_path(&rel_path) {
-                    continue; // the wiki's map, not a page to read
-                }
                 out.push(EntryPoint {
                     wiki_id: wiki_id.to_owned(),
                     page: rel_path,
@@ -325,7 +322,7 @@ fn gather_card_seeds(
     }
 }
 
-/// True when a wiki-relative page path is the reserved `rules.md` policy
+/// True when a wiki-relative page path is the reserved `@rules.md` policy
 /// page ([`wiki::RULES_FILENAME`]) — channel-only, never navigable
 /// (roadmap 41e; the `&str` twin is [`wiki::is_rules_page`]).
 fn is_rules_page_path(page: &Path) -> bool {
@@ -336,8 +333,8 @@ fn is_rules_page_path(page: &Path) -> bool {
 /// Map a `fact_index.source_path` (workdir-relative, POSIX separators) to the
 /// page path relative to the wiki rooted at `rel_dir`. `None` when the path
 /// does not sit under the wiki directory (a stale index row after a move) —
-/// and `None` means **no candidate**, not "fall back to the wiki root": since
-/// the map rule the root is not a landing at all.
+/// and `None` means **no candidate**, not "fall back to the wiki root": a
+/// wiki root is not a landing at all.
 fn page_within(rel_dir: &Path, source_path: &str) -> Option<PathBuf> {
     let prefix = format!("{}/", rel_dir.to_string_lossy().replace('\\', "/"));
     let rest = source_path.strip_prefix(&prefix)?;
@@ -392,28 +389,14 @@ pub const BUNDLED_NAVIGATOR_PROMPT_MD: &str = include_str!("../prompts/navigator
 /// an operator override at `<workdir>/prompts/query-seeds.md` wins.
 pub const BUNDLED_QUERY_SEEDS_PROMPT_MD: &str = include_str!("../prompts/query-seeds.md");
 
-/// True when a wiki-relative page path is the wiki's map — the one rule,
-/// [`wiki::names_map_page`], which `wiki_read` asks too.
-///
-/// Founder's ruling, 2026-08-03: *«la radice della wiki dovrebbe servire solo
-/// al rem e all'ingest come mappa per dove mettere i fatti e non dovrebbe
-/// neanche essere presa per nulla dal recall»*. Same treatment
-/// [`wiki::RULES_FILENAME`] gets, for the same reason: a page whose job is
-/// not to be read is filtered on the offer side and refused centrally in
-/// [`open_target`], so no route can reach it.
-fn is_root_page_path(page: &Path) -> bool {
-    wiki::names_map_page(page)
-}
-
-/// True when a page may never be a navigation destination: the wiki's map
-/// ([`is_root_page_path`]) or its channel-only policy page
-/// ([`is_rules_page_path`]).
+/// True when a page may never be a navigation destination: today only the
+/// channel-only policy page ([`is_rules_page_path`]).
 ///
 /// The one place outside the funnel that needs the same judgement is REM's
 /// rail detector, which must not nominate a link to a page nobody can open.
 #[must_use]
 pub fn is_reserved_page_path(page: &Path) -> bool {
-    is_root_page_path(page) || is_rules_page_path(page)
+    is_rules_page_path(page)
 }
 
 /// Operator knobs for the navigator funnel — **resources only, never
@@ -787,11 +770,11 @@ struct NavOpen {
 ///
 /// The ingest recall block passes the sender's identity card, which
 /// `WHO IS SPEAKING` serves deterministically every turn (roadmap 69a), so
-/// `index.md` is not a navigation destination for its own subject at all
+/// that card is not a navigation destination for its own subject at all
 /// (69b; founder, 2026-08-03: *«non ci frega dell'indice se col rag arriviamo
 /// già sulle pagine giuste»* — the recalled facts land on the right pages
-/// directly, so the hub's routing is not needed to get there). `wiki_navigate`
-/// passes nothing: it builds no block, so it has delivered nothing.
+/// directly). `wiki_navigate` passes nothing: it builds no block, so it has
+/// delivered nothing.
 ///
 /// Degradation contract: an LLM transport failure or an unparseable decision
 /// stops the funnel and returns what was collected so far (recall degrades,
@@ -1196,16 +1179,7 @@ async fn open_target(
         return Ok(None);
     };
     let page = cand.page.clone();
-    // The wiki root is never opened, whatever door the funnel found — the
-    // offer-side filters keep it out of the pool, this is the central gate.
-    if is_root_page_path(&page) {
-        tracing::debug!(
-            wiki_id = %cand.wiki_id,
-            "recall_nav: the wiki root is a map for REM and ingest, not a recall page — discarded"
-        );
-        return Ok(None);
-    }
-    // The reserved `rules.md` policy page is not navigable (roadmap 41e):
+    // The reserved `@rules.md` policy page is not navigable (roadmap 41e):
     // standing directives reach the consumer through the dedicated `rules`
     // field only, and the page's seeded boilerplate is noise as recalled
     // prose. Central fail-safe — the offer-side filters keep the fan clean,
@@ -1564,7 +1538,6 @@ fn linked_wiki_candidates(
                 let rel = PathBuf::from(format!("{}.md", link.wiki_id));
                 if wiki::is_safe_page_path(&rel)
                     && !is_rules_page_path(&rel)
-                    && !is_root_page_path(&rel)
                     && let Some(target) = resolve_bare_slug_wiki(origin, by_id, &rel)
                     && reader_card.reader_can_read_in(target.meta.wiki_id.as_str())
                 {
@@ -1585,17 +1558,11 @@ fn linked_wiki_candidates(
             continue;
         }
         // `[[wiki]]` names a wiki, and recall opens pages, not wikis. It used
-        // to be dropped outright, because the wiki's address resolves to its
-        // `index.md` and that is the map — REM's artefact, refused by
-        // `open_target`. But dropping it deletes the commonest rail the corpus
-        // holds: `[[franz]]`, `[[carol]]`, `[[bob]]` are 20 % of every
-        // link written on a content page, and after 63 §8 split the root they
-        // all pointed at a page nobody may read. What the prose means by
-        // `[[franz]]` is *the person*, and since that split the person is
-        // `profile.md`, so the bare form resolves to the wiki's **foundation
-        // page** instead — the card if it has one, else the buffer. The map
-        // keeps only outgoing links (founder, 2026-08-04), and no rail is lost
-        // to a rename we performed ourselves.
+        // to be dropped outright. But dropping it deletes the commonest rail
+        // the corpus holds: `[[franz]]`, `[[carol]]`, `[[bob]]` are 20 %
+        // of every link written on a content page. What the prose means by
+        // `[[franz]]` is *the person*, so the bare form resolves to the wiki's
+        // **foundation page** — the card if it has one, else the buffer.
         let page_slug = link.page.clone().or_else(|| foundation_slug(d));
         if let Some(slug) = page_slug {
             let rel = PathBuf::from(format!("{slug}.md"));
@@ -1613,11 +1580,6 @@ fn linked_wiki_candidates(
                 continue;
             };
             if is_rules_page_path(&resolved) {
-                continue;
-            }
-            // A rail onto the wiki's map (`[[wiki/index]]`) names the
-            // wiki, not a page to read — not a door either.
-            if is_root_page_path(&resolved) {
                 continue;
             }
             let keywords = reader_page_keywords(d, &resolved, reader_card);
@@ -2042,7 +2004,6 @@ mod tests {
                 salience: None,
                 target_page: None,
                 style: None,
-                page_description: None,
                 source_ref: None,
                 authored_refs: Vec::new(),
             },
@@ -2059,7 +2020,7 @@ mod tests {
     /// Founder, 2026-08-03: *«il recall non entra in una wiki, il recall entra
     /// nelle pagine di contenuto relative ai fatti con score più alto»*. So a
     /// door is a **page**, and nothing that can only name a wiki produces one:
-    /// not the sender, not a group they belong to, not the wiki's own map.
+    /// not the sender, not a group they belong to, not a third party.
     #[tokio::test]
     async fn a_wiki_is_never_a_door_only_its_content_pages_are() {
         let (_dir, tree) = open_tree();
@@ -2067,14 +2028,14 @@ mod tests {
         forge_user(&tree, "bob");
         forge_group(&tree, "famiglia");
         let pool = make_pool().await;
-        // One readable fact per wiki, homed on the wiki root — the shape the
-        // old principal family turned into a door. None of them may seed one.
+        // One readable fact per wiki — the shape the old principal family
+        // turned into a door. None of them may seed one.
         for (n, w) in [(1u8, "alice"), (2, "bob"), (3, "famiglia")] {
             seed_fact(
                 &pool,
                 &fid(n),
                 w,
-                &format!("wikis/{w}/index.md"),
+                &format!("wikis/{w}/@notes.md"),
                 Principal::global(),
                 &[],
             )
@@ -2092,7 +2053,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn topic_seeds_reach_page_cards_and_never_the_wiki_map() {
+    async fn topic_seeds_reach_page_cards() {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "bob");
         let pool = make_pool().await;
@@ -2119,17 +2080,6 @@ mod tests {
             &["pasta"],
         )
         .await;
-        // The same topic on the wiki's map: it feeds the card, never a door.
-        seed_fact(
-            &pool,
-            &fid(3),
-            "bob",
-            "wikis/bob/index.md",
-            Principal::global(),
-            &["Sailing"],
-        )
-        .await;
-
         // Case-insensitive: classified topic "SAILING" vs card "Sailing".
         let fan = gather_entry_points(
             &pool,
@@ -2148,10 +2098,6 @@ mod tests {
         assert!(
             find(&fan, "bob", "food.md").is_none(),
             "non-matching page card must not seed"
-        );
-        assert!(
-            find(&fan, "bob", "index.md").is_none(),
-            "the wiki's map is not a door however well its card matches"
         );
         assert_eq!(fan.len(), 1);
     }
@@ -2267,15 +2213,15 @@ mod tests {
     }
 
     /// A RAG hit is a door only when it names a page the funnel may read. The
-    /// three that do not — an un-promoted `fresh` capture with no published
-    /// page, a hit on the channel-only `rules.md` (roadmap 41e), and a hit on
-    /// the wiki's map — surface through the flat slot and seed nothing.
+    /// two that do not — an un-promoted `fresh` capture with no published
+    /// page, and a hit on the channel-only `@rules.md` (roadmap 41e) — surface
+    /// through the flat slot and seed nothing.
     #[tokio::test]
     async fn rag_seeds_map_to_their_page_and_the_unreadable_ones_seed_nothing() {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
         write_page(&tree, "alice", "recipes.md", "# Recipes\n");
-        write_page(&tree, "alice", "rules.md", "# Rules\n");
+        write_page(&tree, "alice", "@rules.md", "# Rules\n");
         let pool = make_pool().await;
 
         let fan = gather_entry_points(
@@ -2285,10 +2231,9 @@ mod tests {
             &[],
             &[
                 rag_hit("alice", "wikis/alice/recipes.md", 0.42, false),
-                rag_hit("alice", "wikis/alice/_captures.md", 0.9, true), // fresh
-                rag_hit("alice", "wikis/alice/rules.md", 0.9, false),    // channel-only
-                rag_hit("alice", "wikis/alice/index.md", 0.9, false),    // the map
-                rag_hit("nowhere", "wikis/nowhere/x.md", 0.9, false),    // unknown wiki
+                rag_hit("alice", "", 0.9, true), // fresh: no page, no wiki
+                rag_hit("alice", "wikis/alice/@rules.md", 0.9, false), // channel-only
+                rag_hit("nowhere", "wikis/nowhere/x.md", 0.9, false), // unknown wiki
             ],
             &[],
         )
@@ -2325,8 +2270,8 @@ mod tests {
             &["food".to_owned()],
             &[
                 rag_hit("alice", "wikis/alice/menu.md", 0.9, false), // same door, heavier
-                rag_hit("bob", "wikis/bob/notes.md", 0.3, false),
-                rag_hit("bob", "wikis/bob/notes.md", 0.7, false), // duplicate, heavier
+                rag_hit("bob", "wikis/bob/@notes.md", 0.3, false),
+                rag_hit("bob", "wikis/bob/@notes.md", 0.7, false), // duplicate, heavier
             ],
             &[],
         )
@@ -2339,7 +2284,7 @@ mod tests {
         assert_eq!(alice_page.origin, EntryOrigin::Rag);
         assert!((alice_page.weight - 0.9).abs() < f32::EPSILON);
         // bob's page: the heavier rag duplicate survived.
-        let bob_page = find(&fan, "bob", "notes.md").unwrap();
+        let bob_page = find(&fan, "bob", "@notes.md").unwrap();
         assert!((bob_page.weight - 0.7).abs() < f32::EPSILON);
         for pair in fan.windows(2) {
             assert!(pair[0].weight >= pair[1].weight);
@@ -2350,8 +2295,8 @@ mod tests {
     fn page_within_strips_the_wiki_prefix_and_rejects_foreign_paths() {
         // Nested wiki: rel_dir carries the parent chain.
         assert_eq!(
-            page_within(Path::new("wikis/alice/acme"), "wikis/alice/acme/notes.md"),
-            Some(PathBuf::from("notes.md"))
+            page_within(Path::new("wikis/alice/acme"), "wikis/alice/acme/@notes.md"),
+            Some(PathBuf::from("@notes.md"))
         );
         assert_eq!(
             page_within(Path::new("wikis/alice"), "wikis/alice/sub/page.md"),
@@ -2784,19 +2729,18 @@ mod tests {
         write_page(
             &tree,
             "alice",
-            "notes.md",
+            "@notes.md",
             &format!(
                 "---\ntitle: \"Notes\"\n---\n\nShared prose.\n\n\
                  {{{{subject=user:alice f={UUID_1}}}}}secret{{{{/}}}}\n"
             ),
         );
         // One hop is the whole walk here, and that is the shipped behaviour:
-        // an opened page with no `[[wikilinks]]` exposes nothing, there is no
-        // directory listing to stand in for one, and the wiki root is the map
-        // rather than a page. What this test is about is the projection of the
-        // page that WAS opened.
+        // an opened page with no `[[wikilinks]]` exposes nothing and there is
+        // no directory listing to stand in for one. What this test is about is
+        // the projection of the page that WAS opened.
         let llm = ScriptedLlm::new(&[
-            r#"{"open":[{"wiki_id":"alice","page":"notes.md"}],"done":false,"note":"go"}"#,
+            r#"{"open":[{"wiki_id":"alice","page":"@notes.md"}],"done":false,"note":"go"}"#,
         ]);
 
         let out = navigate(
@@ -2805,7 +2749,7 @@ mod tests {
             &llm,
             &sender("mallory", &[]),
             "what do we know?",
-            &[entry("alice", "notes.md", EntryOrigin::Topic, 0.8)],
+            &[entry("alice", "@notes.md", EntryOrigin::Topic, 0.8)],
             &NavigatorPolicy::default(),
             Served::default(),
         )
@@ -2817,7 +2761,7 @@ mod tests {
         assert_eq!(out.fragments.len(), 1);
         let f = &out.fragments[0];
         assert_eq!(f.wiki_id, "alice");
-        assert_eq!(f.page, PathBuf::from("notes.md"));
+        assert_eq!(f.page, PathBuf::from("@notes.md"));
         assert!(f.text.contains("Shared prose."));
         assert!(
             !f.text.contains("secret") && f.text.contains("[redacted]"),
@@ -2857,7 +2801,7 @@ mod tests {
         write_page(
             &tree,
             "alice",
-            "notes.md",
+            "@notes.md",
             &format!("Shared prose.\n\n{{{{subject=global f={UUID_1}}}}}secret{{{{/}}}}\n"),
         );
         let pool = make_pool().await;
@@ -2867,7 +2811,7 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: FactId::parse(UUID_1).unwrap(),
                 wiki_id: "alice".to_owned(),
-                source_path: "wikis/alice/notes.md".to_owned(),
+                source_path: "wikis/alice/@notes.md".to_owned(),
                 region_start: None,
                 region_end: None,
                 text: "secret".to_owned(),
@@ -2882,14 +2826,13 @@ mod tests {
                 salience: None,
                 target_page: None,
                 style: None,
-                page_description: None,
                 source_ref: None,
             },
         )
         .await
         .expect("insert fact row");
         let llm = ScriptedLlm::new(&[
-            r#"{"open":[{"wiki_id":"alice","page":"notes.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"alice","page":"@notes.md"}],"done":false}"#,
             r#"{"open":[],"done":true}"#,
         ]);
 
@@ -2899,7 +2842,7 @@ mod tests {
             &llm,
             &sender("mallory", &[]),
             "what do we know?",
-            &[entry("alice", "notes.md", EntryOrigin::Topic, 0.8)],
+            &[entry("alice", "@notes.md", EntryOrigin::Topic, 0.8)],
             &NavigatorPolicy::default(),
             Served::default(),
         )
@@ -2950,12 +2893,12 @@ mod tests {
     }
 
     /// Founder, 2026-08-03 — *«il recall non entra in una wiki»*. A bare
-    /// `[[bob]]` rail names a wiki, so it is **not** a door: what it points at
-    /// is that wiki's map, which belongs to REM and the ingest classifier. A
-    /// page hop (`[[bob/hobbies]]`) still is one — that is the rail that names
+    /// `[[bob]]` rail names a wiki, and recall opens pages: it resolves to
+    /// bob's foundation page (his card, else his buffer). A page hop
+    /// (`[[bob/hobbies]]`) is a door as it stands — the rail that names
     /// content, arrived at by reading a page rather than by choosing a wiki.
     #[tokio::test]
-    async fn a_bare_wiki_rail_resolves_to_the_foundation_page_never_the_map() {
+    async fn a_bare_wiki_rail_resolves_to_the_foundation_page() {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
         forge_user(&tree, "bob");
@@ -3008,8 +2951,7 @@ mod tests {
         assert_eq!(out.fragments[1].wiki_id, "bob");
         assert_eq!(out.fragments[1].page, PathBuf::from("hobbies.md"));
         assert!(out.fragments[1].text.contains("Bob sails."));
-        // The bare rail now IS a door — onto bob's card. What it must never
-        // reach is the map, whatever route asked for it.
+        // The bare rail IS a door — onto bob's card.
         let offered: Vec<&str> = out.trace[1]
             .candidates
             .iter()
@@ -3019,10 +2961,6 @@ mod tests {
         assert!(
             offered.contains(&wiki::PROFILE_FILENAME),
             "`[[bob]]` must be offered as bob's foundation page: {offered:?}"
-        );
-        assert!(
-            !offered.contains(&wiki::INDEX_FILENAME),
-            "no route may offer a wiki's map: {offered:?}"
         );
         // The navigator asked for the wiki with no page at all — that shape
         // is still not a target, it is what the rail resolved *away from*.
@@ -3040,7 +2978,7 @@ mod tests {
         forge_user(&tree, "bob");
         // Bob has content but nothing authored as his foundation: no card,
         // no buffer. There is nothing for `[[bob]]` to mean, so the rail is
-        // dropped rather than falling back onto the map.
+        // dropped rather than falling back onto the wiki itself.
         write_page(&tree, "alice", "rails.md", "# Rails\n\nSee [[bob]].\n");
         write_page(&tree, "bob", "hobbies.md", "# Hobbies\n\nBob sails.\n");
         let pool = make_pool().await;
@@ -3087,16 +3025,18 @@ mod tests {
     async fn navigate_follows_legacy_bare_slug_links_as_same_wiki_pages() {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
-        // Pre-canonical corpus grammar: a bare `[[notes]]` naming no wiki
-        // must resolve as the same-wiki page `notes.md` (emit canonical,
+        // Pre-canonical corpus grammar: a bare `[[cucina]]` naming no wiki
+        // must resolve as the same-wiki page `cucina.md` (emit canonical,
         // resolve legacy). `[[ghost]]` matches nothing and stays a dead rail.
+        // Deliberately an ORDINARY page: an engine-named one carries the `@`
+        // marker, so a bare slug could never name it.
         write_page(
             &tree,
             "alice",
             "rails.md",
-            "# Rails\n\nSee [[notes]] and [[ghost]].\n",
+            "# Rails\n\nSee [[cucina]] and [[ghost]].\n",
         );
-        write_page(&tree, "alice", "notes.md", "# Notes\n\nAlice paints.\n");
+        write_page(&tree, "alice", "cucina.md", "# Cucina\n\nAlice paints.\n");
         let pool = make_pool().await;
         // The fallback keeps the derived-visibility gate on the resolved
         // wiki: alice must read ≥ 1 fact there for the page to be offered.
@@ -3104,14 +3044,14 @@ mod tests {
             &pool,
             &fid(1),
             "alice",
-            "wikis/alice/notes.md",
+            "wikis/alice/cucina.md",
             Principal::global(),
             &[],
         )
         .await;
         let llm = ScriptedLlm::new(&[
             r#"{"open":[{"wiki_id":"alice","page":"rails.md"}],"done":false}"#,
-            r#"{"open":[{"wiki_id":"alice","page":"notes.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"alice","page":"cucina.md"}],"done":false}"#,
         ]);
 
         let out = navigate(
@@ -3134,8 +3074,8 @@ mod tests {
                 out.fragments[1].wiki_id.as_str(),
                 out.fragments[1].page.display().to_string().as_str(),
             ),
-            ("alice", "notes.md"),
-            "the bare [[notes]] rail must open the same-wiki page"
+            ("alice", "cucina.md"),
+            "the bare [[cucina]] rail must open the same-wiki page"
         );
         assert!(out.fragments[1].text.contains("Alice paints."));
     }
@@ -3305,12 +3245,12 @@ mod tests {
         write_page(
             &tree,
             "alice",
-            "notes.md",
+            "@notes.md",
             "---\ntitle: \"Notes\"\n---\n\nA very long body that does not fit the budget at all.\n",
         );
         let llm = ScriptedLlm::new(&[
-            r#"{"open":[{"wiki_id":"alice","page":"notes.md"}],"done":false}"#,
-            r#"{"open":[{"wiki_id":"alice","page":"rules.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"alice","page":"@notes.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"alice","page":"@rules.md"}],"done":false}"#,
         ]);
         let policy = NavigatorPolicy {
             char_budget: 10,
@@ -3323,7 +3263,7 @@ mod tests {
             &llm,
             &sender("alice", &[]),
             "turn",
-            &[entry("alice", "notes.md", EntryOrigin::Rag, 0.9)],
+            &[entry("alice", "@notes.md", EntryOrigin::Rag, 0.9)],
             &policy,
             Served::default(),
         )
@@ -3351,15 +3291,20 @@ mod tests {
     async fn navigate_never_opens_a_page_the_caller_already_served() {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
-        write_page(&tree, "alice", "index.md", "# Alice\n\nHer whole card.\n");
-        write_page(&tree, "alice", "notes.md", "Ordinary prose.\n");
-        // Hop 1 asks for the wiki root — which resolves to `index.md` — and
-        // for a real page beside it. Hop 2 asks for `index.md` by name, i.e.
-        // the navigator naming the map verbatim: `open_target`'s gate is the
+        write_page(
+            &tree,
+            "alice",
+            "@profile.md",
+            "# Alice\n\nHer whole card.\n",
+        );
+        write_page(&tree, "alice", "@notes.md", "Ordinary prose.\n");
+        // Hop 1 asks for the wiki with no page — which resolves to the
+        // foundation page, `@profile.md` — and for a real page beside it.
+        // Hop 2 asks for `@profile.md` by name: `open_target`'s gate is the
         // central fail-safe and this is the case that exercises it.
         let llm = ScriptedLlm::new(&[
-            r#"{"open":[{"wiki_id":"alice"},{"wiki_id":"alice","page":"notes.md"}],"done":false}"#,
-            r#"{"open":[{"wiki_id":"alice","page":"index.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"alice"},{"wiki_id":"alice","page":"@notes.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"alice","page":"@profile.md"}],"done":false}"#,
         ]);
 
         let out = navigate(
@@ -3370,11 +3315,11 @@ mod tests {
             "what do we know?",
             &[
                 entry("alice", "rails.md", EntryOrigin::Rag, 0.9),
-                entry("alice", "notes.md", EntryOrigin::Rag, 0.5),
+                entry("alice", "@notes.md", EntryOrigin::Rag, 0.5),
             ],
             &NavigatorPolicy::default(),
             Served {
-                pages: &[("alice".to_owned(), PathBuf::from("index.md"))],
+                pages: &[("alice".to_owned(), PathBuf::from("@profile.md"))],
                 cards: &[],
             },
         )
@@ -3384,21 +3329,21 @@ mod tests {
         assert!(
             !out.fragments
                 .iter()
-                .any(|f| f.page == Path::new("index.md")),
+                .any(|f| f.page == Path::new("@profile.md")),
             "the served page must never be opened: {:?}",
             out.fragments
         );
         assert!(
             out.fragments
                 .iter()
-                .any(|f| f.page == Path::new("notes.md")),
+                .any(|f| f.page == Path::new("@notes.md")),
             "and refusing it must not cost the walk its other choice"
         );
         assert!(
             out.trace.iter().all(|hop| hop
                 .candidates
                 .iter()
-                .all(|c| c.page.as_deref() != Some("index.md"))),
+                .all(|c| c.page.as_deref() != Some("@profile.md"))),
             "nor is it ever offered — not from the fan, not from a rail"
         );
         assert!(
@@ -3407,15 +3352,15 @@ mod tests {
         );
     }
 
-    /// Roadmap 41e — the reserved `rules.md` policy page is channel-only:
+    /// Roadmap 41e — the reserved `@rules.md` policy page is channel-only:
     /// no route offers it as a door, and even a navigator that asks for it
     /// verbatim is discarded by the `open_target` fail-safe.
     #[tokio::test]
     async fn navigate_never_offers_nor_opens_the_rules_page() {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
-        write_page(&tree, "alice", "rules.md", "# Rules\n\nStanding policy.\n");
-        write_page(&tree, "alice", "notes.md", "Ordinary prose.\n");
+        write_page(&tree, "alice", "@rules.md", "# Rules\n\nStanding policy.\n");
+        write_page(&tree, "alice", "@notes.md", "Ordinary prose.\n");
         write_page(&tree, "alice", "rails.md", "Entry prose.\n");
         // The navigator asks for the rules page **verbatim**, which is the
         // case that matters: `open_target`'s gate is the central fail-safe and
@@ -3424,7 +3369,7 @@ mod tests {
         // can put a reserved page in front of the navigator by accident, so
         // the remaining risk is exactly a navigator that names one itself.
         let llm = ScriptedLlm::new(&[
-            r#"{"open":[{"wiki_id":"alice","page":"rules.md"},{"wiki_id":"alice","page":"rails.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"alice","page":"@rules.md"},{"wiki_id":"alice","page":"rails.md"}],"done":false}"#,
         ]);
 
         let out = navigate(
@@ -3443,14 +3388,14 @@ mod tests {
         assert!(
             out.fragments
                 .iter()
-                .all(|f| f.page != Path::new("rules.md")),
+                .all(|f| f.page != Path::new("@rules.md")),
             "the rules page must never be opened"
         );
         assert!(
             out.trace
                 .iter()
                 .flat_map(|h| h.candidates.iter())
-                .all(|c| c.page.as_deref() != Some("rules.md")),
+                .all(|c| c.page.as_deref() != Some("@rules.md")),
             "the rules page must never be offered as a candidate door"
         );
         // The control: the ordinary page named beside it in the same decision

@@ -37,6 +37,19 @@ async fn setup_admin(app: &axum::Router) -> String {
     extract_cookie_value(&extract_set_cookie(&response, "mwe_session").expect("cookie"))
 }
 
+/// True when any page of `wiki_id` carries a fact marker — the shape a
+/// capture leaves behind. Scanned across the whole wiki dir: there is no one
+/// page a capture is guaranteed to land on.
+fn wiki_carries_a_marker(tree: &mwe_core::wiki::WikiTree, wiki_id: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(tree.wikis_dir().join(wiki_id)) else {
+        return false;
+    };
+    entries.flatten().any(|e| {
+        std::fs::read_to_string(e.path())
+            .is_ok_and(|raw| raw.contains("{{subject=") || raw.contains("{{owner="))
+    })
+}
+
 #[tokio::test]
 async fn welcome_get_renders_form_with_email_pre_filled() {
     let (app, _pool, _tree, _dir) = make_app_with_memory().await;
@@ -119,11 +132,10 @@ async fn welcome_post_save_fails_422_without_llm_slot() {
         "error body must mention the missing slot: {html}"
     );
 
-    // No marker on disk — capture was not attempted.
-    let index = std::fs::read_to_string(tree.wikis_dir().join("alice").join("index.md")).unwrap();
+    // No marker anywhere in the wiki — capture was not attempted.
     assert!(
-        !index.contains("{{subject=") && !index.contains("{{owner="),
-        "failed save must not leave a partial capture: {index}"
+        !wiki_carries_a_marker(&tree, "alice"),
+        "failed save must not leave a partial capture"
     );
 
     // Flag still 0 — wizard remains pending so the operator can
@@ -154,11 +166,10 @@ async fn welcome_post_skip_flips_flag_without_capturing_and_without_llm() {
     .await;
     assert!(response.status().is_redirection(), "{}", response.status());
 
-    // index.md still the placeholder — no marker added.
-    let index = std::fs::read_to_string(tree.wikis_dir().join("alice").join("index.md")).unwrap();
+    // No marker anywhere in the wiki — nothing was captured.
     assert!(
-        !index.contains("{{subject=") && !index.contains("{{owner="),
-        "skip must not capture: {index}"
+        !wiki_carries_a_marker(&tree, "alice"),
+        "skip must not capture"
     );
 
     // Flag flipped.

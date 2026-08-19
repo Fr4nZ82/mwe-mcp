@@ -112,18 +112,19 @@ routing → seed) and stays inside the ~500 ms–2 s conversational budget
 > compares these columns lexicographically (due-soon ranges, expiry judgements). A malformed
 > bound (an unresolved relative phrase like "domani sera") degrades to open (`NULL`) with a
 > warn — never stored verbatim, never replaced with the turn's own instant. The **narrative buffer→promote path carries validity too**:
-> `buffer_capture` stages `valid_from`/`valid_to` on the capture, the per-wiki `_captures.md`
-> journal mirrors them (`vf`/`vt` attributes — `rm engine.db` + reindex regenerates them), and the light dream's
+> `buffer_capture` stages `valid_from`/`valid_to` on the capture and the light dream's
 > `promote_one` copies them into `fact_index`, where they drive the validity render in compiled prose.
-> The ingest **placement axis** (`target_page` + `style` + `page_description`) **reaches the fact** and is
-> **consumed**: `buffer_capture` stages `style`/`page_description` alongside the
-> `target_page` it already carries, the journal mirrors them (`style`/`desc`, the free-text `desc`
-> percent-escaped), and `promote_one` copies the whole axis into `fact_index` (0035). Since the
-> classifier stopped proposing a destination, `target_page` and `page_description` are only ever
-> populated when the write cannot wait — `lista` material, or a container the user
-> just asked for (see that section below); anything else carries the buffer page
-> and no description. In the **light** cadence `build_wiki_plan` settles each
-> fact that carries a `target_page` **deterministically, with no LLM**
+> The ingest **placement axis** (`target_page` + `style` + `page_description`)
+> splits in two, and only the first half is a destination. `target_page` is
+> filled **only when the write cannot wait** — `lista` material, or a container
+> the user just asked for (see that section below) — and those are written
+> live, page and row together, never buffered. A claim that waits carries no
+> page at all: the buffer holds none (0071), so `promote_one` inserts the fact
+> with `target_page` NULL. `style` and `page_description` say how the page
+> holding the claim should *read*, not which page it is; they ride the buffer
+> and `promote_one` copies them onto the fact (0035). In the **light** cadence
+> `build_wiki_plan` settles each fact that carries a `target_page`
+> **deterministically, with no LLM**
 > (`ingest_placement_blueprint`), and hands everything else — i.e. all prose —
 > to the Cartografo on the cheap tier
 > (`NewFactPlacement::NamedThenCartografo`). The **strong** Cartografo, and the
@@ -147,9 +148,9 @@ routing → seed) and stays inside the ~500 ms–2 s conversational budget
 > stored and shown as the **date** itself, not converted to an age.) Salience is **stored end-to-end** —
 > threaded from the extraction through `CaptureRequest`/`BufferedCapture`
 > into [`fact_index.salience`](../../crates/mwe-core/src/fact_index.rs) (0037) on both the direct and the
-> standard-wiki paths (the `_captures.md` journal mirrors it as the `sal=` attribute, like `vf`/`vt`). **The light
+> standard-wiki paths. **The light
 > compile cadence reads it**: [`ingest_placement_blueprint`](../../crates/mwe-core/src/planner.rs)
-> routes a `high`-salience fact to the actor-wiki's `profile.md` identity card, overriding its proposed `target_page`
+> routes a `high`-salience fact to the actor-wiki's `@profile.md` identity card, overriding its proposed `target_page`
 > (see [narrative-compiler.md](narrative-compiler.md)).
 
 ### The guest short-circuit — ephemeral turns for the unidentified human
@@ -262,12 +263,26 @@ classifier cannot see is one the turn mints a second copy of, live, in front
 of the user. The *product* limit is
 [`MAX_LIST_PAGES_PER_WIKI`](../../crates/mwe-core/src/ingest.rs) — 32 **per
 wiki**, so one person's lists never consume another's allowance — and it is
-enforced where a list is born: `refuse_new_list_over_cap` sends a capture
-that would mint the wiki's 33rd list to the buffer instead. Growth only (an
-existing list is always addable-to, however many the wiki holds), and never a
-lost fact: the refusal downgrades the *destination*, not the capture, so the
-prose lands on the buffer and the nightly placement settles it like any other
-unplaced fact.
+enforced where a list is born: `refuse_new_list_over_cap` takes the page name
+away from a capture that would mint the wiki's 33rd list. Growth only — an
+existing list is always addable-to, however many the wiki holds.
+
+**A list item that loses its page is REFUSED, and the user is told.** Founder,
+2026-08-18: *«se si raggiungono 32 liste il messaggio dev'essere scartato e
+avvisato l'utente, generato un errore»*, and *«`@notes.md` non dev'essere usata
+per elementi di lista»*. The two ways a list loses its page — the cap here, and
+a classifier naming a reserved page — both end with the parking page as the
+destination, and for list material that is not a destination at all: the
+parking page holds prose waiting to be placed, and a list item on it turns the
+wiki's parking page into a shopping list. Waiting in the buffer is no better —
+an hour later there is still no list to place it on. So the extraction is
+dropped, an error is logged, and the turn carries a one-shot notice in
+[`IngestResponse::rules`] telling the agent to say plainly that this item was
+**not** saved and why (`ListRefusal`). A list is a set: one item silently
+missing is a wrong answer, not a partial one, and only the user can free up a
+list or pick an existing one.
+
+Prose is unaffected — it has no page by design and waits like everything else.
 
 The same shape governs the roster: `MAX_ENROLLED_USERS` (24) and
 `MAX_GROUPS_PER_USER` (8) are refused in
@@ -318,8 +333,9 @@ keeps that small by dropping ephemeral ops before any server call.
 
 The wikis that survive the smart-family filter are routed two ways by the
 [`Capture`](#the-four-intents-and-what-each-one-does) arm: a **standard-wiki**
-target (a prose page the compiler writes) is **buffered**; a live
-`requested_container` is a **direct write**. **"standard" = "not
+target (a prose page the compiler writes) is **buffered**, with no destination
+attached; a claim that already knows its page — a `lista` item or a live
+`requested_container` — is a **direct write**. **"standard" = "not
 smart"** — every wiki that survives the smart-family filter is on the
 non-smart path, read from the per-wiki `_meta.md` smart flag rather
 than a registry set.
@@ -342,11 +358,12 @@ the user's next question is seconds away ("what's on the list?"), so waiting
 would be wrong *by the content's nature*, not slow by implementation. So the
 classifier emits a per-extraction `requested_container` flag, and step 4
 routes a flagged capture down the **direct-write path even into a standard
-wiki** (`route_to_buffer = target_is_standard && !requested_container`) —
-`wiki_capture` creates the page if absent and writes the fact's marker
-immediately; the dream later refines it. The classifier decides — there is
-no hard-coded gate. Only accumulated knowledge (`requested_container: false`,
-the default) waits in the buffer.
+wiki** (`route_to_buffer = target_is_standard && !knows_its_page`, where
+`knows_its_page` is the `lista` style or the container flag) — `wiki_capture`
+creates the page if absent and writes the fact's marker immediately; the dream
+later refines it. The classifier decides — there is no hard-coded gate. Only
+accumulated knowledge waits in the buffer, and it waits **without a
+destination**: it is the placement itself that has not happened yet.
 
 > **Collapsing the two was proposed on 2026-08-05 and rejected.** The
 > argument for it was that the fresh slot already makes a buffered claim
@@ -448,8 +465,8 @@ name a page for a list at all — see below.
 ### A page name is honoured exactly when the write cannot wait
 
 `target_page` and `page_description` survive validation in **two** cases;
-everywhere else the classifier's proposal is discarded and the fact takes the
-wiki's buffer page (`IngestPolicy::default_page`, `notes.md`).
+everywhere else the classifier's proposal is discarded and the claim waits in
+the buffer with **no page named at all**.
 
 - **`style: "lista"`.** A list is a *set*. Half a shopping list is not a partial
   answer, it is a wrong one — which is also why a ranked top-K cannot serve one.
@@ -460,7 +477,7 @@ wiki's buffer page (`IngestPolicy::default_page`, `notes.md`).
   Independent of `style` by design — "keep me a note about project X" is prose
   and still needs the name the user gave it. Binding the page to `style` alone
   was a regression this rule's first cut introduced (2026-08-06, caught the same
-  day): a requested note landed on `notes.md` instead of the page asked for.
+  day): a requested note landed on `@notes.md` instead of the page asked for.
 
 Everything else waits, and waiting is what makes the name unnecessary: no single
 page is the answer before a fact is seen beside its neighbours, the classifier is
@@ -483,10 +500,10 @@ unnamed fact with the Cartografo on the cheap tier
 and what the user *did* name — a `lista`, a container asked for by name — is
 settled before the model is called and never shown to it.
 
-So the wiki's buffer page (`notes.md`) is what a fact passes through between
-being captured and the next light cycle, not where it waits for the night. It
-is still the designed holding place for anything the Cartografo declines to
-place, and REM's reorg still drains it.
+So `@notes.md` is no longer a place a fact passes through on its way in: while
+it waits, a claim is in the buffer and on no page. `@notes.md` keeps its other
+job, the one it was designed for — the holding place for anything the
+Cartografo declines to place, which REM's reorg then drains onto real pages.
 
 Nothing about the *reading* depends on this: the recall block renders the
 fact's own text, and a fact captured this minute is served from the capture
@@ -672,7 +689,7 @@ for three reasons:
 
 | Intent | Side effects | Output | Notes |
 |---|---|---|---|
-| `Capture` | **per filed fact**: standard target ⇒ [`capture_buffer::buffer_capture_staged`](narrative-buffer.md) (journal append + `capture_buffer` index carrying the staged vector and origin fingerprint, **no** `.md` write, **no** `fact_index` row) — **unless** the classifier flagged `requested_container`, which routes live; a requested container, or a smart target, ⇒ `wiki_capture` / `wiki_supersede` (embed + dedup + atomic append + `fact_index` insert). **Per closed fact** (the plan's `closures` array): validity stamped act-first + one born-applied receipt — see [the closure verb](#the-closure-verb--completion--the-relayed-forget-gesture). | `capture_id` (the **first** filed fact) + optional `context_snippet` if recall hits exist | Multi-fact: a bad extraction is skipped, the rest are filed. Legacy single-fact: any plan-validation failure ⇒ demote whole turn to skip. Nothing valid filed **and** nothing closed ⇒ skip. |
+| `Capture` | **per filed fact**: standard target ⇒ [`capture_buffer::buffer_capture_staged`](narrative-buffer.md) (one `capture_buffer` row carrying the staged vector and origin fingerprint, **no** file written, **no** `fact_index` row) — **unless** the classifier flagged `requested_container`, which routes live; a requested container, or a smart target, ⇒ `wiki_capture` / `wiki_supersede` (embed + dedup + atomic append + `fact_index` insert). **Per closed fact** (the plan's `closures` array): validity stamped act-first + one born-applied receipt — see [the closure verb](#the-closure-verb--completion--the-relayed-forget-gesture). | `capture_id` (the **first** filed fact) + optional `context_snippet` if recall hits exist | Multi-fact: a bad extraction is skipped, the rest are filed. Legacy single-fact: any plan-validation failure ⇒ demote whole turn to skip. Nothing valid filed **and** nothing closed ⇒ skip. |
 | `Recall` | none | `context_snippet` is the deterministic hit-list rebuilt from the flat hits ([`format_snippet`]) | Recall counter already bumped during step 1. |
 | `Structural` | **per filed fact, when the hybrid message carries content** (the same filing loop as `Capture`: explicit `extractions` + `closures` only, no legacy synthesis) | `suggested_seed` (LLM or canned `structural_suggested_seed`) | Never demotes to skip — the dashboard nudge is the turn's outcome even when nothing files. |
 | `Skip` | none | LLM `suggested_seed` if any, else `fallback_suggested_seed` | Greetings, acks, no-ops. |
@@ -691,8 +708,8 @@ already gone from it, filtered by their `_meta.md` smart flag). When the
 target is standard (smart flag `false`) and the unit is not a live
 `requested_container`, the orchestrator calls
 [`capture_buffer::buffer_capture_staged`](narrative-buffer.md): the claim is
-appended to the wiki's `_captures.md` journal and indexed in
-`capture_buffer`, with the validated supersede target carried through as
+inserted into `capture_buffer` — no file is written at all — with the
+validated supersede target carried through as
 `supersede_hint` (no `.md` is touched, no `fact_index` row is written,
 and the supersede is *not* applied now — it is recorded for the light
 dream to honour at promotion time). Two things ride along with the claim: its
@@ -1234,7 +1251,7 @@ places adjacent to this block (the hermes bridge leads with it).
 2. **`WHO IS SPEAKING`** — the sender's identity card, and the one
    **deterministic** slot in the block: a label line
    `<sender_id> — <their wiki's _meta.summary>`, then the sender's
-   **card (`profile.md`) itself**. Serving the page rather than an abstract of it
+   **card (`@profile.md`) itself**. Serving the page rather than an abstract of it
    is what makes the identity core — name, birthdate, contacts, family
    ties, but also the standing health constraints and the characterising
    preferences a `bio`-typed query would miss — arrive on *every* turn, at
@@ -1305,7 +1322,7 @@ places adjacent to this block (the hermes bridge leads with it).
      scarcest thing the walk has). *Another* person's card is a different
      page and stays navigable — nothing has served it.
    - **A page with no readable fact is scaffolding, not a card** — a freshly
-     seeded `profile.md` is a heading and some connective tissue. The slot
+     seeded `@profile.md` is a heading and some connective tissue. The slot
      then degrades to the label line alone, and is omitted entirely when
      there is neither card nor summary.
 
@@ -1348,7 +1365,7 @@ places adjacent to this block (the hermes bridge leads with it).
    honest: a durable hit **homed on a page the navigator injected below
    is dropped** (rendering happens after navigation, so the dedup is by
    the page's workdir-relative source path; fresh hits have no page and
-   are never deduped), and a hit homed on a `rules.md` page is skipped —
+   are never deduped), and a hit homed on a `@rules.md` page is skipped —
    directives are channel-only.
 
    A third gate sits above those two per-hit filters, and unlike them it
@@ -1388,7 +1405,7 @@ places adjacent to this block (the hermes bridge leads with it).
    a complete list.
    This is the [recall-as-navigation](recall-pipeline.md#entry-point-gathering--recall_nav-navigation-phase-1)
    runtime path: `recall_nav::gather_entry_points` builds the seed fan and
-   `recall_nav::navigate` runs the funnel. The reserved `rules.md` policy
+   `recall_nav::navigate` runs the funnel. The reserved `@rules.md` policy
    page is **not navigable** (roadmap 41e): the sibling fan and wikilink
    hops never offer it, a RAG hit homed on it seeds the wiki root
    instead, and `open_target` discards it as a fail-safe even when the
@@ -1436,7 +1453,7 @@ Standing **behaviour directives** are not memory and never ride
 the consumer can tell a binding rule apart from a remembered fact and **apply**
 it (rather than relay it). It carries the behaviour rules in force for the
 served user, order pinned and most specific last — the agent-wide rules, then
-the user's **user-global** rules (their own identity-wiki `rules.md`, roadmap
+the user's **user-global** rules (their own identity-wiki `@rules.md`, roadmap
 42), then the user's per-user rules for this agent (see
 [Agent behaviour rules](#agent-behaviour-rules--routed-by-scope-outside-fact-memory))
 — led by a one-shot **notice** when a non-admin's agent-wide change was refused
@@ -1493,7 +1510,7 @@ or single-fact:
   REM auto-promote target shares the same chokepoint
   ([rem-cycle.md](rem-cycle.md)) — and anything that still fails
   `is_safe_page_path` (a traversal-laden name, a segment that slugifies
-  to nothing) falls back to `policy.default_page` (`notes.md`, the buffer page).
+  to nothing) falls back to `policy.default_page` (`@notes.md`, the buffer page).
   **A name that survives canonicalisation but is one of the five reserved pages
   falls back too** ([`wiki::names_reserved_page`](../../crates/mwe-core/src/wiki.rs)):
   the prompt promises *«a capture aimed at one is not filed there»*, and until
@@ -1685,9 +1702,9 @@ group's scope fits. Without `enrollment_groups.scope` reaching the classifier, f
 fall back to private captures unless the message echoes a prompt few-shot
 near-verbatim; injecting the scope is what lets the model route on meaning.
 
-## User policy — `rules.md` read *and* written via ingest (prompt v2.21)
+## User policy — `@rules.md` read *and* written via ingest (prompt v2.21)
 
-Where `sender_groups` is *operator* knowledge, `rules.md` is the *user's
+Where `sender_groups` is *operator* knowledge, `@rules.md` is the *user's
 own* standing **engine policy**: a prose page
 ([`wiki::RULES_FILENAME`](../../crates/mwe-core/src/wiki.rs)) whose free
 prose holds **governance rules for the memory engine** — two families,
@@ -1698,13 +1715,13 @@ but as `{{f=…}}` fact regions the governance read strips — they ride the
 dedicated rules channel, never the policy prose. The governance half is
 *all prose, no metadata*: no rule is ever materialised onto the
 wiki-level `scope` primitive (maintainer 2026-06-08
-"tutto-prosa-nei-file"); enforcement is the soft read below. `rules.md`
+"tutto-prosa-nei-file"); enforcement is the soft read below. `@rules.md`
 is the user's front-end onto the per-fragment ACL pillar: the
 "Epstein-files" granularity is dictated *once*, in prose, instead of
 per-message.
 
 **Read side.** The orchestrator reads the **sender's**
-`rules.md` best-effort
+`@rules.md` best-effort
 ([`ingest::sender_rules`](../../crates/mwe-core/src/ingest.rs): locate the
 sender's identity wiki, read the page's free prose — fact regions
 stripped, so a user-global behaviour rule is never injected as policy or
@@ -1715,7 +1732,7 @@ sender's policy *«in full»*, under the standing rule that a slot may act
 against a set it is shown COMPLETE and never against a sample — and this is
 the block that carries governance. It used to be cut at
 `policy.max_sender_rules_chars` (1500), mid-word, with nothing logged: a user
-whose `rules.md` had grown past it, and whose last line was *«i fatti sulla
+whose `@rules.md` had grown past it, and whose last line was *«i fatti sulla
 mia salute restano privati»*, had that rule dropped while the prompt told the
 model it had seen everything. The number survives as the point where an
 unusually long policy is worth a `warn!`, since it costs every turn. The
@@ -1724,17 +1741,17 @@ when it assigns each fact's `subject_id`/`allow_ids`** — an explicit user
 rule ("keep health private", "always share X with the family")
 *overrides* the scope-routing default above — and to **honour
 do-not-store rules by dropping** the matching extraction (no capture at
-all). It is an **aid, never a hard gate**: a sender with no `rules.md`
+all). It is an **aid, never a hard gate**: a sender with no `@rules.md`
 just gets `(none)` and the
 classifier decides on its own (pillar: the LLM decides).
 
-**Write side.** `rules.md` is also *written* through ingest —
+**Write side.** `@rules.md` is also *written* through ingest —
 the same universal classifier prompt, no special "wizard" path. When the
 model marks an extraction `engine_rule: true` (a standing governance
 directive — Part 7 of the prompt), the orchestrator routes it to
 [`append_engine_rule`](../../crates/mwe-core/src/wiki.rs) instead of
 [`capture::wiki_capture`]: the rule's `body` is appended as a prose bullet
-to the **sender's** `rules.md` (seeded from the default body if missing)
+to the **sender's** `@rules.md` (seeded from the default body if missing)
 and **nothing is filed in `fact_index`**
 ([`ingest::append_sender_rule`](../../crates/mwe-core/src/ingest.rs),
 best-effort: a sender with no locatable wiki drops the rule rather than
@@ -1743,8 +1760,8 @@ write→read loop: a rule written this turn is injected as `sender_rules`
 the next. The discriminator is the LLM's, not a gate — a world/household
 `rule` fact ("in casa non si fuma") stays a normal fact
 (`engine_rule: false`); only a directive addressed to the *memory itself*
-goes to `rules.md`. The rule's `body` is written **in the sender's own
-language**: `rules.md` is the user's own
+goes to `@rules.md`. The rule's `body` is written **in the sender's own
+language**: `@rules.md` is the user's own
 policy prose, appended verbatim and read straight back to them as
 `sender_rules`, so it is never translated to English. The **first-login
 wizard** is just a 3-step prompt composer over this same path;
@@ -1754,10 +1771,10 @@ it materialises nothing.
 
 A **behaviour rule** is a directive about *how an agent converses or
 operates* — as opposed to a *fact about the user* (the normal pipeline) or a
-*governance rule for the memory engine* (the user's own `rules.md` prose, read
+*governance rule for the memory engine* (the user's own `@rules.md` prose, read
 back as `sender_rules`). It is the **fourth ingest destination**, and unlike
 the other three it never pollutes the user's fact memory: it lands on a
-reserved `rules.md` page — the **consumer agent's own wiki** for the two
+reserved `@rules.md` page — the **consumer agent's own wiki** for the two
 agent-scoped kinds, the **sender's identity wiki** for the user-global kind
 (roadmap 42). The body is stored in the **imperative** ("Usa sempre Claude
 Code", "Dammi del tu"), not the third person — the agent reads it and acts on
@@ -1831,11 +1848,11 @@ agent cannot leak what it never recalls), not a second stored rule.
 calling consumer's own wiki — its bound **system user**
 ([`consumers::system_user_for`](../../crates/mwe-core/src/consumers.rs), keyed by
 the `consumer_id` threaded through `IngestRequest` from the auth layer) — and
-files the rule there as a **live** fact on its **`rules.md`** page (roadmap 29c —
+files the rule there as a **live** fact on its **`@rules.md`** page (roadmap 29c —
 reclaiming the dead scaffolded slot; in the *agent's* wiki this page holds
 behaviour facts, no collision since `sender_rules` never reads an agent wiki, the
 agent never being a sender). A **user-global** rule skips the consumer
-resolution entirely: its home is the **sender's identity wiki** `rules.md`,
+resolution entirely: its home is the **sender's identity wiki** `@rules.md`,
 alongside the governance prose (the page contract anticipates both — prose plus
 `{{f=…}}` regions). Home + subject are the scope
 ([`ingest::capture_behaviour_rule`](../../crates/mwe-core/src/ingest.rs) taking a
@@ -1893,7 +1910,7 @@ rules out of the self-context block. Two invariants live **in the SQL, before
 the per-call cap** (`BEHAVIOUR_RULES_RECALL_CAP`, a resource cap):
 
 - **the rules-page predicate** — the query matches `source_path` whose file
-  name is `rules.md` (the SQL mirror of
+  name is `@rules.md` (the SQL mirror of
   [`wiki::is_rules_page`](../../crates/mwe-core/src/wiki.rs)), so the cap
   counts *rules only*: however many newer facts the agent wiki accumulates
   under the same subject (self-facts above all), old rules never starve out of
@@ -1905,7 +1922,7 @@ the per-call cap** (`BEHAVIOUR_RULES_RECALL_CAP`, a resource cap):
   *down-rank signal*, never a filter — the rules channel is the **deliberate
   exception**: a retracted rule must stop steering the agent.
 
-**Durability — every structural door skips `rules.md`.** A behaviour rule's
+**Durability — every structural door skips `@rules.md`.** A behaviour rule's
 home *is* the page: `recall_behaviour_rules` keys on it, and a rule leaves the
 channel only via supersede or tombstone — so every pipeline that could re-home
 or fold a fact treats the reserved policy page as the rules pipeline's
@@ -1913,14 +1930,14 @@ perimeter, exactly as they all skip smart wikis:
 
 - the **narrative compiler's** fact-gather
   ([`planner::gather_standard_facts`](../../crates/mwe-core/src/planner.rs))
-  skips every `rules.md` fact — otherwise a behaviour-rule fact (written by the
+  skips every `@rules.md` fact — otherwise a behaviour-rule fact (written by the
   direct path, so absent from the persisted plan) would look *new* on the next
   dream and orphan-fall-back onto the subject's buffer page;
-- the **REM refile sweep** never *nominates* a `rules.md` fact (a per-user rule
+- the **REM refile sweep** never *nominates* a `@rules.md` fact (a per-user rule
   naturally embeds toward its user's wiki — a confirmed move would land it on a
   foreign wiki's buffer); rules facts still count in the similarity pools;
 - **dedup never crosses the rules-page boundary** — a pair is nominable only
-  when both sides are `rules.md` facts or neither is, at capture time
+  when both sides are `@rules.md` facts or neither is, at capture time
   ([capture-and-dedup.md](capture-and-dedup.md)) and in the REM revisor
   ([rem-cycle.md](rem-cycle.md)) alike, so an episodic restatement can neither
   absorb a rule nor be absorbed by one; rule-vs-rule still dedups.
@@ -2020,7 +2037,7 @@ a turn the agent authored, so on a user turn a subject naming the agent keeps it
 ordinary meaning. **The engine chooses the page too**
 ([`agent_self_fact_page`](../../crates/mwe-core/src/ingest.rs)): an identity
 self-fact lands on the agent's buffer page, from which the next compile's
-`orphan_target` lifts it onto the agent's `profile.md` card (`salience: high`)
+`orphan_target` lifts it onto the agent's `@profile.md` card (`salience: high`)
 and the REM consolidates the autobiography; a relationship self-fact lands on `esperienze_<served-user>.md`
 (through the same `normalize_capture_page` chokepoint). The classifier's own
 `target_page` is **ignored** for self-facts — the same "the engine knows the
@@ -2234,7 +2251,7 @@ signature stays stable as the policy grows:
 | `max_recent_message_chars` | 280 | One tweet-length per turn keeps the prompt compact. |
 | `max_list_pages_in_prompt` | 32 | Lists are few by nature; this bounds a pathological corpus, not an ordinary one. The inventory is ordered newest-touched first, so past the cap the list dropped is the one nobody has written to in longest. |
 | `max_group_scope_chars` | 1000 | Per-group `scope` truncation — large enough to keep the scope's exclusion clause, bounded so a pathological scope can't blow the prompt budget. |
-| `default_page` | `notes.md` | The **buffer page** — where a fact lands when no page fits. Never the wiki's `index.md`: that page is the wiki's map (*where does a fact belong*), it holds no facts, and the read path never opens it. REM's reorg sweep drains `notes.md` onto real pages. |
+| `default_page` | `@notes.md` | The **buffer page** — where a fact lands when no page fits. REM's reorg sweep drains `@notes.md` onto real pages. |
 | `fallback_suggested_seed` | `"I've noted that."` | English placeholder; operator-overridable per deployment. |
 | `structural_suggested_seed` | `"This looks like a structural change — open the dashboard to continue."` | Same. |
 | `nav` | `recall_nav::NavigatorPolicy::default()` | The navigator funnel's resource knobs (hops, pages/hop, char budget, candidate cap) — see [recall-pipeline.md](recall-pipeline.md). Inert when no navigator backend is wired. |

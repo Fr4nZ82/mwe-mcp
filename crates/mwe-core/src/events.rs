@@ -172,25 +172,6 @@ pub enum EventsError {
 /// Result alias for this module.
 pub type Result<T> = std::result::Result<T, EventsError>;
 
-/// A row in `wiki_events`. Trimmed shape — the `acks` JSON map is
-/// the consumer-ack tracker and not relevant to the
-/// emitter.
-#[derive(Debug, Clone)]
-pub struct WikiEvent {
-    /// Auto-increment primary key.
-    pub id: i64,
-    /// Event kind (parsed back into an enum at the boundary).
-    pub kind: String,
-    /// Wiki this event is about, if any (omitted for global events).
-    pub wiki_id: Option<String>,
-    /// Fact this event was triggered by, if any.
-    pub fact_id: Option<String>,
-    /// JSON payload — kind-specific shape.
-    pub payload: Option<String>,
-    /// ISO 8601 wall-clock when the row was inserted.
-    pub created_at: String,
-}
-
 /// The delivery rule as a SQL predicate over a `wiki_events` row. Binds, in
 /// order: the **caller's own** user id, then `consumer_id` **twice**. A row
 /// passes when the addressee is nobody in particular, is not a `user:`

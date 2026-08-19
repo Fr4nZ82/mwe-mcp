@@ -424,7 +424,7 @@ mod tests {
             "franz",
             &recent(),
             &["fact-a".to_owned(), "fact-b".to_owned()],
-            &["wikis/franz/index.md".to_owned()],
+            &["wikis/franz/cucina.md".to_owned()],
             &["cucina".to_owned()],
         )
         .await
@@ -434,7 +434,7 @@ mod tests {
         assert_eq!(row.sender_id, "franz");
         assert!(row.surfaced("fact-a", "wikis/x/y.md"), "hit by fact id");
         assert!(
-            row.surfaced("fact-z", "wikis/franz/index.md"),
+            row.surfaced("fact-z", "wikis/franz/cucina.md"),
             "hit by navigated page"
         );
         assert!(!row.surfaced("fact-z", "wikis/x/y.md"), "neither → miss");
@@ -456,7 +456,7 @@ mod tests {
                     sender_id: "franz",
                     fact_id: fid,
                     wiki_id: "franz",
-                    source_path: "wikis/franz/index.md",
+                    source_path: "wikis/franz/cucina.md",
                     surface: MissSurface::Direct,
                     similarity: 0.91,
                     restated_text: "il colore preferito è l'indaco",

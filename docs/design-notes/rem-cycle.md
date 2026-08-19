@@ -15,7 +15,7 @@ fixed sequence of sub-jobs around a single orchestrator
 authoritative roster and order are the call sequence in `run_cycle`;
 the table below mirrors it. The **write-jobs**
 (revisor, auto_promote, the consolidation/hygiene sweeps,
-archive_detector, map_writer)
+archive_detector)
 carry an `is_smart_wiki` skip gate so they leave wikis of the
 smart family to the smart consumer. The two smart-wiki read-jobs
 (Briefing dispatcher + Backlink reciprocity detector) invert the
@@ -41,7 +41,7 @@ construction.
  5. page_merge                   plan/reviewer signals nominate → rem_dedup_semantic LLM confirms → direct apply + `structure_applied` notice (page_merge)
  6. completion_sweep             fresh evidence × similar open items → rem-completion LLM confirms → close_validity + `validity_close` receipt + notice *[skips smart]*
  7. contradiction_sweep          freshly contradicted seeds × similar open items → rem-contradiction LLM confirms → satellites close as contradicted, same paper trail *[skips smart]*
- 8. refile_sweep                 cosine pre-filter nominates misfiled facts → rem-refile LLM picks a dest wiki → cross-wiki move onto the dest wiki's buffer page `notes.md` + `fact_refile` receipt + notice *[skips smart both ends]*
+ 8. refile_sweep                 cosine pre-filter nominates misfiled facts → rem-refile LLM picks a dest wiki → cross-wiki move onto the dest wiki's buffer page `@notes.md` + `fact_refile` receipt + notice *[skips smart both ends]*
  8b. recall_repair               pending recall misses → rem-recall-repair LLM proposes a re-file → gold-set gate replays it on a scratch snapshot → commit only on proven flip (same mover/receipt as 8) else discard/queue operator notice *[skips smart + rules pages]*
  9. provenance_hygiene           deterministic trailing-`([[…]])` detector → pointer moved into `authored_refs`, suffix stripped, text re-embedded (no LLM) *[skips smart]*
 10. date_normalizer              deictic lexicon flags → rem-dates LLM rewrites relative→absolute on canonical text + re-embed *[skips smart]*
@@ -51,7 +51,6 @@ construction.
 14. lease_expirer                wiki_admin_leases::expire_stale (mark active-past-grace as released + delete released-past-retention)
 15. briefing_processor           drains `wiki_briefing_items` on *non-smart* wikis past grace → briefing_processor::process_briefing_item
 16. husk_gc                      plan-absent page files whose rows are all tombstoned/superseded past the revert window → remove_file + settle offsets (no LLM) *[skips smart]*
-17. map_writer                   render the page listing + atomic_write index.md (no LLM)   *[skips smart + plan-owned indexes]*
 ```
 
 Order rationale: the auto_apply + auto_finalize sweeps catch up on any
@@ -75,11 +74,8 @@ night's other observations; lease_expirer cleans up stale rows in
 bounded (no LLM, no filesystem — pure SQL housekeeping); the
 non-smart briefing-processor drains operator comments on standard
 wikis past the grace period (the smart-consumer-on-smart-wikis dual);
-the husk-page GC runs after every mover has settled the night's fact
-state (a page one of them just emptied is judged on the final shape);
-the map writer runs last so every map lists the pages the night actually
-left behind. Running it first would describe a wiki that no longer exists
-by morning.
+and the husk-page GC runs after every mover has settled the night's fact
+state (a page one of them just emptied is judged on the final shape).
 
 ## Smart-wiki classification
 
@@ -256,10 +252,10 @@ For each **family line** ([family scope](#family-scope--the-consolidation-passes
      embedder call.
 
    A pair is nominable only when **both sides sit on a reserved channel
-   page (`rules.md`, `projects.md`) or neither does**
+   page (`@rules.md`, `@projects.md`) or neither does**
    ([`wiki::is_channel_page`](../../crates/mwe-core/src/wiki.rs)): a
    behaviour rule dedups rule-vs-rule only — if it lost against an
-   episodic restatement, its content would survive only off `rules.md`,
+   episodic restatement, its content would survive only off `@rules.md`,
    outside the behaviour-rules channel
    ([ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-by-scope-outside-fact-memory));
    the same fence keeps a project signpost from folding into an ordinary
@@ -404,8 +400,7 @@ Per non-smart wiki, *before* the paragraph pass, **one** LLM call for the
 whole wiki (not one per page):
 
 1. Build the candidate list: every page carrying at least one active
-   fact, except the wiki's own **`index.md`** — the map holds no facts by
-   rule, and this filter is the belt to that braces. `notes.md` is *not*
+   fact. `@notes.md` is *not*
    excluded and must not be: draining the buffer onto real pages, or
    letting a new page emerge out of it, is exactly this pass's job. Collect the wiki's existing **child
    sub-wikis** too — smart children excluded, since REM never files into
@@ -418,11 +413,11 @@ whole wiki (not one per page):
 3. Ask the `rem_promotions` LLM (`rem-page-grouping` prompt) with the
    page **inventory** — name, active-fact count, and up to two verbatim
    excerpts per page — plus the existing sub-wikis, their `_meta`
-   summaries and their own page counts. **Both counts exclude the map**,
-   so the two numbers the model is asked to weigh against each other are
-   the same measurement: the child count used to include each sub-wiki's
-   `index.md` while the parent's never did, so every child read one page
-   larger than it was, against a floor. The inventory deliberately carries excerpts rather than the
+   summaries and their own page counts. **Counted the same way on both
+   sides**, so the two numbers the model is asked to weigh against each
+   other are the same measurement: the child count used to include each
+   sub-wiki's `index.md` while the parent's never did, so every child read
+   one page larger than it was, against a floor. The inventory deliberately carries excerpts rather than the
    stored `page_description`: that field is written per fact at routing
    time and drifts (in a live corpus it routinely describes a
    neighbouring page, and mixes languages), and a wrong label is worse
@@ -441,10 +436,11 @@ whole wiki (not one per page):
    `promote::apply_pages_move_wiki_direct`: pages move whole, under their
    own names, with every active fact on them; the born-applied receipt is
    recorded and one `structure_applied` notice emitted (`variant:
-   pages_to_subwiki` / `pages_move_wiki`). A newborn wiki's `index.md` is
-   a bare title stub — its `notes.md` is a plan-owned `wiki_buffer`
-   node the [narrative compiler](narrative-compiler.md) authors, so the
-   handler must not invent prose the compiler would then fight over. The
+   pages_to_subwiki` / `pages_move_wiki`). A newborn wiki gets its
+   `_meta.md` and the carried pages, nothing else — its `@notes.md` is a
+   plan-owned `wiki_buffer` node the
+   [narrative compiler](narrative-compiler.md) authors, so the handler
+   must not invent prose the compiler would then fight over. The
    `style` + `description` ride in the receipt **context** and are
    stamped onto the newborn `_meta` (`extra["style"]` validated to the
    closed palette, `extra["summary"]`) so the wiki is **not born blind**
@@ -559,9 +555,12 @@ in every wiki:
 The sub-job is **gated by the LLM slot**: when `RemLlms.auto_promote`
 is `None` (operator has not configured `llm.rem_promotions` in
 `mwe-mcp.config.yaml`), it short-circuits cleanly with
-`disabled_reason = Some("no rem_promotions LLM wired")`. This is the
-right default — splitting without an LLM verdict over-promotes on size
-alone; mass is only the entry ticket, the judgement is the model's.
+`disabled_reason = Some("no rem_promotions LLM wired")`. A guard, not a
+supported configuration
+([admin-llm-config.md](admin-llm-config.md#the-models-are-mandatory)):
+splitting without an LLM verdict would over-promote on size alone — mass is
+only the entry ticket, the judgement is the model's — so refusing beats
+guessing.
 
 Hard-capped by `policy.auto_promote_cap` (default 5/night).
 
@@ -680,7 +679,7 @@ view ([`run_completion_sweep`](../../crates/mwe-core/src/rem.rs)).
    `created_at` falls inside `policy.closure_sweep_window`
    (default 48 h) — bounding the sweep to what just landed, so the
    corpus is never re-judged wholesale. The reserved channel pages
-   (`rules.md`, `projects.md`) are fenced out on **both axes**
+   (`@rules.md`, `@projects.md`) are fenced out on **both axes**
    (structural perimeter, like the dedup channel boundary): a standing
    directive is policy, not an event, and a signpost is a pointer —
    it completes nothing (the live incident: one user's naming rule read
@@ -762,7 +761,7 @@ the safety net).
      **nominates only** — a resource cap, never a "belongs elsewhere"
      threshold ([[feedback-no-hardcoded-gates-llm-decides]]).
 
-   A **channel-page** fact (`rules.md`, `projects.md`) is **never
+   A **channel-page** fact (`@rules.md`, `@projects.md`) is **never
    nominated** by either feed
    ([`wiki::is_channel_page`](../../crates/mwe-core/src/wiki.rs)): a
    per-user behaviour rule embeds toward its *user's* wiki by nature, and
@@ -787,15 +786,12 @@ the safety net).
    — the `fact_refile` `wiki_promote` variant repoints the row's
    `wiki_id` (`fact_index::move_to_wiki`, the only primitive that touches
    `wiki_id`), splices the marker off A's page and weaves it onto **B's
-   buffer page `notes.md`** — always the buffer, because the plan keys
+   buffer page `@notes.md`** — always the buffer, because the plan keys
    pages by a bare slug across the whole forest, so landing on a *named*
    page of a foreign wiki could collide with a same-slug page homed
    elsewhere (a cross-wiki leak); the buffer is the one destination every
-   wiki has and nothing else claims, so it is collision-safe. Never B's
-   `index.md`: that page is B's **map**, it holds no facts, and the read
-   path never opens it — so a fact parked there would be one navigation
-   could never reach and this sweep's own reorg pass would never drain
-   (it excludes the map by design). The buffer is drained — and
+   wiki has and nothing else claims, so it is collision-safe. The buffer
+   is drained — and
    re-homes the persisted plan onto the dest page (force-dirtying both
    source and dest) — wrapped in a `fact_refile_apply` WAL op, with one
    born-applied `wiki_promote` receipt + the `structure_applied` notice.
@@ -903,7 +899,7 @@ repair, and **nothing commits on an LLM's opinion alone**.
    the [`rem-recall-repair`](../../crates/mwe-core/prompts/rem-recall-repair.md)
    prompt sees the missed query, the fact, its home, and the non-smart
    wiki roster, and proposes a **re-file** (destination wiki only —
-   landing on its buffer page `notes.md`, the refile sweep's own
+   landing on its buffer page `@notes.md`, the refile sweep's own
    discipline) or `stay`. Conservative by instruction; anti-hallucination
    vets the destination against the roster.
 3. **The gold-set gate** ([`recall_gate::gate_repair`](../../crates/mwe-core/src/recall_gate.rs)):
@@ -1031,72 +1027,6 @@ later.
    notices: the next compile rewrites exactly the touched pages, so
    prose and `lista` records alike stop rotting.
 
-## Map writer sub-job
-
-The last sub-job in the cycle, and the only write-job that calls no model
-at all. It writes every standard wiki's `index.md` as its **map**: the
-page listing that answers *where does a fact belong here*, for the write
-side. The read path never opens a map — see the
-[reserved pages](../concepts/memory-model.md).
-
-- Trigger: the wiki is **not** in the smart family (the smart consumer
-  crafts its own hub pages through `wiki_admin_push`) and its `index.md`
-  is not a page of the persisted compilation plan. Since the map rule
-  (2026-08-03) no foundation node claims one, so that second set is empty
-  on a current plan and this sub-job is the map's only author — the guard
-  stays for a plan persisted before the rule, because two writers on one
-  file is a fight whoever is right.
-- **One refusal, and it is the load-bearing one:** a wiki whose `index.md`
-  the fact index still points at is skipped. The map rule says no fact may
-  live on a root, but a corpus written under the old convention has them
-  until the compiler re-homes each row — and the widened trigger reaches
-  exactly those wikis, where the old one only ever touched group roots,
-  which hold none. Writing a map over them would delete the prose of live
-  facts and leave their `{{f=...}}` byte regions pointing into a file that
-  no longer contains them. Skipping is safe and self-clearing: the compile
-  pass moves the rows, and the next cycle finds the page empty and maps it.
-- For each remaining wiki (bounded by `map_writer_cap`, default 200 — an
-  I/O cap, not a budget one):
-  - list the pages on disk, split reserved from ordinary;
-  - render it — sub-wikis **named, not linked** (a link on a page names a
-    page, and no single page stands for a whole wiki), ordinary pages as
-    `[[wiki_id/stem]]`, and each reserved page with the one line that says
-    what belongs on it;
-  - `atomic_write` it to `<wiki_dir>/index.md`.
-
-  **`index.md` is a list of pages and nothing else.** It used to open with the
-  wiki's own description, copied out of `_meta.md`; that copy is gone (founder,
-  2026-08-05). The description has one real consumer — the recall entry fan
-  reads it from `_meta.md` — and nothing ever read it here: the only code that
-  opens this file is this writer, the read path refuses the page by rule, and
-  the ingest classifier is handed `wiki_id` / `title` / `wiki_type` / `scope` /
-  `smart` / `is_agent`, never a page list. A second copy with no reader could
-  only go stale.
-
-**Why there is no LLM here, and what that cost.** Until 2026-08-03 this
-sub-job asked the `hub_writer` model to compose an index out of the twenty
-most recent fact bodies, and it ran only for a wiki that had **child
-wikis** — so on a corpus of 29 wikis, 19 never got an index at all, and the
-ten that did got a narrative summary of recent facts rather than a map.
-Once the root became a map for the write side only, the thing a model was
-needed for stopped being wanted: a map is the list of pages plus what each
-one is for, and both already exist on disk. Assembling it is free, runs on
-every wiki every cycle, and cannot name a page that does not exist. What
-was traded away is the thematic *grouping* the model used to impose, which
-read well; re-adding it is one pass over an already-correct list — a much
-safer prompt than the one it replaces — and is deliberately not built.
-
-**Link-only by design.** No per-page description or keyword line. A page's
-description and its testata keywords are served by the navigator only to a
-reader at the wiki's default visibility, while a map is one file with one
-audience; page *names* are already visible to anyone the funnel offers a
-sibling to, so a list of them widens nothing. Enriching the lines means
-first deciding whose view the file is written at.
-
-The `hub_writer` LLM slot is **not** retired: the narrative compiler still
-writes `ConceptHub` prose through it (and the operational chat falls back
-to it). See [llm-functions.md](llm-functions.md#11-hub_writer--concepthub-prose--operational-chat-fallback).
-
 ## Briefing dispatcher sub-job
 
 For every smart-family wiki (per the cycle-scoped `SmartWikiIndex`),
@@ -1209,7 +1139,7 @@ picks a destination from a bounded list of the wiki owner's other non-smart wiki
 + this wiki's other pages, and the fact moves act-first via the same engine the
 [cross-wiki refile sweep](#cross-wiki-refile-sweep-sub-job) uses
 (`promote::apply_paragraph_to_file_direct` same-wiki, `promote::apply_fact_refile_direct`
-cross-wiki onto the dest wiki's buffer page `notes.md`) — born-applied + revertible, unlike the bare
+cross-wiki onto the dest wiki's buffer page `@notes.md`) — born-applied + revertible, unlike the bare
 `correct` / `remove` / `add`. Containment + ACL invariants are described in
 [the compiler note](narrative-compiler.md#human-edits-on-compiled-pages). This
 is the batched dream applying the parked comments together — the maintainer's
@@ -1217,8 +1147,11 @@ is the batched dream applying the parked comments together — the maintainer's
 (nightly or admin "run REM"), never the frequent light dream, and never a
 user-triggered per-comment click.
 
-**Mark-passive** remains the policy for structured non-smart types, and the
-fallback for standard wikis when the `ingest` slot is unconfigured: the
+**Mark-passive** remains the policy for structured non-smart types. It is also
+the shape a standard wiki degrades to if the `ingest` role is somehow missing —
+which onboarding prevents
+([admin-llm-config.md](admin-llm-config.md#the-models-are-mandatory)), so treat
+that arm as a guard, never as a configuration: the
 processor stamps `processed_at = NOW()` after a pro-forma read of the cited
 target, with zero LLM calls and zero structural mutations
 ([`briefing_processor::process_briefing_item`]). The
@@ -1277,8 +1210,8 @@ Deterministic, no LLM — a structural GC behind **DB-first guards**
 validity-closed row is still content; any supersession inside the
 window blocks; tombstones never block, the same posture as the orphan
 sweep), not a semantic judgment: every fact on a husk was already
-closed by its own judged path. `index.md` / `rules.md` / `_`-prefixed
-files never qualify; smart wikis are skipped (consumer-authored files
+closed by its own judged path. `@rules.md` / `_`-prefixed files never
+qualify; smart wikis are skipped (consumer-authored files
 are never REM's to delete); **no plan on disk → no-op** (a fresh
 workdir's pages are unplanned, not husks). Bounded by
 `rem.policy.husk_gc_cap` per full cycle (default in
@@ -1303,7 +1236,7 @@ keeps prose clean. Pinned by
 - Every state-mutating sub-step is journaled in `rem_ops_log` via
   [`wal::begin_rem_op`] → `complete_rem_op` / `fail_rem_op`.
 - The write-jobs' sub-step inverses are idempotent:
-  - `atomic_write` handles partial `index.md` writes.
+  - `atomic_write` handles partial page writes.
   - `mark_superseded` and `mark_forgotten` are no-ops on already-
     superseded / already-tombstoned rows.
   - `insert_event` is gated by `find_recent_event_for`.
@@ -1334,7 +1267,7 @@ keeps prose clean. Pinned by
 
 ## LLM-error semantics
 
-Every LLM-using sub-job (revisor, auto_promote, comment_apply — the map
+Every LLM-using sub-job (revisor, auto_promote, comment_apply — the husk
 writer is not one of them any more)
 distinguishes two failure categories:
 
@@ -1369,9 +1302,7 @@ exact roster — the headlines:
 - **events**: wire strings + insert payload roundtrip + null payload +
   dedup probe within window + dedup probe across kinds.
 - **rem**: revisor, auto-promote, archive,
-  auto-apply, auto-finalize, map_writer (a wiki with children, a leaf wiki,
-  the reserved/ordinary split, a nested page's link, an empty wiki, the
-  cap), the provenance-hygiene sweep (defect-shape-only detector,
+  auto-apply, auto-finalize, the provenance-hygiene sweep (defect-shape-only detector,
   move+strip+re-embed, ref dedup + idempotence, cap, smart skip), the
   smart-wiki-aware sub-jobs
   (`briefing_dispatcher_emits_stale_draft_notify_for_smart_wiki`,
@@ -1447,10 +1378,13 @@ the **light dream** — a far more frequent, **deterministic**
 loop that drains the [narrative captures buffer](narrative-buffer.md)
 into `fact_index` via
 [`mwe-core::dream_light`](../../crates/mwe-core/src/dream_light.rs). It
-needs **no LLM bag** (promotion is exact-dup skip + embed + insert +
-deterministic supersede-hint application — no model verdict), so it is
-wired independently of the full cycle's `OwnedRemLlms` and runs even
-when the REM LLM slots are unconfigured. An applied supersede hint also
+screens the queue with **no LLM** (dedup is jaccard + the audience test, no
+model verdict), and the placement stage that follows decides each claim's page
+before any row is written — see
+[narrative-buffer.md](narrative-buffer.md#promotion--the-light-dream). It is
+wired independently of the full cycle's `OwnedRemLlms`; with no `cronista` slot
+it drains deterministically instead of leaving the queue to grow. An applied
+supersede hint also
 performs the retirement **disk half** — the retired fact's on-disk region
 is excised via `reindex::strip_fact_region`, best-effort, exactly like
 `capture::wiki_supersede` ([redaction-policy](redaction-policy.md)).
@@ -1493,14 +1427,16 @@ nominations to re-judge a placement that was already made. The pass
 rebuilds the plan incrementally and writes only the dirty pages (cost-guard),
 then ends with the deterministic post-compile reviewer
 ([narrative-compiler.md §The reviewer](narrative-compiler.md#the-reviewer)),
-whose findings include **`cross_subject_bloat`**: an identity index (a
-`wiki-user`'s `index.md`, the agent wiki included) whose plan carries a
+whose findings include **`cross_subject_bloat`**: an identity card (a
+`wiki-user`'s `@profile.md`, the agent wiki included) whose plan carries a
 **foreign-subject** fact — its subject is a different user, or a group the
 page's user is not a member of (enrollment-fed `reviewer::IdentityContext`, loaded
 best-effort by `dream::run_compile`). Observability for the Cartografo's
 identity-page discipline — counts in the report/log, never a gate. The pass is **skipped**
-when the `cronista` slot is unconfigured — so the light dream still promotes,
-it just cannot write prose. For this, the full-cycle `OwnedRemLlms` (carrying
+when the `cronista` slot is unconfigured — and since the queue is drained
+*inside* the compile, the light dream then falls back to the deterministic drain
+(`dream_light::drain_deterministically`): the claims become facts on the page
+the user's own turn named, or on the parking page, with their prose pending. For this, the full-cycle `OwnedRemLlms` (carrying
 the `cronista` slot) is built once and shared with the light dream via an
 `Arc`, then projected to `RemLlms` (which carries a `cronista` field) on
 each tick.
@@ -1509,7 +1445,7 @@ each tick.
 [`reindex::sweep_retired_regions`](../../crates/mwe-core/src/reindex.rs)
 (called from `dream::run_light`, best-effort — a failure never fails the
 dream): it excises retired-fact regions still sitting on pages **outside
-the current compilation plan** (`rules.md`, husk pages — where residue is
+the current compilation plan** (`@rules.md`, husk pages — where residue is
 otherwise permanent; plan pages self-clean at their next compile). This
 is the convergent backstop behind the act-time strips, covering the
 retire paths that resolve inside the proposal apply chassis (a pending

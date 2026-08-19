@@ -845,9 +845,10 @@ pub(super) async fn call_wiki_read(
     // *same* page — reading page X while loading another page's ACL would be
     // a leak.
     //
-    // **`path` is required, and the map is refused.** It used to default to
-    // `index.md`, which is the wiki's map: no facts, and its whole content is
-    // structure — the sub-wiki list and every page as a `[[wikilink]]`. So the
+    // **`path` is required.** It used to default to `index.md`, the page
+    // listing a standard wiki carried until 2026-08-15: no facts, and its
+    // whole content was structure — the sub-wiki list and every page as a
+    // `[[wikilink]]`. So the
     // ADVERTISED default of the read tool handed a consumer the catalogue of
     // wikis, which is the thing the 2026-08-04 ruling deleted, and a tool
     // description is read by a model at runtime, so it was an instruction to
@@ -866,8 +867,7 @@ pub(super) async fn call_wiki_read(
     else {
         return Err(invalid_input(
             "path: required — name the page to read (a `wiki_search` hit or a \
-             `wiki_navigate` fragment carries one). There is no default page: \
-             the wiki's map is not memory."
+             `wiki_navigate` fragment carries one). There is no default page."
                 .to_owned(),
         ));
     };
@@ -877,13 +877,21 @@ pub(super) async fn call_wiki_read(
             "path: unsafe page path `{page_rel}`"
         )));
     }
-    if mwe_core::wiki::names_map_page(page) {
+    // The **only** name this tool refuses: the engine's own files
+    // (`wiki::names_engine_file` — the leading-underscore set: `_meta.md`,
+    // a smart wiki's `_briefing.md`, …). They are bookkeeping,
+    // not memory, and until 2026-08-16 they were served to anyone who named
+    // one while `index.md` — a page a smart consumer may genuinely author —
+    // was the thing refused. Founder's ruling that day: *«non ci interessa
+    // come sono fatte e nessun file dev'essere vietato o trattato in modo
+    // diverso, tranne quelli che crea il motore come ad esempio il
+    // briefing»*. Everything else is an ordinary page, gated by ACL like any
+    // other; a name with no file behind it falls through to `not_found`
+    // below, which is what a standard wiki now answers for `index.md`.
+    if mwe_core::wiki::names_engine_file(page) {
         return Err(ToolError::new(
             ToolErrorClass::NotFound,
-            format!(
-                "`{page_rel}` is the wiki's map, not a memory page: it holds no facts, \
-                 only this wiki's structure. Name a page instead."
-            ),
+            format!("`{page_rel}` is one of the engine's own files, not a page of this wiki."),
         ));
     }
     let wiki_id =

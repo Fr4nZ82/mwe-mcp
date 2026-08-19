@@ -278,7 +278,6 @@ struct FactRow {
     topics: Vec<String>,
     salience: Option<String>,
     style: Option<String>,
-    page_description: Option<String>,
     body: String,
     valid_from: Option<String>,
     valid_to: Option<String>,
@@ -313,7 +312,6 @@ impl FactRow {
             topics: r.topics,
             salience: r.salience,
             style: r.style,
-            page_description: r.page_description,
             body: r.text,
             valid_from: r.valid_from,
             valid_to: r.valid_to,
@@ -337,7 +335,10 @@ impl FactRow {
     fn from_capture(c: BufferedCapture) -> Self {
         Self {
             fact_id: c.capture_id.as_str().to_owned(),
-            wiki_id: c.wiki_id.as_str().to_owned(),
+            // Empty on purpose: a capture waiting in the buffer is in no wiki
+            // yet — the light dream decides where it goes when it sorts the
+            // queue. The table renders the blank as a dash.
+            wiki_id: String::new(),
             fact_type: c.fact_type,
             subject_id: c.subject.to_string(),
             sender_id: c.sender.map(|p| p.to_string()),
@@ -345,7 +346,6 @@ impl FactRow {
             topics: c.topics,
             salience: c.salience,
             style: c.style,
-            page_description: c.page_description,
             body: c.body,
             valid_from: c.valid_from,
             valid_to: c.valid_to,
@@ -1403,7 +1403,6 @@ fn render_index(
                     (sort_header(filters, page_size, "last_recall_at", "last_recall_at"))
                     (sort_header(filters, page_size, "recall_count_30d", "recall_30d"))
                     th { "style" }
-                    th { "page_description" }
                     th { "source_ref" }
                     th { "authored_refs" }
                     th { "superseded_at" }
@@ -1418,7 +1417,7 @@ fn render_index(
                             td.actions-cell { (action_cell(user, row, chrome.read_only)) }
                             td { (id_cell(&row.fact_id)) }
                             td { (status_cell(row)) }
-                            td { code { (row.wiki_id) } }
+                            td { @if row.wiki_id.is_empty() { "—" } @else { code { (row.wiki_id) } } }
                             td.muted { (opt_cell(row.fact_type.as_deref())) }
                             td { (opt_cell(row.salience.as_deref())) }
                             td { code { (row.subject_id) } }
@@ -1439,7 +1438,6 @@ fn render_index(
                                 }
                             }
                             td { (opt_cell(row.style.as_deref())) }
-                            td { (opt_cell(row.page_description.as_deref())) }
                             td { (opt_cell(row.source_ref.as_deref())) }
                             td { (list_cell(&row.authored_refs)) }
                             td { (ts_cell(row.superseded_at.as_deref())) }
@@ -1792,7 +1790,7 @@ fn fact_summary_dl(fact_id: &FactId, row: &FactIndexRow, body_html: &Markup) -> 
         section.meta.fact-edit-summary {
             h2 { "Current state of fact " code { (fact_id.as_str()) } }
             dl {
-                dt { "wiki_id" } dd { code { (row.wiki_id) } }
+                dt { "wiki_id" } dd { @if row.wiki_id.is_empty() { "— (not placed yet)" } @else { code { (row.wiki_id) } } }
                 dt { "subject" } dd { code { (row.subject_id) } }
                 dt { "sender" }
                 dd {
@@ -2059,7 +2057,7 @@ mod tests {
             authored_refs: Vec::new(),
             fact_id: FactId::parse(fact_id).expect("parse"),
             wiki_id: "alice".to_owned(),
-            source_path: "wikis/alice/index.md".to_owned(),
+            source_path: "wikis/alice/cucina.md".to_owned(),
             region_start: None,
             region_end: None,
             text: "Alice usa la bici a Milano".to_owned(),
@@ -2085,7 +2083,6 @@ mod tests {
             // proposal to carry.
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         }

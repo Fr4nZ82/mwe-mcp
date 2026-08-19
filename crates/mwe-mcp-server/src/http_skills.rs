@@ -11,10 +11,10 @@
 //!   skill, with `ETag` + `Content-Type: text/markdown; charset=utf-8`.
 //!   Honours `If-None-Match` for 304 short-circuits.
 //!
-//! Custom skills are owner-scoped and only accessible through MCP
-//! (`skill_list` / `skill_fetch`) where the JWT carries the
-//! `sender_id` to filter on. The HTTP endpoints stay bundled-only
-//! so unauthenticated curls cannot enumerate users' custom catalogs.
+//! Every skill is bundled — the per-owner catalog was dropped in
+//! migration 0036 — so these endpoints serve exactly the same set as
+//! the MCP pair (`skill_list` / `skill_fetch`). The HTTP path carries
+//! no JWT and needs none: nothing here is owner-scoped.
 
 use axum::Router;
 use axum::extract::Path;

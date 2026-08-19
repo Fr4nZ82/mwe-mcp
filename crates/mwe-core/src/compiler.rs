@@ -103,8 +103,8 @@ use crate::wiki::{WikiError, WikiTree, workdir_relative_source_path};
 /// Bundled default for the Cronista prompt (compiler prose stage).
 pub const BUNDLED_CRONISTA_MD: &str = include_str!("../prompts/cronista.md");
 
-// A wiki's **map** — the one page no plan node may claim and no rail may
-// name. Aliased rather than re-declared as a literal so the reserved name has
+// `index.md` — the page name no plan node may claim and no rail may name.
+// Aliased rather than re-declared as a literal so the reserved name has
 // exactly one definition (63 §8c's stated rule, which this file was quietly
 // breaking).
 use crate::wiki::INDEX_FILENAME as INDEX_PAGE;
@@ -113,9 +113,9 @@ use crate::wiki::INDEX_FILENAME as INDEX_PAGE;
 /// writer for a plan's `ConceptHub` pages.
 ///
 /// **The name is historical and is kept deliberately.** It was REM's
-/// index regenerator, and this compiler stage borrowed it; since 2026-08-03
-/// the map writer assembles a wiki's `index.md` without a model, so the hub
-/// page is the prompt's only caller. Renaming the file would orphan every
+/// `index.md` regenerator, and this compiler stage borrowed it; the hub page
+/// has been its only caller since 2026-08-03, and since 2026-08-15 there is
+/// no `index.md` to regenerate at all. Renaming the file would orphan every
 /// operator override at `<workdir>/prompts/regenerate-index.md`, which is
 /// the exact failure the prompt-drift work exists to avoid — so the name
 /// stays wrong and this comment stays right.
@@ -150,6 +150,13 @@ pub type Result<T> = std::result::Result<T, CompilerError>;
 /// Outcome of [`compile_dirty_pages`].
 #[derive(Debug, Default, Clone)]
 pub struct CompileReport {
+    /// What the queue did on the way in: claims screened, folded as
+    /// duplicates, written, superseded. Filled by
+    /// [`crate::dream::run_compile`], which screens the buffer before planning
+    /// and writes the placed claims before compiling — default when the
+    /// compile ran without a queue (a test calling `compile_dirty_pages`
+    /// directly).
+    pub queue: crate::dream_light::LightCycleReport,
     /// Leaf pages (re)written as prose by Il Cronista (`prosa` / `prosa-tecnica`).
     pub leaves: usize,
     /// Hub pages (re)written.
@@ -219,9 +226,9 @@ impl CompileReport {
 struct CronistaOutput {
     #[serde(rename = "mergedBody")]
     merged_body: String,
-    /// One-line summary of the page; for a wiki's `index.md` overview page this
-    /// becomes the wiki's `_meta` abstract. Also the page's `description:`
-    /// testata field.
+    /// One-line summary of the page — its `description:` testata field, the
+    /// card a reader is shown when deciding whether to open it. On a wiki's
+    /// foundation page it also becomes the wiki's `_meta` abstract.
     #[serde(default)]
     description: String,
     /// The page's dominant **writing style** — the Cronista's
@@ -445,9 +452,11 @@ async fn note_page_failure(pool: &SqlitePool, tree: &WikiTree, page: &PagePlan, 
 /// concept-page file only when ALL of:
 ///
 /// - its path is not in the plan's page set for that wiki,
-/// - it is not a reserved page (the wiki's map, `rules.md`, any `_`-prefixed
-///   file). The card and the buffer need no exemption: they are plan nodes,
-///   so they are always in the plan's page set for their wiki,
+/// - it is not a reserved page (`@rules.md`, any `_`-prefixed file). The card
+///   and the buffer need no exemption: they are plan nodes, so they are
+///   always in the plan's page set for their wiki. An `index.md` left over
+///   from the retired index writer is NOT exempt — that is how the leftovers
+///   leave, one compile after the writer was deleted (2026-08-15),
 /// - **no** non-tombstoned `fact_index` row points at it
 ///   ([`fact_index::count_rows_at_source_path`]) — the DB-first guard: a
 ///   pending render or a superseded row's audit marker keeps the file.
@@ -482,7 +491,6 @@ async fn sweep_orphan_page_files(
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("md"))
                 || name.starts_with('_')
-                || name == crate::wiki::INDEX_FILENAME
                 || name == crate::wiki::RULES_FILENAME
                 || pages.contains(name)
                 || !entry.path().is_file()
@@ -862,10 +870,10 @@ async fn compile_leaf_page(
 /// long enough to be quoted back as fact. What the write side does with the
 /// abstract is its own business — nothing here promises a turn ever sees it.
 ///
-/// The sync used to key on `index.md`, which was right until the map rule
-/// moved every foundation node off the root (2026-08-03) — after which the
-/// branch could never fire again and the abstract would have gone stale
-/// forever, with nothing to say so.
+/// It keys on the page being a **foundation node**, not on a file name: the
+/// name it used to key on stopped existing when every foundation node moved
+/// off the wiki root (2026-08-03), and the branch could then never fire again
+/// — the abstract would have gone stale for ever with nothing to say so.
 ///
 /// Best-effort: a `_meta` hiccup must not fail a page that already wrote.
 fn sync_foundation_summary(page: &PagePlan, abs_dir: &std::path::Path, description: &str) {
@@ -1491,6 +1499,111 @@ fn strip_orphan_fact_tags(body: &str) -> String {
     out
 }
 
+/// The body of a `lista` page: one bullet record per fact, each wrapped in its
+/// bare `{{f=…}}…{{/}}` region marker, with the done-cue **inside** the marker
+/// so redaction hides a closure together with the fact it describes.
+///
+/// One function, two callers, and that is the point: the ingest turn refreshes
+/// a list the moment it changes ([`refresh_list_page`]) and the compile
+/// refreshes one that something else changed. Two renderers would drift, and
+/// the drift would show as a page that flips shape depending on who touched it
+/// last.
+fn list_records<'a>(
+    facts: impl Iterator<Item = (&'a FactId, &'a str, Option<&'a str>, Option<&'a str>)>,
+) -> String {
+    facts
+        .map(|(fact_id, text, decay_reason, valid_to)| {
+            let mut line = text.replace('\n', " ");
+            if let Some(cue) = closure_cue(decay_reason, valid_to) {
+                line.push_str(&cue);
+            }
+            format!("- {}", crate::capture::render_marker(fact_id, &line))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Rewrite a `lista` page **now**, from the facts as they stand.
+///
+/// Founder, 2026-08-18: *«il classificatore si occupa delle liste, sia di
+/// crearle che di aggiungere/togliere/modificare elementi. Il dream light no,
+/// perché avviene dopo un'ora»* — and the reason, in his words: *«gestire una
+/// lista è semplice, non è come scrivere la prosa, per cui aspettiamo un'ora e
+/// bufferizziamo i fatti in modo da risparmiare»*. Waiting buys nothing here:
+/// there is no model to call, no page to choose, nothing to judge. So a list
+/// is brought up to date in the turn that changed it.
+///
+/// Adding an item already wrote it live (the capture path appends its marker).
+/// **Closing one did not**: `fact_index::close_validity` stamps the row and
+/// leaves the file alone, so *«ho comprato il latte»* showed no `✓` until the
+/// next compile, up to an hour later. This is the other half.
+///
+/// Returns `Ok(false)` and touches nothing when the page is not `lista`-styled
+/// — the caller does not have to know what kind of page a fact sits on.
+///
+/// The compile still renders list pages, and that is deliberate: a fact on a
+/// list can also change from the dashboard, the comment channel, a forget
+/// vote or REM's dedup, none of which run a turn. They all reconcile through
+/// the plan's dirty set. In the ordinary case the compile finds the page
+/// already correct and writes nothing.
+///
+/// # Errors
+///
+/// DB or filesystem failures. A page that cannot be parsed is left alone.
+pub async fn refresh_list_page(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    wiki_id: &str,
+    source_path: &str,
+) -> Result<bool> {
+    let handle = tree.locate(&parse_wiki_id(wiki_id))?;
+    let Some(rel) = source_path.strip_prefix(&format!(
+        "{}/",
+        handle.rel_dir().to_string_lossy().replace('\\', "/")
+    )) else {
+        return Ok(false);
+    };
+    let page_path = std::path::Path::new(rel);
+    let Ok(existing) = handle.read_page(page_path) else {
+        return Ok(false);
+    };
+    let Some(doc) = crate::wiki::MarkdownDoc::parse(&existing) else {
+        return Ok(false);
+    };
+    // Only a `lista` page renders as records; anything else is the Cronista's
+    // and is not this function's to touch.
+    if crate::meta_annotate::parse_page_card(&existing)
+        .style
+        .as_deref()
+        .map(str::trim)
+        != Some("lista")
+    {
+        return Ok(false);
+    }
+
+    let rows = fact_index::find_active_by_source_path(pool, source_path).await?;
+    let body = list_records(rows.iter().map(|r| {
+        (
+            &r.fact_id,
+            r.text.as_str(),
+            r.decay_reason.as_deref(),
+            r.valid_to.as_deref(),
+        )
+    }));
+    // The testata is preserved verbatim — title, style, description, keywords
+    // are not this function's to decide; only the records are rebuilt.
+    let contents = format!("---\n{}\n---\n\n{body}\n", doc.frontmatter.trim_end());
+    if contents == existing {
+        return Ok(false);
+    }
+    handle.write_page(page_path, &contents)?;
+    // The records moved, so every offset on this page is stale. Same repoint
+    // the compile does after rendering one.
+    let known: std::collections::BTreeSet<&str> = rows.iter().map(|r| r.fact_id.as_str()).collect();
+    repoint_facts(pool, &contents, &known, wiki_id, source_path).await?;
+    Ok(true)
+}
+
 // ---------- the Record Writer (lista) ----------
 
 /// Render a `lista`-style leaf as atomic records, **no LLM**.
@@ -1515,19 +1628,14 @@ async fn compile_list_page(
     // is a single line, so any newline in the claim collapses to a space. A
     // closed record carries its done-cue INSIDE the marker, so redaction hides
     // the closure together with the fact it describes.
-    let body = page
-        .primary_facts
-        .iter()
-        .map(|f| {
-            let mut line = f.text.replace('\n', " ");
-            if let Some(cue) = record_closure_cue(f) {
-                line.push_str(&cue);
-            }
-            let record = crate::capture::render_marker(&f.fact_id, &line);
-            format!("- {record}")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let body = list_records(page.primary_facts.iter().map(|f| {
+        (
+            &f.fact_id,
+            f.text.as_str(),
+            f.decay_reason.as_deref(),
+            f.valid_to.as_deref(),
+        )
+    }));
 
     let handle = tree.locate(&parse_wiki_id(&page.wiki_id))?;
     let page_path = std::path::Path::new(&page.page_path);
@@ -1583,8 +1691,12 @@ async fn compile_list_page(
 /// described with at ingest). Keyed strictly on `decay_reason`: a window with
 /// a future or merely-expired `valid_to` and no explicit closure gets no cue,
 /// and an open record renders exactly as before.
-fn record_closure_cue(f: &FactForPage) -> Option<String> {
-    let reason = f.decay_reason.as_deref()?;
+///
+/// Takes the two fields rather than a plan row, so a record read straight from
+/// `fact_index` — the turn's own refresh of a list — renders identically to
+/// one carried on the compile plan.
+fn closure_cue(decay_reason: Option<&str>, valid_to: Option<&str>) -> Option<String> {
+    let reason = decay_reason?;
     let glyph = if reason == fact_index::decay::COMPLETED {
         '✓'
     } else {
@@ -1592,9 +1704,7 @@ fn record_closure_cue(f: &FactForPage) -> Option<String> {
     };
     // The date part of the closure instant (ISO-8601 `YYYY-MM-DD…`); a
     // malformed or missing `valid_to` degrades to the bare glyph.
-    let date = f
-        .valid_to
-        .as_deref()
+    let date = valid_to
         .and_then(|t| t.get(..10))
         .map_or_else(String::new, |d| format!(" {d}"));
     Some(format!(" · {glyph}{date}"))
@@ -1902,20 +2012,17 @@ fn is_future(from: &str, now: &str) -> bool {
 /// The canonical wikilink for one planned page, per the link grammar
 /// (recall-pipeline.md §Link grammar):
 /// A planned page as the canonical rail that reaches it —
-/// `[[wiki_id/page-slug]]`, always a page. `None` when the node sits on the
-/// wiki's **map**, which is not a link target.
+/// `[[wiki_id/page-slug]]`, always a page. `None` for a node on a page name
+/// no plan node may claim.
 ///
-/// The bare `[[wiki_id]]` form used to be minted for a node on `index.md`,
-/// back when that was a wiki's overview. Since 63 §8 `index.md` is the map —
-/// written for REM and the filing classifier, refused by `open_target` and by
-/// all three offer-side filters — so a rail pointing there leads nowhere, and
-/// **40 % of the links the live corpus carries on a content page** are that
-/// dead form. Nothing mints such a node any more — the planner seeds
-/// `profile.md`, `notes.md` or a slug, and the last minter, the sub-wiki
-/// emergence handler, now carries its page over under its own name — but a
-/// **persisted** plan can still hold one from before 2026-08-03, so this
-/// refuses rather than asserts: a legacy map node is simply not offered as a
-/// rail, and every caller drops it.
+/// The bare `[[wiki_id]]` form used to be minted for a node on a wiki's
+/// overview page, back when a wiki had one — and **40 % of the links the live
+/// corpus carries on a content page** are that dead form. Nothing mints such
+/// a node any more: the planner seeds `@profile.md`, `@notes.md` or a slug, and
+/// the last minter, the sub-wiki emergence handler, carries its page over
+/// under its own name. But a **persisted** plan can still hold one from
+/// before 2026-08-03, so this refuses rather than asserts: a legacy node on
+/// that name is simply not offered as a rail, and every caller drops it.
 ///
 /// The slug is the page **file's** stem, never the plan slug alone (which
 /// would read as a hop to a wiki that does not exist). Every link the
@@ -2160,8 +2267,8 @@ fn recommended_link_targets(plan: &CompilationPlan, slug: &str) -> Vec<String> {
         .map(|ls| {
             ls.iter()
                 // The graph stores plan slugs; a slug whose page vanished
-                // from the plan would be a dead rail — skip it. A node on a
-                // wiki's map yields `None` for the same reason.
+                // from the plan would be a dead rail — skip it. A legacy node
+                // on a retired page name yields `None` for the same reason.
                 .filter_map(|l| plan.pages.get(l).and_then(plan_page_wikilink))
                 .collect()
         })
@@ -2248,13 +2355,21 @@ fn render_page_file(
     use std::fmt::Write as _;
     let date = now.split('T').next().unwrap_or(now);
     let title = page.title.replace('"', "'");
-    let ptype = planner::page_type_tag(page.page_type);
     let mut fm = String::with_capacity(body.len() + 256);
     fm.push_str("---\n");
     let _ = writeln!(fm, "title: \"{title}\"");
     let _ = writeln!(fm, "created: {created}");
     let _ = writeln!(fm, "updated: {date}");
-    let _ = writeln!(fm, "page_type: {ptype}");
+    // No `page_type:` line. It was written here and **read by nothing** —
+    // `meta_annotate::parse_page_card` reads `description` / `keywords` /
+    // `style` and never it — while sitting one line above `style`, identical
+    // in form. Two labels side by side, of which only `style` is a property of
+    // the page: `PageType` is a plan-internal marker of which reserved page a
+    // node is (card / buffer / ordinary), inherited from the pre-Rust engine's
+    // flat page taxonomy and never a design of this one. Printing it into every
+    // compiled page taught every reader — the founder included — that a page
+    // carries two parallel classifications. It does not (founder, 2026-08-17:
+    // *«tipo di pagina quando mai è stato discusso?»*).
     let _ = writeln!(fm, "style: {style}");
     let desc = description.replace(['"', '\n'], " ");
     let desc = desc.trim();
@@ -2451,7 +2566,7 @@ mod tests {
             "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        std::fs::write(wikis.join("alice/index.md"), "# alice\n").unwrap();
+        std::fs::write(wikis.join("alice/cucina.md"), "# alice\n").unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         (dir, tree, pool)
     }
@@ -2622,7 +2737,6 @@ mod tests {
             successor_fact_id: None,
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
         }
     }
@@ -2843,12 +2957,12 @@ mod tests {
         let (_dir, tree, _pool) = setup().await;
         // Wiki hop: the wiki exists. Page hop: the file must exist too.
         assert!(authored_ref_resolves(&tree, "[[alice]]"));
-        assert!(authored_ref_resolves(&tree, "[[alice/index]]"));
+        assert!(authored_ref_resolves(&tree, "[[alice/cucina]]"));
         assert!(!authored_ref_resolves(&tree, "[[alice/missing]]"));
         assert!(!authored_ref_resolves(&tree, "[[ghost]]"));
         assert!(!authored_ref_resolves(&tree, "[[ghost/page]]"));
         // Mutant shapes never resolve: no brackets, traversal, empty.
-        assert!(!authored_ref_resolves(&tree, "alice/index"));
+        assert!(!authored_ref_resolves(&tree, "alice/cucina"));
         assert!(!authored_ref_resolves(&tree, "[[alice/../secret]]"));
         assert!(!authored_ref_resolves(&tree, "[[]]"));
     }
@@ -2882,7 +2996,6 @@ mod tests {
                 valid_to: None,
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -2898,7 +3011,7 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
-                source_path: "wikis/alice/_captures.md".to_owned(),
+                source_path: "wikis/alice/appunti_vari.md".to_owned(),
                 region_start: None,
                 region_end: None,
                 text: text.to_owned(),
@@ -2914,7 +3027,6 @@ mod tests {
                 // classifier placement proposal to carry.
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -2951,13 +3063,12 @@ mod tests {
                     successor_fact_id: None,
                     target_page: None,
                     style: None,
-                    page_description: None,
                     salience: None,
                 }],
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),
                 wiki_id: "alice".to_owned(),
-                page_path: "index.md".to_owned(),
+                page_path: "cucina.md".to_owned(),
             },
         );
         CompilationPlan {
@@ -2985,7 +3096,7 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
-                source_path: "wikis/alice/_captures.md".to_owned(),
+                source_path: "wikis/alice/appunti_vari.md".to_owned(),
                 region_start: None,
                 region_end: None,
                 text: "Alice loves pasta".to_owned(),
@@ -3001,7 +3112,6 @@ mod tests {
                 // classifier placement proposal to carry.
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -3024,12 +3134,12 @@ mod tests {
         assert_eq!(report.leaves, 1);
 
         // The compiled page exists with the marker.
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/index.md")).unwrap();
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
         assert!(page.contains("Alice ama la pasta."));
         assert!(page.contains(&format!("f={fid}")));
         // The fact_index row was repointed off the journal onto the compiled page.
         let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
-        assert_eq!(row.source_path, "wikis/alice/index.md");
+        assert_eq!(row.source_path, "wikis/alice/cucina.md");
         assert!(row.region_start.is_some(), "offsets repointed");
         assert_eq!(
             row.text, "Alice loves pasta",
@@ -3060,7 +3170,7 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
-                source_path: "wikis/alice/_captures.md".to_owned(),
+                source_path: "wikis/alice/appunti_vari.md".to_owned(),
                 region_start: None,
                 region_end: None,
                 text: "Alice loves pasta".to_owned(),
@@ -3074,7 +3184,6 @@ mod tests {
                 valid_to: None,
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -3163,7 +3272,7 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
-                source_path: "wikis/alice/_captures.md".to_owned(),
+                source_path: "wikis/alice/appunti_vari.md".to_owned(),
                 region_start: None,
                 region_end: None,
                 text: "Alice loves pasta".to_owned(),
@@ -3179,7 +3288,6 @@ mod tests {
                 // classifier placement proposal to carry.
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -3195,7 +3303,7 @@ mod tests {
             .await
             .expect("compile");
 
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/index.md")).unwrap();
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
         assert!(
             page.contains("\nstyle: prosa-tecnica\n"),
             "the Cronista's style is recorded in the testata: {page}"
@@ -3221,7 +3329,7 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
-                source_path: "wikis/alice/_captures.md".to_owned(),
+                source_path: "wikis/alice/appunti_vari.md".to_owned(),
                 region_start: None,
                 region_end: None,
                 text: "Alice loves pasta".to_owned(),
@@ -3235,7 +3343,6 @@ mod tests {
                 valid_to: None,
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -3253,7 +3360,7 @@ mod tests {
             .await
             .expect("compile");
 
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/index.md")).unwrap();
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
         assert!(
             page.contains("\nstyle: prosa-tecnica\n"),
             "the ingest plan's style wins over the Cronista's: {page}"
@@ -3377,7 +3484,7 @@ mod tests {
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),
                 wiki_id: "alice".to_owned(),
-                page_path: "index.md".to_owned(),
+                page_path: "cucina.md".to_owned(),
             },
         );
         let plan = CompilationPlan {
@@ -3405,7 +3512,7 @@ mod tests {
                 .expect("compile");
         assert_eq!(report.leaves, 1, "rendered, counted as a leaf");
 
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/index.md")).unwrap();
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
         assert!(
             !page.contains("INVENTED_LORE"),
             "no LLM on the fact-less path: {page}"
@@ -3491,7 +3598,13 @@ mod tests {
         )
         .unwrap();
         // Reserved names survive even with no rows.
-        std::fs::write(alice_dir.join("rules.md"), "# Rules\n").unwrap();
+        std::fs::write(alice_dir.join("@rules.md"), "# Rules\n").unwrap();
+        // The scaffolding page `setup` seeds is not part of this count.
+        std::fs::remove_file(alice_dir.join("cucina.md")).ok();
+        // A leftover `index.md` from the retired index writer is NOT reserved:
+        // it is swept like any other plan-absent, pointer-less file, which is
+        // how the leftovers leave after 2026-08-15.
+        std::fs::write(alice_dir.join("index.md"), "# Alice\n\n- [[alice/spesa]]\n").unwrap();
 
         let cronista = FakeLlmBackend::new("fake", "unused — lista path");
         let hub = FakeLlmBackend::new("fake", "# hub\n");
@@ -3500,7 +3613,10 @@ mod tests {
                 .await
                 .expect("compile");
 
-        assert_eq!(report.orphan_files_swept, 1, "exactly the zombie went");
+        assert_eq!(
+            report.orphan_files_swept, 2,
+            "the zombie and the leftover index went"
+        );
         assert!(
             !alice_dir.join("registro_spesa.md").exists(),
             "the zombie file is gone"
@@ -3510,10 +3626,14 @@ mod tests {
             "a live pointer keeps the file"
         );
         assert!(
-            alice_dir.join("rules.md").exists(),
+            alice_dir.join("@rules.md").exists(),
             "reserved names survive"
         );
         assert!(alice_dir.join("spesa.md").exists(), "plan pages survive");
+        assert!(
+            !alice_dir.join("index.md").exists(),
+            "a leftover map file is swept like any other orphan"
+        );
         drop(dir);
     }
 
@@ -3675,7 +3795,6 @@ mod tests {
                         successor_fact_id: None,
                         target_page: None,
                         style: None,
-                        page_description: None,
                         salience: None,
                     },
                     FactForPage {
@@ -3693,14 +3812,13 @@ mod tests {
                         successor_fact_id: None,
                         target_page: None,
                         style: None,
-                        page_description: None,
                         salience: None,
                     },
                 ],
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),
                 wiki_id: "alice".to_owned(),
-                page_path: "index.md".to_owned(),
+                page_path: "cucina.md".to_owned(),
             },
         );
         let plan = CompilationPlan {
@@ -3721,7 +3839,7 @@ mod tests {
                 .expect("compile");
         assert_eq!(report.leaves, 1);
 
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/index.md")).unwrap();
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
         // The fact the Cronista DID emit.
         assert!(page.contains(&format!("f={fid1}")), "emitted fact present");
         // The OMITTED non-global fact was recovered by the forward guard,
@@ -3744,7 +3862,7 @@ mod tests {
         for fid in [&fid1, &fid2] {
             let row = fact_index::find_by_id(&pool, fid).await.unwrap().unwrap();
             assert_eq!(
-                row.source_path, "wikis/alice/index.md",
+                row.source_path, "wikis/alice/cucina.md",
                 "fact {fid} repointed onto the compiled page"
             );
             assert!(row.region_start.is_some(), "offsets repointed for {fid}");
@@ -3913,7 +4031,7 @@ mod tests {
                 ),
             )
             .unwrap();
-            std::fs::write(wikis.join(format!("{w}/index.md")), format!("# {w}\n")).unwrap();
+            std::fs::write(wikis.join(format!("{w}/cucina.md")), format!("# {w}\n")).unwrap();
         }
         let tree = WikiTree::open(dir.path()).expect("tree");
 
@@ -3979,7 +4097,7 @@ mod tests {
 
         // Knock the row back to a pending render elsewhere (the state a
         // pre-point leaves when the destination content already sits on disk).
-        fact_index::move_region(&pool, &f.fact_id, "wikis/alice/_captures.md", None, None)
+        fact_index::move_region(&pool, &f.fact_id, "wikis/alice/appunti_vari.md", None, None)
             .await
             .unwrap();
 
@@ -4338,11 +4456,11 @@ mod tests {
         };
         let idx = page_index_block(&plan);
         assert!(
-            idx.contains("[[bob/profile]]: bob desc"),
+            idx.contains("[[bob/@profile]]: bob desc"),
             "shows other page description"
         );
         assert!(
-            idx.contains("[[alice/profile]]: alice desc"),
+            idx.contains("[[alice/@profile]]: alice desc"),
             "includes the page being written — the block is one per run"
         );
         assert!(
@@ -4387,12 +4505,10 @@ mod tests {
             )),
             Some("[[famiglia-bruno-battaglia/referto_oculistica]]".to_owned())
         );
-        // A node on the wiki's map is NOT a link target: the map is written
-        // for filing and refused by every route of the read path, so a rail
-        // onto it is a dead rail. It used to collapse to the bare `[[famiglia]]`
-        // hop, which is what put 40 % of the live corpus's links on a page no
-        // reader may open (founder's rule, 2026-08-04: the map has outgoing
-        // links and no incoming ones).
+        // A legacy node on `index.md` is NOT a link target: no such page is
+        // written any more, so a rail onto it is a dead rail. It used to
+        // collapse to the bare `[[famiglia]]` hop, which is what put 40 % of
+        // the live corpus's links on a page no reader may open.
         assert_eq!(
             plan_page_wikilink(&leaf("famiglia", "famiglia", "index.md")),
             None
@@ -4545,7 +4661,7 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
-                source_path: "wikis/alice/_captures.md".to_owned(),
+                source_path: "wikis/alice/appunti_vari.md".to_owned(),
                 region_start: None,
                 region_end: None,
                 text: "Alice loves pasta".to_owned(),
@@ -4559,7 +4675,6 @@ mod tests {
                 valid_to: None,
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -4660,7 +4775,7 @@ mod tests {
             (
                 "famiglia",
                 PageType::GroupTheme,
-                "profile.md",
+                "@profile.md",
                 vec!["salute".to_owned()],
             ),
             ("salute", PageType::ConceptLeaf, "salute.md", Vec::new()),
@@ -4720,7 +4835,7 @@ mod tests {
         assert_eq!(report.hubs, 1);
         assert!(report.rails_appended.is_empty(), "the child link was woven");
 
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/profile.md")).unwrap();
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/@profile.md")).unwrap();
         assert!(
             page.contains("description: \"Nucleo familiare: salute, spese comuni, casa\""),
             "the model's card is the testata line: {page}"
@@ -4748,7 +4863,7 @@ mod tests {
                 .expect("compile");
         assert_eq!(report.hubs, 1, "a bare-markdown reply still writes a page");
 
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/profile.md")).unwrap();
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/@profile.md")).unwrap();
         assert!(page.contains("# La famiglia"), "reply as body: {page}");
         assert!(
             page.contains("description: \"Group famiglia\""),
@@ -4779,7 +4894,7 @@ mod tests {
             vec!["famiglia: [[alice/salute]]".to_owned()],
         );
 
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/profile.md")).unwrap();
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/@profile.md")).unwrap();
         assert!(
             page.trim_end().ends_with("[[alice/salute]]"),
             "the child is reachable from its hub: {page}"
@@ -4796,19 +4911,19 @@ mod tests {
         let recommended = vec![
             "[[alice/spesa]]".to_owned(),
             "[[alice/cucina]]".to_owned(),
-            "[[bob/profile]]".to_owned(),
+            "[[bob/@profile]]".to_owned(),
         ];
         let body = "Fa la [[alice/spesa|spesa]] il sabato, e cucina in [[alice/cucina.md]].";
         assert_eq!(
             missing_rails(&recommended, body),
-            vec!["[[bob/profile]]".to_owned()],
+            vec!["[[bob/@profile]]".to_owned()],
             "an aliased link and a .md-suffixed one both land; only bob's is missing"
         );
         // A bare wiki link names a MAP, which no reader may open, so it can
         // never stand in for the rail to a page of that wiki.
         assert_eq!(
-            missing_rails(&["[[bob/profile]]".to_owned()], "Ne parla con [[bob]]."),
-            vec!["[[bob/profile]]".to_owned()],
+            missing_rails(&["[[bob/@profile]]".to_owned()], "Ne parla con [[bob]]."),
+            vec!["[[bob/@profile]]".to_owned()],
         );
         assert!(missing_rails(&[], "nessun binario").is_empty());
     }

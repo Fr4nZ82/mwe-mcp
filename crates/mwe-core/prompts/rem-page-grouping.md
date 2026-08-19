@@ -1,8 +1,8 @@
 ---
 name: rem-page-grouping
 description: REM page-group → wiki cartographer — read a wiki's whole page inventory and group the pages that are already one subject area
-version: 1.2
-default_version_at_bootstrap: v1.2
+version: 1.3
+default_version_at_bootstrap: v1.3
 ---
 
 # Prompt: rem-page-grouping
@@ -42,11 +42,11 @@ block lives a few lines below the prompt build.
 
 - `{wiki}` — the wiki's title
 - `{wiki_pages}` — how many topic pages it holds that carry at least one
-  fact (the map, `index.md`, is not one)
+  fact
 - `{min_pages}` — the birth floor, `policy.auto_promote_group_min_pages`
 - `{existing}` — the sub-wikis already under this wiki, one per line,
   with their `_meta` summary and topic-page count (`(none)` when there
-  are none). **The map is excluded there too**, so the two numbers on the
+  are none). Counted the same way on both sides, so the two numbers on the
   page are the same measurement: they used to differ by one — every child
   counted its `index.md` and the parent did not — while the model is asked
   to weigh them against each other.
@@ -94,9 +94,7 @@ whole wiki is skipped up front when it is a smart wiki
 smart wiki, the smart consumer is the sole writer), and again when the
 wiki has **fewer than `{min_pages}` candidate pages and no existing
 sub-wiki** to file into — with neither a possible birth nor a possible
-move, the call would be wasted. `index.md` is never a candidate: it is the
-wiki's **map**, holds no facts, and is reassembled from whatever pages remain
-— there is nothing on it to group. The verdict memo
+move, the call would be wasted. The verdict memo
 (`rem_verdicts` kind `page_grouping`) keys on the rendered prompt, so a
 settled "no groups" re-opens by itself as soon as the inventory changes.
 Applies share `policy.auto_promote_cap` (default `5`) with the

@@ -131,7 +131,22 @@ pub enum PlannerError {
 /// Result alias for this module.
 pub type Result<T> = std::result::Result<T, PlannerError>;
 
-/// The kinds of page the topology distinguishes.
+/// **Which reserved page a plan node is** — not a classification of pages.
+///
+/// `Person` / `GroupTheme` → the wiki's identity card; `WikiBuffer` → its
+/// buffer; `ConceptLeaf` → an ordinary page; `ConceptHub` → retired. The only
+/// classification of a page the founder designed is [`PagePlan::style`]
+/// (`prosa` / `prosa-tecnica` / `lista`).
+///
+/// ⚠️ **These four names are the pre-Rust engine's flat page taxonomy**
+/// (`pages/<topic>.md` with `person` / `group_theme` / `concept_hub` /
+/// `concept_leaf`), carried over verbatim when this module was ported on
+/// 2026-05-31. The migration plan of the day said they should dissolve into
+/// the wiki tree instead — *«i `concept_hub`/`group_theme` del vecchio
+/// diventano nodi wiki, i `concept_leaf` diventano pagine / sub-wiki»* — and
+/// that conversion was never finished; retiring `ConceptHub` on 2026-08-04
+/// did a quarter of it. Founder, 2026-08-17: *«tipo di pagina quando mai è
+/// stato discusso?»* — it was not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PageType {
@@ -206,11 +221,10 @@ impl PageType {
 
     /// The reserved file a foundation node of this type owns.
     ///
-    /// **Never [`crate::wiki::INDEX_FILENAME`]**: a wiki's map is not a plan
-    /// node at all, so nothing the compiler places can land there (founder's
-    /// ruling, 2026-08-03 — the root serves REM and the ingest classifier as a
-    /// map of where a fact belongs, and holds no facts of its own). With no
-    /// plan owning it, the REM hub writer is free to author it.
+    /// **Never [`crate::wiki::INDEX_FILENAME`]**: nothing the compiler places
+    /// may land on that name. It is not a page any more — the nightly writer
+    /// that assembled one per wiki was deleted on 2026-08-15 — and it stays
+    /// unclaimable so it cannot come back meaning something else.
     const fn foundation_page(self) -> Option<&'static str> {
         match self {
             Self::Person | Self::GroupTheme => Some(crate::wiki::PROFILE_FILENAME),
@@ -246,14 +260,21 @@ fn buffer_slug(wiki_slug: &str) -> String {
 ///
 /// [`crate::wiki::INDEX_FILENAME`] maps to the card slug for the benefit of
 /// receipts written before 2026-08-03, when the root *was* the card; nothing
-/// places a fact there any more.
+/// places a fact on that name any more.
 #[must_use]
 pub fn plan_slug_for_page(wiki_id: &str, page: &str) -> String {
     let stem = page.strip_suffix(".md").unwrap_or(page);
     let wiki_slug = slugify(wiki_id);
+    // Both spellings, and that is deliberate: the `@` marker landed on
+    // 2026-08-18, and a receipt or a persisted plan written before it still
+    // names the bare form. `slugify` would eat the marker anyway — it keeps
+    // only letters and digits — so an unmatched `@profile` would silently
+    // become the concept slug `profile` instead of the card's key.
     match stem {
-        "index" | "profile" => wiki_slug,
-        "notes" => buffer_slug(&wiki_slug),
+        "@profile" | "@notes" | "index" | "profile" | "notes" => match stem {
+            "@notes" | "notes" => buffer_slug(&wiki_slug),
+            _ => wiki_slug,
+        },
         other => slugify(other),
     }
 }
@@ -315,10 +336,6 @@ pub struct FactForPage {
     /// (`fact_index.style`). `None` = unproposed.
     #[serde(default)]
     pub style: Option<String>,
-    /// Ingest-proposed "cosa ci va dentro" one-liner seeding the page's
-    /// testata description (`fact_index.page_description`). `None` = unproposed.
-    #[serde(default)]
-    pub page_description: Option<String>,
     /// Per-fact salience the producer deduced (`fact_index.salience`, closed
     /// palette `high` | `normal` | `low`). `high` = always-on material
     /// (identity, health/safety, hard standing constraints) whose home is the
@@ -357,7 +374,6 @@ impl FactForPage {
             successor_fact_id: row.successor_fact_id.clone(),
             target_page: row.target_page.clone(),
             style: row.style.clone(),
-            page_description: row.page_description.clone(),
             salience: row.salience.clone(),
             authored_refs: row.authored_refs.clone(),
         }
@@ -380,7 +396,8 @@ pub struct PagePlan {
     /// decides the style at compile time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<String>,
-    /// Kind of page.
+    /// Which reserved page this node is — see [`PageType`]. Not a
+    /// classification of the page; that is `style`.
     pub page_type: PageType,
     /// Group scope prose (`group_theme` only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1201,21 +1218,19 @@ pub fn build_compilation_plan(
         page.incoming_links = page.outgoing_links.clone(); // symmetric ⇒ equal
     }
 
-    // 9.bis the map invariant, checked where the plan is sealed rather than
-    // trusted at each of the places that mint a page. Nothing the compiler
-    // places may land on a wiki's map: that page answers *where does a fact
-    // belong*, it holds no facts, and the read path never opens it — so a
-    // fact placed there is one no navigation route can reach and no sweep
-    // will drain (founder's ruling, 2026-08-03). Loud rather than fatal: a
-    // mis-keyed page is a bug to fix, not a reason to abandon the night's
-    // compile.
+    // 9.bis the `index.md` invariant, checked where the plan is sealed rather
+    // than trusted at each of the places that mint a page. Nothing the
+    // compiler places may land on that name: it is not a page of a standard
+    // wiki at all, and one placed there would be swept as an orphan the next
+    // compile. Loud rather than fatal: a mis-keyed page is a bug to fix, not
+    // a reason to abandon the night's compile.
     for (slug, p) in &pages {
         if p.page_path == crate::wiki::INDEX_FILENAME {
             tracing::error!(
                 slug = %slug,
                 wiki_id = %p.wiki_id,
                 page_type = page_type_tag(p.page_type),
-                "planner: a plan page points at the wiki's MAP — facts placed there are unreachable"
+                "planner: a plan page points at `index.md` — a name no plan node may claim"
             );
         } else if let Some(expected) = p.page_type.foundation_page()
             && p.page_path != expected
@@ -1257,9 +1272,9 @@ pub fn build_compilation_plan(
 
 fn registry_to_page(e: &ConceptRegistryEntry) -> PagePlan {
     // Concept pages (hub OR leaf) are `<slug>.md` pages WITHIN their wiki — a
-    // wiki's reserved pages (its card, its buffer, its map) are foundation
-    // nodes or nobody's, never concept pages, and `placement_slug` refuses
-    // their names so one can never be minted here.
+    // wiki's reserved pages (its card, its buffer) are foundation nodes or
+    // nobody's, never concept pages, and `placement_slug` refuses their names
+    // so one can never be minted here.
     let page_path = format!("{}.md", e.slug);
     PagePlan {
         slug: e.slug.clone(),
@@ -1681,7 +1696,7 @@ impl RehomePageSeed {
     /// The plan key (slug) is derived from the page the same way
     /// [`crate::promote`] flattens a page path — `slugify(<stem>)` — **except
     /// for a wiki's reserved pages, which are foundation nodes keyed per
-    /// wiki**: `profile.md` is the card (`slugify(wiki_id)`) and `notes.md`
+    /// wiki**: `@profile.md` is the card (`slugify(wiki_id)`) and `@notes.md`
     /// the buffer ([`buffer_slug`], or the plain wiki slug on a topic wiki
     /// that has no card). Deriving `notes` from the stem instead would give
     /// every wiki's buffer the same forest-wide plan key, which is exactly
@@ -2072,6 +2087,11 @@ pub struct CartografoSignals {
     /// person reads, so each batch is cut to one wiki and carries that
     /// wiki's language. Built by [`wiki_locales_for`].
     pub wiki_locales: BTreeMap<String, String>,
+    /// How many facts a proposal must group before a page is born, when the
+    /// cadence imposes a floor at all ([`PAGE_BIRTH_FLOOR`] — the cheap hourly
+    /// tier). `None` at REM: the strong pass reads a whole wiki at once and its
+    /// judgement is the point.
+    pub birth_floor: Option<usize>,
 }
 
 impl CartografoSignals {
@@ -2600,6 +2620,7 @@ pub async fn classify_facts(
         let taken_desc = describe_taken_slugs(foundation, registry, wiki, &signals.foreign_pages);
         let facts_desc = describe_facts(batch, signals);
         let language_directive = signals.language_for(wiki);
+        let birth_floor_directive = birth_floor_directive(signals.birth_floor);
         let system = prompts::render(
             "cartografo",
             workdir,
@@ -2610,6 +2631,7 @@ pub async fn classify_facts(
                 ("concept_pages", concept_desc.as_str()),
                 ("taken_slugs", taken_desc.as_str()),
                 ("facts", facts_desc.as_str()),
+                ("birth_floor", birth_floor_directive.as_str()),
             ],
         )?;
         let resp = match llm
@@ -2645,9 +2667,9 @@ pub async fn classify_facts(
             // `concept_leaf` the Cartografo invents took `slugify` alone, so a
             // page called `projects` or `rules` would have been materialised
             // straight over that wiki's channel page — and
-            // `compiler::sweep_orphan_page_files` exempts `index.md` and
-            // `rules.md` but not `projects.md`, so the signposts were the ones
-            // with no floor under them.
+            // `compiler::sweep_orphan_page_files` exempts `@rules.md` but not
+            // `@projects.md`, so the signposts were the ones with no floor
+            // under them.
             if crate::wiki::is_reserved_page_stem(&slug) {
                 tracing::warn!(
                     slug = %slug,
@@ -2755,11 +2777,11 @@ impl NewFactPlacement<'_> {
 /// `_`). Empty resolves to `None`, and so does **every reserved page name**,
 /// because none of them is a concept page a classifier may mint:
 ///
-/// - `index.md` — the wiki's map, which holds no facts at all;
-/// - `profile.md` and `notes.md` — the wiki's card and buffer, which are
+/// - `index.md` — not a page of a standard wiki at all, and kept unclaimable;
+/// - `@profile.md` and `@notes.md` — the wiki's card and buffer, which are
 ///   per-wiki **foundation nodes**; minting a concept page here would put the
 ///   same file in the plan under a second, forest-wide key;
-/// - `rules.md` ([`crate::wiki::RULES_FILENAME`]) and `projects.md`
+/// - `@rules.md` ([`crate::wiki::RULES_FILENAME`]) and `@projects.md`
 ///   ([`crate::wiki::PROJECTS_FILENAME`]) — written by a deterministic
 ///   channel, so a fact mis-targeted there must not land among the policy or
 ///   the signposts.
@@ -2770,6 +2792,13 @@ impl NewFactPlacement<'_> {
 /// `_md`.
 fn placement_slug(target_page: &str) -> Option<String> {
     let stripped = target_page.strip_suffix(".md").unwrap_or(target_page);
+    // The reserved check runs on the RAW stem, before slugify: slugify keeps
+    // only letters and digits, so it eats the `@` marker and `@notes` would
+    // arrive here as the innocent-looking `notes`. Checking first is what
+    // makes the marker mean anything on this path.
+    if crate::wiki::is_reserved_page_stem(&stripped.to_ascii_lowercase()) {
+        return None;
+    }
     let slug = slugify(stripped);
     if slug.is_empty() || crate::wiki::is_reserved_page_stem(&slug) {
         None
@@ -2803,7 +2832,7 @@ fn ingest_placement_blueprint(facts: &[FactForPage]) -> Blueprint {
         // *overriding* any concrete ingest `target_page`. We achieve that by
         // leaving it UNASSIGNED here: the deterministic orphan-fallback in
         // `build_compilation_plan` then homes it on the subject's card node
-        // (`profile.md`) — see `orphan_target`, which reads the same salience
+        // (`@profile.md`) — see `orphan_target`, which reads the same salience
         // to tell a reserved fact from one that merely has no page yet. No new
         // branch, no LLM — the same path a fact with no proposed page already
         // takes ("una pipeline sola").
@@ -2820,7 +2849,11 @@ fn ingest_placement_blueprint(facts: &[FactForPage]) -> Blueprint {
         new_pages.entry(slug.clone()).or_insert_with(|| NewPage {
             title: capitalize(&slug.replace('_', " ")),
             slug,
-            description: f.page_description.clone().unwrap_or_default(),
+            // No card here: what belongs on a page is the PAGE's, and the
+            // turn that created this page wrote it on the testata
+            // (`capture::seed_page_card`). `heal_page_cards` adopts it from
+            // the file into this plan and the registry.
+            description: String::new(),
             style: f.style.clone(),
             page_type: PageType::ConceptLeaf,
             parent_hub: None,
@@ -2882,10 +2915,105 @@ async fn place_new_facts(
             }
             let classified =
                 classify_facts(*llm, &remainder, foundation, registry, workdir, &signals).await?;
-            Ok(merge_blueprints(named, classified))
+            // The floor applies to what the MODEL invented, never to what the
+            // user's own turn named (the `named` half): a list or a container
+            // asked for by name is one fact's page by right.
+            Ok(merge_blueprints(named, hold_to_birth_floor(classified)))
         },
         NewFactPlacement::OrphanFallback => Ok(Blueprint::default()),
     }
+}
+
+/// The `{birth_floor}` block of the Cartografo prompt.
+///
+/// Two different jobs share one prompt file, and this is where they part: the
+/// cheap hourly tier groups or parks, the nightly strong tier judges. Rendered
+/// rather than written into the body so neither reads the other's rule.
+fn birth_floor_directive(floor: Option<usize>) -> String {
+    floor.map_or_else(
+        || {
+            "YOUR JUDGEMENT DECIDES — you are the nightly pass and you are shown the whole \
+             wiki. Propose the pages the material actually needs; there is no floor on how \
+             many facts a page must group."
+                .to_owned()
+        },
+        |n| {
+            format!(
+                "PARK RATHER THAN GUESS — you are the hourly pass, and you are cheap on purpose.\n\
+             - Assign a fact to an existing page only when that page is a STRONG match. \
+             \"Related\" is not a match: a fact filed on a page it only brushes against is \
+             harder to find than one nobody filed, because the page's card stops describing \
+             what is on it.\n\
+             - When no page is a strong match, OMIT the fact from `assignments`. The engine \
+             parks it on the wiki's buffer page and offers it back to you at the next pass, so \
+             nothing is lost and nothing is guessed.\n\
+             - You may propose a new page ONLY when you are grouping at least {n} facts on one \
+             theme. Below that, omit them: a page born from one or two facts takes its card from \
+             them, and that card is the only thing a reader is shown before deciding whether to \
+             open the page. Let the pile grow — you will see it again — or leave it to the \
+             nightly pass, which reads the whole wiki at once."
+            )
+        },
+    )
+}
+
+/// How many facts on one theme must have piled up before a page is born
+/// (founder, 2026-08-18).
+///
+/// *«Il modello economico dovrebbe evitare di creare pagine e parcheggiare in
+/// `@notes.md` i fatti di cui non è molto sicuro; quindi fare in modo che
+/// `@notes.md` venga usato se non c'è un'assonanza forte con una pagina e poi
+/// verificare se notes contiene almeno altri 4 fatti dello stesso argomento e
+/// solo a quel punto creare la pagina. Altrimenti si lasciano in notes
+/// aspettando che il modello forte faccia il suo mestiere nel REM.»*
+///
+/// A page born from one fact takes its card from that fact, and the card is
+/// the only thing a reader is shown before deciding whether to open the page —
+/// so a one-fact page is a page nobody can find on purpose. The floor is a
+/// **cheap-tier** rule: the hourly pass groups or parks, and the nightly strong
+/// pass keeps its judgement (it is the one that reads a whole wiki at once).
+///
+/// One level up sits its sibling, `RemPolicy::auto_promote_group_min_pages`
+/// (default 9): how many pages must group before a **wiki** is born. Same
+/// shape, different level — facts make a page, pages make a wiki.
+pub const PAGE_BIRTH_FLOOR: usize = 5;
+
+/// Hold a cheap-tier proposal to [`PAGE_BIRTH_FLOOR`]: a page grouping fewer
+/// facts than that is **not** born, and the facts meant for it fall through to
+/// the orphan pass — which homes them on the wiki's parking page, where they
+/// wait for the theme to grow (they re-enter the pool at every light build) or
+/// for the strong pass to read them at night.
+///
+/// Only proposals are held: an assignment onto a page that already exists is
+/// the model recognising a home, not inventing one, and no floor applies.
+fn hold_to_birth_floor(mut bp: Blueprint) -> Blueprint {
+    if bp.new_pages.is_empty() {
+        return bp;
+    }
+    let mut mass: BTreeMap<&str, usize> = BTreeMap::new();
+    for a in &bp.assignments {
+        *mass.entry(a.page_slug.as_str()).or_default() += 1;
+    }
+    let refused: BTreeSet<String> = bp
+        .new_pages
+        .iter()
+        .filter(|np| mass.get(np.slug.as_str()).copied().unwrap_or(0) < PAGE_BIRTH_FLOOR)
+        .map(|np| np.slug.clone())
+        .collect();
+    if refused.is_empty() {
+        return bp;
+    }
+    for slug in &refused {
+        tracing::info!(
+            slug = %slug,
+            floor = PAGE_BIRTH_FLOOR,
+            grouped = mass.get(slug.as_str()).copied().unwrap_or(0),
+            "cartografo: proposal under the birth floor — its facts park instead"
+        );
+    }
+    bp.new_pages.retain(|np| !refused.contains(&np.slug));
+    bp.assignments.retain(|a| !refused.contains(&a.page_slug));
+    bp
 }
 
 /// Fold the Cartografo's blueprint onto the deterministic one.
@@ -3107,8 +3235,18 @@ pub async fn build_wiki_plan(
     placement: NewFactPlacement<'_>,
     conciliatore: Option<&dyn LlmBackend>,
     now: &str,
+    waiting: &[FactForPage],
 ) -> Result<CompilationPlan> {
-    let facts = gather_standard_facts(pool, tree).await?;
+    // Two sources, one placement. `gather_standard_facts` is the memory as it
+    // stands — facts already on a page. `waiting` is the queue: claims screened
+    // out of `capture_buffer` that are not `fact_index` rows yet, and become
+    // ones only once this plan says which page each goes on
+    // (`dream_light::materialise`). Judging both together is the point: a claim
+    // is placed against the memory as it is at that moment, neighbours
+    // included.
+    let mut facts = gather_standard_facts(pool, tree).await?;
+    facts.extend(waiting.iter().cloned());
+    facts.sort_by(|a, b| a.fact_id.as_str().cmp(b.fact_id.as_str()));
     let (foundation, _scopes) = build_foundation_pages(pool, tree).await?;
     let registry = load_concept_registry(tree, now)?;
     let prev = load_previous_plan(tree)?;
@@ -3138,7 +3276,7 @@ pub async fn build_wiki_plan(
     // forward for the older reason — it has no judgement to bring at all.
     // Only slugs the previous plan actually knows count.
     let reopen_consumable = matches!(placement, NewFactPlacement::Cartografo(_));
-    let reopen: BTreeSet<String> = if reopen_consumable {
+    let mut reopen: BTreeSet<String> = if reopen_consumable {
         prev.as_ref()
             .map(|p| {
                 p.reopen_pages
@@ -3152,13 +3290,41 @@ pub async fn build_wiki_plan(
         BTreeSet::new()
     };
 
+    // **The parking page comes back into the pool at every light build**, and
+    // this is not the park above: nobody nominated it, and nothing is consumed.
+    // A fact lands there when the hourly pass found no page that was a strong
+    // enough match ([`PAGE_BIRTH_FLOOR`], founder 2026-08-18). Left carried
+    // over it would sit until the nightly strong pass read it, so the pile
+    // could never reach the floor that lets its page be born — the floor and
+    // this re-offer are one mechanism, and either alone does nothing.
+    //
+    // Cheap by construction: the re-offered facts are exactly the ones nobody
+    // has placed, and a build whose assignments do not change leaves the page's
+    // fingerprint alone, so re-offering is not a reason to recompile.
+    if matches!(placement, NewFactPlacement::NamedThenCartografo(_))
+        && let Some(prev) = &prev
+    {
+        for (slug, page) in &prev.pages {
+            if page.page_type == PageType::WikiBuffer {
+                reopen.insert(slug.clone());
+            }
+        }
+    }
+    let reopen = reopen;
+
     // Structural signals for the Cartografo (information, never a gate):
     // per-page fact mass from the carried-over placements (only facts that
     // still exist count; a re-opened page starts at zero and its pile
     // regrows through the in-run mass as batches re-assign), and — only
     // when the Cartografo actually runs — the enrollment-derived
     // identity-page scopes.
-    let mut signals = CartografoSignals::default();
+    let mut signals = CartografoSignals {
+        // The floor is the cheap tier's; the strong REM pass keeps its
+        // judgement (founder, 2026-08-18).
+        birth_floor: matches!(placement, NewFactPlacement::NamedThenCartografo(_))
+            .then_some(PAGE_BIRTH_FLOOR),
+        ..CartografoSignals::default()
+    };
     if let Some(prev) = &prev {
         for (slug, page) in &prev.pages {
             if reopen.contains(slug) {
@@ -3567,13 +3733,13 @@ async fn gather_standard_facts(pool: &SqlitePool, tree: &WikiTree) -> Result<Vec
             continue;
         }
         for row in fact_index::find_active_in_wiki(pool, d.meta.wiki_id.as_str()).await? {
-            // The reserved channel pages (`rules.md`, `projects.md`) are their
+            // The reserved channel pages (`@rules.md`, `@projects.md`) are their
             // own pipelines' perimeter, not the compiler's: their facts are
             // written directly and read back keyed on that path. The compiler
             // must NOT gather them — absent from the persisted plan they would
             // look "new", orphan-fall-back onto the wiki's buffer, and their channel
             // (which filters on the page) would stop seeing them.
-            // (engine_rule governance is raw `rules.md` prose, not a
+            // (engine_rule governance is raw `@rules.md` prose, not a
             // `fact_index` row, so only behaviour-rule rows are spared here.)
             if crate::wiki::is_channel_page(&row.source_path) {
                 continue;
@@ -3852,7 +4018,7 @@ fn describe_facts(batch: &[FactForPage], signals: &CartografoSignals) -> String 
 /// a home; neither is a topic a page can become part of. Listing them was
 /// worse than idle: they were rendered *first*, the buffer node carries the
 /// wiki's own title and scope as its description (see [`seed_wiki_buffers`]),
-/// so `notes.md` read to the model like the wiki's canonical topic page — and
+/// so `@notes.md` read to the model like the wiki's canonical topic page — and
 /// the prompt's standing bias is *«when in doubt, prefer the redirect»*.
 /// [`vet_redirects`] refuses one named anyway.
 ///
@@ -4000,7 +4166,6 @@ mod tests {
             successor_fact_id: None,
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
         }
     }
@@ -4114,7 +4279,7 @@ mod tests {
             outgoing_links: Vec::new(),
             incoming_links: Vec::new(),
             wiki_id: slug.to_owned(),
-            page_path: "index.md".to_owned(),
+            page_path: crate::wiki::PROFILE_FILENAME.to_owned(),
         }
     }
 
@@ -4175,15 +4340,13 @@ mod tests {
     }
 
     /// Insert a promoted fact in alice's wiki carrying an ingest placement
-    /// proposal (`target_page` / `style` / `page_description`) on `fact_index`.
-    /// Returns the fact id.
+    /// proposal (`target_page` / `style`) on `fact_index`. Returns the fact id.
     async fn plant_alice_fact(
         pool: &SqlitePool,
         id_tail: &str,
         text: &str,
         target_page: Option<&str>,
         style: Option<&str>,
-        desc: Option<&str>,
     ) -> FactId {
         let fid = FactId::parse(&format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{id_tail}")).unwrap();
         fact_index::insert(
@@ -4192,7 +4355,7 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
-                source_path: "wikis/alice/_captures.md".to_owned(),
+                source_path: "wikis/alice/appunti_vari.md".to_owned(),
                 region_start: None,
                 region_end: None,
                 text: text.to_owned(),
@@ -4206,7 +4369,6 @@ mod tests {
                 valid_to: None,
                 target_page: target_page.map(str::to_owned),
                 style: style.map(str::to_owned),
-                page_description: desc.map(str::to_owned),
                 salience: None,
                 source_ref: None,
             },
@@ -4264,33 +4426,109 @@ mod tests {
             placement_slug("recipes/dinner.md"),
             Some("recipes_dinner".to_owned())
         );
-        // `index.md` / empty → None: the foundation page, via orphan-fallback —
+        // `index.md` / empty → None, so the fact reaches the subject's
+        // foundation page via orphan-fallback —
         // never a concept page named "index".
         assert_eq!(placement_slug("index.md"), None);
         assert_eq!(placement_slug("index"), None);
         assert_eq!(placement_slug(""), None);
         assert_eq!(placement_slug("  "), None);
-        // `rules.md` → None: the reserved user-policy page is never a
+        // `@rules.md` → None: the reserved user-policy page is never a
         // fact-bearing concept page; a mis-targeted fact orphan-falls-back.
-        assert_eq!(placement_slug("rules.md"), None);
+        assert_eq!(placement_slug("@rules.md"), None);
         assert_eq!(placement_slug("rules"), None);
     }
 
+    /// **A page is not born for one fact.** The cheap hourly pass may propose a
+    /// page only when it is grouping at least [`PAGE_BIRTH_FLOOR`] facts on one
+    /// theme; below that the proposal is dropped and its facts fall through to
+    /// the orphan pass, which parks them on the wiki's buffer page. They come
+    /// back to the same pass next hour, so the pile can still reach the floor
+    /// (founder, 2026-08-18).
     #[test]
-    fn ingest_placement_blueprint_assigns_to_target_dedups_and_skips_index() {
-        // Two facts → the same `spesa` page (dedup to ONE NewPage, first
-        // style/description wins), one fact → `index.md` (no assignment/page,
-        // left for orphan-fallback), one fact → no proposal at all (skipped).
+    fn a_page_is_not_born_under_the_birth_floor() {
+        let np = |slug: &str| NewPage {
+            slug: slug.to_owned(),
+            title: slug.to_owned(),
+            description: "cosa ci va".to_owned(),
+            style: None,
+            page_type: PageType::ConceptLeaf,
+            parent_hub: None,
+        };
+        let assign = |id: u8, slug: &str| Assignment {
+            fact_id: format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{id:02}"),
+            page_slug: slug.to_owned(),
+        };
+        let bp = Blueprint {
+            new_pages: vec![np("giardino"), np("nuoto")],
+            assignments: vec![
+                // `giardino` groups five → born.
+                assign(1, "giardino"),
+                assign(2, "giardino"),
+                assign(3, "giardino"),
+                assign(4, "giardino"),
+                assign(5, "giardino"),
+                // `nuoto` groups two → parked instead.
+                assign(6, "nuoto"),
+                assign(7, "nuoto"),
+                // An EXISTING page takes one fact and no floor applies: the
+                // model recognised a home, it did not invent one.
+                assign(8, "preferenze"),
+            ],
+        };
+
+        let held = hold_to_birth_floor(bp);
+        assert_eq!(
+            held.new_pages
+                .iter()
+                .map(|p| p.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["giardino"],
+            "only the page that grouped enough is born"
+        );
+        let slugs: Vec<&str> = held
+            .assignments
+            .iter()
+            .map(|a| a.page_slug.as_str())
+            .collect();
+        assert_eq!(slugs.iter().filter(|s| **s == "giardino").count(), 5);
+        assert_eq!(
+            slugs.iter().filter(|s| **s == "nuoto").count(),
+            0,
+            "the refused page's facts are unassigned, so the orphan pass parks them"
+        );
+        assert_eq!(
+            slugs.iter().filter(|s| **s == "preferenze").count(),
+            1,
+            "an assignment onto an existing page is untouched"
+        );
+    }
+
+    /// The floor is the cheap tier's. The nightly strong pass reads a whole
+    /// wiki at once and keeps its judgement, so its prompt says so instead.
+    #[test]
+    fn the_birth_floor_is_the_cheap_tiers_only() {
+        let cheap = birth_floor_directive(Some(PAGE_BIRTH_FLOOR));
+        assert!(cheap.contains("at least 5"), "{cheap}");
+        assert!(cheap.contains("OMIT"), "{cheap}");
+        let strong = birth_floor_directive(None);
+        assert!(strong.contains("no floor"), "{strong}");
+        assert!(!strong.contains("OMIT"), "{strong}");
+    }
+
+    #[test]
+    fn ingest_placement_blueprint_assigns_to_target_and_leaves_the_card_to_the_page() {
+        // Two facts → the same `spesa` page (dedup to ONE NewPage, the first
+        // fact's style wins), one fact → a reserved name (no assignment and no
+        // page, left for orphan-fallback), one fact → no proposal at all.
         let mut latte = fact(1, "latte", "user:alice", "alice");
         latte.target_page = Some("spesa.md".to_owned());
         latte.style = Some("lista".to_owned());
-        latte.page_description = Some("cosa comprare".to_owned());
         let mut pane = fact(2, "pane", "user:alice", "alice");
         pane.target_page = Some("spesa.md".to_owned());
         pane.style = Some("prosa".to_owned()); // ignored — first fact wins.
-        pane.page_description = Some("altra desc".to_owned());
         let mut bio = fact(3, "Alice lives in Lisbon", "user:alice", "alice");
-        bio.target_page = Some("index.md".to_owned()); // → orphan, not a page.
+        bio.target_page = Some("@rules.md".to_owned()); // → orphan, not a page.
         let unproposed = fact(4, "chit chat", "user:alice", "alice"); // target None.
 
         let bp = ingest_placement_blueprint(&[latte.clone(), pane.clone(), bio, unproposed]);
@@ -4310,13 +4548,16 @@ mod tests {
         assert_eq!(np.page_type, PageType::ConceptLeaf);
         assert_eq!(np.parent_hub, None);
         assert_eq!(np.style.as_deref(), Some("lista"));
-        assert_eq!(np.description, "cosa comprare");
+        assert_eq!(
+            np.description, "",
+            "the card is the PAGE's: the turn that created the page wrote it              on the testata, and `heal_page_cards` adopts it from there"
+        );
     }
 
     #[test]
     fn ingest_placement_blueprint_routes_high_salience_off_its_target_page() {
-        // A `high`-salience fact's home is the actor-wiki
-        // `index.md` base context — the routing IS the reservation. Even with a
+        // A `high`-salience fact's home is the subject's identity card —
+        // the routing IS the reservation. Even with a
         // concrete ingest `target_page`, it must be left UNASSIGNED here (the
         // override) so the orphan-fallback homes it on the foundation page. A
         // `normal` fact with the same target_page is assigned as usual.
@@ -4344,9 +4585,9 @@ mod tests {
     }
 
     #[test]
-    fn high_salience_fact_homes_on_actor_index_via_orphan_fallback() {
+    fn high_salience_fact_homes_on_the_card_via_orphan_fallback() {
         // End-to-end through the deterministic plan: a `high` fact with a concrete
-        // target_page lands on the actor's foundation page (`index.md`), and NO
+        // target_page lands on the actor's card (`@profile.md`), and NO
         // concept page named after its overridden target_page is created.
         let mut foundation = BTreeMap::new();
         foundation.insert("alice".to_owned(), person("alice"));
@@ -4365,9 +4606,9 @@ mod tests {
             "2026-06-08T00:00:00Z",
         );
 
-        // The high fact orphan-falls-back onto alice's foundation page (index.md).
+        // The high fact orphan-falls-back onto alice's card.
         let alice = &plan.pages["alice"];
-        assert_eq!(alice.page_path, "index.md");
+        assert_eq!(alice.page_path, crate::wiki::PROFILE_FILENAME);
         assert_eq!(alice.primary_facts.len(), 1);
         assert_eq!(alice.primary_facts[0].fact_id, allergy.fact_id);
         // The overridden target_page never became a page.
@@ -4682,7 +4923,7 @@ mod tests {
     /// Now the plan adopts the written card — and does so without marking the
     /// page dirty, since the description is not in the fingerprint.
     #[tokio::test]
-    async fn the_plan_adopts_the_written_card_over_the_classifiers_guess() {
+    async fn the_plan_adopts_the_card_the_page_itself_carries() {
         use crate::fact_index::NewFact;
         let dir = tempfile::tempdir().unwrap();
         let pool = crate::db::open_or_init(dir.path()).await.expect("db");
@@ -4693,7 +4934,7 @@ mod tests {
             "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        std::fs::write(wikis.join("alice/index.md"), "# alice\n").unwrap();
+        std::fs::write(wikis.join("alice/cucina.md"), "# cucina\n").unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         sqlx::query(
             "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('alice','[]',0)",
@@ -4701,8 +4942,8 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        // The shape of the confirmed case: the turn named the fair, the
-        // classifier minted a page and called it an area of work.
+        // The shape of the confirmed case: the turn named the fair and the
+        // page was minted for it, with no card of its own yet.
         let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d99").unwrap();
         fact_index::insert(
             &pool,
@@ -4710,7 +4951,7 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
-                source_path: "wikis/alice/_captures.md".to_owned(),
+                source_path: "wikis/alice/appunti_vari.md".to_owned(),
                 region_start: None,
                 region_end: None,
                 text: "Alice did not ask to be signed up for the east fair".to_owned(),
@@ -4724,7 +4965,6 @@ mod tests {
                 valid_to: None,
                 target_page: Some("fiera.md".to_owned()),
                 style: Some("prosa".to_owned()),
-                page_description: Some("Projects and activities relating to the fair".to_owned()),
                 salience: None,
                 source_ref: None,
             },
@@ -4738,12 +4978,14 @@ mod tests {
             NewFactPlacement::Ingest,
             None,
             "2026-08-05T00:00:00Z",
+            &[],
         )
         .await
         .expect("plan");
         assert_eq!(
-            plan.pages["fiera"].description, "Projects and activities relating to the fair",
-            "the classifier's guess seeds the fresh page"
+            plan.pages["fiera"].description, "",
+            "a page nobody has described yet has no card — the card is the \
+             PAGE's, and this page has not been written"
         );
 
         // The page is written, and the writer's card says what the facts
@@ -4760,12 +5002,13 @@ mod tests {
             NewFactPlacement::Ingest,
             None,
             "2026-08-05T01:00:00Z",
+            &[],
         )
         .await
         .expect("plan 2");
         assert_eq!(
             plan2.pages["fiera"].description, "the east fair, and what Alice has said about it",
-            "the written card replaces the guess"
+            "the plan adopts what the page itself says"
         );
         assert!(
             !plan2.dirty_pages.contains(&"fiera".to_owned()),
@@ -4816,7 +5059,7 @@ mod tests {
             "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        std::fs::write(wikis.join("alice/index.md"), "# alice\n").unwrap();
+        std::fs::write(wikis.join("alice/cucina.md"), "# cucina\n").unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         // Enroll alice (direct insert is fine for a test).
         sqlx::query(
@@ -4833,7 +5076,7 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
-                source_path: "wikis/alice/_captures.md".to_owned(),
+                source_path: "wikis/alice/appunti_vari.md".to_owned(),
                 region_start: None,
                 region_end: None,
                 text: "Alice loves pasta".to_owned(),
@@ -4849,7 +5092,6 @@ mod tests {
                 // classifier placement proposal to carry.
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -4864,20 +5106,21 @@ mod tests {
             NewFactPlacement::OrphanFallback,
             None,
             "2026-05-31T00:00:00Z",
+            &[],
         )
         .await
         .expect("plan");
         assert!(plan.pages.contains_key("alice"), "alice person page exists");
         let alice = &plan.pages["alice"];
         assert_eq!(alice.page_type, PageType::Person);
-        assert_eq!(alice.page_path, "profile.md", "the card, not the map");
+        assert_eq!(alice.page_path, "@profile.md", "the card, not the map");
         assert!(
             alice.primary_facts.is_empty(),
             "a normal-salience orphan belongs on the buffer, not the identity card"
         );
         let buffer = &plan.pages["alice__notes"];
         assert_eq!(buffer.page_type, PageType::WikiBuffer);
-        assert_eq!(buffer.page_path, "notes.md");
+        assert_eq!(buffer.page_path, "@notes.md");
         assert_eq!(buffer.primary_facts.len(), 1, "fact homed on the buffer");
         assert_eq!(buffer.primary_facts[0].fact_id, fid);
         assert_eq!(
@@ -4895,6 +5138,7 @@ mod tests {
             NewFactPlacement::OrphanFallback,
             None,
             "2026-05-31T01:00:00Z",
+            &[],
         )
         .await
         .expect("plan2");
@@ -4906,11 +5150,11 @@ mod tests {
         drop(dir);
     }
 
-    /// A behaviour-rule fact lives on the reserved policy page `rules.md`
+    /// A behaviour-rule fact lives on the reserved policy page `@rules.md`
     /// (written by the rules pipeline's direct path, not the planner). The
     /// compiler must leave it there: gathering it would orphan-fall-back it
     /// onto the wiki's buffer, changing its `source_path` so `recall_behaviour_rules`
-    /// (which filters on `rules.md`) stops seeing it. Regression for the
+    /// (which filters on `@rules.md`) stops seeing it. Regression for the
     /// durability bug found 2026-06-30.
     #[tokio::test]
     async fn build_wiki_plan_never_gathers_a_rules_md_fact() {
@@ -4924,7 +5168,7 @@ mod tests {
             "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        std::fs::write(wikis.join("alice/index.md"), "# alice\n").unwrap();
+        std::fs::write(wikis.join("alice/cucina.md"), "# cucina\n").unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         sqlx::query(
             "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('alice','[]',0)",
@@ -4952,16 +5196,15 @@ mod tests {
             valid_to: None,
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         };
         // A normal content fact (must be homed) ...
-        let content = mk("01", "wikis/alice/_captures.md", "preference");
+        let content = mk("01", "wikis/alice/appunti_vari.md", "preference");
         let content_id = content.fact_id.clone();
         fact_index::insert(&pool, &content).await.unwrap();
-        // ... and a behaviour-rule fact on the reserved `rules.md` (must be spared).
-        let rule = mk("02", "wikis/alice/rules.md", "rule");
+        // ... and a behaviour-rule fact on the reserved `@rules.md` (must be spared).
+        let rule = mk("02", "wikis/alice/@rules.md", "rule");
         let rule_id = rule.fact_id.clone();
         fact_index::insert(&pool, &rule).await.unwrap();
 
@@ -4971,6 +5214,7 @@ mod tests {
             NewFactPlacement::OrphanFallback,
             None,
             "2026-06-30T00:00:00Z",
+            &[],
         )
         .await
         .expect("plan");
@@ -5005,7 +5249,7 @@ mod tests {
             "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        std::fs::write(wikis.join("alice/index.md"), "# alice\n").unwrap();
+        std::fs::write(wikis.join("alice/cucina.md"), "# cucina\n").unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         sqlx::query(
             "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('alice','[]',0)",
@@ -5013,15 +5257,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let fid = plant_alice_fact(
-            &pool,
-            "b1",
-            "Matteo does karate on Mondays",
-            None,
-            None,
-            None,
-        )
-        .await;
+        let fid = plant_alice_fact(&pool, "b1", "Matteo does karate on Mondays", None, None).await;
 
         // First build: the fact orphan-homes on alice's foundation page.
         let plan = build_wiki_plan(
@@ -5030,6 +5266,7 @@ mod tests {
             NewFactPlacement::OrphanFallback,
             None,
             "2026-06-11T00:00:00Z",
+            &[],
         )
         .await
         .expect("plan");
@@ -5077,6 +5314,7 @@ mod tests {
             NewFactPlacement::OrphanFallback,
             None,
             "2026-06-11T02:00:00Z",
+            &[],
         )
         .await
         .expect("plan2");
@@ -5101,6 +5339,7 @@ mod tests {
             NewFactPlacement::OrphanFallback,
             None,
             "2026-06-11T03:00:00Z",
+            &[],
         )
         .await
         .expect("plan3");
@@ -5128,7 +5367,7 @@ mod tests {
             "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        std::fs::write(wikis.join("alice/index.md"), "# alice\n").unwrap();
+        std::fs::write(wikis.join("alice/cucina.md"), "# cucina\n").unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         sqlx::query(
             "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('alice','[]',0)",
@@ -5136,21 +5375,14 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let fid = plant_alice_fact(
-            &pool,
-            "b1",
-            "Matteo does karate on Mondays",
-            None,
-            None,
-            None,
-        )
-        .await;
+        let fid = plant_alice_fact(&pool, "b1", "Matteo does karate on Mondays", None, None).await;
         build_wiki_plan(
             &pool,
             &tree,
             NewFactPlacement::OrphanFallback,
             None,
             "2026-07-02T00:00:00Z",
+            &[],
         )
         .await
         .expect("plan");
@@ -5178,6 +5410,7 @@ mod tests {
             NewFactPlacement::OrphanFallback,
             None,
             "2026-07-02T02:00:00Z",
+            &[],
         )
         .await
         .expect("plan2");
@@ -5204,6 +5437,7 @@ mod tests {
             NewFactPlacement::Cartografo(&llm),
             None,
             "2026-07-02T03:00:00Z",
+            &[],
         )
         .await
         .expect("plan3");
@@ -5253,7 +5487,7 @@ mod tests {
             "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        std::fs::write(wikis.join("alice/index.md"), "# alice\n").unwrap();
+        std::fs::write(wikis.join("alice/cucina.md"), "# cucina\n").unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         sqlx::query(
             "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('alice','[]',0)",
@@ -5261,13 +5495,14 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let fid = plant_alice_fact(&pool, "b3", "potatura", Some("giardinaggio"), None, None).await;
+        let fid = plant_alice_fact(&pool, "b3", "potatura", Some("giardinaggio"), None).await;
         build_wiki_plan(
             &pool,
             &tree,
             NewFactPlacement::Ingest,
             None,
             "2026-08-05T00:00:00Z",
+            &[],
         )
         .await
         .expect("plan");
@@ -5319,7 +5554,7 @@ mod tests {
             "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        std::fs::write(wikis.join("alice/index.md"), "# alice\n").unwrap();
+        std::fs::write(wikis.join("alice/cucina.md"), "# cucina\n").unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         sqlx::query(
             "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('alice','[]',0)",
@@ -5328,13 +5563,14 @@ mod tests {
         .await
         .unwrap();
         // The ingest classifier placed the fact on `spesa`.
-        let fid = plant_alice_fact(&pool, "b2", "latte", Some("spesa"), Some("lista"), None).await;
+        let fid = plant_alice_fact(&pool, "b2", "latte", Some("spesa"), Some("lista")).await;
         let plan = build_wiki_plan(
             &pool,
             &tree,
             NewFactPlacement::Ingest,
             None,
             "2026-06-11T00:00:00Z",
+            &[],
         )
         .await
         .expect("plan");
@@ -5385,7 +5621,7 @@ mod tests {
         // In the LIGHT cadence the planner places NEW facts on the
         // page the ingest classifier proposed — with NO LLM. A fact with a
         // concrete `target_page` lands on a concept_leaf (carrying its testata);
-        // an `index.md` fact orphan-falls-back to its subject's foundation page.
+        // a fact naming `index.md` orphan-falls-back to its subject's card.
         let dir = tempfile::tempdir().unwrap();
         let pool = crate::db::open_or_init(dir.path()).await.expect("db");
         let wikis = dir.path().join("wikis");
@@ -5395,7 +5631,7 @@ mod tests {
             "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        std::fs::write(wikis.join("alice/index.md"), "# alice\n").unwrap();
+        std::fs::write(wikis.join("alice/cucina.md"), "# cucina\n").unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         sqlx::query(
             "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('alice','[]',0)",
@@ -5404,24 +5640,9 @@ mod tests {
         .await
         .unwrap();
 
-        let spesa = plant_alice_fact(
-            &pool,
-            "a1",
-            "latte",
-            Some("spesa.md"),
-            Some("lista"),
-            Some("cosa comprare"),
-        )
-        .await;
-        let home = plant_alice_fact(
-            &pool,
-            "a2",
-            "Alice lives in Lisbon",
-            Some("index.md"),
-            None,
-            None,
-        )
-        .await;
+        let spesa = plant_alice_fact(&pool, "a1", "latte", Some("spesa.md"), Some("lista")).await;
+        let home =
+            plant_alice_fact(&pool, "a2", "Alice lives in Lisbon", Some("index.md"), None).await;
 
         // LIGHT cadence placement: no LLM passed at all.
         let plan = build_wiki_plan(
@@ -5430,6 +5651,7 @@ mod tests {
             NewFactPlacement::Ingest,
             None,
             "2026-05-31T00:00:00Z",
+            &[],
         )
         .await
         .expect("plan");
@@ -5439,7 +5661,11 @@ mod tests {
         assert_eq!(spesa_page.page_type, PageType::ConceptLeaf);
         assert_eq!(spesa_page.wiki_id, "alice"); // homed in the fact's wiki.
         assert_eq!(spesa_page.style.as_deref(), Some("lista"));
-        assert_eq!(spesa_page.description, "cosa comprare");
+        assert_eq!(
+            spesa_page.description, "",
+            "the card belongs to the page, written on its testata by the turn \
+             that created it — not carried here by a fact"
+        );
         assert_eq!(spesa_page.primary_facts.len(), 1);
         assert_eq!(spesa_page.primary_facts[0].fact_id, spesa);
         // The reserved-name fact orphan-fell-back onto alice's BUFFER — the
@@ -5460,6 +5686,7 @@ mod tests {
             NewFactPlacement::Ingest,
             None,
             "2026-05-31T01:00:00Z",
+            &[],
         )
         .await
         .expect("plan2");
@@ -5467,21 +5694,14 @@ mod tests {
         assert_eq!(plan2.pages["spesa"].primary_facts.len(), 1);
 
         // A NEW fact on the SAME ingest page accretes onto it — no duplicate page.
-        plant_alice_fact(
-            &pool,
-            "a3",
-            "pane",
-            Some("spesa.md"),
-            Some("lista"),
-            Some("cosa comprare"),
-        )
-        .await;
+        plant_alice_fact(&pool, "a3", "pane", Some("spesa.md"), Some("lista")).await;
         let plan3 = build_wiki_plan(
             &pool,
             &tree,
             NewFactPlacement::Ingest,
             None,
             "2026-05-31T02:00:00Z",
+            &[],
         )
         .await
         .expect("plan3");
@@ -5518,7 +5738,7 @@ mod tests {
             "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        std::fs::write(wikis.join("alice/index.md"), "# alice\n").unwrap();
+        std::fs::write(wikis.join("alice/cucina.md"), "# cucina\n").unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         sqlx::query(
             "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('alice','[]',0)",
@@ -5533,7 +5753,7 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
-                source_path: "wikis/alice/_captures.md".to_owned(),
+                source_path: "wikis/alice/appunti_vari.md".to_owned(),
                 region_start: None,
                 region_end: None,
                 text: "Alice was born in 1985".to_owned(),
@@ -5549,7 +5769,6 @@ mod tests {
                 // classifier placement proposal to carry.
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -5563,6 +5782,7 @@ mod tests {
             NewFactPlacement::OrphanFallback,
             None,
             "2026-05-31T00:00:00Z",
+            &[],
         )
         .await
         .expect("plan");
@@ -5572,6 +5792,7 @@ mod tests {
             NewFactPlacement::OrphanFallback,
             None,
             "2026-05-31T01:00:00Z",
+            &[],
         )
         .await
         .expect("plan2");
@@ -5591,6 +5812,7 @@ mod tests {
             NewFactPlacement::OrphanFallback,
             None,
             "2026-05-31T02:00:00Z",
+            &[],
         )
         .await
         .expect("plan3");
@@ -6434,7 +6656,7 @@ mod tests {
     /// The foundation nodes are keyed by [`plan_slug_for_page`] — the card
     /// takes the wiki's slug, the buffer takes `<wiki>__notes` — so a bare
     /// `notes` misses the lookup and reached the fallback mint, which would
-    /// have produced a second page writing `notes.md` in the same wiki.
+    /// have produced a second page writing `@notes.md` in the same wiki.
     #[test]
     fn an_assignment_naming_a_reserved_page_mints_nothing() {
         let mut foundation = BTreeMap::new();
@@ -6591,9 +6813,9 @@ mod tests {
 
     #[tokio::test]
     async fn every_standard_wiki_gets_a_buffer_foundation_node() {
-        // The Fonditore's third source: every standard non-identity wiki's
-        // `index.md` becomes an EmergedIndex foundation node (plan-owned,
-        // never GC'd); smart wikis and identity/group wikis never qualify.
+        // The Fonditore's third source: every standard non-identity wiki gets
+        // a buffer foundation node on `@notes.md` (plan-owned, never GC'd);
+        // smart wikis and identity/group wikis never qualify.
         let dir = tempfile::tempdir().unwrap();
         let pool = crate::db::open_or_init(dir.path()).await.expect("db");
         let wikis = dir.path().join("wikis");
@@ -6636,7 +6858,7 @@ mod tests {
 
         let node = &foundation["famiglia_bruno_battaglia__notes"];
         assert_eq!(node.page_type, PageType::WikiBuffer);
-        assert_eq!(node.page_path, "notes.md", "the buffer, never the map");
+        assert_eq!(node.page_path, "@notes.md", "the buffer, never the map");
         assert_eq!(node.wiki_id, "famiglia-bruno-battaglia");
         assert_eq!(
             node.parent_hub.as_deref(),
@@ -6645,7 +6867,7 @@ mod tests {
         );
         assert_eq!(node.description, "Tutto su Bruno Battaglia");
         // The group's own card, and its buffer hanging under it.
-        assert_eq!(foundation["famiglia"].page_path, "profile.md");
+        assert_eq!(foundation["famiglia"].page_path, "@profile.md");
         assert_eq!(foundation["famiglia"].page_type, PageType::GroupTheme);
         assert_eq!(
             foundation["famiglia__notes"].parent_hub.as_deref(),
@@ -6668,7 +6890,7 @@ mod tests {
         // The invariant the whole change exists for.
         assert!(
             foundation.values().all(|p| p.page_path != "index.md"),
-            "no foundation node may claim the wiki's map"
+            "no foundation node may claim `index.md`"
         );
         drop(dir);
     }
@@ -6681,7 +6903,7 @@ mod tests {
         // buffer is never GC'd (it is a foundation page).
         let mut emerged = person("famiglia_bruno_battaglia");
         emerged.page_type = PageType::WikiBuffer;
-        emerged.page_path = "notes.md".to_owned();
+        emerged.page_path = "@notes.md".to_owned();
         emerged.wiki_id = "famiglia-bruno-battaglia".to_owned();
         let mut foundation = BTreeMap::new();
         foundation.insert("famiglia_bruno_battaglia".to_owned(), emerged);
@@ -6714,7 +6936,7 @@ mod tests {
         let page = &plan.pages["famiglia_bruno_battaglia"];
         assert_eq!(page.page_type, PageType::WikiBuffer);
         assert_eq!(
-            page.page_path, "notes.md",
+            page.page_path, "@notes.md",
             "the slug now renders the wiki's buffer, not the legacy sibling file"
         );
         assert_eq!(page.primary_facts.len(), 1, "the carried fact re-attached");

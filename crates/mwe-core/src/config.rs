@@ -224,16 +224,20 @@ impl LogLevel {
 /// `RemDedupSemantic`, `Navigator`. `Cronista` drives the narrative
 /// compiler ([`crate::compiler::compile_leaf_page`], via the dream
 /// compile pass) that rewrites each dirty standard-wiki leaf from its
-/// facts into prose; with the slot unconfigured the compile step is
-/// skipped and the pages stay blank, so it is surfaced like every other
-/// slot. It keeps the `#[deprecated]` marker only because the compiler
+/// facts into prose. Every slot is mandatory in practice — a deployment with
+/// no model is a half-installed product, and onboarding enforces the `ingest`
+/// role (`docs/design-notes/admin-llm-config.md`); the "slot unconfigured"
+/// arms in the engine are guards against a half-wired install, never modes to
+/// design around. With this one missing the compile is skipped and the pages
+/// stay blank, so it is surfaced like every other slot. It keeps the `#[deprecated]` marker only because the compiler
 /// has not yet graduated to a full REM sub-job (`structure_proposal`
 /// output + budget enforcement) — the marker lifts when it does and does
 /// **not** mean the slot is unused. The value loads from an
 /// `llm.cronista:` section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmFunction {
-    /// `hub_writer` — regenerates `index.md` summaries on writes.
+    /// `hub_writer` — the prose of a compiled page that has no facts of its
+    /// own and only lists its child pages.
     HubWriter,
     /// `ingest` — backs `wiki_ingest_message` and the dashboard's
     /// non-agentic consumer-style turn (the welcome-wizard primer).

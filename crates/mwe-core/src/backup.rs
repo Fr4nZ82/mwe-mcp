@@ -632,7 +632,6 @@ mod tests {
             valid_to: None,
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         };

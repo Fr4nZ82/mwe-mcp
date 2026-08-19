@@ -1311,7 +1311,6 @@ async fn page_view_redacts_a_retired_region_but_reveal_still_shows_it() {
             valid_to: None,
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         },

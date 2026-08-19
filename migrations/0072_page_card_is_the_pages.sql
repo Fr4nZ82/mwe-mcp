@@ -1,0 +1,31 @@
+-- 0072_page_card_is_the_pages — what belongs on a page is the PAGE's, not a
+-- column repeated on every fact that lands there.
+--
+-- Founder, 2026-08-18: *«a che serve scrivere "cosa ci va dentro" sul db dei
+-- fatti? … se il motore ha bisogno di sapere "cosa ci va dentro" sta
+-- richiedendo i dati di una pagina, non di un fatto, quindi la rimuoverei del
+-- tutto»*.
+--
+-- `page_description` was the classifier's one-line card for the page a fact
+-- was headed to. Three things were wrong with keeping it here:
+--
+--   * it was repeated on every fact of the same page, so N facts carried N
+--     copies of one sentence;
+--   * it had to be maintained whenever REM edited the page's card or moved the
+--     fact to a different page — and nothing did that, so the copies drifted;
+--   * a page's card already has a home, `page_card` (migration `0069`), and
+--     the page's own testata `description:` is what a reader is shown.
+--
+-- Where it comes from now. A page BORN by a live write gets its testata card
+-- written at that moment (`capture::seed_page_card`), from what the turn
+-- proposed. `planner::heal_page_cards` adopts the written card into the
+-- compilation plan and the concept registry; the reindex sweep mirrors it into
+-- `page_card`; the list inventory reads the `holds` line by joining
+-- `page_card`. One sentence, one place, and the page owns it.
+--
+-- `capture_buffer` loses the column for the same reason plus a stronger one:
+-- a claim that waits has no page, so it has no page to describe (see
+-- `0071_capture_buffer_no_destination`).
+
+ALTER TABLE fact_index     DROP COLUMN page_description;
+ALTER TABLE capture_buffer DROP COLUMN page_description;

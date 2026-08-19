@@ -31,6 +31,7 @@ use chrono::Utc;
 use sqlx::SqlitePool;
 use tracing::warn;
 
+use crate::capture_buffer;
 use crate::compiler::{self, CompileReport};
 use crate::dream_light::{self, LightCycleReport, LightPolicy};
 use crate::embedder::Embedder;
@@ -169,6 +170,7 @@ fn placement_for<'a>(
 pub async fn run_compile(
     pool: &SqlitePool,
     tree: &WikiTree,
+    embedder: Arc<dyn Embedder>,
     llms: &RemLlms<'_>,
     cadence: Cadence,
     now: &str,
@@ -212,12 +214,26 @@ pub async fn run_compile(
     // it materialises; the nightly REM runs it on its configured
     // `rem_dedup_semantic` slot (`llms.revisor`).
     let conciliatore = Some(conciliatore_backend(cadence, llms.revisor, flash));
-    let plan = planner::build_wiki_plan(pool, tree, placement, conciliatore, now)
+    // The queue, screened: the claims waiting in `capture_buffer` minus the
+    // duplicates. They are not memories yet — the plan below decides where each
+    // one goes, and `materialise` writes the rows once it has (founder,
+    // 2026-08-18: first the address, then the row and the prose together).
+    let mut queue = dream_light::screen_queue(pool, tree, &LightPolicy::default())
+        .await
+        .context("light dream: screen queue")?;
+    let plan = planner::build_wiki_plan(pool, tree, placement, conciliatore, now, &queue.for_plan)
         .await
         .context("planner")?;
-    let report = compiler::compile_dirty_pages(pool, tree, &plan, cronista, hub_writer, now)
+    // Between the plan and the prose: each placed claim becomes a `fact_index`
+    // row addressed to the page it landed on, moments before the compile writes
+    // that page. A claim the plan could not place keeps waiting.
+    dream_light::materialise(pool, tree, &embedder, &mut queue, &plan)
+        .await
+        .context("light dream: materialise")?;
+    let mut report = compiler::compile_dirty_pages(pool, tree, &plan, cronista, hub_writer, now)
         .await
         .context("compiler")?;
+    report.queue = queue.report;
     // Deterministic, no-LLM pass that syncs each wiki's
     // `_meta.keywords["topics"]` to the union of its facts' topics, and each
     // page's testata to the topics of the facts on it. The **page** cards are
@@ -356,20 +372,45 @@ pub async fn run_light(
     llms: Option<&RemLlms<'_>>,
     policy: &LightPolicy,
 ) -> Result<LightOutcome> {
-    let light = dream_light::run_light_cycle(pool, tree, embedder.clone(), policy)
-        .await
-        .context("light dream promotion")?;
-    // Skip the (expensive) compile when nothing changed: a plan with no new
-    // facts is a no-op, but checking here keeps the strong model untouched.
-    let promoted_any = light.promoted > 0 || light.superseded > 0;
-    let compile = match (promoted_any, llms) {
-        (true, Some(llms)) => {
-            Some(run_compile(pool, tree, llms, Cadence::Light, &Utc::now().to_rfc3339()).await?)
-        },
+    // Skip the (expensive) compile when the queue is empty: a plan with no new
+    // claims is a no-op, and checking here keeps the strong model untouched.
+    // The count is the whole gate now — the promotion itself lives inside the
+    // compile, because a claim becomes a fact only once its page is decided.
+    let waiting = usize::try_from(capture_buffer::count_buffered(pool).await?).unwrap_or(0);
+    let compile = match (waiting > 0, llms) {
+        (true, Some(llms)) => Some(
+            run_compile(
+                pool,
+                tree,
+                embedder.clone(),
+                llms,
+                Cadence::Light,
+                &Utc::now().to_rfc3339(),
+            )
+            .await?,
+        ),
         _ => None,
     };
+    // No prose writer configured: drain the queue anyway, deterministically.
+    // Each claim lands on the page the user's own turn named, or on the orphan
+    // fallback's, with its render pending — because the alternative is a queue
+    // that grows for ever while the recall fresh slot, a ranked top-K, quietly
+    // stops offering the older half of it.
+    let light = match &compile {
+        Some(c) => c.queue.clone(),
+        None if waiting > 0 => dream_light::drain_deterministically(
+            pool,
+            tree,
+            &embedder,
+            policy,
+            &Utc::now().to_rfc3339(),
+        )
+        .await
+        .context("light dream: deterministic drain")?,
+        None => LightCycleReport::default(),
+    };
     // Retirement hygiene: excise retired-fact regions from pages OUTSIDE the
-    // compilation plan (`rules.md`, husks — plan pages self-clean at their
+    // compilation plan (`@rules.md`, husks — plan pages self-clean at their
     // next compile). This is the convergent backstop behind the act-time
     // strips, covering the retire paths that run inside the proposal apply
     // chassis. Best-effort: a failure degrades disk hygiene, never the dream
@@ -414,7 +455,15 @@ pub async fn run_full(
     let cycle = rem::run_cycle(pool, tree, Arc::clone(&embedder), llms, policy)
         .await
         .context("rem cycle")?;
-    let compile = run_compile(pool, tree, llms, Cadence::Full, &Utc::now().to_rfc3339()).await?;
+    let compile = run_compile(
+        pool,
+        tree,
+        embedder.clone(),
+        llms,
+        Cadence::Full,
+        &Utc::now().to_rfc3339(),
+    )
+    .await?;
     Ok(FullOutcome { cycle, compile })
 }
 
@@ -555,6 +604,7 @@ mod tests {
         let report = run_compile(
             &pool,
             &tree,
+            Arc::new(FakeEmbedder::new("fake", 4)),
             &bag(&hub, &rev),
             Cadence::Full,
             "2026-05-31T00:00:00Z",

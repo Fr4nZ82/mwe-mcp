@@ -30,9 +30,10 @@ disk ([`reindex-pipeline.md`](reindex-pipeline.md)).
 The recovery path is therefore a **backup**, not a re-index: treat
 `engine.db` like the files (the dashboard's Backup console and the
 snapshot tooling, `mwe_core::backup`, exist for exactly that). What *is*
-regenerable from disk: smart-wiki content rows (re-chunked from page
-content) and the `capture_buffer` (replayed from the per-wiki
-`_captures.md` journals — [`narrative-buffer.md`](narrative-buffer.md)).
+regenerable from disk: smart-wiki content rows, re-chunked from page content.
+The `capture_buffer` is **not** — it was, from a per-wiki `_captures.md`
+journal, until that journal was deleted on 2026-08-18
+([`narrative-buffer.md`](narrative-buffer.md)).
 (One DB sits outside this story: `media_catalog.db` is a *separate*,
 externally-populated catalog — not covered here.)
 
@@ -122,9 +123,8 @@ CREATE TABLE fact_index (
     -- added by 0035 (the ingest placement axis, a hint):
     target_page      TEXT,               -- page the classifier proposed; NULL = unproposed
     style            TEXT,               -- proposed page style (prosa|prosa-tecnica|lista); NULL = unproposed
-    page_description TEXT,               -- proposed "cosa ci va dentro" one-liner; NULL = unproposed
-    -- per-fact salience for the index base context (migration 0037):
-    salience         TEXT,                -- "high" | "normal" | "low"; NULL = unspecified; high → index.md
+    -- per-fact salience for the always-on base context (migration 0037):
+    salience         TEXT,                -- "high" | "normal" | "low"; NULL = unspecified; high → the subject's card
     -- document provenance (migration 0040):
     source_ref       TEXT,                -- catalog id / url the fact was extracted from; NULL for conversational captures
     -- group-17 provenance breadcrumbs (migration 0042):
@@ -188,24 +188,29 @@ the `(current: [[…]])` feed hint so the prose can point one hop from the
 obituary to today's truth
 ([narrative-compiler.md](narrative-compiler.md#the-succession-pointer--one-hop-from-the-obituary-to-todays-truth)).
 
-**Ingest placement axis (`target_page` / `style` / `page_description`, migration
-0035).** Sibling of the validity axis, design SSOT
-[`narrative-compiler.md`](narrative-compiler.md). The ingest
-classifier (the "Cartografo at runtime") already decides, per claim, *where* it
-goes plus the target page's style and a "cosa ci va dentro" one-liner. These
-three columns carry that proposal onto the fact so the **light** dream can
-settle a fact on its ingest page without calling a model at all. Since prompt
-v2.59 the classifier only fills them when the write cannot wait — a `lista`, or
-a container the user asked for by name — and those are exactly the placements
-**no model may revise**: they are settled first and never enter the Cartografo's
-batch. Everything else reaches the light Cartografo on the cheap tier
-(`NewFactPlacement::NamedThenCartografo`). For anything that does arrive with a
-hint from an older row or an operator-overridden prompt, the hint is still a
-**hint, not the home**: the compilation plan stays authoritative on placement
-and the REM Cartografo may re-home a fact. The standard-wiki path stages
-`style`/`page_description` on the buffer (`target_page` rode it already) and
-`promote_one` copies the whole axis across; the direct path carries it from the
-request.
+**Ingest placement axis (`target_page` / `style`, migration 0035).** Sibling of the validity axis, design SSOT
+[`narrative-compiler.md`](narrative-compiler.md). Two different things sit in
+these three columns, and only one of them is a destination:
+
+- `target_page` is filled **only on the live path** — a `lista` item, or a
+  container the user asked for by name. Those are the writes that cannot wait,
+  and they are exactly the placements **no model may revise**: settled in the
+  turn, never entered into the Cartografo's batch. A fact promoted out of the
+  buffer arrives with `target_page` NULL, because a claim that waited is a
+  claim nobody has placed (migration `0071`); the light Cartografo places it on
+  the cheap tier (`NewFactPlacement::NamedThenCartografo`).
+- `style` says what shape the *material* has — a list, technical prose,
+  ordinary prose — not which page holds it. It rides the buffer and
+  `dream_light::write_placed` copies it onto the fact; a page takes its style
+  from the majority of the facts on it, so the arrow points the other way.
+
+The third column of that axis, `page_description`, is **gone** (migration
+`0072`): a page's card is the page's, it lives on the page's testata and in
+`page_card`, and it was being repeated on every fact that landed there.
+
+Where a `target_page` does survive from an older row or an operator-overridden
+prompt, it is a **hint, not the home**: the compilation plan stays
+authoritative on placement and the REM Cartografo may re-home a fact.
 
 **Per-fact salience (`salience`, migration 0037).** Design SSOT
 [`ingest-pipeline.md`](ingest-pipeline.md) (the "Per-fact salience" section). One more
@@ -216,11 +221,13 @@ producer-decided axis: how always-relevant a fact is to its subject — `'high'`
 vocabulary enforced at the ingest producer (no hardcoded gate — the classifier
 decides). It is **independent** from `fact_type` / validity / `style`. The ingest
 classifier emits it; it is threaded through `CaptureRequest` /
-`BufferedCapture` into `fact_index` on both paths (the `_captures.md` journal
-mirrors it as the `sal=` attribute, like `vf`/`vt`). **Read by the light compile
-cadence**: `ingest_placement_blueprint` routes a `'high'` fact to the
-actor-wiki's `index.md` base context, overriding its proposed `target_page` (see
-[narrative-compiler.md](narrative-compiler.md)).
+`BufferedCapture` into `fact_index` on both paths. **Read by the light compile
+cadence**: `ingest_placement_blueprint` leaves a `'high'` fact unassigned so
+the Architetto's orphan fallback homes it on the subject's identity **card**
+(`@profile.md`), overriding any proposed `target_page` (see
+[narrative-compiler.md](narrative-compiler.md)). The 0037 migration comment
+still says `index.md` — migrations are frozen by checksum and are read as a
+record of their own date, never as current behaviour.
 
 Indices: `idx_fact_wiki_id`, `idx_fact_subject`, `idx_fact_created`,
 `idx_fact_type` (partial, `WHERE fact_type IS NOT NULL`),
@@ -736,22 +743,35 @@ The notable invariants here:
 
 ### `capture_buffer` — standard-wiki pre-compilation staging (0031)
 
-The captures buffer. For a **standard** wiki,
-`wiki_ingest_message` does not write the classified claim into the
-published `.md`; it stages the claim here (and in the on-disk journal)
-and the nightly compiler turns the buffer into prose later. This row
-shape mirrors `fact_index`'s classifier/ACL columns so promotion is a
-straight copy. **Standard-wiki perimeter only** — smart-wiki
-(smart-owned) wikis never touch this table (they write through the
-`wiki_admin_*` family), and an explicitly requested container (a list /
-collection the user asked to keep) takes the direct-write
-`capture::wiki_capture` path instead of buffering.
+The captures buffer: the queue of claims waiting to be **sorted and then
+written as prose**. For a **standard** wiki, `wiki_ingest_message` does not
+write the classified claim into the published `.md`; it stages the claim here,
+and the light dream drains the queue — deciding, as it reads each row, which
+wiki and which page the claim belongs on. This row shape mirrors `fact_index`'s
+classifier/ACL columns so promotion is a straight copy.
+
+**A row says nothing about where the claim will go** (founder, 2026-08-18;
+migration `0071`). `wiki_id` and `target_page` were dropped: both were the
+classifier's guess, taken before anybody had looked at the memory, and the
+placement pass that runs right after promotion is offered the whole forest
+anyway. What stays is everything about the *claim* — subject, sender, allow,
+type, topics, validity, salience, provenance — which is what the sorting is
+done on. A claim becomes a `fact_index` row only once the plan has given it a
+page (`dream_light::materialise`), so its address is a real page's from birth;
+the wiki a **new** page for it would be born in is derived from the **subject**
+(`dream_light::home_wiki`), the one thing about a fact that never moves.
+
+**Standard-wiki perimeter only** — smart-wiki (smart-owned) wikis never touch
+this table (they write through the `wiki_admin_*` family). Two shapes bypass it
+because they already know their page and are written live, inside the turn: a
+`lista` item (adding to or creating a list) and an explicitly requested
+container, both on the direct-write `capture::wiki_capture` path.
 
 ```sql
 CREATE TABLE capture_buffer (
     capture_id        TEXT PRIMARY KEY,                 -- UUIDv7; reused verbatim as fact_id on promotion
-    wiki_id           TEXT NOT NULL,
-    target_page       TEXT NOT NULL,                    -- page the classifier proposed (a compiler hint)
+    -- NO destination: `wiki_id` / `target_page` were dropped by 0071 — where a
+    -- waiting claim goes is decided when the light dream reads the queue.
     body              TEXT NOT NULL,                    -- captured claim prose, verbatim, no markers
     subject_id        TEXT NOT NULL,                    -- who the fact is ABOUT: "global" | "user:X" | "group:X"
     allow_ids         TEXT NOT NULL DEFAULT '[]',       -- JSON array of principals
@@ -767,69 +787,59 @@ CREATE TABLE capture_buffer (
     source_kind       TEXT NOT NULL DEFAULT 'ingest',   -- ingest | shadow_diff | dashboard
     source_ref        TEXT,
     -- added by 0034 (validity threaded through the
-    -- narrative buffer→promote path; mirrored in the journal as vf/vt):
+    -- narrative buffer→promote path):
     valid_from        TEXT,                             -- ISO 8601; NULL = unknown / "since forever"
     valid_to          TEXT,                             -- ISO 8601; NULL = open ("true now, no horizon")
-    -- added by 0035 (the placement style axis; staged here
-    -- so promote_one copies it onto the fact; mirrored in the journal as
-    -- style=/desc=, the free-text desc percent-escaped):
+    -- added by 0035 (how the claim should READ, not where it goes; staged
+    -- here so promote_one copies it onto the fact, where the placement pass
+    -- seeds a new page's testata from it):
     style             TEXT,                             -- proposed page style (prosa|prosa-tecnica|lista); NULL = unproposed
-    page_description  TEXT,                             -- proposed "cosa ci va dentro" one-liner; NULL = unproposed
     -- added by 0038 (a closure that lands while the target is still
-    -- buffered; DB-only post-capture mutation, never journalled):
+    -- buffered; DB-only post-capture mutation):
     decay_reason      TEXT,                             -- why the staged valid_to closed; NULL = alive
     -- added by 0042 (group-17 provenance breadcrumbs; staged here so
-    -- promote_one copies them onto the fact; mirrored in the journal as the
-    -- comma-joined aref= attr):
+    -- promote_one copies them onto the fact):
     authored_refs     TEXT NOT NULL DEFAULT '[]'        -- JSON array of [[wiki_id/page]] wikilinks
 );
 ```
 
-Indices: `idx_capture_buffer_wiki ON (wiki_id)` and the partial
-`idx_capture_buffer_pending ON (status) WHERE status = 'buffered'`
-(the light dream's backlog/drain query).
+Index: the partial `idx_capture_buffer_pending ON (status) WHERE status =
+'buffered'` (the light dream's backlog/drain query). `idx_capture_buffer_wiki`
+went with the column it covered (0071).
 
 The load-bearing invariants:
 
-- **This table is a rebuildable cache/index, not the SSOT.** The
-  durable source of truth for a buffered capture is the per-wiki
-  on-disk journal `<wiki_dir>/_captures.md`
-  (`crate::wiki::CAPTURES_FILENAME`): a YAML frontmatter
-  (`kind: capture_journal`, `wiki_id`) followed by one entry per
-  capture, each fenced by `<!-- mwe-capture … -->` / `<!-- /mwe-capture -->`
-  HTML comments with the verbatim body between them. Deliberately there
-  is **no `journal_path` column** — a capture for wiki *W* always lives
-  in *W*'s `_captures.md`, derived from the tree. `rm engine.db`
-  followed by `mwe-mcp serve` regenerates every row, because
-  `reindex::reindex_full` now calls
-  `capture_buffer::reindex_capture_journal` per wiki (idempotent,
-  `ON CONFLICT(capture_id) DO NOTHING`). The journal is excluded from
-  `WikiHandle::list_pages` and the marker reindex sweep
-  (`reindex::is_capture_journal` guards both `enumerate_pages` and
-  `reindex_file`) so its entries are never indexed as facts. Capture
-  bodies may not contain `{{`, `}}`, or `<!--` (the marker grammar and
-  the journal delimiters are mwe-mcp-managed).
+- **This table is the source of truth for a pending capture.** There is no
+  second copy: a capture lives here between the turn that made it and the
+  compile that writes it onto a page, and durability is the workdir
+  snapshot's job (`crate::backup`), like everything else the DB holds.
+  Until 2026-08-18 each capture was also appended to a per-wiki on-disk
+  journal `_captures.md`, declared the durable SSOT with this table as its
+  cache; it was deleted (founder's call) because every capture rewrote the
+  whole file, nothing pruned it, its per-entry `status=` never advanced past
+  `buffered`, and the five-minute safety-net reindex re-parsed all of it. See
+  [`narrative-buffer.md`](narrative-buffer.md). Capture bodies may not
+  contain `{{`, `}}`, or `<!--` — the marker grammar is mwe-mcp-managed and
+  `<!--` stays reserved.
 - **`capture_id` is a UUIDv7 minted at buffer time and reused verbatim
   as the `fact_id` on promotion**, so a claim keeps one stable id
   across buffer → fact → compiled-page (the correctness hinge for
   incremental compilation).
-- **The `status` lifecycle is wired by the light dream.** Ingest lands
-  rows `buffered`; the drain side runs in
-  [`crate::dream_light`](../../crates/mwe-core/src/dream_light.rs).
-  Per buffered capture the light dream embeds the body and inserts a
-  fact whose `fact_id` **is** the `capture_id`, with
-  `source_path = _captures.md` and `region_start` / `region_end` NULL
-  (no published page yet — the Cronista repoints these on compile), then
-  stamps the row `promoted` (with `resolved_fact_id = capture_id` and
-  `processed_at`). An exact duplicate of an existing active fact is
-  stamped `skipped_dup` (resolving to the survivor) and no new fact is
-  created. The `idx_capture_buffer_pending` partial index backs that
-  drain query. A standard-wiki capture becomes recallable once the light
-  dream promotes it. Prose compilation of those facts into the published
-  `.md` is the Cronista (landed — it compiles each promoted fact into a
-  standard page and repoints `source_path`/offsets off `_captures.md`;
-  see [`narrative-compiler.md`](narrative-compiler.md)); recall does not
-  yet serve that compiled prose, only the fact body. For the full write-path design
+- **The `status` lifecycle is wired by the light dream**, in two halves with
+  the compilation plan between them
+  ([`crate::dream_light`](../../crates/mwe-core/src/dream_light.rs)). Ingest
+  lands rows `buffered`. `screen_queue` folds the duplicates — a claim matching
+  an active fact about the same subject, or another claim in the same queue, is
+  stamped `skipped_dup` resolving to the survivor, and no fact is created.
+  `build_wiki_plan` then gives each surviving claim a page, and `materialise`
+  inserts a fact whose `fact_id` **is** the `capture_id`, addressed to
+  `wikis/<wiki>/<page>` with `region_start` / `region_end` NULL — the compile
+  writes the page moments later and repoints both — and stamps the row
+  `promoted` (with `resolved_fact_id = capture_id` and `processed_at`). A claim
+  the plan could not place keeps waiting rather than becoming a fact nobody
+  renders. The `idx_capture_buffer_pending` partial index backs the drain query.
+  Recall serves a waiting claim through the fresh slot and a placed one from
+  `fact_index.text`. For the full write-path design
   see [`narrative-buffer.md`](narrative-buffer.md); for the promotion
   algorithm, idempotency, and cadence see
   [`rem-cycle.md`](rem-cycle.md).
@@ -1053,10 +1063,10 @@ directory. One annotated row per migration:
 | `0028_wiki_types_companion_bool` | Replaces `family TEXT` with `companion BOOLEAN`; translates the legacy value, drops the old column + index. |
 | `0029_consumers_system_user` | Adds `consumers.system_user_id` — materialises the consumer ↔ system-user binding of the diagonal identity model (a standard consumer's own credential-less identity), populated by `consumer_register` from a `consumer_class = standard` token. |
 | `0030_wiki_types_narrative_bool` | Adds the derived `narrative BOOLEAN` marker splitting non-smart types into narrative (prose) vs structured. |
-| `0031_capture_buffer` | The standard-wiki captures buffer — a rebuildable index over the per-wiki `_captures.md` journal. |
+| `0031_capture_buffer` | The standard-wiki captures buffer. (Its DDL comment describes it as an index over a per-wiki `_captures.md` journal — that journal was deleted on 2026-08-18 and the table is the source of truth now; migrations are frozen by checksum and read as a record of their own date.) |
 | `0032_structure_proposals_recipient` | Adds the `recipient_id` addressee column on `structure_proposals` (per-user notice routing). |
 | `0033_fact_index_validity` | Adds the per-fact validity columns `valid_from` / `valid_to` / `decay_reason` + the partial `idx_fact_valid_to` (the per-fact validity model). |
-| `0034_capture_buffer_validity` | Adds `valid_from` / `valid_to` to `capture_buffer` — threads validity through the narrative buffer→promote path so `promote_one` copies it into `fact_index`; mirrored in the `_captures.md` journal (`vf`/`vt`) to keep the captures-journal rebuild faithful. |
+| `0034_capture_buffer_validity` | Adds `valid_from` / `valid_to` to `capture_buffer` — threads validity through the narrative buffer→promote path so `promote_one` copies it into `fact_index`. |
 | `0035_placement_axis` | Adds the ingest placement axis `target_page` / `style` / `page_description` to `fact_index` and `style` / `page_description` to `capture_buffer` — carries the classifier's per-claim page/style/description proposal onto the fact so the light dream settles a fact on its ingest page without the strong-model Cartografo; the buffer columns are mirrored in the journal (`style`/`desc`, free-text `desc` percent-escaped). Additive + inert until the light-cadence consumer. |
 | `0036_drop_wiki_types_registry` | Drops the two inert `wiki_type` caches — `wiki_types_registry` (0007–0030) and `skills_custom` (0024). The smart flag lives per-wiki in `_meta.md` (`smart: bool`), and only bundled skills remain. Pure removal; nothing reconstructible is lost (a `rm engine.db` rebuild simply no longer materializes them). |
 | `0037_fact_salience` | Adds the per-fact `salience` column to `fact_index` and `capture_buffer` (journal attr `sal=`) — the always-on base-context axis. |
@@ -1074,7 +1084,7 @@ directory. One annotated row per migration:
 | `0049_user_2fa` | Dashboard TOTP 2FA: `user_2fa` (secret encrypted at rest with a `MWE_TOKEN_SECRET`-derived key — rotating the token secret invalidates every enrollment), `user_2fa_recovery_codes` (single-use, SHA-256-hashed), `pending_2fa` (the between-password-and-session challenge, deliberately not a JWT), plus `enrollment_users.require_2fa` (per-user enforcement; the deployment-wide toggle is `engine_meta` `auth.require_2fa_all`). Gates only the human login surface. |
 | `0050_enrollment_is_agent` | Adds `enrollment_users.is_agent` — the explicit marker for a consumer agent's OWN identity (the system user a standard token binds), set when a standard consumer token connects or is issued. Mutually exclusive with a `user_credentials` login, enforced in both directions: an identity is EITHER a human with a login OR an agent. |
 | `0051_materialize_sender_id` | `sender` and `owner` become two separate, always-materialized fields: backfills `sender_id = owner_id` on every NULL-sender row of `fact_index` (marker regions only — smart-wiki section rows kept `sender_id = NULL`; since `0062` they are not in this table at all), `capture_buffer`, `media_catalog` and `document_jobs`. Provenance is frozen at birth and never collapsed onto the *current* owner (a NULL read as "== owner" silently rebound provenance whenever an `acl_change` moved the owner); `NULL` survives only as the scrubbed-principal fallback. |
-| `0052_behaviour_rules_page_rename` | Content migration unifying behaviour-rule storage onto the agent wiki's `rules.md` (every agent wiki already scaffolds one; the agent is never a *sender*, so the engine-policy reader never runs on an agent wiki — no collision): rewrites `fact_index.source_path` basenames `behaviour_rules.md` → `rules.md`. No-op on a fresh database. |
+| `0052_behaviour_rules_page_rename` | Content migration unifying behaviour-rule storage onto the agent wiki's `@rules.md` (every agent wiki already scaffolds one; the agent is never a *sender*, so the engine-policy reader never runs on an agent wiki — no collision): rewrites `fact_index.source_path` basenames `behaviour_rules.md` → `@rules.md`. No-op on a fresh database. |
 | `0053_structure_proposal_votes` | The `structure_proposal_votes` table — one final vote per `(proposal, voter)` (PK makes a re-vote a conflict), explicit `'yes'` / `'no'` so an all-voted quorum can resolve early, both FKs cascading, plus the per-voter index behind the pending-vote reminder. Backs the governed group-wiki page-deletion tally and the `fact_forget` audience vote (`crate::votes`). |
 | `0054_dream_runs` | The `dream_runs` journal — one durable row per finished dream run (`kind` light/compile/full, `trigger_source` manual/scheduled, `ok`, `summary`, full `log_text`), written by the dashboard Dream console and the scheduler alike; `crate::dream_journal` prunes to the newest 100 rows (resource cap), and a no-op scheduled light tick is not recorded. |
 | `0055_compiler_resilience` | Per-page compile-failure surfacing: adds `pages_failed` / `pages_degraded` to `dream_runs` (a completed run stops reading as plain ok when the compile was not clean) and creates the `compile_failures` ledger (`source_path` PK, `consecutive`, `last_error`, `updated_at`) behind the `compile_failure_streak` notice — see [rem-cycle.md](rem-cycle.md#per-page-compile-failure-surfacing). |
@@ -1090,8 +1100,10 @@ directory. One annotated row per migration:
 | `0065_wiki_sections_fts` | **`wiki_sections_fts`** — an FTS5 external-content index (`content='wiki_sections'`, `unicode61 remove_diacritics 2`) over each section's `heading_path` and `"text"`, plus the three triggers that maintain it. Recall fuses its `bm25` ranking with the cosine one so that an **identifier** — `D-006`, an ADR number, a ticket id, a stack-trace symbol — can be found at all: an embedding has almost nothing to encode in one, and the query `D-006` used to return the section that merely *cites* it. The heading is a separate, 4×-weighted column because `"text"` already contains the heading chain, and counting it twice is exactly what separates the section that *is* `D-006` from one that refers to it (measured: 4 of 7 decision identifiers ranked first with one column, 7 of 7 with two). Triggers live in the schema, not in the Rust write path, so no writer can bypass them. Fully regenerable, and cheap enough to be: 2.5 MB and 60 ms on the 4 220-section production corpus, with no embedder. See [recall-pipeline.md](recall-pipeline.md#the-section-corpus-is-ranked-by-two-passes-fused). |
 | `0066_llm_usage` | **`llm_usage`** — one row per internal-LLM call: slot, backend, model, `kind`, `billing`, `source`/`tag`, the four token columns, latency, and the error *class* of a failed call. Written by the `usage::maybe_wrap` decorator in `build_backend`, so every slot and transport is covered without touching a call site; **no prompt text is stored**, which is the whole reason this is not the training spool. The prompt is kept as three quantities because providers price them at three rates — plain input is `prompt_tokens - cached_prompt_tokens - cache_write_tokens` — and `billing` is its own column because the same provider is metered against a key in one config and covered by a flat subscription in the next. `NULL` means *not reported*, `0` means *measured zero*. Swept against `usage.retention_days` (default 400) at most once a UTC day. See [`mwe_core::usage`](../../crates/mwe-core/src/usage.rs) and [llm-usage-ledger.md](llm-usage-ledger.md). |
 | `0067_smart_wikis_description` | **`smart_wikis.description`** — one authored line per project, the **door sign** that makes it reachable from a turn that never names it. Mirrored from the wiki's own `_meta.scope` by `WikiMeta::door_description`; no second field, because `scope` already means *what goes in this container* and a smart wiki is never a placement target, so the classifier's reading of it cannot collide with this one. **Project wikis only** — an agent's operational notebook is a smart wiki too and is nobody's door — declined on *either* marker (`is_agent`, `wiki_type: agent`), because production holds one with the type and no on-disk flag. Nullable **on purpose**: it replaces a signpost fact somebody had to remember to write, and the counting is what justified the change — across the whole training window only four projects ever had one written, and the largest undescribed corpus was 1 477 sections with none. A missing act leaves no trace; an empty column can be counted, shown and asked about. See [smart-wikis.md](smart-wikis.md). |
-| `0069_page_card` | **`page_card`** — a page's testata `description` (its **card**: the one line saying what belongs on it), plus its owner-tier keywords, its style, and a `(mtime_ms, size)` validity stamp, keyed by `source_path`. The card is what the recall navigator is shown when it decides whether to open a page, and for a page no `[[wikilink]]` points at it is the only thing that can bring a reader there — yet it lived only in the `.md` frontmatter, so *asking anything about the cards* meant opening every page. A **cache, with the file authoritative**, in the same class as the `smart_wikis` projection: rows are written by the reindex pipeline (the watcher per edit, plus a card-only pass in `reindex_full` that covers the standard wikis the fact sweep deliberately skips), a missing row falls back to opening the page, and a stale row is caught by the stamp before it is shown. `embedding` is NULL until the card selection that replaces `compiler::page_index_block`'s uncapped list is built — the column is here so that work needs no second migration. See [`mwe_core::page_card`](../../crates/mwe-core/src/page_card.rs) and [recall-pipeline.md](recall-pipeline.md#entry-point-gathering--recall_nav-navigation-phase-1). |
-| `0070_rename_owner_to_subject` | Renames the per-fragment ACL axis for what it holds — **who or what a fact is about**, the third axis beside authorship (`sender_id`) and audience (`allow_ids`). The whole mapping: `owner_id` → `subject_id` on `fact_index`, `capture_buffer`, `media_catalog` and `document_jobs`; `disclosure_audit.prev_owner_id` / `new_owner_id` → `prev_subject_id` / `new_subject_id`; `idx_fact_owner` → `idx_fact_subject`; `idx_media_sha256_owner` → `idx_media_sha256_subject`. No data moves, and SQLite rewrites every index / view / trigger definition that names a renamed column, so the two DROP/CREATE pairs are for the index **names** only. Deliberately **not** renamed: `smart_wikis.owner_id` + `idx_smart_wikis_owner`, which are the wiki's proprietor and a separate axis — a fact whose subject is `user:franz` can live in a wiki owned by `group:famiglia`; `idx_document_jobs_idem`, whose name carries no owner; and `idx_webagentoauth_refresh_owner`, which covers `(sender_id, consumer_id)` — no webagentoauth table has an owner column at all. The same release moves the on-disk companions, the `.md` region marker and the `_captures.md` journal, to `subject=`, and both readers accept `owner=` **permanently**: the journal is what a `rm engine.db` rebuild replays and it holds entries from every version the deployment has ever run, so a key that stops parsing there is silent data loss, not an error. |
+| `0069_page_card` | **`page_card`** — a page's testata `description` (its **card**: the one line saying what belongs on it), plus its owner-tier keywords, its style, and a `(mtime_ms, size)` validity stamp, keyed by `source_path`. The card is what the recall navigator is shown when it decides whether to open a page, and for a page no `[[wikilink]]` points at it is the only thing that can bring a reader there — yet it lived only in the `.md` frontmatter, so *asking anything about the cards* meant opening every page. A **cache, with the file authoritative**, in the same class as the `smart_wikis` projection: rows are written by the reindex pipeline (the watcher per edit, plus a card-only pass in `reindex_full` that covers the standard wikis the fact sweep deliberately skips), a missing row falls back to opening the page, and a stale row is caught by the stamp before it is shown. Rows leave three ways: the page vanishes (`drop_page`, from the sweep's per-wiki pass), the wiki is deleted (`drop_wiki`, from [`wiki_delete::delete_wiki_subtree`](../../crates/mwe-core/src/wiki_delete.rs)), or the wiki turns smart (`drop_wiki` again, from the sweep's smart branch). The last two exist because that sweep only walks wikis still discovered as **standard** — a wiki that left that set is never visited again, so nothing else would ever reach its rows and they would keep their embeddings forever. `embedding` is NULL until the card selection that replaces `compiler::page_index_block`'s uncapped list is built — the column is here so that work needs no second migration. See [`mwe_core::page_card`](../../crates/mwe-core/src/page_card.rs) and [recall-pipeline.md](recall-pipeline.md#entry-point-gathering--recall_nav-navigation-phase-1). |
+| `0072_page_card_is_the_pages` | Drops `page_description` from `fact_index` **and** `capture_buffer`. A page's card — the one-line `description:` saying what belongs on it — is a property of the PAGE (founder, 2026-08-18: *«se il motore ha bisogno di sapere "cosa ci va dentro" sta richiedendo i dati di una pagina, non di un fatto»*). As a fact column it was repeated on every fact of the same page, and nothing maintained the copies when REM edited the card or moved the fact. Where it comes from now: a page born by a live write gets its testata card written at that moment (`capture::seed_page_card`); `planner::heal_page_cards` adopts the written card into the plan and the concept registry; the reindex sweep mirrors it into `page_card` (migration `0069`); the list inventory reads the `holds` line by joining `page_card`. On `capture_buffer` there is a second reason: a claim that waits has no page, so it has none to describe. |
+| `0071_capture_buffer_no_destination` | Drops `wiki_id` and `target_page` from `capture_buffer` (and the `idx_capture_buffer_wiki` index that covered the first — SQLite refuses to drop an indexed column). A claim waiting in the buffer is waiting to be **sorted**, and sorting it is the light dream's call at the moment it reads the queue (founder, 2026-08-18: *«i fatti nel buffer non devono avere info su dove andranno messi»*). Both columns were the classifier's guess taken before anyone had looked at the memory; in practice every buffered row carried the same page, the wiki's buffer page. The provisional wiki a promoted fact needs for its `_pending.md` address is derived at promotion from the subject (`dream_light::provisional_wiki`), falling back to whoever said it and refusing an agent's own wiki. Two consequences worth naming: the list inventory (`fact_index::list_pages_readable_by` / `count_list_pages_in_wiki`) no longer unions the buffer — a `lista` never waits there, it is written live — and a wiki filter over buffered captures is now a no-op, so the dashboard's "consolidating" list is the same list on every wiki. |
+| `0070_rename_owner_to_subject` | Renames the per-fragment ACL axis for what it holds — **who or what a fact is about**, the third axis beside authorship (`sender_id`) and audience (`allow_ids`). The whole mapping: `owner_id` → `subject_id` on `fact_index`, `capture_buffer`, `media_catalog` and `document_jobs`; `disclosure_audit.prev_owner_id` / `new_owner_id` → `prev_subject_id` / `new_subject_id`; `idx_fact_owner` → `idx_fact_subject`; `idx_media_sha256_owner` → `idx_media_sha256_subject`. No data moves, and SQLite rewrites every index / view / trigger definition that names a renamed column, so the two DROP/CREATE pairs are for the index **names** only. Deliberately **not** renamed: `smart_wikis.owner_id` + `idx_smart_wikis_owner`, which are the wiki's proprietor and a separate axis — a fact whose subject is `user:franz` can live in a wiki owned by `group:famiglia`; `idx_document_jobs_idem`, whose name carries no owner; and `idx_webagentoauth_refresh_owner`, which covers `(sender_id, consumer_id)` — no webagentoauth table has an owner column at all. The same release moves the on-disk companions, the `.md` region marker and (while it still existed) the `_captures.md` journal, to `subject=`, and the marker reader accepts `owner=` **permanently**: a page holds regions written by every version the deployment has ever run, so a key that stops parsing there is silent data loss, not an error. |
 
 ## How the runtime gets here
 

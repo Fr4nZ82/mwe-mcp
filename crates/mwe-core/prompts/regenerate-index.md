@@ -1,8 +1,8 @@
 ---
 name: regenerate-index
-description: Hub Writer prompt — the prose of a compilation plan's `ConceptHub` page, from its children list. The file name is historical: the REM index regenerator this was written for was retired on 2026-08-03 (a wiki's `index.md` is now assembled without a model), and renaming the file would orphan every operator override.
-version: 1.7
-default_version_at_bootstrap: v1.7
+description: Hub Writer prompt — the prose of a compilation plan's `ConceptHub` page, from its children list. The file name is historical: the REM index regenerator this was written for was made model-free on 2026-08-03 and deleted on 2026-08-15, and renaming the file would orphan every operator override.
+version: 1.8
+default_version_at_bootstrap: v1.8
 source_of_truth: crates/mwe-core/src/compiler.rs (fn compile_hub_page)
 ---
 
@@ -14,9 +14,9 @@ overview citing every child as a `[[wikilink]]`. It renders against the
 `hub_writer` slot.
 
 **Historical name.** This was REM's `index.md` regenerator, and the hub
-pass borrowed it. Since 2026-08-03 a wiki's `index.md` is its **map** and
-is assembled from the pages on disk with no model involved, so the hub page
-is the only caller left. The file keeps its name because renaming it would
+pass borrowed it. That sub-job stopped calling a model on 2026-08-03 and was
+deleted on 2026-08-15 — a standard wiki has no `index.md` at all — so the hub
+page is the only caller left. The file keeps its name because renaming it would
 orphan every operator override at `<workdir>/prompts/regenerate-index.md`. The dashboard agentic
 chat panel is a separate prompt at
 [`crates/mwe-dashboard/prompts/agentic-chat-panel.md`](../../mwe-dashboard/prompts/agentic-chat-panel.md);
@@ -58,7 +58,7 @@ labels them for what they actually are instead.
   `compiler::plan_page_wikilink` (the link grammar of
   recall-pipeline.md). Already resolvable, to be copied verbatim. A child
   that resolves to no page is omitted rather than rendered as a bare
-  `[[wiki_id]]`, which names a map and leads nowhere
+  `[[wiki_id]]`, which names a wiki and leads nowhere
 - `{snippet}` — the context window the model summarises, `\n\n---\n\n`
   separated: child-page blurbs, `- <slug>: <description>`. **Not facts** — a
   hub has none of its own, which is what makes it a hub
@@ -83,8 +83,8 @@ parse-failure path that costs a page.
 
 The compiler wraps the body in a testata (`render_page_file`, `style` forced
 to `prosa`) and writes it with `handle.write_page(page.page_path, …)` —
-**never** to `<wiki_dir>/index.md`, which since 2026-08-03 is the wiki's map
-and is assembled with no model. Expected shape: 6-12 lines of prose. Long
+**never** to `<wiki_dir>/index.md`, which is not a page of a standard wiki.
+Expected shape: 6-12 lines of prose. Long
 outputs are silently trimmed by `max_tokens`.
 
 **Rail floor** (v1.7): the body's child links are checked against
@@ -108,9 +108,9 @@ function-calling.
 **Upstream filter** (decides when the model sees the prompt at all):
 the compiler's hub gate in `compiler::compile_page` — a plan node with
 **no facts of its own**, with child leaves, typed `ConceptHub` /
-`GroupTheme` / `WikiBuffer`. REM's map writer, which once shared this
-prompt, calls no model at all any more; the file keeps its historical name
-so operator overrides are not orphaned. The 20-fact bound on `{snippet}`
+`GroupTheme` / `WikiBuffer`. REM's index writer, which once shared this
+prompt, no longer exists; the file keeps its historical name so operator
+overrides are not orphaned. The 20-fact bound on `{snippet}`
 is applied at render time so the prompt fits the workhorse's ~4k context
 budget on a co-resident embedder.
 

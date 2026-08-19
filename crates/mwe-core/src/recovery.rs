@@ -21,7 +21,7 @@
 //!   keeping the *installation*: the memory tables are cleared in one
 //!   transaction and the `wikis/`, `media/`, and training-spool trees
 //!   are removed, while accounts, enrollment, consumers, tokens,
-//!   OAuth state, custom skills, config, env, and `prompts/` survive.
+//!   OAuth state, config, env, and `prompts/` survive.
 //!   Identity wikis are re-scaffolded for every enrolled principal, and
 //!   `profile_initialized` is cleared so the welcome wizard re-seeds
 //!   each profile on next login.
@@ -151,7 +151,7 @@ pub struct RecoveryOutcome {
 /// `consumers`, `consumer_delegations`, `user_credentials`,
 /// `user_invitations`, `user_2fa`, `user_2fa_recovery_codes`,
 /// `pending_2fa`, `password_resets`, `token_blacklist`,
-/// `webagentoauth_*`, `engine_meta`, `skills_custom`.
+/// `webagentoauth_*`, `engine_meta`.
 const MEMORY_TABLES: &[&str] = &[
     "fact_index",
     "capture_buffer",
@@ -804,7 +804,6 @@ mod tests {
             valid_to: None,
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         };

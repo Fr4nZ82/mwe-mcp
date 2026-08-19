@@ -18,8 +18,8 @@
 //!   backend construction cost on every cycle, which would be wasteful
 //!   for the local-Ollama path (model not in RAM until first call).
 //! - Per-cycle failures are **soft**: they get logged and the next tick
-//!   still fires. A bug in one sub-job (forge cluster detector, hub
-//!   writer …) should not take the HTTP server down with it; the
+//!   still fires. A bug in one sub-job (forge cluster detector, refile
+//!   sweep …) should not take the HTTP server down with it; the
 //!   operator restarts after fixing config / capacity.
 //! - The optional slots (`auto_promote` = `rem_promotions`, `apply` =
 //!   `ingest`) are passed only when the corresponding `llm.*` slot is
@@ -53,9 +53,9 @@ use tracing::{info, warn};
 /// Public because the CLI `rem run-cycle` escape hatch reuses the same
 /// constructor + adapter to drive a single cycle from a child process.
 pub struct OwnedRemLlms {
-    /// `hub_writer` slot — required for any meaningful cycle (without
-    /// it the Hub Writer sub-job runs but writes nothing, and several
-    /// proposal kinds that need an apply-time LLM cannot auto-apply).
+    /// `hub_writer` slot — required for any meaningful cycle (without it
+    /// the compiler cannot write a hub page, and several proposal kinds
+    /// that need an apply-time LLM cannot auto-apply).
     pub hub_writer: Box<dyn LlmBackend>,
     /// `rem_dedup_semantic` slot — required for the revisor sub-job.
     pub revisor: Box<dyn LlmBackend>,
@@ -385,10 +385,11 @@ async fn journal_run(
 pub async fn run_compile_once(
     pool: &SqlitePool,
     tree: &WikiTree,
+    embedder: Arc<dyn Embedder>,
     llms: &OwnedRemLlms,
     now: &str,
 ) -> Result<mwe_core::compiler::CompileReport> {
-    dream::run_compile(pool, tree, &llms.as_borrow(), Cadence::Full, now).await
+    dream::run_compile(pool, tree, embedder, &llms.as_borrow(), Cadence::Full, now).await
 }
 
 // ---------- light dream ----------
@@ -682,7 +683,9 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         let llms = fake_llms();
-        let report = run_compile_once(&pool, &tree, &llms, "2026-05-31T00:00:00Z")
+        let embedder: Arc<dyn Embedder> =
+            Arc::new(mwe_core::embedder::FakeEmbedder::new("fake", 4));
+        let report = run_compile_once(&pool, &tree, embedder, &llms, "2026-05-31T00:00:00Z")
             .await
             .expect("compile pass must succeed on an empty workdir");
         assert_eq!(report.leaves, 0);

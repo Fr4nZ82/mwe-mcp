@@ -166,7 +166,7 @@ mod tests {
     #[tokio::test]
     async fn ledger_increments_per_failure_and_resets_on_clean() {
         let (_dir, pool) = pool().await;
-        let path = "wikis/alice/index.md";
+        let path = "wikis/alice/cucina.md";
 
         assert_eq!(record_failure(&pool, path, "boom 1").await.unwrap(), 1);
         assert_eq!(record_failure(&pool, path, "boom 2").await.unwrap(), 2);

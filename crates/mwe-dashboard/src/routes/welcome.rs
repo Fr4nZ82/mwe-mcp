@@ -16,10 +16,10 @@
 //! 1. **Identity + always-on → the identity card.** The card plus a
 //!    health/safety slot. The ingest LLM marks these `salience: high`
 //!    and the engine routes the always-on core to the owner's
-//!    always-on base context of the card (`profile.md`).
-//! 2. **Governance rules → `rules.md`.** Privacy / sharing / do-not-store
+//!    always-on base context of the card (`@profile.md`).
+//! 2. **Governance rules → `@rules.md`.** Privacy / sharing / do-not-store
 //!    presets. The ingest LLM marks each `engine_rule: true` and the
-//!    engine appends it to the sender's `rules.md` policy page
+//!    engine appends it to the sender's `@rules.md` policy page
 //!    — never a row in `fact_index`.
 //! 3. **The rest → normal pipeline.** Low-weight preferences the LLM
 //!    files wherever it sees fit.
@@ -30,9 +30,8 @@
 //! the ingest classifier marks a biographical statement `salience: high`, and
 //! `planner::orphan_target` sends a high-salience fact to the wiki's
 //! foundation card. Before 63 §8 that card *was* `index.md`; since the split
-//! it is `profile.md` and `index.md` is the map, a page the read path never
-//! opens. Nothing here was hardcoded, so the routing followed the split for
-//! free — only these words had to change.
+//! it is `@profile.md`. Nothing here was hardcoded, so the routing followed
+//! the split for free — only these words had to change.
 //!
 //! So the primer reaches the card **through a classifier judgement** rather
 //! than by assertion: a primer fact the model marks `normal` lands on the
@@ -123,7 +122,7 @@ pub fn router() -> Router<DashboardState> {
 /// The fields are grouped by the wizard's three steps, which map to the
 /// three universal ingest destinations: step 1 → the user's
 /// the card's always-on base context (identity + health/safety, marked
-/// `salience: high` by the ingest LLM), step 2 → the user's `rules.md`
+/// `salience: high` by the ingest LLM), step 2 → the user's `@rules.md`
 /// engine-policy page (privacy / do-not-store directives, routed by the
 /// `engine_rule` flag the ingest LLM sets), step 3 → the normal pipeline
 /// (low-weight preferences the LLM files wherever it sees fit). The
@@ -416,7 +415,7 @@ async fn fetch_email_for(state: &DashboardState, sender_id: &str) -> Result<Opti
 /// their identity card into being. The ingest prompt already knows what an
 /// identity core is (Part 6: name and aliases, roles and relations, birthdate,
 /// where they live, language and timezone, contacts) and already routes it —
-/// `salience: "high"` lands a fact on `profile.md`. What it has no way of
+/// `salience: "high"` lands a fact on `@profile.md`. What it has no way of
 /// knowing is that these particular sentences are somebody introducing
 /// themselves rather than chatting, and its own standing instruction is to
 /// keep `high` **scarce**.
@@ -489,7 +488,7 @@ show(0);\
 /// Step-2 section marker. Tells the ingest LLM the lines that follow are
 /// the user's GOVERNANCE rules (privacy / do-not-store), not facts — so
 /// it sets `engine_rule: true` and the engine appends them to
-/// the sender's `rules.md` instead of filing rows in
+/// the sender's `@rules.md` instead of filing rows in
 /// `fact_index`. Reinforcement, not routing: the universal routing
 /// already lives in the ingest prompt; the marker just nudges the
 /// classification.
@@ -616,11 +615,11 @@ fn compose_identity_section(email: Option<&str>, form: &ProfileSubmission) -> St
     out
 }
 
-/// Step 2 → `rules.md`. Turns the preset answers (Q1 sharing / Q2
+/// Step 2 → `@rules.md`. Turns the preset answers (Q1 sharing / Q2
 /// exclusions / Q3 private topics / Q5 do-not-store) into imperative
 /// policy sentences under [`ENGINE_RULES_SECTION_MARKER`]. Each is a
 /// directive addressed to the memory engine, so the ingest LLM marks it
-/// `engine_rule: true` and it lands in `rules.md`. Q4 (tone)
+/// `engine_rule: true` and it lands in `@rules.md`. Q4 (tone)
 /// is a *behaviour* rule for the consumer agent, not an engine rule —
 /// out of scope here (it belongs to the consumer-routing path).
 fn compose_engine_rules_section(form: &ProfileSubmission) -> String {
@@ -814,7 +813,7 @@ fn step1_identity_fieldset(email_value: &str, locale_default: &str) -> Markup {
     }
 }
 
-/// Step 2 fieldset → `rules.md`: the governance presets (Q1 sharing /
+/// Step 2 fieldset → `@rules.md`: the governance presets (Q1 sharing /
 /// Q2 exclusions / Q3 private topics / Q5 do-not-store). Q4 (tone) is a
 /// consumer-behaviour rule, out of scope here.
 fn step2_rules_fieldset() -> Markup {

@@ -1,8 +1,8 @@
 ---
 name: rem-recall-repair
 description: REM recall-repair sub-job — given one confirmed recall miss (the query the user had to restate, and the fact memory held but recall did not surface), decide whether re-filing the fact into a different wiki would make it reachable, or whether no local repair applies; strict JSON out; the verdict is only a CANDIDATE — a gold-set gate replay must prove it before anything commits
-version: 1.1
-default_version_at_bootstrap: v1.1
+version: 1.2
+default_version_at_bootstrap: v1.2
 ---
 
 # Prompt: rem-recall-repair
@@ -47,7 +47,7 @@ Rules:
 - Be CONSERVATIVE. Propose a move ONLY when the fact plainly belongs in one of the candidate wikis — when its subject matter is that wiki's subject and its current home is why the query could not reach it. When in doubt, answer "stay" (a common, fine answer: not every miss has a filing cause).
 - A fact belongs in the wiki whose SUBJECT it is primarily about — whose subject/topic the claim is fundamentally a fact OF, not merely a fact that references it.
 - `dest_wiki_id` MUST be a wiki_id copied EXACTLY from the candidate list. Never invent one, and never name the home wiki.
-- You choose only the destination WIKI, not a page: the fact lands on that wiki's buffer page (`notes.md`, where everything unplaced waits) and the wiki's own next dream files it onto the right page.
+- You choose only the destination WIKI, not a page: the fact lands on that wiki's buffer page (`@notes.md`, where everything unplaced waits) and the wiki's own next dream files it onto the right page.
 - Your verdict is a CANDIDATE only: a replay gate will verify that the move actually makes the fact reachable for this query without regressing anything, and only then does it commit (act-first, revertable from the dashboard).
 
 QUERY (what the user asked — the turn that missed):

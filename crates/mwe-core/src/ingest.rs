@@ -327,7 +327,7 @@ pub struct IngestResponse {
     /// binding rule is never indistinguishable from a remembered fact
     /// (roadmap 29d). Carries the served user's behaviour rules (how to
     /// converse / operate with them, recalled from the agent's own
-    /// `rules.md`) and, leading, any one-shot governance notice (e.g. an
+    /// `@rules.md`) and, leading, any one-shot governance notice (e.g. an
     /// agent-wide change refused for a non-admin this turn). `None` when the
     /// turn surfaced no directive. The agent applies these as instructions,
     /// not as material to relay.
@@ -468,7 +468,7 @@ pub struct IngestPolicy {
     /// teaches the classifier *not* to over-share — without letting a
     /// pathological scope blow the prompt budget.
     pub max_group_scope_chars: usize,
-    /// Character cap on the sender's `rules.md` policy injected into the
+    /// Character cap on the sender's `@rules.md` policy injected into the
     /// prompt's `sender_rules` section. Bounds a pathological
     /// hand-edited policy from blowing the prompt budget; a normal policy
     /// is a short paragraph or two. Also bounds the `YOUR RULES` section
@@ -485,7 +485,7 @@ pub struct IngestPolicy {
     pub max_agent_history_chars: usize,
     /// Character cap on the recall block's `WHO IS SPEAKING` section — the
     /// sender's identity card, served deterministically from their
-    /// `profile.md` (roadmap 69a).
+    /// `@profile.md` (roadmap 69a).
     ///
     /// A **failsafe, not a curation knob**: what belongs on the card and how
     /// dense it is are REM's judgement (69c, hard ceiling 2 500 characters),
@@ -698,7 +698,7 @@ struct LlmIngestPlan {
     /// Per-fact **salience** (`high` | `normal` | `low`;
     /// absent = unspecified). `high` = "must be known in every interaction"
     /// (identity, health/safety, hard constraints) → routed to the actor-wiki
-    /// `profile.md` identity card. The classifier decides it; no hardcoded
+    /// `@profile.md` identity card. The classifier decides it; no hardcoded
     /// gate. Plan-level mirror for the legacy single-fact fallback; the per-fact
     /// value lives on [`LlmExtraction`].
     #[serde(default)]
@@ -717,7 +717,7 @@ struct LlmIngestPlan {
     /// The classifier flags an
     /// **engine-rule**: a standing *governance* directive for the memory engine
     /// (a privacy/sharing policy, or a do-not-store rule), not a fact about the
-    /// world. An engine-rule is appended as prose to the sender's `rules.md`
+    /// world. An engine-rule is appended as prose to the sender's `@rules.md`
     /// (read back as `sender_rules`) instead of being filed in `fact_index` —
     /// it never becomes a fact. The classifier decides; no hard-coded gate. The
     /// world/household `rule` `fact_type` ("in casa non si fuma") is a normal
@@ -965,7 +965,7 @@ struct CaptureUnit<'a> {
     requested_container: bool,
     /// Engine-rule routing flag (see
     /// [`LlmIngestPlan::engine_rule`]). `true` → the body is appended to the
-    /// sender's `rules.md` as prose, never filed as a fact.
+    /// sender's `@rules.md` as prose, never filed as a fact.
     engine_rule: bool,
     /// Behaviour-rule routing flag (see
     /// [`LlmIngestPlan::behaviour_rule`]). `true` → the body is filed on the
@@ -1159,7 +1159,7 @@ enum CapturePlanError {
 /// segment: lowercase, non-alphanumeric runs → `_`), then require the
 /// result to pass [`is_safe_page_path`]; anything that still fails
 /// (empty segment, traversal) falls back to the wiki's default page
-/// (the buffer, `notes.md`) so a normal message can never crash ingest. The
+/// (the buffer, `@notes.md`) so a normal message can never crash ingest. The
 /// classifier prompt shows neither wikis nor page names — the one exception
 /// being the `list_pages` inventory, whose entries are exact names to be
 /// copied — so canonicalising here is fighting a name the model **coined**,
@@ -1266,6 +1266,57 @@ fn derive_target_wiki(
     known(home).or_else(|| known(&request.sender_id))
 }
 
+/// Why a list item could not be filed — the two ways a list loses its page.
+///
+/// Both end the same way for the user: nothing was written, and they are told
+/// so this turn. Kept apart only so the notice can say which happened, because
+/// one is theirs to fix (free up a list) and the other is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListRefusal {
+    /// The classifier named one of the reserved pages. A model slip: the
+    /// prompt forbids it and the engine enforces it rather than trusting it.
+    ReservedName,
+    /// The wiki already holds [`MAX_LIST_PAGES_PER_WIKI`] lists and this item
+    /// would mint one more.
+    WikiAtListCap,
+}
+
+impl ListRefusal {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReservedName => "reserved_page_name",
+            Self::WikiAtListCap => "wiki_at_list_cap",
+        }
+    }
+
+    /// The one-shot notice the turn carries in [`IngestResponse::rules`].
+    ///
+    /// Behaviour guidance, not memory: the agent applies it when composing the
+    /// reply. It must say the item was NOT saved — a list the user believes is
+    /// complete and is not is the failure worth preventing here.
+    fn notice(self) -> String {
+        let why = match self {
+            Self::ReservedName => {
+                "the page name proposed for it is reserved by the engine, so the list could not be created"
+            },
+            Self::WikiAtListCap => {
+                "that memory already holds the maximum number of lists, so no new one could be created"
+            },
+        };
+        format!(
+            "NOTE — the user asked to put something on a list and it was NOT saved: {why}.              Tell them plainly that this item was not remembered and why, so they can retry              on an existing list. Do NOT say it was noted or remembered."
+        )
+    }
+}
+
+/// Is this extraction list-shaped material? The one place the `lista` style is
+/// read off the classifier's output, so the live/wait/refuse decisions cannot
+/// disagree about what a list is.
+fn is_list_shaped(unit: &CaptureUnit<'_>) -> bool {
+    unit.style
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("lista"))
+}
+
 /// How many `lista` pages one wiki may hold (founder, 2026-08-09).
 ///
 /// A **product** limit — «se non ci entrano più di 24 persone non deve far
@@ -1282,10 +1333,11 @@ pub const MAX_LIST_PAGES_PER_WIKI: usize = 32;
 /// **Growth only, and never a lost fact.** An existing list stays addable-to
 /// however many the wiki holds — the check fires only for a name the wiki
 /// does not already have. And the refusal downgrades the *destination*, not
-/// the capture: the fact still lands, on the wiki's buffer, where the nightly
-/// placement settles it like any other unplaced prose. Refusing the whole
-/// extraction would throw away what the person said in order to enforce a
-/// filing limit.
+/// the capture: with its page taken away the claim is one nobody has placed,
+/// so it waits in the buffer with the rest and the placement pass settles it
+/// like any other unplaced prose (the router reads the page for exactly that
+/// — see `route_to_buffer`). Refusing the whole extraction would throw away
+/// what the person said in order to enforce a filing limit.
 ///
 /// Soft on error: a count that cannot be taken lets the capture through
 /// unchanged — a limit is not worth dropping a turn's work over.
@@ -1296,10 +1348,7 @@ async fn refuse_new_list_over_cap(
     list_pages: &[fact_index::ListPage],
     policy: &IngestPolicy,
 ) -> std::result::Result<(), fact_index::FactIndexError> {
-    let list_shaped = unit
-        .style
-        .is_some_and(|s| s.trim().eq_ignore_ascii_case("lista"));
-    if !list_shaped {
+    if !is_list_shaped(unit) {
         return Ok(());
     }
     let wiki_id = cap_req.wiki_id.as_str().to_owned();
@@ -1366,16 +1415,15 @@ fn validate_capture_plan(
     //
     // Enforced here rather than asked for in the prompt: a guessed page name
     // that reaches disk is a page, and pages outlive the turn that minted them.
-    let list_shaped = unit
-        .style
-        .is_some_and(|s| s.trim().eq_ignore_ascii_case("lista"));
-    let names_its_page = list_shaped || unit.requested_container;
+    let names_its_page = is_list_shaped(unit) || unit.requested_container;
     let page = if names_its_page {
         let coined = normalize_capture_page(unit.target_page, &policy.default_page);
         // The guarantee the prompt makes — «a capture aimed at a reserved page
         // is not filed there» — enforced, not asked for. A model that names
-        // `rules.md` or `index.md` gets the buffer instead, and the placement
-        // pass settles it like any other unplaced prose.
+        // `@rules.md` gets the buffer page here, which the router then reads
+        // as "this claim knows no page": it waits, and the placement pass
+        // settles it like any other unplaced prose. Without that reading a
+        // refused `lista` was written live onto the buffer page itself.
         if wiki::names_reserved_page(&coined) {
             tracing::warn!(
                 page = %coined.display(),
@@ -1769,12 +1817,19 @@ async fn file_unclaimed_attachments(
     if unclaimed.is_empty() {
         return None;
     }
-    // Resolve the sender's identity wiki against the FULL tree, not the
-    // prompt's `available` window. An identity wiki is exempt from the cap
-    // and so is always in the window today, but the fallback must file even
-    // if that ever changes — and `available` may be the empty list a soft
-    // enumeration failure left behind. `available_wikis` drops smart wikis
-    // itself: a smart-managed identity wiki never takes buffered captures.
+    // The precondition, not a destination: these captures wait in the buffer,
+    // which names no wiki, and promotion parks them in the SUBJECT's own wiki
+    // — here the sender's, since an unclaimed attachment is filed about
+    // whoever sent it. So the sender having an identity wiki is what decides
+    // whether the claim can ever land; without one it would sit buffered for
+    // ever, and leaving the blob merely catalogued is the better failure.
+    //
+    // Resolved against the FULL tree, not the prompt's `available` window: an
+    // identity wiki is exempt from the cap and so is always in the window
+    // today, but this must hold even if that changes — and `available` may be
+    // the empty list a soft enumeration failure left behind. `available_wikis`
+    // drops smart wikis itself: a smart-managed identity wiki never takes
+    // buffered captures.
     let target = available
         .iter()
         .find(|w| w.wiki_id == request.sender_id)
@@ -1830,7 +1885,7 @@ async fn file_unclaimed_attachments(
             // project content — no provenance breadcrumbs.
             authored_refs: Vec::new(),
         };
-        match capture_buffer::buffer_capture(tree, pool, cap_req, None).await {
+        match capture_buffer::buffer_capture(pool, cap_req, None).await {
             Ok(buffered) => {
                 tracing::info!(
                     capture_id = buffered.capture_id.as_str(),
@@ -2628,6 +2683,7 @@ async fn confirm_topic_closures(
 /// Returns the number of closures applied.
 async fn apply_plan_closures(
     pool: &SqlitePool,
+    tree: &WikiTree,
     plan_closures: &[LlmClosure],
     recall_hits: &[RecallHit],
     request: &IngestRequest,
@@ -2710,6 +2766,33 @@ async fn apply_plan_closures(
     }
     if applied.is_empty() {
         return 0;
+    }
+    // A closed item on a LIST is shown now, not at the next dream: the page is
+    // rebuilt from the facts as they stand, so «ho comprato il latte» carries
+    // its `✓` in the same turn that said it. Nothing happens for any other
+    // page — a `lista` is the one shape whose maintenance costs no model call,
+    // which is the whole reason it does not wait
+    // ([`crate::compiler::refresh_list_page`]). Best-effort: a page that
+    // cannot be refreshed is a stale render, never a lost closure — the
+    // authoritative state is the row, and the compile reconciles it.
+    let mut refreshed: std::collections::BTreeSet<(String, String)> =
+        std::collections::BTreeSet::new();
+    for a in &applied {
+        let Ok(Some(row)) = fact_index::find_by_id(pool, &a.fact_id).await else {
+            continue;
+        };
+        if !refreshed.insert((row.wiki_id.clone(), row.source_path.clone())) {
+            continue;
+        }
+        if let Err(e) =
+            crate::compiler::refresh_list_page(pool, tree, &row.wiki_id, &row.source_path).await
+        {
+            tracing::warn!(
+                error = %e,
+                source_path = %row.source_path,
+                "ingest: list page not refreshed after a closure (the compile will)"
+            );
+        }
     }
     emit_closure_paper_trail(pool, &applied, recall_hits, request).await;
     applied.len()
@@ -3688,7 +3771,7 @@ fn build_prompt(
         }
     }
 
-    // sender_rules: the sender's own standing policy (their `rules.md`).
+    // sender_rules: the sender's own standing policy (their `@rules.md`).
     // The classifier honours the privacy/sharing rules here when it
     // decides each fact's `subject_id`/`allow_ids` (e.g. "keep health private" →
     // subject-only), and surfaces the behaviour rules to the consumer. Absent →
@@ -3698,7 +3781,7 @@ fn build_prompt(
     // under the standing rule that a slot may act against a set it is shown
     // COMPLETE and never against a sample — and this is the block that carries
     // governance. It used to be cut at `max_sender_rules_chars`, mid-word,
-    // with no warning logged: a user whose `rules.md` had grown past 1 500
+    // with no warning logged: a user whose `@rules.md` had grown past 1 500
     // characters, and whose last line was *«i fatti sulla mia salute restano
     // privati»*, had that rule silently dropped while the prompt told the
     // model it had seen everything. A rules file is written by a person and is
@@ -4154,10 +4237,10 @@ pub(crate) fn available_wikis(tree: &WikiTree, cap: usize) -> Result<Vec<Availab
     Ok(identity)
 }
 
-/// Read the sender's `rules.md` user-policy — governance PROSE only,
+/// Read the sender's `@rules.md` user-policy — governance PROSE only,
 /// best-effort.
 ///
-/// The sender's identity wiki is `wiki_id == sender_id`; its `rules.md`
+/// The sender's identity wiki is `wiki_id == sender_id`; its `@rules.md`
 /// ([`crate::wiki::RULES_FILENAME`]) holds the standing privacy/sharing policy
 /// the classifier honours when it assigns per-fact ACL. Since roadmap 42 the
 /// same page also carries the user's USER-GLOBAL behaviour rules as `{{f=…}}`
@@ -4167,7 +4250,7 @@ pub(crate) fn available_wikis(tree: &WikiTree, cap: usize) -> Result<Vec<Availab
 /// rule is injected twice (or under the wrong section). Returns `None` — and
 /// the prompt's `sender_rules` section reads `(none)`, so the classifier
 /// decides ACL as it did before — for a sender with no identity wiki, no
-/// `rules.md` (older wikis), a file with no prose, or any read error.
+/// `@rules.md` (older wikis), a file with no prose, or any read error.
 /// Best-effort by design: a policy is an aid to the ACL decision, never a hard
 /// gate, so it must never fail the ingest (pillar: the LLM decides).
 fn sender_rules(tree: &WikiTree, sender_id: &str) -> Option<String> {
@@ -4188,12 +4271,12 @@ fn sender_rules(tree: &WikiTree, sender_id: &str) -> Option<String> {
     (!prose.trim().is_empty()).then_some(prose)
 }
 
-/// Append an engine-rule to the sender's `rules.md`.
+/// Append an engine-rule to the sender's `@rules.md`.
 ///
 /// The write side of the engine-rule loop: when the classifier marks an
 /// extraction as a standing *governance* directive, the orchestrator routes the
 /// body here instead of [`capture::wiki_capture`] — the rule lives as prose in
-/// `wikis/<sender_id>/rules.md` and is read straight back as [`sender_rules`]
+/// `wikis/<sender_id>/@rules.md` and is read straight back as [`sender_rules`]
 /// next turn (a tight write→read loop), never as a row in `fact_index`.
 ///
 /// Returns `Ok(true)` when the rule was written, `Ok(false)` when the sender has
@@ -4214,7 +4297,7 @@ fn append_sender_rule(tree: &WikiTree, sender_id: &str, rule: &str) -> Result<bo
 
 /// Page where behaviour rules are filed (the ingest prompt's Part 7b).
 /// Unified with the engine-policy page name (roadmap 29c): in the *agent's*
-/// wiki this `rules.md` holds the per-user and agent-wide behaviour facts —
+/// wiki this `@rules.md` holds the per-user and agent-wide behaviour facts —
 /// no collision, since [`sender_rules`] (the engine-policy reader) never runs
 /// for the agent (it is never a sender). In the *user's* identity wiki the
 /// same page carries their USER-GLOBAL behaviour facts alongside the
@@ -4278,7 +4361,7 @@ impl BehaviourScope {
     }
 }
 
-/// File a behaviour-rule fact on the `rules.md` page its scope calls home
+/// File a behaviour-rule fact on the `@rules.md` page its scope calls home
 /// (roadmap 29c + 42), written LIVE (direct path) so it is in effect on the
 /// next turn.
 ///
@@ -4376,6 +4459,8 @@ async fn capture_behaviour_rule(
         valid_from: None,
         valid_to: None,
         style: Some("prosa-tecnica".to_owned()),
+        // The behaviour-rules page's own card, written on its testata the
+        // first time the page is created (`capture::seed_page_card`).
         page_description: Some(page_description.to_owned()),
         salience: None,
         authored_refs: Vec::new(),
@@ -4394,12 +4479,14 @@ async fn capture_behaviour_rule(
 /// Which page a `self` fact lands on (item 47-x3). The engine decides — not
 /// the model's proposed `target_page` — mirroring how a self-fact's wiki is
 /// already engine-pinned to the agent's own wiki. An IDENTITY fact
-/// (user-agnostic, injected every turn) stays on the agent's index, where REM
-/// consolidates identity. A RELATIONSHIP fact goes to a per-served-user page
-/// `esperienze_<user>.md`, so the agent's history with each user grows in its
-/// own space instead of piling into one heterogeneous catch-all
-/// (`esperienze_agente.md`, the Finding-C monolith the classifier used to
-/// invent). A relationship fact with no served user degrades to the index.
+/// (user-agnostic, injected every turn) stays on the wiki's parking page
+/// (`default`, i.e. [`wiki::NOTES_FILENAME`]), from which REM's reorg lifts it
+/// onto the identity pages it consolidates. A RELATIONSHIP fact goes to a
+/// per-served-user page `esperienze_<user>.md`, so the agent's history with
+/// each user grows in its own space instead of piling into one heterogeneous
+/// catch-all (`esperienze_agente.md`, the Finding-C monolith the classifier
+/// used to invent). A relationship fact with no served user degrades to the
+/// parking page too.
 /// Recall is page-agnostic (`recall_agent_self` buckets by the served-user
 /// topic tag, not the page), so this write-time routing is invisible to reads.
 fn agent_self_fact_page(is_identity: bool, sender_id: &str, default: &Path) -> PathBuf {
@@ -4512,7 +4599,7 @@ async fn capture_agent_self_fact(
 const BEHAVIOUR_RULES_RECALL_CAP: usize = 50;
 
 /// Pull the behaviour-rule facts whose SUBJECT is this principal, on the
-/// agent's `rules.md`
+/// agent's `@rules.md`
 /// page (roadmap 29c), via [`fact_index::find_behaviour_rules`]. Page-scoped
 /// on purpose: a `subject = agent` query would otherwise drag in the agent's
 /// self-facts, which live on its content pages, not here. The
@@ -4840,14 +4927,14 @@ fn format_history_with_user(agent: &AgentSelf, policy: &IngestPolicy) -> Option<
     )
 }
 
-/// The identity card of a principal's wiki — **`profile.md`**, and not the
+/// The identity card of a principal's wiki — **`@profile.md`**, and not the
 /// wiki root.
 ///
 /// Founder's ruling, 2026-08-03: *«la radice della wiki e la pagina
-/// identitaria non dovrebbe essere la stessa pagina»*. `index.md` is the
-/// wiki's **map** — REM's and the ingest classifier's answer to *where does a
-/// fact belong* — and recall never opens it. The card is a content page like
-/// any other, except that this slot serves it deterministically.
+/// identitaria non dovrebbe essere la stessa pagina»*. The card is a content
+/// page like any other, except that this slot serves it deterministically.
+/// (The wiki-root page that ruling split it away from does not exist at all
+/// any more.)
 ///
 /// Not [`IngestPolicy::default_page`] either, which is the *capture* fallback
 /// ([`wiki::NOTES_FILENAME`]): this is the page the classifier routes the
@@ -4875,7 +4962,7 @@ struct SpeakerCard {
 
 /// Render the `WHO IS SPEAKING` section — the sender's identity card.
 ///
-/// Roadmap 69a. The slot serves the sender's **`profile.md`**, not a one-line
+/// Roadmap 69a. The slot serves the sender's **`@profile.md`**, not a one-line
 /// abstract of it: the card is the set of facts the classifier deterministically
 /// routed to the identity page (name, birthdate, contacts, family ties — but
 /// also the standing health constraints and the characterising preferences a
@@ -5126,7 +5213,7 @@ async fn identity_card(
         &sender.sender_groups,
     );
     // A page whose injected prose carries **no fact this reader may see** is
-    // scaffolding, not a card: a freshly seeded `profile.md` is a heading and
+    // scaffolding, not a card: a freshly seeded `@profile.md` is a heading and
     // a sentence of connective tissue, and serving that on every turn
     // forever is noise. What earns the slot is the identity core the
     // classifier routed onto the page — so the test is on the *rendered*
@@ -6334,6 +6421,14 @@ pub async fn wiki_ingest_message(
     // `rules` field carries a one-shot notice so the agent declines politely
     // this turn.
     let mut agent_wide_denied = false;
+    // A list item the turn could NOT file, because its page name did not
+    // survive: the classifier named a reserved page, or the wiki is already at
+    // its list limit. The item is refused rather than parked, and the `rules`
+    // field carries a one-shot notice so the agent tells the user it was not
+    // saved. Founder, 2026-08-18: *«se si raggiungono 32 liste il messaggio
+    // dev'essere scartato e avvisato l'utente, generato un errore»*, and
+    // *«@notes.md non dev'essere usata per elementi di lista»*.
+    let mut list_page_refused: Option<ListRefusal> = None;
     // The flat recall slot is the DETERMINISTIC hit-list ([`format_snippet`]),
     // never an LLM recap. The classifier runs BEFORE the navigator and sees
     // only the shallow flat hits, so a prose recap it wrote here could assert
@@ -6420,7 +6515,7 @@ pub async fn wiki_ingest_message(
                 // An engine-rule is a
                 // standing GOVERNANCE directive (a privacy/sharing policy, or a
                 // do-not-store rule), not a fact. The classifier flags it; the
-                // orchestrator appends it as prose to the sender's `rules.md`
+                // orchestrator appends it as prose to the sender's `@rules.md`
                 // (read back as `sender_rules` next turn) and files NOTHING in
                 // `fact_index`. A rule needs only a body — no capture-plan /
                 // supersede validation, no target page. The world/household
@@ -6683,6 +6778,39 @@ pub async fn wiki_ingest_message(
                     tracing::warn!(error = %e, "ingest: list-page cap check failed");
                 }
 
+                // **A list item is never parked.** Both refusals above express
+                // themselves the same way — the page falls back to the wiki's
+                // parking page — and for list material that is not a
+                // destination: the parking page holds prose waiting to be
+                // placed, and a list item on it turns it into a shopping list.
+                //
+                // Nor may the item wait in the buffer: it would be placed an
+                // hour later by a pass that has no list to place it on, and
+                // land on the parking page anyway. So the extraction is
+                // REFUSED and the user is told. A list is a set — silently
+                // dropping one item is a wrong answer, not a partial one, and
+                // the user must know to retry or free a list.
+                if is_list_shaped(&unit) && cap_req.page == policy.default_page {
+                    let reason = if unit.target_page.is_some_and(|p| {
+                        wiki::names_reserved_page(&normalize_capture_page(
+                            Some(p),
+                            &policy.default_page,
+                        ))
+                    }) {
+                        ListRefusal::ReservedName
+                    } else {
+                        ListRefusal::WikiAtListCap
+                    };
+                    tracing::error!(
+                        wiki_id = %cap_req.wiki_id,
+                        proposed_page = unit.target_page.unwrap_or("<none>"),
+                        reason = reason.as_str(),
+                        "ingest: list item REFUSED — no list page to file it on, nothing written"
+                    );
+                    list_page_refused = Some(reason);
+                    continue;
+                }
+
                 // Supersede = content update, NOT a sharing change: the new
                 // fact INHERITS the superseded fact's audience (`allow`).
                 // Sharing changes go through the explicit `acl_change` verb.
@@ -6777,16 +6905,26 @@ pub async fn wiki_ingest_message(
                     .iter()
                     .find(|w| w.wiki_id.as_str() == cap_req.wiki_id.as_str())
                     .is_some_and(|w| !w.smart);
-                // The LIVE exception: an explicitly requested container (a
-                // list / collection / note the user asked to keep) is written
-                // live via the direct path even into a standard wiki, so it is
-                // there immediately; only accumulated knowledge waits for the
-                // dream. The classifier sets the flag — no hard-coded gate.
+                // The LIVE exception, and it is the same one that decides who
+                // names their own page (`names_its_page` in
+                // `capture_request_for`): **a fact that already knows where it
+                // goes is written now.** Two shapes qualify — a `lista` item,
+                // and a container the user asked for *this turn*. Everything
+                // else is accumulated knowledge and waits for the dream.
                 //
-                // Removing it was considered on 2026-08-05 and REJECTED on the
-                // founder's question, because the argument for removing it did
-                // not survive contact with what a list is. Recorded here so it
-                // is not re-proposed:
+                // The `lista` half landed on 2026-08-18 (founder: *«le liste
+                // non ci passano … il classificatore riceve appositamente tutte
+                // le liste che l'utente vede e aggiunge l'elemento direttamente
+                // lì»*). Until then only `requested_container` bypassed the
+                // buffer, so **creating** a shopping list was live while
+                // **adding to it** waited up to a dream interval — and the
+                // reasoning that kept the exception alive was about lists, not
+                // about creation. It was written for a list and hung on the
+                // wrong moment.
+                //
+                // That reasoning, from 2026-08-05, when removing the exception
+                // was considered and REJECTED on the founder's question.
+                // Recorded here so it is not re-proposed:
                 //
                 // - "The buffered claim is recallable anyway, so the page can
                 //   lag." True for a fact, false for a LIST. The fresh slot is
@@ -6804,10 +6942,21 @@ pub async fn wiki_ingest_message(
                 //
                 // What the live path actually costs, now that the embedding is
                 // computed at staging time either way: one dedup scan over the
-                // wiki's active facts, one atomic page write and one row
+                // facts about this subject, one atomic page write and one row
                 // insert, moved into the turn instead of into the dream. No
                 // model call, no extra embedding.
-                let route_to_buffer = target_is_standard && !unit.requested_container;
+                //
+                // The test is the PAGE, and asking it here rather than
+                // re-deriving the two shapes keeps one answer where there
+                // were two. `capture_request_for` already resolved it: a
+                // claim that names its own page carries it, everything else
+                // carries the wiki's buffer page — and so does a name that
+                // was REFUSED, either as a reserved page or as the wiki's
+                // 33rd list. A claim sitting on the buffer page is a claim
+                // nobody has placed, which is exactly what waiting means.
+                // (Deriving it from `style`/`requested_container` instead
+                // wrote a refused `lista` live ONTO `@notes.md`.)
+                let route_to_buffer = target_is_standard && cap_req.page == policy.default_page;
 
                 // Cleared when the direct path's write-time dedup proves
                 // nothing new filed — a restated fact is no news to its
@@ -6831,7 +6980,6 @@ pub async fn wiki_ingest_message(
                     )
                     .await;
                     let buffered = capture_buffer::buffer_capture_staged(
-                        tree,
                         pool,
                         cap_req,
                         supersede_target.clone(),
@@ -6840,7 +6988,6 @@ pub async fn wiki_ingest_message(
                     .await?;
                     tracing::info!(
                         capture_id = buffered.capture_id.as_str(),
-                        journal = %buffered.journal_path,
                         superseded_hint = supersede_target.is_some(),
                         "ingest: capture BUFFERED (standard wiki; awaits the light dream)"
                     );
@@ -7027,8 +7174,15 @@ pub async fn wiki_ingest_message(
                     }
                 }
             }
-            let closed =
-                apply_plan_closures(pool, &turn_closures, &closure_hits, &request, turn_now).await;
+            let closed = apply_plan_closures(
+                pool,
+                tree,
+                &turn_closures,
+                &closure_hits,
+                &request,
+                turn_now,
+            )
+            .await;
             if closed > 0 {
                 captured_any = true;
             }
@@ -7075,7 +7229,8 @@ pub async fn wiki_ingest_message(
                 // case it now breaks.
                 //
                 // `agent_wide_denied` rides the same path: nothing filed, but
-                // the turn must still carry the one-shot decline notice.
+                // the turn must still carry the one-shot decline notice. So
+                // does `list_page_refused`, for the same reason.
                 //
                 // Nothing is lost by continuing: unclaimed media is filed by
                 // the deterministic pass below (the same call the demotion
@@ -7083,7 +7238,7 @@ pub async fn wiki_ingest_message(
                 // empty still gets the canned seed — see the fallback right
                 // after the recall block.
                 include_flat = true;
-                nothing_filed = !captured_any && !agent_wide_denied;
+                nothing_filed = !captured_any && !agent_wide_denied && list_page_refused.is_none();
             }
         },
         IntentKind::Recall => {
@@ -7123,7 +7278,7 @@ pub async fn wiki_ingest_message(
     // survives on whatever the flat path already produced.
     let seeds = nav_seeds(&plan);
     // `WHO IS SPEAKING` — the sender's identity card, served from their
-    // `profile.md` (roadmap 69a). It runs FIRST of the tail because it is the
+    // `@profile.md` (roadmap 69a). It runs FIRST of the tail because it is the
     // deterministic slot the other two defer to: it costs no completion, it
     // arrives whatever the navigator decides, and the page it serves must
     // then be injected nowhere else.
@@ -7216,9 +7371,15 @@ pub async fn wiki_ingest_message(
         let decision =
             reconcile_after_reading(tree, llm, &request, turn_now, &candidates, &turn_facts).await;
         if !decision.is_empty() {
-            reconciled +=
-                apply_plan_closures(pool, &decision.closures, &candidates, &request, turn_now)
-                    .await;
+            reconciled += apply_plan_closures(
+                pool,
+                tree,
+                &decision.closures,
+                &candidates,
+                &request,
+                turn_now,
+            )
+            .await;
             reconciled += apply_reconciled_supersedes(
                 pool,
                 &decision.supersedes,
@@ -7284,7 +7445,7 @@ pub async fn wiki_ingest_message(
     // hit whose page prose already rides in the block is dropped instead of
     // arriving twice ([`format_snippet`] dedup) — from the navigated
     // section, or from the identity card the deterministic slot serves
-    // (69a: a `bio` fact on `profile.md` is on both routes by construction).
+    // (69a: a `bio` fact on `@profile.md` is on both routes by construction).
     let relevant = if include_flat {
         let mut nav_paths: Vec<String> = nav_tail
             .as_ref()
@@ -7427,13 +7588,15 @@ pub async fn wiki_ingest_message(
     // behaviour-rule governance — the ingest-pipeline design note). It
     // rides the dedicated `rules` field (it is behaviour guidance), not the
     // recalled memory.
-    let notice = agent_wide_denied.then(|| {
-        "NOTE — the user asked to set a rule that would apply to EVERYONE (an \
-         agent-wide directive). Only the administrator may do that, so it was \
-         not applied. Tell the user politely that an agent-wide change is \
-         reserved to the admin; do not adopt it. A preference that applies only \
-         to them you may still honour."
-            .to_owned()
+    let notice = list_page_refused.map(ListRefusal::notice).or_else(|| {
+        agent_wide_denied.then(|| {
+            "NOTE — the user asked to set a rule that would apply to EVERYONE (an \
+             agent-wide directive). Only the administrator may do that, so it was \
+             not applied. Tell the user politely that an agent-wide change is \
+             reserved to the admin; do not adopt it. A preference that applies \
+             only to them you may still honour."
+                .to_owned()
+        })
     });
     // Behaviour directives ride their own first-level field (roadmap 29d), kept
     // apart from the recalled memory in `context_snippet`.
@@ -7598,7 +7761,7 @@ mod tests {
             "---\nwiki_id: {slug}\nwiki_type: {wiki_type}\nslug: {slug}\ntitle: {title}\nacl_default: 'user:{slug}'{parent_yaml}\n---\n",
         );
         std::fs::write(dir.join("_meta.md"), &frontmatter).unwrap();
-        std::fs::write(dir.join("index.md"), "# index\n").unwrap();
+        std::fs::write(dir.join("cucina.md"), "# cucina\n").unwrap();
     }
 
     fn req(text: &str, sender: &str) -> IngestRequest {
@@ -7693,14 +7856,15 @@ mod tests {
     /// Tests that are about the BUFFERING itself assert on the buffer
     /// directly and never call this.
     async fn promote_buffer(pool: &SqlitePool, tree: &WikiTree) {
-        crate::dream_light::run_light_cycle(
+        crate::dream_light::drain_deterministically(
             pool,
             tree,
-            fake_embedder(),
+            &fake_embedder(),
             &crate::dream_light::LightPolicy::default(),
+            "2026-08-18T00:00:00Z",
         )
         .await
-        .expect("light cycle");
+        .expect("drain");
     }
 
     // ---------- smart-family filter ----------
@@ -7721,8 +7885,8 @@ mod tests {
                     slug: proj\ntitle: Proj\nacl_default: 'user:alice'\nsmart: true\n---\n";
         let (nmeta, _) = WikiMeta::parse(Path::new("_meta.md"), normal).expect("normal meta");
         let (cmeta, _) = WikiMeta::parse(Path::new("_meta.md"), comp).expect("smart-wiki meta");
-        crate::wiki::write_wiki_dir(&tree, &nmeta, "# Alice\n", false).expect("create alice");
-        crate::wiki::write_wiki_dir(&tree, &cmeta, "# Proj\n", false).expect("create proj");
+        crate::wiki::write_wiki_dir(&tree, &nmeta, false).expect("create alice");
+        crate::wiki::write_wiki_dir(&tree, &cmeta, false).expect("create proj");
 
         // The enumerator itself is the gate now: a smart wiki never reaches
         // the window at all, so no caller has to remember to filter.
@@ -7754,7 +7918,7 @@ mod tests {
 
     fn write_meta(tree: &WikiTree, yaml: &str) {
         let (meta, _) = WikiMeta::parse(Path::new("_meta.md"), yaml).expect("meta");
-        crate::wiki::write_wiki_dir(tree, &meta, "# x\n", false).expect("create wiki");
+        crate::wiki::write_wiki_dir(tree, &meta, false).expect("create wiki");
     }
 
     #[test]
@@ -8263,7 +8427,7 @@ mod tests {
             intent: "capture".into(),
             suggested_seed: None,
             target_wiki_id: Some("alice".into()),
-            target_page: Some("rules.md".into()),
+            target_page: Some("@rules.md".into()),
             subject_id: None,
             allow_ids: Vec::new(),
             fact_type: None,
@@ -8387,7 +8551,7 @@ mod tests {
             validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
                 .expect("validated");
         assert_eq!(cap.wiki_id.as_str(), "alice");
-        assert_eq!(cap.page, PathBuf::from("notes.md"));
+        assert_eq!(cap.page, PathBuf::from("@notes.md"));
         assert!(matches!(cap.subject, Principal::User(ref id) if id == "alice"));
         assert!(matches!(cap.sender, Some(Principal::User(ref id)) if id == "alice"));
         assert_eq!(cap.fact_type.as_deref(), Some("preference"));
@@ -8765,7 +8929,7 @@ mod tests {
         RecallHit {
             fact_id: FactId::parse(fact_id_str).unwrap(),
             wiki_id: "alice".into(),
-            source_path: "wikis/alice/index.md".into(),
+            source_path: "wikis/alice/preferenze.md".into(),
             region_start: None,
             region_end: None,
             text: "alice prefers coffee black".into(),
@@ -9134,7 +9298,7 @@ mod tests {
         );
     }
 
-    /// The sender's `rules.md` policy is injected into the
+    /// The sender's `@rules.md` policy is injected into the
     /// `sender_rules` section so the classifier can honour it when assigning
     /// per-fact ACL; absent → an explicit `(none)`, and an over-long policy is
     /// truncated to the budget.
@@ -9177,7 +9341,7 @@ mod tests {
         // sender's policy «in full», under the rule that a slot may act
         // against a set it is shown complete and never against a sample — and
         // this is the block that carries governance. Cutting it dropped the
-        // last rule of anyone whose `rules.md` had grown, silently, while the
+        // last rule of anyone whose `@rules.md` had grown, silently, while the
         // prompt asserted they had seen everything.
         let long = format!(
             "{}\ni fatti sulla mia salute restano privati",
@@ -9362,12 +9526,13 @@ mod tests {
     }
 
     #[test]
-    fn agent_self_fact_page_routes_identity_to_index_relationship_per_user() {
-        let default = Path::new("index.md");
-        // Identity self-facts are user-agnostic → the agent's index (item 47-x3).
+    fn agent_self_fact_page_parks_identity_and_splits_relationships_per_user() {
+        let default = Path::new(wiki::NOTES_FILENAME);
+        // Identity self-facts are user-agnostic → the parking page, which
+        // REM's reorg drains onto the identity pages (item 47-x3).
         assert_eq!(
             agent_self_fact_page(true, "morgana", default),
-            PathBuf::from("index.md")
+            PathBuf::from(wiki::NOTES_FILENAME)
         );
         // Relationship self-facts → a per-served-user page, flat slug.
         assert_eq!(
@@ -9378,31 +9543,34 @@ mod tests {
             agent_self_fact_page(false, "frodo", default),
             PathBuf::from("esperienze_frodo.md")
         );
-        // A relationship fact with no served user degrades to the index.
+        // A relationship fact with no served user degrades to the parking page.
         assert_eq!(
             agent_self_fact_page(false, "", default),
-            PathBuf::from("index.md")
+            PathBuf::from(wiki::NOTES_FILENAME)
         );
     }
 
     #[test]
     fn normalize_capture_page_handles_untrusted_target_page() {
-        let default = Path::new("index.md");
+        // The default IS the parking page in production
+        // ([`IngestPolicy::default_page`]) — every fall-through below lands
+        // on it, which is what "nobody named a page" looks like.
+        let default = Path::new(wiki::NOTES_FILENAME);
 
         // None / blank → default page.
         assert_eq!(
             normalize_capture_page(None, default),
-            PathBuf::from("index.md")
+            PathBuf::from(wiki::NOTES_FILENAME)
         );
         assert_eq!(
             normalize_capture_page(Some("   "), default),
-            PathBuf::from("index.md")
+            PathBuf::from(wiki::NOTES_FILENAME)
         );
 
         // Already a canonical .md path → preserved verbatim.
         assert_eq!(
-            normalize_capture_page(Some("index.md"), default),
-            PathBuf::from("index.md")
+            normalize_capture_page(Some("spesa.md"), default),
+            PathBuf::from("spesa.md")
         );
         assert_eq!(
             normalize_capture_page(Some("spesa/detersivi.md"), default),
@@ -9442,11 +9610,11 @@ mod tests {
         // Path traversal degrades to the default page.
         assert_eq!(
             normalize_capture_page(Some("../escape"), default),
-            PathBuf::from("index.md")
+            PathBuf::from(wiki::NOTES_FILENAME)
         );
         assert_eq!(
             normalize_capture_page(Some("---"), default),
-            PathBuf::from("index.md")
+            PathBuf::from(wiki::NOTES_FILENAME)
         );
     }
 
@@ -9683,7 +9851,10 @@ mod tests {
             embedding: vec![0.1, 0.2, 0.3, 0.4],
             subject_id: Principal::User("alice".into()),
             allow_ids: Vec::new(),
-            sender_id: None,
+            // Materialised, like every real write — provenance is never NULL
+            // (`capture::normalize_sender_attribution`), and the dedup compares
+            // it as stored.
+            sender_id: Some(Principal::User("alice".into())),
             fact_type: Some("preference".to_owned()),
             topics: Vec::new(),
             valid_from: None,
@@ -9691,7 +9862,6 @@ mod tests {
             salience: None,
             target_page: None,
             style: None,
-            page_description: None,
             source_ref: None,
         };
         fact_index::insert(&pool, &existing).await.expect("insert");
@@ -9759,7 +9929,6 @@ mod tests {
             salience: None,
             target_page: None,
             style: None,
-            page_description: None,
             source_ref: None,
         };
         fact_index::insert(&pool, &existing).await.expect("insert");
@@ -9803,7 +9972,7 @@ mod tests {
         let fact = RecallHit {
             fact_id: FactId::parse("018f1234-5678-7abc-9def-0123456789ab").unwrap(),
             wiki_id: "franz".into(),
-            source_path: "wikis/franz/index.md".into(),
+            source_path: "wikis/franz/preferenze.md".into(),
             region_start: None,
             region_end: None,
             text: "franz lives in Bologna".into(),
@@ -9857,7 +10026,7 @@ mod tests {
             page_of("wikis/franz/acmesigns/architecture/X.md"),
             "architecture/X.md"
         );
-        assert_eq!(page_of("wikis/franz/acmesigns/index.md"), "index.md");
+        assert_eq!(page_of("wikis/franz/acmesigns/README.md"), "README.md");
         // Unexpected shapes fall back to the whole path rather than lying.
         assert_eq!(page_of("odd.md"), "odd.md");
     }
@@ -9868,7 +10037,7 @@ mod tests {
             RecallHit {
                 fact_id: FactId::parse("018f1234-5678-7abc-9def-0123456789ab").unwrap(),
                 wiki_id: "alice".into(),
-                source_path: "wikis/alice/index.md".into(),
+                source_path: "wikis/alice/preferenze.md".into(),
                 region_start: None,
                 region_end: None,
                 text: "alice likes coffee".into(),
@@ -9885,7 +10054,7 @@ mod tests {
             RecallHit {
                 fact_id: FactId::parse("018f1234-5678-7abc-9def-0123456789ac").unwrap(),
                 wiki_id: "bob".into(),
-                source_path: "wikis/bob/index.md".into(),
+                source_path: "wikis/bob/preferenze.md".into(),
                 region_start: None,
                 region_end: None,
                 text: "bob likes tea".into(),
@@ -9902,7 +10071,7 @@ mod tests {
             RecallHit {
                 fact_id: FactId::parse("018f1234-5678-7abc-9def-0123456789ad").unwrap(),
                 wiki_id: "alice".into(),
-                source_path: "alice/_captures.md".into(),
+                source_path: String::new(), // fresh: nothing written yet
                 region_start: None,
                 region_end: None,
                 text: "alice just joined a gym".into(),
@@ -9939,15 +10108,15 @@ mod tests {
     fn format_snippet_dedups_navigated_pages_and_skips_rules_hits() {
         let mut navigated_home = sample_recall_hit("018f1234-5678-7abc-9def-0123456789ab");
         navigated_home.text = "franz likes indigo".into();
-        navigated_home.source_path = "wikis/franz/index.md".into();
+        navigated_home.source_path = "wikis/franz/preferenze.md".into();
         let mut rules_hit = sample_recall_hit("018f1234-5678-7abc-9def-0123456789ac");
         rules_hit.text = "always use the claude-code skill".into();
-        rules_hit.source_path = "wikis/hermes1/rules.md".into();
+        rules_hit.source_path = "wikis/hermes1/@rules.md".into();
         let mut kept = sample_recall_hit("018f1234-5678-7abc-9def-0123456789ad");
         kept.text = "matteo's pronouns are he/him".into();
-        kept.source_path = "wikis/matteo/index.md".into();
+        kept.source_path = "wikis/matteo/preferenze.md".into();
 
-        let nav_paths = vec!["wikis/franz/index.md".to_owned()];
+        let nav_paths = vec!["wikis/franz/preferenze.md".to_owned()];
         let snippet = format_snippet(
             &[navigated_home, rules_hit, kept.clone()],
             &nav_paths,
@@ -9962,7 +10131,7 @@ mod tests {
         assert!(snippet.contains("matteo's pronouns are he/him"));
         // All hits filtered → the whole section is omitted.
         assert_eq!(
-            format_snippet(&[kept], &["wikis/matteo/index.md".into()], &[], 0.0),
+            format_snippet(&[kept], &["wikis/matteo/preferenze.md".into()], &[], 0.0),
             None
         );
     }
@@ -10007,7 +10176,6 @@ mod tests {
             salience: Some("high".to_owned()),
             target_page: None,
             style: None,
-            page_description: None,
             source_ref: None,
         };
         fact_index::insert(pool, &fact).await.expect("insert fact");
@@ -10026,7 +10194,7 @@ mod tests {
             "Profile of Alice, a bookbinder in Bologna.",
         );
         std::fs::write(
-            wikis.join("alice").join("profile.md"),
+            wikis.join("alice").join("@profile.md"),
             format!(
                 "---\ntitle: Alice\npage_type: person\nkeywords:\n  topics: bio, city, craft\n---\n\n\
                  {{{{f={ALICE_FACT_A}}}}}Alice lives in Bologna.{{{{/}}}}\n\n\
@@ -10039,7 +10207,7 @@ mod tests {
             pool,
             ALICE_FACT_A,
             "alice",
-            "wikis/alice/profile.md",
+            "wikis/alice/@profile.md",
             "Alice lives in Bologna.",
             Principal::User("alice".into()),
         )
@@ -10048,7 +10216,7 @@ mod tests {
             pool,
             ALICE_FACT_B,
             "alice",
-            "wikis/alice/profile.md",
+            "wikis/alice/@profile.md",
             "Alice is allergic to walnuts.",
             Principal::User("alice".into()),
         )
@@ -10066,7 +10234,7 @@ mod tests {
     #[tokio::test]
     async fn a_named_third_party_gets_their_card_served_projected_for_the_reader() {
         const CAROL_ONLY: &str = "018f1234-5678-7abc-9def-00000000c009";
-        let (dir, _tree, pool) = setup_workdir().await;
+        let (dir, _, pool) = setup_workdir().await;
         seed_alice_card(&dir, &pool).await;
         let page = dir
             .path()
@@ -10083,7 +10251,7 @@ mod tests {
             &pool,
             CAROL_ONLY,
             "alice",
-            "wikis/alice/profile.md",
+            "wikis/alice/@profile.md",
             "Alice is planning a surprise.",
             Principal::User("carol".into()),
         )
@@ -10148,7 +10316,7 @@ mod tests {
         );
         assert_eq!(
             out.page_paths,
-            vec!["wikis/alice/profile.md".to_owned()],
+            vec!["wikis/alice/@profile.md".to_owned()],
             "and to the flat slot, so its facts are not restated"
         );
     }
@@ -10157,7 +10325,7 @@ mod tests {
     /// buy a second copy. And a turn that names nobody produces no slot.
     #[tokio::test]
     async fn the_speaker_is_never_their_own_mentioned_card_and_no_name_means_no_slot() {
-        let (dir, _tree, pool) = setup_workdir().await;
+        let (dir, _, pool) = setup_workdir().await;
         seed_alice_card(&dir, &pool).await;
         let file = crate::enrollment::EnrollmentFile {
             version: 1,
@@ -10209,7 +10377,7 @@ mod tests {
     /// the other slots can defer to it.
     #[tokio::test]
     async fn who_is_speaking_serves_the_identity_page_projected_and_link_free() {
-        let (dir, _tree, pool) = setup_workdir().await;
+        let (dir, _, pool) = setup_workdir().await;
         seed_alice_card(&dir, &pool).await;
         let tree = WikiTree::open(dir.path()).expect("reopen tree");
 
@@ -10247,7 +10415,7 @@ mod tests {
         );
         assert_eq!(
             card.page_path.as_deref(),
-            Some("wikis/alice/profile.md"),
+            Some("wikis/alice/@profile.md"),
             "the served page is reported so the flat and navigated slots can drop it"
         );
         drop(dir);
@@ -10259,7 +10427,7 @@ mod tests {
     /// nothing).
     #[tokio::test]
     async fn who_is_speaking_falls_back_to_the_summary_when_the_page_carries_no_fact() {
-        let (dir, _tree, pool) = setup_workdir().await;
+        let (dir, _, pool) = setup_workdir().await;
         set_wiki_summary(
             &dir.path().join("wikis"),
             "alice",
@@ -10313,14 +10481,13 @@ mod tests {
         // e.g. something carol told the assistant about alice privately.
         const CAROL_ONLY: &str = "018f1234-5678-7abc-9def-00000000c003";
 
-        let (dir, _tree, pool) = setup_workdir().await;
+        let (dir, _, pool) = setup_workdir().await;
         seed_alice_card(&dir, &pool).await;
         let wikis = dir.path().join("wikis");
-        // On `profile.md` — the page `identity_card` actually opens. Writing
-        // this region to `index.md` (as this fixture did until 2026-08-04,
-        // from before the 63 §8 split) put it on a file the code never reads,
-        // so the negative assertion below passed without the ACL projection
-        // running at all: it would have stayed green with the projection
+        // On the identity card — the page `identity_card` actually opens.
+        // Writing this region anywhere else puts it on a file the code never
+        // reads, and the negative assertion below then passes without the ACL
+        // projection running at all: it would stay green with the projection
         // replaced by a no-op.
         let page = wikis.join("alice").join(crate::wiki::PROFILE_FILENAME);
         let existing = std::fs::read_to_string(&page).unwrap();
@@ -10333,7 +10500,7 @@ mod tests {
             &pool,
             CAROL_ONLY,
             "alice",
-            "wikis/alice/profile.md",
+            "wikis/alice/@profile.md",
             "Alice is planning a surprise.",
             Principal::User("carol".into()),
         )
@@ -10361,7 +10528,7 @@ mod tests {
     /// card off without silencing the slot.
     #[tokio::test]
     async fn who_is_speaking_budget_zero_serves_the_summary_line_alone() {
-        let (dir, _tree, pool) = setup_workdir().await;
+        let (dir, _, pool) = setup_workdir().await;
         seed_alice_card(&dir, &pool).await;
         let tree = WikiTree::open(dir.path()).expect("reopen tree");
 
@@ -10386,7 +10553,7 @@ mod tests {
     }
 
     /// End to end: the card's prose reaches the turn exactly **once**. The
-    /// navigator may still open `index.md` (stopping that is 69b), but its
+    /// navigator may still open the card (stopping that is 69b), but its
     /// fragment is dropped, and the flat slot drops the facts the card
     /// already carries.
     #[tokio::test]
@@ -10396,7 +10563,7 @@ mod tests {
         // identity anchor and there is no second choice to test against.
         const ALICE_FACT_C: &str = "018f1234-5678-7abc-9def-00000000c003";
 
-        let (dir, _tree, pool) = setup_workdir().await;
+        let (dir, _, pool) = setup_workdir().await;
         seed_alice_card(&dir, &pool).await;
         std::fs::write(
             dir.path().join("wikis").join("alice").join("hobbies.md"),
@@ -10459,7 +10626,7 @@ mod tests {
         );
         let navigated = snippet.split(HDR_NAVIGATED_PAGES).nth(1).unwrap_or("");
         assert!(
-            !navigated.contains("alice/index.md"),
+            !navigated.contains("alice/preferenze.md"),
             "the identity page is not a navigation destination for its own subject: {navigated}"
         );
         drop(dir);
@@ -10790,7 +10957,7 @@ mod tests {
         // non-smart wiki is a standard wiki, so a plain capture would
         // buffer for the dream instead (covered by
         // `ingest_standard_wiki_buffers_instead_of_writing_md`).
-        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"user:alice\",\"body\":\"alice prefers coffee black\",\"fact_type\":\"preference\",\"topics\":[\"coffee\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"user:alice\",\"body\":\"alice prefers coffee black\",\"fact_type\":\"preference\",\"topics\":[\"coffee\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
         let resp = wiki_ingest_message(
@@ -10827,7 +10994,7 @@ mod tests {
     async fn ingest_unenrolled_subject_reowns_to_sender() {
         let (dir, tree, pool) = setup_workdir().await;
         // `aragorn` is never enrolled: the classifier coined him.
-        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"user:aragorn\",\"body\":\"aragorn arrives on Friday\",\"fact_type\":\"plan\",\"topics\":[\"visit\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"user:aragorn\",\"body\":\"aragorn arrives on Friday\",\"fact_type\":\"plan\",\"topics\":[\"visit\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
         let resp = wiki_ingest_message(
@@ -10865,7 +11032,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"user:morgana\",\"body\":\"morgana arrives on Friday\",\"fact_type\":\"plan\",\"topics\":[\"visit\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"user:morgana\",\"body\":\"morgana arrives on Friday\",\"fact_type\":\"plan\",\"topics\":[\"visit\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
         let resp = wiki_ingest_message(
@@ -10903,7 +11070,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"user:morgana\",\"body\":\"the agent walked alice through what morgana must check at the viewing\",\"fact_type\":\"plan\",\"topics\":[\"viewing\"],\"requested_container\":true,\"suggested_seed\":\"ok\"}";
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"user:morgana\",\"body\":\"the agent walked alice through what morgana must check at the viewing\",\"fact_type\":\"plan\",\"topics\":[\"viewing\"],\"requested_container\":true,\"suggested_seed\":\"ok\"}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
         let mut request = req("checklist for the used-car viewing", "alice");
@@ -10950,13 +11117,13 @@ mod tests {
             .await
             .unwrap();
         let json = "{\"intent\":\"capture\",\"extractions\":[\
-            {\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+            {\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
              \"subject_id\":\"user:morgana\",\"body\":\"morgana handles the viewing on Friday\",\
              \"fact_type\":\"plan\",\"topics\":[\"viewing\"],\"requested_container\":true},\
-            {\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+            {\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
              \"subject_id\":\"user:morgana\",\"body\":\"morgana must bring the service booklet\",\
              \"fact_type\":\"plan\",\"topics\":[\"viewing\"],\"requested_container\":true},\
-            {\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+            {\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
              \"subject_id\":\"user:alice\",\"body\":\"alice sold her bike\",\
              \"fact_type\":\"episode\",\"topics\":[\"bike\"],\"requested_container\":true}],\
             \"suggested_seed\":\"ok\"}";
@@ -11011,7 +11178,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"user:bot\",\"body\":\"the bot tracks the pantry stock\",\"fact_type\":\"plan\",\"topics\":[\"pantry\"],\"requested_container\":true,\"suggested_seed\":\"ok\"}";
+        let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"user:bot\",\"body\":\"the bot tracks the pantry stock\",\"fact_type\":\"plan\",\"topics\":[\"pantry\"],\"requested_container\":true,\"suggested_seed\":\"ok\"}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
         wiki_ingest_message(
@@ -11053,13 +11220,13 @@ mod tests {
                           slug: proj\ntitle: Proj\nacl_default: 'user:alice'\nsmart: true\n---\n";
         let (cmeta, _) =
             WikiMeta::parse(Path::new("_meta.md"), smart_meta).expect("smart-wiki meta");
-        crate::wiki::write_wiki_dir(&tree, &cmeta, "# Proj\n", false).expect("create proj");
+        crate::wiki::write_wiki_dir(&tree, &cmeta, false).expect("create proj");
 
         // A conversational, durable personal fact. `requested_container: true`
         // files it live into `fact_index`, so the destination wiki is easy to
         // assert.
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-            \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
             \"subject_id\":\"user:alice\",\"body\":\"alice prefers tabs over spaces\",\
             \"fact_type\":\"preference\",\"topics\":[\"style\"],\"requested_container\":true}],\
             \"suggested_seed\":\"Noted.\"}";
@@ -11102,7 +11269,7 @@ mod tests {
         let filler = "fix the build, rerun the tests, bump the lints, ".repeat(60);
         let long = format!("{filler}\n\n{buried}\n\n{filler}");
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-            \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
             \"subject_id\":\"user:alice\",\"body\":\"alice has a dentist appointment Thursday at 17:00\",\
             \"fact_type\":\"plan\",\"topics\":[\"appointments\"],\"requested_container\":true}],\
             \"suggested_seed\":\"Noted.\"}";
@@ -11144,7 +11311,7 @@ mod tests {
         let valid_to = "2026-06-12T17:00:00Z";
         let json = format!(
             "{{\"intent\":\"capture\",\"extractions\":[{{\
-            \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
             \"subject_id\":\"user:alice\",\"body\":\"alice has a dentist appointment Thursday at 17:00\",\
             \"fact_type\":\"plan\",\"topics\":[\"appointments\"],\"requested_container\":true,\
             \"valid_from\":\"2026-06-10T08:00:00Z\",\"valid_to\":\"{valid_to}\"}}],\
@@ -11193,8 +11360,8 @@ mod tests {
 
     /// An extraction the classifier marks
     /// as an engine-rule (a standing governance directive) is appended to the
-    /// sender's `rules.md` as prose and is NEVER filed in `fact_index` or the
-    /// capture buffer. `setup_workdir` does not seed a `rules.md`, so this also
+    /// sender's `@rules.md` as prose and is NEVER filed in `fact_index` or the
+    /// capture buffer. `setup_workdir` does not seed a `@rules.md`, so this also
     /// exercises the missing-file path (the helper seeds from the default body).
     #[tokio::test]
     async fn ingest_engine_rule_appends_to_rules_md_not_fact_index() {
@@ -11242,7 +11409,7 @@ mod tests {
                 .join("alice")
                 .join(crate::wiki::RULES_FILENAME),
         )
-        .expect("rules.md written");
+        .expect("@rules.md written");
         assert!(
             rules
                 .contains("- Health information is always private; never share it with any group."),
@@ -11330,9 +11497,9 @@ mod tests {
             resp.context_snippet.is_none(),
             "a pure behaviour-rule turn surfaces no recalled memory in context_snippet"
         );
-        // The rule lands on the agent wiki's `rules.md` page (roadmap 29c).
+        // The rule lands on the agent wiki's `@rules.md` page (roadmap 29c).
         assert!(
-            rows[0].source_path.ends_with("rules.md")
+            rows[0].source_path.ends_with("@rules.md")
                 && !rows[0].source_path.ends_with("behaviour_rules.md"),
             "behaviour rule stored on rules.md, was: {}",
             rows[0].source_path
@@ -11627,7 +11794,7 @@ mod tests {
         .unwrap();
         assert_eq!(rows.len(), 1, "exactly one rule in alice's identity wiki");
         assert_eq!(rows[0].subject_id, Principal::User("alice".into()));
-        assert!(rows[0].source_path.ends_with("rules.md"));
+        assert!(rows[0].source_path.ends_with("@rules.md"));
 
         // Served through the channel on a bound consumer…
         let via_agent =
@@ -11785,7 +11952,7 @@ mod tests {
     }
 
     /// Roadmap 29c data migration: the `0052` page-rename re-homes legacy
-    /// behaviour-rule facts off `behaviour_rules.md` onto `rules.md`, preserving
+    /// behaviour-rule facts off `behaviour_rules.md` onto `@rules.md`, preserving
     /// the workdir-relative path prefix. (On a live DB the migration runs at
     /// startup; here we exercise its exact statement on a planted legacy row.)
     #[tokio::test]
@@ -11840,7 +12007,9 @@ mod tests {
         assert_eq!(
             after.source_path,
             before.source_path.replace("behaviour_rules.md", "rules.md"),
-            "the basename moves to rules.md, the wikis/<id>/ prefix is preserved"
+            "0052 moved the basename to `rules.md` — the bare name, which is \
+             what that migration wrote; the `@` marker arrived on 2026-08-18 \
+             and a migration is never edited after the fact"
         );
         assert!(after.source_path.ends_with("/rules.md"));
         // And the re-homed fact is recalled through the behaviour channel.
@@ -11868,12 +12037,12 @@ mod tests {
             allow: Vec::new(),
             sender: None,
             fact_type: Some("rule".into()),
+            page_description: None,
             topics: Vec::new(),
             dedup_threshold,
             valid_from: None,
             valid_to: None,
             style: None,
-            page_description: None,
             salience: None,
         }
     }
@@ -11907,7 +12076,7 @@ mod tests {
                 &pool,
                 fake_embedder(),
                 agent_fact_req(
-                    "index.md",
+                    "esperienze.md",
                     &format!("agent self note number {i}"),
                     Some(1.01), // crowding, not dedup, is under test
                 ),
@@ -12021,7 +12190,7 @@ mod tests {
     }
 
     /// A single turn can carry BOTH an engine-rule and an ordinary fact. The
-    /// rule is appended to `rules.md`; the fact still routes normally (buffered
+    /// rule is appended to `@rules.md`; the fact still routes normally (buffered
     /// for the standard `alice` wiki) and surfaces as the turn's `capture_id`.
     #[tokio::test]
     async fn ingest_mixed_turn_files_fact_and_appends_rule() {
@@ -12029,7 +12198,7 @@ mod tests {
         let json = "{\"intent\":\"capture\",\"extractions\":[\
             {\"engine_rule\":true,\"fact_type\":\"rule\",\
              \"body\":\"Never store my exact home address.\"},\
-            {\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"user:alice\",\
+            {\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"user:alice\",\
              \"body\":\"Alice lives in Bologna.\",\"fact_type\":\"bio\",\"topics\":[\"bio\"]}],\
             \"suggested_seed\":\"Noted.\"}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -12051,9 +12220,7 @@ mod tests {
         let cid = resp
             .capture_id
             .expect("the ordinary fact surfaces a capture_id");
-        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
-            .await
-            .unwrap();
+        let buffered = capture_buffer::find_all_buffered(&pool, 100).await.unwrap();
         assert_eq!(buffered.len(), 1, "exactly the one ordinary fact buffers");
         assert_eq!(buffered[0].capture_id, cid);
         assert_eq!(buffered[0].body, "Alice lives in Bologna.");
@@ -12063,7 +12230,7 @@ mod tests {
                 .join("alice")
                 .join(crate::wiki::RULES_FILENAME),
         )
-        .expect("rules.md written");
+        .expect("@rules.md written");
         assert!(rules.contains("- Never store my exact home address."));
         drop(dir);
     }
@@ -12083,7 +12250,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: "alice prefers coffee black".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
@@ -12108,7 +12275,7 @@ mod tests {
         // capture into the standard `alice` wiki would buffer instead).
         let llm_resp = format!(
             "{{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\
-             \"target_page\":\"index.md\",\"subject_id\":\"user:alice\",\
+             \"target_page\":\"preferenze.md\",\"subject_id\":\"user:alice\",\
              \"body\":\"alice now prefers tea\",\
              \"fact_type\":\"preference\",\"topics\":[\"tea\"],\
              \"requested_container\":true,\
@@ -12178,18 +12345,18 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: "alice is 72 kg".into(),
             subject: Principal::User("alice".into()),
             allow: vec![Principal::Group("famiglia".into())],
             sender: None,
             fact_type: Some("state".into()),
+            page_description: None,
             topics: vec!["weight".into()],
             dedup_threshold: Some(0.99),
             valid_from: None,
             valid_to: None,
             style: None,
-            page_description: None,
             salience: None,
         };
         let planted = capture::wiki_capture(&tree, &pool, fake_embedder(), cap_req)
@@ -12200,7 +12367,7 @@ mod tests {
         // restated only the content.
         let llm_resp = format!(
             "{{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\
-             \"target_page\":\"index.md\",\"subject_id\":\"user:alice\",\
+             \"target_page\":\"preferenze.md\",\"subject_id\":\"user:alice\",\
              \"body\":\"alice is 73 kg\",\
              \"fact_type\":\"state\",\"topics\":[\"weight\"],\
              \"requested_container\":true,\
@@ -12250,18 +12417,18 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: "alice wants to watch Jumanji".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("plan".into()),
+            page_description: None,
             topics: vec!["film".into()],
             dedup_threshold: Some(0.99),
             valid_from: None,
             valid_to: None,
             style: None,
-            page_description: None,
             salience: None,
         };
         let planted = capture::wiki_capture(&tree, &pool, fake_embedder(), cap_req)
@@ -12348,18 +12515,18 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: "alice wants to watch Jumanji".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("plan".into()),
+            page_description: None,
             topics: vec!["film".into()],
             dedup_threshold: Some(0.99),
             valid_from: None,
             valid_to: None,
             style: None,
-            page_description: None,
             salience: None,
         };
         let planted = capture::wiki_capture(&tree, &pool, fake_embedder(), cap_req)
@@ -12468,15 +12635,15 @@ mod tests {
             allow: Vec::new(),
             sender: None,
             fact_type: Some("plan".into()),
+            page_description: None,
             topics: vec!["spesa".into()],
             dedup_threshold: None,
             valid_from: None,
             valid_to: None,
             style: Some("lista".into()),
-            page_description: None,
             salience: None,
         };
-        let buffered = capture_buffer::buffer_capture(&tree, &pool, cap_req, None)
+        let buffered = capture_buffer::buffer_capture(&pool, cap_req, None)
             .await
             .expect("buffer");
 
@@ -12502,7 +12669,7 @@ mod tests {
         assert_eq!(resp.intent, IntentKind::Capture);
 
         // The buffer row carries the staged closure.
-        let rows = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+        let rows = capture_buffer::find_all_buffered(&pool, 100)
             .await
             .expect("buffered");
         assert_eq!(rows.len(), 1);
@@ -12531,12 +12698,12 @@ mod tests {
             allow: vec![Principal::Group("global".into())],
             sender: None,
             fact_type: Some("other".into()),
+            page_description: None,
             topics: vec!["paese".into()],
             dedup_threshold: None,
             valid_from: None,
             valid_to: None,
             style: None,
-            page_description: None,
             salience: None,
         };
         let private = CaptureRequest {
@@ -12545,10 +12712,10 @@ mod tests {
             page: PathBuf::from("salute.md"),
             ..public.clone()
         };
-        capture_buffer::buffer_capture(&tree, &pool, public, None)
+        capture_buffer::buffer_capture(&pool, public, None)
             .await
             .expect("buffer public");
-        capture_buffer::buffer_capture(&tree, &pool, private, None)
+        capture_buffer::buffer_capture(&pool, private, None)
             .await
             .expect("buffer private");
 
@@ -12667,7 +12834,7 @@ mod tests {
         );
         // …and the content half filed (buffered for the light dream).
         assert!(resp.capture_id.is_some(), "the recipe fact filed");
-        let rows = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+        let rows = capture_buffer::find_all_buffered(&pool, 100)
             .await
             .expect("buffered");
         assert_eq!(rows.len(), 1);
@@ -12700,7 +12867,7 @@ mod tests {
         .expect("ingest");
         assert_eq!(resp.intent, IntentKind::Structural);
         assert!(resp.capture_id.is_none(), "no legacy synthesis");
-        let rows = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+        let rows = capture_buffer::find_all_buffered(&pool, 100)
             .await
             .expect("buffered");
         assert!(rows.is_empty(), "nothing filed");
@@ -12717,18 +12884,18 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: "alice is building a small greenhouse in the garden".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("plan".into()),
+            page_description: None,
             topics: vec!["serra".into()],
             dedup_threshold: Some(0.99),
             valid_from: None,
             valid_to: None,
             style: None,
-            page_description: None,
             salience: None,
         };
         let planted = capture::wiki_capture(&tree, &pool, fake_embedder(), cap_req)
@@ -12797,18 +12964,18 @@ mod tests {
             CaptureRequest {
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
-                page: PathBuf::from("index.md"),
+                page: PathBuf::from("cucina.md"),
                 body: "alice deve comprare il latte".into(),
                 subject: Principal::User("alice".into()),
                 allow: Vec::new(),
                 sender: None,
                 fact_type: Some("commitment".into()),
+                page_description: None,
                 topics: vec!["spesa".into()],
                 dedup_threshold: Some(0.99),
                 valid_from: None,
                 valid_to: None,
                 style: None,
-                page_description: None,
                 salience: None,
             },
         )
@@ -12876,18 +13043,18 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
-                        page: PathBuf::from("index.md"),
+                        page: PathBuf::from("cucina.md"),
                         body: body.into(),
                         subject: Principal::User("alice".into()),
                         allow,
                         sender: None,
                         fact_type: Some("bio".into()),
+                        page_description: None,
                         topics: vec!["lavoro".into()],
                         dedup_threshold: Some(1.01),
                         valid_from: None,
                         valid_to: None,
                         style: None,
-                        page_description: None,
                         salience: None,
                     },
                 )
@@ -12971,18 +13138,18 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
-                        page: PathBuf::from("notes.md"),
+                        page: PathBuf::from("@notes.md"),
                         body: body.into(),
                         subject: Principal::User("alice".into()),
                         allow: Vec::new(),
                         sender: None,
                         fact_type: Some("plan".into()),
+                        page_description: None,
                         topics: vec!["spesa".into()],
                         dedup_threshold: Some(1.01),
                         valid_from: None,
                         valid_to,
                         style: None,
-                        page_description: None,
                         salience: None,
                     },
                 )
@@ -13039,26 +13206,25 @@ mod tests {
     /// `confirm_topic_closures` already writes down.
     #[tokio::test]
     async fn the_reconciler_sees_a_capture_the_recall_block_suppressed() {
-        let (dir, tree, pool) = setup_workdir().await;
+        let (dir, _, pool) = setup_workdir().await;
         let origin = "Ho comprato il latte al Conad.";
         capture_buffer::buffer_capture_staged(
-            &tree,
             &pool,
             CaptureRequest {
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
-                page: PathBuf::from("notes.md"),
+                page: PathBuf::from("@notes.md"),
                 body: "alice ha comprato il latte".into(),
                 subject: Principal::User("alice".into()),
                 allow: Vec::new(),
                 sender: None,
                 fact_type: Some("episode".into()),
+                page_description: None,
                 topics: vec!["spesa".into()],
                 dedup_threshold: None,
                 valid_from: None,
                 valid_to: None,
                 style: None,
-                page_description: None,
                 salience: None,
             },
             None,
@@ -13114,25 +13280,24 @@ mod tests {
     /// would read as done.
     #[tokio::test]
     async fn a_supersede_retires_a_target_that_is_still_buffered() {
-        let (dir, tree, pool) = setup_workdir().await;
+        let (dir, _, pool) = setup_workdir().await;
         let buffered = capture_buffer::buffer_capture(
-            &tree,
             &pool,
             CaptureRequest {
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
-                page: PathBuf::from("notes.md"),
+                page: PathBuf::from("@notes.md"),
                 body: "la riunione è giovedì".into(),
                 subject: Principal::User("alice".into()),
                 allow: Vec::new(),
                 sender: None,
                 fact_type: Some("plan".into()),
+                page_description: None,
                 topics: vec!["lavoro".into()],
                 dedup_threshold: None,
                 valid_from: None,
                 valid_to: None,
                 style: None,
-                page_description: None,
                 salience: None,
             },
             None,
@@ -13195,18 +13360,18 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
-                        page: PathBuf::from("notes.md"),
+                        page: PathBuf::from("@notes.md"),
                         body: body.into(),
                         subject,
                         allow: Vec::new(),
                         sender: None,
                         fact_type: Some("bio".into()),
+                        page_description: None,
                         topics: vec!["casa".into()],
                         dedup_threshold: Some(1.01),
                         valid_from: None,
                         valid_to: None,
                         style: None,
-                        page_description: None,
                         salience: None,
                     },
                 )
@@ -13284,18 +13449,18 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
-                        page: PathBuf::from("notes.md"),
+                        page: PathBuf::from("@notes.md"),
                         body: body.into(),
                         subject,
                         allow,
                         sender: Some(Principal::User("alice".into())),
                         fact_type: Some("evento".into()),
+                        page_description: None,
                         topics: vec!["salute".into()],
                         dedup_threshold: Some(1.01),
                         valid_from: None,
                         valid_to: None,
                         style: None,
-                        page_description: None,
                         salience: None,
                     },
                 )
@@ -13382,18 +13547,18 @@ mod tests {
             CaptureRequest {
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
-                page: PathBuf::from("index.md"),
+                page: PathBuf::from("cucina.md"),
                 body: "bob lavora alla Acme".into(),
                 subject: Principal::User("bob".into()),
                 allow: vec![Principal::User("alice".into())],
                 sender: None,
                 fact_type: Some("bio".into()),
+                page_description: None,
                 topics: vec!["lavoro".into()],
                 dedup_threshold: Some(1.01),
                 valid_from: None,
                 valid_to: None,
                 style: None,
-                page_description: None,
                 salience: None,
             },
         )
@@ -13538,18 +13703,18 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: "alice is building a small greenhouse in the garden".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("plan".into()),
+            page_description: None,
             topics: vec!["serra".into()],
             dedup_threshold: Some(0.99),
             valid_from: None,
             valid_to: None,
             style: None,
-            page_description: None,
             salience: None,
         };
         let planted = capture::wiki_capture(&tree, &pool, fake_embedder(), cap_req)
@@ -13610,12 +13775,12 @@ mod tests {
             allow: Vec::new(),
             sender: None,
             fact_type: Some("state".into()),
+            page_description: None,
             topics: vec!["spesa".into()],
             dedup_threshold: Some(0.99),
             valid_from: Some("2026-06-10T00:00:00Z".into()),
             valid_to: Some("2026-06-25T00:00:00Z".into()),
             style: None,
-            page_description: None,
             salience: None,
         };
         let planted = capture::wiki_capture(&tree, &pool, fake_embedder(), cap_req)
@@ -13686,12 +13851,12 @@ mod tests {
             allow: Vec::new(),
             sender: None,
             fact_type: Some("state".into()),
+            page_description: None,
             topics: vec!["orari".into()],
             dedup_threshold: Some(0.99),
             valid_from: None,
             valid_to: Some("2026-06-30T00:00:00Z".into()),
             style: None,
-            page_description: None,
             salience: None,
         };
         let planted = capture::wiki_capture(&tree, &pool, fake_embedder(), cap_req)
@@ -13749,18 +13914,18 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: "alice ha un orto sul balcone".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("bio".into()),
+            page_description: None,
             topics: vec!["orto".into()],
             dedup_threshold: Some(0.99),
             valid_from: None,
             valid_to: None,
             style: None,
-            page_description: None,
             salience: None,
         };
         let planted = capture::wiki_capture(&tree, &pool, fake_embedder(), cap_req)
@@ -13851,18 +14016,18 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: "alice ha un cane di nome Fido".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: Some(Principal::User("galadriel".into())),
             fact_type: Some("bio".into()),
+            page_description: None,
             topics: vec!["cane".into()],
             dedup_threshold: Some(0.99),
             valid_from: None,
             valid_to: None,
             style: None,
-            page_description: None,
             salience: None,
         };
         let planted = capture::wiki_capture(&tree, &pool, fake_embedder(), cap_req)
@@ -13915,7 +14080,7 @@ mod tests {
         // verb must refuse — smart-wiki governance is wiki-level, markerless
         // (6j.4). The subject gate would pass (she owns it), so the smart guard
         // is what stops the per-fragment write + the disclosure-audit row.
-        let (dir, _tree, pool) = setup_workdir().await;
+        let (dir, _, pool) = setup_workdir().await;
         let proj_dir = dir.path().join("wikis/proj");
         std::fs::create_dir_all(&proj_dir).unwrap();
         std::fs::write(
@@ -13934,7 +14099,7 @@ mod tests {
             &fact_index::NewFact {
                 fact_id: fid.clone(),
                 wiki_id: "proj".into(),
-                source_path: "wikis/proj/index.md".into(),
+                source_path: "wikis/proj/note.md".into(),
                 region_start: None,
                 region_end: None,
                 text: "il progetto usa Rust".into(),
@@ -13948,7 +14113,6 @@ mod tests {
                 valid_to: None,
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
                 authored_refs: Vec::new(),
@@ -13959,7 +14123,7 @@ mod tests {
 
         let mut hit = sample_recall_hit(fid.as_str());
         hit.wiki_id = "proj".into();
-        hit.source_path = "wikis/proj/index.md".into();
+        hit.source_path = "wikis/proj/note.md".into();
 
         let change = LlmAclChange {
             target: Some(fid.as_str().to_owned()),
@@ -13997,7 +14161,7 @@ mod tests {
     // ---------- standard-wiki captures route to the buffer ----------
 
     /// A capture into a NARRATIVE wiki (wiki-user) must land in the captures
-    /// buffer (`_captures.md` + `capture_buffer`), NOT in `fact_index` or the
+    /// buffer (the `capture_buffer` row), NOT in `fact_index` or the
     /// published `.md`. The nightly compiler is what eventually writes the page.
     #[tokio::test]
     async fn ingest_standard_wiki_buffers_instead_of_writing_md() {
@@ -14005,7 +14169,7 @@ mod tests {
 
         let llm = FakeLlmBackend::new(
             "fake",
-            "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+            "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
               \"subject_id\":\"user:alice\",\"body\":\"alice loves pasta\",\
               \"fact_type\":\"preference\",\"topics\":[\"food\"]}",
         );
@@ -14027,14 +14191,12 @@ mod tests {
 
         // The capture landed in the BUFFER.
         assert_eq!(capture_buffer::count_buffered(&pool).await.unwrap(), 1);
-        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
-            .await
-            .unwrap();
+        let buffered = capture_buffer::find_all_buffered(&pool, 100).await.unwrap();
         assert_eq!(buffered.len(), 1);
         assert_eq!(buffered[0].capture_id, cid);
         assert_eq!(buffered[0].body, "alice loves pasta");
 
-        // No direct write: fact_index empty, index.md carries no fact marker.
+        // No direct write: fact_index empty, no page carries a fact marker.
         assert!(
             fact_index::find_active_in_wiki(&pool, "alice")
                 .await
@@ -14042,16 +14204,197 @@ mod tests {
                 .is_empty(),
             "standard-wiki ingest must not insert a fact row"
         );
-        let index_md = std::fs::read_to_string(dir.path().join("wikis/alice/index.md")).unwrap();
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
         assert!(
-            !index_md.contains("{{subject=")
-                && !index_md.contains("{{subject=")
-                && !index_md.contains("alice loves pasta"),
+            !page.contains("{{subject=") && !page.contains("alice loves pasta"),
             "standard-wiki ingest must not write a marker or the claim into the page"
         );
         assert!(
-            dir.path().join("wikis/alice/_captures.md").exists(),
-            "the captures journal must exist on disk"
+            !dir.path().join("wikis/alice/_captures.md").exists(),
+            "a capture writes no file — least of all the retired journal"
+        );
+
+        drop(dir);
+    }
+
+    /// **A list item is written now, not at the next dream.**
+    ///
+    /// Founder, 2026-08-18: *«le liste non ci passano … il classificatore
+    /// riceve appositamente tutte le liste che l'utente vede e aggiunge
+    /// l'elemento direttamente lì»*. Until that day only a container the user
+    /// requested *this turn* took the live path, so **creating** a shopping
+    /// list was immediate while **adding to it** waited up to a dream
+    /// interval — and the reasoning that keeps the exception alive (a list is
+    /// a set; the fresh slot serves a ranked top-3, so six items added at once
+    /// lose three) is about lists, not about creation.
+    ///
+    /// `requested_container` is deliberately **false** here: this is the
+    /// everyday case, an item added to a list that already exists.
+    #[tokio::test]
+    async fn a_list_item_is_written_live_not_buffered() {
+        let (dir, tree, pool) = setup_workdir().await;
+
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"user:alice\",\
+              \"body\":\"detersivo\",\"style\":\"lista\",\"target_page\":\"spesa.md\",\
+              \"page_description\":\"cosa manca da comprare\",\
+              \"requested_container\":false,\"fact_type\":\"other\",\"topics\":[]}]}",
+        );
+        let policy = IngestPolicy::default();
+        wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("aggiungi il detersivo alla lista della spesa", "alice"),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+
+        assert_eq!(
+            capture_buffer::count_buffered(&pool).await.unwrap(),
+            0,
+            "a list item must not wait in the buffer"
+        );
+        let rows = fact_index::find_active_in_wiki(&pool, "alice")
+            .await
+            .expect("rows");
+        assert_eq!(rows.len(), 1, "the item is a fact immediately: {rows:?}");
+        assert!(
+            rows[0].source_path.ends_with("spesa.md"),
+            "and it is on the list the user named: {}",
+            rows[0].source_path
+        );
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/spesa.md"))
+            .expect("the list page exists now");
+        assert!(page.contains("detersivo"), "the item is readable: {page}");
+
+        drop(dir);
+    }
+
+    /// **A list item with no list page is refused, not parked.**
+    ///
+    /// The classifier named a reserved page for a shopping item, so the name
+    /// was taken away and nothing is left to file the item on. It must not
+    /// land on the parking page (that page holds prose waiting to be placed,
+    /// and a list item turns it into a shopping list) and it must not wait in
+    /// the buffer either (an hour later there would still be no list). So the
+    /// extraction is dropped **and the turn tells the user**: a list is a set,
+    /// and one silently missing item is a wrong answer.
+    #[tokio::test]
+    async fn a_list_item_with_no_page_is_refused_and_the_user_is_told() {
+        let (dir, tree, pool) = setup_workdir().await;
+
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"user:alice\",\
+              \"body\":\"detersivo\",\"style\":\"lista\",\"target_page\":\"@rules.md\",\
+              \"requested_container\":false,\"fact_type\":\"other\",\"topics\":[]}]}",
+        );
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("aggiungi il detersivo", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        assert_eq!(
+            capture_buffer::count_buffered(&pool).await.unwrap(),
+            0,
+            "nothing waits — a list item is refused, never parked"
+        );
+        assert!(
+            fact_index::find_active_in_wiki(&pool, "alice")
+                .await
+                .expect("rows")
+                .is_empty(),
+            "and nothing was written"
+        );
+        assert!(
+            !dir.path().join("wikis/alice/@notes.md").exists(),
+            "above all the parking page was not turned into a shopping list"
+        );
+        let rules = resp.rules.unwrap_or_default();
+        assert!(
+            rules.contains("was NOT saved") && rules.contains("reserved"),
+            "the turn must tell the user it was not saved: {rules}"
+        );
+
+        drop(dir);
+    }
+
+    /// The same refusal for the wiki's 33rd list — the product limit
+    /// (founder, 2026-08-09) refuses to MINT one more, and now says so.
+    #[tokio::test]
+    async fn the_33rd_list_is_refused_and_the_user_is_told() {
+        let (dir, tree, pool) = setup_workdir().await;
+        // 32 lists already on `alice`, each one page with one fact.
+        for i in 0..MAX_LIST_PAGES_PER_WIKI {
+            capture::wiki_capture(
+                &tree,
+                &pool,
+                fake_embedder(),
+                CaptureRequest {
+                    wiki_id: WikiId::parse("alice").unwrap(),
+                    page: PathBuf::from(format!("lista_{i}.md")),
+                    body: format!("voce {i}"),
+                    subject: "user:alice".parse().unwrap(),
+                    allow: Vec::new(),
+                    sender: Some("user:alice".parse().unwrap()),
+                    fact_type: None,
+                    page_description: None,
+                    topics: Vec::new(),
+                    dedup_threshold: None,
+                    valid_from: None,
+                    valid_to: None,
+                    style: Some("lista".to_owned()),
+                    salience: None,
+                    authored_refs: Vec::new(),
+                },
+            )
+            .await
+            .expect("seed list");
+        }
+
+        let llm = FakeLlmBackend::new(
+            "fake",
+            "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"user:alice\",\
+              \"body\":\"detersivo\",\"style\":\"lista\",\"target_page\":\"spesa.md\",\
+              \"requested_container\":false,\"fact_type\":\"other\",\"topics\":[]}]}",
+        );
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("aggiungi il detersivo alla spesa", "alice"),
+            &IngestPolicy::default(),
+        )
+        .await
+        .expect("ingest");
+
+        assert!(
+            !dir.path().join("wikis/alice/spesa.md").exists(),
+            "the 33rd list is not minted"
+        );
+        assert_eq!(
+            capture_buffer::count_buffered(&pool).await.unwrap(),
+            0,
+            "and the item does not wait either"
+        );
+        let rules = resp.rules.unwrap_or_default();
+        assert!(
+            rules.contains("was NOT saved") && rules.contains("maximum number of lists"),
+            "the turn must tell the user: {rules}"
         );
 
         drop(dir);
@@ -14065,7 +14408,7 @@ mod tests {
     async fn ingest_stages_the_vector_and_the_origin_message_on_the_capture() {
         let (dir, tree, pool) = setup_workdir().await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-            \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
             \"subject_id\":\"user:alice\",\"body\":\"Alice beve il caffè amaro.\",\
             \"fact_type\":\"preference\"}]}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -14082,7 +14425,7 @@ mod tests {
         .await
         .expect("ingest");
 
-        let staged = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+        let staged = capture_buffer::find_all_buffered(&pool, 100)
             .await
             .expect("buffer read");
         assert_eq!(staged.len(), 1);
@@ -14187,10 +14530,9 @@ mod tests {
     /// so a list never depends on this.
     #[tokio::test]
     async fn the_fresh_slot_cannot_serve_a_whole_list() {
-        let (dir, tree, pool) = setup_workdir().await;
+        let (dir, _, pool) = setup_workdir().await;
         for item in ["latte", "pane", "uova", "caffè", "riso"] {
             capture_buffer::buffer_capture(
-                &tree,
                 &pool,
                 crate::capture::CaptureRequest {
                     authored_refs: Vec::new(),
@@ -14448,7 +14790,7 @@ mod tests {
     async fn ingest_assistant_turn_subject_self_files_into_the_agent_wiki() {
         let (dir, tree, pool) = setup_agent_workdir().await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-            \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"self\",\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"self\",\
             \"body\":\"L'agente ha aiutato Alice con la pratica INPS.\",\
             \"fact_type\":\"episode\",\"salience\":\"normal\"}]}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -14514,7 +14856,7 @@ mod tests {
     async fn ingest_assistant_turn_subject_spelled_as_the_agent_files_into_the_agent_wiki() {
         let (dir, tree, pool) = setup_agent_workdir().await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-            \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\"subject_id\":\"user:samvisebot\",\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"user:samvisebot\",\
             \"body\":\"L'agente ha aiutato Alice con la pratica INPS.\",\
             \"fact_type\":\"episode\",\"salience\":\"normal\"}]}";
         let llm = FakeLlmBackend::new("fake", json);
@@ -14580,7 +14922,7 @@ mod tests {
     async fn ingest_user_turn_subject_naming_the_agent_is_not_a_self_fact() {
         let (dir, tree, pool) = setup_agent_workdir().await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-            \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+            \"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
             \"subject_id\":\"user:samvisebot\",\
             \"body\":\"L'agente ha aiutato Alice con la pratica INPS.\",\
             \"fact_type\":\"episode\",\"salience\":\"normal\"}]}";
@@ -14626,7 +14968,7 @@ mod tests {
         let identity_llm = FakeLlmBackend::new(
             "fake",
             "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"self\",\
-              \"target_page\":\"index.md\",\"body\":\"L'agente è l'assistente della famiglia di Franz.\",\
+              \"target_page\":\"preferenze.md\",\"body\":\"L'agente è l'assistente della famiglia di Franz.\",\
               \"fact_type\":\"bio\",\"salience\":\"high\"}]}",
         );
         wiki_ingest_message(
@@ -14809,7 +15151,7 @@ mod tests {
         let bio_llm = FakeLlmBackend::new(
             "fake",
             "{\"intent\":\"capture\",\"extractions\":[{\"subject_id\":\"self\",\
-              \"target_page\":\"index.md\",\"body\":\"L'agente parla italiano e inglese.\",\
+              \"target_page\":\"preferenze.md\",\"body\":\"L'agente parla italiano e inglese.\",\
               \"fact_type\":\"bio\",\"salience\":\"normal\"}]}",
         );
         wiki_ingest_message(
@@ -15023,9 +15365,7 @@ mod tests {
         assert_eq!(resp.intent, IntentKind::Capture);
         assert!(resp.capture_id.is_some(), "first fact anchors the response");
         // All three facts were buffered (not just the first).
-        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
-            .await
-            .unwrap();
+        let buffered = capture_buffer::find_all_buffered(&pool, 100).await.unwrap();
         assert_eq!(buffered.len(), 3, "every extraction must be filed");
         let bodies: Vec<&str> = buffered.iter().map(|c| c.body.as_str()).collect();
         assert!(bodies.contains(&"Alice loves pasta"));
@@ -15069,9 +15409,7 @@ mod tests {
             resp.capture_id.is_some(),
             "the single fact anchors the response"
         );
-        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
-            .await
-            .unwrap();
+        let buffered = capture_buffer::find_all_buffered(&pool, 100).await.unwrap();
         assert_eq!(
             buffered.len(),
             1,
@@ -15134,7 +15472,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: "alice prefers coffee black".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
@@ -15156,7 +15494,7 @@ mod tests {
         let hallucinated = "018f9999-9999-7999-9999-999999999999";
         let llm_resp = format!(
             "{{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\
-             \"target_page\":\"index.md\",\"subject_id\":\"user:alice\",\
+             \"target_page\":\"preferenze.md\",\"subject_id\":\"user:alice\",\
              \"body\":\"alice now prefers tea\",\
              \"fact_type\":\"preference\",\"topics\":[\"tea\"],\
              \"supersede_target\":\"{hallucinated}\",\
@@ -15209,18 +15547,18 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: "alice prefers coffee black".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
             sender: None,
             fact_type: Some("preference".into()),
+            page_description: None,
             topics: vec!["coffee".into()],
             dedup_threshold: Some(0.99),
             valid_from: None,
             valid_to: None,
             style: None,
-            page_description: None,
             salience: None,
         };
         capture::wiki_capture(&tree, &pool, fake_embedder(), cap_req)
@@ -15456,7 +15794,7 @@ mod tests {
     fn ingest_policy_default_uses_recall_dedup_threshold() {
         let p = IngestPolicy::default();
         assert!((p.dedup_threshold - DEFAULT_DEDUP_THRESHOLD).abs() < 1e-6);
-        assert_eq!(p.default_page, PathBuf::from("notes.md"));
+        assert_eq!(p.default_page, PathBuf::from("@notes.md"));
     }
 
     // Re-test of WikiMeta to ensure setup_workdir's serialized YAML
@@ -15793,11 +16131,11 @@ mod tests {
                 None,
                 None,
                 Some("flat".into()),
-                Some("NAVIGATED PAGES:\n\n(a/index.md)\nx".into()),
+                Some("NAVIGATED PAGES:\n\n(a/preferenze.md)\nx".into()),
                 Some("UPCOMING:\n- (a) y".into()),
             )
             .as_deref(),
-            Some("flat\n\nNAVIGATED PAGES:\n\n(a/index.md)\nx\n\nUPCOMING:\n- (a) y")
+            Some("flat\n\nNAVIGATED PAGES:\n\n(a/preferenze.md)\nx\n\nUPCOMING:\n- (a) y")
         );
         assert_eq!(
             assemble_recall_block(
@@ -15901,7 +16239,7 @@ mod tests {
     )]
     async fn ingest_recall_turn_appends_navigated_memory_section() {
         let (dir, tree, pool) = setup_workdir().await;
-        // A page that is NOT the identity card: `index.md` is served whole by
+        // A page that is NOT the identity card: the card is served whole by
         // the deterministic `WHO IS SPEAKING` slot (69a) and is dropped from
         // this section by construction, so navigation is exercised on a
         // sibling page instead.
@@ -15931,7 +16269,6 @@ mod tests {
             salience: None,
             target_page: None,
             style: None,
-            page_description: None,
             source_ref: None,
         };
         fact_index::insert(&pool, &fact).await.expect("insert fact");
@@ -16009,7 +16346,7 @@ mod tests {
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000d001").unwrap(),
             wiki_id: "alice".to_owned(),
-            source_path: "wikis/alice/index.md".to_owned(),
+            source_path: "wikis/alice/preferenze.md".to_owned(),
             region_start: None,
             region_end: None,
             text: "dentist appointment".to_owned(),
@@ -16024,7 +16361,6 @@ mod tests {
             salience: None,
             target_page: None,
             style: None,
-            page_description: None,
             source_ref: None,
         };
         fact_index::insert(&pool, &fact).await.expect("insert fact");
@@ -16093,7 +16429,7 @@ mod tests {
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000d002").unwrap(),
             wiki_id: "alice".to_owned(),
-            source_path: "wikis/alice/index.md".to_owned(),
+            source_path: "wikis/alice/preferenze.md".to_owned(),
             region_start: None,
             region_end: None,
             text: "dentist appointment".to_owned(),
@@ -16109,7 +16445,6 @@ mod tests {
             salience: None,
             target_page: None,
             style: None,
-            page_description: None,
             source_ref: None,
         };
         fact_index::insert(&pool, &fact).await.expect("insert fact");
@@ -16209,7 +16544,7 @@ mod tests {
         let cid = seed_photo(&pool, dir.path(), "user:alice", b"jpegbytes").await;
         let json = format!(
             "{{\"intent\":\"capture\",\"extractions\":[{{\
-             \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+             \"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
              \"subject_id\":\"user:alice\",\"allow_ids\":[\"group:famiglia\"],\
              \"requested_container\":true,\
              \"body\":\"Foto di Frodo e Sam al cancello del giardino.\",\
@@ -16338,7 +16673,7 @@ mod tests {
         let cid =
             seed_photo_typed(&pool, dir.path(), "user:alice", b"heicbytes", "image/heic").await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-             \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+             \"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
              \"subject_id\":\"user:alice\",\"allow_ids\":[],\
              \"body\":\"Frodo al cancello del giardino.\"}],\
              \"suggested_seed\":\"Bella foto!\"}";
@@ -16386,7 +16721,7 @@ mod tests {
             .await
             .expect("ingest");
         assert!(resp.capture_id.is_some(), "fallback filed the media");
-        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+        let buffered = capture_buffer::find_all_buffered(&pool, 100)
             .await
             .expect("buffer read");
         assert_eq!(buffered.len(), 1);
@@ -16416,7 +16751,7 @@ mod tests {
             resp.capture_id.is_some(),
             "media filed despite the bad plan"
         );
-        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+        let buffered = capture_buffer::find_all_buffered(&pool, 100)
             .await
             .expect("buffer read");
         assert_eq!(buffered.len(), 1);
@@ -16430,7 +16765,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         let cid = seed_photo(&pool, dir.path(), "user:alice", b"jpegbytes").await;
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
-             \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+             \"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
              \"subject_id\":\"user:alice\",\"requested_container\":true,\
              \"body\":\"Una foto qualunque.\",\
              \"attachments\":[\"c-2020-01-01-photo-999.jpg\"]}]}";
@@ -16448,7 +16783,7 @@ mod tests {
             .unwrap();
         assert!(!row.text.contains("{{embed="), "{}", row.text);
         // …and the real attachment was filed by the fallback.
-        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+        let buffered = capture_buffer::find_all_buffered(&pool, 100)
             .await
             .expect("buffer read");
         assert_eq!(buffered.len(), 1);
@@ -16471,7 +16806,7 @@ mod tests {
             .await
             .expect("ingest");
         assert!(resp.capture_id.is_none(), "nothing filed for bare media");
-        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+        let buffered = capture_buffer::find_all_buffered(&pool, 100)
             .await
             .expect("buffer read");
         assert!(buffered.is_empty(), "buffer stays empty: {buffered:?}");
@@ -16495,7 +16830,7 @@ mod tests {
         let cid = seed_photo(&pool, dir.path(), "user:alice", b"jpegbytes").await;
         let json = format!(
             "{{\"intent\":\"capture\",\"extractions\":[{{\
-             \"target_wiki_id\":\"alice\",\"target_page\":\"index.md\",\
+             \"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
              \"subject_id\":\"user:alice\",\"requested_container\":true,\
              \"body\":\"Una foto {{{{embed={cid}}}}} qualunque.\"}}]}}"
         );
@@ -16513,7 +16848,7 @@ mod tests {
             .unwrap();
         assert!(!row.text.contains("{{embed="), "{}", row.text);
         // …and the unclaimed media was filed by the fallback instead.
-        let buffered = capture_buffer::find_buffered_in_wiki(&pool, "alice")
+        let buffered = capture_buffer::find_all_buffered(&pool, 100)
             .await
             .expect("buffer read");
         assert_eq!(buffered.len(), 1);

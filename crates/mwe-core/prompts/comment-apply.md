@@ -1,8 +1,8 @@
 ---
 name: comment-apply
 description: turns parked dashboard comments on a narrative page into precise fact ops (correct / remove / add / move) over that page's facts; an `add` carries its own subject_id/allow_ids decided under the ingest rules (subject + audience from the comment, the page's wiki scope, and the commenter's group scopes)
-version: 1.4
-default_version_at_bootstrap: v1.4
+version: 1.5
+default_version_at_bootstrap: v1.5
 ---
 
 # Prompt: comment-apply
@@ -38,8 +38,7 @@ an operator override at `<workdir>/prompts/comment-apply.md` wins.
   and a `move` is refused if its destination does
   not exist / is smart / belongs to a different owner. A cross-wiki move always lands
   on the destination wiki's **buffer** page (`CROSS_WIKI_DEST_PAGE` =
-  `wiki::NOTES_FILENAME`; not its `index.md`, which is the map — the dest wiki
-  re-homes it on its next compile). A `move` is born-applied + revertible from the dashboard; an
+  `wiki::NOTES_FILENAME`; the dest wiki re-homes it on its next compile). A `move` is born-applied + revertible from the dashboard; an
   unparseable response leaves the comments for the next cycle.
 
 ## System prompt

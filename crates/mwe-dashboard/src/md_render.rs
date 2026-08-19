@@ -135,15 +135,6 @@ pub fn render_reveal(body: &str) -> String {
     render_inner(body, true, None, |_| None)
 }
 
-/// [`render_with_heading_injections`] for the admin ACL-reveal view —
-/// see [`render_reveal`] for what "reveal" relaxes.
-pub fn render_reveal_with_heading_injections<F>(body: &str, inject_after_heading: F) -> String
-where
-    F: FnMut(&str) -> Option<String>,
-{
-    render_inner(body, true, None, inject_after_heading)
-}
-
 /// Trimmed-equality membership test for the reveal wrapper tags. pulldown
 /// hands us the source HTML verbatim (often with a trailing newline for a
 /// block tag), so we trim before comparing against the canonical literals.
@@ -772,7 +763,7 @@ e un documento {{embed=c-2026-06-12-doc-001.pdf}}.\n",
             "famiglia-bruno-battaglia" => {
                 Some("/dashboard/wiki/famiglia-bruno-battaglia".to_owned())
             },
-            "alice/notes" => Some("/dashboard/wiki/alice/view/notes.md".to_owned()),
+            "alice/@notes" => Some("/dashboard/wiki/alice/view/@notes.md".to_owned()),
             "famiglia-bruno-battaglia/referto" => {
                 Some("/dashboard/wiki/famiglia-bruno-battaglia/view/referto.md".to_owned())
             },
@@ -798,14 +789,14 @@ e un documento {{embed=c-2026-06-12-doc-001.pdf}}.\n",
 
     #[test]
     fn wikilinks_linkify_both_canonical_forms() {
-        let html = render_linkified("See [[alice]] and [[alice/notes]] today.\n");
+        let html = render_linkified("See [[alice]] and [[alice/@notes]] today.\n");
         assert!(
             html.contains(r#"<a class="wikilink" href="/dashboard/wiki/alice">alice</a>"#),
             "wiki hop: {html}"
         );
         assert!(
             html.contains(
-                r#"<a class="wikilink" href="/dashboard/wiki/alice/view/notes.md">alice/notes</a>"#
+                r#"<a class="wikilink" href="/dashboard/wiki/alice/view/@notes.md">alice/@notes</a>"#
             ),
             "page hop: {html}"
         );
@@ -842,14 +833,14 @@ e un documento {{embed=c-2026-06-12-doc-001.pdf}}.\n",
 
     #[test]
     fn wikilink_alias_renders_as_the_label() {
-        let html = render_linkified("Read [[alice/notes|My Notes]].\n");
+        let html = render_linkified("Read [[alice/@notes|My Notes]].\n");
         assert!(
             html.contains(
-                r#"<a class="wikilink" href="/dashboard/wiki/alice/view/notes.md">My Notes</a>"#
+                r#"<a class="wikilink" href="/dashboard/wiki/alice/view/@notes.md">My Notes</a>"#
             ),
             "{html}"
         );
-        assert!(!html.contains("alice/notes|"), "{html}");
+        assert!(!html.contains("alice/@notes|"), "{html}");
     }
 
     #[test]
@@ -909,7 +900,7 @@ e un documento {{embed=c-2026-06-12-doc-001.pdf}}.\n",
 
     #[test]
     fn wikilinks_in_code_stay_literal_and_render_without_ctx_is_inert() {
-        let html = render_linkified("```\n[[alice]]\n```\n\nAnd `[[alice/notes]]` inline.\n");
+        let html = render_linkified("```\n[[alice]]\n```\n\nAnd `[[alice/@notes]]` inline.\n");
         assert!(!html.contains("<a "), "code stays literal: {html}");
         assert!(html.contains("[[alice]]"), "{html}");
         // The plain `render` (no ctx — e.g. the chat reply) never linkifies.

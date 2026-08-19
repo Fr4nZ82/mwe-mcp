@@ -74,6 +74,45 @@ semver-governed surface — breaking changes are called out explicitly.
   The bundled prompts and skills name the subject too, so the model is told
   the same word the schema uses.
 
+### Removed
+
+- **A standard wiki no longer has an `index.md`.** Every night REM assembled
+  one per wiki — a listing of the pages that lived there, meant for whoever
+  files a fact and has to decide where it goes. Nothing read it. The side
+  that actually places a fact (the compilation planner's classification
+  stage) is handed the same material — page name, title, wiki, one-line
+  description, current fact count — out of the compilation plan and the
+  `page_cards` table, both of which are written on **every** page change
+  rather than once a night. The file was a third copy, always the stalest,
+  with no reader.
+
+  **Gone with it:** the `map_writer` REM sub-job and its `map_writer_cap`
+  policy field — internal only, never a `rem:` config key, though the
+  configuration reference listed it as one; the
+  `wikis/index.md` collector file written for an operator browsing the
+  directory in Obsidian; the `index.md` seeded into every newly created wiki
+  (identity wikis and wikis born from a promotion alike);
+  `wiki::write_root_collector_index` and
+  `fact_index::count_active_on_page`, both left without callers; and the
+  four separate rules that existed only to keep readers away from what the
+  sub-job wrote — the recall navigator's offer filter and its central
+  refusal, the page-card indexer's exclusion, and the exemptions in the
+  compiler's orphan sweep and REM's husk GC. `wiki::write_wiki_dir` no
+  longer takes an index body.
+
+  **Unchanged on purpose:** `wiki_read` still answers `404` for `index.md`,
+  exactly as before. On a **smart** wiki that page is ordinary content its
+  consumer authors through `wiki_admin_push`, and nothing about smart wikis
+  moves here. The page name also stays reserved
+  (`wiki::is_reserved_page_stem`), so nothing coins a page called `index`
+  that is not one, and no plan node may claim it.
+
+  **Migration: none needed.** A leftover `<wiki>/index.md` is no longer
+  exempt from the compiler's orphan sweep, so the first compile after the
+  upgrade removes it (a file carrying live facts is kept, as always). The
+  loose `wikis/index.md` collector is outside every sweep and can be deleted
+  by hand.
+
 ## 1.9.0 — 2026-08-02
 
 Recall was handing the model the wrong material and reaching the right page by
@@ -99,7 +138,7 @@ luck. Everything here sits on the path every single turn takes.
   quietly losing. Withdraw a description and its entry retires by itself.
 
   The other half of that page — "what was done today" — moved onto the
-  project's own `project_diary.md` and rides the same call (`activity`). The
+  project's own `@projects_diary.md` and rides the same call (`activity`). The
   overview page is the server's to compose; the diary is the consumer's to
   fill. Nobody writes both.
 
@@ -670,7 +709,7 @@ fixed here, and both were found by looking rather than by a report.
 - **`signpost_hint` no longer fires on a consumer's own operational
   wiki** (`wiki_type: agent`). Signposts exist so a conversational turn
   can discover *projects*; nudging an agent to signpost its private
-  working memory only added noise to the owner's `projects.md`.
+  working memory only added noise to the owner's `@projects.md`.
 - **Create-mode errors say what to pass.** A parent-less smart-wiki
   create now names the caller's own root wiki id in the message instead
   of stating only that top-level is not allowed; the `title` and
@@ -760,7 +799,7 @@ fixed here, and both were found by looking rather than by a report.
   A smart consumer writes short **signposts** into its owner's own wiki
   through the new `wiki_admin_signpost` (H family) — one plain-language
   description per project, plus one activity line per day over a rolling
-  5-day window, on a reserved `projects.md`. Length caps are enforced
+  5-day window, on a reserved `@projects.md`. Length caps are enforced
   server-side and an over-long field is refused with its measured length,
   never truncated; rewriting an unchanged signpost is a no-op, and
   `wiki_admin_push` answers with a `signpost_hint` when something is
@@ -983,7 +1022,7 @@ fixed here, and both were found by looking rather than by a report.
   `user-global`: a directive the user explicitly addresses to every
   assistant they talk to ("voglio che TUTTI gli assistenti mi parlino
   in italiano") now files in the **sender's own identity-wiki
-  `rules.md`** (owner = the sender, no admin gate — it binds only
+  `@rules.md`** (owner = the sender, no admin gate — it binds only
   their conversations) and the `rules` channel of every consumer
   serving that user surfaces it, the bindingless smart consumer
   included. Order pinned in `YOUR RULES`, most specific last:
@@ -993,7 +1032,7 @@ fixed here, and both were found by looking rather than by a report.
   (a non-admin's revision files additively at its own scope). This
   retires the old salience-`high` workaround for cross-assistant
   directives, and the governance read (`sender_rules`) now strips fact
-  regions from the user's `rules.md` so a user-global rule never leaks
+  regions from the user's `@rules.md` so a user-global rule never leaks
   into the classifier's policy section.
 
 ### Fixed

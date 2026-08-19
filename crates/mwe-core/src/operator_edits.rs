@@ -330,7 +330,7 @@ mod tests {
     #[tokio::test]
     async fn acl_change_operator_applies_and_reverts() {
         let (_dir, tree, pool) = setup().await;
-        let f1 = capture_one(&tree, &pool, embedder(), "index.md", "Alice usa la bici").await;
+        let f1 = capture_one(&tree, &pool, embedder(), "cucina.md", "Alice usa la bici").await;
 
         let new_subject: Principal = "user:alice".parse().unwrap();
         let new_allow: Vec<Principal> = vec!["group:famiglia".parse().unwrap()];
@@ -394,7 +394,7 @@ mod tests {
             &tree,
             &pool,
             embedder(),
-            "index.md",
+            "cucina.md",
             "Alice lavora alla startup",
         )
         .await;

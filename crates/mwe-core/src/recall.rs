@@ -602,14 +602,19 @@ impl RecallHit {
     }
 
     /// Build a hit from an un-promoted buffered capture (the mid-range
-    /// "fresh" slot). No published-page region exists yet, so the offsets
-    /// are `None` and `source_path` points at the wiki's capture journal.
+    /// "fresh" slot).
+    ///
+    /// **No address of any kind**, and both halves are empty strings because
+    /// there is genuinely nothing to name: a waiting claim has no page (nothing
+    /// is written yet) and no wiki (the buffer names none — where it goes is
+    /// settled when the light dream sorts the queue). The navigator never
+    /// follows a fresh hit ([`crate::recall_nav`]), which is why there is
+    /// nothing to point it at.
     fn from_buffered(cap: BufferedCapture, score: f32) -> Self {
-        let journal = format!("{}/_captures.md", cap.wiki_id.as_str());
         Self {
             fact_id: cap.capture_id,
-            wiki_id: cap.wiki_id.as_str().to_owned(),
-            source_path: journal,
+            wiki_id: String::new(),
+            source_path: String::new(),
             region_start: None,
             region_end: None,
             text: cap.body,
@@ -1642,7 +1647,7 @@ pub async fn recall_signposted_project_docs(
 /// and naming the project still reaches it.
 ///
 /// The description is an ordinary `fact_index` row on the subject's reserved
-/// `projects.md`, so its **stored** embedding is reused (no per-turn
+/// `@projects.md`, so its **stored** embedding is reused (no per-turn
 /// re-embed of the funnel) and its visibility is the ordinary per-fragment
 /// ACL: a reader who cannot see a project's signpost cannot open its docs,
 /// and cannot learn the project exists.
@@ -1859,8 +1864,13 @@ pub async fn wiki_facts_full_for(
 ///
 /// Unlike [`recall_fresh_captures`] this does **no** semantic ranking (it is a
 /// list, not a search, so it needs no embedder): it returns every visible
-/// buffered capture, ACL-filtered for `sender` and honouring the `wiki_id`,
-/// `subject_id`, `fact_type`, `topics_any`, and `created_*` fields of `filters`.
+/// buffered capture, ACL-filtered for `sender` and honouring the `subject_id`,
+/// `fact_type`, `topics_any`, and `created_*` fields of `filters`.
+///
+/// A `wiki_id` filter is **ignored here, and cannot be otherwise**: a buffered
+/// capture is in no wiki (the buffer names no destination — see
+/// [`capture_buffer::BufferedCapture`]), so there is nothing to match it
+/// against. The consolidating list is the same list on every wiki's page.
 /// The dashboard renders these with a `fresh` flag of its own.
 ///
 /// `reveal` has the same meaning as in [`wiki_facts_full_for`]: when `true`
@@ -1868,19 +1878,16 @@ pub async fn wiki_facts_full_for(
 ///
 /// # Errors
 ///
-/// As [`capture_buffer::find_buffered_in_wiki`] / [`capture_buffer::find_all_buffered`].
+/// As [`capture_buffer::find_recent_buffered`].
 pub async fn wiki_buffered_full_for(
     pool: &SqlitePool,
     filters: &fact_index::FactFilters,
     sender: &SenderContext,
     reveal: bool,
 ) -> RecallResult<Vec<BufferedCapture>> {
-    let candidates = match filters.wiki_id.as_deref() {
-        Some(wiki_id) => capture_buffer::find_buffered_in_wiki(pool, wiki_id).await?,
-        // Newest first: this is the "consolidating" list, and if it is cut the
-        // operator wants what just landed, not the oldest stuck rows.
-        None => capture_buffer::find_recent_buffered(pool, FRESH_SCAN_CAP).await?,
-    };
+    // Newest first: this is the "consolidating" list, and if it is cut the
+    // operator wants what just landed, not the oldest stuck rows.
+    let candidates = capture_buffer::find_recent_buffered(pool, FRESH_SCAN_CAP).await?;
     let visible: Vec<BufferedCapture> = candidates
         .into_iter()
         .filter(|cap| reveal || buffered_visible_to(cap, sender))
@@ -2584,7 +2591,6 @@ mod tests {
             // classifier placement proposal to carry.
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         }
@@ -2657,7 +2663,6 @@ mod tests {
         use crate::capture::CaptureRequest;
         use crate::capture_buffer::buffer_capture;
         use crate::types::WikiId;
-        use crate::wiki::WikiTree;
         use std::path::PathBuf;
 
         let dir = tempfile::tempdir().unwrap();
@@ -2671,13 +2676,12 @@ mod tests {
             "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: alice\nacl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        std::fs::write(d.join("index.md"), "# index\n").unwrap();
-        let tree = WikiTree::open(dir.path()).expect("tree");
+        std::fs::write(d.join("cucina.md"), "# index\n").unwrap();
 
         let mk = |body: String| CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body,
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: Vec::new(),
@@ -2694,7 +2698,7 @@ mod tests {
         // More pending rows than the embed cap, oldest written first.
         let total = usize::try_from(FRESH_CANDIDATE_CAP).unwrap() + 4;
         for n in 0..total {
-            buffer_capture(&tree, &pool, mk(format!("nota numero {n}")), None)
+            buffer_capture(&pool, mk(format!("nota numero {n}")), None)
                 .await
                 .expect("buffer");
         }
@@ -2737,7 +2741,6 @@ mod tests {
         use crate::capture::CaptureRequest;
         use crate::capture_buffer::{BufferStaging, buffer_capture_staged, origin_fingerprint};
         use crate::types::WikiId;
-        use crate::wiki::WikiTree;
         use std::path::PathBuf;
 
         let dir = tempfile::tempdir().unwrap();
@@ -2751,13 +2754,12 @@ mod tests {
             "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: alice\nacl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        std::fs::write(d.join("index.md"), "# index\n").unwrap();
-        let tree = WikiTree::open(dir.path()).expect("tree");
+        std::fs::write(d.join("cucina.md"), "# index\n").unwrap();
 
         let mk = |body: &str| CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: body.to_owned(),
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: Vec::new(),
@@ -2779,7 +2781,6 @@ mod tests {
             ("Il corso di nuoto di Alice comincia a ottobre.", unshown),
         ] {
             buffer_capture_staged(
-                &tree,
                 &pool,
                 mk(body),
                 None,
@@ -2836,7 +2837,6 @@ mod tests {
         use crate::capture::CaptureRequest;
         use crate::capture_buffer::buffer_capture;
         use crate::types::WikiId;
-        use crate::wiki::WikiTree;
         use std::path::PathBuf;
 
         let dir = tempfile::tempdir().unwrap();
@@ -2853,14 +2853,13 @@ mod tests {
                 ),
             )
             .unwrap();
-            std::fs::write(d.join("index.md"), "# index\n").unwrap();
+            std::fs::write(d.join("cucina.md"), "# index\n").unwrap();
         }
-        let tree = WikiTree::open(dir.path()).expect("tree");
 
         let mk = |wiki: &str, body: &str, subject: &str| CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: body.to_owned(),
             subject: subject.parse::<Principal>().unwrap(),
             allow: Vec::new(),
@@ -2877,7 +2876,6 @@ mod tests {
 
         // Two un-promoted captures: one owned by alice, one by bob.
         buffer_capture(
-            &tree,
             &pool,
             mk(
                 "alice",
@@ -2888,14 +2886,9 @@ mod tests {
         )
         .await
         .expect("buffer alice");
-        buffer_capture(
-            &tree,
-            &pool,
-            mk("bob", "Bob's private note.", "user:bob"),
-            None,
-        )
-        .await
-        .expect("buffer bob");
+        buffer_capture(&pool, mk("bob", "Bob's private note.", "user:bob"), None)
+            .await
+            .expect("buffer bob");
 
         let embedder = embedder_default();
         let hits = recall_fresh_captures(
@@ -2931,7 +2924,6 @@ mod tests {
         use crate::capture::CaptureRequest;
         use crate::capture_buffer::buffer_capture;
         use crate::types::WikiId;
-        use crate::wiki::WikiTree;
         use std::path::PathBuf;
 
         let dir = tempfile::tempdir().unwrap();
@@ -2948,14 +2940,13 @@ mod tests {
                 ),
             )
             .unwrap();
-            std::fs::write(d.join("index.md"), "# index\n").unwrap();
+            std::fs::write(d.join("cucina.md"), "# index\n").unwrap();
         }
-        let tree = WikiTree::open(dir.path()).expect("tree");
 
         let mk = |wiki: &str, body: &str, subject: &str, fact_type: Option<&str>| CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("cucina.md"),
             body: body.to_owned(),
             subject: subject.parse::<Principal>().unwrap(),
             allow: Vec::new(),
@@ -2972,7 +2963,6 @@ mod tests {
 
         // alice owns two captures (one `plan`, one `bio`); bob owns one.
         buffer_capture(
-            &tree,
             &pool,
             mk(
                 "alice",
@@ -2985,7 +2975,6 @@ mod tests {
         .await
         .expect("buffer alice plan");
         buffer_capture(
-            &tree,
             &pool,
             mk(
                 "alice",
@@ -2998,7 +2987,6 @@ mod tests {
         .await
         .expect("buffer alice bio");
         buffer_capture(
-            &tree,
             &pool,
             mk("bob", "Bob's private note.", "user:bob", None),
             None,
@@ -3336,7 +3324,6 @@ mod tests {
             // classifier placement proposal to carry.
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         });
@@ -3605,7 +3592,7 @@ mod tests {
     }
 
     /// Seed a project's **description signpost** — the funnel's own input:
-    /// an ordinary fact on the subject's reserved `projects.md`, carrying the
+    /// an ordinary fact on the subject's reserved `@projects.md`, carrying the
     /// topics [`crate::signposts`] writes.
     fn insert_signpost(
         pool_setup: &mut Vec<NewFact>,
@@ -3620,7 +3607,7 @@ mod tests {
             authored_refs: Vec::new(),
             fact_id: FactId::parse(id_str).unwrap(),
             wiki_id: owner_wiki.to_owned(),
-            source_path: format!("wikis/{owner_wiki}/projects.md"),
+            source_path: format!("wikis/{owner_wiki}/@projects.md"),
             region_start: Some(0),
             region_end: Some(32),
             text: text.to_owned(),
@@ -3638,7 +3625,6 @@ mod tests {
             valid_to: None,
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         });
@@ -4265,7 +4251,7 @@ mod tests {
             authored_refs: Vec::new(),
             fact_id: fact_id.clone(),
             wiki_id: owner_wiki.to_owned(),
-            source_path: format!("wikis/{owner_wiki}/projects.md"),
+            source_path: format!("wikis/{owner_wiki}/@projects.md"),
             region_start: Some(0),
             region_end: Some(32),
             text: text.to_owned(),
@@ -4279,7 +4265,6 @@ mod tests {
             valid_to: None,
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         };
@@ -4683,7 +4668,6 @@ mod tests {
             // classifier placement proposal to carry.
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         };
@@ -4732,7 +4716,6 @@ mod tests {
             // classifier placement proposal to carry.
             target_page: None,
             style: None,
-            page_description: None,
             salience: None,
             source_ref: None,
         };

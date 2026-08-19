@@ -1879,7 +1879,7 @@ pub struct AppliedEmit {
 /// is a user-driven revert via [`revert_proposal`] within the window.
 ///
 /// `spec` is the JSON the kind's revert handler reads (for
-/// `structured_emerge`: the wiki id, its `index.md` source path, and the
+/// `structured_emerge`: the wiki id, the source path of the page, and the
 /// originating fact ids). `applied_by` is the originating sender's raw id.
 ///
 /// # Errors

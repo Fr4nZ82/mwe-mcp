@@ -286,16 +286,6 @@ pub struct ModelCapabilities {
     pub image_input: Option<bool>,
 }
 
-impl ModelCapabilities {
-    /// `true` when nothing at all is known about the model — the caller is
-    /// on its own (offline fallback list, then whatever the provider says
-    /// on the first real call).
-    #[must_use]
-    pub fn is_unknown(&self) -> bool {
-        *self == Self::default()
-    }
-}
-
 /// Look up [`ModelCapabilities`] for an mwe-mcp `backend` tag + model id in
 /// the process-wide [`snapshot`].
 ///
@@ -424,10 +414,13 @@ mod tests {
     #[test]
     fn an_unlisted_model_is_unknown_not_permissive() {
         let caps = bundled().capabilities("anthropic", "claude-opus-9-released-tomorrow");
-        assert!(caps.is_unknown());
+        assert_eq!(caps, ModelCapabilities::default());
         assert_eq!(caps.accepts_sampling_params, None);
         // Same for a backend with no catalog at all.
-        assert!(bundled().capabilities("ollama", "qwen3:8b").is_unknown());
+        assert_eq!(
+            bundled().capabilities("ollama", "qwen3:8b"),
+            ModelCapabilities::default()
+        );
     }
 
     /// The only test that touches the process-wide slot, so it cannot race

@@ -199,10 +199,11 @@ And the public-read `/skills/*` sub-router via
   `ETag: "<sha256[..32]>"`, honours `If-None-Match → 304 Not
   Modified`.
 
-Custom skills are intentionally **MCP-only**: the HTTP path has no
-JWT context, so exposing custom would allow enumeration of other
-owners' catalogs. The bundled catalog is documentation that ships
-with the binary and is safe to serve unauthenticated.
+Every skill is bundled: the per-owner catalog was dropped in
+migration 0036, so `/skills` and the MCP pair serve the same set.
+The bundled catalog is documentation that ships with the binary and
+is safe to serve unauthenticated, which is why the HTTP path needs
+no JWT context.
 
 ## Audit trail
 

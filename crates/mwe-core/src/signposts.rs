@@ -19,7 +19,7 @@
 //!
 //! Two pages because the halves have **opposite lifecycles** — one is
 //! derived and rebuildable, the other accumulated and irreplaceable — and
-//! sharing a page would cost the stronger guarantee: `projects.md` is
+//! sharing a page would cost the stronger guarantee: `@projects.md` is
 //! regenerable from the registry in full, and only stays that way while
 //! nothing on it had to be kept. The table in
 //! [`crate::wiki::PROJECT_DIARY_FILENAME`] is the whole argument.
@@ -457,7 +457,7 @@ pub struct ProjectionReport {
 }
 
 /// Project every project's `smart_wikis.description` into a signpost fact
-/// on its owner's `projects.md`, so ordinary flat recall can find it.
+/// on its owner's `@projects.md`, so ordinary flat recall can find it.
 ///
 /// **Why a projection and not the thing itself.** A standard consumer's
 /// per-turn recall reads the fact corpus only, so a description that lives
@@ -673,7 +673,7 @@ async fn render_page(pool: &SqlitePool, tree: &WikiTree, source_path: &str) -> R
 ///
 /// "Not a project" means the wiki is an **agent's own**: the consumer's
 /// operational wiki, forged by the sign-in flow, is private working memory
-/// and signposting it would only add noise to the owner's `projects.md` —
+/// and signposting it would only add noise to the owner's `@projects.md` —
 /// observed live on `franz-ubestia-cc`, where the nudge fired twice and
 /// was correctly ignored twice. The test is deliberately that property and
 /// not "has a `project_id`": `project_id` is optional on create, so a
@@ -709,7 +709,7 @@ pub async fn status(
     let (Ok(page), Ok(diary)) = (page_path(tree, &owner), diary_page_path(tree, &owner)) else {
         return Ok(None);
     };
-    // Two pages now, one question each: the door sign is on `projects.md`
+    // Two pages now, one question each: the door sign is on `@projects.md`
     // and the days are in the diary.
     let mine = |rows: Vec<FactIndexRow>| -> Vec<FactIndexRow> {
         rows.into_iter()
@@ -786,7 +786,7 @@ fn validate(req: &SignpostRequest) -> Result<(Option<String>, Option<ActivityLin
 struct Target {
     owner_wiki_id: WikiId,
     owner_principal: Principal,
-    /// Where the project's door sign lives — `projects.md`, derived.
+    /// Where the project's door sign lives — `@projects.md`, derived.
     source_path: String,
     /// Where its diary lines live — `project_diary.md`, accumulated.
     diary_source_path: String,
@@ -1118,7 +1118,7 @@ mod tests {
 
     /// The door-sign page — derived, rebuildable.
     async fn page_facts(pool: &SqlitePool) -> Vec<FactIndexRow> {
-        fact_index::find_active_by_source_path(pool, "wikis/alice/projects.md")
+        fact_index::find_active_by_source_path(pool, "wikis/alice/@projects.md")
             .await
             .unwrap()
     }
@@ -1126,7 +1126,7 @@ mod tests {
     /// The diary page — accumulated, windowed. A separate page precisely so
     /// the two cannot damage each other.
     async fn diary_facts(pool: &SqlitePool) -> Vec<FactIndexRow> {
-        fact_index::find_active_by_source_path(pool, "wikis/alice/project_diary.md")
+        fact_index::find_active_by_source_path(pool, "wikis/alice/@projects_diary.md")
             .await
             .unwrap()
     }
@@ -1212,7 +1212,7 @@ mod tests {
         .expect("write");
 
         assert_eq!(report.owner_wiki_id, "alice");
-        assert_eq!(report.source_path, "wikis/alice/projects.md");
+        assert_eq!(report.source_path, "wikis/alice/@projects.md");
         assert!(matches!(
             report.description,
             Some(SignpostOutcome::Created(_))
@@ -1234,7 +1234,7 @@ mod tests {
             "the reader half must be able to name the project"
         );
         // And it is on disk, in the page the recall navigator reads.
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/projects.md")).unwrap();
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/@projects.md")).unwrap();
         assert!(page.contains("AcmeSigns — sistema per gestire"));
     }
 
@@ -1342,7 +1342,7 @@ mod tests {
             "an activity line never lands on the door-sign page"
         );
         assert_eq!(
-            last_activity_day(&pool, "wikis/alice/project_diary.md", "alice-acmesigns")
+            last_activity_day(&pool, "wikis/alice/@projects_diary.md", "alice-acmesigns")
                 .await
                 .unwrap()
                 .as_deref(),
@@ -1549,7 +1549,7 @@ mod tests {
     }
 
     async fn description_of(pool: &SqlitePool) -> Option<String> {
-        fact_index::find_active_by_source_path(pool, "wikis/alice/projects.md")
+        fact_index::find_active_by_source_path(pool, "wikis/alice/@projects.md")
             .await
             .expect("scan")
             .into_iter()
@@ -1623,7 +1623,7 @@ mod tests {
         assert_eq!((r.created, r.updated), (0, 1));
 
         let live: Vec<String> =
-            fact_index::find_active_by_source_path(&pool, "wikis/alice/projects.md")
+            fact_index::find_active_by_source_path(&pool, "wikis/alice/@projects.md")
                 .await
                 .unwrap()
                 .into_iter()
@@ -1703,12 +1703,14 @@ mod tests {
 
         // Both pages are signpost pages for delivery: a diary line
         // surfacing means the project is in play just as a description does.
-        assert!(crate::wiki::is_signpost_page("wikis/alice/projects.md"));
+        assert!(crate::wiki::is_signpost_page("wikis/alice/@projects.md"));
         assert!(crate::wiki::is_signpost_page(
-            "wikis/alice/project_diary.md"
+            "wikis/alice/@projects_diary.md"
         ));
         // …and both stay fenced out of the structural sweeps.
-        assert!(crate::wiki::is_channel_page("wikis/alice/project_diary.md"));
+        assert!(crate::wiki::is_channel_page(
+            "wikis/alice/@projects_diary.md"
+        ));
         assert!(!crate::wiki::is_signpost_page(
             "wikis/alice/my_projects_notes.md"
         ));
@@ -1727,14 +1729,14 @@ mod tests {
             .unwrap();
         assert_eq!(r.rendered, 1);
 
-        let page = std::fs::read_to_string(dir.path().join("wikis/alice/projects.md")).unwrap();
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/@projects.md")).unwrap();
         assert!(page.starts_with("# Projects"), "got: {page:?}");
         assert!(page.contains("Signage for shop windows."));
         assert!(!page.contains("\n\n\n"), "no blank-line scars: {page:?}");
 
         // The offsets are re-stamped to where the marker actually landed,
         // so the region the DB points at is the region on disk.
-        let row = &fact_index::find_active_by_source_path(&pool, "wikis/alice/projects.md")
+        let row = &fact_index::find_active_by_source_path(&pool, "wikis/alice/@projects.md")
             .await
             .unwrap()[0];
         let (start, end) = (

@@ -84,7 +84,7 @@ memory and instructions never share a field.
 | Slot | Filled by | Bounded by |
 |---|---|---|
 | `WHO YOU ARE` | the agent wiki's abstract + its identity self-facts | `max_agent_identity_chars` (`900`) |
-| `WHO IS SPEAKING` | the sender's identity card — their `profile.md`, projected per sender, testata dropped and links plain. **Deterministic**: no walk, no model decision, no page open | `max_sender_identity_chars` (`2 500`, a failsafe) |
+| `WHO IS SPEAKING` | the sender's identity card — their `@profile.md`, projected per sender, testata dropped and links plain. **Deterministic**: no walk, no model decision, no page open | `max_sender_identity_chars` (`2 500`, a failsafe) |
 | `PEOPLE THIS TURN NAMES` | the same card, for each **other** enrolled person the turn names — gated by `recall::turn_subjects` (a word match on the roster, no model call), projected for the *reader*, and silent when a card's every fact is private to its subject | `max_mentioned_cards` (`2`), each under `max_sender_identity_chars` |
 | `YOUR RECENT HISTORY WITH THIS USER` | the agent's own log of what it has done with this person | `max_agent_history_chars` (`1 400`) |
 | `RELEVANT MEMORY` | the flat hit-list — promoted facts, then `Recent (not yet consolidated):` for the fresh slot, then `Project documentation` for the docs slot; deduplicated against the navigated pages | `recall_top_k`, `recall_fresh_top_k`, the docs slot's own budget, and — for the **promoted half only** — `relevance_floor` |
@@ -254,7 +254,7 @@ project.* Two ways in, and nothing else:
 2. **The project's signpost description clears the floor** — one cosine
    against the one short authored line per project that
    [`signposts`](../../crates/mwe-core/src/signposts.rs) keeps on the
-   owner's reserved `projects.md`.
+   owner's reserved `@projects.md`.
 
 So the decision costs a handful of dot products against authored lines,
 not a scan of thousands of sections — and a turn that opens nothing never
@@ -317,7 +317,7 @@ run at different points of the turn:
    from `_meta.md`). No LLM, and no query embedding at all when nothing
    is named. No floor: the turn asked.
 2. **The signpost.** A signpost is a fact on the owner's reserved
-   `projects.md` ([`signposts`](../../crates/mwe-core/src/signposts.rs))
+   `@projects.md` ([`signposts`](../../crates/mwe-core/src/signposts.rs))
    saying a project exists; when one comes back in the turn's ordinary
    fact recall, that project *can* be opened. Whether it *should* be is
    the classifier's call — the `needs_project_docs` field of the JSON it
@@ -823,10 +823,9 @@ counters touched — and draws on three seed families, all content-derived:
 
 **Every seed is a page.** `EntryPoint::page` is a `PathBuf`, not an
 `Option` — there is no wiki-level door, so a seed that can only name a wiki
-produces nothing at all. Three hits therefore seed no door and reach the turn
-through the flat slot instead: a `fresh` capture (no published page yet), a hit
-homed on the channel-only `rules.md` (roadmap 41e), and a hit homed on the
-wiki's `index.md` (the map — see *Link grammar* below).
+produces nothing at all. Two hits therefore seed no door and reach the turn
+through the flat slot instead: a `fresh` capture (no published page yet) and a
+hit homed on the channel-only `@rules.md` (roadmap 41e).
 
 ### There is no identity family, and that is the fix
 
@@ -845,7 +844,7 @@ Lowering the constant would have moved that number without changing its kind.
 
 Nothing was lost by removing it, because identity now reaches the turn by a
 route that costs no navigation at all: `WHO IS SPEAKING` serves the sender's
-`profile.md` deterministically on every turn, and `PEOPLE THIS TURN NAMES`
+`@profile.md` deterministically on every turn, and `PEOPLE THIS TURN NAMES`
 serves the card of each other person the turn names. Measured after the change:
 the first decision went from **79 % identity pages to 19 %**, content opens
 from **21 % to 81 %**, and opens on the sender's own card from **132 to 0**.
@@ -973,9 +972,9 @@ drops the testata, and **projects it per-sender** (`render_for_sender`) — the
 navigator never sees a raw ACL marker. Opening a page grows the next hop's
 candidates: the destinations reachable via `[[wikilinks]]` from the collected
 prose (`Visible`-only) — a page hop offers the linked **page directly**, a bare
-wiki hop offers that wiki's **foundation page** (`profile.md`, else `notes.md`)
-and never its map, each with the same reader-relative card (see the link
-grammar below). Nothing else is added: the other pages of that wiki are not
+wiki hop offers that wiki's **foundation page** (`@profile.md`, else
+`@notes.md`), each with the same reader-relative card (see the link grammar
+below). Nothing else is added: the other pages of that wiki are not
 offered for living in the same directory as one the funnel opened.
 
 Before the next prompt is built, `prune_pool` **stably ranks the pool by
@@ -1057,7 +1056,7 @@ resolved but never minted, and a presentation alias:
 | Form | Meaning | Example |
 |---|---|---|
 | `[[wiki_id/page-slug]]` | **page hop** — one page of that wiki; the slug is the page file's stem (no `.md`), and may itself contain `/` for a nested page | `[[famiglia-bruno-battaglia/referto_oculistica_bruno_2026_02_11]]` |
-| `[[wiki_id]]` | **legacy wiki hop** — resolved to that wiki's **foundation page** (`profile.md`, else `notes.md`), *never* its map; dropped when the wiki has neither. Not minted and not taught | `[[famiglia]]` → `famiglia/profile.md` |
+| `[[wiki_id]]` | **legacy wiki hop** — resolved to that wiki's **foundation page** (`@profile.md`, else `@notes.md`); dropped when the wiki has neither. Not minted and not taught | `[[famiglia]]` → `famiglia/profile.md` |
 | `[[target\|display]]` | either form with a **display alias** — presentation only, stripped before resolution; renders as the label | `[[famiglia/profile\|famiglia]]` |
 
 Wiki ids are **flat** (`famiglia-bruno-battaglia`), never directory paths —
@@ -1065,17 +1064,16 @@ the id is the address, the tree position is the tree's business.
 
 **Why the bare form is legacy.** It once meant "the wiki's overview", and the
 overview was `index.md`. Since [63 §8](../../planning/63_navigator-drift.md)
-`index.md` is the **map** — written for REM and the filing classifier, refused
-by `open_target` and by all three offer-side filters — so every bare rail in
-the corpus pointed at a page no reader may open. They are not rare: `[[franz]]`,
+every foundation node moved off that name, and since 2026-08-15 a standard
+wiki has no `index.md` at all — so every bare rail in the corpus pointed at a
+page no reader may open. They are not rare: `[[franz]]`,
 `[[carol]]`, `[[bob]]` and their kind are **40 % of the links written on a
 content page** in the live corpus. What the prose means by `[[franz]]` is *the
-person*, and since the same split the person is `profile.md` — so the funnel
+person*, and since the same split the person is `@profile.md` — so the funnel
 resolves the bare form to the wiki's foundation page and the rails survive a
 rename we performed ourselves. The writer is taught the page form only
 (`cronista.md` v1.19), and `compiler::plan_page_wikilink` cannot mint the bare
-one; the founder's rule is that **the map has outgoing links and no incoming
-ones** (2026-08-04).
+one.
 
 **Legacy fallback — emit canonical, resolve legacy** (the same stance the
 [marker grammar](marker-grammar.md) takes on the full inline marker): a
@@ -1121,8 +1119,8 @@ Every mechanical emitter writes the canonical forms —
 `capture::wiki_link`, the document-ingest dossier anchor, the smart-push
 `authored_refs`, and the compiler feeds
 (`compiler::plan_page_wikilink`: the starvation index, the recommended
-links, the Hub Writer children — a page hop everywhere, and `None` for a
-wiki's own `index.md`, so a plan node still sitting on the map contributes no
+links, the Hub Writer children — a page hop everywhere, and `None` for
+`index.md`, so a legacy plan node still sitting on that name contributes no
 link at all rather than a dead one). The prose-writing prompts
 (`cronista`, `regenerate-index`) carry the copy-verbatim instruction: a
 model never mints or restyles a link target. There is no mechanical corpus
@@ -1136,7 +1134,7 @@ seed and classifier input — «RAG for the entrances»), only for intents that
 justify the LLM spend (capture / recall / disambiguation), and only when the
 call site wired the optional `navigator` backend. The classification's
 `subject_id`s ride the recall trace but seed no door — no family is keyed on
-a principal, see *There is no identity family* above. The reserved `rules.md`
+a principal, see *There is no identity family* above. The reserved `@rules.md`
 policy page is never a door (channel-only — the fan skips it, a RAG hit
 homed on it seeds nothing, and the open step discards it as a fail-safe).
 
@@ -1161,11 +1159,10 @@ They enter
 the walk as if it had opened them, so they are never offered as a candidate,
 never opened, and never charged to the character budget — the guarantee holds
 on every route in, because it is the one `visited` set that `prune_pool`
-filters by and `open_target` refuses on. **So `index.md` is not a navigation
-destination for its own subject**: its prose is in the block whatever the
-navigator does, and the founder's ruling (2026-08-03) is that the hub's
-routing is not needed when the recalled facts already name the pages that
-answer the turn. *Another* person's identity page is untouched by this —
+filters by and `open_target` refuses on. **So the sender's own card is not a
+navigation destination**: its prose is in the block whatever the navigator
+does, and the founder's ruling (2026-08-03) is that a routing page is not
+needed when the recalled facts already name the pages that answer the turn. *Another* person's identity page is untouched by this —
 nothing has served it. `wiki_navigate` passes nothing: it builds no block. The
 assembled role-labelled `context_snippet` (`WHO YOU ARE` → `WHO IS
 SPEAKING` → `YOUR RECENT HISTORY WITH THIS USER` → `RELEVANT MEMORY` →
@@ -1462,8 +1459,8 @@ table is the larger and the more regenerable of the two.
 - `wiki_recall`: 1 (delegates to search today).
 - `recall_fresh_captures`: 1 (un-promoted buffered capture surfaces, ACL-scoped, flagged `fresh`; a capture with another subject is filtered out).
 - `recall_nav` (gatherer): per-family seed tests (topic and situational card
-  matches / rag path mapping / the three hits that seed nothing — `fresh`,
-  `rules.md`, the map), the per-family ACL-cascade matrix, dedup/sort,
+  matches / rag path mapping / the two hits that seed nothing — `fresh` and
+  `@rules.md`), the per-family ACL-cascade matrix, dedup/sort,
   `page_within`, and `fold_entities` keeping a resolved name as a needle.
 - `recall_nav` (funnel, scripted-LLM): vetted open + per-sender
   projection, hallucinated-target discard, wikilink follow-through

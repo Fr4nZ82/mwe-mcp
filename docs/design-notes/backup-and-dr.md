@@ -200,9 +200,9 @@ jobs, media catalog, tool log) are cleared in one transaction, then
 `wikis/`, `media/`, and `training-spool/` are removed. Preserved:
 enrollment, credentials (with `profile_initialized` cleared so the
 welcome wizard re-seeds each profile), consumers and delegations,
-tokens/2FA/OAuth state, custom skills, `engine_meta`, config, env, and
-`prompts/`. Identity wikis are re-scaffolded empty for every enrolled
-user, agent, and group.
+tokens/2FA/OAuth state, `engine_meta`, config, env, and `prompts/`.
+Identity wikis are re-scaffolded empty for every enrolled user, agent,
+and group.
 
 **Restart-to-apply.** The console's "Restart now" button broadcasts the
 same graceful shutdown as ctrl-c and then exits with the deliberate

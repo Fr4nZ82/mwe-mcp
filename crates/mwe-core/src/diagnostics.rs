@@ -46,14 +46,6 @@ pub struct DbDiagnostics {
     pub perm_findings: Vec<PermFinding>,
 }
 
-impl DbDiagnostics {
-    /// Remediation hint for a non-empty [`Self::perm_findings`].
-    #[must_use]
-    pub fn perm_remediation(workdir: &Path) -> String {
-        workdir_security::remediation(workdir)
-    }
-}
-
 /// Collect the DB + workdir checks against a live pool.
 ///
 /// Read-only: counts rows and audits filesystem permissions. Safe to call

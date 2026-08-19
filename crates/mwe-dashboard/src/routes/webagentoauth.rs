@@ -674,7 +674,7 @@ async fn ensure_dedicated_wiki(
         project_id: None,
         description: None,
         pages: vec![wiki_admin::PushPage {
-            path: "index.md".to_owned(),
+            path: "cucina.md".to_owned(),
             content: format!(
                 "# {connection}\n\nDedicated memory wiki for the {client_name} connection.\n"
             ),

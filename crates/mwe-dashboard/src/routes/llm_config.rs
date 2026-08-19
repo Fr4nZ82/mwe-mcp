@@ -152,8 +152,9 @@ const ROLE_GUIDES: &[RoleGuide] = &[
     },
     RoleGuide {
         slot: LlmFunction::HubWriter,
-        title: "Index summaries",
-        blurb: "Regenerates the index.md summaries on every write.",
+        title: "Overview pages",
+        blurb: "Writes the prose of a page that has no facts of its own and \
+                only lists its child pages.",
         tier: "workhorse — a local 9B is fine",
     },
     RoleGuide {

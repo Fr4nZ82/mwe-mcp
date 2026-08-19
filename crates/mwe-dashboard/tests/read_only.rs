@@ -134,7 +134,7 @@ async fn a_frozen_instance_refuses_memory_and_configuration_writes() {
     // Memory.
     for (uri, body) in [
         ("/chat", "text=remember+that+I+moved+house"),
-        ("/wiki/alice/comment/index.md", "text=note"),
+        ("/wiki/alice/comment/cucina.md", "text=note"),
         ("/wiki/alice/delete", ""),
         ("/facts/0197fa00-0000-7000-8000-000000000001/delete", ""),
         ("/dream/light", ""),

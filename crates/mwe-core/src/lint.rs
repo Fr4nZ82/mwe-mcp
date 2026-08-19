@@ -79,8 +79,8 @@ pub enum Check {
     /// `media_catalog` row for the key, or a row whose blob is gone
     /// from the content-addressed store. **Implemented**.
     EmbedMissing,
-    /// Wiki `index.md` older than its newest fact. **Not yet
-    /// implemented**.
+    /// A hub page (no facts of its own, only children) older than its newest
+    /// child. **Not yet implemented**.
     HubOutdated,
     /// Cycle or broken reference in a supersedence chain. **Not yet
     /// implemented**.
@@ -605,7 +605,7 @@ mod tests {
         let (pool, tree, _td) = fresh_pool_and_tree().await;
         let wiki_dir = tree.wikis_dir().join("alice");
         write_meta(&wiki_dir, "alice", "alice");
-        std::fs::write(wiki_dir.join("notes.md"), "stuff {{subject=user:alice").unwrap();
+        std::fs::write(wiki_dir.join("@notes.md"), "stuff {{subject=user:alice").unwrap();
 
         let r = run(
             &pool,
@@ -640,13 +640,13 @@ mod tests {
         let (pool, tree, _td) = fresh_pool_and_tree().await;
         let wiki_dir = tree.wikis_dir().join("alice");
         write_meta(&wiki_dir, "alice", "alice");
-        std::fs::write(wiki_dir.join("notes.md"), "no markers here").unwrap();
+        std::fs::write(wiki_dir.join("@notes.md"), "no markers here").unwrap();
 
         let fact_id = crate::types::FactId::parse(
             &uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::ContextV7::new())).to_string(),
         )
         .unwrap();
-        let source_path = "wikis/alice/notes.md".to_owned();
+        let source_path = "wikis/alice/@notes.md".to_owned();
         fact_index::insert(
             &pool,
             &fact_index::NewFact {
@@ -669,7 +669,6 @@ mod tests {
                 // placement proposal to carry.
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -702,8 +701,8 @@ mod tests {
             "{{{{subject=user:alice f={id}}}}}hello{{{{/}}}}",
             id = fact_id.as_str()
         );
-        std::fs::write(wiki_dir.join("notes.md"), &body).unwrap();
-        let source_path = "wikis/alice/notes.md".to_owned();
+        std::fs::write(wiki_dir.join("@notes.md"), &body).unwrap();
+        let source_path = "wikis/alice/@notes.md".to_owned();
         fact_index::insert(
             &pool,
             &fact_index::NewFact {
@@ -726,7 +725,6 @@ mod tests {
                 // placement proposal to carry.
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -787,7 +785,7 @@ mod tests {
         .expect("store");
         let good = stored.row.catalog_id;
         std::fs::write(
-            wiki_dir.join("notes.md"),
+            wiki_dir.join("@notes.md"),
             format!(
                 "ok {{{{embed={good}}}}}\n\ndangling {{{{embed=c-2020-01-01-photo-009.jpg}}}}\n"
             ),

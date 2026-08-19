@@ -344,7 +344,7 @@ async fn dashboard_editor_save_writes_op_log_row_with_actor_kind_dashboard() {
         &app,
         Request::builder()
             .method("POST")
-            .uri("/wiki/alice/edit/notes.md")
+            .uri("/wiki/alice/edit/@notes.md")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .header(header::COOKIE, cookie.clone())
             .body(Body::from(
@@ -391,7 +391,7 @@ async fn dashboard_editor_save_writes_op_log_row_with_actor_kind_dashboard() {
     let response = send(
         &app,
         Request::builder()
-            .uri("/wiki/alice/edit/notes.md")
+            .uri("/wiki/alice/edit/@notes.md")
             .header(header::COOKIE, cookie)
             .body(Body::empty())
             .unwrap(),
@@ -854,12 +854,12 @@ async fn dashboard_revert_button_succeeds_on_revertable_row() {
     let (app, pool, _tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
 
-    // Two saves on `notes.md`: the second is the target we will revert.
+    // Two saves on `@notes.md`: the second is the target we will revert.
     // (We need a second op_log row so the first save's `pre_image_json`
     // is non-NULL — that's the row whose pre-image carries the original
     // body and whose revert restores it.)
-    dashboard_editor_save(&app, &cookie, "alice", "notes.md", "# v1 body\n").await;
-    dashboard_editor_save(&app, &cookie, "alice", "notes.md", "# v2 body\n").await;
+    dashboard_editor_save(&app, &cookie, "alice", "@notes.md", "# v1 body\n").await;
+    dashboard_editor_save(&app, &cookie, "alice", "@notes.md", "# v2 body\n").await;
 
     // GET the op-log view: the page must render a Revert form for the
     // second row (the upsert).
@@ -961,11 +961,11 @@ async fn dashboard_revert_button_returns_409_with_conflict_details_on_target_cha
     let (app, pool, _tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
 
-    // Save v1 (creates `notes.md`), then v2 (overwrites with the body
+    // Save v1 (creates `@notes.md`), then v2 (overwrites with the body
     // we'll try to revert), then v3 (an independent later edit on the
     // same page — this is the conflict).
-    dashboard_editor_save(&app, &cookie, "alice", "notes.md", "# v1 body\n").await;
-    dashboard_editor_save(&app, &cookie, "alice", "notes.md", "# v2 body\n").await;
+    dashboard_editor_save(&app, &cookie, "alice", "@notes.md", "# v1 body\n").await;
+    dashboard_editor_save(&app, &cookie, "alice", "@notes.md", "# v2 body\n").await;
     // The middle row is our revert target (its pre-image is "# v1 body\n").
     let target_op_id: i64 = sqlx::query_scalar(
         "SELECT op_id FROM wiki_admin_op_log
@@ -975,7 +975,7 @@ async fn dashboard_revert_button_returns_409_with_conflict_details_on_target_cha
     .fetch_one(&pool)
     .await
     .unwrap();
-    dashboard_editor_save(&app, &cookie, "alice", "notes.md", "# v3 body\n").await;
+    dashboard_editor_save(&app, &cookie, "alice", "@notes.md", "# v3 body\n").await;
 
     let response = send(
         &app,
@@ -1040,7 +1040,7 @@ async fn dashboard_revert_button_hidden_for_pull_rows() {
     // Build a revertable history first so the table has at least one
     // pull-discriminated assertion: a dashboard save (push_upsert) +
     // a manually inserted pull row simulating an MCP `wiki_admin_pull`.
-    dashboard_editor_save(&app, &cookie, "alice", "notes.md", "# body\n").await;
+    dashboard_editor_save(&app, &cookie, "alice", "@notes.md", "# body\n").await;
     sqlx::query(
         "INSERT INTO wiki_admin_op_log
             (wiki_id, sender_id, consumer_id, actor_kind, op_kind, op_mode,
@@ -1096,8 +1096,8 @@ async fn dashboard_revert_button_admin_only() {
     let admin_cookie = login_as_admin(&app).await;
 
     // Seed a revertable row.
-    dashboard_editor_save(&app, &admin_cookie, "alice", "notes.md", "# body\n").await;
-    dashboard_editor_save(&app, &admin_cookie, "alice", "notes.md", "# body2\n").await;
+    dashboard_editor_save(&app, &admin_cookie, "alice", "@notes.md", "# body\n").await;
+    dashboard_editor_save(&app, &admin_cookie, "alice", "@notes.md", "# body2\n").await;
     let target_op_id: i64 = sqlx::query_scalar(
         "SELECT op_id FROM wiki_admin_op_log
           WHERE wiki_id = 'alice' AND op_kind = 'push_upsert'
@@ -1629,7 +1629,9 @@ async fn proposals_promote_to_subwiki_round_trips_via_action_routes() {
     let new_dir = tree.wikis_dir().join("alice").join("giardinaggio");
     assert!(new_dir.exists());
     assert!(new_dir.join("_meta.md").exists());
-    assert!(new_dir.join("index.md").exists());
+    // The carried page came over under its own name; nothing else is seeded.
+    assert!(new_dir.join("giardinaggio.md").exists());
+    assert!(!new_dir.join("index.md").exists());
     let source_after = tree.wikis_dir().join("alice").join("giardinaggio.md");
     assert!(!source_after.exists());
     // fact_index rows now point at the sub-wiki.
@@ -1830,16 +1832,17 @@ async fn chat_agentic_loop_dispatches_tool_then_returns_final_message() {
 #[tokio::test]
 async fn chat_ingest_e2e_captures_fact_with_fake_backend() {
     use mwe_core::fact_index;
-    // `requested_container: true` takes the live direct-write path so the
-    // fact lands in `fact_index` immediately. Every non-smart wiki is
-    // a standard wiki, so a plain capture into `alice`
-    // would buffer for the compiler instead.
+    // `requested_container: true` **on a page it names** takes the live
+    // direct-write path, so the fact lands in `fact_index` immediately. Both
+    // halves matter: a plain capture into `alice` waits for the dream, and so
+    // does one whose page name was refused — a claim on the parking page is a
+    // claim nobody has placed.
     let plan = serde_json::json!({
         "intent": "capture",
         "suggested_seed": "ho salvato",
         "context_snippet": "",
         "target_wiki_id": "alice",
-        "target_page": "index.md",
+        "target_page": "presentazioni.md",
         "subject_id": "user:alice",
         "allow_ids": [],
         "fact_type": "bio",

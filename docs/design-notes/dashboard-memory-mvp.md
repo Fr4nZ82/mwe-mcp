@@ -13,7 +13,8 @@ Alongside the identity console
 needs at runtime:
 
 - a list of wikis with their active-fact counts;
-- a read-only single-wiki view (`index.md` + page list + meta), with an
+- a read-only single-wiki view (page list + meta, plus an `index.md`
+  preview on a **smart** wiki, where its consumer authors that page), with an
   admin-only **export** link that downloads the wiki subtree as a
   portable full-marker tar
   ([`mwe_core::export`](../../crates/mwe-core/src/export.rs) — the
@@ -225,7 +226,8 @@ is the only coherent setting today.
    with the status "consumer agent (no login by design)", instead of a
    `user` whose status ("no credentials, no invitation") is equally true of
    a human waiting to accept an invite.
-4. Reads `index.md` if present, **strips the testata**
+4. On a smart wiki only, reads its `index.md` if present, **strips the
+   testata**
    (`MarkdownDoc::parse(raw).map_or(raw, |d| d.body)` — so the frontmatter
    card's owner-tier `keywords`/`description` never leak, exactly as
    `wiki_read` / the recall navigator do; the structured fields come from
@@ -542,9 +544,14 @@ The page also reads **un-promoted captures** still in `capture_buffer`
 `recall::wiki_buffered_full_for` — the same ACL projection and filter set,
 but no semantic ranking (it is a list, not a search, so it needs no
 embedder). Those buffered rows lead the listing, carry an **`in
-consolidamento`** badge (`badge-fresh`), and drop the "modifica" /
-"elimina" actions — there is no `fact_index` row to edit or tombstone by
-`fact_id` until promotion.
+consolidamento`** badge (`badge-fresh`), show a dash in the `wiki_id`
+column, and drop the "modifica" / "elimina" actions — there is no
+`fact_index` row to edit or tombstone by `fact_id` until promotion.
+
+Two consequences of a buffered capture having **no wiki** (migration `0071`):
+the dash above, and the fact that a `wiki_id` filter cannot narrow this half
+of the listing. The consolidating prefix is therefore the same on every
+wiki's view — correct, since those claims are not in any wiki yet.
 Pagination's next-page estimate keys off the promoted count alone; the
 fresh prefix is small and capped, so it never spans pages. This mirrors
 the consumer-side mid-range bridge (`recall_fresh_captures`): a claim is
@@ -627,7 +634,7 @@ The edit form carries **three** surfaces, split by how they apply:
   `move` op (REM, batched) and the operative-chat `wiki_move_fact` tool both
   reuse the same engine (`promote::apply_paragraph_to_file_direct` for a
   same-wiki page→page move, `promote::apply_fact_refile_direct` for a
-  cross-wiki move onto the destination wiki's `index.md`), each minting a
+  cross-wiki move onto the destination wiki's buffer page `@notes.md`), each minting a
   born-applied + revertible receipt. ACL / validity stay structured because
   no LLM judgment is involved; a move follows an operator's stated *intent*,
   so it rides the intent-driven channels, never a `<select>`.

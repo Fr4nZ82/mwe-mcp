@@ -43,7 +43,7 @@ smart consumer notifying its own wiki (`403
 smart_does_not_notify_own_wiki`), because writing your own inbox is a
 write, not a message. mwe-mcp's REM cycle skips all
 write-jobs on companion-wikis (no auto-promote, no auto-archive, no
-hub-writer), runs read-jobs (recall pre-indexing, dedup source), and
+page compilation), runs read-jobs (recall pre-indexing, dedup source), and
 adds two notify-only sub-jobs (Briefing dispatcher + Backlink
 reciprocity) that drop items into `_briefing.md`.
 
@@ -89,7 +89,7 @@ The **fine work** (extract the appointment, resolve its date, dedup
 against what is already stored, build the page) is **the server's**:
 once you route a turn to `wiki_ingest_message`, the `ingest` classifier
 does it with operator knowledge (group scopes, known users, the
-sender's `rules.md`) you do not have.
+sender's `@rules.md`) you do not have.
 
 **Length is never the fact-gate.** "Don't ingest long messages" means
 *don't store the long body verbatim* — **not** *don't look inside it*.

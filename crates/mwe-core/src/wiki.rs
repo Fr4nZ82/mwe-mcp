@@ -19,7 +19,6 @@
 //!   wikis/                  (the forest container — holds no wiki of its own)
 //!     <slug>/               (a top-level memory wiki: a user, a group, …)
 //!       _meta.md            (YAML frontmatter, see WikiMeta)
-//!       index.md            (Hub-Writer-managed hub page, optional)
 //!       <leaf>.md           (leaf prose pages)
 //!       <sub_slug>/         (sub-wiki, recursive)
 //!         _meta.md
@@ -76,24 +75,27 @@ pub const WIKIS_DIR: &str = "wikis";
 /// Filename of the per-wiki manifest.
 pub const META_FILENAME: &str = "_meta.md";
 
-/// Filename of a wiki's **map** (`<wiki_dir>/index.md`).
+/// The page name `index.md` — kept only to keep it **out of use**.
 ///
-/// The map answers one question — *where does a fact belong on this wiki?* —
-/// and it is asked by exactly two callers: the REM sweeps deciding where to
-/// re-file, and the ingest classifier deciding where to place. The read path
-/// never opens it: recall reaches the content pages the turn's best facts
-/// live on, and a map of a wiki it is already standing in tells a reader
-/// nothing the pages do not. So the funnel filters it out of every offer and
-/// refuses it centrally ([`crate::recall_nav`]), the same treatment
-/// [`RULES_FILENAME`] gets for the same reason.
+/// A standard wiki has no such page. Until 2026-08-15 REM assembled one per
+/// wiki every night as a "map" of what lived there, on the theory that
+/// whoever places a fact would read it to decide where the fact goes. Nothing
+/// ever read it: the placement side (the Cartografo) is handed the pages, one
+/// line each, out of the compilation plan and the `page_cards` table — which
+/// carry the same information, are written on **every** page change rather
+/// than once a night, and cost no file. Founder, 2026-08-15: *«quello che non
+/// serve va tolto»*. So the writer is gone, and with it the four rules that
+/// existed only to keep readers away from what it wrote.
 ///
-/// A corollary that has bitten once: **nothing may re-home a fact here**. A
-/// fact parked on the map is a fact no navigation route can reach.
-/// Cross-wiki moves land on [`NOTES_FILENAME`] instead.
+/// What the name is still good for: nothing may coin a page called `index`
+/// ([`is_reserved_page_stem`]), so the word cannot come back meaning
+/// something else. On a **smart** wiki `index.md` is an ordinary content page
+/// its consumer authors through `wiki_admin_push`; REM never touched those
+/// and still does not.
 pub const INDEX_FILENAME: &str = "index.md";
 
 /// Filename of a person's or group's **identity card**
-/// (`<wiki_dir>/profile.md`).
+/// (`<wiki_dir>/@profile.md`).
 ///
 /// Who this actor is, in prose: the page the ingest classifier keeps current
 /// and the one recall *serves* verbatim in its own slot (`WHO YOU ARE` /
@@ -102,13 +104,12 @@ pub const INDEX_FILENAME: &str = "index.md";
 /// — spending a navigation hop to re-read text the reader is looking at is
 /// the one door guaranteed to teach nothing.
 ///
-/// Distinct from [`INDEX_FILENAME`] on purpose: *who someone is* and *where
-/// their facts go* are different questions, and one page answering both made
-/// every identity card a placement target and every placement map a
-/// biography.
-pub const PROFILE_FILENAME: &str = "profile.md";
+/// Distinct from [`NOTES_FILENAME`] on purpose: *who someone is* and *where a
+/// fact waits until it has a page* are different questions, and one page
+/// answering both made every identity card a landing area.
+pub const PROFILE_FILENAME: &str = "@profile.md";
 
-/// Filename of a wiki's **buffer page** (`<wiki_dir>/notes.md`).
+/// Filename of a wiki's **buffer page** (`<wiki_dir>/@notes.md`).
 ///
 /// Where a fact lands when it has a wiki but no page yet: the ingest
 /// classifier's fallback placement, and the destination of every cross-wiki
@@ -118,22 +119,11 @@ pub const PROFILE_FILENAME: &str = "profile.md";
 /// reorg sweep reads it like any other page and lifts its facts onto the
 /// pages they belong on, emerging new ones where a theme has grown enough
 /// to deserve its own.
-pub const NOTES_FILENAME: &str = "notes.md";
+pub const NOTES_FILENAME: &str = "@notes.md";
 
-/// Filename of the per-wiki captures journal (`<wiki_dir>/_captures.md`).
+/// Filename of the per-actor user-policy page (`<wiki_dir>/@rules.md`).
 ///
-/// The durable on-disk SSOT of buffered captures for a *standard* wiki: the
-/// classifier writes here and the nightly compiler (Cronista) reads from it; the
-/// published `.md` pages are the compiler's OUTPUT, not the capture target. It is
-/// NOT a publishable page and carries no `{{f=…}}` fact regions, so it is excluded
-/// from [`WikiHandle::list_pages`] and from the reindex marker sweep
-/// (`crate::reindex`). See [`crate::capture_buffer`].
-pub const CAPTURES_FILENAME: &str = "_captures.md";
-
-/// Filename of the per-actor user-policy page (`<wiki_dir>/rules.md`).
-///
-/// A **user-facing** page (no underscore, unlike the `_meta`/`_captures`
-/// plumbing) seeded with a default at actor-wiki creation. It holds the user's
+/// A **user-facing** page (no underscore, unlike the engine's own plumbing) seeded with a default at actor-wiki creation. It holds the user's
 /// standing policy in natural language — privacy/ACL rules the ingest honours
 /// when it assigns the per-fact ACL (`subject` / `allow`), and behaviour rules
 /// every consumer is shown. Its privacy/governance directives are raw prose
@@ -149,11 +139,31 @@ pub const CAPTURES_FILENAME: &str = "_captures.md";
 /// *satellite*, never completion *evidence* nor a completion candidate);
 /// and the recall navigator never opens it (channel-only delivery) — so a
 /// behaviour rule keeps living here and `recall_behaviour_rules` keeps
-/// finding it, and `rules.md` survives the compile/REM cycle untouched. A
+/// finding it, and `@rules.md` survives the compile/REM cycle untouched. A
 /// rule leaves the channel only via supersede, tombstone, or a closed
 /// validity window — its subject's explicit closure, never collateral (the
 /// channel filters validity at read time).
-pub const RULES_FILENAME: &str = "rules.md";
+pub const RULES_FILENAME: &str = "@rules.md";
+
+/// True when `source_path`'s last component is `name`, **or its pre-marker
+/// spelling** — `name` without the leading `@`.
+///
+/// Emit canonical, resolve legacy: writes use the constant and land on the
+/// marked name, while a row written before 2026-08-18 still says `rules.md`
+/// / `profile.md` / `notes.md`. Every predicate that asks *"is this page the
+/// rules page?"* keys on the path, so without this a migrated corpus would
+/// go quietly invisible to its own channel — the rule would sit on disk and
+/// the reader would never look there. Same stance the marker grammar takes
+/// on `owner=` / `subject=`.
+fn names_page(source_path: &str, name: &str) -> bool {
+    let Some(last) = std::path::Path::new(source_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+    else {
+        return false;
+    };
+    last == name || name.strip_prefix('@').is_some_and(|bare| last == bare)
+}
 
 /// True when `source_path` is a wiki's reserved policy page [`RULES_FILENAME`].
 ///
@@ -164,13 +174,11 @@ pub const RULES_FILENAME: &str = "rules.md";
 /// content page like `house_rules.md` is not caught.
 #[must_use]
 pub fn is_rules_page(source_path: &str) -> bool {
-    std::path::Path::new(source_path)
-        .file_name()
-        .is_some_and(|n| n == std::ffi::OsStr::new(RULES_FILENAME))
+    names_page(source_path, RULES_FILENAME)
 }
 
 /// Filename of the per-actor **project signposts** page
-/// (`<wiki_dir>/projects.md`), roadmap group 48.
+/// (`<wiki_dir>/@projects.md`), roadmap group 48.
 ///
 /// Home of the *signposts*: one short non-technical description per
 /// project the actor owns, plus a handful of by-day activity lines. They
@@ -189,19 +197,36 @@ pub fn is_rules_page(source_path: &str) -> bool {
 /// Written only by the deterministic channel
 /// ([`crate::signposts`]) — never by the ingest classifier, never by the
 /// compiler — and, like [`RULES_FILENAME`], fenced out of every structural
-/// sweep ([`is_channel_page`]). Unlike `rules.md` it stays **recallable**
+/// sweep ([`is_channel_page`]). Unlike `@rules.md` it stays **recallable**
 /// and navigable: delivery through ordinary recall is the entire point.
-pub const PROJECTS_FILENAME: &str = "projects.md";
+pub const PROJECTS_FILENAME: &str = "@projects.md";
 
 /// True when `stem` (a page name without its `.md`) names one of the five
 /// **reserved pages** no classifier may aim a capture at.
 ///
-/// The wiki's map ([`INDEX_FILENAME`], which holds no facts), its card and
-/// its buffer ([`PROFILE_FILENAME`] / [`NOTES_FILENAME`], per-wiki foundation
-/// nodes the planner owns), and the two deterministic channels
-/// ([`RULES_FILENAME`] / [`PROJECTS_FILENAME`], written by their own code
-/// paths). A capture that names one is not filed there — it falls through to
-/// the deterministic home its subject and salience choose.
+/// The wiki's card and its buffer ([`PROFILE_FILENAME`] / [`NOTES_FILENAME`],
+/// per-wiki foundation nodes the planner owns), the three deterministic
+/// channels ([`RULES_FILENAME`] / [`PROJECTS_FILENAME`] /
+/// [`PROJECT_DIARY_FILENAME`], each written by its own code path), and `index`
+/// — the one name here that no longer *is* anything ([`INDEX_FILENAME`]),
+/// fenced off so nothing coins a page called "index" that is not one. A
+/// capture that names any of them is not filed there: it falls through to the
+/// deterministic home its subject and salience choose.
+///
+/// **These are pages of the memory**, unlike the `_`-prefixed set
+/// ([`names_engine_file`]) — they hold facts, recall reads them and the
+/// compiler writes them. What they share is only that the **name** is the
+/// engine's: this list is about who may coin one, not about what the file is.
+///
+/// ⚠️ `project_diary` joined on 2026-08-18, having been missing since the
+/// diary shipped: it was fenced out of every structural sweep
+/// ([`is_channel_page`]) but not out of *coining*, so a `lista` or a
+/// user-requested container named `project_diary` reached
+/// `planner::placement_slug` intact and would have minted a plan page over the
+/// owner's diary. Same shape as the `@projects.md` hole found on 2026-08-11 —
+/// a name protected on one side of the fence and not the other. Founder,
+/// 2026-08-18, asking which files the engine names: *«forse ce ne sono
+/// altre?»* — there was one.
 ///
 /// One list, read by both sides of that decision: the planner's placement
 /// flattener and the ingest list-page inventory
@@ -209,7 +234,22 @@ pub const PROJECTS_FILENAME: &str = "projects.md";
 /// about what a classifier is allowed to name.
 #[must_use]
 pub fn is_reserved_page_stem(stem: &str) -> bool {
-    matches!(stem, "index" | "rules" | "projects" | "profile" | "notes")
+    // The marker settles it whatever follows: `@` is the engine's, so no
+    // coined name may start with one (founder, 2026-08-18). The bare words
+    // stay refused beside it — a page called `rules.md` next to `@rules.md`
+    // would read as the same thing to a human and be a different thing to
+    // the engine, and a receipt written before the marker still names them.
+    stem.starts_with('@')
+        || matches!(
+            stem,
+            "index"
+                | "rules"
+                | "projects"
+                | "project_diary"
+                | "projects_diary"
+                | "profile"
+                | "notes"
+        )
 }
 
 /// True when `page` — a **model-coined** page name — names a reserved page.
@@ -229,7 +269,7 @@ pub fn is_reserved_page_stem(stem: &str) -> bool {
 /// (`rem::run_auto_promote`). Each falls back to the wiki's **buffer** — the
 /// designed holding place a placement settles from — never to the map.
 ///
-/// Only the *last* segment is judged: `spesa/notes.md` is a page inside a
+/// Only the *last* segment is judged: `spesa/@notes.md` is a page inside a
 /// folder, not the wiki's buffer. Case- and extension-insensitive, because a
 /// coined name is a guess at a spelling.
 #[must_use]
@@ -239,42 +279,20 @@ pub fn names_reserved_page(page: &Path) -> bool {
         .is_some_and(|stem| is_reserved_page_stem(&stem.to_ascii_lowercase()))
 }
 
-/// True when a wiki-relative page path names the wiki's **map**
-/// ([`INDEX_FILENAME`]).
-///
-/// The map is the engine's own instrument — where REM and the ingest
-/// placement look up where a fact goes. It holds no facts, and what it does
-/// hold is structure: the wiki's sub-wikis and every one of its pages as a
-/// `[[wikilink]]`. Founder's ruling, 2026-08-03: *«la radice della wiki
-/// dovrebbe servire solo al rem e all'ingest come mappa per dove mettere i
-/// fatti e non dovrebbe neanche essere presa per nulla dal recall»*, and
-/// 2026-08-14 on the read side generally: *«la struttura va tolta dal
-/// messaggio di risposta al consumer, al consumer interessa solo
-/// l'informazione relativamente al messaggio che ha inviato l'utente»*.
-///
-/// One rule, asked by every route that could reach it: the navigator's offer
-/// filter and its central `open_target` refusal, and `wiki_read`, which used
-/// to serve the map as its **advertised default**.
-#[must_use]
-pub fn names_map_page(page: &Path) -> bool {
-    page.file_name()
-        .is_some_and(|n| n == std::ffi::OsStr::new(INDEX_FILENAME))
-}
-
 /// The owner's reserved **project diary** — one line per project per day,
 /// saying what happened.
 ///
 /// Separate from [`PROJECTS_FILENAME`] because the two have opposite
 /// lifecycles, and mixing them costs the stronger of the two guarantees:
 ///
-/// | | `projects.md` | this page |
+/// | | `@projects.md` | this page |
 /// |---|---|---|
 /// | content | each project's **door sign** | what happened, by day |
 /// | origin | *derived* — projected from `smart_wikis.description` | *accumulated* — nothing to derive it from |
 /// | if lost | rebuilt by the next sweep | gone |
 /// | ages out | no | yes, on a rolling window |
 ///
-/// Keeping them apart is what makes `projects.md` **fully regenerable**:
+/// Keeping them apart is what makes `@projects.md` **fully regenerable**:
 /// everything on it comes from the registry, so there is nothing on it a
 /// buggy writer could destroy that a sweep would not restore. A page that
 /// also accumulated events could not make that promise, and its renderer
@@ -287,7 +305,7 @@ pub fn names_map_page(page: &Path) -> bool {
 ///
 /// Written by [`crate::signposts`] alone, and fenced out of the structural
 /// sweeps exactly like its sibling ([`is_channel_page`]).
-pub const PROJECT_DIARY_FILENAME: &str = "project_diary.md";
+pub const PROJECT_DIARY_FILENAME: &str = "@projects_diary.md";
 
 /// `wiki_type` of a smart consumer's **operational wiki**.
 ///
@@ -304,7 +322,7 @@ pub const AGENT_WIKI_TYPE: &str = "agent";
 
 /// The `{subject}` line for an agent's wiki; empty for every other wiki.
 ///
-/// Read by the prompts that WRITE a wiki's index — the hub writer and the
+/// Read by the prompts that WRITE a wiki's pages — the Cronista and the
 /// compiler's hub pass. Those passes narrate a wiki from the outside by
 /// default, which is the voice a human's memory wants. An agent's wiki is its
 /// **autobiography**: left on the default voice the same pass files the
@@ -331,18 +349,14 @@ pub const fn subject_directive(meta: &WikiMeta) -> &'static str {
 /// so a content page named `my_projects.md` is not caught.
 #[must_use]
 pub fn is_projects_page(source_path: &str) -> bool {
-    std::path::Path::new(source_path)
-        .file_name()
-        .is_some_and(|n| n == std::ffi::OsStr::new(PROJECTS_FILENAME))
+    names_page(source_path, PROJECTS_FILENAME)
 }
 
 /// True when `source_path` is the owner's reserved project diary
 /// [`PROJECT_DIARY_FILENAME`]. Keyed on the file name, like its siblings.
 #[must_use]
 pub fn is_project_diary_page(source_path: &str) -> bool {
-    std::path::Path::new(source_path)
-        .file_name()
-        .is_some_and(|n| n == std::ffi::OsStr::new(PROJECT_DIARY_FILENAME))
+    names_page(source_path, PROJECT_DIARY_FILENAME)
 }
 
 /// True when `source_path` is either half of the signpost channel — the
@@ -367,7 +381,7 @@ pub fn is_signpost_page(source_path: &str) -> bool {
 /// A channel page's facts are written by a dedicated deterministic path
 /// and read back by a dedicated reader, so the engine's structural sweeps
 /// must leave them exactly where they are: the compiler never gathers them
-/// (they would orphan onto `index.md` and fall out of their channel), the
+/// (they would orphan onto another page and fall out of their channel), the
 /// REM refile never nominates them, the contradiction and completion
 /// sweeps never use them as satellites or evidence, and dedup pairs never
 /// cross the boundary (both sides on a channel page, or neither — else a
@@ -380,6 +394,37 @@ pub fn is_signpost_page(source_path: &str) -> bool {
 #[must_use]
 pub fn is_channel_page(source_path: &str) -> bool {
     is_rules_page(source_path) || is_signpost_page(source_path)
+}
+
+/// True when a wiki-relative page path names one of the **engine's own
+/// files** rather than a page of the memory.
+///
+/// **The leading underscore is the whole rule** (founder, 2026-08-18):
+/// [`META_FILENAME`], a smart wiki's `_briefing.md` and its rotated archive,
+/// anything the engine adds later.
+/// Everything the engine keeps for its own bookkeeping is named that way, and
+/// nothing a wiki holds *as content* ever is — so this predicate replaces
+/// every list of names that used to be maintained by hand (page enumeration,
+/// the reindex sweep, the export, the read tool).
+///
+/// Founder's ruling, 2026-08-16, on how a smart wiki is read: *«non ci
+/// interessa come sono fatte e nessun file dev'essere vietato o trattato in
+/// modo diverso, tranne quelli che crea il motore come ad esempio il
+/// briefing»*. A smart wiki's pages are its consumer's documentation and the
+/// engine has no opinion on their names — so the read tool refuses this set
+/// and nothing else. (Before that ruling it refused `index.md` instead, a
+/// leftover of the standard-wiki page listing deleted on 2026-08-15, which
+/// hit only smart wikis and hid a page their consumer had authored.)
+///
+/// Only the last component is judged, so a content page inside a folder is
+/// never caught. The engine's own readers do not go through here: the
+/// smart consumer pulls its briefing with `wiki_admin_pull`, which
+/// enumerates via [`WikiHandle::list_pages`].
+#[must_use]
+pub fn names_engine_file(page: &Path) -> bool {
+    page.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with('_'))
 }
 
 /// Errors raised by the wiki I/O layer.
@@ -1450,7 +1495,11 @@ fn list_pages_inner(wiki_root: &Path, cur: &Path, out: &mut Vec<PageInfo>) -> Re
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if name == META_FILENAME || name == CAPTURES_FILENAME {
+            // One rule: a name starting with `_` belongs to the engine and is
+            // not a page of the wiki (founder, 2026-08-18). Covers `_meta.md`,
+            // the smart consumer's `_briefing.md` + its archive, and any
+            // leftover of the retired captures journal.
+            if name.starts_with('_') {
                 continue;
             }
             // Case-insensitive `.md` filter so `INTRO.MD` from an Obsidian
@@ -1528,9 +1577,9 @@ pub fn is_safe_page_path(p: &Path) -> bool {
                 if name.is_empty() {
                     return false;
                 }
-                let all_ok = name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.');
+                let all_ok = name.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'@'
+                });
                 if !all_ok {
                     return false;
                 }
@@ -1566,7 +1615,7 @@ pub fn is_safe_page_path(p: &Path) -> bool {
 ///
 /// Byte-exact reserved names are deliberately NOT flagged: their
 /// writability is per-caller policy (`wiki_admin_push` refuses
-/// `_meta.md` but accepts `rules.md` / `_briefing.md`).
+/// `_meta.md` but accepts `@rules.md` / `_briefing.md`).
 #[must_use]
 pub fn page_path_case_hazard(rel: &Path) -> Option<String> {
     let reserved = [
@@ -1908,7 +1957,7 @@ Italian, whoever you are\") are also kept here, managed automatically.\n";
 /// into the next ingest prompt, so we simply append; section layout is not
 /// load-bearing.
 ///
-/// Reads the wiki's current `rules.md` and appends `- <rule>` after a blank
+/// Reads the wiki's current `@rules.md` and appends `- <rule>` after a blank
 /// line. When the file is missing (a legacy wiki that never got the
 /// scaffold), it starts from [`RULES_DEFAULT_BODY`] so the rule is never lost.
 ///
@@ -1918,7 +1967,7 @@ Italian, whoever you are\") are also kept here, managed automatically.\n";
 ///
 /// # Errors
 ///
-/// - [`WikiError::UnsafePagePath`] (never, for the constant `rules.md`).
+/// - [`WikiError::UnsafePagePath`] (never, for the constant `@rules.md`).
 /// - [`WikiError::Io`] on a filesystem read/write failure.
 pub fn append_engine_rule(handle: &WikiHandle, rule: &str) -> Result<()> {
     let rule = rule.trim().trim_start_matches("- ").trim();
@@ -1948,8 +1997,9 @@ pub fn append_engine_rule(handle: &WikiHandle, rule: &str) -> Result<()> {
 /// Create the on-disk scaffold for an identity wiki.
 ///
 /// (See the wiki filesystem surface.) Writes
-/// `<workdir>/wikis/<id>/_meta.md` (frontmatter) + `index.md` (placeholder
-/// body) + [`rules.md`](RULES_FILENAME) (default user-policy page).
+/// `<workdir>/wikis/<id>/_meta.md` (frontmatter) +
+/// [`@rules.md`](RULES_FILENAME) (default user-policy page). No content page:
+/// the wiki's pages arrive from what is written into it.
 ///
 /// Idempotent — when the directory already has a `_meta.md`, returns
 /// `Ok(IdentityWikiCreation { created: false, ... })` and does not
@@ -2017,31 +2067,19 @@ pub fn create_identity_wiki(
         updated: Some(now_iso),
         extra: serde_yaml::Mapping::new(),
     };
-    let body = format!(
-        "# {title}\n\n_Identity wiki for {id}. Capture freely._\n",
-        id = id.as_str()
-    );
     let meta_doc = meta.render("").map_err(|e| WikiError::InvalidFrontmatter {
         path: meta_path.clone(),
         detail: format!("rendering canonical meta: {e}"),
     })?;
     atomic_write(&meta_path, meta_doc.as_bytes())?;
-    atomic_write(&dir.join("index.md"), body.as_bytes())?;
-    // Seed the user-facing policy page. Only at creation (like
-    // index.md); the idempotent early-return above preserves a user-edited
-    // rules.md on re-runs.
+    // Seed the user-facing policy page. Only at creation; the idempotent
+    // early-return above preserves a user-edited rules.md on re-runs.
     atomic_write(&dir.join(RULES_FILENAME), RULES_DEFAULT_BODY.as_bytes())?;
     tracing::info!(
         wiki_id = id.as_str(),
         kind = ?kind,
         "identity wiki: created"
     );
-    // A new top-level wiki appeared → refresh the operator's Obsidian
-    // collector index. Best-effort: a convenience artifact must never
-    // fail the actual creation.
-    if let Err(e) = write_root_collector_index(tree) {
-        tracing::warn!(error = %e, "root collector index refresh failed (non-fatal)");
-    }
     Ok(IdentityWikiCreation {
         wiki_id: id.clone(),
         created: true,
@@ -2113,56 +2151,7 @@ pub fn ensure_is_agent_marker_in(wiki_dir: &Path) -> Result<bool> {
     Ok(true)
 }
 
-/// Write the **root collector index** at `<workdir>/wikis/index.md`: a
-/// marker-less Obsidian hub linking every top-level memory wiki.
-///
-/// This exists purely so an operator who opens `wikis/` as an Obsidian
-/// vault gets a navigable landing page — it is **admin convenience, NOT a
-/// mwe-mcp runtime mechanism**, and nothing in the engine reads it.
-/// (Future: the dashboard graph-exploration view can reuse this hub.)
-///
-/// It is a *loose* file — no `_meta.md` beside it — so it stays invisible
-/// to the engine: the re-index resolves it to `wiki_id = None` (zero
-/// `fact_index` rows, exactly like `_styles/`) and wiki enumeration (which
-/// keys on `_meta.md`) never mistakes it for a wiki. It is for a **human**
-/// browsing the files: recall renders nothing of the sort, because the read
-/// side is shown no wiki and no list of them.
-///
-/// Only **top-level** wikis are listed — direct children of `wikis/`
-/// (`rel_dir` depth 2). Smart wikis and emerged sub-wikis are always
-/// nested, so they never appear here; the operator follows each top-level
-/// wiki's own internal links to reach them. Re-written wholesale (option
-/// B, "kept fresh") whenever a top-level wiki is created and once at
-/// bootstrap to realign after external edits. Entries are sorted
-/// case-insensitively by title; each is an Obsidian wikilink
-/// `[[<slug>/index|<Title>]]` (path resolves from the `wikis/` vault root,
-/// alias is the human title).
-///
-/// # Errors
-///
-/// Filesystem failures from the tree walk or the atomic write.
-pub fn write_root_collector_index(tree: &WikiTree) -> Result<()> {
-    use std::fmt::Write as _;
-    let mut entries: Vec<(String, String)> = tree
-        .walk()?
-        .into_iter()
-        .filter(|d| d.rel_dir.components().count() == 2 && !d.meta.smart)
-        .map(|d| (d.meta.title.clone(), d.meta.slug.as_str().to_owned()))
-        .collect();
-    entries.sort_by(|a, b| {
-        a.0.to_lowercase()
-            .cmp(&b.0.to_lowercase())
-            .then_with(|| a.0.cmp(&b.0))
-    });
-    let mut body = String::from("# Wikis\n\n");
-    for (title, slug) in &entries {
-        let _ = writeln!(body, "- [[{slug}/index|{title}]]");
-    }
-    atomic_write(&tree.wikis_dir().join("index.md"), body.as_bytes())
-}
-
-/// Materialise a wiki directory on disk from a fully-built [`WikiMeta`] plus
-/// the body of its `index.md`.
+/// Materialise a wiki directory on disk from a fully-built [`WikiMeta`].
 ///
 /// A generic filesystem primitive (the `wiki_type` registry/template machinery
 /// it once served has been removed): the caller hands over a finished
@@ -2175,7 +2164,8 @@ pub fn write_root_collector_index(tree: &WikiTree) -> Result<()> {
 ///    inherits a parent's ACL scope.
 /// 3. **Additive-only invariant** — an existing `_meta.md` at the target is
 ///    refused with [`WikiError::AlreadyExists`]; create never overwrites.
-/// 4. **Atomic write** — `_meta.md` (canonical render) then `index.md`.
+/// 4. **Atomic write** — `_meta.md` (canonical render). Nothing else: a new
+///    wiki's pages come from whatever writes into it.
 ///
 /// It deliberately does **not** touch `fact_index`, the op-log, or any
 /// transaction: callers layer their own bookkeeping around it. Returns the
@@ -2188,12 +2178,7 @@ pub fn write_root_collector_index(tree: &WikiTree) -> Result<()> {
 /// - [`WikiError::WikiNotFound`] — `meta.parent_wiki_id` does not resolve.
 /// - [`WikiError::InvalidFrontmatter`] — `_meta.md` failed to render.
 /// - [`WikiError::Io`] — filesystem error during write.
-pub fn write_wiki_dir(
-    tree: &WikiTree,
-    meta: &WikiMeta,
-    index_body: &str,
-    requires_parent: bool,
-) -> Result<PathBuf> {
+pub fn write_wiki_dir(tree: &WikiTree, meta: &WikiMeta, requires_parent: bool) -> Result<PathBuf> {
     if requires_parent && meta.parent_wiki_id.is_none() {
         return Err(WikiError::RequiresParent {
             wiki_type: meta.wiki_type.clone(),
@@ -2228,7 +2213,6 @@ pub fn write_wiki_dir(
         detail: format!("rendering canonical meta: {e}"),
     })?;
     atomic_write(&meta_path, meta_doc.as_bytes())?;
-    atomic_write(&dir.join("index.md"), index_body.as_bytes())?;
     Ok(dir)
 }
 
@@ -2283,7 +2267,7 @@ mod tests {
         // A page inside a folder called after a reserved name is a page.
         assert!(!names_reserved_page(Path::new("notes/spesa.md")));
         // …but the wiki's own buffer is, wherever it is addressed from.
-        assert!(names_reserved_page(Path::new("spesa/notes.md")));
+        assert!(names_reserved_page(Path::new("spesa/@notes.md")));
         assert!(!names_reserved_page(Path::new("lista_spesa.md")));
         assert!(!names_reserved_page(Path::new("indexing.md")));
         assert!(!names_reserved_page(Path::new("")));
@@ -2521,7 +2505,7 @@ mod tests {
     // ---------- create_identity_wiki ----------
 
     #[test]
-    fn create_identity_wiki_writes_meta_and_index() {
+    fn create_identity_wiki_writes_meta_and_rules() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("wikis")).unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
@@ -2540,8 +2524,12 @@ mod tests {
             tree.resolve_scope_principal(&parsed).expect("resolve"),
             Principal::User("franz".into())
         );
-        let index = fs::read_to_string(tree.wikis_dir().join("franz").join("index.md")).unwrap();
-        assert!(index.contains("# Franz"));
+        // No `index.md`: a wiki is born with its metadata and its rules page,
+        // and gets its pages from what is written into it (2026-08-15).
+        assert!(
+            !tree.wikis_dir().join("franz").join("index.md").exists(),
+            "a new wiki must not be seeded with an index.md"
+        );
         // A default, user-facing rules.md is seeded too — engine
         // rules only (privacy + do-not-store), no "Behaviour" section.
         let rules =
@@ -2912,21 +2900,20 @@ mod tests {
     }
 
     #[test]
-    fn write_wiki_dir_top_level_writes_meta_and_index() {
+    fn write_wiki_dir_top_level_writes_meta() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("wikis")).unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
         let id = WikiId::parse("contacts").unwrap();
         let meta = typed_meta(&id, None, "contacts", "wiki-contacts");
-        let out = write_wiki_dir(&tree, &meta, "# Contacts\n", false).unwrap();
+        let out = write_wiki_dir(&tree, &meta, false).unwrap();
         assert_eq!(out, tree.wikis_dir().join("contacts"));
         let written = fs::read_to_string(out.join("_meta.md")).unwrap();
         assert!(written.contains("wiki_id: contacts"));
         assert!(written.contains("wiki_type: wiki-contacts"));
         assert!(
-            fs::read_to_string(out.join("index.md"))
-                .unwrap()
-                .contains("# Contacts")
+            !out.join("index.md").exists(),
+            "the primitive writes metadata only"
         );
     }
 
@@ -2941,71 +2928,9 @@ mod tests {
         tree = WikiTree::open(dir.path()).unwrap();
         let child = WikiId::child_of(&parent, &WikiSlug::parse("contatti").unwrap());
         let meta = typed_meta(&child, Some(&parent), "contatti", "wiki-contacts");
-        let out = write_wiki_dir(&tree, &meta, "# Contatti\n", false).unwrap();
+        let out = write_wiki_dir(&tree, &meta, false).unwrap();
         assert_eq!(out, tree.wikis_dir().join("famiglia").join("contatti"));
         assert!(out.join("_meta.md").exists());
-    }
-
-    #[test]
-    fn root_collector_index_lists_only_top_level_marker_less() {
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("wikis")).unwrap();
-        let mut tree = WikiTree::open(dir.path()).unwrap();
-        // Two top-level user wikis, created out of alpha order to exercise
-        // the sort.
-        create_identity_wiki(
-            &tree,
-            &WikiId::parse("bob").unwrap(),
-            "Bob",
-            IdentityKind::User,
-        )
-        .unwrap();
-        create_identity_wiki(
-            &tree,
-            &WikiId::parse("alice").unwrap(),
-            "Alice",
-            IdentityKind::User,
-        )
-        .unwrap();
-        tree = WikiTree::open(dir.path()).unwrap();
-        // A nested sub-wiki under alice (depth 3) — must be excluded.
-        let alice = WikiId::parse("alice").unwrap();
-        let child = WikiId::child_of(&alice, &WikiSlug::parse("sub").unwrap());
-        write_wiki_dir(
-            &tree,
-            &typed_meta(&child, Some(&alice), "sub", "wiki-tech"),
-            "# Sub\n",
-            false,
-        )
-        .unwrap();
-        // A top-level smart wiki — must be excluded by the smart flag.
-        let mut comp = typed_meta(
-            &WikiId::parse("comp").unwrap(),
-            None,
-            "comp",
-            "wiki-companion",
-        );
-        comp.smart = true;
-        comp.title = "Comp".to_owned();
-        write_wiki_dir(&tree, &comp, "# Comp\n", false).unwrap();
-        tree = WikiTree::open(dir.path()).unwrap();
-
-        write_root_collector_index(&tree).unwrap();
-
-        let body = fs::read_to_string(tree.wikis_dir().join("index.md")).unwrap();
-        assert!(body.starts_with("# Wikis\n"), "{body}");
-        // Top-level only, Obsidian path+alias, sorted by title.
-        let alice_at = body.find("[[alice/index|Alice]]").expect(&body);
-        let bob_at = body.find("[[bob/index|Bob]]").expect(&body);
-        assert!(alice_at < bob_at, "alphabetical by title: {body}");
-        // Excluded: the nested sub-wiki and the smart wiki.
-        assert!(!body.contains("sub/index"), "nested excluded: {body}");
-        assert!(!body.contains("comp/index"), "smart wiki excluded: {body}");
-        // Marker-less: never a fact carrier.
-        assert!(!body.contains("{{"), "no markers: {body}");
-        // Invisible to wiki enumeration: walk() keys on _meta.md, so the
-        // loose index.md adds no phantom wiki (alice, bob, alice-sub, comp).
-        assert_eq!(tree.walk().unwrap().len(), 4, "index.md must not be a wiki");
     }
 
     #[test]
@@ -3015,7 +2940,7 @@ mod tests {
         let tree = WikiTree::open(dir.path()).unwrap();
         let id = WikiId::parse("agenda").unwrap();
         let meta = typed_meta(&id, None, "agenda", "wiki-cron");
-        let err = write_wiki_dir(&tree, &meta, "# Agenda\n", /* requires_parent */ true)
+        let err = write_wiki_dir(&tree, &meta, /* requires_parent */ true)
             .expect_err("child-only type must refuse top-level");
         assert!(matches!(err, WikiError::RequiresParent { .. }));
         assert!(
@@ -3031,15 +2956,14 @@ mod tests {
         let tree = WikiTree::open(dir.path()).unwrap();
         let id = WikiId::parse("contacts").unwrap();
         let meta = typed_meta(&id, None, "contacts", "wiki-contacts");
-        write_wiki_dir(&tree, &meta, "# Contacts\n", false).unwrap();
-        let err = write_wiki_dir(&tree, &meta, "# Overwrite\n", false)
-            .expect_err("second create must refuse");
+        write_wiki_dir(&tree, &meta, false).unwrap();
+        let err = write_wiki_dir(&tree, &meta, false).expect_err("second create must refuse");
         assert!(matches!(err, WikiError::AlreadyExists { .. }));
-        // First body survives.
+        // First `_meta.md` survives.
         assert!(
-            fs::read_to_string(tree.wikis_dir().join("contacts").join("index.md"))
+            fs::read_to_string(tree.wikis_dir().join("contacts").join(META_FILENAME))
                 .unwrap()
-                .contains("# Contacts")
+                .contains("wiki_id: contacts")
         );
     }
 
@@ -3349,13 +3273,13 @@ mod tests {
     fn case_hazard_flags_reserved_variants_and_upper_md_extension() {
         assert!(page_path_case_hazard(Path::new("_Meta.md")).is_some());
         assert!(page_path_case_hazard(Path::new("sub/_META.md")).is_some());
-        assert!(page_path_case_hazard(Path::new("RULES.md")).is_some());
+        assert!(page_path_case_hazard(Path::new("@RULES.md")).is_some());
         assert!(page_path_case_hazard(Path::new("_Briefing.md")).is_some());
         assert!(page_path_case_hazard(Path::new("notes.MD")).is_some());
         assert!(page_path_case_hazard(Path::new("notes.Md")).is_some());
         // Byte-exact reserved names are caller policy, not a hazard.
         assert!(page_path_case_hazard(Path::new("_meta.md")).is_none());
-        assert!(page_path_case_hazard(Path::new("rules.md")).is_none());
+        assert!(page_path_case_hazard(Path::new("@rules.md")).is_none());
         assert!(page_path_case_hazard(Path::new("_briefing.md")).is_none());
         assert!(page_path_case_hazard(Path::new("Setup.md")).is_none());
         assert!(page_path_case_hazard(Path::new("Docs/Overview.md")).is_none());

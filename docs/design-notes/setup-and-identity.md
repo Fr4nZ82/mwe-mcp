@@ -67,8 +67,7 @@ POST /dashboard/setup
                                  ▼
                           filesystem (post-commit):
                           3. create <workdir>/wikis/<user_id>/_meta.md
-                          4. create <workdir>/wikis/<user_id>/index.md
-                          5. create <workdir>/wikis/<user_id>/rules.md
+                          4. create <workdir>/wikis/<user_id>/rules.md
                              (default user-policy page)
                                  ▼
                           session cookie minted
@@ -100,7 +99,7 @@ future dashboard form) to set a friendlier title. The
 helper is the canonical writer — it produces the same frontmatter
 shape every caller relies on, for both user and group actor-wikis.
 
-Step 5 seeds [`rules.md`](../../crates/mwe-core/src/wiki.rs) (`RULES_FILENAME`),
+Step 5 seeds [`@rules.md`](../../crates/mwe-core/src/wiki.rs) (`RULES_FILENAME`),
 the user-facing **engine-policy page**: the user's
 standing **governance** rules in natural language — privacy/sharing + do-not-store
 (per-agent behaviour rules belong to the consumer's own wiki; the user's
@@ -212,8 +211,8 @@ reinforcing **section markers** to one composed message.
 
 | Step | Fields | Destination | How the engine routes it |
 |---|---|---|---|
-| **1 · Chi sei** | `email`, `display_name`, `nickname`, `presentati`, `birthday`, `address`, `language`, `timezone`, `pronouns`, `phone`, `occupation`, `health_safety` | the sender's `profile.md` identity card (their always-on base context) | the ingest LLM marks the identity/always-on facts `salience: high`; the engine routes the high-salience core onto `profile.md` |
-| **2 · Le tue regole** | `sharing_default` (radio: private / group / always-private), `sharing_exclusions`, `private_topics`, `do_not_store` | the sender's `rules.md` engine-policy page | the ingest LLM marks each directive `engine_rule: true`; the engine appends it as policy prose to `rules.md` — never a row in `fact_index` |
+| **1 · Chi sei** | `email`, `display_name`, `nickname`, `presentati`, `birthday`, `address`, `language`, `timezone`, `pronouns`, `phone`, `occupation`, `health_safety` | the sender's `@profile.md` identity card (their always-on base context) | the ingest LLM marks the identity/always-on facts `salience: high`; the engine routes the high-salience core onto `@profile.md` |
+| **2 · Le tue regole** | `sharing_default` (radio: private / group / always-private), `sharing_exclusions`, `private_topics`, `do_not_store` | the sender's `@rules.md` engine-policy page | the ingest LLM marks each directive `engine_rule: true`; the engine appends it as policy prose to `@rules.md` — never a row in `fact_index` |
 | **3 · Il resto** | `favorite_color`, `hobbies`, `food_preferences` | the normal pipeline | no special tag — the LLM files them wherever it sees fit (`salience` stays normal/low) |
 
 All fields are optional. A "Salta tutto" submit repeats on every step,
@@ -237,7 +236,7 @@ chat turn via the `behaviour_rule` destination (see
 [ingest-pipeline.md](ingest-pipeline.md#agent-behaviour-rules--routed-by-scope-outside-fact-memory)):
 into the consumer's own wiki when it is agent-local (keyed by the caller's
 consumer identity threaded through `wiki_ingest_message`), or onto this same
-`rules.md` as a fact region when the user sets it for every assistant
+`@rules.md` as a fact region when the user sets it for every assistant
 (`user-global`, roadmap 42).
 
 ### Composing the message
@@ -293,7 +292,7 @@ not facts ("Le indicazioni che seguono NON sono fatti su di me, ma le mie
 REGOLE …"). The `sharing_default` radio maps to one sentence (private /
 group-decides / always-private); `sharing_exclusions`, `private_topics`,
 `do_not_store` each add a bulleted directive. The ingest LLM recognises
-each as an `engine_rule` and the engine appends it to `rules.md`.
+each as an `engine_rule` and the engine appends it to `@rules.md`.
 
 **Step 3 (the rest).** The leftover low-weight preferences as plain
 first-person prose under a "niente di importante" marker; no routing tag.

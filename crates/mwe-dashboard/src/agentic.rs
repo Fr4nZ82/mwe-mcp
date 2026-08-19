@@ -51,7 +51,7 @@
 //!   salute") — to another page of the same wiki
 //!   ([`mwe_core::promote::apply_paragraph_to_file_direct`]) or into another
 //!   wiki ([`mwe_core::promote::apply_fact_refile_direct`], always landing on
-//!   the destination wiki's `index.md`). It reuses the same act-first engine
+//!   the destination wiki's buffer page). It reuses the same act-first engine
 //!   the REM cross-wiki refile sweep and the comment-apply `move` op use, so
 //!   the dashboard, the dream, and the chat all mint the same born-applied +
 //!   revertible receipt. Admin-only (a move is structure authority —
@@ -159,10 +159,10 @@ pub enum AgenticTool {
     /// sweep + the comment-apply `move` op use:
     /// [`mwe_core::promote::apply_paragraph_to_file_direct`] for a same-wiki
     /// page→page move, [`mwe_core::promote::apply_fact_refile_direct`] for a
-    /// cross-wiki move (which always lands on the destination wiki's
-    /// `index.md` — the compilation plan keys pages by bare slug forest-wide,
-    /// so a named cross-wiki page would collide; the dest wiki re-homes it on
-    /// its next compile). Admin-only (structure authority), standard-wikis only (a smart
+    /// cross-wiki move (which always lands on the destination wiki's buffer
+    /// page — the compilation plan keys pages by bare slug forest-wide, so a
+    /// named cross-wiki page would collide; the dest wiki re-homes it on its
+    /// next compile). Admin-only (structure authority), standard-wikis only (a smart
     /// source or dest is refused), act-first + born-applied receipt. Write
     /// tool.
     WikiMoveFact,
@@ -454,7 +454,7 @@ fn proposal_tool_descriptors() -> Vec<Tool> {
                     },
                     "answers": {
                         "type": "object",
-                        "description": "Per-kind answers object (e.g. {\"target_page\": \"index.md\"} for wiki_promote, {} for dedup_merge)."
+                        "description": "Per-kind answers object (e.g. {\"target_page\": \"salute.md\"} for wiki_promote, {} for dedup_merge)."
                     }
                 },
                 "required": ["proposal_id", "answers"]
@@ -626,7 +626,7 @@ fn move_fact_tool_descriptors() -> Vec<Tool> {
                 },
                 "dest_page": {
                     "type": "string",
-                    "description": "Destination page (e.g. \"salute.md\") for a SAME-WIKI page move. Ignored for a cross-wiki move (which always lands on the destination wiki's index.md)."
+                    "description": "Destination page (e.g. \"salute.md\") for a SAME-WIKI page move. Ignored for a cross-wiki move (which always lands on the destination wiki's buffer page)."
                 }
             },
             "required": ["fact_id"]
@@ -661,7 +661,7 @@ fn delete_page_tool_descriptors() -> Vec<Tool> {
                 },
                 "page": {
                     "type": "string",
-                    "description": "Page file name within the wiki (e.g. \"salute.md\", \"index.md\")."
+                    "description": "Page file name within the wiki (e.g. \"salute.md\", \"@notes.md\")."
                 },
                 "delete_all_facts": {
                     "type": "boolean",
@@ -1805,8 +1805,7 @@ async fn dispatch_wiki_change_scope(
 /// Landing page for a cross-wiki move — always the destination wiki's
 /// buffer page, because the compilation plan keys pages by bare slug
 /// forest-wide and a named cross-wiki page would collide; the dest wiki
-/// re-homes the fact on its next compile. Never its `index.md`: that page
-/// is the wiki's map, and a fact parked there is one no read path reaches.
+/// re-homes the fact on its next compile.
 const MOVE_FACT_CROSS_WIKI_DEST_PAGE: &str = mwe_core::wiki::NOTES_FILENAME;
 
 #[derive(Debug, Deserialize)]
@@ -2074,7 +2073,7 @@ async fn dispatch_wiki_delete_page(
 }
 
 /// Cross-wiki branch of [`dispatch_wiki_move_fact`]: validate the destination
-/// wiki (locates, not smart), then refile the fact onto its `index.md`.
+/// wiki (locates, not smart), then refile the fact onto its buffer page.
 #[allow(
     clippy::too_many_arguments,
     reason = "the cross-wiki branch carries the ctx, fact, source wiki/page, dest wiki, recipient, and reason"
@@ -3077,7 +3076,6 @@ mod tests {
                 valid_to: None,
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -3359,7 +3357,7 @@ mod tests {
             "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
         )
         .unwrap();
-        std::fs::write(wikis.join("alice/index.md"), "# Alice\n").unwrap();
+        std::fs::write(wikis.join("alice/cucina.md"), "# Alice\n").unwrap();
         std::fs::create_dir_all(wikis.join("salute")).unwrap();
         std::fs::write(
             wikis.join("salute/_meta.md"),
@@ -3376,7 +3374,7 @@ mod tests {
         (dir, pool, tree)
     }
 
-    /// Capture a fact into `alice/index.md` via the real capture path so it
+    /// Capture a fact into `alice/cucina.md` via the real capture path so it
     /// lands as a marker on disk (the move engines locate the region by
     /// marker). Owned by `user:alice`.
     async fn capture_alice_fact(
@@ -3389,7 +3387,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: std::path::PathBuf::from("index.md"),
+            page: std::path::PathBuf::from("cucina.md"),
             body: body.to_owned(),
             subject: "user:alice".parse().unwrap(),
             allow: vec![],
@@ -3411,7 +3409,7 @@ mod tests {
             CaptureAction::Captured { .. } => {
                 // re-find by source path to get the id
                 let facts =
-                    mwe_core::fact_index::find_active_by_source_path(pool, "wikis/alice/index.md")
+                    mwe_core::fact_index::find_active_by_source_path(pool, "wikis/alice/cucina.md")
                         .await
                         .unwrap();
                 facts
@@ -3435,7 +3433,7 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: fact_id.clone(),
                 wiki_id: "proj".to_owned(),
-                source_path: "wikis/proj/index.md".to_owned(),
+                source_path: "wikis/proj/cucina.md".to_owned(),
                 region_start: Some(0),
                 region_end: Some(5),
                 text: "Project uses CI".to_owned(),
@@ -3449,7 +3447,6 @@ mod tests {
                 valid_to: None,
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -3459,7 +3456,7 @@ mod tests {
     }
 
     /// Happy path: the chat moves a fact cross-wiki (alice → salute). The
-    /// dispatcher refiles it onto salute's index.md and returns a `moved`
+    /// dispatcher refiles it onto salute's buffer page and returns a `moved`
     /// payload with the born-applied receipt id.
     #[tokio::test]
     async fn dispatch_wiki_move_fact_moves_cross_wiki() {
@@ -3495,8 +3492,8 @@ mod tests {
         assert_eq!(moved["fact_id"], fid.as_str());
         assert_eq!(moved["dest_wiki_id"], "salute");
         assert_eq!(
-            moved["dest_page"], "notes.md",
-            "a cross-wiki move lands on the destination's buffer page, never its map"
+            moved["dest_page"], "@notes.md",
+            "a cross-wiki move lands on the destination's buffer page"
         );
         assert_eq!(moved["cross_wiki"], true);
         assert!(
@@ -3510,7 +3507,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.wiki_id, "salute");
-        assert_eq!(row.source_path, "wikis/salute/notes.md");
+        assert_eq!(row.source_path, "wikis/salute/@notes.md");
         drop(dir);
     }
 

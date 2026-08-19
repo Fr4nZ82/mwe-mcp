@@ -35,11 +35,14 @@ ones — and so does what "reconcile" means:
   repaired after hand edits; a hand-deleted marker or page still
   tombstones its *rendered* rows (the operator's forget gesture).
 
-Reserved underscore-pages are never indexable content — both families
-skip them (`is_reserved_page`): `_meta.md` (wiki config), `_captures.md`
-(the buffered-capture journal), and `_briefing.md` / `_briefing.archive.md`
-(the smart consumer's feedback inbox, addressed *to* the consumer, not
-knowledge it authored).
+**A file whose name starts with `_` belongs to the engine, not to the wiki,
+and is never indexable content** — the whole rule, and both families skip on
+it (`is_reserved_page` → `wiki::names_engine_file`). It covers `_meta.md` (the
+wiki's config), `_briefing.md` / `_briefing.archive.md` (the smart consumer's
+inbox, addressed *to* the consumer, not knowledge it authored), and anything
+the engine reserves later. It used to be a hand-maintained list of three
+names, which meant a newly reserved file had to be remembered here or its
+bytes became recallable facts (founder, 2026-08-18).
 
 ## Public entry points
 
@@ -94,6 +97,7 @@ searchable), embeds each section, and reconciles the page's rows in
 | Same texts in the same positions | **no-op** (idempotent) |
 | Anything drifts (edited/added/removed/reordered section) | [`sections::replace_page_sections`](../../crates/mwe-core/src/sections.rs) in **one transaction** — upsert by position, then drop any tail position the new content no longer reaches. An unchanged section's text reuses its stored embedding; only new/changed sections are re-embedded |
 | File missing | hard-drop every section of the page (no tombstone) |
+| Wiki deleted, or no longer smart | hard-drop every section of the **wiki**, and its `smart_wikis` row with them ([`sections::drop_wiki_sections`](../../crates/mwe-core/src/sections.rs)). The per-page rows above are unreachable in this case — the sweep only walks wikis still discovered as smart — so the drop is driven from the wiki side instead: by [`wiki_delete::delete_wiki_subtree`](../../crates/mwe-core/src/wiki_delete.rs) at delete time, and by the registry sweep for a wiki whose `smart:` flag was turned off by hand |
 
 **The lexical index needs nothing from this path.** `wiki_sections_fts`
 (migration `0065`, the exact-term half of section ranking) is maintained
@@ -330,11 +334,9 @@ discarded so a fresh startup does not slam the embedder before any
 edit had a chance to fire.
 
 `reindex_full` first refreshes the `smart_wikis` registry (so a
-hand-edited `smart:` flag or `shared_with:` roster lands within a tick),
-rebuilds every wiki's captures buffer from its durable
-`_captures.md` journal
-([`capture_buffer::reindex_capture_journal`](../../crates/mwe-core/src/capture_buffer.rs)
-— best-effort, never indexed itself), then **section-indexes only smart
+hand-edited `smart:` flag or `shared_with:` roster lands within a tick,
+and a wiki that leaves the registry loses its sections in the same pass),
+then **section-indexes only smart
 wikis** (the per-page no-op fast path keeps the tick cheap on an idle
 tree) and finishes with a **deleted-page sweep**: any indexed page that
 no longer exists on disk has its sections hard-dropped (the markerless

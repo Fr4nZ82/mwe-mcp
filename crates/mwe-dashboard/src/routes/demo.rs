@@ -308,9 +308,9 @@ mod tests {
     fn a_switch_returns_to_the_page_it_was_made_from() {
         assert_eq!(
             destination(Some(
-                "https://demo.example/dashboard/wiki/bob/view/index.md"
+                "https://demo.example/dashboard/wiki/bob/view/cucina.md"
             )),
-            "/dashboard/wiki/bob/view/index.md"
+            "/dashboard/wiki/bob/view/cucina.md"
         );
         assert_eq!(
             destination(Some("/dashboard/facts?page=2")),

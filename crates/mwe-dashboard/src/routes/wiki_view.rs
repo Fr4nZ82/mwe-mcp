@@ -11,8 +11,9 @@
 //!   ([`super::smart_view::list_smart_wikis`], `/dashboard/wiki/smart`);
 //!   the two share one "Wikis" nav entry, switched by the
 //!   [`wiki_family_tabs`] bar.
-//! - GET `/dashboard/wiki/:id`                 — render
-//!   `<wiki_id>/index.md` along with the page list. The body goes
+//! - GET `/dashboard/wiki/:id`                 — the page list, plus a
+//!   preview of the wiki's `index.md` when it happens to have one (a smart
+//!   consumer may author one; nothing else creates one). The body goes
 //!   through [`mwe_core::render::render_for_sender`] so the connected
 //!   user sees the same declassified view a consumer agent would
 //!   receive via `wiki_read` — invisible regions are replaced by
@@ -115,6 +116,7 @@ use mwe_core::enrollment;
 use mwe_core::fact_index;
 use mwe_core::page::DeletionMode;
 use mwe_core::render;
+use mwe_core::sections;
 use mwe_core::types::{Principal, WikiId};
 use mwe_core::wiki::{META_FILENAME, wiki_get_meta, wiki_list_pages, wiki_read};
 use mwe_core::wiki_admin::{
@@ -274,12 +276,19 @@ async fn delete_confirm(
     let wikis_removed = subtree.len();
 
     // Sum active facts across the whole subtree so the operator sees the
-    // full blast radius, not just the target wiki's own count.
+    // full blast radius, not just the target wiki's own count. Sections are
+    // counted beside them because a smart wiki keeps its content there and
+    // its fact count is ~0 — showing facts alone would say "nothing to lose"
+    // about a wiki that is about to lose everything.
     let mut facts = 0i64;
+    let mut sections_count = 0i64;
     for d in &subtree {
         facts += fact_index::count_active_in_wiki(&state.pool, d.meta.wiki_id.as_str())
             .await
             .map_err(|e| DashboardError::Internal(format!("count_active_in_wiki: {e}")))?;
+        sections_count += sections::count_in_wiki(&state.pool, d.meta.wiki_id.as_str())
+            .await
+            .map_err(|e| DashboardError::Internal(format!("sections::count_in_wiki: {e}")))?;
     }
 
     let body = html! {
@@ -305,13 +314,25 @@ async fn delete_confirm(
             p {
                 "Deleting moves the whole directory subtree into "
                 code { "<workdir>/trash/" } " — the files are never erased. What happens to the "
-                strong { "facts" } " is a separate choice, and it is the one that matters: a "
-                "tombstoned fact leaves recall, and putting the directory back does not bring it "
-                "back."
+                strong { "facts" } " is a separate choice, and for a wiki that holds facts it "
+                "is the one that matters: a tombstoned fact leaves recall, and putting the "
+                "directory back does not bring it back."
+            }
+            @if sections_count > 0 {
+                p.flash.flash-error {
+                    strong { "This wiki keeps its content in sections, not in facts." }
+                    " The choice below only governs facts, and a smart wiki has almost none. "
+                    "Its " strong { (sections_count) } " sections are dropped either way — that "
+                    "is what deleting a smart wiki means. Putting the directory back out of the "
+                    "trash rebuilds them from the files, exactly like the pages."
+                }
             }
             ul {
                 li { "Wikis removed (this one + sub-wikis): " strong { (wikis_removed) } }
                 li { "Active facts on the subtree: " strong { (facts) } }
+                @if sections_count > 0 {
+                    li { "Sections dropped on the subtree: " strong { (sections_count) } }
+                }
             }
             form action=(format!("/dashboard/wiki/{id}/delete")) method="post" {
                 (disposition_fieldset())
@@ -421,6 +442,8 @@ async fn delete_apply(
         facts_tombstoned = report.facts_tombstoned,
         facts_evacuated = report.facts_evacuated,
         facts_unplaced = report.facts_unplaced,
+        sections_dropped = report.sections_dropped,
+        page_cards_dropped = report.page_cards_dropped,
         trash = %report.trash_dir.display(),
         "dashboard: wiki subtree soft-deleted to trash"
     );
@@ -460,9 +483,13 @@ fn map_wiki_delete_err(e: wiki_delete::WikiDeleteError) -> DashboardError {
         E::NotFound(_) => DashboardError::NotFound,
         E::Identity(_, _) => DashboardError::Validation(e.to_string()),
         E::Wiki(we) => map_wiki_err(we),
-        E::FactIndex(_) | E::Refile(_) | E::Move { .. } | E::Enrollment(_) | E::Plan(_) => {
-            DashboardError::Internal(e.to_string())
-        },
+        E::FactIndex(_)
+        | E::Refile(_)
+        | E::Move { .. }
+        | E::Enrollment(_)
+        | E::Plan(_)
+        | E::Sections(_)
+        | E::PageCards(_) => DashboardError::Internal(e.to_string()),
     }
 }
 
@@ -691,6 +718,12 @@ async fn view(
     let fact_count = fact_index::count_active_in_wiki(&state.pool, wiki_id.as_str())
         .await
         .map_err(|e| DashboardError::Internal(format!("count_active_in_wiki: {e}")))?;
+    // No wiki is assumed to have an `index.md`. A standard wiki has none at
+    // all since the nightly index writer was deleted (2026-08-15); a smart
+    // wiki has whatever pages its consumer pushed, which may or may not
+    // include one — it is documentation, not a shape the engine imposes. So
+    // this previews the page when it is there and renders nothing when it is
+    // not, exactly as it would for any other page name.
     let rendered_index_body = rendered_index_for(
         &state,
         &memory.tree,
@@ -743,14 +776,10 @@ async fn view(
             }
         }
 
-        h2 { "index.md" }
-        (render_index_preview(
-            &wiki_id,
-            rendered_index_body.as_ref(),
-            &user.sender_id,
-            reveal,
-            &link_index,
-        ))
+        @if let Some(rendered) = rendered_index_body.as_ref() {
+            h2 { "index.md" }
+            (render_index_preview(&wiki_id, rendered, &user.sender_id, reveal, &link_index))
+        }
 
         h2 { "Pages" }
         @if pages.is_empty() {
@@ -784,29 +813,21 @@ async fn view(
     )))
 }
 
-/// The `index.md` preview block of the wiki home: the redaction/reveal
+/// The `index.md` preview block of a wiki's home: the redaction/reveal
 /// badge, the rendered HTML (reveal mode keeps the highlight wrappers,
 /// normal mode strips all raw HTML; wikilinks click through and
 /// fact-backed regions carry their record anchor, same as the page
-/// viewer), and the "Open index.md" link. `None` renders the "no index
-/// yet" hint instead.
+/// viewer), and the "Open index.md" link.
+///
+/// Called only when the page exists: a wiki without one is not missing
+/// anything, so the caller renders no block rather than a hint.
 fn render_index_preview(
     wiki_id: &WikiId,
-    rendered: Option<&render::SegmentedRenderOutput>,
+    rendered: &render::SegmentedRenderOutput,
     sender_id: &str,
     reveal: bool,
     link_index: &std::collections::BTreeMap<String, PathBuf>,
 ) -> Markup {
-    let Some(rendered) = rendered else {
-        return html! {
-            p.muted {
-                "This wiki has no "
-                code { "index.md" }
-                " — the REM Hub Writer regenerates one whenever the wiki has "
-                "children + at least one active fact. Capture a fact to seed it."
-            }
-        };
-    };
     let resolve_wikilink =
         |target: &str| resolve_wikilink_href(link_index, Some(wiki_id.as_str()), target);
     // The wiki home serves at `/dashboard/wiki/:id` — without the rewrite
@@ -1123,8 +1144,8 @@ async fn page_acl_map_for(
     }
 }
 
-/// Read and declassify the wiki's `index.md` for the operator; `None`
-/// when the wiki has no index page yet.
+/// Read and declassify a wiki's `index.md` for the operator; `None` when
+/// there is no such page — which is the ordinary case.
 async fn rendered_index_for(
     state: &DashboardState,
     tree: &mwe_core::wiki::WikiTree,
@@ -2850,13 +2871,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let alice = dir.path().join("alice");
         std::fs::create_dir_all(alice.join("modules")).unwrap();
-        std::fs::write(alice.join("notes.md"), "x").unwrap();
+        std::fs::write(alice.join("@notes.md"), "x").unwrap();
+        std::fs::write(alice.join("cucina.md"), "x").unwrap();
         std::fs::write(alice.join("modules/auth.md"), "x").unwrap();
         let famiglia = dir.path().join("famiglia");
         let sub = famiglia.join("bruno-battaglia");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(famiglia.join("dossier.md"), "x").unwrap();
-        std::fs::write(famiglia.join("notes.md"), "x").unwrap();
+        std::fs::write(famiglia.join("@notes.md"), "x").unwrap();
+        std::fs::write(famiglia.join("cucina.md"), "x").unwrap();
         std::fs::write(sub.join("referto.md"), "x").unwrap();
         let mut index = std::collections::BTreeMap::new();
         index.insert("alice".to_owned(), alice);
@@ -2873,8 +2896,10 @@ mod tests {
             Some("/dashboard/wiki/alice")
         );
         assert_eq!(
-            resolve_wikilink_href(&index, None, "alice/notes").as_deref(),
-            Some("/dashboard/wiki/alice/view/notes.md")
+            resolve_wikilink_href(&index, None, "alice/@notes").as_deref(),
+            // `@` is not in RFC 3986's unreserved set, so the href carries it
+            // percent-encoded; the route decodes it back.
+            Some("/dashboard/wiki/alice/view/%40notes.md")
         );
         // Nested page slug keeps its separators.
         assert_eq!(
@@ -2907,11 +2932,13 @@ mod tests {
     #[test]
     fn resolve_wikilink_href_legacy_bare_slug_resolves_in_deterministic_tree_order() {
         let (_dir, index) = link_index_fixture();
-        // Current wiki first: `notes.md` exists in both `alice` and
-        // `famiglia`, and `[[notes]]` on an alice page stays home.
+        // Current wiki first: `cucina.md` exists in both `alice` and
+        // `famiglia`, and `[[cucina]]` on an alice page stays home. An
+        // ORDINARY page on purpose: an engine-named one carries the `@`
+        // marker, so a bare slug could never name it.
         assert_eq!(
-            resolve_wikilink_href(&index, Some("alice"), "notes").as_deref(),
-            Some("/dashboard/wiki/alice/view/notes.md")
+            resolve_wikilink_href(&index, Some("alice"), "cucina").as_deref(),
+            Some("/dashboard/wiki/alice/view/cucina.md")
         );
         // Ancestor next: `[[dossier]]` on a page of the emerged sub-wiki
         // reaches the parent's page (the prod dossier-stub shape).
@@ -2954,8 +2981,8 @@ mod tests {
         let alice = &index["alice"];
         // From the wiki root (the home page's base).
         assert_eq!(
-            resolve_relative_page_href(alice, "alice", "", "notes.md").as_deref(),
-            Some("/dashboard/wiki/alice/view/notes.md")
+            resolve_relative_page_href(alice, "alice", "", "@notes.md").as_deref(),
+            Some("/dashboard/wiki/alice/view/%40notes.md")
         );
         assert_eq!(
             resolve_relative_page_href(alice, "alice", "", "modules/auth.md").as_deref(),
@@ -2967,8 +2994,8 @@ mod tests {
             Some("/dashboard/wiki/alice/view/modules/auth.md")
         );
         assert_eq!(
-            resolve_relative_page_href(alice, "alice", "modules", "../notes.md").as_deref(),
-            Some("/dashboard/wiki/alice/view/notes.md")
+            resolve_relative_page_href(alice, "alice", "modules", "../@notes.md").as_deref(),
+            Some("/dashboard/wiki/alice/view/%40notes.md")
         );
         // `./` and case variants normalize to the on-disk spelling — only
         // where the filesystem keeps spellings apart. On macOS/Windows
@@ -2983,8 +3010,8 @@ mod tests {
         }
         // A fragment rides along on the rewritten href.
         assert_eq!(
-            resolve_relative_page_href(alice, "alice", "", "notes.md#history").as_deref(),
-            Some("/dashboard/wiki/alice/view/notes.md#history")
+            resolve_relative_page_href(alice, "alice", "", "@notes.md#history").as_deref(),
+            Some("/dashboard/wiki/alice/view/%40notes.md#history")
         );
     }
 
@@ -2998,7 +3025,7 @@ mod tests {
             "/dashboard/wiki/alice",    // site-absolute
             "https://example.com/x.md", // scheme'd URL
             "mailto:bob@example.com",   // scheme'd, no path
-            "notes.md?raw=1",           // query-carrying
+            "@notes.md?raw=1",          // query-carrying
             "notes.txt",                // non-.md target
             "missing.md",               // known-shape, dead file
             "../secret.md",             // escapes the wiki root

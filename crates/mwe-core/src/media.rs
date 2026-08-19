@@ -423,22 +423,6 @@ async fn find_by_sha_and_subject(
     raw.map(decode_row).transpose()
 }
 
-/// Load the catalog rows for `catalog_ids`, in the order given; unknown
-/// ids are silently skipped (the caller counts them — export does).
-///
-/// # Errors
-///
-/// `Db` / `Decode` as in [`find_by_id`].
-pub async fn find_by_ids(pool: &SqlitePool, catalog_ids: &[CatalogId]) -> Result<Vec<MediaRow>> {
-    let mut out = Vec::with_capacity(catalog_ids.len());
-    for id in catalog_ids {
-        if let Some(row) = find_by_id(pool, id).await? {
-            out.push(row);
-        }
-    }
-    Ok(out)
-}
-
 /// Whether `sender_id` (with `sender_groups`) may read this media item —
 /// the same union rule as fact regions
 /// (redaction policy),

@@ -20,9 +20,8 @@
 //!
 //! - **file → sub-wiki**: take an entire page of a wiki and turn it
 //!   into a new dedicated sub-wiki, the page carried over under its own
-//!   name and its bytes verbatim. The new wiki's `index.md` is born a
-//!   bare title stub and is the **map**, written by the REM map writer,
-//!   never by this handler. The new wiki id is derived as `parent-childslug`
+//!   name and its bytes verbatim. The new wiki id is derived as
+//!   `parent-childslug`
 //!   ([`WikiId::child_of`]); the new directory lives at
 //!   `<parent_abs_dir>/<childslug>/`. Selected via
 //!   `answers.variant = "file_to_subwiki"`.
@@ -64,13 +63,10 @@
 //! wrote — nothing offers it for sitting in the same folder — so a link
 //! left behind strands the page's whole neighbourhood.
 //!
-//! Two companions on the same seam. The map of the wiki a page left
-//! needs nothing: it is **regenerated** from the filenames on disk by the
-//! REM map writer, which cannot name a page that is not there. The
-//! wiki's **card** does need something — it is written prose about what
-//! lives here, the compiler copies it into `_meta` and the map writer
-//! copies `_meta` into the map — so both wikis' cards are parked for a
-//! rewrite ([`park_wiki_cards_for_recompile`]).
+//! The wiki's **card** does need something on this seam — it is written
+//! prose about what lives here, and the compiler copies it into `_meta` —
+//! so both wikis' cards are parked for a rewrite
+//! ([`park_wiki_cards_for_recompile`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -95,7 +91,7 @@ use crate::wiki::{self, WikiMeta, WikiTree, atomic_write, is_safe_page_path};
 struct PromoteContext {
     /// Wiki id whose page the facts currently live in.
     source_wiki_id: String,
-    /// Page path within the wiki (relative, e.g. `index.md`).
+    /// Page path within the wiki (relative, e.g. `lavoro.md`).
     source_page: String,
     /// Facts to move. Order is preserved when assembling the target page.
     fact_ids: Vec<String>,
@@ -1119,7 +1115,7 @@ async fn rehome_after_move(
 
 /// Best-effort plan-sync with an explicit destination seed — the shared
 /// core of [`rehome_after_move`] and the emergence (`file_to_subwiki`)
-/// seam, where the destination is the emerged wiki's `index.md` rather
+/// seam, where the destination is the emerged wiki's carried page rather
 /// than a `<slug>.md` concept leaf. Failures are logged loudly, never
 /// returned.
 async fn rehome_rows_with_seed(
@@ -1316,9 +1312,7 @@ async fn repoint_markers(pool: &SqlitePool, source_rel: &str, body: &str) {
 /// the directory listing was retired a page is reachable
 /// only by a fact hit, a match on its card, or an inbound link — so a move
 /// that leaves those links behind does not merely make them ugly, it strands
-/// the page's whole neighbourhood. The map of the wiki the page left needs no
-/// help here: it is **regenerated** from the filenames on disk by the REM map
-/// writer, which cannot name a page that is not there.
+/// the page's whole neighbourhood.
 ///
 /// Rewrites inside a fact's marked region too. That is not a divergence: the
 /// bytes in a region are the prose the writing model produced, never a copy
@@ -1425,7 +1419,7 @@ struct MergeSpec {
 /// the survivor, delete the husk file, and re-home the move in the
 /// persisted compilation plan (husk dropped from plan + registry).
 ///
-/// Refuses `index.md` on either side (foundation pages never merge), and
+/// Refuses `index.md` on either side (not a page of a standard wiki), and
 /// refuses a partial move: every active `fact_index` row living on the husk
 /// must be in `context.fact_ids`, else deleting the file would strand rows
 /// for the orphan sweep to tombstone.
@@ -1447,7 +1441,7 @@ async fn apply_page_merge(
     let target_page_path = validated_page_path(&ans.target_page, "answers.target_page")?;
     if source_page_path.as_os_str() == "index.md" || target_page_path.as_os_str() == "index.md" {
         return Err(ApplyError::InvalidPayload(
-            "page_merge never touches a foundation index.md".into(),
+            "page_merge never touches `index.md`".into(),
         ));
     }
     let wiki_id = WikiId::parse(&ctx.source_wiki_id)
@@ -1968,7 +1962,7 @@ struct SubwikiSpec {
     /// Name the promoted page carries **inside** the new sub-wiki — its
     /// own file name, e.g. `giardinaggio.md`.
     ///
-    /// `None` on a receipt written before the map rule, when the page's
+    /// `None` on a receipt written before 2026-08-03, when the page's
     /// bytes *were* the new wiki's `index.md`. The revert reads that
     /// absence as "the carried page is `index.md`" and undoes the old
     /// shape unchanged, so a receipt from that era stays undoable.
@@ -1982,7 +1976,7 @@ struct SubwikiSpec {
 
 /// The page a `file_to_subwiki` receipt carried inside the new wiki:
 /// what `spec.carried_page` names, or `index.md` for a receipt written
-/// before the map rule.
+/// before 2026-08-03.
 fn carried_page_of(spec: &SubwikiSpec) -> &str {
     spec.carried_page.as_deref().unwrap_or(wiki::INDEX_FILENAME)
 }
@@ -2040,12 +2034,10 @@ async fn apply_file_to_subwiki(
     let source_rel = wiki::workdir_relative_source_path(tree.workdir(), &source_abs);
 
     // The promoted page keeps its own name inside the new wiki. It used to
-    // *become* that wiki's `index.md`, which since the map rule is the one
-    // page the read path refuses — so a wiki born by promotion started with
-    // its founding facts unreachable by recall. The new wiki's map is the
-    // program's to write (see the stub below); what emerges here is a page
-    // like any other. Same shape as the group variant, which carries every
-    // page over under its own name.
+    // *become* that wiki's `index.md`, a page the read path refused — so a
+    // wiki born by promotion started with its founding facts unreachable by
+    // recall. What emerges here is a page like any other. Same shape as the
+    // group variant, which carries every page over under its own name.
     let carried_page = source_page_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -2057,7 +2049,7 @@ async fn apply_file_to_subwiki(
         .to_owned();
     if carried_page == wiki::INDEX_FILENAME {
         return Err(ApplyError::InvalidPayload(format!(
-            "{source_rel} is a wiki's map — a map does not emerge into a wiki of its own",
+            "{source_rel} names `index.md`, which is not a page of a standard wiki",
         )));
     }
     let new_page_abs = new_wiki_dir.join(&carried_page);
@@ -2146,17 +2138,12 @@ async fn apply_file_to_subwiki(
         updated: None,
         extra,
     };
-    // Materialise the sub-wiki (dir + _meta.md + index.md) via the shared
-    // filesystem primitive. file_to_subwiki always lands a child under an
-    // existing parent and never needs the child-only gate, so requires_parent
-    // is false.
-    //
-    // `index.md` is born a bare title stub and stays the **program's**: the
-    // REM map writer authors the list of pages living here, deterministically,
-    // for every standard wiki. This handler must not put prose there — a map
-    // is not a plan node, and the next cycle would overwrite it anyway.
-    let index_stub = format!("# {}\n", meta.title);
-    wiki::write_wiki_dir(tree, &meta, &index_stub, /* requires_parent */ false)
+    // Materialise the sub-wiki (dir + _meta.md) via the shared filesystem
+    // primitive. file_to_subwiki always lands a child under an existing
+    // parent and never needs the child-only gate, so requires_parent is
+    // false. A new wiki is born with its metadata and the pages carried into
+    // it — nothing else.
+    wiki::write_wiki_dir(tree, &meta, /* requires_parent */ false)
         .map_err(|e| ApplyError::HandlerIo(format!("create sub-wiki {new_wiki_id}: {e}")))?;
 
     // The promoted page itself, bytes verbatim — which is what lets every
@@ -2378,7 +2365,7 @@ async fn revert_file_to_subwiki(
     // Tear down the now-orphan sub-wiki directory. Whole, like the sibling
     // revert does: guard 1 has already established that everything inside is
     // either the receipt's or a fact-free page the compiler seeded, and
-    // naming the files one by one is what made a seeded `notes.md` an error
+    // naming the files one by one is what made a seeded `@notes.md` an error
     // rather than a cleanup.
     std::fs::remove_dir_all(&new_wiki_dir).map_err(|e| {
         RevertError::HandlerIo(format!(
@@ -2638,14 +2625,13 @@ async fn relocate_page(
 /// A wiki's one-line description is **written**, by the compiler, when its
 /// foundation card page compiles — that card is what
 /// [`sync_foundation_summary`](../../../crates/mwe-core/src/compiler.rs) copies
-/// into `_meta`, and the REM map writer then copies `_meta` into the map. So a
-/// card that still promises a subject which has moved to another wiki spreads
-/// its staleness into two more places. A page leaving does not touch the card,
+/// into `_meta`. So a card that still promises a subject which has moved to
+/// another wiki spreads its staleness into one more place. A page leaving does not touch the card,
 /// so nothing would have re-derived it: parking the slug on the plan's
 /// `force_dirty` makes the next cycle rewrite it against what is actually
 /// there.
 ///
-/// The card's plan slug is the wiki's own slug — `profile.md` is a foundation
+/// The card's plan slug is the wiki's own slug — `@profile.md` is a foundation
 /// page, keyed per wiki.
 ///
 /// Takes **every** wiki whose page set changed, not only the one the pages
@@ -2706,11 +2692,9 @@ async fn rehome_grouped_page(
 /// are one subject area becomes a dedicated sub-wiki, each page carried
 /// over under its own name.
 ///
-/// The new wiki's `index.md` is born as a bare title stub, and stays the
-/// REM hub writer's to author — a wiki's map is not a plan node at all
-/// (see [`crate::wiki::INDEX_FILENAME`]). What the narrative compiler owns
-/// in the new wiki is its `notes.md` buffer node plus the carried pages, so
-/// this handler must not invent prose either would then fight over.
+/// What the narrative compiler owns in the new wiki is its `@notes.md` buffer
+/// node plus the carried pages, so this handler invents no prose it would
+/// then fight over.
 ///
 /// The page-count floor is the **caller's** (the REM grouping pass owns
 /// `auto_promote_group_min_pages`); this handler enforces only the
@@ -2779,8 +2763,7 @@ async fn apply_pages_to_subwiki(
         updated: None,
         extra: subwiki_meta_extra(context),
     };
-    let index_stub = format!("# {new_title}\n");
-    wiki::write_wiki_dir(tree, &meta, &index_stub, /* requires_parent */ false)
+    wiki::write_wiki_dir(tree, &meta, /* requires_parent */ false)
         .map_err(|e| ApplyError::HandlerIo(format!("create sub-wiki {new_wiki_id}: {e}")))?;
 
     let mut spec_pages = Vec::with_capacity(collected.len());
@@ -2861,8 +2844,8 @@ fn subwiki_meta_extra(context: &Value) -> serde_yaml::Mapping {
 ///
 /// The reserved pages are the compiler's to seed on its own schedule:
 /// `planner::seed_wiki_buffers` gives every non-smart wiki a buffer node on
-/// `notes.md`, and a wiki born by promotion is force-dirtied at birth — so the
-/// **next hourly compile** writes `notes.md` into it. A guard that lists the
+/// `@notes.md`, and a wiki born by promotion is force-dirtied at birth — so the
+/// **next hourly compile** writes `@notes.md` into it. A guard that lists the
 /// receipt's own files and nothing else therefore refused every revert from
 /// one compile after the promotion: regroup at 03:00, compile at 04:00, click
 /// Undo at 09:00 → refused, on a wiki nobody had touched. The undo window is
@@ -5319,33 +5302,29 @@ mod tests {
         let source_after = tree.wikis_dir().join("alice").join("giardinaggio.md");
         assert!(!source_after.exists(), "source file must be removed");
 
-        // The map is the program's: a bare stub, no facts on it. Putting the
-        // founding content here is what made an emerged wiki unreadable —
-        // `index.md` is refused by every route of the read path.
-        let index = std::fs::read_to_string(new_dir.join("index.md")).unwrap();
+        // A new wiki is born with its metadata and the page carried into it,
+        // and nothing else: no `index.md` is seeded any more (2026-08-15).
         assert!(
-            !index.contains("Note A"),
-            "the map holds no content: {index}"
+            !new_dir.join("index.md").exists(),
+            "an emerged wiki is not seeded with an index.md"
         );
-        assert!(!index.contains("{{f="), "the map holds no markers: {index}");
 
         // fact_index rows updated: wiki_id = alice-giardinaggio, source_path
-        // = the carried page, never the map.
+        // = the carried page.
         for fid in [&f1, &f2] {
             let row = fact_index::find_by_id(&pool, fid).await.unwrap().unwrap();
             assert_eq!(row.wiki_id, "alice-giardinaggio");
             assert_eq!(
                 row.source_path, "wikis/alice/giardinaggio/giardinaggio.md",
-                "a fact must never land on the wiki's map"
+                "a fact lands on the carried page"
             );
         }
     }
 
-    /// A wiki's map is not a subject, so it never emerges into a wiki of
-    /// its own — and it is the one page whose name would collide with the
-    /// map the handler writes itself.
+    /// `index.md` is not a page of a standard wiki, so a promotion that
+    /// names one is refused rather than carried into a wiki of its own.
     #[tokio::test]
-    async fn apply_file_to_subwiki_refuses_to_promote_a_map() {
+    async fn apply_file_to_subwiki_refuses_to_promote_an_index_page() {
         let (_dir, tree, pool) = setup().await;
         let f1 = capture_one(&tree, &pool, embedder(), "index.md", "Note A").await;
 
@@ -5357,9 +5336,9 @@ mod tests {
         let ans = json!({ "variant": "file_to_subwiki" });
         let err = apply_wiki_promote(&pool, &tree, &ctx, &ans)
             .await
-            .expect_err("promoting a map must be refused");
+            .expect_err("promoting `index.md` must be refused");
         assert!(
-            format!("{err}").contains("map"),
+            format!("{err}").contains("index.md"),
             "the refusal must say why: {err}"
         );
     }
@@ -5604,12 +5583,12 @@ mod tests {
             .expect("apply");
         let dir = tree.wikis_dir().join("alice").join("giardinaggio");
 
-        // The compiler seeds `notes.md` into every non-smart wiki, and a wiki
+        // The compiler seeds `@notes.md` into every non-smart wiki, and a wiki
         // born by promotion is force-dirtied at birth — so the next hourly
         // compile writes one. That must NOT close the undo window: regroup at
         // 03:00, compile at 04:00, click Undo at 09:00 used to be refused on
         // a wiki nobody had touched.
-        std::fs::write(dir.join("notes.md"), "# Note\n").unwrap();
+        std::fs::write(dir.join("@notes.md"), "# Note\n").unwrap();
 
         // A page nobody's schedule explains is the real signal.
         std::fs::write(dir.join("potatura.md"), "user edits\n").unwrap();
@@ -5621,7 +5600,7 @@ mod tests {
             RevertError::HandlerData(msg) => {
                 assert!(msg.contains("refusing to delete"), "{msg}");
                 assert!(
-                    msg.contains("potatura.md") && !msg.contains("notes.md"),
+                    msg.contains("potatura.md") && !msg.contains("@notes.md"),
                     "the refusal names the page that is unaccounted for, not the seeded one: {msg}"
                 );
             },
@@ -6248,9 +6227,8 @@ Un'altra pagina: [[bruno/orto]].
     }
 
     /// A wiki's own card is written prose about what lives in it, and the
-    /// compiler copies it into `_meta`, which the map writer then copies
-    /// into the map. A page leaving touches none of that by itself, so the
-    /// move parks the card for a rewrite — on both wikis, since gaining
+    /// compiler copies it into `_meta`. A page leaving touches none of that
+    /// by itself, so the move parks the card for a rewrite — on both wikis, since gaining
     /// pages dates a card exactly as much as losing them.
     #[tokio::test]
     async fn a_page_changing_wiki_parks_both_cards_for_a_rewrite() {

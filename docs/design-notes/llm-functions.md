@@ -9,7 +9,7 @@ last_review: "2026-06-11"
 
 mwe-mcp ships with its own **configurable internal LLM**. This is the
 model the *server* uses for its own reasoning — intent classification,
-nightly reorganisation, dedup confirmation, `index.md` regeneration —
+nightly reorganisation, dedup confirmation, page prose —
 and it is entirely separate from the LLM the *consumer agent* runs to
 talk to its end user. The two have separate bills and separate
 configuration; in a private self-hosted deployment they happen to be
@@ -147,10 +147,9 @@ the dedicated `operator_chat` slot is unset.
 
 **It no longer writes a wiki's `index.md`.** Until 2026-08-03 that was its
 primary job: REM's Hub Writer sub-job composed an index out of the twenty
-most recent fact bodies. Since a wiki root became a **map** for the write
-side only, the map is *assembled* from the pages on disk with no model
-involved — see the [map writer](rem-cycle.md#map-writer-sub-job). The slot
-stays because two other consumers still need it.
+most recent fact bodies. That sub-job was made model-free in 2026-08-03
+and deleted outright on 2026-08-15 — a standard wiki has no `index.md` at
+all. The slot stays because two other consumers still need it.
 
 **Narrative compiler, `ConceptHub` pages.** When the compilation plan has
 a hub over child leaves, the compiler renders the `regenerate-index`

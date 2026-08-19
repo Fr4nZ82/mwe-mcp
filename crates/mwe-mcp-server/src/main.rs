@@ -764,11 +764,6 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
         report.cycle.archive_detector.proposals_emitted.len(),
     );
     println!(
-        "map_writer     : written={} skipped={}",
-        report.cycle.map_writer.written.len(),
-        report.cycle.map_writer.skipped.len()
-    );
-    println!(
         "compile        : leaves={} lists={} hubs={} unchanged={} errors={}",
         report.compile.leaves,
         report.compile.lists,
@@ -866,10 +861,22 @@ async fn cmd_rem_run_compile(workdir: &Path, config: &Config) -> Result<()> {
              configure them (and `llm.cronista` for the prose writer) to compile"
         )
     })?;
-    let report =
-        rem_scheduler::run_compile_once(&pool, &tree, &llms, &chrono::Utc::now().to_rfc3339())
-            .await
-            .context("compile pass")?;
+    // The compile drains the captures queue on its way in, and a claim staged
+    // without its vector is embedded there — so this pass needs an embedder.
+    let embedder: Arc<dyn Embedder> = config
+        .embedding
+        .build_embedder()
+        .await
+        .context("building embedder")?;
+    let report = rem_scheduler::run_compile_once(
+        &pool,
+        &tree,
+        embedder,
+        &llms,
+        &chrono::Utc::now().to_rfc3339(),
+    )
+    .await
+    .context("compile pass")?;
 
     println!(
         "compile        : leaves={} lists={} hubs={} unchanged={} errors={}",
@@ -1623,9 +1630,10 @@ async fn cmd_serve_http(
         // bytes travel out of band here. The dashboard renders embeds
         // through its own cookie-authenticated alias.
         .nest("/media", mwe_mcp_server::http_media::router(state.clone()))
-        // Public read of bundled skills. Custom skills
-        // stay MCP-only (`skill_list` / `skill_fetch`) since they are
-        // owner-scoped and the HTTP path has no JWT context.
+        // Public read of the skill catalog. Every skill is bundled
+        // (the per-owner catalog went in migration 0036), so this
+        // unauthenticated path serves the same set as the MCP pair
+        // `skill_list` / `skill_fetch`.
         .nest("/skills", mwe_mcp_server::http_skills::router())
         // Operator-facing onboarding surface. Today
         // ships the hook bundle templates (`/connect/hooks` +
@@ -2197,17 +2205,6 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
     }
 
     boot_smart_wiki_passes(&pool, &tree).await;
-
-    // Refresh the operator's Obsidian collector index (`wikis/index.md`) to
-    // realign after any external edits/deletions while the server was down.
-    // Admin convenience only — best-effort, never blocks serving. Skipped on
-    // a frozen deployment: it is a file write inside `wikis/`, and "nothing
-    // changes" has to include the bytes we would write ourselves at boot.
-    if !config.instance.read_only
-        && let Err(e) = mwe_core::wiki::write_root_collector_index(&tree)
-    {
-        warn!(error = %e, "root collector index: bootstrap refresh failed (non-fatal)");
-    }
 
     // The embedder backend is operator-configurable via the `embedding:`
     // section (roadmap group 18); `build_embedder` honours it, defaulting

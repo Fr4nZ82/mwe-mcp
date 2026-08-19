@@ -407,7 +407,7 @@ mod tests {
             ),
         )
         .unwrap();
-        std::fs::write(dir.join("index.md"), "# index\n").unwrap();
+        std::fs::write(dir.join("cucina.md"), "# index\n").unwrap();
     }
 
     async fn seed_fact(pool: &SqlitePool, id: &str, wiki: &str, text: &str) {
@@ -415,7 +415,7 @@ mod tests {
             authored_refs: Vec::new(),
             fact_id: FactId::parse(id).unwrap(),
             wiki_id: wiki.to_owned(),
-            source_path: format!("wikis/{wiki}/index.md"),
+            source_path: format!("wikis/{wiki}/cucina.md"),
             region_start: None,
             region_end: None,
             text: text.to_owned(),
@@ -430,7 +430,6 @@ mod tests {
             salience: None,
             target_page: None,
             style: None,
-            page_description: None,
             source_ref: None,
         };
         fact_index::insert(pool, &fact).await.expect("seed fact");
@@ -548,7 +547,7 @@ mod tests {
             sender_id: "alice".into(),
             fact_id: "018f1234-5678-7abc-9def-00000000aa01".into(),
             wiki_id: "alice".into(),
-            source_path: "wikis/alice/index.md".into(),
+            source_path: "wikis/alice/cucina.md".into(),
             surface: "direct".into(),
             similarity: Some(0.9),
             restated_text: "la crostata si fa con le renette".into(),

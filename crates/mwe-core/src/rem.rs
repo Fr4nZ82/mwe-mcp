@@ -14,22 +14,20 @@
 //! of the cycle: the two proposal sweeps settle overdue
 //! `structure_proposals` first; the consolidation and hygiene sweeps
 //! (dedup, promote, merge, completion, contradiction, refile,
-//! provenance, dates) reorganise the fact set act-first; the archive
-//! detector and the smart-wiki read-jobs emit proposals/briefing items;
-//! and the map writer runs last so every wiki's map lists the pages the
-//! night actually left behind.
+//! provenance, dates) reorganise the fact set act-first; and the archive
+//! detector and the smart-wiki read-jobs emit proposals/briefing items.
 //!
 //! ## Cycle invariants
 //!
 //! - Sub-jobs run in the fixed order wired in [`run_cycle`]; ordering
 //!   is load-bearing only at the edges (the proposal sweeps settle
-//!   pending state before the write-jobs touch it, provenance hygiene
-//!   runs right before the date normalizer so later sub-jobs see
-//!   pointer-clean text, and the map writer runs last).
+//!   pending state before the write-jobs touch it, and provenance
+//!   hygiene runs right before the date normalizer so later sub-jobs
+//!   see pointer-clean text).
 //! - Every state-mutating sub-step is journaled in `rem_ops_log` via
 //!   [`crate::wal::begin_rem_op`] → `complete_rem_op` / `fail_rem_op`.
 //!   The floor's sub-step inverses are idempotent (`atomic_write`
-//!   handles partial `index.md` writes; `mark_superseded` and
+//!   handles partial page writes; `mark_superseded` and
 //!   `mark_forgotten` are no-ops on already-superseded / already-
 //!   tombstoned rows; `insert_event` is gated by an idempotency probe).
 //!   A crashed cycle is safe to retry on the next REM tick — there is
@@ -92,15 +90,6 @@ pub struct RemPolicy {
     /// Wall-clock anchor for lifecycle evaluation (`now` in the rule
     /// expressions). `None` ⇒ [`Utc::now`].
     pub now: Option<DateTime<Utc>>,
-    /// Maximum number of wikis whose `index.md` is rewritten as a map per
-    /// cycle.
-    ///
-    /// A plain I/O cap since the map writer stopped calling a model: the
-    /// per-wiki cost is a directory listing and one `atomic_write`. It was
-    /// `10` while the sub-job was the most expensive one per call, and that
-    /// number silently starved a corpus larger than ten wikis — the tree walk
-    /// is stably ordered, so the *same* tail went unmapped every night.
-    pub map_writer_cap: usize,
     /// Maximum number of dedup supersedes per cycle. Mirrors the
     /// `cap_promotions_per_night` figure in
     /// engine DB and migrations — REM never
@@ -304,7 +293,6 @@ impl Default for RemPolicy {
         Self {
             cycle_id: None,
             now: None,
-            map_writer_cap: 200,
             revisor_cap: 30,
             revisor_jaccard_min: 0.45,
             revisor_jaccard_max: recall::DEFAULT_DEDUP_THRESHOLD,
@@ -407,8 +395,6 @@ pub struct RemCycleReport {
     /// Husk-page GC sub-job report — plan-absent page files whose
     /// rows are all past any revert removed from disk.
     pub husk_gc: HuskGcReport,
-    /// Map writer sub-job report (runs last).
-    pub map_writer: MapWriterReport,
     /// Negative-verdict memos dropped by the TTL sweep at cycle start
     /// ([`crate::rem_verdicts`]).
     pub verdict_memo_purged: u64,
@@ -588,18 +574,6 @@ pub struct DateNormalizeReport {
     pub examined: usize,
     /// `fact_id`s whose text was rewritten + re-embedded.
     pub rewritten: Vec<String>,
-    /// Soft errors.
-    pub errors: Vec<String>,
-}
-
-/// Sub-report for the map writer.
-#[derive(Debug, Clone, Default)]
-pub struct MapWriterReport {
-    /// Wiki ids whose `index.md` was rewritten as a map.
-    pub written: Vec<String>,
-    /// Wiki ids left alone: the smart family (the smart consumer owns its
-    /// own hub pages) and any wiki whose map a persisted plan still claims.
-    pub skipped: Vec<String>,
     /// Soft errors.
     pub errors: Vec<String>,
 }
@@ -785,7 +759,8 @@ pub struct RemLlms<'a> {
     /// `hub_writer` slot — the **narrative compiler's** `ConceptHub` prose
     /// ([`crate::compiler`]), which is the slot's only remaining REM-side
     /// consumer: the sub-job that used to regenerate a wiki's `index.md`
-    /// through it writes the map deterministically now.
+    /// through it was made model-free in 2026-08-03 and deleted in
+    /// 2026-08-15.
     pub hub_writer: &'a dyn LlmBackend,
     /// `rem_dedup_semantic` slot — confirms suspicious dedup pairs.
     pub revisor: &'a dyn LlmBackend,
@@ -1056,7 +1031,6 @@ pub async fn run_cycle(
     )
     .await?;
     let husk_gc = run_husk_gc(pool, tree, &cycle_id, now, policy, &smart_wiki_index).await?;
-    let map_writer = run_map_writer(pool, tree, &cycle_id, policy, &smart_wiki_index).await?;
 
     let ended_at = Utc::now();
     tracing::info!(
@@ -1100,7 +1074,6 @@ pub async fn run_cycle(
         comment_facts_moved = briefing_processor.facts_moved,
         husk_pages_examined = husk_gc.pages_examined,
         husk_pages_removed = husk_gc.removed.len(),
-        maps_written = map_writer.written.len(),
         verdict_memo_purged,
         "rem: cycle done"
     );
@@ -1126,7 +1099,6 @@ pub async fn run_cycle(
         lease_expirer,
         briefing_processor,
         husk_gc,
-        map_writer,
         verdict_memo_purged,
         verdict_memo_rows,
     })
@@ -1406,9 +1378,9 @@ async fn run_revisor_jaccard(
                 }
                 // A behaviour rule dedups only against another rules-page
                 // fact (rule-vs-rule; in practice the same page — one
-                // `rules.md` per wiki). A pair mixing a rule with an
+                // `@rules.md` per wiki). A pair mixing a rule with an
                 // ordinary fact is never nominated: if the rule lost, its
-                // content would survive only OFF `rules.md`, out of the
+                // content would survive only OFF `@rules.md`, out of the
                 // behaviour-rules channel — the dedup twin of the compiler
                 // and refile skips. A structural channel invariant, not a
                 // semantic gate: rule-vs-rule pairs still go to the LLM.
@@ -2051,6 +2023,18 @@ async fn run_auto_promote(
         // (founder, 2026-08-04). See [`over_mass_floor`].
         let mut pages: Vec<&str> = page_mass
             .iter()
+            // A channel page is never split, and this is the gate that was
+            // missing (founder, 2026-08-18). The other five sweeps honour
+            // `is_channel_page` each in its own way — dedup never pairs
+            // across it, the completion sweep never takes it as evidence,
+            // refile never nominates it as the fact to move — but the split
+            // looked only at style and mass. A project diary over the floor
+            // therefore reached the model that decides which facts leave the
+            // page, and a confirmed split would have carried them onto a page
+            // of its own: its reader keys on the path, so those lines would
+            // have gone quietly unread. Same shape as the `@projects.md` hole
+            // of 2026-08-11 — a name defended on one side of the fence only.
+            .filter(|&(&path, _)| !wiki::is_channel_page(path))
             .filter(|&(&path, &m)| over_mass_floor(d, path, m, policy))
             .map(|(&p, _)| p)
             .filter(|p| !regrouped.contains(*p))
@@ -2189,10 +2173,11 @@ async fn run_auto_promote(
                 continue;
             }
             // Third and last of the model-coined page names. `index.md` and
-            // `rules.md` survive `slugify` unchanged, and this variant's
+            // `@rules.md` survive `slugify` unchanged, and this variant's
             // validator checks only traversal and "differs from the source" —
             // the sibling variants refuse them (`apply_page_merge` on either
-            // side, `apply_file_to_subwiki` for a map), this one never did. A
+            // side, `apply_file_to_subwiki` for `index.md`), this one never
+            // did. A
             // split has no fallback page to fall through to, so the split is
             // simply skipped: the facts stay where they are and the next cycle
             // asks again.
@@ -2315,7 +2300,7 @@ async fn run_auto_promote(
 /// - **Source scope.** A receipt records the page a fact was promoted
 ///   FROM. Matching `source_wiki_id`/`source_page` stops an old receipt
 ///   from vetoing a fact that has since migrated onto a *different* page
-///   (e.g. a fact promoted off `index.md` that later landed on
+///   (a fact promoted off `@notes.md` that later landed on
 ///   `esperienze_agente.md` must not freeze the latter).
 async fn already_promoted_for(
     pool: &SqlitePool,
@@ -2765,9 +2750,12 @@ async fn run_page_grouping_for_wiki(
                 style,
                 description,
             } => {
-                // The birth floor. Below it the group is not a subject
-                // area with a home to earn — it is a handful of pages,
-                // and they stay where they are.
+                // The WIKI birth floor. Below it the group is not a subject
+                // area with a home to earn — it is a handful of pages, and
+                // they stay where they are. Sibling one level down:
+                // [`crate::planner::PAGE_BIRTH_FLOOR`], how many facts must
+                // group before a PAGE is born. Same shape, different level —
+                // facts make a page, pages make a wiki.
                 if pages.len() < policy.auto_promote_group_min_pages {
                     continue;
                 }
@@ -2908,9 +2896,9 @@ fn grouping_existing_wikis(children: &[&wiki::DiscoveredWiki]) -> String {
             .get(serde_yaml::Value::from("summary"))
             .and_then(serde_yaml::Value::as_str)
             .unwrap_or("");
-        // Topic pages, on the same definition the parent's own count uses —
-        // the map is not one. Counting `index.md` here inflated every child
-        // by one against a parent number that excludes it, and the model is
+        // Topic pages, on the same definition the parent's own count uses.
+        // Counting a foundation page here inflated every child by one against
+        // a parent number that excludes it, and the model is
         // asked to weigh the two side by side when it chooses between filing
         // into a sub-wiki and founding another.
         let pages = std::fs::read_dir(&c.abs_dir).map_or(0, |rd| {
@@ -3940,10 +3928,10 @@ struct RefileDecision {
     #[serde(default)]
     dest_wiki_id: Option<String>,
     // The judge picks only the destination WIKI; the fact always lands on
-    // that wiki's `notes.md` (collision-safe — see the apply site), so no
+    // that wiki's `@notes.md` (collision-safe — see the apply site), so no
     // per-page field is read. A `dest_page` in the model's JSON is ignored
-    // by serde. **Never the root**: `index.md` is the wiki's map, it holds
-    // no facts, and the read path never opens it (founder, 2026-08-03).
+    // by serde. **Never `index.md`**: that name is not a page of a standard
+    // wiki (`wiki::INDEX_FILENAME`).
     #[serde(default)]
     reason: Option<String>,
 }
@@ -3981,7 +3969,7 @@ fn refile_cases<'a>(
             // *user's* wiki by nature (it names how the agent behaves with
             // them), so it is a natural false nominee — and a confirmed move
             // would eject it from the behaviour-rules channel, which reads
-            // `rules.md` in the agent's own wiki (the refile twin of the
+            // `@rules.md` in the agent's own wiki (the refile twin of the
             // compiler-door skip in `planner::gather_standard_facts`), and the
             // signposts page is fenced the same way. Channel facts still count
             // in the similarity pools above/below; they are only never
@@ -4267,7 +4255,7 @@ async fn judge_refile_case(
     // collision-safe: the fact crosses into the right wiki and that wiki's
     // own dream (auto_promote / page_merge) re-files it onto the right page.
     // Finer cross-wiki page placement waits on a wiki-qualified plan
-    // keyspace. Never `index.md` — that is the map, and it holds no facts.
+    // keyspace.
     let dest_page = wiki::NOTES_FILENAME;
     // Source page wiki-relative (the apply joins it onto the source wiki's
     // abs_dir, so a workdir-relative path would double the prefix).
@@ -5389,7 +5377,7 @@ async fn run_provenance_hygiene(
 ///
 /// Deterministic, no LLM: a structural GC behind DB-first guards, not a
 /// semantic judgment (each fact was closed by its own judged path).
-/// `index.md` / `rules.md` / `_`-prefixed files never qualify; smart
+/// `@rules.md` and `_`-prefixed files never qualify; smart
 /// wikis are skipped (consumer-authored files are never REM's to
 /// delete); **no plan on disk → no-op** (a fresh workdir's pages are
 /// unplanned, not husks). Bounded by `policy.husk_gc_cap` per cycle,
@@ -5445,7 +5433,6 @@ async fn run_husk_gc(
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("md"))
                 || name.starts_with('_')
-                || name == "index.md"
                 || name == wiki::RULES_FILENAME
                 || pages.is_some_and(|p| p.contains(name))
                 || !entry.path().is_file()
@@ -6048,273 +6035,6 @@ async fn run_briefing_processor_non_smart(
     Ok(report)
 }
 
-// ---------- Map Writer sub-job ----------
-
-/// Write every non-smart wiki's `index.md` as its **map** — the page listing
-/// that answers *where does a fact belong here*.
-///
-/// **Deterministic, and that is the design.** Until 2026-08-03 this sub-job
-/// asked the `hub_writer` model to compose an index out of the twenty most
-/// recent fact bodies, and it ran only for a wiki that had **child wikis** —
-/// so on a corpus of 29 wikis, 19 never got an index at all, and the ten that
-/// did got a narrative summary rather than a map. Once the founder's ruling
-/// made the root a map for the write side only ([`wiki::INDEX_FILENAME`]),
-/// the content a model was needed for stopped being wanted: a map is the list
-/// of pages plus what each one is about, and both already exist on disk. So
-/// the map is assembled, not generated — free, running on every wiki every
-/// cycle, and structurally unable to name a page that does not exist.
-///
-/// What was traded away, stated plainly: the model used to *group* the links
-/// under thematic headings, which read well. Re-adding that is one pass over
-/// an already-correct list — a far safer prompt than the one this replaces —
-/// and it is deliberately not built here.
-///
-/// **The line each page gets is its testata keywords, not its `description`.**
-/// A map is one file with one audience, while a description is shown by the
-/// navigator only to a reader at the wiki's default visibility. The keywords
-/// are already computed at that boundary ([`meta_annotate::sync_page_keywords`],
-/// the [`fact_at_default_visibility`](meta_annotate) rule), so they are the
-/// subset that is safe in a file everyone who can open the wiki can read.
-/// Richer lines are a card-quality job, and the map improves for free when
-/// the cards do.
-async fn run_map_writer(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    cycle_id: &str,
-    policy: &RemPolicy,
-    smart_wiki_index: &SmartWikiIndex,
-) -> Result<MapWriterReport> {
-    let mut report = MapWriterReport::default();
-    // Any wiki whose `index.md` the compilation plan owns stays off-limits:
-    // two writers on one file is a fight, whoever is right. Since the map
-    // rule (founder, 2026-08-03) **no plan node points at a wiki's map** —
-    // foundation nodes sit on the card and the buffer — so this set is empty
-    // on a current plan and the hub writer is the map's only author, which is
-    // the point: authoring a map of what lives here is exactly its job. The
-    // guard stays because a plan persisted before the rule (or a revert of a
-    // legacy `file_to_subwiki` receipt) can still carry such a node, and
-    // fighting it would be worse than skipping the wiki for a night.
-    let plan_owned_indexes: std::collections::BTreeSet<String> =
-        match crate::planner::load_previous_plan(tree) {
-            Ok(Some(plan)) => plan
-                .pages
-                .values()
-                .filter(|p| p.page_path == wiki::INDEX_FILENAME)
-                .map(|p| p.wiki_id.clone())
-                .collect(),
-            Ok(None) => std::collections::BTreeSet::new(),
-            Err(e) => {
-                tracing::warn!(error = %e, "map_writer: persisted plan unreadable — treating no index as plan-owned");
-                std::collections::BTreeSet::new()
-            },
-        };
-    for d in tree.walk()? {
-        if report.written.len() >= policy.map_writer_cap {
-            break;
-        }
-        let wiki_id = d.meta.wiki_id.as_str().to_owned();
-        // Never rewrite a smart wiki's `index.md` — the smart consumer
-        // crafts its own hub pages via `wiki_admin_push`.
-        if is_smart_wiki(smart_wiki_index, d.meta.wiki_id.as_str()) {
-            report.skipped.push(wiki_id);
-            continue;
-        }
-        if plan_owned_indexes.contains(&wiki_id) {
-            report.skipped.push(wiki_id);
-            continue;
-        }
-        // No trigger beyond "is a standard wiki". The old one — must have
-        // child wikis AND active facts — is what left 19 of production's 29
-        // wikis without an index; a map of a wiki with two pages and no
-        // sub-wikis is still the answer to "where does a fact belong here",
-        // and an empty wiki's map says so in one line instead of leaving
-        // whatever bytes happened to be there.
-        //
-        // One refusal, and it is the load-bearing one: **never overwrite an
-        // `index.md` the fact index still points at.** The map rule says no
-        // fact may live on a root, but a corpus written under the old
-        // convention has them until the compiler re-homes each row, and the
-        // widened trigger now reaches exactly those wikis — the previous
-        // trigger only ever touched group roots, which hold none. Writing a
-        // map over them would delete the prose of live facts and leave their
-        // `{{f=...}}` byte regions pointing into a file that no longer
-        // contains them. Skipping is safe and self-clearing: the compile pass
-        // moves the rows, and the next cycle finds the page empty and maps it.
-        let index_source_path = d
-            .rel_dir
-            .join(wiki::INDEX_FILENAME)
-            .to_string_lossy()
-            .replace('\\', "/");
-        if fact_index::count_active_on_page(pool, &index_source_path).await? > 0 {
-            report.skipped.push(wiki_id);
-            continue;
-        }
-        let op_id = wal::begin_rem_op(pool, cycle_id, "map_writer", Some(&wiki_id), None).await?;
-        match write_wiki_map(&d) {
-            Ok(()) => {
-                wal::complete_rem_op(pool, op_id).await?;
-                report.written.push(wiki_id);
-            },
-            Err(e) => {
-                wal::fail_rem_op(pool, op_id, &format!("{e}")).await?;
-                report.errors.push(format!("map_writer on {wiki_id}: {e}"));
-            },
-        }
-    }
-    Ok(report)
-}
-
-/// Render one wiki's `index.md`. Pure function of the wiki's metadata and the
-/// filenames on disk, so it is fully testable and cannot invent a page.
-///
-/// **It is a list of pages and nothing else.** It used to open with the wiki's
-/// own description copied out of `_meta.md`, and that copy is gone (founder,
-/// 2026-08-05: *«questi index sono elenchi di pagine, quindi la descrizione di
-/// una wiki perché andrebbe lì?»*). The description has one real consumer —
-/// the recall entry fan reads it from `_meta.md` — and nothing in the product
-/// ever read it here: the only code that opens this file is the writer below,
-/// the read path refuses the page by rule, and the ingest classifier is handed
-/// `wiki_id`/`title`/`wiki_type`/`scope`/`smart`/`is_agent`, never a page list.
-/// So the copy bought no reader and could only go stale.
-///
-/// Three sections, each omitted when empty:
-///
-/// - **Sub-wikis** — the child wikis, **named and not linked**: a link on a
-///   page names a page, and no single page stands for a wiki (a card exists
-///   only where the wiki is an enrolled person or group; the two pages every
-///   wiki has are this one, which no reader may open, and its buffer, which is
-///   where unplaced facts land rather than a portrait of the wiki).
-/// - **Pages** — every ordinary page, as `[[wiki_id/stem]]`.
-/// - **Reserved** — the pages with a fixed structural role, each with the one
-///   line that says what belongs on it. This section is the part REM and a
-///   future classifier prompt actually need: it is where the rule *"a fact
-///   with no page goes on the buffer, an identity fact goes on the card"*
-///   stops being tribal knowledge held in Rust and becomes something written
-///   in the wiki itself.
-///
-/// Deliberately **link-only**: no per-page description or keyword line. Page
-/// names are already visible to any reader the funnel offers a sibling to, so
-/// a list of them adds no exposure — whereas a page's description and its
-/// testata keywords are served by the navigator only at the wiki's default
-/// visibility, and a map is one file with one audience. Enriching the lines
-/// means first deciding whose view the file is written at.
-fn render_wiki_map(meta: &wiki::WikiMeta, pages: &[std::path::PathBuf], today: &str) -> String {
-    let wiki_id = meta.wiki_id.as_str();
-    let title = if meta.title.trim().is_empty() {
-        wiki_id
-    } else {
-        meta.title.trim()
-    };
-    let mut out = String::new();
-    out.push_str("---\ntitle: ");
-    out.push_str(&serde_yaml::to_string(&title).unwrap_or_else(|_| format!("{title}\n")));
-    out.push_str("updated: ");
-    out.push_str(today);
-    out.push_str("\npage_type: wiki_map\ndescription: \"Map of ");
-    out.push_str(wiki_id);
-    out.push_str(": which pages live here and what belongs on each.\"\n---\n\n# ");
-    out.push_str(title);
-    out.push_str("\n\nThis page is a map, not a memory: it lists what lives in this wiki so a\n");
-    out.push_str("fact can be filed where it belongs. Facts are on the pages below.\n");
-
-    if !meta.children.is_empty() {
-        out.push_str("\n## Sub-wikis\n\n");
-        for c in &meta.children {
-            // Named, **not linked** (founder, 2026-08-05: a link on a page
-            // names a page, never a whole wiki). No single page stands for a
-            // wiki across the three kinds: a card (`profile.md`) exists only
-            // where the wiki is an enrolled person or group, an emerged topic
-            // wiki has none, and the two pages every wiki does have are its
-            // map — which no reader may open — and its buffer, which is where
-            // unplaced facts land, not a portrait of the wiki. This section
-            // exists to tell the filing side that a child wiki is there; the
-            // id alone says it, and a link that led nowhere would say it worse.
-            out.push_str("- ");
-            out.push_str(&c.wiki_id);
-            out.push('\n');
-        }
-    }
-
-    // Split the listing: an ordinary page is content, a reserved page has a
-    // fixed role and the role is the useful half.
-    let mut ordinary: Vec<&std::path::PathBuf> = Vec::new();
-    let mut reserved: Vec<(&std::path::PathBuf, &str)> = Vec::new();
-    for rel in pages {
-        let name = rel.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-        match name {
-            // The map never lists itself.
-            wiki::INDEX_FILENAME => {},
-            wiki::PROFILE_FILENAME => reserved.push((
-                rel,
-                "the identity card: biography, health, preferences, standing events",
-            )),
-            wiki::NOTES_FILENAME => reserved.push((
-                rel,
-                "the buffer: where a fact lands when no page fits it, and what the nightly reorg drains",
-            )),
-            wiki::RULES_FILENAME => reserved.push((
-                rel,
-                "behaviour rules, not facts (outside every structural sweep)",
-            )),
-            wiki::PROJECTS_FILENAME => {
-                reserved.push((rel, "one door sign per project — written by the signpost channel"));
-            },
-            _ => ordinary.push(rel),
-        }
-    }
-
-    out.push_str("\n## Pages\n\n");
-    if ordinary.is_empty() {
-        out.push_str("(none yet — a fact with no page goes to the buffer below)\n");
-    } else {
-        for rel in ordinary {
-            out.push_str("- ");
-            out.push_str(&page_wikilink(wiki_id, rel));
-            out.push('\n');
-        }
-    }
-
-    if !reserved.is_empty() {
-        out.push_str("\n## Reserved\n\n");
-        for (rel, role) in reserved {
-            out.push_str("- ");
-            out.push_str(&page_wikilink(wiki_id, rel));
-            out.push_str(" — ");
-            out.push_str(role);
-            out.push('\n');
-        }
-    }
-    out
-}
-
-/// `[[wiki_id/stem]]` for a page path relative to its wiki — the canonical
-/// hop grammar the navigator and the dashboard click-through both resolve.
-/// A relative markdown link resolves for neither.
-fn page_wikilink(wiki_id: &str, rel: &std::path::Path) -> String {
-    let stem = rel
-        .to_string_lossy()
-        .trim_end_matches(".md")
-        .replace('\\', "/");
-    format!("[[{wiki_id}/{stem}]]")
-}
-
-/// Assemble and write one wiki's map to its `index.md`.
-///
-/// Rewrites unconditionally rather than diffing: the map is a pure function
-/// of the directory, so an identical render is an identical file, and the
-/// atomic write is cheaper than reading the old one back to compare.
-fn write_wiki_map(d: &wiki::DiscoveredWiki) -> Result<()> {
-    let pages: Vec<std::path::PathBuf> = wiki::list_wiki_pages(&d.abs_dir)?
-        .into_iter()
-        .map(|p| p.rel_path)
-        .collect();
-    let today = Utc::now().date_naive().to_string();
-    let body = render_wiki_map(&d.meta, &pages, &today);
-    let index_path = d.abs_dir.join(wiki::INDEX_FILENAME);
-    wiki::atomic_write(&index_path, body.as_bytes())?;
-    Ok(())
-}
-
 // ---------- Briefing dispatcher sub-job ----------
 
 /// Scan every smart-family wiki for two flavours of finding worth
@@ -6821,7 +6541,6 @@ mod tests {
             "---\nwiki_id: {slug}\nwiki_type: {wiki_type}\nslug: {slug}\ntitle: {title}\nacl_default: 'user:{slug}'\n---\n",
         );
         std::fs::write(dir.join("_meta.md"), frontmatter).unwrap();
-        std::fs::write(dir.join("index.md"), "# placeholder\n").unwrap();
     }
 
     fn fake_embedder() -> Arc<dyn Embedder> {
@@ -6841,7 +6560,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("preferenze.md"),
             body: body.to_owned(),
             subject: Principal::User(subject.to_owned()),
             allow: Vec::new(),
@@ -6875,7 +6594,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from("index.md"),
+            page: PathBuf::from("preferenze.md"),
             body: body.to_owned(),
             subject: Principal::User(subject.to_owned()),
             allow,
@@ -6902,7 +6621,7 @@ mod tests {
     ///
     /// Returns the section's stable `"<source_path>#<ord>"` handle.
     async fn plant_section(pool: &SqlitePool, wiki: &str, body: &str) -> String {
-        let source_path = format!("wikis/{wiki}/index.md");
+        let source_path = format!("wikis/{wiki}/preferenze.md");
         let existing = sections::find_page_sections(pool, &source_path)
             .await
             .expect("read sections");
@@ -6944,11 +6663,12 @@ mod tests {
         subject: &str,
         embedding: Vec<f32>,
     ) -> FactId {
-        plant_page_fact_with_embedding(tree, pool, wiki, "index.md", body, subject, embedding).await
+        plant_page_fact_with_embedding(tree, pool, wiki, "preferenze.md", body, subject, embedding)
+            .await
     }
 
     /// [`plant_fact_with_embedding`] on a caller-chosen page (e.g. the
-    /// reserved `rules.md`, for the behaviour-rules channel guards).
+    /// reserved `@rules.md`, for the behaviour-rules channel guards).
     async fn plant_page_fact_with_embedding(
         tree: &WikiTree,
         pool: &SqlitePool,
@@ -7068,7 +6788,7 @@ mod tests {
             "p-para-foreign",
             "paragraph_to_file",
             "hermes1",
-            "index.md",
+            "preferenze.md",
             &[f.as_str()],
             "applied",
         )
@@ -7081,7 +6801,7 @@ mod tests {
         );
         // ...but it DOES veto its own source page (genuine anti-re-promote).
         assert!(
-            already_promoted_for(&pool, &f, "hermes1", "index.md")
+            already_promoted_for(&pool, &f, "hermes1", "preferenze.md")
                 .await
                 .unwrap(),
             "a genuine paragraph_to_file receipt must veto its own source page"
@@ -7360,249 +7080,6 @@ mod tests {
         drop(dir);
     }
 
-    // ---------- map_writer: every standard wiki gets a map ----------
-
-    #[tokio::test]
-    async fn map_writer_writes_a_map_for_a_wiki_with_children() {
-        let (dir, mut tree, pool) = setup_workdir().await;
-        let parent = "alice";
-        let child = "alice-acmecorp";
-        let parent_dir = tree.wikis_dir().join(parent);
-        std::fs::create_dir_all(&parent_dir).unwrap();
-        let fm = format!(
-            "---\nwiki_id: {parent}\nwiki_type: wiki-user\nslug: {parent}\ntitle: Alice\nacl_default: 'user:alice'\nchildren:\n  - wiki_id: {child}\n    slug: acmecorp\n    title: ACME Corp\n    wiki_type: wiki-tech\n---\n"
-        );
-        std::fs::write(parent_dir.join("_meta.md"), fm).unwrap();
-        std::fs::write(parent_dir.join("index.md"), "# old\n").unwrap();
-        std::fs::write(parent_dir.join("concerti.md"), "# Concerti\n").unwrap();
-        std::fs::write(parent_dir.join("notes.md"), "# Notes\n").unwrap();
-        write_wiki(&tree, child, "ACME Corp", "wiki-tech");
-        tree = WikiTree::open(dir.path()).unwrap();
-        plant_fact_on_page(
-            &tree,
-            &pool,
-            parent,
-            "concerti.md",
-            "alice landed in mwe-mcp",
-            "alice",
-        )
-        .await;
-
-        let policy = RemPolicy::default();
-        let hub_llm = FakeLlmBackend::new("hub", "# never used by the map writer\n");
-        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .unwrap();
-        assert!(
-            report.map_writer.written.iter().any(|w| w == parent),
-            "parent wiki must be mapped, got {report:?}"
-        );
-        let index = std::fs::read_to_string(parent_dir.join("index.md")).unwrap();
-        assert!(index.contains("page_type: wiki_map"), "{index}");
-        // A sub-wiki is NAMED, never linked: no page stands for a whole
-        // wiki, and a link on a page names a page (founder, 2026-08-05).
-        assert!(index.contains("- alice-acmecorp\n"), "{index}");
-        assert!(!index.contains("[[alice-acmecorp]]"), "{index}");
-        assert!(index.contains("[[alice/concerti]]"), "{index}");
-        // The buffer is listed with its role, not as an ordinary page.
-        assert!(index.contains("[[alice/notes]] — the buffer"), "{index}");
-        // The map never lists itself.
-        assert!(!index.contains("[[alice/index]]"), "{index}");
-        drop(dir);
-    }
-
-    /// The old trigger was "has child wikis AND has active facts", which left
-    /// 19 of production's 29 wikis with no index at all. A leaf wiki's map is
-    /// exactly as much an answer to "where does a fact belong here".
-    #[tokio::test]
-    async fn map_writer_maps_a_leaf_wiki_too() {
-        let (dir, mut tree, pool) = setup_workdir().await;
-        write_wiki(&tree, "lonely", "Lonely", "wiki-user");
-        tree = WikiTree::open(dir.path()).unwrap();
-        plant_fact_on_page(&tree, &pool, "lonely", "notes.md", "lonely fact", "lonely").await;
-        let policy = RemPolicy::default();
-        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
-        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .unwrap();
-        assert!(report.map_writer.written.iter().any(|w| w == "lonely"));
-        let index =
-            std::fs::read_to_string(tree.wikis_dir().join("lonely").join("index.md")).unwrap();
-        assert!(index.contains("page_type: wiki_map"), "{index}");
-        assert!(!index.contains("placeholder"), "{index}");
-        drop(dir);
-    }
-
-    /// The one refusal that matters. A corpus written before the map rule
-    /// has facts homed on a wiki root, and the widened trigger reaches
-    /// exactly those wikis — the old one only ever touched group roots,
-    /// which hold none. Overwriting would delete live fact prose and leave
-    /// every `{{f=...}}` region pointing into a file that no longer holds
-    /// it, with the row still claiming the page.
-    #[tokio::test]
-    async fn map_writer_refuses_a_root_that_still_holds_facts() {
-        let (dir, mut tree, pool) = setup_workdir().await;
-        write_wiki(&tree, "legacy", "Legacy", "wiki-user");
-        tree = WikiTree::open(dir.path()).unwrap();
-        let index_path = tree.wikis_dir().join("legacy").join("index.md");
-        std::fs::write(&index_path, "# Legacy\n\nfact prose that must survive\n").unwrap();
-        // A fact homed on the root, exactly as the old convention wrote it.
-        plant_fact_on_page(
-            &tree,
-            &pool,
-            "legacy",
-            "index.md",
-            "an old rooted fact",
-            "legacy",
-        )
-        .await;
-
-        let policy = RemPolicy::default();
-        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
-        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .unwrap();
-
-        assert!(
-            !report.map_writer.written.iter().any(|w| w == "legacy"),
-            "a root still holding facts must not be mapped, got {:?}",
-            report.map_writer
-        );
-        let index = std::fs::read_to_string(&index_path).unwrap();
-        assert!(
-            index.contains("fact prose that must survive"),
-            "the page bytes must be untouched, got {index}"
-        );
-        drop(dir);
-    }
-
-    // ---------- render_wiki_map: the pure renderer ----------
-
-    fn map_meta(dir: &std::path::Path, wiki_id: &str, title: &str) -> wiki::WikiMeta {
-        let wdir = dir.join("wikis").join(wiki_id);
-        std::fs::create_dir_all(&wdir).expect("wiki dir");
-        let fm = format!(
-            "---\nwiki_id: {wiki_id}\nwiki_type: wiki-user\nslug: {wiki_id}\ntitle: {title}\nacl_default: 'user:{wiki_id}'\n---\n"
-        );
-        let meta_path = wdir.join("_meta.md");
-        std::fs::write(&meta_path, &fm).expect("write meta");
-        wiki::WikiMeta::parse(&meta_path, &fm)
-            .expect("meta parses")
-            .0
-    }
-
-    /// Reserved pages carry their role, ordinary pages carry a link, and the
-    /// map never lists itself — the three properties the classifier and REM
-    /// read it for.
-    #[test]
-    fn a_map_separates_reserved_pages_from_content_pages() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let meta = map_meta(dir.path(), "alice", "Alice");
-        let pages: Vec<PathBuf> = [
-            "index.md",
-            "profile.md",
-            "notes.md",
-            "rules.md",
-            "viaggi.md",
-        ]
-        .iter()
-        .map(PathBuf::from)
-        .collect();
-        let out = render_wiki_map(&meta, &pages, "2026-08-03");
-
-        assert!(out.contains("- [[alice/viaggi]]\n"), "{out}");
-        assert!(
-            out.contains("[[alice/profile]] — the identity card"),
-            "{out}"
-        );
-        assert!(out.contains("[[alice/notes]] — the buffer"), "{out}");
-        assert!(out.contains("[[alice/rules]] — behaviour rules"), "{out}");
-        assert!(!out.contains("[[alice/index]]"), "{out}");
-        // No fact markers: a map is not a memory, so nothing on it can need
-        // ACL redaction.
-        assert!(!out.contains("{{f="), "{out}");
-    }
-
-    /// A nested page keeps its directory in the link target, or the hop
-    /// resolves to a page that does not exist.
-    #[test]
-    fn a_nested_page_keeps_its_path_in_the_link() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let meta = map_meta(dir.path(), "alice", "Alice");
-        let pages = vec![PathBuf::from("viaggi/norvegia.md")];
-        let out = render_wiki_map(&meta, &pages, "2026-08-03");
-        assert!(out.contains("[[alice/viaggi/norvegia]]"), "{out}");
-    }
-
-    /// An empty wiki gets a map that says so, rather than keeping whatever
-    /// bytes happened to be on the page.
-    #[test]
-    fn an_empty_wiki_still_gets_an_honest_map() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let meta = map_meta(dir.path(), "alice", "Alice");
-        let out = render_wiki_map(&meta, &[], "2026-08-03");
-        assert!(out.contains("(none yet"), "{out}");
-        assert!(out.contains("page_type: wiki_map"), "{out}");
-    }
-
-    // ---------- policy caps ----------
-
-    #[tokio::test]
-    async fn map_writer_cap_bounds_the_number_of_maps_per_cycle() {
-        let (dir, mut tree, pool) = setup_workdir().await;
-        for parent in ["p1", "p2"] {
-            let pdir = tree.wikis_dir().join(parent);
-            std::fs::create_dir_all(&pdir).unwrap();
-            let fm = format!(
-                "---\nwiki_id: {parent}\nwiki_type: wiki-user\nslug: {parent}\ntitle: P\nacl_default: 'user:{parent}'\n---\n"
-            );
-            std::fs::write(pdir.join("_meta.md"), fm).unwrap();
-            std::fs::write(pdir.join("index.md"), "# old\n").unwrap();
-        }
-        tree = WikiTree::open(dir.path()).unwrap();
-        plant_fact_on_page(&tree, &pool, "p1", "notes.md", "f1", "p1").await;
-        plant_fact_on_page(&tree, &pool, "p2", "notes.md", "f2", "p2").await;
-
-        let policy = RemPolicy {
-            map_writer_cap: 1,
-            ..RemPolicy::default()
-        };
-        let hub_llm = FakeLlmBackend::new("hub", "# unused\n");
-        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&hub_llm, &rev_llm),
-            &policy,
-        )
-        .await
-        .unwrap();
-        assert_eq!(report.map_writer.written.len(), 1);
-        drop(dir);
-    }
-
     // ---------- journaling ----------
 
     #[tokio::test]
@@ -7670,7 +7147,7 @@ mod tests {
             .unwrap();
     }
 
-    /// Plant `n` distinct short facts on `wiki`'s `index.md` so the page
+    /// Plant `n` distinct short facts on `wiki`'s `preferenze.md` so the page
     /// accumulates mass. Bodies are distinct topics so the jaccard
     /// pre-pass never flags them as dedup siblings.
     async fn plant_distinct(
@@ -7983,7 +7460,6 @@ mod tests {
                 successor_fact_id: None,
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
             })
             .collect();
@@ -8341,8 +7817,8 @@ mod tests {
         assert_eq!(ctx["variant"], "paragraph_to_file");
         assert_eq!(ctx["source_wiki_id"], "alice");
         // The stored source_page is wiki-relative, not
-        // `wikis/alice/index.md`.
-        assert_eq!(ctx["source_page"], "index.md");
+        // `wikis/alice/preferenze.md`.
+        assert_eq!(ctx["source_page"], "preferenze.md");
         assert_eq!(ctx["recommended_target_page"], "acme_corp.md");
         // The hint records page mass, not a word count.
         assert_eq!(ctx["trigger_page_facts"], 3);
@@ -8549,7 +8025,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r1.auto_promote.applied.len(), 1);
-        // Cycle 2: index.md dropped under the floor (2 facts) and the
+        // Cycle 2: the page dropped under the floor (2 facts) and the
         // moved fact's new page is covered by the receipt — nothing to
         // do.
         let r2 = run_cycle(&pool, &tree, fake_embedder(), &llms, &mass_policy())
@@ -8562,11 +8038,62 @@ mod tests {
         drop(dir);
     }
 
+    /// A channel page is never split by mass, whatever its size.
+    ///
+    /// The five other sweeps fenced `is_channel_page` each in its own way; the
+    /// split looked at style and mass alone until 2026-08-18. A diary over the
+    /// floor reached the model that names the facts to move out, and a
+    /// confirmed split would have taken them onto a page of their own — where
+    /// the channel, which keys on the path, would never look again.
+    #[tokio::test]
+    async fn auto_promote_never_splits_a_channel_page() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        // Well over any floor, on the diary and on an ordinary page alike.
+        plant_on_page(&tree, &pool, "alice", "@projects_diary.md", 12, "alice").await;
+        plant_on_page(&tree, &pool, "alice", "cucina.md", 12, "alice").await;
+
+        let hub_llm = FakeLlmBackend::new("hub", "# hub\n");
+        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
+        // The scorer says "split" to anything it is shown, so whatever reaches
+        // it gets split — which is exactly what makes the absence visible.
+        let promote_llm = FakeLlmBackend::new(
+            "rp",
+            "{\"split\":true,\"fact_ids\":[\"n1\",\"n2\"],\"target_page\":\"nuova.md\"}",
+        );
+        let policy = RemPolicy::default();
+        let report = run_cycle(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &grouping_llms(&hub_llm, &rev_llm, &promote_llm),
+            &policy,
+        )
+        .await
+        .expect("cycle");
+
+        // One page reached the scorer, and it is the ordinary one: without
+        // the gate both would, since both sit well over the floor. Asserting
+        // on the candidate count rather than on receipt ids, which are opaque
+        // uuids and would make the check pass vacuously.
+        //
+        // Deliberately NOT asserting the diary's fact count: the dedup sweep
+        // is allowed to fold two diary lines into each other (its fence
+        // forbids crossing the channel boundary, not pairing inside it), so
+        // that number moves for reasons unrelated to the split.
+        assert_eq!(
+            report.auto_promote.candidates_examined, 1,
+            "only the ordinary page may reach the scorer: {:?}",
+            report.auto_promote
+        );
+        drop(dir);
+    }
+
     // ---------- page-group → wiki regrouping ----------
 
-    /// Plant `n` distinct facts on a specific (non-index) page so the
-    /// regrouping pass — which excludes `index.md` — has real topic
-    /// pages to work with. Bodies are namespaced by page so two pages
+    /// Plant `n` distinct facts on a specific page so the regrouping pass
+    /// has real topic pages to work with. Bodies are namespaced by page so two pages
     /// never collide on the dedup threshold.
     async fn plant_on_page(
         tree: &WikiTree,
@@ -8625,7 +8152,6 @@ mod tests {
              slug: {slug}\ntitle: {title}\nacl_default: 'user:{parent}'\n---\n",
         );
         std::fs::write(dir.join("_meta.md"), frontmatter).unwrap();
-        std::fs::write(dir.join("index.md"), "# placeholder\n").unwrap();
     }
 
     /// REM policy with a low birth floor (production default is 9) so a
@@ -8694,10 +8220,11 @@ mod tests {
                 "{page} must be gone from the parent",
             );
         }
-        // Its front page is a bare stub: the compiler owns the real one.
-        let index = std::fs::read_to_string(new_dir.join("index.md")).unwrap();
-        assert!(index.contains("Giardino"), "index stub carries the title");
-        assert!(!index.contains("{{f="), "no facts land on the stub index");
+        // Nothing else is seeded: no `index.md` is written any more.
+        assert!(
+            !new_dir.join("index.md").exists(),
+            "an emerged wiki is not seeded with an index.md"
+        );
 
         let rows = fact_index::find_active_in_wiki(&pool, "alice-giardino")
             .await
@@ -8857,9 +8384,8 @@ mod tests {
 
         let hub_llm = FakeLlmBackend::new("hub", "# index\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        // index.md is the wiki's own front page: it is not a candidate,
-        // so naming it invalidates the whole group rather than
-        // decapitating the parent.
+        // `index.md` is not a page of a standard wiki, so naming it
+        // invalidates the whole group rather than decapitating the parent.
         let promote_llm = FakeLlmBackend::new(
             "rp",
             "{\"groups\":[{\"action\":\"create\",\"slug\":\"giardino\",\"title\":\"Giardino\",\
@@ -8873,8 +8399,8 @@ mod tests {
         assert_eq!(report.auto_promote.grouping_groups_applied, 0);
         assert!(report.auto_promote.applied.is_empty());
         assert!(
-            tree.wikis_dir().join("alice").join("index.md").exists(),
-            "the parent keeps its front page",
+            !tree.wikis_dir().join("alice").join("giardino").exists(),
+            "and no sub-wiki was founded from the invalid group",
         );
         drop(dir);
     }
@@ -8951,7 +8477,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(wiki_id, "alice");
-        assert!(path.ends_with("alice/index.md"), "got path {path:?}");
+        assert!(path.ends_with("alice/preferenze.md"), "got path {path:?}");
         assert_eq!(reason, "no_recall_hit_365d");
         assert_eq!(status, "pending");
         drop(dir);
@@ -9491,7 +9017,7 @@ mod tests {
         let hub_llm =
             FakeLlmBackend::new("hub", "# REGEN — MUST NEVER BE WRITTEN OVER COMPANION\n");
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(
+        run_cycle(
             &pool,
             &tree,
             fake_embedder(),
@@ -9501,11 +9027,6 @@ mod tests {
         .await
         .expect("cycle");
 
-        assert!(
-            !report.map_writer.written.iter().any(|w| w == parent),
-            "the map writer must skip a smart wiki, got {:?}",
-            report.map_writer
-        );
         let index = std::fs::read_to_string(parent_dir.join("index.md")).unwrap();
         assert!(
             index.contains("companion-original"),
@@ -9554,7 +9075,7 @@ mod tests {
             &pool,
             "alice",
             chrono::Duration::hours(48),
-            Some("wiki://alice/index.md"),
+            Some("wiki://alice/preferenze.md"),
         )
         .await;
 
@@ -9610,7 +9131,7 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
-                source_path: "wikis/alice/index.md".to_owned(),
+                source_path: "wikis/alice/preferenze.md".to_owned(),
                 region_start: Some(0),
                 region_end: Some(20),
                 text: "Alice was born in 1985".to_owned(),
@@ -9626,7 +9147,6 @@ mod tests {
                 // classifier placement proposal to carry.
                 target_page: None,
                 style: None,
-                page_description: None,
                 salience: None,
                 source_ref: None,
             },
@@ -9637,7 +9157,7 @@ mod tests {
             &pool,
             "alice",
             chrono::Duration::hours(48),
-            Some("wiki://alice/index.md#bio"),
+            Some("wiki://alice/preferenze.md#bio"),
         )
         .await;
 
@@ -9892,7 +9412,7 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("bot").unwrap(),
-                        page: PathBuf::from("rules.md"),
+                        page: PathBuf::from("@rules.md"),
                         body,
                         subject: Principal::User("bot".to_owned()),
                         allow: Vec::new(),
@@ -10088,10 +9608,10 @@ mod tests {
 
         // The model even names a specific dest page — which the engine
         // deliberately IGNORES, forcing the fact onto the dest wiki's
-        // collision-safe `index.md`. (A named cross-wiki page can collide
+        // collision-safe buffer page. (A named cross-wiki page can collide
         // with a same-slug page already homed in another wiki under the
         // bare-slug plan keyspace, stranding wiki_id != source_path — the
-        // regression this asserts.) The move must still land on bob/index.md.
+        // regression this asserts.) The move must still land on bob/@notes.md.
         let resp = "{\"verdict\":\"move\",\"dest_wiki_id\":\"bob\",\"dest_page\":\"cooking.md\",\"reason\":\"this fact is about bob\"}";
         let llm = FakeLlmBackend::new("confirmer", resp);
         let index = load_smart_wiki_index(&tree).expect("index");
@@ -10121,7 +9641,7 @@ mod tests {
             .unwrap()
             .expect("row");
         assert_eq!(row.wiki_id, "bob");
-        assert_eq!(row.source_path, "wikis/bob/notes.md");
+        assert_eq!(row.source_path, "wikis/bob/@notes.md");
         assert!(row.deleted_at.is_none(), "refile is never a tombstone");
 
         // Born-applied receipt + one notice.
@@ -10291,7 +9811,7 @@ mod tests {
         drop(dir);
     }
 
-    /// A `rules.md` fact is never NOMINATED for refile, however foreign it
+    /// A `@rules.md` fact is never NOMINATED for refile, however foreign it
     /// embeds: a per-user behaviour rule naturally embeds toward its user's
     /// wiki, and a confirmed move would eject it from the behaviour-rules
     /// channel (the refile twin of the compiler-door skip). The non-rules
@@ -10305,7 +9825,7 @@ mod tests {
 
         // alice's own content sits on one axis; bob's wiki holds TWO facts on
         // the other axis (so bob's own facts are at home and never nominated
-        // themselves). The behaviour rule lives on alice's `rules.md` and
+        // themselves). The behaviour rule lives on alice's `@rules.md` and
         // embeds squarely onto bob's axis — the exact geometry that moved the
         // misfiled fact in the act-first test above.
         let _alice_own = plant_fact_with_embedding(
@@ -10373,11 +9893,11 @@ mod tests {
             .unwrap()
             .expect("row");
         assert_eq!(row.wiki_id, "alice");
-        assert_eq!(row.source_path, "wikis/alice/rules.md");
+        assert_eq!(row.source_path, "wikis/alice/@rules.md");
         drop(dir);
     }
 
-    /// The revisor never pairs a `rules.md` fact with a non-rules fact
+    /// The revisor never pairs a `@rules.md` fact with a non-rules fact
     /// (both-or-neither): an episodic restatement of a directive must not
     /// fold the rule off its page. The confirmer would say "same" — it must
     /// never be asked about the mixed pair.
@@ -10570,7 +10090,7 @@ mod tests {
     }
 
     /// Rule-vs-rule pairs stay nominable: two near-duplicate directives on
-    /// the same `rules.md` page still reach the confirmer and merge.
+    /// the same `@rules.md` page still reach the confirmer and merge.
     #[tokio::test]
     async fn revisor_still_pairs_rules_with_rules() {
         let (dir, mut tree, pool) = setup_workdir().await;
@@ -10739,7 +10259,7 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
-                        page: PathBuf::from("index.md"),
+                        page: PathBuf::from("preferenze.md"),
                         body: body.to_owned(),
                         subject: Principal::User("alice".to_owned()),
                         allow: Vec::new(),
@@ -10860,7 +10380,7 @@ mod tests {
             CaptureRequest {
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
-                page: PathBuf::from("rules.md"),
+                page: PathBuf::from("@rules.md"),
                 body: "Rispondi sempre anche a voce.".to_owned(),
                 subject: Principal::User("alice".to_owned()),
                 allow: Vec::new(),
@@ -11146,15 +10666,13 @@ mod tests {
         .await;
         // The destination wiki has a readable fact whose topic makes its
         // card match the turn's seed ("ricette") for the gather fan.
-        // On a content page, not the wiki root: the root is the map REM and
-        // the ingest classifier read, and recall never opens it. `notes.md`
-        // is also where a cross-wiki refile lands, so opening it is what lets
-        // the gate see the moved fact.
+        // On `@notes.md` — the buffer, which is where a cross-wiki refile
+        // lands, so opening it is what lets the gate see the moved fact.
         plant_topic_fact(
             &tree,
             &pool,
             "ricette",
-            "notes.md",
+            "@notes.md",
             "Le ricette di famiglia sono raccolte qui",
             "alice",
             &["ricette"],
@@ -11184,7 +10702,7 @@ mod tests {
         );
         let navigator = FakeLlmBackend::new(
             "nav",
-            "{\"open\":[{\"wiki_id\":\"ricette\",\"page\":\"notes.md\"}],\"done\":true}",
+            "{\"open\":[{\"wiki_id\":\"ricette\",\"page\":\"@notes.md\"}],\"done\":true}",
         );
         // Flat replay blind (top_k 0) → the gate's verdict rides navigation.
         let policy = RemPolicy {
@@ -11221,9 +10739,8 @@ mod tests {
             .unwrap()
             .expect("moved fact");
         assert_eq!(
-            moved.source_path, "wikis/ricette/notes.md",
-            "the fact landed on the destination's buffer page — a page the \
-             read path can reach, unlike the wiki's map"
+            moved.source_path, "wikis/ricette/@notes.md",
+            "the fact landed on the destination's buffer page"
         );
         let misses = crate::recall_log::recent_misses(&pool, 10).await.unwrap();
         assert_eq!(misses[0].status, "repaired");
@@ -11272,7 +10789,7 @@ mod tests {
                     sender_id: "alice",
                     fact_id: target.as_str(),
                     wiki_id: "alice",
-                    source_path: "wikis/alice/index.md",
+                    source_path: "wikis/alice/preferenze.md",
                     surface: crate::recall_log::MissSurface::Direct,
                     similarity: 0.9,
                     restated_text: "qual è il codice del cancello?",
@@ -11660,7 +11177,7 @@ mod tests {
             &tree,
             &pool,
             "alice-lnprint",
-            "Design note. ([[alice-lnprint/notes]])",
+            "Design note. ([[alice-lnprint/@notes]])",
             "alice",
         )
         .await;
@@ -11699,7 +11216,7 @@ mod tests {
             "---\nwiki_id: {wiki_id}\nwiki_type: wiki-tech\nslug: {child_slug}\ntitle: {child_slug}\nacl_default: 'user:{subject}'\nparent_wiki_id: {parent}\n---\n",
         );
         std::fs::write(dir.join("_meta.md"), frontmatter).unwrap();
-        std::fs::write(dir.join("index.md"), "# sub\n").unwrap();
+        std::fs::write(dir.join("preferenze.md"), "# sub\n").unwrap();
     }
 
     #[tokio::test]
@@ -11804,7 +11321,7 @@ mod tests {
             &tree,
             &pool,
             "hermes1",
-            "index.md",
+            "preferenze.md",
             "Ho aiutato Alice con la pratica INPS.",
             "hermes1",
         )
@@ -11813,7 +11330,7 @@ mod tests {
             &tree,
             &pool,
             "hermes1",
-            "index.md",
+            "preferenze.md",
             "Ho aiutato Bob con la pratica INPS.",
             "hermes1",
         )
@@ -11887,7 +11404,7 @@ mod tests {
             &tree,
             &pool,
             "alice",
-            "index.md",
+            "preferenze.md",
             "Bruno Battaglia è il padre di Franz e vive a Ferrara",
             "alice",
         )
@@ -11896,7 +11413,7 @@ mod tests {
             &tree,
             &pool,
             "alice",
-            "index.md",
+            "preferenze.md",
             "Bruno Battaglia è il padre di Franz e vive a Ferrara in centro",
             "alice",
         )
@@ -11950,7 +11467,7 @@ mod tests {
                 &tree,
                 &pool,
                 "alice",
-                "index.md",
+                "preferenze.md",
                 &format!("Bruno Battaglia è il padre di Franz e vive a Ferrara {tail}"),
                 "alice",
             )
@@ -12137,7 +11654,7 @@ mod tests {
                 vec![1.0, 0.0, 0.0, 0.0],
             )),
             "franz",
-            "index.md",
+            "preferenze.md",
             old_text,
             "franz",
         )
@@ -12150,7 +11667,7 @@ mod tests {
                 vec![0.999, 0.04, 0.0, 0.0],
             )),
             "franz",
-            "index.md",
+            "preferenze.md",
             new_text,
             "franz",
         )
@@ -12181,7 +11698,10 @@ mod tests {
         assert_eq!(loser.superseded_by.as_ref(), Some(&newer));
         // The confirm prompt framed both sides with their page.
         let prompt = llm.last_prompt().expect("prompt recorded");
-        assert!(prompt.contains("franz · wikis/franz/index.md"), "{prompt}");
+        assert!(
+            prompt.contains("franz · wikis/franz/preferenze.md"),
+            "{prompt}"
+        );
         drop(dir);
     }
 
@@ -12407,7 +11927,7 @@ mod tests {
         // Plan-member page with no rows → never a candidate.
         std::fs::write(dir.path().join("wikis/alice/pianificata.md"), "# planned\n").unwrap();
         // Reserved name with no rows → never a candidate.
-        std::fs::write(dir.path().join("wikis/alice/rules.md"), "# rules\n").unwrap();
+        std::fs::write(dir.path().join("wikis/alice/@rules.md"), "# rules\n").unwrap();
 
         let mut pages = std::collections::BTreeMap::new();
         pages.insert(
@@ -12458,7 +11978,7 @@ mod tests {
             "only the two plan-absent, non-reserved pages are checked"
         );
         assert!(report.removed.is_empty(), "every guard held: {report:?}");
-        for page in ["attiva.md", "fresca.md", "pianificata.md", "rules.md"] {
+        for page in ["attiva.md", "fresca.md", "pianificata.md", "@rules.md"] {
             assert!(
                 dir.path().join("wikis/alice").join(page).exists(),
                 "{page} must survive"
