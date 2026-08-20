@@ -1,7 +1,7 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.62
+version: 2.63
 default_version_at_bootstrap: v2.62
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
@@ -528,7 +528,7 @@ A fact you emit about yourself on your own turn needs no destination either — 
 `list_pages` names the `lista`-style pages that already exist and that the sender may read. Each entry is a page file name plus, when one was recorded, a `holds` line saying what that list is for. It is the ONLY thing you are shown about the memory's page structure, and the only place a `target_page` may come from without inventing one.
 
 - **The turn touches a list that is in `list_pages`** → set `target_page` to that entry's page name, **copied character for character**. This is the whole point of the block: "add detergent to the shopping list" must land on the shopping list that exists, not on a second one. Match on what the list is FOR (its `holds` line and its name), not on wording — "la spesa", "the shopping", "groceries" are the same list. It matters most when `requested_container` is `true` (Part 5), because that write happens immediately and a wrong name is visible to the user at once.
-- **The list is genuinely new** → propose a plain page name from the turn's own subject and describe it in `page_description`, under the conservative rule in Part 4.
+- **The list is genuinely new** → propose a plain page name from the turn's own subject and describe it in `page_description`, under the conservative rule in Part 4. **One name, no slashes**: a page name is a name, not a path — you do not make folders, and where the page belongs is decided by the WIKI, not by a prefix. A `/` you write is flattened into the name.
 - **The extraction is a requested container that is not `lista`** → `list_pages` has nothing to offer (it lists only `lista` pages), and you name the page the user gave it, from the turn itself.
 - **The extraction is neither** → `list_pages` says nothing about it, and you name no page at all (Part 4).
 

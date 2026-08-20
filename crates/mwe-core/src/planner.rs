@@ -554,28 +554,48 @@ pub fn slugify(s: &str) -> String {
     out.trim_matches('_').to_owned()
 }
 
-/// Canonicalize an LLM-proposed page path through [`slugify`]: trim,
-/// strip a trailing `.md`, slugify each `/` segment, re-join, re-append
-/// `.md`. Returns `None` when any segment slugifies to nothing.
+/// Canonicalize an LLM-proposed page name through [`slugify`]: trim, strip a
+/// trailing `.md`, slugify, re-append `.md`. Returns `None` when nothing is
+/// left to slugify.
 ///
-/// This is the single chokepoint for every page name an LLM invents —
-/// the ingest classifier's `target_page` and the REM auto-promote's
-/// recommended target both pass through here, so the same concept can
-/// never materialise twice under spelling variants (`lista-spesa` vs
-/// `Lista spesa`).
+/// This is the single chokepoint for every page name an LLM invents — the
+/// ingest classifier's `target_page` and the REM auto-promote's recommended
+/// target both pass through here, so the same concept can never materialise
+/// twice under spelling variants (`lista-spesa` vs `Lista spesa`).
+///
+/// **A coined name is ONE segment.** A `/` in it is flattened, not honoured
+/// (founder, 2026-08-19: *«un utente non può poter creare cartelle, non ne
+/// vedo il motivo»*). A model that proposed `spesa/detersivi.md` used to get
+/// the folder made for it, because the write creates missing parents — so a
+/// container nobody asked for was born as a side effect of a page name, which
+/// is the shape the *«un contenitore è una wiki»* ruling abolished. Where a
+/// page belongs is the WIKI's job: *«se un utente dice creami una lista della
+/// spesa, il classificatore la metterà sul gruppo famiglia perché c'è scritto
+/// nello scope del gruppo; se chiede una lista dei libri che ha letto, verrà
+/// creata nella sua wiki personale»*.
+///
+/// Folders inside a wiki are still read (an import may have them, and a smart
+/// wiki's tree is its consumer's business) — [`crate::wiki::is_safe_page_path`]
+/// is unchanged. They are just never *coined* here.
 #[must_use]
 pub fn canonical_page_path(raw: &str) -> Option<String> {
     let stem = raw.trim();
     let stem = stem.strip_suffix(".md").unwrap_or(stem);
-    let mut segments = Vec::new();
-    for part in stem.split('/') {
-        let slug = slugify(part);
-        if slug.is_empty() {
-            return None;
-        }
-        segments.push(slug);
+    // A traversal is refused, not flattened. `spesa/detersivi` is a two-word
+    // name written with a slash and becomes `spesa_detersivi`; `../escape` is
+    // a malformed proposal, and slugifying it into the plausible page `escape`
+    // would invent a page out of an attack.
+    if stem
+        .split(['/', '\\'])
+        .any(|seg| matches!(seg.trim(), "." | ".."))
+    {
+        return None;
     }
-    Some(format!("{}.md", segments.join("/")))
+    let slug = slugify(stem);
+    if slug.is_empty() {
+        return None;
+    }
+    Some(format!("{slug}.md"))
 }
 
 fn capitalize(s: &str) -> String {
@@ -4231,11 +4251,19 @@ mod tests {
             canonical_page_path("Orari Matteo.md"),
             Some("orari_matteo.md".to_owned())
         );
-        // Nested paths canonicalise per segment.
+        // **A coined name is one segment.** A `/` used to be honoured per
+        // segment, and the write creates missing parents — so a model writing
+        // `Diario/Episodi Marzo` made a folder nobody asked for. It is
+        // flattened now (founder, 2026-08-19: *«un utente non può poter creare
+        // cartelle»*); where a page belongs is the wiki's call, not a prefix's.
         assert_eq!(
             canonical_page_path("Diario/Episodi Marzo"),
-            Some("diario/episodi_marzo.md".to_owned())
+            Some("diario_episodi_marzo.md".to_owned())
         );
+        // A traversal is still refused rather than flattened: `escape` is a
+        // plausible page name, and inventing one out of an attack is worse
+        // than dropping the name.
+        assert_eq!(canonical_page_path("nested/../escape"), None);
         // Traversal / noise segments are refused, not repaired.
         assert_eq!(canonical_page_path("../escape"), None);
         assert_eq!(canonical_page_path("---"), None);

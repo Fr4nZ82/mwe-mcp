@@ -9572,9 +9572,13 @@ mod tests {
             normalize_capture_page(Some("spesa.md"), default),
             PathBuf::from("spesa.md")
         );
+        // A coined name is ONE segment: a `/` is flattened, never honoured.
+        // Left alone it made the folder — the write creates missing parents —
+        // so a container nobody asked for was born out of a page name
+        // (founder, 2026-08-19: *«un utente non può poter creare cartelle»*).
         assert_eq!(
             normalize_capture_page(Some("spesa/detersivi.md"), default),
-            PathBuf::from("spesa/detersivi.md")
+            PathBuf::from("spesa_detersivi.md")
         );
 
         // Missing extension on a safe slug → `.md` appended (the
