@@ -102,31 +102,23 @@ async fn in_flight_count(
     }))
 }
 
-/// Form fields for the apply submit. The fields a given kind handler
-/// actually consumes depend on the kind + variant of the proposal:
+/// Form fields for the apply submit — one field, because only one
+/// handler needs anything from the operator.
 ///
-/// - `wiki_promote` + `variant = "paragraph_to_file"` (or unset):
-///   reads `target_page`.
-/// - `wiki_promote` + `variant = "file_to_subwiki"`: reads
-///   `new_wiki_slug` (optional) and `new_wiki_title` (optional).
+/// - `wiki_promote` paragraph → file: reads `target_page`.
+/// - `wiki_promote` pages → sub-wiki: reads nothing; the handler takes
+///   every field from the proposal's own context.
 /// - `dedup_merge`: ignores every field (the act of posting is the
 ///   confirmation).
 /// - `bundle`: still surfaces `not_implemented_phase_c`.
+///
+/// The variant is on the **proposal row**, never on the form: the
+/// chassis dispatches on it, so an operator cannot pick one.
 #[derive(Debug, Deserialize)]
 pub struct ApplyForm {
-    /// Variant discriminator for `wiki_promote`. Optional; missing
-    /// defaults to `paragraph_to_file`.
-    #[serde(default)]
-    pub variant: Option<String>,
     /// `wiki_promote` paragraph → file: target page name.
     #[serde(default)]
     pub target_page: Option<String>,
-    /// `wiki_promote` file → sub-wiki: slug for the new sub-wiki.
-    #[serde(default)]
-    pub new_wiki_slug: Option<String>,
-    /// `wiki_promote` file → sub-wiki: human-readable title.
-    #[serde(default)]
-    pub new_wiki_title: Option<String>,
 }
 
 /// `POST /dashboard/proposals/:id/apply` — apply a pending proposal,
@@ -385,40 +377,13 @@ fn compose_primer(proposal_id: &str) -> String {
 ///
 /// Routes through [`MemoryHandles::backend_for`] so the API key
 /// Build the `answers` JSON the chassis expects from the submitted
-/// form fields. The chassis dispatches by `kind` (which is on the
-/// proposal row, not the form), so this helper picks the fields a
-/// given combination of kind + variant cares about and packs them
-/// into a JSON object.
+/// form fields.
 ///
-/// Heuristics:
-///
-/// - `variant = "file_to_subwiki"` → `wiki_promote` sub-wiki form.
-/// - Otherwise → `wiki_promote` paragraph-to-file (or `dedup_merge`,
-///   which ignores answers anyway).
+/// Only `wiki_promote` paragraph-to-file reads anything: its
+/// `target_page`. Every other kind and variant takes what it needs from
+/// the proposal's own context (`pages_to_subwiki`) or ignores answers
+/// entirely (`dedup_merge`, where posting *is* the confirmation).
 fn build_answers(form: &ApplyForm) -> Value {
-    let variant = form.variant.as_deref().map_or("", str::trim);
-    if variant == "file_to_subwiki" {
-        let mut obj = serde_json::Map::new();
-        obj.insert("variant".into(), Value::String(variant.to_owned()));
-        if let Some(slug) = form.new_wiki_slug.as_deref()
-            && !slug.trim().is_empty()
-        {
-            obj.insert(
-                "new_wiki_slug".into(),
-                Value::String(slug.trim().to_owned()),
-            );
-        }
-        if let Some(title) = form.new_wiki_title.as_deref()
-            && !title.trim().is_empty()
-        {
-            obj.insert(
-                "new_wiki_title".into(),
-                Value::String(title.trim().to_owned()),
-            );
-        }
-        return Value::Object(obj);
-    }
-
     let target = form.target_page.as_deref().map_or("", str::trim);
     if target.is_empty() {
         serde_json::json!({})

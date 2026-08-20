@@ -49,7 +49,7 @@
 //! ## Act-first structural changes
 //!
 //! Since the apply-and-notice conversion, the two structural rungs
-//! (`wiki_promote` `paragraph_to_file` / `file_to_subwiki`) never enter
+//! (`wiki_promote` `paragraph_to_file` / `pages_to_subwiki`) never enter
 //! `pending`: REM applies them directly and records a **born-applied**
 //! receipt via [`emit_applied_proposal`] (status `applied`,
 //! `revert_token` + `revert_deadline` minted at insert). The pending

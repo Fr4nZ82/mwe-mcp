@@ -806,9 +806,9 @@ the maintainer (2026-05-31):
   A **wiki** emerges from a different signal entirely — a *set* of existing
   pages that are one subject area (`auto_promote_group_min_pages`). Two
   mechanisms, two rungs of the *forma fisica* scale, and they never compete:
-  a wiki is never born holding a single page. The one-page-to-sub-wiki
-  variant (`file_to_subwiki`) has **no emitter** — it is an operator move
-  from the dashboard form, never a decision REM makes.
+  a wiki is never born holding a single page. A one-page-to-sub-wiki variant
+  survived unemitted until 2026-08-20 and was deleted: nothing proposed it,
+  and a wiki holding one page is the shape this rule exists to forbid.
 
 The consequence: **the planner adds no new proposal kind.** Routine concept-page
 creation is prose the Cronista emits; the only structural action is

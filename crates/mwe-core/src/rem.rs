@@ -2066,8 +2066,8 @@ async fn run_auto_promote(
                 continue;
             };
             // Coarse dedup: skip the page only if a genuine page-promotion
-            // receipt (paragraph_to_file / file_to_subwiki) already moved
-            // one of THESE facts OUT OF THIS SAME page — the emergence pass
+            // receipt (`paragraph_to_file`) already moved one of THESE
+            // facts OUT OF THIS SAME page — the emergence pass
             // above may have just done so. Lifecycle ops that share
             // kind='wiki_promote' and receipts for other pages must not
             // veto (see already_promoted_for).
@@ -2178,9 +2178,8 @@ async fn run_auto_promote(
             // `@rules.md` survive `slugify` unchanged, and this variant's
             // validator checks only traversal and "differs from the source" —
             // the sibling variants refuse them (`apply_page_merge` on either
-            // side, `apply_file_to_subwiki` for `index.md`), this one never
-            // did. A
-            // split has no fallback page to fall through to, so the split is
+            // side), this one never did. A split has no fallback page to
+            // fall through to, so the split is
             // simply skipped: the facts stay where they are and the next cycle
             // asks again.
             if crate::wiki::is_reserved_page_stem(&target_slug) {
@@ -2296,9 +2295,11 @@ async fn run_auto_promote(
 ///   fact-lifecycle ops (`validity_close`, `fact_refile`, `acl_change`,
 ///   `validity_edit`, `page_merge`) share the kind and each stamp their
 ///   `fact_id` into `context`. A `kind`-only match let ANY once-closed /
-///   refiled / re-ACL'd fact veto its whole page. Only `paragraph_to_file`
-///   and `file_to_subwiki` are real page-promotion receipts, so match
-///   those.
+///   refiled / re-ACL'd fact veto its whole page. `paragraph_to_file` is
+///   the one real page-promotion receipt to match. Its sibling
+///   `pages_to_subwiki` cannot be matched here and does not need to be:
+///   its context carries a `pages` list and no `source_page`, so the
+///   scope clause below would never fire on it.
 /// - **Source scope.** A receipt records the page a fact was promoted
 ///   FROM. Matching `source_wiki_id`/`source_page` stops an old receipt
 ///   from vetoing a fact that has since migrated onto a *different* page
@@ -2315,7 +2316,7 @@ async fn already_promoted_for(
         "SELECT COUNT(*) FROM structure_proposals \
          WHERE kind = 'wiki_promote' \
            AND status IN ('pending', 'applied') \
-           AND json_extract(context, '$.variant') IN ('paragraph_to_file', 'file_to_subwiki') \
+           AND json_extract(context, '$.variant') = 'paragraph_to_file' \
            AND json_extract(context, '$.source_wiki_id') = ? \
            AND json_extract(context, '$.source_page') = ? \
            AND context LIKE '%' || ? || '%'",
@@ -6746,8 +6747,8 @@ mod tests {
     /// The old `kind`-only match let any once-touched fact veto its whole
     /// page, so `candidates_examined` was stuck at exactly 0 for every
     /// over-mass page. `already_promoted_for` must count ONLY genuine
-    /// page-promotion receipts (`paragraph_to_file` / `file_to_subwiki`),
-    /// scoped to the same `(source_wiki_id, source_page)`.
+    /// page-promotion receipts (`paragraph_to_file`), scoped to the same
+    /// `(source_wiki_id, source_page)`.
     #[tokio::test]
     async fn already_promoted_for_only_genuine_receipts_on_same_source_page() {
         let (_dir, _tree, pool) = setup_workdir().await;
@@ -6813,7 +6814,7 @@ mod tests {
         insert_wiki_promote_proposal(
             &pool,
             "p-sub-reverted",
-            "file_to_subwiki",
+            "paragraph_to_file",
             "hermes1",
             "trio.md",
             &[g.as_str()],
@@ -6829,7 +6830,7 @@ mod tests {
         insert_wiki_promote_proposal(
             &pool,
             "p-sub-pending",
-            "file_to_subwiki",
+            "paragraph_to_file",
             "hermes1",
             "malessere.md",
             &[g.as_str()],

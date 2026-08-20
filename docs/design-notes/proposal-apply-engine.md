@@ -235,7 +235,7 @@ token.
 
 | Kind constant | Wire string | Handler status |
 |---|---|---|
-| `kind::WIKI_PROMOTE` | `wiki_promote` | **Shipped** — variants `paragraph_to_file` (default), `pages_to_subwiki`, `pages_move_wiki`, `page_merge`, `fact_refile` (born-applied only), `validity_close` (born-applied only), plus `file_to_subwiki` (no emitter — operator-applied from the dashboard form). See [Promote handler](#promote-handler). |
+| `kind::WIKI_PROMOTE` | `wiki_promote` | **Shipped** — variants `paragraph_to_file` (default), `pages_to_subwiki`, `pages_move_wiki`, `page_merge`, `fact_refile` (born-applied only), `validity_close` (born-applied only). See [Promote handler](#promote-handler). |
 | `kind::DEDUP_MERGE` | `dedup_merge` | **Shipped** — two-way merge variant. See [Dedup-merge handler](#dedup-merge-handler). |
 | `kind::BUNDLE` | `bundle` | **Revert shipped** (`bundle::revert_bundle`) — born-applied only (wraps tombstones + cross-wiki refiles for the page deletion); no chassis *apply* path, so `apply` stays `KindNotYetImplemented` by design. See [Bundle handler](#bundle-handler). |
 | `kind::FACT_FORGET` | `fact_forget` | **Apply shipped** (`proposals::apply_fact_forget`) — born-`pending` (a non-sender subject's forget request, [`mwe_core::votes`]); apply tombstones the fact when its audience consents; **no revert** (final). See [Fact-forget handler](#fact-forget-handler). |
@@ -283,9 +283,10 @@ the REM auto-promote sub-job ([`rem-cycle.md`](rem-cycle.md)).
 > The two do not compete: mass splits, and only a **set** of pages emerges.
 > A wiki is therefore never born holding one page, and the trigger is
 > evidence on disk rather than a forecast about what one page might ramify
-> into. The `file_to_subwiki` variant (one page → sub-wiki) exists in the
-> handler but has **no emitter**: it is operator-applied from the dashboard
-> form, never something REM decides.
+> into. A `file_to_subwiki` variant (one page → sub-wiki) existed until
+> 2026-08-20, unemitted since the grouping pass replaced it; it was deleted
+> rather than left wired, because a single page becoming a wiki contradicts
+> the rule above.
 
 Both passes are **act-first**: they apply in-cycle and record a
 **born-applied** receipt, so neither raises a pending proposal — the
@@ -448,7 +449,7 @@ field in `answers` (default `paragraph_to_file`):
   with `fact_index`. The **page-count floor**
   lives in the REM caller (`auto_promote_group_min_pages`), not here.
 
-  Its **revert** (and `file_to_subwiki`'s) may find more in the newborn
+  Its **revert** may find more in the newborn
   directory than the receipt put there, and that is not a defect of the wiki:
   `planner::seed_parking_pages` gives every non-smart wiki a parking node on
   `@notes.md`, and a wiki born by promotion is force-dirtied at birth, so the
@@ -461,19 +462,6 @@ field in `answers` (default `paragraph_to_file`):
   exists**. No floor: the home is there. The target must be a child of
   the source wiki — regrouping rearranges a wiki's own subtree, it never
   files content into somebody else's.
-- **`file_to_subwiki`** — the single-page emergence: one whole page
-  becomes a sub-wiki of its own, **carried over under its own name**,
-  bytes verbatim (so every marker keeps its offsets). The new wiki gets
-  its `_meta.md` and the carried page, nothing else — it used to be born
-  with its founding facts on an `index.md`, the one page the read path
-  refused. A promotion naming `index.md` is refused: that is not a page of
-  a standard wiki. The wiki's «what goes in here» goes on `_meta`
-  (`extra["summary"]`). **No emitter reaches this variant** (REM's live
-  emergence is `pages_to_subwiki`); it is applied by an operator choosing
-  the variant on the dashboard's apply form. A receipt written before
-  2026-08-03 carries no
-  `carried_page` in its spec, and the revert reads that absence as "the
-  carried page was `index.md`", so those stay undoable unchanged.
 - **`page_merge`** — move **every** active fact of one concept page (the
   husk) onto a near-synonym survivor page of the same wiki, **delete the
   husk file**, and re-home the move in the persisted compilation plan
