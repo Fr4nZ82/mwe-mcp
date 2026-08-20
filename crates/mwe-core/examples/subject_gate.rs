@@ -17,9 +17,10 @@
 //! - the flat recall top-K as that sender actually sees it, ACL included —
 //!   i.e. what the turn already gets **without** any card being served;
 //! - whether the phrase's `--expect` needles are in there, and at what rank.
-//!   This is the founder's own success test: *«"sta sera cucino io, cosa
-//!   faccio per carol?" deve venir fuori la celiachia e la gravidanza come
-//!   minimo»*;
+//!   This is the founder's own success test — his words, with the person he
+//!   named replaced by a fixture name, as every example here is: *«"sta sera
+//!   cucino io, cosa faccio per carol?" deve venir fuori la celiachia e la
+//!   gravidanza come minimo»*;
 //! - what serving each resolved subject's card would cost in characters, and
 //!   how many of its facts the flat slot already carries — the double-pay the
 //!   gate has to avoid.

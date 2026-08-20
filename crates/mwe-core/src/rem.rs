@@ -1758,8 +1758,11 @@ pub struct MissingRail {
 /// tests: `run_cycle` does not, no confirmer exists, and no code authors a
 /// rail from a co-open pair. The link concern it was built for was answered
 /// a different way on 2026-08-09, in the Cronista prompt, with
-/// unreachability as the criterion. Wire it or delete it — do not read it
-/// as a live pass.
+/// unreachability as the criterion. **Do not read it as a live pass**, and
+/// do not delete it either: the founder kept it deliberately on 2026-08-20,
+/// because the REM review it belongs to is the next piece of work and this
+/// is the instrument that review starts from. It is unwired on purpose,
+/// pending that review — not a leftover somebody forgot to sweep.
 ///
 /// Founder, 2026-08-04: *«è dal lavoro del REM che si conta la bontà della
 /// memoria, perché i link che il navigatore segue alla fine li ha decisi il

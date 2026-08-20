@@ -135,8 +135,29 @@ Never commit hand-built assets outside this flow — they are embedded via
   people's names, customer data, credentials or private paths — in commit
   messages, and equally in comments, prompts, examples and test fixtures. Reach
   for the fictional names the repo already uses (`alice`, `bob`, `carol`,
-  `frodo`, `famiglia`). A measurement is written from real rows, so real names
-  travel with it unless you rename them as you write.
+  `frodo`, `famiglia`).
+
+  **There is no exemption, and the two that felt like one are why 24 real
+  names sat in six tracked files until 2026-08-20.** A name arriving inside
+  something you must not alter is exactly the case the rule is for:
+
+  - **A verbatim quote from the owner is not exempt.** His sentences name his
+    family. Substitute the fixture name inside the quote and say once, where it
+    is quoted, that the person was renamed — the sentence keeps its authority
+    and loses the name.
+  - **A measurement is not exempt.** It is written from real rows, so the names
+    come along with it. Rename them **as you write**, not afterwards: once the
+    paragraph reads as evidence, nobody wants to touch it.
+
+  **Check before committing, not before pushing.** The pre-push hook scans the
+  whole outgoing range, so one bad line means rewriting every commit since. Run
+  it while the work is still in the working tree:
+
+  ```
+  BL="$HOME/.config/mwe-scrub-blacklist.txt"
+  git diff | grep -inEf "$BL"                      # working tree
+  git log -p origin/main..HEAD | grep -inEf "$BL"  # already committed
+  ```
 
 ## Local-only material
 

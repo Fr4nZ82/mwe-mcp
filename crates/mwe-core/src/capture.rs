@@ -306,18 +306,18 @@ pub struct LinkOutcome {
 /// stays with the caller, which decides what a hit means.
 /// Who may read a fact — the whole set, not just its subject.
 ///
-/// **Two facts are the same fact only when this matches.** Founder's ruling,
-/// 2026-07-28: *«a fact that reached two users by two private routes, each
-/// holding it privately, must stay two facts»* — merging hands each of them
+/// **Two facts are the same fact only when this matches.** Merging two rows
+/// that are not readable by the same people hands each of those readers
 /// something they were never told, and it cannot be undone afterwards. Same
-/// content is a *candidate* signal, never a sufficient one.
+/// content is a *candidate* signal, never a sufficient one — the founder
+/// ruled that out on 2026-07-28 and restated it on 2026-08-18.
 ///
-/// Built 2026-08-18, when the founder said it again (*«i duplicati possono
-/// esistere … se due utenti hanno detto la stessa cosa ma con acl diversa»*)
-/// and the check turned out to compare the **subject alone**: two identical
-/// claims about the same person, one private and one shared with the family,
-/// collapsed into whichever arrived first, and the audience of the other was
-/// lost. The three fields together are exactly what [`crate::acl::can_read`]
+/// Built 2026-08-18, when he stated it in the form this compares (*«i
+/// duplicati possono esistere … se due utenti hanno detto la stessa cosa ma
+/// con acl diversa»*) and the check turned out to compare the **subject
+/// alone**: two identical claims about the same person, one private and one
+/// shared with the family, collapsed into whichever arrived first, and the
+/// audience of the other was lost. The three fields together are exactly what [`crate::acl::can_read`]
 /// resolves, so equal here means *readable by exactly the same people* — and
 /// then merging tells nobody anything new.
 #[derive(Debug, Clone, Copy)]

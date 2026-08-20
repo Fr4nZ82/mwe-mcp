@@ -204,7 +204,13 @@ impl TraceHit {
 pub struct TraceEntryPoint {
     /// Target wiki.
     pub wiki_id: String,
-    /// `None` = the wiki root (its overview page).
+    /// The page this seed opens. `Option` only because the field is
+    /// `#[serde(default)]` and an old journal row may not carry one —
+    /// **`None` is not a landing**: a live [`EntryPoint`] always names a
+    /// page, and a seed that names only a wiki opens nothing (there is no
+    /// wiki-root page to fall back to, and has not been since 2026-08-15).
+    ///
+    /// [`EntryPoint`]: crate::recall_nav::EntryPoint
     pub page: Option<String>,
     /// Seed family (`principal` | `rag` | `topic` | `situational`).
     pub origin: String,

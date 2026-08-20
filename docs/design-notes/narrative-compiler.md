@@ -1499,7 +1499,7 @@ the property that was actually meant.
 The write is **best-effort** (a
 `_meta` hiccup is logged, never fails the page) and **idempotent** (rewritten
 only when the abstract changed; the `_meta` prose body is preserved), so it
-refreshes exactly when the overview page is recompiled.
+refreshes exactly when the wiki's foundation page is recompiled.
 
 This is the LLM-authored companion to the deterministic
 [topic-keyword sync](#keyword-sync--fact-topics-into-_meta-and-the-page-testate-recall-navigation):

@@ -173,14 +173,17 @@ gets a clean "you superseded a phantom" diagnostic.
 ## 🚨 Identical text is not a duplicate — the audience decides
 
 **Before any similarity number matters:** two facts carrying the same content
-are not necessarily one fact. The governing case is not style but governance —
+are not necessarily one fact — the founder ruled that out on 2026-07-28 and
+restated it on 2026-08-18:
 
-> A fact that reached two users by two private routes, each holding it
-> privately, must stay **two** facts. Merging them hands each user something
-> they were never told, and it cannot be undone after the fact.
+> *«i duplicati possono esistere … se due utenti hanno detto la stessa cosa ma
+> con acl diversa»*
 
-Founder's ruling, 2026-07-28. So similarity is a **candidate** signal, never a
-sufficient one: the **audience** and the **provenance** decide. Anything that
+The governing case is not style but governance. A fact that reached two users
+by two private routes, each holding it privately, stays **two** facts: merging
+them hands each user something they were never told, and it cannot be undone
+after the fact. So similarity is a **candidate** signal, never a sufficient
+one: the **audience** and the **provenance** decide. Anything that
 consolidates memory must start from that, not from *identical ⇒ collapse* —
 this is the per-fragment governance the product exists to sell, and a
 consolidation feature that skips it sells the opposite.

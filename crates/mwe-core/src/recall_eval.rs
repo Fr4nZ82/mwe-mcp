@@ -409,7 +409,7 @@ mod tests {
         )
         .unwrap();
         // The deviating fact lives in the prose, dissimilar to the query — on
-        // a content page, since the wiki root is a map recall never opens.
+        // a content page, which is the only thing recall opens.
         std::fs::write(
             wikis.join("@profile.md"),
             "# Alice\n\nAlice is celiac and avoids gluten everywhere.\n",

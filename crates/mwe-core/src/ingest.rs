@@ -1394,7 +1394,15 @@ fn validate_capture_plan(
     };
     // A page name is honoured exactly when THE WRITE CANNOT WAIT.
     //
-    // Two cases, and they are two independent switches on the plan:
+    // **The classifier does not choose where a fact goes** (founder,
+    // 2026-08-06; restated 2026-08-20 closing the contradiction with his own
+    // ruling of 2026-08-03, which gave that job to a per-wiki map that no
+    // longer exists). Placement belongs to the hourly round, which reads the
+    // whole memory before deciding. The exceptions below are the WHOLE list:
+    // two independent switches on the plan, plus standing rules, which never
+    // reach this router because they never become facts (`engine_rule` →
+    // the sender's `@rules.md`, `behaviour_rule` → the calling agent's own
+    // wiki).
     //
     // - **List-shaped material.** A list is a *set*: it is right or it is
     //   wrong, and half a shopping list is a wrong answer rather than a
@@ -4927,14 +4935,13 @@ fn format_history_with_user(agent: &AgentSelf, policy: &IngestPolicy) -> Option<
     )
 }
 
-/// The identity card of a principal's wiki — **`@profile.md`**, and not the
-/// wiki root.
+/// The identity card of a principal's wiki — **`@profile.md`**.
 ///
-/// Founder's ruling, 2026-08-03: *«la radice della wiki e la pagina
-/// identitaria non dovrebbe essere la stessa pagina»*. The card is a content
-/// page like any other, except that this slot serves it deterministically.
-/// (The wiki-root page that ruling split it away from does not exist at all
-/// any more.)
+/// A content page like any other, except that this slot serves it
+/// deterministically. There is no wiki-root page to confuse it with: the
+/// per-wiki map the card was once split away from was deleted on 2026-08-15,
+/// and `index.md` survives only as a name nothing may coin
+/// ([`wiki::INDEX_FILENAME`]).
 ///
 /// Not [`IngestPolicy::default_page`] either, which is the *capture* fallback
 /// ([`wiki::NOTES_FILENAME`]): this is the page the classifier routes the

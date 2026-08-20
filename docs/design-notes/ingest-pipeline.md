@@ -464,9 +464,20 @@ name a page for a list at all — see below.
 
 ### A page name is honoured exactly when the write cannot wait
 
-`target_page` and `page_description` survive validation in **two** cases;
-everywhere else the classifier's proposal is discarded and the claim waits in
-the buffer with **no page named at all**.
+**The classifier does not choose where a fact goes.** That is the hourly
+round's job, taken with the whole memory in front of it; the classifier reads
+one turn. The founder ruled it on 2026-08-06 and restated it on 2026-08-20,
+closing a contradiction with his own ruling of 2026-08-03 — which had given
+placement to a per-wiki map that was deleted on 2026-08-15 and no longer
+exists.
+
+**Lists and rules are the exceptions, and there is nothing else.** Rules never
+reach this router at all: an `engine_rule` is appended to the sender's
+`@rules.md` and a `behaviour_rule` to the calling agent's own wiki, and neither
+becomes a fact. That leaves lists, in the two shapes below — where
+`target_page` and `page_description` survive validation. Everywhere else the
+classifier's proposal is discarded and the claim waits in the buffer with **no
+page named at all**.
 
 - **`style: "lista"`.** A list is a *set*. Half a shopping list is not a partial
   answer, it is a wrong one — which is also why a ranked top-K cannot serve one.
@@ -1407,9 +1418,9 @@ places adjacent to this block (the hermes bridge leads with it).
    runtime path: `recall_nav::gather_entry_points` builds the seed fan and
    `recall_nav::navigate` runs the funnel. The reserved `@rules.md` policy
    page is **not navigable** (roadmap 41e): the sibling fan and wikilink
-   hops never offer it, a RAG hit homed on it seeds the wiki root
-   instead, and `open_target` discards it as a fail-safe even when the
-   navigator asks for it verbatim.
+   hops never offer it, a RAG hit homed on it **seeds nothing** (it reaches
+   the reader through the flat slot instead), and `open_target` discards it
+   as a fail-safe even when the navigator asks for it verbatim.
 6. **`UPCOMING`** — facts whose validity window closes inside the
    operator horizon (`recall::recall_due_soon`), most imminent first, each
    rendered with its `valid_to` (`[due <ISO>]`).

@@ -572,7 +572,9 @@ pub struct HopTrace {
 pub struct CandidateCard {
     /// Target wiki.
     pub wiki_id: String,
-    /// `None` = the wiki's overview page.
+    /// The page offered. `Option` only for `#[serde(default)]` on an old
+    /// journal row — [`Self::from_candidate`] always fills it, because a
+    /// candidate that named no page would offer nothing to open.
     pub page: Option<String>,
     /// How it surfaced (`principal` | `rag` | `topic` | `situational` |
     /// `link` | `page`).
@@ -603,7 +605,9 @@ impl CandidateCard {
 pub struct RequestedOpen {
     /// Target wiki the decision named.
     pub wiki_id: String,
-    /// Target page (`None` = the wiki's overview page).
+    /// Target page the decision named. **`None` means the model named a
+    /// wiki and no page**, which is half an address: recall opens pages, not
+    /// wikis, so the vetting discards it and `opened` is `false`.
     pub page: Option<String>,
     /// Whether the vetting let the pick through and the page opened.
     pub opened: bool,
