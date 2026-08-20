@@ -146,8 +146,17 @@ filesystem, and several test modules use them deliberately.
   language of the design conversations and the corpus is preserved
   as-is. It lives outside the public repo; the engineering wiki is the
   canonical surface.
-- The **lockstep rule**: a code change must update the `docs/` page
-  covering that area in the same commit.
+- **When the docs are brought true**: `docs/` is a **release
+  deliverable**, not a per-commit obligation. Before a release the pages
+  covering the areas that release touched are checked against the code and
+  rewritten. Updating a page along with the change that motivates it is
+  welcome and cheaper, but not required — and a page that lags between
+  releases is not a defect. **The code is the source of truth**; a page
+  that disagrees with it is fixed, never believed.
+- **Prompts and skills are exempt** — `crates/mwe-core/prompts/` and
+  `crates/mwe-core/skills/` are executed, not read: a model acts on them at
+  runtime. A wrong sentence there ships as behaviour, so it is corrected in
+  the same commit as the code, always.
 - The terms **engineering docs** (`docs/`, this documentation set) vs
   **memory wiki / consumer wiki** (the Markdown wiki the engine writes
   and serves at runtime) are not interchangeable.

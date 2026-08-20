@@ -328,7 +328,8 @@ Per-class anti-patterns are exhaustive in each skill body.
 ## 9. References
 
 The documentation set ([`docs/`](docs/)) is the reference for what the
-system is and does (kept in lockstep with code):
+system is and does. It is brought true at each release; the code is what
+is authoritative in between:
 
 - [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md) —
   public tool surface (roster + families).

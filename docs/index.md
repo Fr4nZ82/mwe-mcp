@@ -7,12 +7,17 @@ last_review: "2026-06-28"
 
 # mwe-mcp engineering wiki
 
-> **What this is.** This engineering wiki is the **single source of
-> truth** for what the mwe-mcp codebase is, what it does, and the logic
-> underneath. It is maintained in lockstep with the code: a change to the
-> code updates the relevant page in the same commit. Forward-looking work
-> (roadmap, planning) is kept in the maintainer's private notes and lands
-> here as it ships.
+> **What this is.** This engineering wiki describes what the mwe-mcp
+> codebase is, what it does, and the logic underneath.
+>
+> **It is not the source of truth — the code is.** These pages are a
+> **release deliverable**: they are brought true before a release, over the
+> areas that release touched. Between releases a page may lag, and that is
+> not a defect. So **verify against the code before trusting a page**, and
+> when the two disagree, the code wins and the page gets fixed.
+>
+> Forward-looking work (roadmap, planning) is kept in the maintainer's
+> private notes and lands here as it ships.
 
 > **Terminology reminder.** Two different things share the word "wiki" —
 > always write the qualified term, never a bare "wiki". The
@@ -113,7 +118,7 @@ If you are new, read in this order:
 - [build-run.md](development/build-run.md) — cargo workspace commands +
   the CLI sub-command roster + workdir layout + the `mwe-mcp.env` loader.
 - [conventions.md](development/conventions.md) — formatting, linting,
-  MSRV, no-unsafe, the lockstep doc rule.
+  MSRV, no-unsafe, when the docs are brought true.
 - [agents-bridges.md](development/agents-bridges.md) — the in-repo home of
   the host adapters (`agents-bridges/`): compat manifests, the two-tier
   smoke harness, the non-blocking CI + weekly upstream canary, and the

@@ -18,13 +18,15 @@ how to keep it in sync with the code.
 
 ## Two principles
 
-1. **The wiki is the source of truth, in lockstep with code.** This wiki
-   describes what the code _is_, not what _might be_. When you change
-   code, update the page covering that area **in the same commit**. When
-   a page becomes wrong, fix it immediately — a stale reference is worse
-   than a missing one. (The per-area pages describe only the current
-   state; forward-looking work is kept in the maintainer's private
-   notes.)
+1. **The code is the source of truth; this wiki is a release
+   deliverable.** These pages describe what the code _is_, not what
+   _might be_ — but they carry **no guarantee between releases**. Read a
+   page to find *where* something lives and *why* it was built that way,
+   then **confirm the behaviour in the code**. The pages are brought true
+   before a release, over the areas that release touched; updating one
+   along with the change that motivates it is welcome and cheaper, but not
+   required. (Per-area pages describe only the current state;
+   forward-looking work is kept in the maintainer's private notes.)
 2. **One concept per page.** If two concepts keep cross-referencing, they
    belong on the same page or in adjacent pages, not scattered. Prefer a
    single canonical page per mechanism and let others link to it rather
@@ -48,9 +50,10 @@ Entry point: [`index.md`](index.md). From there:
 - Forward-looking material (roadmap, planning, decision log) is not part
   of the public wiki.
 
-The wiki is the SSOT: a topic that exists in the code should have a home
-here. If you can't find one, it is a gap to fill, not a pointer to chase
-elsewhere.
+Coverage is still the goal: a topic that exists in the code should have a
+home here, and a missing one is a gap to fill rather than a pointer to
+chase elsewhere. Coverage is not authority, though — the page tells you
+where to look and why; the code tells you what happens.
 
 ## Frontmatter contract
 
@@ -168,11 +171,14 @@ concluding something isn't there.
 
 ## Anti-patterns
 
-- ❌ Leaving a wiki page stale after the code moved. The wiki is the SSOT;
-  a wrong page misleads every reader and every agent.
+- ❌ **Carrying a stale page THROUGH a release.** Between releases a page
+  may lag; a release is where that stops. A page shipped wrong misleads
+  every reader and every agent, and it is read as knowledge.
+- ❌ **Quoting a page as the state of the engine.** Open the code. A page
+  says where to look and why; it does not say what happens.
 - ❌ Marking a page `implemented` while the tests are stubs.
 - ❌ Hardcoding a derived count (tools, sub-jobs, migrations, modules,
-  templates) as a load-bearing fact. Point at the code SSOT instead; keep
+  templates) as a load-bearing fact. Point at the code instead; keep
   at most one canonical count where a page is pedagogically the roster
   (e.g. `protocol/mcp-tools.md`).
 - ❌ Linking into the gitignored `road-behind/` archive — repoint to the

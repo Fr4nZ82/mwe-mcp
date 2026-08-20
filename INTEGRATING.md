@@ -21,7 +21,7 @@ LLM agent that *talks to* mwe-mcp over MCP reads
 [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) instead.
 
 > **What is solid vs. what is still moving.** The **per-turn contract** a host
-> bridge implements (below) is concrete and lockstep with the code, and the two
+> bridge implements (below) is concrete and true of the shipped release, and the two
 > hosts in the `/bridges` catalog have working copy-paste setup. The remaining
 > consumer-side detail — an end-to-end worked integration for a host we don't
 > ship, the identity/delegation handshake from the consumer's point of view — is
