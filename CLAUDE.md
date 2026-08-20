@@ -38,12 +38,38 @@ work like X" — a page is rewritten or deleted, never annotated with its past.
 The one exception is a sentence explaining why something is *absent*, when a
 reader would otherwise re-add it.
 
-## Changing behaviour is a sweep, not an edit
+## Finishing is a loop, not a moment
 
-When a name dies, grep the name across `crates/`, `docs/` — and any local-only
-directory, which a repo-root grep may skip — and it must come back **empty**.
-Then grep the *sentences* that described the old behaviour: they do not contain
-the symbol, so the compiler never finds them and the next reader believes them.
+Green tests mean the code runs. They say nothing about what the change left
+behind, and that residue — a symbol nobody calls, a comment describing the
+previous design, a sentence in a prompt the model still obeys — is what the next
+reader picks up and believes. **The compiler cannot see any of it.**
+
+So when you think you are done, you are not. Run this pass, fix everything it
+finds, then **run it again** — a fix creates new residue. Stop after a pass that
+finds nothing. A *first* pass that finds nothing means it was not a pass.
+
+1. **Dead names.** For every name the change removed or renamed, grep the old
+   name across `crates/`, `docs/` — and any local-only directory, which a
+   repo-root grep may skip. It must come back **empty**, except where a
+   deliberate line explains an absence.
+2. **Dead code.** Anything that lost its last caller goes: functions, `pub`
+   items, enum variants, config keys, test helpers, whole modules. `clippy` will
+   not tell you — it does not flag a `pub` item nobody uses. Before deleting on
+   the grounds that *"another path already does this"*, write down the domain of
+   both and compare them: if the one you are deleting is coarser, the difference
+   is the case nobody will handle.
+3. **Stale comments — read the neighbours, not the diff.** The comment that is
+   now wrong is usually the one *beside* your change, which the diff never shows
+   you. Open each function you touched and read it whole: its doc comment, the
+   comments above and below your hunk, the module header. A comment that
+   describes what the code used to do is a defect with the same weight as a bug.
+4. **The claim sweep.** Take 2–3 distinctive phrasings of the OLD behaviour
+   ("lists wikis", "falls back to", "in the same commit") and grep those. Stale
+   *sentences* do not contain the symbol, so step 1 never finds them.
+5. **Read the whole diff as a stranger**, top to bottom, asking of each hunk:
+   would somebody who was not here understand why this is the way it is?
+
 A leftover you have already seen is never left for later.
 
 ## Build / test / CI
