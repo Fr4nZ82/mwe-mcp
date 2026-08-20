@@ -17,17 +17,23 @@ client knows about exactly **two** MCP surfaces (this one for chat,
 
 ## What the orchestrator does
 
-The pipeline is six steps. Four of them are deterministic plumbing
-around (at most) two LLM calls:
+The pipeline is eight steps. Three of them call a model on the `ingest`
+slot, and a fourth calls the `navigator`:
 
 ```text
-1. recall context        recall::wiki_recall   (top_k hits, ACL filtered)
+1. recall context        recall::wiki_recall   (ranked hits, ACL filtered)
 2. enumerate wikis       WikiTree::walk        (bounded compact list)
-3. LLM intent + plan     llm::complete         (single call, JSON out)
+3. LLM intent + plan     llm::complete         (`ingest` slot, JSON out)
 4. route by intent       capture (standard wiki ⇒ buffer, unless requested-container ⇒ live | otherwise ⇒ direct write) | recall snippet | dashboard hint | noop
-5. recall-block tail     recall_nav::gather_entry_points + navigate (optional) + recall::recall_due_soon
-6. assemble response     IngestResponse        (context_snippet + rules + suggested_seed + capture_id)
+5. closure confirmer     confirm_topic_closures (`ingest` slot, only when the turn closes something)
+6. recall-block tail     recall_nav::gather_entry_points + navigate (`navigator` slot, optional) + recall::recall_due_soon
+7. reconcile what was read  reconcile_after_reading (`ingest` slot — supersede / close / re-date / re-share)
+8. assemble response     IngestResponse        (context_snippet + rules + suggested_seed + capture_id)
 ```
+
+Steps 5 and 7 are separate calls **because they act on what the turn has
+since read**, which step 3 had not seen: the pages the navigator opened and
+the buffered captures the block suppressed.
 
 The LLM is asked for **one JSON object** that encodes both the intent
 classification (`capture | recall | structural | skip`) and — for
@@ -677,12 +683,11 @@ table: a row whose subject is a group cannot be re-attributed without
 re-reading the sentence, since `sender_id` records who *said* a fact, not who
 it is *about*.
 
-## Why one LLM call (and not many)
+## Why the classifier is one call (and not three)
 
-A multi-stage pipeline — classify intent
+Step 3 could have been a multi-stage pipeline — classify intent
 (small model) → if capture, ask "where" (separate call) → ask "compose
-a seed" (third call) — is the obvious alternative. Single-call beats it
-for three reasons:
+a seed" (third call). Single-call beats it for three reasons:
 
 - **Latency.** Each round trip is ~400-800 ms on Ollama with Qwen
   3.5 9B. Three calls land outside the conversational budget on

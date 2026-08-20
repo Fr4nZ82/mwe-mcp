@@ -1515,9 +1515,14 @@ const fn default_rem_initial_delay_secs() -> u64 {
 // equality anyway.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RecallConfig {
-    /// Override `IngestPolicy::recall_top_k` (flat-slot size, default 5).
+    /// Override `IngestPolicy::recall_top_k` (flat-slot size).
     #[serde(default)]
     pub recall_top_k: Option<usize>,
+    /// Override `IngestPolicy::nav_seed_depth` — how far past the flat slot
+    /// the entry fan may look for a door on a page it has not already
+    /// reached.
+    #[serde(default)]
+    pub nav_seed_depth: Option<usize>,
     /// Override `IngestPolicy::recall_fresh_top_k` (fresh-slot size,
     /// default 3; `0` disables the slot).
     #[serde(default)]
@@ -1628,6 +1633,9 @@ impl RecallConfig {
         let mut p = crate::ingest::IngestPolicy::default();
         if let Some(v) = self.recall_top_k {
             p.recall_top_k = v;
+        }
+        if let Some(v) = self.nav_seed_depth {
+            p.nav_seed_depth = v;
         }
         if let Some(v) = self.recall_fresh_top_k {
             p.recall_fresh_top_k = v;
@@ -3174,7 +3182,7 @@ mod tests {
     #[test]
     fn recall_section_overlays_ingest_policy_else_default() {
         let dir = tempdir().unwrap();
-        let body = "recall:\n  max_hops: 4\n  due_soon_horizon_hours: 24\n  recall_top_k: 8\n";
+        let body = "recall:\n  max_hops: 4\n  due_soon_horizon_hours: 24\n  recall_top_k: 8\n  nav_seed_depth: 25\n";
         fs::write(Config::path_in(dir.path()), body).unwrap();
         let cfg = Config::load(dir.path()).expect("load");
         let p = cfg.recall.resolved_ingest_policy();
@@ -3182,6 +3190,7 @@ mod tests {
         assert_eq!(p.nav.max_hops, 4);
         assert_eq!(p.due_soon_horizon_hours, 24);
         assert_eq!(p.recall_top_k, 8);
+        assert_eq!(p.nav_seed_depth, 25);
         // Overrides left unset keep the defaults.
         assert_eq!(p.nav.pages_per_hop, def.nav.pages_per_hop);
         assert_eq!(p.nav.char_budget, def.nav.char_budget);

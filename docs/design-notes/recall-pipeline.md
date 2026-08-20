@@ -827,6 +827,26 @@ produces nothing at all. Two hits therefore seed no door and reach the turn
 through the flat slot instead: a `fresh` capture (no published page yet) and a
 hit homed on the channel-only `@rules.md` (roadmap 41e).
 
+**One door per page, and the freed slot goes to another page.** Founder,
+2026-08-21: *«se 2 o più fatti scelti dal rag puntano alla stessa pagina, si
+tiene il primo e basta visto che il navigatore comunque quella pagina se la
+leggerà tutta, così diamo spazio ad altre "porte" su altre pagine»*. The
+navigator opens a page whole, so a second door onto it buys nothing and costs
+a slot.
+
+The Rag family is therefore fed a **deeper** slice of the same ranking than the
+recall block gets: `IngestPolicy::nav_seed_depth` (30) hits, from which
+[`recall_nav::hits_as_doors`](../../crates/mwe-core/src/recall_nav.rs) keeps the
+best hit per page until it has `recall_top_k` (10) doors. Both numbers are
+operator knobs on the recall settings panel. It costs rows carried out of one
+query, never a second search — the scan reads the whole readable corpus either
+way.
+
+**Only the doors are chosen this way.** The block, the supersede and closure
+verbs, the validity edits and the snippet all read the top-K exactly as before:
+what a hit is worth as *context* is a different question from whether its page
+is worth opening.
+
 ### There is no identity family, and that is the fix
 
 A fourth family used to exist — **Principal**, the identity wikis of the people

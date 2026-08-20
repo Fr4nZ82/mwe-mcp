@@ -357,6 +357,39 @@ fn fan_order(a: &EntryPoint, b: &EntryPoint) -> std::cmp::Ordering {
         .then_with(|| a.page.cmp(&b.page))
 }
 
+/// The recall hits that become doors: **one per page, and no more than
+/// `doors` of them.**
+///
+/// Founder, 2026-08-21, reading his own 2026-08-01 statement of the model
+/// back: *«se 2 o più fatti scelti dal rag puntano alla stessa pagina, si
+/// tiene il primo e basta visto che il navigatore comunque quella pagina se
+/// la leggerà tutta, così diamo spazio ad altre "porte" su altre pagine»*.
+///
+/// The second half is the part that needed building. [`dedup_and_sort`]
+/// already collapsed two hits on one page into one door — but the hit list it
+/// was handed was the **block's**, cut at `recall_top_k` before anybody looked
+/// at which pages the hits sat on. So a turn whose ten best facts lived on
+/// four pages opened four doors and threw the other six slots away. Handed a
+/// deeper list, this keeps the best hit per page and fills the freed room with
+/// pages further down the ranking.
+///
+/// Order is preserved: `hits` arrives ranked, and a page's door is the first
+/// hit that named it.
+#[must_use]
+pub fn hits_as_doors(hits: &[RecallHit], doors: usize) -> Vec<RecallHit> {
+    let mut seen: BTreeSet<(&str, &str)> = BTreeSet::new();
+    let mut out = Vec::with_capacity(doors.min(hits.len()));
+    for hit in hits {
+        if out.len() == doors {
+            break;
+        }
+        if seen.insert((hit.wiki_id.as_str(), hit.source_path.as_str())) {
+            out.push(hit.clone());
+        }
+    }
+    out
+}
+
 /// Collapse duplicates on `(wiki, page)` keeping the copy that sorts first
 /// under [`fan_order`], then sort the survivors with it.
 fn dedup_and_sort(candidates: Vec<EntryPoint>) -> Vec<EntryPoint> {
@@ -1944,6 +1977,52 @@ mod tests {
             score,
             fresh,
         }
+    }
+
+    /// **One door per page, and the freed slot goes to another page.**
+    ///
+    /// The old shape is the negative half and it is what this denies: the fan
+    /// was handed the block's `recall_top_k` hits, so ten facts sitting on
+    /// three pages opened three doors and the remaining seven slots were
+    /// simply lost. Founder, 2026-08-21: *«se 2 o più fatti scelti dal rag
+    /// puntano alla stessa pagina, si tiene il primo e basta … così diamo
+    /// spazio ad altre "porte" su altre pagine»*.
+    #[test]
+    fn two_hits_on_one_page_free_a_door_for_another_page() {
+        // Ranked: three hits crowd `cucina.md`, then four distinct pages.
+        let ranked = vec![
+            rag_hit("alice", "wikis/alice/cucina.md", 0.90, false),
+            rag_hit("alice", "wikis/alice/cucina.md", 0.88, false),
+            rag_hit("alice", "wikis/alice/cucina.md", 0.87, false),
+            rag_hit("alice", "wikis/alice/spesa.md", 0.60, false),
+            rag_hit("alice", "wikis/alice/salute.md", 0.55, false),
+            rag_hit("famiglia", "wikis/famiglia/cena.md", 0.50, false),
+            rag_hit("alice", "wikis/alice/lavoro.md", 0.45, false),
+        ];
+
+        let doors = hits_as_doors(&ranked, 4);
+
+        let pages: Vec<&str> = doors.iter().map(|h| h.source_path.as_str()).collect();
+        assert_eq!(
+            pages,
+            vec![
+                "wikis/alice/cucina.md",
+                "wikis/alice/spesa.md",
+                "wikis/alice/salute.md",
+                "wikis/famiglia/cena.md",
+            ],
+            "four doors on FOUR pages: the two extra hits on cucina.md are not \
+             doors of their own, and the slots they would have taken reach \
+             pages further down the ranking"
+        );
+        // The negative: the crowded page is opened by its BEST hit, and the
+        // budget is not spent twice on prose the navigator reads whole anyway.
+        assert!(
+            (doors[0].score - 0.90).abs() < f32::EPSILON,
+            "the door onto a page is its best-ranked hit"
+        );
+        // And a shallower list simply yields fewer doors — it never invents one.
+        assert_eq!(hits_as_doors(&ranked[..3], 4).len(), 1);
     }
 
     fn sender(id: &str, groups: &[&str]) -> SenderContext {

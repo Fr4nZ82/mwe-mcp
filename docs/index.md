@@ -162,9 +162,10 @@ If you are new, read in this order:
   `fact_index`, the content-addressed store, the `/media` byte pair,
   ingest attachments + vision, dashboard rendering, export bundling.
 - [ingest-pipeline.md](design-notes/ingest-pipeline.md) — the flagship
-  `wiki_ingest_message`: recall → enumerate wikis → single LLM call
+  `wiki_ingest_message`: recall → enumerate wikis → classifier call
   returning strict JSON plan → route to capture / recall snippet /
-  structural dashboard hint / skip (`mwe-core::ingest`).
+  structural dashboard hint / skip → navigate → reconcile what was read
+  (`mwe-core::ingest`).
 - [document-ingest.md](design-notes/document-ingest.md) — long-form
   content that is not a turn: the disposition dial (consult / dossier /
   dissolve), the async checkpointed job behind `wiki_ingest_external`,

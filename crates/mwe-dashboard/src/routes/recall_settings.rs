@@ -70,7 +70,17 @@ fn knobs() -> Vec<Knob> {
             field: "recall_top_k",
             label: "Flat slot — top-K hits",
             default: def.recall_top_k.to_string(),
-            help: "Vector-recall hits fetched per turn (classifier context + RAG entry seeds)."
+            help: "Vector-recall hits in the classifier's context block — and \
+                   the number of entry doors the navigator is given."
+                .to_owned(),
+        },
+        Knob {
+            field: "nav_seed_depth",
+            label: "Entry fan — how deep to look for doors",
+            default: def.nav_seed_depth.to_string(),
+            help: "Two hits on one page are one door, so the fan reads further down the \
+                   same ranking to fill the freed slot with a page it has not reached. \
+                   Costs rows out of one query, not a second search."
                 .to_owned(),
         },
         Knob {
@@ -201,6 +211,7 @@ fn override_value(cfg: &RecallConfig, field: &str) -> String {
     }
     match field {
         "recall_top_k" => s(cfg.recall_top_k),
+        "nav_seed_depth" => s(cfg.nav_seed_depth),
         "recall_fresh_top_k" => s(cfg.recall_fresh_top_k),
         "smart_corpus_floor" => s(cfg.smart_corpus_floor),
         "relevance_floor" => s(cfg.relevance_floor),
@@ -398,6 +409,7 @@ fn backup_path_for(target: &Path) -> PathBuf {
 fn parse_form(form: &HashMap<String, String>) -> Result<RecallConfig> {
     Ok(RecallConfig {
         recall_top_k: parse_usize(form, "recall_top_k")?,
+        nav_seed_depth: parse_usize(form, "nav_seed_depth")?,
         recall_fresh_top_k: parse_usize(form, "recall_fresh_top_k")?,
         smart_corpus_floor: parse_f32(form, "smart_corpus_floor")?,
         relevance_floor: parse_f32(form, "relevance_floor")?,

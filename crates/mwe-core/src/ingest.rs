@@ -10,21 +10,23 @@
 //! ## Pipeline (per call)
 //!
 //! ```text
-//! 1. recall context        recall::wiki_recall   (top_k hits, ACL filtered)
+//! 1. recall context        recall::wiki_recall   (ranked hits, ACL filtered)
 //! 2. enumerate wikis       WikiTree::walk        (bounded compact list)
-//! 3. LLM intent + plan     llm::complete         (single call, JSON out)
+//! 3. LLM intent + plan     llm::complete         (`ingest` slot, JSON out)
 //! 4. route by intent       capture::wiki_capture | recall snippet | dashboard hint | noop
-//! 5. recall-block tail     recall_nav::navigate  (optional) + recall::recall_due_soon
-//! 6. assemble response     IngestResponse        (context_snippet + suggested_seed + capture_id)
+//! 5. closure confirmer     confirm_topic_closures (`ingest` slot, only when the turn closes something)
+//! 6. recall-block tail     recall_nav::navigate  (`navigator` slot, optional) + recall::recall_due_soon
+//! 7. reconcile what was read  reconcile_after_reading (`ingest` slot — supersede / close / re-date / re-share)
+//! 8. assemble response     IngestResponse        (context_snippet + suggested_seed + capture_id)
 //! ```
 //!
-//! The LLM is asked to produce one strict JSON object encoding both
-//! the intent classification and the operational plan (target wiki,
-//! body, subject, `fact_type`, topics, disambig need). Calling the model
-//! once — instead of intent → routing → seed as three round trips —
-//! keeps latency under the conversational budget the spec calls out
-//! (ingest pipeline) and keeps cost
-//! predictable.
+//! **Step 3 is one call, and that is the claim** — the classifier is asked
+//! for one strict JSON object encoding both the intent and the operational
+//! plan (target wiki, body, subject, `fact_type`, topics, disambig need)
+//! rather than intent → routing → seed as three round trips, which keeps
+//! latency inside the conversational budget. Steps 5 and 7 are separate
+//! calls on purpose: each acts on **what the turn has since read**, which
+//! step 3 had not seen yet.
 //!
 //! ## Fallback policy
 //!
@@ -386,6 +388,17 @@ pub struct IngestPolicy {
     /// the scoring read the whole readable corpus either way, and `top_k`
     /// only decides how much of the ranking survives into the block.
     pub recall_top_k: usize,
+    /// How deep the **entry fan** may look down the same ranking for doors
+    /// on distinct pages.
+    ///
+    /// The doors it keeps are still `recall_top_k` — this only decides how
+    /// far past them it may go to find one on a page it has not already
+    /// opened a door onto (founder, 2026-08-21; see
+    /// [`recall_nav::hits_as_doors`]). Cheap: the scan and the scoring read
+    /// the whole readable corpus either way, so a deeper `top_k` costs rows
+    /// carried out of one query, not a second search. Clamped up to
+    /// `recall_top_k` — a shallower value would starve the block.
+    pub nav_seed_depth: usize,
     /// Size of the separate "fresh / unconsolidated" recall slot — how many
     /// un-promoted buffered captures the mid-range bridge surfaces per turn
     /// (see [`recall::recall_fresh_captures`]). `0` disables the slot. Small by
@@ -566,6 +579,7 @@ impl Default for IngestPolicy {
     fn default() -> Self {
         Self {
             recall_top_k: 10,
+            nav_seed_depth: 30,
             recall_fresh_top_k: 3,
             project_docs_top_k: 3,
             project_docs_char_budget: 3_000,
@@ -5622,15 +5636,32 @@ async fn navigated_tail(
     turn_text: &str,
     seeds: &NavSeeds,
     rag_hits: &[RecallHit],
+    seed_tail: &[RecallHit],
+    doors: usize,
     nav_policy: &recall_nav::NavigatorPolicy,
     served: recall_nav::Served<'_>,
 ) -> Option<NavigatedTail> {
+    // **One door per page** (founder, 2026-08-21). The block's hits come
+    // first — they are the best-ranked — and `seed_tail` supplies a page for
+    // each slot two hits on one page would otherwise have wasted. This is
+    // the ONLY consumer of the deeper list: everything else this turn reads
+    // `rag_hits` unchanged, because what the top-K is for elsewhere
+    // (supersede targets, closures, validity edits, the block itself) is a
+    // different question from which pages are worth opening.
+    let seeding: Vec<RecallHit> = recall_nav::hits_as_doors(
+        &rag_hits
+            .iter()
+            .chain(seed_tail)
+            .cloned()
+            .collect::<Vec<_>>(),
+        doors,
+    );
     let entries = match recall_nav::gather_entry_points(
         pool,
         tree,
         sender,
         &seeds.topics,
-        rag_hits,
+        &seeding,
         // Situational seeds arrive with the host adapter (context model).
         &[],
     )
@@ -6001,12 +6032,18 @@ pub async fn wiki_ingest_message(
 
     // Step 1 — recall context. Soft-fail to empty hits so a transient
     // index issue does not kill the entire turn.
-    let mut recall_hits = match recall::wiki_recall(
+    // One search, two consumers with different appetites: the block takes the
+    // top `recall_top_k`, the entry fan is allowed to look further down for
+    // doors on pages the block's own hits did not already name
+    // ([`recall_nav::hits_as_doors`]). Splitting here rather than searching
+    // twice — the scan reads the whole readable corpus either way, so the
+    // extra rows are carried out of the same query.
+    let mut ranked = match recall::wiki_recall(
         pool,
         Arc::clone(&embedder),
         &request.text,
         &[],
-        policy.recall_top_k,
+        policy.nav_seed_depth.max(policy.recall_top_k),
         fact_index::FactFilters::default(),
         &sender_ctx,
     )
@@ -6018,6 +6055,8 @@ pub async fn wiki_ingest_message(
             Vec::new()
         },
     };
+    let seed_tail: Vec<RecallHit> = ranked.split_off(ranked.len().min(policy.recall_top_k));
+    let mut recall_hits = ranked;
     // Cross-consumer recent window (group 43), fetched HERE rather than at the
     // end of the turn: it is served back to the consumer as its own field, but
     // it is also half the answer to "what is this agent already looking at",
@@ -7332,6 +7371,8 @@ pub async fn wiki_ingest_message(
                 &request.text,
                 &seeds,
                 &recall_hits,
+                &seed_tail,
+                policy.recall_top_k,
                 &policy.nav,
                 recall_nav::Served {
                     pages: &served_identity,

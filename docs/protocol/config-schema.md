@@ -454,7 +454,8 @@ row wins (see the table row above).
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `recall.recall_top_k` | int \| _unset_ | _unset_ → `5` | Flat-slot size: vector-recall hits fetched per turn (classifier context + RAG entry seeds). |
+| `recall.recall_top_k` | int \| _unset_ | _unset_ → `10` | Flat-slot size: vector-recall hits in the classifier's context block, and the number of entry doors the navigator is given. |
+| `recall.nav_seed_depth` | int \| _unset_ | _unset_ → `30` | How far past the flat slot the entry fan may read the same ranking to find a door on a page it has not already reached. Two hits on one page are one door; this fills the freed slot. Clamped up to `recall_top_k`. |
 | `recall.recall_fresh_top_k` | int \| _unset_ | _unset_ → `3` | Fresh-slot size: un-promoted buffered captures surfaced per turn. `0` disables the slot. |
 | `recall.smart_corpus_floor` | float 0–1 \| _unset_ | _unset_ → `0.45` | The **smart-corpus funnel**: how close a project's signpost description must be to the query before the whole-corpus search (`wiki_search` with no `scope.smart`) may read that project's documentation at all. Naming the project bypasses it; a project with no readable description is never admitted. `0` turns the funnel off and admits every readable smart wiki. See [recall-pipeline](../design-notes/recall-pipeline.md#the-smart-corpus-funnel--a-project-opens-on-its-own-description) for the measurement behind the default. |
 | `recall.max_hops` | int \| _unset_ | _unset_ → `2` | Navigator depth dial: decisions per turn, clamped to the hard hop cap (`recall::MULTI_HOP_HARD_LIMIT`). |
