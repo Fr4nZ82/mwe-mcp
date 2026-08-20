@@ -103,12 +103,6 @@ use crate::wiki::{WikiError, WikiTree, workdir_relative_source_path};
 /// Bundled default for the Cronista prompt (compiler prose stage).
 pub const BUNDLED_CRONISTA_MD: &str = include_str!("../prompts/cronista.md");
 
-// `index.md` — the page name no plan node may claim and no rail may name.
-// Aliased rather than re-declared as a literal so the reserved name has
-// exactly one definition (63 §8c's stated rule, which this file was quietly
-// breaking).
-use crate::wiki::INDEX_FILENAME as INDEX_PAGE;
-
 /// Errors raised by the compiler. Per-page LLM/parse failures are collected
 /// into the report (soft); infrastructure failures bubble.
 #[derive(Debug, Error)]
@@ -427,9 +421,7 @@ async fn note_page_failure(pool: &SqlitePool, tree: &WikiTree, page: &PagePlan, 
 /// - its path is not in the plan's page set for that wiki,
 /// - it is not a reserved page (`@rules.md`, any `_`-prefixed file). The card
 ///   and the parking page need no exemption: they are plan nodes, so they are
-///   always in the plan's page set for their wiki. `index.md` is NOT exempt:
-///   a standard wiki has no such page, so one found on disk is swept like any
-///   other file the plan does not know about,
+///   always in the plan's page set for their wiki,
 /// - **no** non-tombstoned `fact_index` row points at it
 ///   ([`fact_index::count_rows_at_source_path`]) — the DB-first guard: a
 ///   pending render or a superseded row's audit marker keeps the file.
@@ -829,12 +821,9 @@ async fn compile_leaf_page(
 /// *what is this wiki* — its **foundation** node: an actor's card, or a topic
 /// wiki's parking page.
 ///
-/// 🚨 **The abstract has no reader on the read side, and never had one after
-/// 2026-08-03.** This doc used to claim it is «what the entry fan and the
-/// root-index catalog show for the wiki as a whole»; the catalog was removed
-/// with the read side's whole notion of a wiki, and the sentence outlived it
-/// long enough to be quoted back as fact. What the write side does with the
-/// abstract is its own business — nothing here promises a turn ever sees it.
+/// 🚨 **The abstract has no reader on the read side.** What the write side
+/// does with it is its own business — nothing here promises a turn ever sees
+/// it.
 ///
 /// It keys on the page being a **foundation node**, not on a file name: the
 /// name it used to key on stopped existing when every foundation node moved
@@ -1838,33 +1827,19 @@ fn is_future(from: &str, now: &str) -> bool {
 }
 
 /// The canonical wikilink for one planned page, per the link grammar
-/// (recall-pipeline.md §Link grammar):
-/// A planned page as the canonical rail that reaches it —
-/// `[[wiki_id/page-slug]]`, always a page. `None` for a node on a page name
-/// no plan node may claim.
-///
-/// The bare `[[wiki_id]]` form used to be minted for a node on a wiki's
-/// overview page, back when a wiki had one — and **40 % of the links the live
-/// corpus carries on a content page** are that dead form. Nothing mints such
-/// a node any more: the planner seeds `@profile.md`, `@notes.md` or a slug, and
-/// the last minter, the sub-wiki emergence handler, carries its page over
-/// under its own name. But a **persisted** plan can still hold one from
-/// before 2026-08-03, so this refuses rather than asserts: a legacy node on
-/// that name is simply not offered as a rail, and every caller drops it.
+/// (recall-pipeline.md §Link grammar) — `[[wiki_id/page-slug]]`, always a
+/// page.
 ///
 /// The slug is the page **file's** stem, never the plan slug alone (which
 /// would read as a hop to a wiki that does not exist). Every link the
 /// compiler feeds the Cronista goes through here, so the prose only ever
 /// sees resolvable rails.
-fn plan_page_wikilink(page: &PagePlan) -> Option<String> {
-    if page.page_path == INDEX_PAGE {
-        return None;
-    }
+fn plan_page_wikilink(page: &PagePlan) -> String {
     let stem = page
         .page_path
         .strip_suffix(".md")
         .unwrap_or(&page.page_path);
-    Some(format!("[[{}/{stem}]]", page.wiki_id))
+    format!("[[{}/{stem}]]", page.wiki_id)
 }
 
 /// Resolve a successor fact's home page to its canonical wikilink — the
@@ -1890,7 +1865,7 @@ fn successor_wikilink(
     if slug == current_slug {
         return None;
     }
-    plan_page_wikilink(home)
+    Some(plan_page_wikilink(home))
 }
 
 /// The link rail every leaf is shown: one line per page in the plan,
@@ -2056,7 +2031,7 @@ impl PageIndex {
         );
         let lines: Vec<String> = picked
             .iter()
-            .filter_map(|p| Some(format!("- {}: {}", plan_page_wikilink(p)?, p.description)))
+            .map(|p| format!("- {}: {}", plan_page_wikilink(p), p.description))
             .collect();
         if lines.is_empty() {
             "(no other pages)".to_owned()
@@ -2072,7 +2047,7 @@ fn page_index_block(plan: &CompilationPlan) -> String {
         .iter()
         .filter_map(|s| {
             let p = plan.pages.get(s)?;
-            Some(format!("- {}: {}", plan_page_wikilink(p)?, p.description))
+            Some(format!("- {}: {}", plan_page_wikilink(p), p.description))
         })
         .collect();
     if lines.is_empty() {
@@ -2095,9 +2070,8 @@ fn recommended_link_targets(plan: &CompilationPlan, slug: &str) -> Vec<String> {
         .map(|ls| {
             ls.iter()
                 // The graph stores plan slugs; a slug whose page vanished
-                // from the plan would be a dead rail — skip it. A legacy node
-                // on a retired page name yields `None` for the same reason.
-                .filter_map(|l| plan.pages.get(l).and_then(plan_page_wikilink))
+                // from the plan would be a dead rail — skip it.
+                .filter_map(|l| plan.pages.get(l).map(plan_page_wikilink))
                 .collect()
         })
         .unwrap_or_default()
@@ -4308,7 +4282,7 @@ mod tests {
         // A leaf page links as `[[wiki_id/stem]]` …
         assert_eq!(
             plan_page_wikilink(&leaf("ricette_freezer", "morgana", "ricette_freezer.md")),
-            Some("[[morgana/ricette_freezer]]".to_owned())
+            "[[morgana/ricette_freezer]]"
         );
         // … even when the page lives in a sub-wiki whose id differs from
         // the plan slug (the underscored-mutant class this kills).
@@ -4318,19 +4292,12 @@ mod tests {
                 "famiglia-bruno-battaglia",
                 "referto_oculistica.md"
             )),
-            Some("[[famiglia-bruno-battaglia/referto_oculistica]]".to_owned())
+            "[[famiglia-bruno-battaglia/referto_oculistica]]"
         );
-        // A node on `index.md` is not a link target: a standard wiki has no
-        // such page, so a rail onto it is a dead rail.
-        assert_eq!(
-            plan_page_wikilink(&leaf("famiglia", "famiglia", "index.md")),
-            None
-        );
-
         // The starvation index and the recommended links both ride the
         // same helper.
         let mut pages = BTreeMap::new();
-        pages.insert("hub".to_owned(), leaf("hub", "famiglia", "index.md"));
+        pages.insert("hub".to_owned(), leaf("hub", "famiglia", "ricette.md"));
         pages.insert(
             "salute_bruno".to_owned(),
             leaf(

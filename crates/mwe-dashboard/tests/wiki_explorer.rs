@@ -1417,8 +1417,8 @@ async fn proposals_dedup_apply_then_revert_redirects_and_round_trips() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
-    let loser = capture_fact(&pool, &tree, "index.md", "Bob pesa 80").await;
-    let winner = capture_fact(&pool, &tree, "index.md", "Bob ora pesa 80").await;
+    let loser = capture_fact(&pool, &tree, "appunti.md", "Bob pesa 80").await;
+    let winner = capture_fact(&pool, &tree, "appunti.md", "Bob ora pesa 80").await;
     seed_pending_dedup_proposal(&pool, "p-dup", &loser, &winner).await;
 
     // Apply via the dashboard (POST with empty body) → 303 to the chat.
@@ -1493,8 +1493,8 @@ async fn pending_confirms_confirm_route_promotes_to_applied_and_redirects() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
-    let loser = capture_fact(&pool, &tree, "index.md", "Alice ha un cane").await;
-    let winner = capture_fact(&pool, &tree, "index.md", "Alice possiede un cane").await;
+    let loser = capture_fact(&pool, &tree, "appunti.md", "Alice ha un cane").await;
+    let winner = capture_fact(&pool, &tree, "appunti.md", "Alice possiede un cane").await;
     seed_applied_pending_confirm_dedup(&pool, "p-confirm-me", &loser, &winner).await;
 
     let response = send(
@@ -1532,8 +1532,8 @@ async fn pending_confirms_revert_route_unwinds_dedup_merge_and_redirects() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
-    let loser = capture_fact(&pool, &tree, "index.md", "Alice ha un cane").await;
-    let winner = capture_fact(&pool, &tree, "index.md", "Alice possiede un cane").await;
+    let loser = capture_fact(&pool, &tree, "appunti.md", "Alice ha un cane").await;
+    let winner = capture_fact(&pool, &tree, "appunti.md", "Alice possiede un cane").await;
     seed_applied_pending_confirm_dedup(&pool, "p-revert-me", &loser, &winner).await;
 
     // POST revert with no body — the action route auto-detects
@@ -1605,8 +1605,8 @@ async fn proposals_apply_then_revert_round_trips_via_action_routes() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
-    let fact = capture_fact(&pool, &tree, "index.md", "Movable text").await;
-    seed_pending_promote_proposal(&pool, "p-1", "index.md", std::slice::from_ref(&fact)).await;
+    let fact = capture_fact(&pool, &tree, "appunti.md", "Movable text").await;
+    seed_pending_promote_proposal(&pool, "p-1", "appunti.md", std::slice::from_ref(&fact)).await;
 
     // Apply via the action route → 303 to the chat.
     let response = send(
@@ -1645,7 +1645,7 @@ async fn proposals_apply_then_revert_round_trips_via_action_routes() {
 
     // The fact is back on the source page.
     let source_after =
-        std::fs::read_to_string(tree.wikis_dir().join("alice").join("index.md")).unwrap();
+        std::fs::read_to_string(tree.wikis_dir().join("alice").join("appunti.md")).unwrap();
     assert!(
         source_after.contains(&format!("f={fact}")),
         "{source_after}"
@@ -1891,8 +1891,8 @@ async fn chat_agentic_loop_applies_dedup_proposal_end_to_end() {
     let (app, pool, tree, _dir) = make_app_with_overrides(overrides).await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
-    let loser = capture_fact(&pool, &tree, "index.md", "Alice pesa 62 kg").await;
-    let winner = capture_fact(&pool, &tree, "index.md", "Alice pesa adesso 62 kg").await;
+    let loser = capture_fact(&pool, &tree, "appunti.md", "Alice pesa 62 kg").await;
+    let winner = capture_fact(&pool, &tree, "appunti.md", "Alice pesa adesso 62 kg").await;
     seed_pending_dedup_proposal(&pool, "p-dup", &loser, &winner).await;
 
     let response = send(
@@ -2005,9 +2005,9 @@ async fn chat_agentic_batch_forgets_three_facts_end_to_end() {
     std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
     let tree = WikiTree::open(dir.path()).unwrap();
     seed_alice_wiki(&tree);
-    let f1 = capture_fact(&pool, &tree, "index.md", "primo fatto su libri").await;
-    let f2 = capture_fact(&pool, &tree, "index.md", "secondo fatto su libri").await;
-    let f3 = capture_fact(&pool, &tree, "index.md", "terzo fatto su libri").await;
+    let f1 = capture_fact(&pool, &tree, "appunti.md", "primo fatto su libri").await;
+    let f2 = capture_fact(&pool, &tree, "appunti.md", "secondo fatto su libri").await;
+    let f3 = capture_fact(&pool, &tree, "appunti.md", "terzo fatto su libri").await;
 
     let fake = mwe_core::llm::FakeLlmBackend::new("fake-hub", "fallback")
         .with_chat_script(batch_forget_chat_script(&[f1, f2, f3]));
@@ -2140,7 +2140,7 @@ async fn chat_agentic_supersedes_single_fact_with_corrected_body_end_to_end() {
     std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
     let tree = WikiTree::open(dir.path()).unwrap();
     seed_alice_wiki(&tree);
-    let old_fact = capture_fact(&pool, &tree, "index.md", "ho deciso martedì alle 14").await;
+    let old_fact = capture_fact(&pool, &tree, "appunti.md", "ho deciso martedì alle 14").await;
     // Give the old fact a validity window so the test pins the
     // carry-over: a body correction must not reopen/close the claim.
     sqlx::query("UPDATE fact_index SET valid_from = ?, valid_to = ? WHERE fact_id = ?")
@@ -2253,7 +2253,7 @@ async fn chat_agentic_supersede_refuses_already_tombstoned_fact() {
     std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
     let tree = WikiTree::open(dir.path()).unwrap();
     seed_alice_wiki(&tree);
-    let old_fact = capture_fact(&pool, &tree, "index.md", "fatto da cancellare").await;
+    let old_fact = capture_fact(&pool, &tree, "appunti.md", "fatto da cancellare").await;
     // Tombstone the fact before the chat tries to supersede it.
     mwe_core::capture::wiki_forget(
         &tree,
@@ -2561,8 +2561,8 @@ async fn open_in_chat_primes_panel_with_proposal_summary() {
     let (app, pool, tree, _dir) = make_app_with_overrides(overrides).await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
-    let loser = capture_fact(&pool, &tree, "index.md", "Bob pesa 80").await;
-    let winner = capture_fact(&pool, &tree, "index.md", "Bob ora pesa 80").await;
+    let loser = capture_fact(&pool, &tree, "appunti.md", "Bob pesa 80").await;
+    let winner = capture_fact(&pool, &tree, "appunti.md", "Bob ora pesa 80").await;
     seed_pending_dedup_proposal(&pool, "p-dup", &loser, &winner).await;
 
     let response = send(
@@ -2728,9 +2728,9 @@ async fn facts_page_lists_captured_facts_for_connected_user() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
-    let _f1 = capture_fact(&pool, &tree, "index.md", "fact body uno").await;
-    let _f2 = capture_fact(&pool, &tree, "index.md", "fact body due").await;
-    let _f3 = capture_fact(&pool, &tree, "index.md", "fact body tre").await;
+    let _f1 = capture_fact(&pool, &tree, "appunti.md", "fact body uno").await;
+    let _f2 = capture_fact(&pool, &tree, "appunti.md", "fact body due").await;
+    let _f3 = capture_fact(&pool, &tree, "appunti.md", "fact body tre").await;
 
     let response = send(
         &app,
@@ -2766,10 +2766,24 @@ async fn facts_page_respects_wiki_id_filter() {
     // Two memory wikis, both readable by alice. Two facts each.
     seed_alice_wiki(&tree);
     seed_wiki_for_alice(&tree, "alice-giardinaggio");
-    capture_fact(&pool, &tree, "index.md", "alice main A").await;
-    capture_fact(&pool, &tree, "index.md", "alice main B").await;
-    capture_fact_in(&pool, &tree, "alice-giardinaggio", "index.md", "giardino A").await;
-    capture_fact_in(&pool, &tree, "alice-giardinaggio", "index.md", "giardino B").await;
+    capture_fact(&pool, &tree, "appunti.md", "alice main A").await;
+    capture_fact(&pool, &tree, "appunti.md", "alice main B").await;
+    capture_fact_in(
+        &pool,
+        &tree,
+        "alice-giardinaggio",
+        "appunti.md",
+        "giardino A",
+    )
+    .await;
+    capture_fact_in(
+        &pool,
+        &tree,
+        "alice-giardinaggio",
+        "appunti.md",
+        "giardino B",
+    )
+    .await;
 
     let response = send(
         &app,
@@ -2801,7 +2815,7 @@ async fn facts_edit_form_pre_populates_from_fact_index_row() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
-    let fact = capture_fact(&pool, &tree, "index.md", "Alice usa la bici a Milano").await;
+    let fact = capture_fact(&pool, &tree, "appunti.md", "Alice usa la bici a Milano").await;
 
     let response = send(
         &app,
@@ -2875,7 +2889,7 @@ async fn facts_edit_submit_composes_message_and_primes_chat_panel() {
     let (app, pool, tree, _dir) = make_app_with_overrides(overrides).await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
-    let fact = capture_fact(&pool, &tree, "index.md", "Alice usa la bici a Milano").await;
+    let fact = capture_fact(&pool, &tree, "appunti.md", "Alice usa la bici a Milano").await;
 
     let response = send(
         &app,
@@ -2927,7 +2941,7 @@ async fn facts_legacy_open_in_chat_route_is_gone() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
-    let fact = capture_fact(&pool, &tree, "index.md", "Alice usa la bici a Milano").await;
+    let fact = capture_fact(&pool, &tree, "appunti.md", "Alice usa la bici a Milano").await;
 
     let response = send(
         &app,
@@ -2953,7 +2967,7 @@ async fn facts_index_deep_link_points_at_edit_form() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
-    let fact = capture_fact(&pool, &tree, "index.md", "Alice usa la bici a Milano").await;
+    let fact = capture_fact(&pool, &tree, "appunti.md", "Alice usa la bici a Milano").await;
 
     let response = send(
         &app,

@@ -1524,10 +1524,8 @@ or single-fact:
   to nothing) falls back to `policy.default_page` (`@notes.md`, the parking page).
   **A name that survives canonicalisation but is one of the five reserved pages
   falls back too** ([`wiki::names_reserved_page`](../../crates/mwe-core/src/wiki.rs)):
-  the prompt promises *«a capture aimed at one is not filed there»*, and until
-  2026-08-10 nothing kept that promise — `is_reserved_page_stem` had two
-  callers and both sat on paths where the name had already been discarded for
-  other reasons. Every place a **model** names a page now asks the same
+  the prompt promises *«a capture aimed at one is not filed there»*, and the
+  engine enforces it rather than trusting it. Every place a **model** names a page asks the same
   question: this one, the document extractor's per-fact target, the
   Cartografo's coined `concept_leaf` slug (dropped outright — its facts
   orphan-fallback), and REM's split target (the split is skipped; there is no

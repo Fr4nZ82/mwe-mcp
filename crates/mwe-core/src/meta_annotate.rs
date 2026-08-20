@@ -7,9 +7,7 @@
 //! 🚨 **The read side has no concept of a wiki**, so nothing here feeds it a
 //! catalogue: none exists. The wiki-level annotations below are for the
 //! **write** side — the filer deciding where a fact goes — and the surface a
-//! turn actually reaches is the per-**page** card. The catalog and root-index
-//! renderers this module used to feed were deleted on 2026-08-05, having been
-//! dead since the ruling.
+//! turn actually reaches is the per-**page** card.
 //!
 //! It owns three navigation annotations:
 //!

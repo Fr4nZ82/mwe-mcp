@@ -75,13 +75,6 @@ pub const WIKIS_DIR: &str = "wikis";
 /// Filename of the per-wiki manifest.
 pub const META_FILENAME: &str = "_meta.md";
 
-/// The page name `index.md`, reserved on a standard wiki.
-///
-/// A standard wiki has no such page and nothing may coin one
-/// ([`is_reserved_page_stem`]). On a **smart** wiki it is an ordinary content
-/// page its consumer authors through `wiki_admin_push`, like any other name.
-pub const INDEX_FILENAME: &str = "index.md";
-
 /// Filename of a person's or group's **identity card**
 /// (`<wiki_dir>/@profile.md`).
 ///
@@ -268,9 +261,8 @@ pub const PROJECTS_FILENAME: &str = "@projects.md";
 /// The wiki's card and its parking page ([`PROFILE_FILENAME`] / [`NOTES_FILENAME`],
 /// per-wiki foundation nodes the planner owns), the three deterministic
 /// channels ([`RULES_FILENAME`] / [`PROJECTS_FILENAME`] /
-/// [`PROJECT_DIARY_FILENAME`], each written by its own code path), and
-/// [`INDEX_FILENAME`], which a standard wiki does not have. A capture that
-/// names any of them is not filed there: it falls through to the
+/// [`PROJECT_DIARY_FILENAME`], each written by its own code path). A capture
+/// that names any of them is not filed there: it falls through to the
 /// deterministic home its subject and salience choose.
 ///
 /// **These are pages of the memory**, unlike the `_`-prefixed set
@@ -302,13 +294,7 @@ pub fn is_reserved_page_stem(stem: &str) -> bool {
     stem.starts_with('@')
         || matches!(
             stem,
-            "index"
-                | "rules"
-                | "projects"
-                | "project_diary"
-                | "projects_diary"
-                | "profile"
-                | "notes"
+            "rules" | "projects" | "project_diary" | "projects_diary" | "profile" | "notes"
         )
 }
 
@@ -2287,8 +2273,8 @@ mod tests {
 
     /// All five, however a model spells them, and only in the last segment.
     #[test]
-    fn names_reserved_page_covers_the_five_and_only_the_last_segment() {
-        for stem in ["index", "rules", "projects", "profile", "notes"] {
+    fn names_reserved_page_covers_the_reserved_stems_and_only_the_last_segment() {
+        for stem in ["rules", "projects", "profile", "notes"] {
             assert!(
                 names_reserved_page(Path::new(&format!("{stem}.md"))),
                 "{stem}.md is reserved"
@@ -2303,7 +2289,8 @@ mod tests {
         // …but the wiki's own parking page is, wherever it is addressed from.
         assert!(names_reserved_page(Path::new("spesa/@notes.md")));
         assert!(!names_reserved_page(Path::new("lista_spesa.md")));
-        assert!(!names_reserved_page(Path::new("indexing.md")));
+        // A page a model coins is free unless it hits a reserved stem.
+        assert!(!names_reserved_page(Path::new("index.md")));
         assert!(!names_reserved_page(Path::new("")));
     }
 

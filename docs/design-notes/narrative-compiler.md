@@ -499,8 +499,8 @@ materialises the final plan deterministically, top to bottom:
    through the redirect map. An assignment whose `fact_id` no longer exists
    (superseded since classification) is skipped; an assignment to a page
    that does not exist mints a `concept_leaf` on the fly so the fact still
-   has a home — **except when the name is a reserved stem** (`index`,
-   `rules`, `projects`, `profile`, `notes`). The foundation nodes are keyed by
+   has a home — **except when the name is a reserved stem** (`rules`,
+   `projects`, `profile`, `notes`). The foundation nodes are keyed by
    `plan_slug_for_page` — a wiki's card takes the wiki's own slug, its buffer
    takes `<wiki>__notes` — so a bare `notes` misses the lookup and would mint a
    *second* plan page writing `@notes.md` in that same wiki. The assignment is
@@ -1497,8 +1497,7 @@ This is the LLM-authored companion to the deterministic
 together they fill the per-wiki `summary` + `keywords`. Those are **write-side**
 vocabulary — the filer's, not a reader's: nothing on the read side is shown a
 wiki, a wiki card, or a list of them
-([recall pipeline](recall-pipeline.md)). The catalog and root-index renderers
-that used to surface them were deleted on 2026-08-05, dead since the ruling.
+([recall pipeline](recall-pipeline.md)).
 
 ### The `fact_id` repoint — recall returns prose, `text` stays canonical
 

@@ -824,17 +824,12 @@ pub async fn navigate(
         .filter(|d| !d.meta.smart)
         .map(|d| (d.meta.wiki_id.as_str(), d))
         .collect();
-    // No wiki catalog is built. Until 2026-08-04 every hop carried a ROOT
-    // INDEX — one line per visible wiki with its `_meta` abstract and its
-    // whole topic union, ~13.5k characters on the live corpus, ~27k a turn
-    // across two hops. Founder's ruling: *«chi legge non ha bisogno di sapere
-    // quali sono le wiki, arriva direttamente sui fatti, e da lì legge tramite
-    // i link le pagine collegate»*. The structure is the WRITE side's
-    // instrument — it tells the filer where a fact goes and which pages to
-    // link — and the read side is meant to arrive on a page and follow rails.
-    // A catalog of containers answers a question the reader never asks, and
-    // the day before this it had to be labelled "orientation, not doors"
-    // because the navigator kept trying to open its entries.
+    // No wiki catalog is built. Founder, 2026-08-04: *«chi legge non ha
+    // bisogno di sapere quali sono le wiki, arriva direttamente sui fatti, e
+    // da lì legge tramite i link le pagine collegate»*. The structure is the
+    // WRITE side's instrument — it tells the filer where a fact goes and which
+    // pages to link — and the read side arrives on a page and follows rails.
+    // A catalog of containers answers a question the reader never asks.
     let system = prompts::render(
         "navigator",
         tree.workdir(),

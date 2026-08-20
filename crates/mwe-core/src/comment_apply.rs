@@ -70,9 +70,6 @@ const REASON_COMMENT_REMOVE: &str = "dashboard_comment";
 /// bare slug forest-wide, so a named cross-wiki page would collide; the
 /// destination wiki's own compile pass then re-homes the fact onto the right
 /// page. Same contract as the REM cross-wiki refile sweep.
-///
-/// **Not `cucina.md`.** That name is not a page of a standard wiki at all
-/// (`wiki::INDEX_FILENAME`), and nothing may file a fact onto it.
 const CROSS_WIKI_DEST_PAGE: &str = crate::wiki::NOTES_FILENAME;
 
 /// Cap on the comment excerpt woven into a move receipt's `reason` so the

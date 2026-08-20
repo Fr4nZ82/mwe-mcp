@@ -1403,8 +1403,7 @@ struct MergeSpec {
 /// the survivor, delete the husk file, and re-home the move in the
 /// persisted compilation plan (husk dropped from plan + registry).
 ///
-/// Refuses `index.md` on either side (not a page of a standard wiki), and
-/// refuses a partial move: every active `fact_index` row living on the husk
+/// Refuses a partial move: every active `fact_index` row living on the husk
 /// must be in `context.fact_ids`, else deleting the file would strand rows
 /// for the orphan sweep to tombstone.
 #[allow(
@@ -1423,11 +1422,6 @@ async fn apply_page_merge(
 
     let source_page_path = validated_page_path(&ctx.source_page, "context.source_page")?;
     let target_page_path = validated_page_path(&ans.target_page, "answers.target_page")?;
-    if source_page_path.as_os_str() == "index.md" || target_page_path.as_os_str() == "index.md" {
-        return Err(ApplyError::InvalidPayload(
-            "page_merge never touches `index.md`".into(),
-        ));
-    }
     let wiki_id = WikiId::parse(&ctx.source_wiki_id)
         .map_err(|e| ApplyError::InvalidPayload(format!("context.source_wiki_id invalid: {e}")))?;
     // The survivor's wiki: same as the husk's unless a family-scope merge
@@ -1985,7 +1979,7 @@ struct CollectedPage {
 
 /// Collect + validate every page of a group move.
 ///
-/// Per page: the path is safe and is not the wiki's own `index.md`
+/// Per page: the path is safe
 /// (moving a wiki's front page out would decapitate it), the file
 /// exists, and the marker set on disk matches the active `fact_index`
 /// rows for that `source_path` exactly. A page with no active fact is
@@ -2011,11 +2005,6 @@ async fn collect_group_pages(
             )));
         }
         let rel_in_wiki = validated_page_path(page, "context.pages")?;
-        if rel_in_wiki == std::path::Path::new("index.md") {
-            return Err(ApplyError::InvalidPayload(
-                "a group move must not carry the wiki's own index.md".into(),
-            ));
-        }
         let abs = source_dir.join(&rel_in_wiki);
         let source_rel = wiki::workdir_relative_source_path(tree.workdir(), &abs);
         let bytes = std::fs::read_to_string(&abs)
@@ -2402,13 +2391,12 @@ fn compiler_seeded_pages(
 ///
 /// Conservative, and deliberately narrower than "delete the directory":
 ///
-/// 1. The wiki directory may hold only `_meta.md`, `index.md`, and the
-///    pages the spec carried. A page that appeared afterwards means the
-///    wiki has a life of its own — refuse.
-/// 2. `index.md` must carry **no** fact markers. The front page is
-///    compiler-authored and disposable, so its bytes are free to have
-///    changed since the apply; facts landing *on* it are not, since the
-///    revert has nowhere to put them.
+/// 1. The wiki directory may hold only `_meta.md`, the pages the compiler
+///    seeds on its own schedule, and the pages the spec carried. A page that
+///    appeared afterwards means the wiki has a life of its own — refuse.
+/// 2. None of those seeded pages may carry a fact marker: their bytes are
+///    free to have changed since the apply, but a fact landing on one is
+///    something the revert has nowhere to put.
 /// 3. Each carried page's marker set must still match the spec — a fact
 ///    that arrived after the move would be dropped by the verbatim
 ///    rewrite.
@@ -2441,7 +2429,7 @@ async fn revert_pages_to_subwiki(
     // 1 + 2. Nothing in the directory beyond `_meta.md`, the pages the
     //        receipt carried, and the reserved pages the compiler seeds on
     //        its own schedule — and none of those seeded pages may carry a
-    //        fact, which is the rule `index.md` always had.
+    //        fact.
     let carried: HashSet<&str> = spec.pages.iter().map(|p| p.page.as_str()).collect();
     compiler_seeded_pages(&wiki_dir, &carried)?;
 
@@ -4229,12 +4217,12 @@ mod tests {
     async fn apply_moves_single_fact_paragraph_to_file() {
         let (_dir, tree, pool) = setup().await;
         let emb = embedder();
-        let f1 = capture_one(&tree, &pool, emb.clone(), "index.md", "First fact").await;
-        let _f_stay = capture_one(&tree, &pool, emb, "index.md", "Stays in place").await;
+        let f1 = capture_one(&tree, &pool, emb.clone(), "appunti.md", "First fact").await;
+        let _f_stay = capture_one(&tree, &pool, emb, "appunti.md", "Stays in place").await;
 
         let ctx = json!({
             "source_wiki_id": "alice",
-            "source_page": "index.md",
+            "source_page": "appunti.md",
             "fact_ids": [f1.as_str()],
         });
         let ans = json!({ "target_page": "giardinaggio.md" });
@@ -4256,7 +4244,7 @@ mod tests {
 
         // Source page no longer contains f1's marker, but still has the stayer.
         let source =
-            std::fs::read_to_string(tree.wikis_dir().join("alice").join("index.md")).unwrap();
+            std::fs::read_to_string(tree.wikis_dir().join("alice").join("appunti.md")).unwrap();
         assert!(!source.contains(&format!("f={f1}")));
         assert!(source.contains("Stays in place"));
 
@@ -4380,33 +4368,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn page_merge_never_touches_a_foundation_index() {
-        let (_dir, tree, pool) = setup().await;
-        let emb = embedder();
-        let f1 = capture_one(&tree, &pool, emb, "index.md", "Identity fact").await;
-        let ctx = json!({
-            "source_wiki_id": "alice",
-            "source_page": "index.md",
-            "fact_ids": [f1.as_str()],
-        });
-        let ans = json!({ "variant": "page_merge", "target_page": "viaggi.md" });
-        let err = apply_page_merge(&pool, &tree, &ctx, &ans)
-            .await
-            .expect_err("index.md must be refused");
-        assert!(err.to_string().contains("index.md"), "{err}");
-    }
-
-    #[tokio::test]
     async fn apply_moves_multiple_facts_in_order() {
         let (_dir, tree, pool) = setup().await;
         let emb = embedder();
-        let f1 = capture_one(&tree, &pool, emb.clone(), "index.md", "Fact A").await;
-        let f2 = capture_one(&tree, &pool, emb.clone(), "index.md", "Fact B").await;
-        let f3 = capture_one(&tree, &pool, emb, "index.md", "Fact C").await;
+        let f1 = capture_one(&tree, &pool, emb.clone(), "appunti.md", "Fact A").await;
+        let f2 = capture_one(&tree, &pool, emb.clone(), "appunti.md", "Fact B").await;
+        let f3 = capture_one(&tree, &pool, emb, "appunti.md", "Fact C").await;
 
         let ctx = json!({
             "source_wiki_id": "alice",
-            "source_page": "index.md",
+            "source_page": "appunti.md",
             "fact_ids": [f1.as_str(), f2.as_str(), f3.as_str()],
         });
         let ans = json!({ "target_page": "moved.md" });
@@ -4440,11 +4411,11 @@ mod tests {
         let emb = embedder();
         // Seed a fact already on target page so it pre-exists with content.
         let _f_target = capture_one(&tree, &pool, emb.clone(), "target.md", "Already there").await;
-        let f1 = capture_one(&tree, &pool, emb, "index.md", "Will be moved").await;
+        let f1 = capture_one(&tree, &pool, emb, "appunti.md", "Will be moved").await;
 
         let ctx = json!({
             "source_wiki_id": "alice",
-            "source_page": "index.md",
+            "source_page": "appunti.md",
             "fact_ids": [f1.as_str()],
         });
         let ans = json!({ "target_page": "target.md" });
@@ -4464,12 +4435,12 @@ mod tests {
     async fn apply_rejects_missing_fact_id() {
         let (_dir, tree, pool) = setup().await;
         let emb = embedder();
-        let _f_real = capture_one(&tree, &pool, emb, "index.md", "Real").await;
+        let _f_real = capture_one(&tree, &pool, emb, "appunti.md", "Real").await;
         // Use a syntactically-valid but unknown fact id.
         let bogus = "018f1234-5678-7abc-9def-0123456789ab";
         let ctx = json!({
             "source_wiki_id": "alice",
-            "source_page": "index.md",
+            "source_page": "appunti.md",
             "fact_ids": [bogus],
         });
         let ans = json!({ "target_page": "elsewhere.md" });
@@ -4488,13 +4459,13 @@ mod tests {
     async fn apply_rejects_same_source_and_target_page() {
         let (_dir, tree, pool) = setup().await;
         let emb = embedder();
-        let f1 = capture_one(&tree, &pool, emb, "index.md", "x").await;
+        let f1 = capture_one(&tree, &pool, emb, "appunti.md", "x").await;
         let ctx = json!({
             "source_wiki_id": "alice",
-            "source_page": "index.md",
+            "source_page": "appunti.md",
             "fact_ids": [f1.as_str()],
         });
-        let ans = json!({ "target_page": "index.md" });
+        let ans = json!({ "target_page": "appunti.md" });
         let err = apply_paragraph_to_file(&pool, &tree, &ctx, &ans)
             .await
             .expect_err("must reject");
@@ -4506,7 +4477,7 @@ mod tests {
         let (_dir, tree, pool) = setup().await;
         let ctx = json!({
             "source_wiki_id": "alice",
-            "source_page": "index.md",
+            "source_page": "appunti.md",
             "fact_ids": [],
         });
         let ans = json!({ "target_page": "target.md" });
@@ -4525,14 +4496,14 @@ mod tests {
     async fn apply_then_revert_round_trips_to_source() {
         let (_dir, tree, pool) = setup().await;
         let emb = embedder();
-        let f1 = capture_one(&tree, &pool, emb.clone(), "index.md", "Movable A").await;
-        let f2 = capture_one(&tree, &pool, emb, "index.md", "Movable B").await;
+        let f1 = capture_one(&tree, &pool, emb.clone(), "appunti.md", "Movable A").await;
+        let f2 = capture_one(&tree, &pool, emb, "appunti.md", "Movable B").await;
         let original_source =
-            std::fs::read_to_string(tree.wikis_dir().join("alice").join("index.md")).unwrap();
+            std::fs::read_to_string(tree.wikis_dir().join("alice").join("appunti.md")).unwrap();
 
         let ctx = json!({
             "source_wiki_id": "alice",
-            "source_page": "index.md",
+            "source_page": "appunti.md",
             "fact_ids": [f1.as_str(), f2.as_str()],
         });
         let ans = json!({ "target_page": "moved.md" });
@@ -4546,7 +4517,7 @@ mod tests {
 
         // Source contents contain the two markers again (order at end is OK).
         let restored_source =
-            std::fs::read_to_string(tree.wikis_dir().join("alice").join("index.md")).unwrap();
+            std::fs::read_to_string(tree.wikis_dir().join("alice").join("appunti.md")).unwrap();
         assert!(
             restored_source.contains(&format!("f={f1}")),
             "{restored_source}"
@@ -4566,7 +4537,7 @@ mod tests {
         // fact_index rows point back at source.
         for fid in [&f1, &f2] {
             let row = fact_index::find_by_id(&pool, fid).await.unwrap().unwrap();
-            assert_eq!(row.source_path, "wikis/alice/index.md");
+            assert_eq!(row.source_path, "wikis/alice/appunti.md");
         }
         // Restored source contains all the original bytes (the markers may
         // be in a different order; just check substring equivalence on the
@@ -4605,7 +4576,7 @@ mod tests {
             &pool,
             emb.clone(),
             "alice",
-            "index.md",
+            "appunti.md",
             "Belongs to bob",
         )
         .await;
@@ -4614,21 +4585,21 @@ mod tests {
             &pool,
             emb.clone(),
             "alice",
-            "index.md",
+            "appunti.md",
             "Stays in alice",
         )
         .await;
         // A pre-existing fact in bob so the dest page already has content.
-        let _b = capture_in(&tree, &pool, emb, "bob", "index.md", "Bob's own note").await;
+        let _b = capture_in(&tree, &pool, emb, "bob", "appunti.md", "Bob's own note").await;
 
         let receipt = apply_fact_refile_direct(
             &pool,
             &tree,
             &f,
             "alice",
-            "index.md",
+            "appunti.md",
             "bob",
-            "index.md",
+            "appunti.md",
             Some("LLM: this fact is about bob"),
             None,
         )
@@ -4654,14 +4625,14 @@ mod tests {
         // The fact_index row repointed to bob.
         let row = fact_index::find_by_id(&pool, &f).await.unwrap().unwrap();
         assert_eq!(row.wiki_id, "bob");
-        assert_eq!(row.source_path, "wikis/bob/index.md");
+        assert_eq!(row.source_path, "wikis/bob/appunti.md");
 
         // Disk: marker gone from alice, present in bob; the stayer + bob's
         // own note untouched.
         let alice_idx =
-            std::fs::read_to_string(tree.wikis_dir().join("alice").join("index.md")).unwrap();
+            std::fs::read_to_string(tree.wikis_dir().join("alice").join("appunti.md")).unwrap();
         let bob_idx =
-            std::fs::read_to_string(tree.wikis_dir().join("bob").join("index.md")).unwrap();
+            std::fs::read_to_string(tree.wikis_dir().join("bob").join("appunti.md")).unwrap();
         assert!(!alice_idx.contains(&format!("f={f}")));
         assert!(alice_idx.contains("Stays in alice"));
         assert!(bob_idx.contains(&format!("f={f}")));
@@ -4674,11 +4645,11 @@ mod tests {
             .expect("revert");
         let row = fact_index::find_by_id(&pool, &f).await.unwrap().unwrap();
         assert_eq!(row.wiki_id, "alice");
-        assert_eq!(row.source_path, "wikis/alice/index.md");
+        assert_eq!(row.source_path, "wikis/alice/appunti.md");
         let alice_idx =
-            std::fs::read_to_string(tree.wikis_dir().join("alice").join("index.md")).unwrap();
+            std::fs::read_to_string(tree.wikis_dir().join("alice").join("appunti.md")).unwrap();
         let bob_idx =
-            std::fs::read_to_string(tree.wikis_dir().join("bob").join("index.md")).unwrap();
+            std::fs::read_to_string(tree.wikis_dir().join("bob").join("appunti.md")).unwrap();
         assert!(alice_idx.contains(&format!("f={f}")));
         assert!(alice_idx.contains("Belongs to bob"));
         assert!(!bob_idx.contains(&format!("f={f}")));
@@ -4689,11 +4660,11 @@ mod tests {
     async fn fact_refile_refuses_same_wiki() {
         let (_dir, tree, pool) = setup().await;
         let emb = embedder();
-        let f = capture_one(&tree, &pool, emb, "index.md", "x").await;
+        let f = capture_one(&tree, &pool, emb, "appunti.md", "x").await;
         let ctx = json!({
             "fact_id": f.as_str(),
             "source_wiki_id": "alice",
-            "source_page": "index.md",
+            "source_page": "appunti.md",
         });
         let ans = json!({ "dest_wiki_id": "alice", "dest_page": "other.md" });
         let err = apply_fact_refile(&pool, &tree, &ctx, &ans)
@@ -4806,7 +4777,7 @@ mod tests {
              slug: {slug}\ntitle: {slug}\nacl_default: 'user:alice'\n---\n",
         );
         std::fs::write(dir.join("_meta.md"), meta).unwrap();
-        std::fs::write(dir.join("index.md"), "# placeholder\n").unwrap();
+        std::fs::write(dir.join("appunti.md"), "# placeholder\n").unwrap();
     }
 
     #[tokio::test]
@@ -5279,28 +5250,5 @@ Un'altra pagina: [[bruno/orto]].
             "unexpected error: {err:?}",
         );
         assert!(tree.wikis_dir().join("alice").join("orto.md").exists());
-    }
-
-    #[tokio::test]
-    async fn pages_to_subwiki_refuses_to_carry_the_parents_index() {
-        let (_dir, tree, pool) = setup().await;
-        let emb = embedder();
-        capture_one(&tree, &pool, emb.clone(), "index.md", "front page note").await;
-        capture_one(&tree, &pool, emb, "orto.md", "note on orto").await;
-
-        let ctx = json!({
-            "variant": "pages_to_subwiki",
-            "source_wiki_id": "alice",
-            "pages": ["orto.md", "index.md"],
-            "new_wiki_slug": "giardino",
-        });
-        let err = apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_subwiki"}))
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, ApplyError::InvalidPayload(ref m) if m.contains("index.md")),
-            "unexpected error: {err:?}",
-        );
-        assert!(tree.wikis_dir().join("alice").join("index.md").exists());
     }
 }

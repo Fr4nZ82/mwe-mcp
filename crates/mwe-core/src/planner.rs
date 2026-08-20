@@ -325,8 +325,7 @@ pub struct PagePlan {
     pub wiki_id: String,
     /// The `.md` path within `wiki_id`. A foundation node uses its type's
     /// reserved page (`@profile.md` / `@notes.md`) — and it is that name, not
-    /// a separate field, that says which kind of page this is. **Never
-    /// [`crate::wiki::INDEX_FILENAME`]**, which no plan node may claim.
+    /// a separate field, that says which kind of page this is.
     pub page_path: String,
 }
 
@@ -629,7 +628,7 @@ pub async fn build_foundation_pages(
     // there either. *«Perché dovrei avere un elenco di pagine? Dalle wiki utente
     // lo abbiamo già tolto … l'elenco delle pagine, ognuna col suo biglietto,
     // arriva al motore leggendo i file e i frontmatter, non serve un indice
-    // che poi va pure mantenuto.»* The same reasoning that deleted `index.md`.
+    // che poi va pure mantenuto.»*
     //
     // What the group actually needs is already in its `_meta.md`: its title,
     // its `scope` prose (inherited from the group's enrollment scope, and read
@@ -704,8 +703,7 @@ pub async fn build_foundation_pages(
 /// The key is [`buffer_slug`] on **every** wiki, carded or not — see there for
 /// why it cannot depend on whether the wiki has a card.
 ///
-/// **No node points at [`crate::wiki::INDEX_FILENAME`]** — see
-/// [`crate::wiki::NOTES_FILENAME`]. Returns how many nodes it seeded.
+/// Returns how many nodes it seeded.
 fn seed_parking_pages(tree: &WikiTree, pages: &mut BTreeMap<String, PagePlan>) -> Result<usize> {
     let mut seeded = 0usize;
     for d in tree.walk()? {
@@ -1153,26 +1151,6 @@ pub fn build_compilation_plan(
     for (slug, page) in &mut pages {
         page.outgoing_links = link_graph.get(slug).cloned().unwrap_or_default();
         page.incoming_links = page.outgoing_links.clone(); // symmetric ⇒ equal
-    }
-
-    // 9.bis the `index.md` invariant, checked where the plan is sealed rather
-    // than trusted at each of the places that mint a page. Nothing the
-    // compiler places may land on that name: it is not a page of a standard
-    // wiki at all, and one placed there would be swept as an orphan the next
-    // compile. Loud rather than fatal: a mis-keyed page is a bug to fix, not
-    // a reason to abandon the night's compile.
-    for (slug, p) in &pages {
-        if p.page_path == crate::wiki::INDEX_FILENAME {
-            tracing::error!(
-                slug = %slug,
-                wiki_id = %p.wiki_id,
-                "planner: a plan page points at `index.md` — a name no plan node may claim"
-            );
-        }
-        // What used to sit here: a check that a foundation node's declared TYPE
-        // agreed with its file name. It went with the type (2026-08-19) — the
-        // file name is now the only place that answers "what page is this?",
-        // and a single source of truth has nothing to disagree with.
     }
 
     // 10. compilation order: a wiki's own pages first, then slug for stability.
@@ -2672,7 +2650,6 @@ impl NewFactPlacement<'_> {
 /// `_`). Empty resolves to `None`, and so does **every reserved page name**,
 /// because none of them is a concept page a classifier may mint:
 ///
-/// - `index.md` — not a page of a standard wiki at all, and kept unclaimable;
 /// - `@profile.md` and `@notes.md` — the wiki's card and parking page, which are
 ///   per-wiki **foundation nodes**; minting a concept page here would put the
 ///   same file in the plan under a second, forest-wide key;
@@ -4286,11 +4263,8 @@ mod tests {
             placement_slug("recipes/dinner.md"),
             Some("recipes_dinner".to_owned())
         );
-        // `index.md` / empty → None, so the fact reaches the subject's
-        // foundation page via orphan-fallback —
-        // never a concept page named "index".
-        assert_eq!(placement_slug("index.md"), None);
-        assert_eq!(placement_slug("index"), None);
+        // Empty → None, so the fact reaches the subject's foundation page
+        // via orphan-fallback.
         assert_eq!(placement_slug(""), None);
         assert_eq!(placement_slug("  "), None);
         // `@rules.md` → None: the reserved user-policy page is never a
@@ -5452,7 +5426,7 @@ mod tests {
         // In the LIGHT cadence the planner places NEW facts on the
         // page the ingest classifier proposed — with NO LLM. A fact with a
         // concrete `target_page` lands on a concept_leaf (carrying its testata);
-        // a fact naming `index.md` orphan-falls-back to its subject's card.
+        // a fact naming a reserved page orphan-falls-back to its subject's wiki.
         let dir = tempfile::tempdir().unwrap();
         let pool = crate::db::open_or_init(dir.path()).await.expect("db");
         let wikis = dir.path().join("wikis");
@@ -5472,8 +5446,14 @@ mod tests {
         .unwrap();
 
         let spesa = plant_alice_fact(&pool, "a1", "latte", Some("spesa.md"), Some("lista")).await;
-        let home =
-            plant_alice_fact(&pool, "a2", "Alice lives in Lisbon", Some("index.md"), None).await;
+        let home = plant_alice_fact(
+            &pool,
+            "a2",
+            "Alice lives in Lisbon",
+            Some("@rules.md"),
+            None,
+        )
+        .await;
 
         // LIGHT cadence placement: no LLM passed at all.
         let plan = build_wiki_plan(
@@ -6691,11 +6671,6 @@ mod tests {
             foundation.contains_key("alice__notes"),
             "…but it still gets a buffer: every standard wiki needs somewhere \
              to put a fact"
-        );
-        // The invariant the whole change exists for.
-        assert!(
-            foundation.values().all(|p| p.page_path != "index.md"),
-            "no foundation node may claim `index.md`"
         );
         drop(dir);
     }

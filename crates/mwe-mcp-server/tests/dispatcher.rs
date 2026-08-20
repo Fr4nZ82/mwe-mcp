@@ -450,8 +450,7 @@ async fn wiki_read_projects_acl_per_sender() {
 
     // Plant a three-region wiki on disk. `wikis/alice` already exists
     // implicitly from `WikiTree::open`; create the `_meta.md` and the
-    // A memory page with three markers carrying distinct subjects. Not
-    // `index.md`: `wiki_read` refuses that name.
+    // A memory page with three markers carrying distinct subjects.
     let wiki_dir = dir.path().join("wikis").join("alice");
     std::fs::create_dir_all(&wiki_dir).expect("mkdir alice");
     std::fs::write(
@@ -560,8 +559,8 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
     .expect("write _meta.md");
     std::fs::write(wiki_dir.join("index.md"), "# Alice\n\nLanding page.\n")
         .expect("write index.md");
-    // A non-index page with one subject-only region — proves the ACL map is
-    // resolved for the *page read*, not for `index.md`.
+    // A second page with one subject-only region — proves the ACL map is
+    // resolved for the page actually read.
     // Deliberately the LEGACY `owner=` spelling: a page as an older engine wrote
     // it, carried all the way through `wiki_read` to the redacted response. This
     // region has no `fact_index` row, which is what makes the spelling matter —
@@ -1059,9 +1058,8 @@ async fn wiki_read_refuses_only_the_engines_own_files() {
         );
     }
 
-    // And nothing else is special: a page named `index.md` is read like any
-    // other. No standard wiki writes one any more, but a smart consumer may
-    // author one, and refusing it hid a page somebody wrote on purpose.
+    // Nothing else is special: a page named `index.md` is read like any
+    // other, on a smart wiki as anywhere else.
     let out = call(
         &state,
         &identity,

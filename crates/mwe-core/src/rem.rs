@@ -2609,17 +2609,15 @@ async fn run_page_grouping_for_wiki(
         return Ok(moved);
     }
 
-    // Candidate pages: every page carrying mass except the wiki's own map
-    // ([`wiki::INDEX_FILENAME`] holds no facts by rule; this filter stays as
-    // the belt to that braces). [`wiki::NOTES_FILENAME`] is *not* excluded and
-    // must not be: it is the parking page a fact lands on when nothing better fits,
-    // and draining it onto real pages — or letting a new page emerge out of
-    // it — is exactly this sweep's job.
+    // Candidate pages: every page carrying mass. [`wiki::NOTES_FILENAME`] is
+    // *not* excluded and must not be: it is the parking page a fact lands on
+    // when nothing better fits, and draining it onto real pages — or letting a
+    // new page emerge out of it — is exactly this sweep's job.
     let mut candidates: Vec<(String, &str, usize)> = page_mass
         .iter()
         .filter_map(|(&source_path, &mass)| {
             let rel = wiki_relative_page(d, source_path)?;
-            (rel != wiki::INDEX_FILENAME).then_some((rel, source_path, mass))
+            Some((rel, source_path, mass))
         })
         .collect();
     candidates.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -2913,7 +2911,6 @@ fn grouping_existing_wikis(children: &[&wiki::DiscoveredWiki]) -> String {
                         .extension()
                         .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
                         && name != "_meta.md"
-                        && name != wiki::INDEX_FILENAME
                 })
                 .count()
         });
@@ -3933,8 +3930,7 @@ struct RefileDecision {
     // The judge picks only the destination WIKI; the fact always lands on
     // that wiki's `@notes.md` (collision-safe — see the apply site), so no
     // per-page field is read. A `dest_page` in the model's JSON is ignored
-    // by serde. **Never `index.md`**: that name is not a page of a standard
-    // wiki (`wiki::INDEX_FILENAME`).
+    // by serde.
     #[serde(default)]
     reason: Option<String>,
 }
@@ -8321,12 +8317,12 @@ mod tests {
         plant_distinct(&tree, &pool, "alice", 2, "alice").await;
 
         let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        // `index.md` is not a page of a standard wiki, so naming it
-        // invalidates the whole group rather than decapitating the parent.
+        // A page the model names but the wiki does not have invalidates the
+        // whole group rather than carrying the two that do exist.
         let promote_llm = FakeLlmBackend::new(
             "rp",
             "{\"groups\":[{\"action\":\"create\",\"slug\":\"giardino\",\"title\":\"Giardino\",\
-             \"pages\":[\"orto.md\",\"potatura.md\",\"index.md\"]}]}",
+             \"pages\":[\"orto.md\",\"potatura.md\",\"inesistente.md\"]}]}",
         );
         let llms = grouping_llms(&rev_llm, &promote_llm);
         let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
