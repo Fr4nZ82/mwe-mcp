@@ -105,6 +105,12 @@ Never commit hand-built assets outside this flow — they are embedded via
   `git status --short` is one you touched.
 - A red build may not be yours. If the offending code is untracked or absent
   from `HEAD` and outside what you edited, leave it and re-run later.
+- ⚠️ **The repository is public and a commit stays in history forever.** No real
+  people's names, customer data, credentials or private paths — in commit
+  messages, and equally in comments, prompts, examples and test fixtures. Reach
+  for the fictional names the repo already uses (`alice`, `bob`, `carol`,
+  `frodo`, `famiglia`). A measurement is written from real rows, so real names
+  travel with it unless you rename them as you write.
 
 ## Local-only material
 
