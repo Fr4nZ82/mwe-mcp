@@ -75,23 +75,11 @@ pub const WIKIS_DIR: &str = "wikis";
 /// Filename of the per-wiki manifest.
 pub const META_FILENAME: &str = "_meta.md";
 
-/// The page name `index.md` — kept only to keep it **out of use**.
+/// The page name `index.md`, reserved on a standard wiki.
 ///
-/// A standard wiki has no such page. Until 2026-08-15 REM assembled one per
-/// wiki every night as a "map" of what lived there, on the theory that
-/// whoever places a fact would read it to decide where the fact goes. Nothing
-/// ever read it: the placement side (the Cartografo) is handed the pages, one
-/// line each, out of the compilation plan and the `page_cards` table — which
-/// carry the same information, are written on **every** page change rather
-/// than once a night, and cost no file. Founder, 2026-08-15: *«quello che non
-/// serve va tolto»*. So the writer is gone, and with it the four rules that
-/// existed only to keep readers away from what it wrote.
-///
-/// What the name is still good for: nothing may coin a page called `index`
-/// ([`is_reserved_page_stem`]), so the word cannot come back meaning
-/// something else. On a **smart** wiki `index.md` is an ordinary content page
-/// its consumer authors through `wiki_admin_push`; REM never touched those
-/// and still does not.
+/// A standard wiki has no such page and nothing may coin one
+/// ([`is_reserved_page_stem`]). On a **smart** wiki it is an ordinary content
+/// page its consumer authors through `wiki_admin_push`, like any other name.
 pub const INDEX_FILENAME: &str = "index.md";
 
 /// Filename of a person's or group's **identity card**
@@ -204,7 +192,7 @@ pub const NOTES_FILENAME: &str = "@notes.md";
 /// behaviour-rule channel additionally writes `{{f=…}}` **behaviour-rule fact
 /// regions** here via the direct path. Either way the engine never derives,
 /// re-homes, or folds this page's facts: the slug `rules` is reserved from
-/// placement ([`crate::planner`]) the way `index` is; `gather_standard_facts`
+/// placement ([`crate::planner`]); `gather_standard_facts`
 /// skips any fact whose page is this one ([`is_rules_page`]); the REM refile
 /// sweep never nominates one; dedup pairs never cross the rules-page
 /// boundary (both sides here, or neither — capture-time and REM revisor
@@ -280,10 +268,9 @@ pub const PROJECTS_FILENAME: &str = "@projects.md";
 /// The wiki's card and its parking page ([`PROFILE_FILENAME`] / [`NOTES_FILENAME`],
 /// per-wiki foundation nodes the planner owns), the three deterministic
 /// channels ([`RULES_FILENAME`] / [`PROJECTS_FILENAME`] /
-/// [`PROJECT_DIARY_FILENAME`], each written by its own code path), and `index`
-/// — the one name here that no longer *is* anything ([`INDEX_FILENAME`]),
-/// fenced off so nothing coins a page called "index" that is not one. A
-/// capture that names any of them is not filed there: it falls through to the
+/// [`PROJECT_DIARY_FILENAME`], each written by its own code path), and
+/// [`INDEX_FILENAME`], which a standard wiki does not have. A capture that
+/// names any of them is not filed there: it falls through to the
 /// deterministic home its subject and salience choose.
 ///
 /// **These are pages of the memory**, unlike the `_`-prefixed set
@@ -393,30 +380,6 @@ pub const PROJECT_DIARY_FILENAME: &str = "@projects_diary.md";
 /// the marker existed.
 pub const AGENT_WIKI_TYPE: &str = "agent";
 
-/// The `{subject}` line for an agent's wiki; empty for every other wiki.
-///
-/// Read by the prompt that WRITES a wiki's pages — the Cronista. It narrates
-/// a wiki from the outside by default, which is the voice a human's memory
-/// wants. An agent's wiki is its
-/// **autobiography**: left on the default voice the same pass files the
-/// agent's own memories as a third-party dossier ("l'agente ha aiutato
-/// l'utente…") — the agent reads back a report about itself instead of
-/// remembering. This lives next to the [`WikiMeta::is_agent`] marker it reads
-/// so the two cannot drift apart, and is injected whole so a prompt that does
-/// not want it simply omits the placeholder.
-#[must_use]
-pub const fn subject_directive(meta: &WikiMeta) -> &'static str {
-    if meta.is_agent {
-        "SUBJECT: this wiki is an AI AGENT's own memory — what you write is a page of ITS \
-         autobiography, not a profile someone else keeps on it. Write in the FIRST PERSON \
-         (\"sono…\", \"lavoro con…\", in the language named below): who I am, what I do, who I \
-         work with and what I have learned. Never a third-person description of the agent, \
-         never a log of services rendered."
-    } else {
-        ""
-    }
-}
-
 /// True when `source_path` is a wiki's reserved signposts page
 /// [`PROJECTS_FILENAME`]. Keyed on the file name, like [`is_rules_page`],
 /// so a content page named `my_projects.md` is not caught.
@@ -485,9 +448,7 @@ pub fn is_channel_page(source_path: &str) -> bool {
 /// modo diverso, tranne quelli che crea il motore come ad esempio il
 /// briefing»*. A smart wiki's pages are its consumer's documentation and the
 /// engine has no opinion on their names — so the read tool refuses this set
-/// and nothing else. (Before that ruling it refused `index.md` instead, a
-/// leftover of the standard-wiki page listing deleted on 2026-08-15, which
-/// hit only smart wikis and hid a page their consumer had authored.)
+/// and nothing else.
 ///
 /// Only the last component is judged, so a content page inside a folder is
 /// never caught. The engine's own readers do not go through here: the
@@ -2597,11 +2558,11 @@ mod tests {
             tree.resolve_scope_principal(&parsed).expect("resolve"),
             Principal::User("franz".into())
         );
-        // No `index.md`: a wiki is born with its metadata and its rules page,
+        // A wiki is born with its metadata and its rules page,
         // and gets its pages from what is written into it (2026-08-15).
         assert!(
             !tree.wikis_dir().join("franz").join("index.md").exists(),
-            "a new wiki must not be seeded with an index.md"
+            "a wiki is seeded with `_meta.md` and `@rules.md` only"
         );
         // A default, user-facing rules.md is seeded too — engine
         // rules only (privacy + do-not-store), no "Behaviour" section.
@@ -2830,24 +2791,6 @@ mod tests {
         let parent_raw =
             fs::read_to_string(tree.wikis_dir().join("franz").join(META_FILENAME)).unwrap();
         assert!(!parent_raw.contains("is_agent"), "{parent_raw}");
-    }
-
-    /// The `{subject}` directive the index-writing prompts substitute: present
-    /// only for an agent's wiki, so a human's index keeps the voice it has.
-    #[test]
-    fn subject_directive_speaks_only_for_an_agent_wiki() {
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("wikis")).unwrap();
-        let tree = WikiTree::open(dir.path()).unwrap();
-        let human = WikiId::parse("franz").unwrap();
-        let agent = WikiId::parse("hermesbot").unwrap();
-        create_identity_wiki(&tree, &human, "Franz", IdentityKind::User).unwrap();
-        create_identity_wiki(&tree, &agent, "Hermes", IdentityKind::Agent).unwrap();
-
-        assert!(subject_directive(&wiki_get_meta(&tree, &human).unwrap()).is_empty());
-        let directive = subject_directive(&wiki_get_meta(&tree, &agent).unwrap());
-        assert!(directive.contains("FIRST PERSON"), "{directive}");
-        assert!(directive.contains("autobiography"), "{directive}");
     }
 
     #[test]

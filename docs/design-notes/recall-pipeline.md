@@ -1062,11 +1062,8 @@ resolved but never minted, and a presentation alias:
 Wiki ids are **flat** (`famiglia-bruno-battaglia`), never directory paths —
 the id is the address, the tree position is the tree's business.
 
-**Why the bare form is legacy.** It once meant "the wiki's overview", and the
-overview was `index.md`. Since [63 §8](../../planning/63_navigator-drift.md)
-every foundation node moved off that name, and since 2026-08-15 a standard
-wiki has no `index.md` at all — so every bare rail in the corpus pointed at a
-page no reader may open. They are not rare: `[[franz]]`,
+**Why the bare form is legacy.** It names a wiki, and recall opens pages —
+so a bare rail points at nothing a reader may open. They are not rare: `[[franz]]`,
 `[[carol]]`, `[[bob]]` and their kind are **40 % of the links written on a
 content page** in the live corpus. What the prose means by `[[franz]]` is *the
 person*, and since the same split the person is `@profile.md` — so the funnel
@@ -1119,9 +1116,8 @@ Every mechanical emitter writes the canonical forms —
 `capture::wiki_link`, the document-ingest dossier anchor, the smart-push
 `authored_refs`, and the compiler feeds
 (`compiler::plan_page_wikilink`: the starvation index and the recommended
-links — a page hop everywhere, and `None` for
-`index.md`, so a legacy plan node still sitting on that name contributes no
-link at all rather than a dead one). The prose-writing prompts
+links — a page hop everywhere, and `None` for `index.md`, which is not a page
+of a standard wiki and so contributes no link rather than a dead one). The prose-writing prompts
 (`cronista`) carries the copy-verbatim instruction: a
 model never mints or restyles a link target. There is no mechanical corpus
 rewriter — the verbatim-copied legacy links simply stay navigable through

@@ -2082,8 +2082,8 @@ the authoritative `consumers.system_user_id` binding — see
 [memory-model.md](../concepts/memory-model.md)), so it is recognisable as an
 agent's without a DB lookup, and the consolidation passes read it: the wiki's
 pages are compiled in the **first person** (`compiler::resolve_tone` →
-`agent-autobiography-first-person`, and `wiki::subject_directive` on the index
-writer) instead of as a third-party dossier about the agent, and the dedup
+`agent-autobiography-first-person`) instead of as a third-party dossier about
+the agent, and the dedup
 confirmer is told that *who* an episode was lived with is part of the fact, so
 two near-identical episodes with two different people stay two memories
 ([rem-cycle.md](rem-cycle.md)). What remains of **27d-rem** is organic

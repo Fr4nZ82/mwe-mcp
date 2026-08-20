@@ -154,10 +154,6 @@ fn buffer_slug(wiki_slug: &str) -> String {
 /// ([`crate::wiki::PROFILE_FILENAME`]) takes `slugify(wiki_id)` and the parking page
 /// ([`crate::wiki::NOTES_FILENAME`]) takes [`buffer_slug`]. Everything else is
 /// a concept page keyed by its own flattened stem.
-///
-/// [`crate::wiki::INDEX_FILENAME`] maps to the card slug for the benefit of
-/// receipts written before 2026-08-03, when the root *was* the card; nothing
-/// places a fact on that name any more.
 #[must_use]
 pub fn plan_slug_for_page(wiki_id: &str, page: &str) -> String {
     let stem = page.strip_suffix(".md").unwrap_or(page);
@@ -168,7 +164,7 @@ pub fn plan_slug_for_page(wiki_id: &str, page: &str) -> String {
     // only letters and digits — so an unmatched `@profile` would silently
     // become the concept slug `profile` instead of the card's key.
     match stem {
-        "@profile" | "@notes" | "index" | "profile" | "notes" => match stem {
+        "@profile" | "@notes" | "profile" | "notes" => match stem {
             "@notes" | "notes" => buffer_slug(&wiki_slug),
             _ => wiki_slug,
         },

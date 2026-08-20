@@ -427,9 +427,9 @@ async fn note_page_failure(pool: &SqlitePool, tree: &WikiTree, page: &PagePlan, 
 /// - its path is not in the plan's page set for that wiki,
 /// - it is not a reserved page (`@rules.md`, any `_`-prefixed file). The card
 ///   and the parking page need no exemption: they are plan nodes, so they are
-///   always in the plan's page set for their wiki. An `index.md` left over
-///   from the retired index writer is NOT exempt — that is how the leftovers
-///   leave, one compile after the writer was deleted (2026-08-15),
+///   always in the plan's page set for their wiki. `index.md` is NOT exempt:
+///   a standard wiki has no such page, so one found on disk is swept like any
+///   other file the plan does not know about,
 /// - **no** non-tombstoned `fact_index` row points at it
 ///   ([`fact_index::count_rows_at_source_path`]) — the DB-first guard: a
 ///   pending render or a superseded row's audit marker keeps the file.
@@ -599,10 +599,9 @@ async fn compile_page(
     // still carries facts and flips to a bare overview once REM's reorg has
     // drained them onto children — which is what is meant to happen to
     // everything that lands there.
-    // **No page lists other pages** (founder, 2026-08-19). A group's card was
-    // the last one that did, and it is gone — the same reasoning that deleted
-    // `index.md`: an index has to be maintained, while the list of pages with
-    // their cards is something the engine already gets by reading the files.
+    // **No page lists other pages** (founder, 2026-08-19): an index has to be
+    // maintained, while the list of pages with their cards is something the
+    // engine already gets by reading the files.
     // A page with no facts is empty, and renders as its card.
     // Il Cronista a 3 stili. A leaf whose ingest-decided style (`page.style`) is
     // `lista` holds atomic-record data (a shopping list, a filmography), not
@@ -3427,9 +3426,8 @@ mod tests {
         std::fs::write(alice_dir.join("@rules.md"), "# Rules\n").unwrap();
         // The scaffolding page `setup` seeds is not part of this count.
         std::fs::remove_file(alice_dir.join("cucina.md")).ok();
-        // A leftover `index.md` from the retired index writer is NOT reserved:
-        // it is swept like any other plan-absent, pointer-less file, which is
-        // how the leftovers leave after 2026-08-15.
+        // `index.md` is not reserved on the sweep side: a file the plan does
+        // not know about, with no fact pointing at it, is swept like any other.
         std::fs::write(alice_dir.join("index.md"), "# Alice\n\n- [[alice/spesa]]\n").unwrap();
 
         let cronista = FakeLlmBackend::new("fake", "unused — lista path");
@@ -4322,10 +4320,8 @@ mod tests {
             )),
             Some("[[famiglia-bruno-battaglia/referto_oculistica]]".to_owned())
         );
-        // A legacy node on `index.md` is NOT a link target: no such page is
-        // written any more, so a rail onto it is a dead rail. It used to
-        // collapse to the bare `[[famiglia]]` hop, which is what put 40 % of
-        // the live corpus's links on a page no reader may open.
+        // A node on `index.md` is not a link target: a standard wiki has no
+        // such page, so a rail onto it is a dead rail.
         assert_eq!(
             plan_page_wikilink(&leaf("famiglia", "famiglia", "index.md")),
             None

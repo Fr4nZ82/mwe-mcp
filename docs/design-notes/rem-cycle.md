@@ -414,9 +414,7 @@ whole wiki (not one per page):
    excerpts per page — plus the existing sub-wikis, their `_meta`
    summaries and their own page counts. **Counted the same way on both
    sides**, so the two numbers the model is asked to weigh against each
-   other are the same measurement: the child count used to include each
-   sub-wiki's `index.md` while the parent's never did, so every child read
-   one page larger than it was, against a floor. The inventory deliberately carries excerpts rather than the
+   other are the same measurement. The inventory deliberately carries excerpts rather than the
    stored `page_description`: that field is written per fact at routing
    time and drifts (in a live corpus it routinely describes a
    neighbouring page, and mixes languages), and a wrong label is worse

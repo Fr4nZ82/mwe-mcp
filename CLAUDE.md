@@ -33,10 +33,33 @@ page that lags is not a defect.
 use the product: a wrong sentence there is a **live bug**, fixed with the code,
 always, in the same commit.
 
-`docs/` pages describe **only the current state**. No history, no "this used to
-work like X" — a page is rewritten or deleted, never annotated with its past.
-The one exception is a sentence explaining why something is *absent*, when a
-reader would otherwise re-add it.
+## A change leaves no trace of what it removed
+
+**Write what is. Never what was.** This binds `docs/`, every comment, every
+prompt, every test message — the whole tracked surface.
+
+When you delete or replace something, the sentences that described it go with
+it. Do not annotate them, do not date them, do not keep them "for context":
+- ❌ *"it used to key on `index.md` until 2026-08-03"* → say what it keys on.
+- ❌ *"a leftover of the page listing deleted on 2026-08-15"* → delete the clause.
+- ❌ *"no longer / any more / retired / legacy / before the X rule"* → these
+  words are the smell. A reader who never saw the old thing cannot use them,
+  and a reader who did does not need them.
+
+Where a fence has no obvious reason, give it a **present-tense** one — *"a
+standard wiki has no `index.md`, and nothing may coin one"* — not the story of
+how it got there.
+
+**The history has exactly two homes**, and neither is the tracked surface:
+`planning/logs.md` (the dated decision log) and `planning/archive/`. Anything
+worth keeping goes there, in full, once. `CHANGELOG.md` is the one file on the
+tracked surface whose subject *is* history — a release entry stays as written.
+
+**Why this is a rule and not a preference** (founder, 2026-08-20): *«se
+facciamo sempre così, cioè che ogni cosa che si modifica lascia sue tracce, si
+crea confusione e tanto testo inutile da leggere»*. Every change that leaves a
+trace makes the next reader pay for a decision they were not part of, and the
+traces accumulate faster than anybody prunes them.
 
 ## Finishing is a loop, not a moment
 
@@ -51,8 +74,8 @@ finds nothing. A *first* pass that finds nothing means it was not a pass.
 
 1. **Dead names.** For every name the change removed or renamed, grep the old
    name across `crates/`, `docs/` — and any local-only directory, which a
-   repo-root grep may skip. It must come back **empty**, except where a
-   deliberate line explains an absence.
+   repo-root grep may skip. It must come back **empty**: a surviving mention is
+   a trace, and traces do not stay (see the section above).
 2. **Dead code.** Anything that lost its last caller goes: functions, `pub`
    items, enum variants, config keys, test helpers, whole modules. `clippy` will
    not tell you — it does not flag a `pub` item nobody uses. Before deleting on

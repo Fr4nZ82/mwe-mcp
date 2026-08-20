@@ -1,7 +1,7 @@
 ---
 name: rem-page-grouping
 description: REM page-group → wiki cartographer — read a wiki's whole page inventory and group the pages that are already one subject area
-version: 1.3
+version: 1.4
 default_version_at_bootstrap: v1.3
 ---
 
@@ -47,9 +47,7 @@ block lives a few lines below the prompt build.
 - `{existing}` — the sub-wikis already under this wiki, one per line,
   with their `_meta` summary and topic-page count (`(none)` when there
   are none). Counted the same way on both sides, so the two numbers on the
-  page are the same measurement: they used to differ by one — every child
-  counted its `index.md` and the parent did not — while the model is asked
-  to weigh them against each other.
+  page are the same measurement.
 - `{inventory}` — one line per candidate page: name, active-fact count,
   and up to two verbatim excerpts
 

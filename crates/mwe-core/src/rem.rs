@@ -8161,10 +8161,10 @@ mod tests {
                 "{page} must be gone from the parent",
             );
         }
-        // Nothing else is seeded: no `index.md` is written any more.
+        // Nothing else is seeded.
         assert!(
             !new_dir.join("index.md").exists(),
-            "an emerged wiki is not seeded with an index.md"
+            "an emerged wiki carries its pages and nothing else"
         );
 
         let rows = fact_index::find_active_in_wiki(&pool, "alice-giardino")

@@ -70,12 +70,12 @@ async fn admin_creating_user_materialises_identity_wiki_on_disk() {
     assert!(!raw.contains("acl_default"), "{raw}");
     // Title is always the user_id (there is no separate label channel).
     assert!(raw.contains("title: bob"), "{raw}");
-    // The rules page is seeded; `index.md` is not — a standard wiki has none
+    // A standard wiki is seeded with its rules page and nothing else.
     // since the nightly index writer was deleted (2026-08-15).
     assert!(tree.wikis_dir().join("bob").join("@rules.md").exists());
     assert!(
         !tree.wikis_dir().join("bob").join("index.md").exists(),
-        "no index.md is seeded any more"
+        "a standard wiki has no index.md"
     );
 }
 

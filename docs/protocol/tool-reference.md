@@ -519,10 +519,6 @@ refused are the engine's own files — the leading-underscore set `_meta.md` /
 bookkeeping rather than memory. Every other page of the wiki can be named,
 gated by ACL like any other; an unknown name is `404`.
 
-Until 2026-08-16 the refusal was the other way round: those files were served
-to anyone who named one, while `index.md` was blocked — a leftover of the
-standard-wiki page listing deleted the day before, which by then could only hit
-a **smart** wiki, where that page is documentation its consumer authored.
 Founder's ruling: *«non ci interessa come sono fatte e nessun file dev'essere
 vietato o trattato in modo diverso, tranne quelli che crea il motore come ad
 esempio il briefing»*. A default page was dropped earlier still, for its own

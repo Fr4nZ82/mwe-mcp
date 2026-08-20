@@ -155,16 +155,12 @@ each one honest:
 | `@notes.md` | *nothing yet* | the **parking page** a fact lands on when the placement pass declines to place it; REM's reorg drains it onto real pages |
 | `@rules.md` | *what has this actor asked for?* | the rules channel only — outside every structural sweep |
 
-**There is no `index.md`.** Until 2026-08-15 REM assembled one per wiki
-every night — a "map" listing the pages, on the theory that whoever files
-a fact would read it to decide where the fact goes. Nothing ever read it:
-the placement side (the Cartografo) is handed the pages one line each out
-of the compilation plan and the `page_cards` table, both of which carry
-the same information, are written on **every** page change rather than
-once a night, and cost no file. Founder, 2026-08-15: *«quello che non
-serve va tolto»*. The name stays reserved (`wiki::is_reserved_page_stem`)
-so nothing coins a page called `index` that is not one; on a **smart**
-wiki `index.md` is an ordinary content page its consumer authors.
+**A standard wiki has no `index.md`.** Nothing lists its pages: the
+placement side is handed them one line each out of the compilation plan and
+the `page_cards` table, written on **every** page change and costing no
+file. The name stays reserved (`wiki::is_reserved_page_stem`) so nothing
+coins one; on a **smart** wiki `index.md` is an ordinary content page its
+consumer authors.
 
 There are **no slots and no compatibility checks**: a wiki can host any
 kind of sub-wiki. The system does not block placement — it suggests.

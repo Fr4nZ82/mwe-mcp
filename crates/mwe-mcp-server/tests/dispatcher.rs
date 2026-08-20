@@ -578,10 +578,8 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
     let tree = WikiTree::open(dir.path()).expect("reopen");
     let state = McpState { tree, ..state };
 
-    // No default page: `path` is required. It used to default to `index.md`,
-    // so the ADVERTISED default of the read tool handed back a list of the
-    // wiki's pages and sub-wikis — the catalogue of containers the read side
-    // is not supposed to have.
+    // No default page: `path` is required. A default would be the read tool
+    // naming a page the caller never asked for.
     let err = call(&state, &identity, "wiki_read", json!({"wiki_id": "alice"}))
         .await
         .expect_err("no default page");
@@ -1025,11 +1023,7 @@ async fn wiki_ingest_message_omits_pending_attention_when_no_proposals_in_flight
 ///
 /// Founder, 2026-08-16, on how a smart wiki is read — *«non ci interessa come
 /// sono fatte e nessun file dev'essere vietato o trattato in modo diverso,
-/// tranne quelli che crea il motore come ad esempio il briefing»*. Before that
-/// the rule ran backwards: `_meta.md` and `_briefing.md` were served to anyone
-/// who named one, while `index.md` was blocked — a leftover of the
-/// standard-wiki page listing deleted on 2026-08-15, which by then could only
-/// hit a smart wiki, where that page is documentation its consumer authored.
+/// tranne quelli che crea il motore come ad esempio il briefing»*.
 #[tokio::test]
 async fn wiki_read_refuses_only_the_engines_own_files() {
     let (state, identity, dir) = fixture(false, None).await;

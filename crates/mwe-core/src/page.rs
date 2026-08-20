@@ -47,13 +47,9 @@ use crate::wiki::{WikiError, WikiTree};
 /// agentic single-fact move). The plan keys pages by bare slug forest-wide, so
 /// only the reserved per-wiki foundation names are collision-safe.
 ///
-/// It used to be the wiki's retired root page, and that was a defect rather
-/// than a choice: no fact may live on that name, and
-/// [`crate::planner::plan_slug_for_page`] maps the stem `index` to the **card's**
-/// plan key — so a deleted page's facts were filed onto somebody's identity
-/// card, the one page that carries a single subject by design and is served
-/// whole into every turn. The constant's own comment claimed it mirrored the
-/// agentic move, which had always used the parking page.
+/// It must not be the identity card: that page carries a single subject by
+/// design and is served whole into every turn, so evacuated facts about
+/// anybody else would ride into it.
 ///
 /// Shared with the whole-wiki evacuation
 /// ([`crate::wiki_delete::delete_wiki_subtree`] in `SenderKeyed` mode).

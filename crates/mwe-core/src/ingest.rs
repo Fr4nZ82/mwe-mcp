@@ -4938,10 +4938,7 @@ fn format_history_with_user(agent: &AgentSelf, policy: &IngestPolicy) -> Option<
 /// The identity card of a principal's wiki — **`@profile.md`**.
 ///
 /// A content page like any other, except that this slot serves it
-/// deterministically. There is no wiki-root page to confuse it with: the
-/// per-wiki map the card was once split away from was deleted on 2026-08-15,
-/// and `index.md` survives only as a name nothing may coin
-/// ([`wiki::INDEX_FILENAME`]).
+/// deterministically. A standard wiki has no root page to confuse it with.
 ///
 /// Not [`IngestPolicy::default_page`] either, which is the *capture* fallback
 /// ([`wiki::NOTES_FILENAME`]): this is the page the classifier routes the

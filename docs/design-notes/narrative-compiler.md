@@ -81,9 +81,7 @@ it has one else the parent wiki's foundation slug, description = the
 `_meta` `scope` prose). Smart wikis never qualify: their consumer is the
 sole writer.
 
-**Two foundation pages per wiki, and neither is its `index.md`.** That
-name is not a plan node at all, and since 2026-08-15 not a page of a
-standard wiki either — it stays reserved so nothing coins one. The two
+**Two foundation pages per wiki.** The two
 nodes are not interchangeable, because two different things arrive at the
 [orphan fallback](#stage-2--the-architetto-deterministic-assembly):
 
@@ -969,7 +967,7 @@ leaf, fed:
   (`agent-autobiography-first-person`) instead of as a dossier kept on it,
   and the marker has to be read before the type because that wiki is a
   `wiki-user` like a human's — then the bare `wiki_type` string for everyone
-  else (`wiki::subject_directive`).
+  else.
 
   **The first person is then narrowed per page** (`tone_for_page`), because a
   wiki is one container but not one subject: an agent's wiki accumulates pages
@@ -985,10 +983,9 @@ Every link the compiler feeds a prose-writing prompt is rendered by
 [`plan_page_wikilink`](../../crates/mwe-core/src/compiler.rs) in the
 **canonical grammar** ([recall-pipeline.md §Link grammar](recall-pipeline.md#link-grammar)):
 `[[wiki_id/page-slug]]`, always a **page** — never a bare plan slug, which
-would read as a hop to a wiki that does not exist, and (since 2026-08-04)
-never the bare `[[wiki_id]]` wiki hop either: it names a wiki and recall
-opens pages, so a legacy node sitting on `index.md` yields `None` and is
-simply not offered as a rail. The prompt's counterpart rule is
+would read as a hop to a wiki that does not exist, and never the bare
+`[[wiki_id]]` wiki hop either: it names a wiki and recall opens pages, so
+it resolves to nothing and is not offered as a rail. The prompt's counterpart rule is
 **copy-verbatim**: the model weaves the given links in character-for-character
 and never mints or restyles a target (a hyphen flipped to the surrounding
 underscore slug style is a dead rail). Non-canonical links still on compiled
@@ -1376,13 +1373,11 @@ sits over a [record body](#the-record-writer--lista-pages-no-llm), never prose.
 
 ### No page lists other pages
 
-There used to be a third writer here, the **Hub Writer**: it wrote the overview
-of a page that had no facts of its own and only children, citing each one. By
-2026-08-19 the only such page left was a **group's card**, and that card went
-the way `index.md` went, for the same reason (founder): *«perché dovrei avere un
-elenco di pagine? Dalle wiki utente lo abbiamo già tolto … l'elenco delle pagine,
-ognuna col suo biglietto, arriva al motore leggendo i file e i frontmatter, non
-serve un indice che poi va pure mantenuto.»*
+No page is an overview of other pages — not a group's card, not a wiki's
+root. Founder: *«perché dovrei avere un elenco di pagine? Dalle wiki utente lo
+abbiamo già tolto … l'elenco delle pagine, ognuna col suo biglietto, arriva al
+motore leggendo i file e i frontmatter, non serve un indice che poi va pure
+mantenuto.»*
 
 So the compiler has **two** writers — the Cronista for prose, the record
 renderer for `lista` pages — and a page with no facts renders as its card. What
@@ -1488,13 +1483,9 @@ one-liner, so a group's abstract was the plan's literal `Group <slug>`). A
 **`lista`** wiki still uses the plan's
 [`PagePlan.description`](../../crates/mwe-core/src/planner.rs): the Record
 Writer has no LLM to author one.
-⚠️ **This keyed on `index.md` until 2026-08-03**, which was right for as long
-as the foundation node lived there. Every foundation node then moved off that
-name, and the condition matched **nothing** — the abstract would
-have frozen at whatever it last said, on every wiki, with no error anywhere to
-notice it by. It keys on
-[`PagePlan::is_foundation`](../../crates/mwe-core/src/planner.rs) now, which is
-the property that was actually meant.
+It keys on
+[`PagePlan::is_foundation`](../../crates/mwe-core/src/planner.rs) — the
+property that is actually meant, rather than any one file name.
 
 The write is **best-effort** (a
 `_meta` hiccup is logged, never fails the page) and **idempotent** (rewritten

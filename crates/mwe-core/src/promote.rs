@@ -2343,9 +2343,9 @@ fn subwiki_meta_extra(context: &Value) -> serde_yaml::Mapping {
 /// Undo at 09:00 → refused, on a wiki nobody had touched. The undo window is
 /// measured in days and it was closing in an hour.
 ///
-/// They are disposable in exactly the way `index.md` already was — *while*
-/// they carry no facts of their own. One that does means the wiki started a
-/// life the revert cannot undo, and refusing is right.
+/// They are disposable *while* they carry no facts of their own. One that
+/// does means the wiki started a life the revert cannot undo, and refusing
+/// is right.
 ///
 /// Returns the names that are safe to remove with the directory; `Err` when
 /// something arrived that is neither the receipt's nor the compiler's, or when
