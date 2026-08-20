@@ -6,7 +6,7 @@
 //! today:
 //!
 //! - `logging`.
-//! - `llm` — six canonical functions (`hub_writer`, `ingest`,
+//! - `llm` — six canonical functions (`ingest`, `operator_chat`,
 //!   `rem_promotions`, `rem_dedup_semantic`, `cronista`, `navigator`);
 //!   needed by the ingest orchestrator that consumes `llm.ingest`.
 //!
@@ -229,11 +229,8 @@ impl LogLevel {
 /// role (`docs/design-notes/admin-llm-config.md`); the "slot unconfigured"
 /// arms in the engine are guards against a half-wired install, never modes to
 /// design around. With this one missing the compile is skipped and the pages
-/// stay blank, so it is surfaced like every other slot. It keeps the `#[deprecated]` marker only because the compiler
-/// has not yet graduated to a full REM sub-job (`structure_proposal`
-/// output + budget enforcement) — the marker lifts when it does and does
-/// **not** mean the slot is unused. The value loads from an
-/// `llm.cronista:` section.
+/// stay blank, so it is surfaced like every other slot. The value loads
+/// from an `llm.cronista:` section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmFunction {
     /// `ingest` — backs `wiki_ingest_message` and the dashboard's
@@ -242,10 +239,10 @@ pub enum LlmFunction {
     /// `operator_chat` — the dashboard's operational agentic chat loop
     /// (the maintainer's tool on their own memory). Wants a **strong**
     /// model with reliable function-calling: it reasons over multiple
-    /// tool calls and must handle fact ids faithfully. Optional — when
-    /// the slot is unconfigured the chat falls back to `hub_writer`
-    /// (`MemoryHandles::backend_for_chat`), so existing deployments keep
-    /// working without a new YAML key.
+    /// tool calls and must handle fact ids faithfully. **Mandatory for
+    /// the chat and nothing else falls in for it**
+    /// (`MemoryHandles::backend_for_chat`): unset, the dashboard chat is
+    /// unavailable and says so.
     OperatorChat,
     /// `rem_promotions` — promotes paragraphs / files / wikis nightly.
     RemPromotions,
@@ -266,8 +263,22 @@ pub enum LlmFunction {
     Navigator,
 }
 
-#[allow(deprecated, reason = "Cronista arm kept for YAML backward compat")]
 impl LlmFunction {
+    /// Every slot, in display order — **the** roster.
+    ///
+    /// Three hand-written copies of this list used to exist (the env
+    /// overrides, the boot health check, the dashboard editor). A fourth,
+    /// in a test, is how `operator_chat` came to be missing from the canned
+    /// profiles without anything going red.
+    pub const ALL: [Self; 6] = [
+        Self::Ingest,
+        Self::OperatorChat,
+        Self::RemPromotions,
+        Self::RemDedupSemantic,
+        Self::Cronista,
+        Self::Navigator,
+    ];
+
     /// YAML key for this function under `llm:`.
     #[must_use]
     pub const fn yaml_key(self) -> &'static str {
@@ -330,7 +341,7 @@ pub struct LlmFunctionConfig {
     /// [`Self::apply_defaults_to_completion`] /
     /// [`Self::apply_defaults_to_chat`] when the caller leaves the
     /// request field unset. Operator-overridable knob for the
-    /// generative slots (`hub_writer`, `cronista`, etc.); call sites
+    /// generative slots (`operator_chat`, `cronista`, etc.); call sites
     /// that pin temperature explicitly (e.g. `ingest` parsing or REM
     /// revisor at 0.1 for determinism) are unaffected because the
     /// helpers only fill `None` fields.
@@ -667,7 +678,7 @@ pub struct LlmConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingest: Option<LlmFunctionConfig>,
     /// `operator_chat` slot — the dashboard's operational agentic chat.
-    /// Optional: unset falls back to `hub_writer`
+    /// Required for that chat; nothing else stands in for it
     /// ([`crate::config::LlmFunction::OperatorChat`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_chat: Option<LlmFunctionConfig>,
@@ -695,7 +706,7 @@ pub enum LlmProfile {
     /// privacy-first deployments; matches the workhorse runtime
     /// baseline in the `project-workhorse-runtime-baseline` memory.
     AllLocal,
-    /// `ingest` and `hub_writer` stay local; the strong nightly slots
+    /// `ingest` and `operator_chat` stay local; the strong nightly slots
     /// (`rem_promotions`, `cronista`) and the navigator go to an API
     /// (Anthropic by default). Local chat latency, API-quality
     /// maintenance.
@@ -740,8 +751,8 @@ impl LlmProfile {
     /// Picks per slot follow the tier table in
     /// the ingest pipeline notes:
     ///
-    /// - `hub_writer`, `ingest` — workhorse tier. Local where possible
-    ///   (latency matters for chat).
+    /// - `ingest`, `operator_chat` — workhorse tier. Local where
+    ///   possible (latency matters for chat).
     /// - `rem_promotions`, `cronista` — strong tier. API where
     ///   possible (decisions worth the cost).
     /// - `rem_dedup_semantic` — yes/no classifier. Reuses the already-
@@ -775,9 +786,10 @@ impl LlmProfile {
             Self::AllLocal => LlmConfig {
                 profile: Some("all-local".into()),
                 ingest: Some(ollama("qwen3.5:9b-q8_0")),
-                // Falls back to `hub_writer` (the local workhorse) unless
-                // the operator wires a stronger tool-calling model.
-                operator_chat: None,
+                // The local workhorse, already in VRAM. Every slot is local
+                // on this profile by definition, so there is no stronger
+                // tool-calling model to reach for.
+                operator_chat: Some(ollama("qwen3.5:9b-q8_0")),
                 rem_promotions: Some(ollama("qwen3.5:9b-q8_0").with_reasoning_effort("extra-high")),
                 rem_dedup_semantic: Some(ollama("qwen3.5:9b-q8_0")),
                 cronista: Some(ollama("qwen3.5:9b-q8_0")),
@@ -792,9 +804,9 @@ impl LlmProfile {
             Self::Hybrid => LlmConfig {
                 profile: Some("hybrid".into()),
                 ingest: Some(ollama("qwen3.5:9b-q8_0")),
-                // Falls back to `hub_writer` (the local workhorse) unless
-                // the operator wires a stronger tool-calling model.
-                operator_chat: None,
+                // Conversational, so it stays local like `ingest`: the
+                // maintainer's own chat, on the workhorse already loaded.
+                operator_chat: Some(ollama("qwen3.5:9b-q8_0")),
                 rem_promotions: Some(
                     anthropic("claude-opus-4-7", "ANTHROPIC_API_KEY")
                         .with_reasoning_effort("extra-high"),
@@ -803,16 +815,16 @@ impl LlmProfile {
                 cronista: Some(anthropic("claude-opus-4-7", "ANTHROPIC_API_KEY")),
                 navigator: Some(anthropic("claude-haiku-4-5-20251001", "ANTHROPIC_API_KEY")),
             },
-            // API-only. Haiku for the bandwidth-heavy `hub_writer`,
-            // Sonnet for `ingest` (intent classification benefits from
-            // the bigger model), Opus 4.7 for the strong slots. Dedup
-            // stays on Haiku — single-provider deploys are simpler.
+            // API-only. Sonnet for `ingest` (intent classification
+            // benefits from the bigger model) and for the operational chat
+            // (a tool-calling loop that must carry fact ids faithfully, run
+            // by one maintainer now and then — quality costs almost nothing
+            // here), Opus 4.7 for the strong slots. Dedup stays on Haiku —
+            // single-provider deploys are simpler.
             Self::AllApi => LlmConfig {
                 profile: Some("all-api".into()),
                 ingest: Some(anthropic("claude-sonnet-4-6", "ANTHROPIC_API_KEY")),
-                // Falls back to `hub_writer` unless wired; a strong
-                // tool-calling model is the right pick when set.
-                operator_chat: None,
+                operator_chat: Some(anthropic("claude-sonnet-4-6", "ANTHROPIC_API_KEY")),
                 rem_promotions: Some(
                     anthropic("claude-opus-4-7", "ANTHROPIC_API_KEY")
                         .with_reasoning_effort("extra-high"),
@@ -947,13 +959,6 @@ fn gemini(model: &str, key_env: &str) -> LlmFunctionConfig {
     }
 }
 
-// LlmFunction::Cronista is intentionally referenced from the match
-// arms below + the apply_env_overrides FUNCTIONS list so the
-// `cronista: Option<LlmFunctionConfig>` field on `LlmConfig` keeps
-// parsing from existing YAML files. The variant is marked
-// `#[deprecated]` to discourage NEW consumers; the allow here scopes
-// the warning suppression to the symmetry-maintaining code paths.
-#[allow(deprecated, reason = "Cronista variant kept for YAML backward compat")]
 impl LlmConfig {
     /// Lookup helper.
     #[must_use]
@@ -989,16 +994,8 @@ impl LlmConfig {
     where
         F: FnMut(&str) -> Option<String>,
     {
-        const FUNCTIONS: [LlmFunction; 6] = [
-            LlmFunction::Ingest,
-            LlmFunction::OperatorChat,
-            LlmFunction::RemPromotions,
-            LlmFunction::RemDedupSemantic,
-            LlmFunction::Cronista,
-            LlmFunction::Navigator,
-        ];
         let mut applied = 0usize;
-        for func in FUNCTIONS {
+        for func in LlmFunction::ALL {
             let prefix = func.env_prefix();
             let model_var = format!("{prefix}_MODEL");
             let backend_var = format!("{prefix}_BACKEND");
@@ -2685,10 +2682,6 @@ impl Config {
 }
 
 #[cfg(test)]
-#[allow(
-    deprecated,
-    reason = "tests cover the YAML-backward-compat surface that still references Cronista"
-)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
@@ -2715,23 +2708,37 @@ mod tests {
     fn llm_profile_all_local_seeds_every_slot_on_ollama() {
         let cfg = LlmProfile::AllLocal.build();
         assert_eq!(cfg.profile.as_deref(), Some("all-local"));
-        for func in [
-            LlmFunction::Ingest,
-            LlmFunction::RemPromotions,
-            LlmFunction::RemDedupSemantic,
-            LlmFunction::Cronista,
-            LlmFunction::Navigator,
-        ] {
+        for func in LlmFunction::ALL {
             let slot = cfg.slot(func).unwrap_or_else(|| panic!("{func:?} missing"));
             assert_eq!(slot.backend, "ollama");
             assert!(slot.api_key_env.is_none());
         }
     }
 
+    /// A canned profile leaves **no slot empty**.
+    ///
+    /// It used to leave one: `operator_chat` was `None` on all three,
+    /// correct only while the chat borrowed the retired `hub_writer`. When
+    /// that fallback went (2026-08-19, the operational chat gets its own
+    /// model) the hole became "pick a profile in the wizard, and the chat
+    /// panel is dead until you wire a model by hand".
+    #[test]
+    fn every_canned_profile_fills_every_slot() {
+        for profile in [LlmProfile::AllLocal, LlmProfile::Hybrid, LlmProfile::AllApi] {
+            let cfg = profile.build();
+            for func in LlmFunction::ALL {
+                assert!(
+                    cfg.slot(func).is_some(),
+                    "{profile:?} leaves {func:?} unconfigured"
+                );
+            }
+        }
+    }
+
     #[test]
     fn llm_profile_hybrid_puts_conversational_slots_local_and_nightly_slots_on_anthropic() {
         // Updated post-realignment with the user:
-        // hub_writer + ingest + rem_dedup_semantic all reuse the local
+        // operator_chat + ingest + rem_dedup_semantic all reuse the local
         // workhorse; rem_promotions + cronista go to Opus 4.7 with
         // extra-high reasoning effort on the structural decisions.
         let cfg = LlmProfile::Hybrid.build();
@@ -2744,6 +2751,8 @@ mod tests {
         let cronista = cfg.cronista.as_ref().unwrap();
         assert_eq!(cronista.backend, "anthropic");
         assert_eq!(cronista.model, "claude-opus-4-7");
+        // Conversational like `ingest`, so local.
+        assert_eq!(cfg.operator_chat.as_ref().unwrap().backend, "ollama");
         // The per-turn navigator goes strong-but-cheap, not local: link
         // choice is the recall quality bar, and the workhorse is busy
         // with ingest on every turn anyway.
@@ -2755,7 +2764,7 @@ mod tests {
     #[test]
     fn llm_profile_all_local_reuses_workhorse_for_dedup() {
         // Post-realignment: dedup runs on the same Qwen 9B that's
-        // already in VRAM for hub_writer + ingest. Zero VRAM extra,
+        // already in VRAM for operator_chat + ingest. Zero VRAM extra,
         // no model swap during the REM cycle.
         let cfg = LlmProfile::AllLocal.build();
         assert_eq!(
@@ -3273,7 +3282,7 @@ mod tests {
     fn parse_hybrid_profile_populates_canonical_slots() {
         // The "hybrid" profile, lifted as-is.
         let dir = tempdir().unwrap();
-        let body = "llm:\n  profile: hybrid\n  hub_writer:\n    backend: ollama\n    model: qwen3.5-9b\n  ingest:\n    backend: ollama\n    model: qwen3.5-9b\n  rem_promotions:\n    backend: anthropic\n    model: claude-sonnet-4-6\n    api_key_env: MWE_ANTHROPIC_KEY\n  rem_dedup_semantic:\n    backend: ollama\n    model: phi-3-mini\n  cronista:\n    backend: anthropic\n    model: claude-sonnet-4-6\n    api_key_env: MWE_ANTHROPIC_KEY\n";
+        let body = "llm:\n  profile: hybrid\n  operator_chat:\n    backend: ollama\n    model: qwen3.5-9b\n  ingest:\n    backend: ollama\n    model: qwen3.5-9b\n  rem_promotions:\n    backend: anthropic\n    model: claude-sonnet-4-6\n    api_key_env: MWE_ANTHROPIC_KEY\n  rem_dedup_semantic:\n    backend: ollama\n    model: phi-3-mini\n  cronista:\n    backend: anthropic\n    model: claude-sonnet-4-6\n    api_key_env: MWE_ANTHROPIC_KEY\n";
         fs::write(Config::path_in(dir.path()), body).unwrap();
         let cfg = Config::load(dir.path()).expect("load");
         assert_eq!(cfg.llm.profile.as_deref(), Some("hybrid"));

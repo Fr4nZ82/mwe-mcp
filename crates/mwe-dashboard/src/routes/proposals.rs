@@ -263,7 +263,7 @@ async fn revert(
 /// for the agentic chat panel.
 ///
 /// The server composes a review/apply primer message, runs it through the
-/// agentic loop (same `hub_writer` slot the chat panel uses), and
+/// agentic loop (same `operator_chat` slot the chat panel uses), and
 /// returns a landing page that injects the resulting [`AgenticTurn`]
 /// into the chat panel's `localStorage` via `window.__mweChatPrimer`.
 /// The user lands directly inside the chat with the proposal already on

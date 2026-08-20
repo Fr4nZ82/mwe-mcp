@@ -87,8 +87,11 @@ in [narrative-buffer.md](narrative-buffer.md).
    one page's facts into another's.
 3. **Embed**: call the supplied `Arc<dyn Embedder>` on the body. A
    remote-embedder failure short-circuits *before* any durable write.
-4. **Dedup**: fetch every active fact in the wiki **whose subject is the same
-   principal as the new fact's** (different subject ⇒ different fact — two senders
+4. **Dedup**: fetch every active fact **whose subject is the same principal as
+   the new fact's, across the whole forest** — not this wiki's
+   ([`fact_index::find_active_by_subject`]; see
+   [the scope rule](#the-scope-of-a-question-about-facts-is-the-subject-never-the-wiki))
+   (different subject ⇒ different fact — two senders
    adding to one `group:` page collapse to a shared item, but per-user facts
    that merely share a wiki, like an agent's behaviour rules whose subject is the
    user who dictated each one, stay distinct), **never crossing the rules-page
@@ -189,6 +192,34 @@ sees it. The reader set is [`acl::reader_set`](../../crates/mwe-core/src/acl.rs)
 — `subject ∪ allow ∪ sender`, read from beside `can_read` so the two cannot
 drift. The write-time scan below is a different case (one author, one turn,
 one audience by construction) and takes no such gate.
+
+## The scope of a question about facts is the **subject**, never the wiki
+
+A fact is not bound to the wiki of the person it is about. The engine may file
+it — or later move it — wherever the prose reads better, and that is **correct,
+not damage**: read access is judged per fact on `subject ∪ allow ∪ sender`,
+never on the container, so moving a fact between wikis changes nothing anybody
+may see. Founder, restating it after I had scoped one pass to a single wiki:
+
+> *«le wiki e sottowiki sono struttura, aiutano a creare i links tra le pagine
+> creando un albero congruo per la narrazione e tra argomenti. Non sono da
+> considerarsi contenitori stagni, un fatto può essere duplicato anche tra più
+> wiki, non ha senso controllare i doppioni solo in una wiki»* (2026-08-18)
+
+The operative consequence, and it binds **every** pass that judges facts — not
+just this one: the wiki a fact sits in is **provisional** (derived from the
+subject at capture, re-homable by the Cartografo and by REM's refile), while
+the **subject** is decided once and never moves. So a question of the form *"is
+there already a fact like this one?"* is asked over
+[`fact_index::find_active_by_subject`](../../crates/mwe-core/src/fact_index.rs),
+across the whole forest. Scoping it to a wiki makes the duplicate filed
+elsewhere structurally invisible.
+
+Three write sites ask it and all three scope on the subject: the live capture
+(`capture::wiki_capture`), the hourly round's screening
+(`dream_light::screen_queue`), and the dashboard comment's `add`
+(`comment_apply::apply_add` — corrected 2026-08-20, the one missed when the
+other two were fixed).
 
 ## Jaccard 6-gram dedup
 

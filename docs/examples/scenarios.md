@@ -780,7 +780,7 @@ different contexts.
 In every scenario the **dominant cost** is composing the reply on the
 client-agent LLM (Sonnet / Opus / other, paid by the consumer). The
 mwe-mcp tools are I/O + local embedding → near-zero cost. The server's
-internal LLM slots (Hub Writer, REM, `ingest`) can run locally → zero
+internal LLM slots (`ingest`, REM, the Cronista) can run locally → zero
 cost, or via API → an order of magnitude below the consumer's spend.
 Smart consumers skip the server's `ingest` slot entirely for their
 smart wikis, classifying on their own subscription.

@@ -305,7 +305,7 @@ roadmap):
 | Not yet supported | Blocker |
 |---|---|
 | Per-kind WAL inverses (`file_write`, `db_update`, `marker_propagation`) | needs the dashboard-only `proposals::apply_proposal` `bundle` handler |
-| 5 remaining `wiki_lint` checks (`broken_crosslinks`, `acl_inconsistent`, `embed_missing`, `hub_outdated`, `superseded_chain`) | need recall pipeline + hub regeneration cycle |
+| 3 remaining `wiki_lint` checks (`broken_crosslinks`, `acl_inconsistent`, `superseded_chain`) | need the recall pipeline's wikilink resolver + redaction projection |
 | `wiki_ingest_external` source types `file` / `git` / `url` | external IO + import policy decisions |
 | `cost_estimate` in audit rows | needs LLM token accounting |
 | Rate limiting per `rate_limit_id` (claim parsed, not enforced) | needs tower-governor wiring |

@@ -314,8 +314,8 @@ enum RemCommand {
     RunLight,
     /// Run one narrative compile pass synchronously: (incrementally)
     /// rebuild the compilation plan and compile the dirty pages into prose.
-    /// Needs the `cronista` (+ `hub_writer`) LLM slots configured; acquires
-    /// the workdir lockfile.
+    /// Needs the `cronista` (+ `rem_dedup_semantic`) LLM slots configured;
+    /// acquires the workdir lockfile.
     RunCompile,
 }
 
@@ -729,8 +729,8 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
         .context("building embedder")?;
     let llms = rem_scheduler::build_backends(&config.llm)?.ok_or_else(|| {
         anyhow!(
-            "rem run-cycle: `llm.hub_writer` or `llm.rem_dedup_semantic` are not configured \
-             in mwe-mcp.config.yaml; both are required to run a cycle"
+            "rem run-cycle: `llm.rem_dedup_semantic` is not configured \
+             in mwe-mcp.config.yaml; it is required to run a cycle"
         )
     })?;
     let policy = config.rem.resolved_policy();
@@ -807,9 +807,9 @@ async fn cmd_rem_run_light(workdir: &Path, config: &Config) -> Result<()> {
         .build_embedder()
         .await
         .context("building embedder")?;
-    // Optional: when `hub_writer` + `rem_dedup_semantic` (+ `cronista`) are
-    // configured, the light dream also compiles the pages the promotion
-    // dirtied. Absent config ⇒ `None` ⇒ promotion only.
+    // Optional: when `rem_dedup_semantic` (+ `cronista`) are configured,
+    // the light dream also compiles the pages the promotion dirtied.
+    // Absent config ⇒ `None` ⇒ promotion only.
     let llms = rem_scheduler::build_backends(&config.llm)?;
     let policy = mwe_core::dream_light::LightPolicy::default();
     let report = rem_scheduler::run_light_once(&pool, &tree, embedder, llms.as_ref(), &policy)
@@ -841,8 +841,8 @@ async fn cmd_rem_run_light(workdir: &Path, config: &Config) -> Result<()> {
 }
 
 /// Run one narrative compile pass from the CLI: rebuild the plan and
-/// compile the dirty pages into prose. Needs the `cronista` (+ `hub_writer`)
-/// slots; lockfile-guarded.
+/// compile the dirty pages into prose. Needs the `cronista`
+/// (+ `rem_dedup_semantic`) slots; lockfile-guarded.
 async fn cmd_rem_run_compile(workdir: &Path, config: &Config) -> Result<()> {
     info!(workdir = %workdir.display(), "mwe-mcp rem run-compile: starting");
 
@@ -855,8 +855,8 @@ async fn cmd_rem_run_compile(workdir: &Path, config: &Config) -> Result<()> {
     let tree = WikiTree::open(workdir).context("opening wikis/ tree")?;
     let llms = rem_scheduler::build_backends(&config.llm)?.ok_or_else(|| {
         anyhow!(
-            "rem run-compile: `llm.hub_writer` or `llm.rem_dedup_semantic` are not configured; \
-             configure them (and `llm.cronista` for the prose writer) to compile"
+            "rem run-compile: `llm.rem_dedup_semantic` is not configured; \
+             configure it (and `llm.cronista` for the prose writer) to compile"
         )
     })?;
     // The compile drains the captures queue on its way in, and a claim staged
@@ -1686,8 +1686,8 @@ async fn cmd_serve_http(
 
     // REM scheduler. Built before
     // the listener starts accepting traffic so a misconfigured
-    // `llm.hub_writer` / `llm.rem_dedup_semantic` slot surfaces in the
-    // startup log instead of half an hour later on the first tick.
+    // `llm.rem_dedup_semantic` slot surfaces in the startup log instead
+    // of half an hour later on the first tick.
     // Build the LLM bag once and share it (Arc) between the REM
     // full cycle and the light dream — both run the narrative compile pass.
     let llms = rem_scheduler::build_backends(&config.llm)
@@ -1695,9 +1695,9 @@ async fn cmd_serve_http(
         .map(std::sync::Arc::new);
     if llms.is_none() && !frozen {
         warn!(
-            "rem scheduler: `llm.hub_writer` or `llm.rem_dedup_semantic` not configured — \
-             the REM full cycle will not auto-run (configure both or use `mwe-mcp rem run-cycle`); \
-             the light dream still promotes captures but cannot compile prose without the slots"
+            "rem scheduler: `llm.rem_dedup_semantic` not configured — \
+             the REM full cycle will not auto-run (configure it or use `mwe-mcp rem run-cycle`); \
+             the light dream still promotes captures but cannot compile prose without the slot"
         );
     }
     let scheduler_handle = if let Some(llms) = &llms

@@ -19,10 +19,8 @@ The orchestrator drives this prompt from
 `LANGUAGE` section is substituted with the directive built by
 `mwe_core::locale::render_language_directive`. See also the
 agentic chat design notes
-for the design narrative and the relationship to the
-`LlmFunction::HubWriter` slot (shared with the narrative compiler's hub
-pass — the REM index regenerator that once rode it stopped calling a model
-on 2026-08-03 and was deleted on 2026-08-15).
+for the design narrative. The model is the `LlmFunction::OperatorChat`
+slot's, dedicated to this chat and shared with nothing.
 
 ## Runtime contract
 

@@ -101,7 +101,7 @@ project wiki on user request); every other wiki omits the key. The
 The smart actor wiki is **generic** — software docs, research notes,
 recipe books, runbooks — so it ships no fixed folder structure: the smart
 consumer is authoritative on the on-disk shape (default ACL `owner_user`,
-no REM hub regeneration underneath it). Smart *content* shape is the
+no REM page regeneration underneath it). Smart *content* shape is the
 smart consumer's to organise.
 
 **Recall indexing — its own tables, content-indexed and markerless.** A
@@ -792,8 +792,8 @@ partially-broken trees rather than silently dropping work.
 
 Write-job exclusion is uniform: a single
 `if is_companion(companion_index, wiki_id) { continue; }` at the top
-of each `tree.walk()` loop in the four legacy write-jobs — revisor,
-auto-promote, archive-detector, hub-writer (see
+of each `tree.walk()` loop in the legacy write-jobs — revisor,
+auto-promote, archive-detector (see
 [`rem-cycle.md`](rem-cycle.md)).
 Auto-apply / auto-finalize sweeps work on proposals, not wikis, and
 proposals targeting companions are blocked at emission time by the

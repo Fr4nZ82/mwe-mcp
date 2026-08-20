@@ -175,7 +175,7 @@ If you are new, read in this order:
 - [narrative-compiler.md](design-notes/narrative-compiler.md) — the
   compilation planner: the five-stage topology pass (Fonditore →
   Cartografo → Conciliatore → Architetto → incremental orchestrator) that
-  turns promoted facts into a hub→leaf `CompilationPlan` (one-fact-one-page,
+  turns promoted facts into a `CompilationPlan` (one-fact-one-page,
   stable `fact_id`s, fixpoint GC, dirty set via `page_fingerprint`),
   persisted as a rebuildable cache under `wikis/_plan/` (`mwe-core::planner`,
   prompts `cartografo`/`conciliatore` in `prompts::BUNDLED_*`).

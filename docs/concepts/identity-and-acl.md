@@ -69,7 +69,7 @@ to recognise a genuine *world* fact (e.g. weather, common knowledge) and
 route it to `subject=global`, as opposed to a *public personal* fact (which
 names the person in `subject=` and adds `allow=global`). It is special-cased
 throughout: never hand-membered or deletable, excluded from the
-collaborative-group list that seeds `group_theme` hubs, and seeded by
+collaborative-group list that seeds the group wikis, and seeded by
 migration `0047` /
 [`enrollment::ensure_global_group`](../../crates/mwe-core/src/enrollment.rs).
 
@@ -796,6 +796,43 @@ prose or structure the reader was not granted.
 This is the load-bearing consequence of "ACL lives only in the fact": the
 wiki and the page are **recall structure** — where a fact is filed, how it is
 grouped, the prose around it — never an access boundary.
+
+---
+
+## 6. Who may know what about a third party — **the users decide, not the engine**
+
+The default routing of §1–§2 (`owner = subject`) has a consequence that looks
+like a problem and is not one. A parent tells the assistant *«la maestra dice
+che Tommaso fatica a stare seduto»*; Tommaso is enrolled, so under the default
+he owns that claim and can read it.
+
+Asked to rule on it, the founder chose the classifier route and widened it
+(2026-08-01):
+
+> **«la 3, il llm decide, non c'entra l'età, le regole le stabiliscono gli
+> utenti in `rules.md` e nello scope dei gruppi.»**
+
+Three commitments, and the second and third bind every future design:
+
+1. **The sense of the turn decides, per turn.** A parent confiding a worry and
+   a parent recording a datum are different turns and may route differently.
+   That reading is the classifier's, made from the turn itself.
+2. **Age is irrelevant.** No minor special case, no age-keyed branch, anywhere.
+3. **Departures from the default are AUTHORED BY THE USERS** — a standing rule
+   in the sender's [`@rules.md`](../design-notes/ingest-pipeline.md) (the
+   classifier's `engine_rule` route) or a group's `scope` prose. The engine
+   honours the policy a family wrote; **it does not ship one**.
+
+**Why this is not negotiable.** It is the product thesis applied to itself.
+What mwe-mcp sells is *governed sharing*: the wedge is that the people involved
+decide who may know what about whom. A built-in family policy, however humane,
+would be the engine deciding instead of them — and that is precisely the
+property no competitor has and we would be discarding.
+
+**How to apply.** When a case surfaces where the default routing is wrong for
+someone, the fix is a user-authored rule, and (failing that) the classifier's
+reading of the turn. **Never a new built-in policy branch**, and never an
+age-, role- or relationship-keyed exception in Rust.
 
 ---
 

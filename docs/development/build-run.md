@@ -297,13 +297,13 @@ What each sub-command does:
   separate from the nightly full-cycle ticker), so this CLI invocation
   is only needed when the in-process scheduler is off.
 - **`rem run-compile`** — drive one **narrative compile pass**
-  synchronously (leaves / lists / hubs / unchanged / errors): rebuild the
+  synchronously (prose / lists / unchanged / errors): rebuild the
   compilation plan incrementally and compile the dirty standard pages —
   prose leaves via the Cronista, `lista` pages as atomic records
   (`mwe_core::compiler` via
   [`rem_scheduler::run_compile_once`](../../crates/mwe-mcp-server/src/rem_scheduler.rs)).
-  Needs the `cronista` (+ `hub_writer`) LLM slots configured; lockfile-
-  guarded. Under `mwe-mcp serve` this runs automatically — the light
+  Needs the `cronista` (+ `rem_dedup_semantic`) LLM slots configured;
+  lockfile-guarded. Under `mwe-mcp serve` this runs automatically — the light
   dream compiles after a promotion, and the nightly full cycle
   recompiles after its reorg — so the CLI form is the out-of-band hatch.
 - **`recall eval`** — replay a YAML gold set against the workdir and
@@ -416,8 +416,9 @@ The full list of variables the server understands is:
 - `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, … — referenced from
   `mwe-mcp.config.yaml > llm.*.api_key_env` (the YAML stores the *name*
   of the env var, not the value).
-- `MWE_LLM_HUB_WRITER_*`, `MWE_LLM_INGEST_*`, `MWE_LLM_REM_PROMOTIONS_*`,
-  `MWE_LLM_REM_DEDUP_SEMANTIC_*`, `MWE_LLM_CRONISTA_*` — per-slot
+- `MWE_LLM_INGEST_*`, `MWE_LLM_OPERATOR_CHAT_*`, `MWE_LLM_REM_PROMOTIONS_*`,
+  `MWE_LLM_REM_DEDUP_SEMANTIC_*`, `MWE_LLM_CRONISTA_*`,
+  `MWE_LLM_NAVIGATOR_*` — per-slot
   overrides of the matching `mwe-mcp.config.yaml > llm` keys. Suffixes
   `_MODEL` / `_BACKEND` / `_API_KEY_ENV` / `_BASE_URL`. See
   `LlmFunction::env_prefix` in

@@ -744,11 +744,11 @@ Run consistency checks over the corpus (read-only, no auto-fix).
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `scope.wiki_ids` | `array<wiki_id>` | no | Restrict the scan. |
-| `checks` | `array<string>` | no (default = all) | Subset of the eight check names; an unknown name → `400 invalid_input`. |
+| `checks` | `array<string>` | no (default = all) | Subset of the seven check names; an unknown name → `400 invalid_input`. |
 
-The eight advertised check names are `broken_crosslinks`,
+The seven advertised check names are `broken_crosslinks`,
 `marker_malformed`, `orphan_facts`, `meta_invalid`, `acl_inconsistent`,
-`embed_missing`, `hub_outdated`, `superseded_chain`.
+`embed_missing`, `superseded_chain`.
 
 **Output**
 
@@ -772,12 +772,12 @@ carries all three keys (pre-seeded to `0`) so a consumer can index it
 without a presence check; `by_check` is pre-seeded with the requested
 (active) check names.
 
-**Caveat — four of eight checks are live.** Only `marker_malformed`,
+**Caveat — four of seven checks are live.** Only `marker_malformed`,
 `orphan_facts`, `meta_invalid` and `embed_missing` (every `{{embed=…}}`
 must resolve to a `media_catalog` row whose blob exists — see
 media pipeline) actually run in
-`mwe-core::lint`. The other four (`broken_crosslinks`,
-`acl_inconsistent`, `hub_outdated`, `superseded_chain`) are accepted by
+`mwe-core::lint`. The other three (`broken_crosslinks`,
+`acl_inconsistent`, `superseded_chain`) are accepted by
 the schema and return zero issues without error — even when requested
 explicitly. A green result means "the four shipped checks found
 nothing," not "the corpus is provably clean."

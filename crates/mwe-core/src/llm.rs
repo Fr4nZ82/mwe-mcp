@@ -3,9 +3,9 @@
 //!
 //! ## Why a trait
 //!
-//! The five canonical LLM functions — `hub_writer`, `ingest`,
-//! `rem_promotions`, `rem_dedup_semantic`, `cronista` — all want the
-//! same thing: feed a prompt (optionally with a system message) to a
+//! The six canonical LLM functions — `ingest`, `operator_chat`,
+//! `rem_promotions`, `rem_dedup_semantic`, `cronista`, `navigator` — all
+//! want the same thing: feed a prompt (optionally with a system message) to a
 //! model, get back the completion. The provider behind that contract
 //! is a deployment choice (Ollama for local-only, Anthropic/`OpenAI`/
 //! Google for cloud) that the operator pins per-function in
@@ -651,7 +651,7 @@ pub trait LlmBackend: Send + Sync {
     /// non-Ollama provider in this codebase — return
     /// [`LlmError::Backend`] with a descriptive message. Callers that
     /// depend on tools must check at startup that the configured
-    /// `hub_writer` slot supports `chat`; the dashboard does this via
+    /// `operator_chat` slot supports `chat`; the dashboard does this via
     /// the boot-time health check path.
     ///
     /// # Errors
@@ -2592,7 +2592,7 @@ impl LlmBackend for AnthropicBackend {
 //   `finishReason: "MAX_TOKENS"`. We pin `thinkingLevel: "minimal"`
 //   and `maxOutputTokens: 65536` on every request — same hard policy
 //   as `think: false` on Ollama Qwen 3.x — so the structured callers
-//   (ingest, REM dedup, hub_writer JSON) get parseable output instead
+//   (ingest, REM dedup, the Cartografo's JSON) get parseable output instead
 //   of a truncated tail. A future surface that wants visible reasoning
 //   (dashboard ChatPanel "show thinking" toggle) will make this
 //   per-call configurable, mirroring LLM functions.

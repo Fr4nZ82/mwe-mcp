@@ -19,7 +19,8 @@
 //!   a regression).
 //! - **duplicate prose** — two leaf pages whose stripped bodies share a
 //!   char-6-gram Jaccard above [`PROSE_DUP_THRESHOLD`] (the starvation invariant
-//!   should make cross-page prose duplication near-zero; hubs are excluded).
+//!   should make cross-page prose duplication near-zero; fact-less pages are
+//!   excluded).
 //! - **missing ACL marker** — an owned fact (subject ≠ `global`) assigned to a
 //!   page whose compiled body carries no `{{… f=<fact_id>}}` marker for it, or
 //!   whose marker is public. This is the ACL-leak guard the old engine lacked:
@@ -147,9 +148,9 @@ pub struct ReviewReport {
     /// discipline violated. Observability only, never a gate.
     pub cross_subject_bloat: Vec<(String, String, String)>,
     /// `(slug, children)` — `concept_leaf` pages other pages parent under.
-    /// A leaf functioning as a container is the two-rank topology violated;
+    /// A page functioning as a container is the two-rank topology violated;
     /// parked as a placement re-open so the Cartografo re-homes its facts
-    /// (once emptied, the assembly normalises its type to hub).
+    /// (once emptied, the assembly garbage-collects it).
     pub leaf_with_children: Vec<(String, usize)>,
     /// `(slug, facts)` — fact-bearing pages at/over
     /// [`OVERSIZED_PAGE_THRESHOLD`]; parked as a placement re-open so
@@ -318,26 +319,24 @@ pub fn review(
     Ok(report)
 }
 
-/// The per-page shape checks of the plan-level pass: empty leaf, two-rank
-/// topology (leaf-with-children / hub-with-facts), oversized nomination.
+/// The per-page shape checks of the plan-level pass: empty page,
+/// two-rank topology (a page other pages hang under), oversized nomination.
 fn check_page_shape(slug: &str, page: &PagePlan, report: &mut ReviewReport) {
     if !page.is_foundation() && page.primary_facts.is_empty() {
         report.empty_leaves.push(slug.to_owned());
     }
-    // Two-rank topology: leaves hold facts and parent nothing; hubs
-    // parent children and hold nothing. (An *empty* leaf with children
-    // is normalised to hub by the assembly itself — what reaches this
-    // check is the fact-bearing container, which needs its facts
-    // re-homed first.)
+    // Two-rank topology: a page holds facts and parents nothing. (An
+    // *empty* page with children is garbage-collected by the assembly
+    // itself — what reaches this check is the fact-bearing container,
+    // which needs its facts re-homed first.)
     if !page.is_foundation() && !page.child_leaves.is_empty() {
         report
             .leaf_with_children
             .push((slug.to_owned(), page.child_leaves.len()));
     }
-    // The `hub_with_facts` check went with the page it was about: a group's
-    // card was the only overview page, and a group wiki has no card any more
-    // (2026-08-19). Nothing lists pages, so nothing can list them and hold
-    // facts at the same time.
+    // There is no `hub_with_facts` check: it was about a group's card, the
+    // last overview page, and a group wiki has no card any more (2026-08-19).
+    // Nothing lists pages, so nothing can list them and hold facts at once.
     // Oversized nomination: mass alone re-opens nothing today, so a
     // clean grown page could never split (see the const's doc).
     if page.primary_facts.len() >= OVERSIZED_PAGE_THRESHOLD {
@@ -456,15 +455,12 @@ mod tests {
 
     #[test]
     fn flags_two_rank_topology_violations_and_oversized_pages() {
-        // `cucina`: a fact-bearing page other pages parent under (container);
-        // `famiglia`: a GROUP's card carrying a fact — the card links its
-        // children and holds none of its own; `pile`: a subject-clean page at
-        // the oversized nomination threshold. All three park as placement
-        // re-opens via the findings→healing bridge.
+        // `cucina`: a fact-bearing page other pages hang under (container);
+        // `pile`: a subject-clean page at the oversized nomination threshold.
+        // Both park as placement re-opens via the findings→healing bridge.
         //
-        // The middle case used to be a `concept_hub`, the retired "page that
-        // contains pages". It went with the page-type enum on 2026-08-19, so
-        // the only overview page left is a group's card.
+        // There used to be a third case here, a page holding no facts and
+        // listing its children. No such page is written any more.
         let mut cucina = leaf("cucina", vec![ffp(0x40, "user:alice")]);
         cucina.child_leaves = vec!["cucina_tecniche".to_owned()];
         let pile_facts: Vec<FactForPage> = (0..OVERSIZED_PAGE_THRESHOLD)

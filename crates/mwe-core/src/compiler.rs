@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Narrative **compiler** — Il Cronista + the Hub Writer.
+//! Narrative **compiler** — Il Cronista + the Record Writer.
 //!
 //! The compiler is the prose stage: it consumes the [`CompilationPlan`] the
 //! planner ([`crate::planner`]) produced and, page by page, turns the facts
@@ -8,13 +8,13 @@
 //! compiler decides *how it reads*.
 //!
 //! Per dirty page, [`compile_page`] routes:
-//! - a **hub** (0 facts, ≥1 children, `concept_hub`/`group_theme`) →
-//!   [`compile_hub_page`] (the Hub Writer, cheap model): an overview that cites
-//!   every child `[[wikilink]]`, never facts.
-//! - a **`lista`-style leaf** (the ingest classifier's `page.style`) →
+//! - a **`lista`-style page** (the ingest classifier's `page.style`) →
 //!   [`compile_list_page`] (the Record Writer, **no LLM**): each atomic fact
 //!   rendered deterministically as one bullet record wrapped in its ACL marker,
 //!   bypassing Il Cronista.
+//! - a page with **no facts** → [`compile_empty_leaf`], deterministic: its
+//!   card and nothing else. No page lists other pages, so an empty one has
+//!   nothing to narrate and never reaches a model.
 //! - everything else → [`compile_leaf_page`] (Il Cronista, **strong** model):
 //!   the page's own facts woven into prose, each claim wrapped in a
 //!   bare `{{f=<fact_id>}}…{{/}}` runtime ACL marker (the full
@@ -222,8 +222,8 @@ struct CronistaOutput {
 
 /// Compile every dirty page of `plan` into prose.
 ///
-/// `cronista` is the strong-model backend for leaves; `hub` the cheap backend
-/// for hubs. Per-page failures are collected into the report; the run continues.
+/// `cronista` is the strong-model backend for prose pages. Per-page failures
+/// are collected into the report; the run continues.
 ///
 /// # Errors
 ///
@@ -1855,8 +1855,8 @@ fn is_future(from: &str, now: &str) -> bool {
 ///
 /// The slug is the page **file's** stem, never the plan slug alone (which
 /// would read as a hop to a wiki that does not exist). Every link the
-/// compiler feeds the Cronista / Hub Writer goes through here, so the prose
-/// only ever sees resolvable rails.
+/// compiler feeds the Cronista goes through here, so the prose only ever
+/// sees resolvable rails.
 fn plan_page_wikilink(page: &PagePlan) -> Option<String> {
     if page.page_path == INDEX_PAGE {
         return None;

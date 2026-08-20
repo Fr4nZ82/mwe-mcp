@@ -3,7 +3,7 @@
 //! actually offered, and where does `max_candidates` cut it?
 //!
 //! The card was opened on one traced turn and two counts taken off the
-//! filesystem (41 pages with no links, one hub emitting 22). Those describe the
+//! filesystem (41 pages with no links, one page emitting 22). Those describe the
 //! *corpus*; they do not say how often a real turn meets either end of it. This
 //! measures the pool itself, over real turns, and answers the three questions
 //! the card's steps hang on:

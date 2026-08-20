@@ -11,9 +11,9 @@ last_review: "2026-08-06"
 **topology stage** of the narrative compiler. It turns the flat
 fact store — [`fact_index`](capture-and-dedup.md), fed by the
 [light dream](narrative-buffer.md#promotion--the-light-dream) — into a
-[`CompilationPlan`](../../crates/mwe-core/src/planner.rs): a hub→leaf page
-graph in which every fact lives on **exactly one** page (the
-one-fact-one-page invariant), hubs hold only narrative + links, and a
+[`CompilationPlan`](../../crates/mwe-core/src/planner.rs): a page graph in
+which every fact lives on **exactly one** page (the
+one-fact-one-page invariant), and a
 persistent [`ConceptRegistry`](../../crates/mwe-core/src/planner.rs) stops
 the same concept page being re-invented run-to-run. The plan is the input
 the **compiler** ([`mwe-core::compiler`](../../crates/mwe-core/src/compiler.rs))
@@ -314,8 +314,8 @@ The *«of the batch's wiki»* half survived the un-fencing above, with a
 different reason behind it. It is not a rule about where a fact may live — a
 fact may be assigned to any page in the forest. It is what proposing a page
 means: a new page is born where its facts are, this batch's facts are this
-wiki's, so a hub in another wiki would be a parent the page does not live
-under. `vet_accepted` asks only that the hub exist, because by the time the
+wiki's, so a parent in another wiki would be one the page does not live
+under. `vet_accepted` asks only that the parent exist, because by the time the
 Conciliatore runs a proposal may have been merged into a page already homed
 elsewhere.
 
@@ -447,9 +447,9 @@ concept registry, because the model is asked to re-emit `slug` /
 
 A dropped redirect loses nothing: the proposal stays its own page and the next
 cycle can still merge it correctly. The `parent_hub` check is deliberately
-weaker than `vet_proposal`'s, which also demands the hub belong to *this* wiki
-— a fact is free to live in any wiki, so what has to hold here is only that the
-hub exists.
+weaker than `vet_proposal`'s, which also demands the parent belong to *this*
+wiki — a fact is free to live in any wiki, so what has to hold here is only
+that the parent exists.
 
 The conciliatore's output schema carries no writing `style`, so the code
 re-attaches each accepted page's ingest-proposed style from the original
@@ -520,29 +520,30 @@ materialises the final plan deterministically, top to bottom:
    with the updated registry) and this plan's page, with an info trace.
    Idempotent — once the entry has a style it never re-fires.
 6. **Dangling-parent heal**, then **parent → child**: a `parent_hub`
-   naming no plan page (the pointer an absorbed or GC'd hub leaves on its
-   children) is re-pointed to the page's own wiki foundation page when the
-   plan has one, else cleared — on the plan page **and** the registry
+   naming no plan page (the pointer an absorbed or GC'd parent leaves on
+   its children) is re-pointed to the page's own wiki foundation page when
+   the plan has one, else cleared — on the plan page **and** the registry
    entry, or the pointer would resurrect next build. Then every page with
-   a `parent_hub` is registered as a child of that hub; child lists are
+   a `parent_hub` is registered as a child of that parent; child lists are
    sorted.
 7. **Fixpoint garbage-collection** of empty concept pages — see the fix
    below.
-8. **Link graph**: build the directed adjacency (hub→child + foundation
+8. **Link graph**: build the directed adjacency (parent→child + foundation
    outgoing), make it **symmetric** (every edge gets its inverse), sort,
    and sync `outgoing_links` / `incoming_links` back onto each page.
-9. **Compilation order**: hubs → persons → leaves
+9. **Compilation order**: a wiki's own pages (its card, its parking page)
+   first, then everything else
    ([`PagePlan::order_rank`](../../crates/mwe-core/src/planner.rs)), ties
-   broken by slug, so a hub is always written after its children are
-   placed.
+   broken by slug.
 
 Two of these steps deserve calling out:
 
 - **Deterministic orphan homing** (step 4). A fact the Cartografo never
   assigned (or whose batch was skipped) is homed by
-  [`orphan_target`](../../crates/mwe-core/src/planner.rs): the **subject's**
-  `person` / `group_theme` page if it exists, else the fact's **source
-  wiki's** foundation page, else dropped from the plan with a warning —
+  [`orphan_target`](../../crates/mwe-core/src/planner.rs): in the **subject's**
+  wiki if it has one, else in the fact's **source wiki** — its identity card
+  when the fact is identity-salient, otherwise its parking page; if neither
+  wiki has either, dropped from the plan with a warning —
   **never an arbitrary page**. The home is a function of the
   fact's own subject and provenance, so the same orphan lands the same place
   every run. (A concept *page* the Cartografo leaves without a resolvable
@@ -556,17 +557,16 @@ Two of these steps deserve calling out:
 - **Fixpoint GC** (step 7). Empty concept pages are removed
   (an ordinary page with no facts) — but in a
   **loop until no removals**, not a single pass. A single pass would leave a
-  stranded hub whose only child was an empty leaf removed *in that same
-  pass*; the fixpoint catches the cascade — remove the empty leaf, the hub
-  becomes childless, remove the hub too. Each iteration first
+  stranded parent whose only child was an empty page removed *in that same
+  pass*; the fixpoint catches the cascade — remove the empty page, the parent
+  becomes childless, remove the parent too. Each iteration first
   **normalises** the shape the sweep must not eat: an emptied page that
   other pages still parent under is **kept** instead of being removed —
   removal would orphan every child's `parent_hub` (the dangling-pointer
   factory step 6 heals after) —
-  which is how a fact-bearing container drained by a placement re-open
-  settles into its real hub role; the type flip alone marks the page dirty
-  (`compute_dirty_pages` compares the type beside the fingerprint, since
-  hubs render through a different writer). Foundation pages are exempt.
+  which is how a fact-bearing container drained by a placement re-open stops
+  being a container without taking its children down with it. Foundation
+  pages are exempt.
   Each removal is recorded in `merged_pages` for audit and dropped from the
   registry. The GC's **on-disk half** runs at compile time:
   [`sweep_orphan_page_files`](../../crates/mwe-core/src/compiler.rs) (tail of
@@ -589,14 +589,9 @@ the definitions there are the SSOT.
   parking page, anything else an ordinary page. `PagePlan` answers with
   `is_identity_card()` / `is_parking_page()` / `is_foundation()`, all derived
   from `page_path`, and `prompt_kind()` renders the word the placement prompt
-  needs (`person` / `group_theme` / `parking_page` / `concept_leaf`) at the
+  needs (`person` / `parking_page` / `concept_leaf`) at the
   moment it is shown. The wiki's own pages are never garbage-collected; an
   ordinary page goes when it holds no facts.
-
-  The one thing a file name cannot say is whether a card belongs to a **person
-  or a group** — same name, different wikis — so `PagePlan` carries a single
-  boolean, `group_wiki`, stamped once per build from the foundation set. It is
-  a fact about the wiki, not a role for the page.
 
   ⚠️ **There used to be a `PageType` enum here, and removing it on 2026-08-19
   is the point of this section.** Its five values were the page taxonomy of the
@@ -628,8 +623,8 @@ the definitions there are the SSOT.
   [id-stability invariant](narrative-buffer.md#id-stability) carried
   through `capture → fact → page`).
 - **[`PagePlan`]** — one page's record: `slug` (the plan key), `title`,
-  `description`, `group_wiki`, optional `owner_scope` (group prose) and
-  `parent_hub`, `child_leaves`, `primary_facts`, the symmetric
+  `description`, `style`, the optional `parent_hub`, `child_leaves`,
+  `primary_facts`, the symmetric
   `outgoing_links` / `incoming_links`, and the page's **tree home** —
   `wiki_id` + `page_path`. That last one is also what says which kind of page
   this is: `@profile.md` for a card, `@notes.md` for a parking page,
@@ -638,9 +633,12 @@ the definitions there are the SSOT.
 - **[`CompilationPlan`]** — the persisted artifact: `pages` (keyed by slug
   in a `BTreeMap`, sorted for determinism), `merged_pages` (the GC/redirect
   audit), `link_graph`, `compilation_order`, `generated_at`, `fact_count`,
-  and `dirty_pages` (the recompile set).
+  `dirty_pages` (the recompile set), and the signals the next build reads
+  back: `force_dirty` (pages a structural change marked for rewrite even
+  though their fingerprint matches), `refile_candidates` and `reopen_pages`
+  (what the reviewer nominated for a second look).
 - **[`ConceptRegistry`]** / **[`ConceptRegistryEntry`]** — the persistent
-  record of emergent concept pages, so a hub/leaf minted one night is
+  record of emergent concept pages, so a page minted one night is
   recognised (and reused) the next, rather than re-invented. The Cartografo
   is shown the registry as its dedup context; the Architetto materialises
   registry pages and prunes GC'd ones from it.
@@ -655,9 +653,10 @@ sorted. Sorting is what makes it stable across runs; the per-fact content
 hash is a deterministic FNV-1a (never the randomised `std` hasher, which
 would not survive a round-trip through the persisted plan). Because the
 fingerprint folds in the link neighbourhood, a page goes **dirty even with
-no new facts** when a link, a parent, or a child changes — the Cronista
-must rewrite a hub when its child set shifts, even though the hub holds no
-facts itself. And because it folds in each fact's **render content** — the
+no new facts** when a link, a parent, or a child changes — the prose names
+the pages it links to, so a page whose neighbourhood moved is out of date
+even when its own facts did not. And because it folds in each fact's
+**render content** — the
 claim text *plus* the validity fields (`valid_from` / `valid_to` /
 `decay_reason`), everything of a fact that reaches the rendered page
 (`fact_render_key` in [`planner.rs`](../../crates/mwe-core/src/planner.rs))
@@ -815,7 +814,7 @@ The consequence: **the planner adds no new proposal kind.** Routine concept-page
 creation is prose the Cronista emits; the only structural action is
 the page-group → sub-wiki emergence, and that already exists. (The
 [`resolve_page_wiki`](../../crates/mwe-core/src/planner.rs) helper homes a new
-concept page in **its facts' source wiki** (a factless hub falls back to its
+concept page in **its facts' source wiki** (a factless page falls back to its
 parent's wiki), so a page always has a tree home and lives in the same wiki as
 its facts. There is no root wiki — the tree is a forest of top-level wikis.)
 
@@ -868,7 +867,7 @@ spuriously between runs that changed nothing. The
 `#[cfg(test)]` module in [`planner.rs`](../../crates/mwe-core/src/planner.rs)
 is the SSOT for the covered scenarios — among them the slugify canonical
 form, the Architetto homing assigned + orphan facts, the fixpoint GC of an
-empty hub/leaf chain, the fingerprint reacting to a link change, the
+empty parent/child chain, the fingerprint reacting to a link change, the
 Cartografo blueprint parse + new-page dedup, the changed/new/removed dirty
 set, and the end-to-end `build_wiki_plan` incremental-idempotency
 (first build homes the fact, an unchanged second build yields zero dirty
@@ -885,7 +884,8 @@ decided *where each fact lives*; the compiler decides *how it reads*.
 `dirty_pages` but gone from `pages`) is skipped here; its on-disk file is
 deleted by the [orphan-file sweep](#stage-2--the-architetto-deterministic-assembly)
 at the tail of the same compile — and returns a `CompileReport`
-(leaves / `lists` / hubs / `unchanged` / `degraded` / per-page soft errors).
+(`leaves` / `lists` / `unchanged` / `degraded` / `orphan_files_swept` /
+per-page soft errors).
 Per-page LLM or parse failures are collected into the report and the run
 continues — a leaf whose Cronista keeps failing lands in the
 [degraded guard-only rewrite](#degraded-mode--the-guard-only-rewrite) rather
@@ -909,10 +909,9 @@ that surfaces persistent failures to the operator.
    — prose leaves, and a `person` / `parking_page` page carrying facts —
    goes to **Il Cronista**.
 
-The three writers target different config slots (the Cronista on the strong
-tier, the Hub Writer on the cheap tier, the Record Writer on **no** model at
-all), so each kind of work is independently tunable and `lista` data never pays
-for prose synthesis.
+The two writers target different config slots — the Cronista the strong
+tier, the Record Writer **no** model at all — so `lista` data never pays for
+prose synthesis.
 
 ### Il Cronista — the leaf writer (strong model)
 
@@ -970,8 +969,7 @@ leaf, fed:
   (`agent-autobiography-first-person`) instead of as a dossier kept on it,
   and the marker has to be read before the type because that wiki is a
   `wiki-user` like a human's — then the bare `wiki_type` string for everyone
-  else. The hub pass carries the same distinction through the index writer's
-  `{subject}` line (`wiki::subject_directive`).
+  else (`wiki::subject_directive`).
 
   **The first person is then narrowed per page** (`tone_for_page`), because a
   wiki is one container but not one subject: an agent's wiki accumulates pages
@@ -981,9 +979,7 @@ leaf, fed:
   the guard starts working. A leaf gets the autobiography voice only when most
   of its facts have the agent as their subject; otherwise it keeps the ordinary
   identity voice. Narrating a user's pregnancy as the assistant's own life is a
-  far worse failure than the third-person log the voice exists to fix. The
-  **index / hub** pass stays wiki-level on purpose: an identity wiki's index is
-  its subject's own page by definition, whatever sits on the leaves below it.
+  far worse failure than the third-person log the voice exists to fix.
 
 Every link the compiler feeds a prose-writing prompt is rendered by
 [`plan_page_wikilink`](../../crates/mwe-core/src/compiler.rs) in the
@@ -1076,7 +1072,7 @@ cut on the `=== PAGE TO WRITE ===` line by
 | Half | Content | Rides |
 |---|---|---|
 | Before the marker | the standing brief + the page index | the **system** prompt, marked cacheable |
-| From the marker on | this page's title / slug / hub / tone, its facts, its recommended links | the **user** turn, closed by the write instruction |
+| From the marker on | this page's title / slug / parent / tone, its facts, its recommended links | the **user** turn, closed by the write instruction |
 
 The split exists because of the shape of the spend, measured on the live
 store: the brief plus the index is **~5.8k tokens and byte-identical for every
@@ -1108,11 +1104,11 @@ system prompt, nothing is marked cacheable.
 
 ### The rail guard — a recommended link that never reached the prose
 
-The compiler hands the writer the links it must weave in — for a leaf the
-plan's `link_graph` row
-([`recommended_link_targets`](../../crates/mwe-core/src/compiler.rs)), for a
-hub its `child_leaves` — and until this guard **nothing checked that any of
-them landed**. The links are not suggestions: `link_graph` is hub→child plus
+The compiler hands the writer the links it must weave in — the page's
+`link_graph` row
+([`recommended_link_targets`](../../crates/mwe-core/src/compiler.rs)) — and
+until this guard **nothing checked that any of
+them landed**. The links are not suggestions: `link_graph` is parent→child plus
 the page's own authored outgoing links, made symmetric (planner, step 9),
 i.e. the structure the plan asserts. And a link that does not land is not a
 cosmetic loss — the navigator harvests its next hops from the **prose**, and a
@@ -1126,7 +1122,7 @@ Three parts, cheapest first:
    mandatory the way fact completeness already was, with the reason stated and
    one prohibition: they may not be parked in a list at the end — a link
    explained by the prose around it is the point, a bare address is the weak
-   form of it. The Hub Writer has carried the equivalent rule since v1.6.
+   form of it.
 2. **The check, and one rewrite.** After a usable reply, the written links are
    parsed out of the body with
    [`recall::extract_wikilinks`](../../crates/mwe-core/src/recall.rs) — the
@@ -1148,10 +1144,6 @@ Three parts, cheapest first:
    because an unreachable neighbour is worse. The report is what keeps the
    trade visible: how often the writer declines a rail is a **prompt** signal,
    and it used to be invisible.
-
-The hub arm has **no rewrite**: it is a single-shot call on the cheap slot, and
-a hub whose children are absent has failed at the one job it has, so the links
-go on directly.
 
 ⚠️ The size of the loss is **unmeasured on this engine**. It was 111 of 334
 links (33 %) on the corpus compiled before 2026-08-04, which is a static
@@ -1361,13 +1353,11 @@ later work (it is born with emergence), not this one.
   `prosa` (interconnected knowledge) or `prosa-tecnica` (itemizable / technical
   content) — it writes prose, so it never returns `lista` (atomic-record pages it
   does not author). [`normalize_style`](../../crates/mwe-core/src/compiler.rs)
-  coerces the value into the palette; absent / unrecognised → `prosa`. A **hub** is
-  an overview/navigation page, always `prosa` (it holds no facts → takes no ingest
-  style).
+  coerces the value into the palette; absent / unrecognised → `prosa`.
 - **`description`** is the page's **card** — the one line the recall navigator
   decides from, since it is shown a page's name, its keywords and this line and
-  never its prose. It is **written**, by whichever model wrote the page: the
-  Cronista's fresh `description` for a leaf, the Hub Writer's for a hub (v1.7).
+  never its prose. It is **written**: the Cronista's fresh `description` for
+  the page it just wrote (v1.7).
   It falls back to the plan's
   [`PagePlan.description`](../../crates/mwe-core/src/planner.rs) only when the
   writer returned none. Besides the testata it feeds the
@@ -1455,7 +1445,7 @@ first guess. Nothing used to read back what the page turned out to say — while
 the writer puts **its own card** in the testata on every compile. So the two
 diverged, and the stale one was the copy the models saw: the Cronista's
 [page index](#the-cacheable-split--why-the-page-comes-last) carries every
-page's description, its own line included, and the Hub Writer's `{snippet}`
+page's description, its own line included, and the `{snippet}`
 carries its children's.
 
 **That is how an invented frame becomes permanent.** The confirmed production
@@ -1488,14 +1478,12 @@ and the registry is rewritten only when something actually healed.
 
 ### The abstract sync — the wiki's `summary`
 
-When the compiler (re)writes a wiki's **foundation page** — the `person` /
-`group_theme` **card** (`@profile.md`) or a topic wiki's **buffer**
-(`@notes.md`); concept pages use `<slug>.md` and are skipped — it persists a
+When the compiler (re)writes one of a wiki's **own pages** — its identity
+**card** (`@profile.md`) or its **parking page**
+(`@notes.md`); ordinary pages use `<slug>.md` and are skipped — it persists a
 one-line **abstract** into that wiki's `_meta.md` (`extra["summary"]`) via
 [`meta_annotate::sync_wiki_summary`](../../crates/mwe-core/src/meta_annotate.rs).
-The source is the page's own **card**, so it is written by whichever model
-wrote the page: Il Cronista's `description` for a **person** wiki, the Hub
-Writer's for a **hub** (v1.7 — until then the Hub Writer emitted prose and no
+The source is the page's own **card**, written by Il Cronista (v1.7 — until then the writer emitted prose and no
 one-liner, so a group's abstract was the plan's literal `Group <slug>`). A
 **`lista`** wiki still uses the plan's
 [`PagePlan.description`](../../crates/mwe-core/src/planner.rs): the Record
@@ -1651,15 +1639,15 @@ mutates the corpus, it surfaces problems for a maintainer or a later cycle.
 The checks (the [`ReviewReport`](../../crates/mwe-core/src/reviewer.rs)
 fields are the roster):
 
-- **empty leaf** — a `concept_leaf` with zero facts (the Architetto's
+- **empty page** — an ordinary page with zero facts (the Architetto's
   fixpoint GC should have removed it; a hit is a planner regression).
 - **duplicate fact home** — a `fact_id` on two or more pages (a
   one-fact-one-page violation).
 - **asymmetric link** — an `a → b` edge with no `b → a` back-edge (the
   Architetto makes the graph symmetric, so any asymmetry is a regression).
-- **duplicate prose** — two leaf pages whose stripped bodies share a
+- **duplicate prose** — two pages whose stripped bodies share a
   char-6-gram Jaccard ≥ `PROSE_DUP_THRESHOLD` (reuses `recall::jaccard_6gram`;
-  hubs excluded). The starvation invariant should make this near-zero, so a
+  fact-less pages excluded). The starvation invariant should make this near-zero, so a
   hit means a leaf leaked another's content — or that two near-synonym pages
   cover one concept: these pairs feed the
   [REM page-merge sub-job](rem-cycle.md#page-merge-sub-job-semantic-page-consolidation)
@@ -1686,14 +1674,11 @@ fields are the roster):
   purpose: plan placement is the load-bearing channel (the Cronista renders
   only the facts the plan gives a page), so a plan-clean identity index
   converges to a clean disk page at its next compile.
-- **leaf with children** — a `concept_leaf` other pages parent under: the
+- **leaf with children** — a page other pages parent under: the
   two-rank topology violated by a fact-bearing container (the *empty*
-  container case never reaches the reviewer — the Architetto's GC
-  normalises it to hub). Parked as a placement re-open so the Cartografo
-  re-homes its facts; once drained, the flip settles it.
-- **hub with facts** — a group's card carrying facts
-  (hubs hold no facts; the shape a degraded orphan-fallback build or an
-  old plan can leave). Parked as a placement re-open.
+  container case never reaches the reviewer — the Architetto's GC keeps it
+  while it has children and removes it once it has none). Parked as a
+  placement re-open so the Cartografo re-homes its facts.
 - **oversized page** — a fact-bearing page at/over
   `OVERSIZED_PAGE_THRESHOLD` (a nomination constant beside
   `PROSE_DUP_THRESHOLD`, tunable in code). Mass alone re-opened nothing
@@ -1722,7 +1707,7 @@ act on cycle N+1 (the `force_dirty` park pattern). All
   reviewer already nominated it; the judge still decides, and refuses
   what does not apply);
 - each `cross_subject_bloat` **page**, each topology-anomalous page
-  (`leaf_with_children`, `hub_with_facts`), each `oversized` page, plus
+  (`leaf_with_children`), each `oversized` page, plus
   every page whose compile keeps failing
   (`compile_failures::persistent`, streak ≥ 2), parks as a
   `reopen_pages` entry — consumed by the next **Cartografo**
@@ -1839,7 +1824,7 @@ reviewer, the REM cadence wiring, and human-edit handling:
 | Stage | What it adds | Status |
 |---|---|---|
 | **compilation planner** | Builds the `CompilationPlan` (foundation + classification + dedup + assembly), persisted under `wikis/_plan/`, with the incremental dirty set. | **landed** (this page) |
-| **compiler (Cronista + Hub Writer + Record Writer)** | Consumes the plan and writes the published `.md` pages — prose leaves via the strong Cronista (facts → prose + `{{… f=}}` markers), `lista` leaves via the no-LLM [Record Writer](#the-record-writer--lista-pages-no-llm) (atomic records), hubs via the cheap Hub Writer; repoints `fact_index` off the *no page yet* address onto the compiled page; reindex skips standard pages. | **landed** (this page) |
+| **compiler (Cronista + Record Writer)** | Consumes the plan and writes the published `.md` pages — prose pages via the strong Cronista (facts → prose + `{{… f=}}` markers), `lista` pages via the no-LLM [Record Writer](#the-record-writer--lista-pages-no-llm) (atomic records); repoints `fact_index` off the *no page yet* address onto the compiled page; reindex skips standard pages. | **landed** (this page) |
 | **deterministic reviewer** | Post-compile QA over the plan + written pages: empty leaves, duplicate fact homes, asymmetric links, cross-page prose duplication, the missing-ACL-marker leak guard, and the cross-subject-bloat identity-index check. Non-blocking (`crate::reviewer`). | **landed** ([above](#the-reviewer)) |
 | **cadence wiring** | Wires the compile pass into both REM cadences (light = dirty sync after promotion, REM night = full reorg then recompile), sharing the LLM bag; `mwe-mcp rem run-compile` CLI hatch. | **landed** ([above](#the-cadence--wired-into-rem)) |
 | **human edits via comments** | Parked dashboard comments on standard pages are applied by the REM dream as contained, ACL-safe fact ops (`mwe_core::comment_apply`); the fingerprint folds fact content so an in-place correction recompiles only its page. | **landed** ([above](#human-edits-on-compiled-pages)) |

@@ -146,9 +146,10 @@ pub fn render_default_env_file(token_secret_hex: &str) -> String {
     s.push_str("#                              `api_key_env: ANTHROPIC_API_KEY`).\n");
     s.push_str("#   OPENAI_API_KEY             API key for the `openai` LLM backend.\n");
     s.push_str("#\n");
-    s.push_str("# Per-slot LLM overrides (any of MWE_LLM_HUB_WRITER_*,\n");
-    s.push_str("# MWE_LLM_INGEST_*, MWE_LLM_REM_PROMOTIONS_*, MWE_LLM_REM_DEDUP_SEMANTIC_*,\n");
-    s.push_str("# MWE_LLM_CRONISTA_*; suffixes _MODEL / _BACKEND / _API_KEY_ENV /\n");
+    s.push_str("# Per-slot LLM overrides (any of MWE_LLM_INGEST_*,\n");
+    s.push_str("# MWE_LLM_OPERATOR_CHAT_*, MWE_LLM_REM_PROMOTIONS_*,\n");
+    s.push_str("# MWE_LLM_REM_DEDUP_SEMANTIC_*, MWE_LLM_CRONISTA_*,\n");
+    s.push_str("# MWE_LLM_NAVIGATOR_*; suffixes _MODEL / _BACKEND / _API_KEY_ENV /\n");
     s.push_str("# _BASE_URL) override the matching key in `mwe-mcp.config.yaml > llm`.\n");
     s.push_str("# See `crates/mwe-core/src/config.rs > LlmFunction::env_prefix`.\n");
     s.push('\n');

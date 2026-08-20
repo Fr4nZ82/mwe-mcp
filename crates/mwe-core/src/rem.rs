@@ -5882,8 +5882,8 @@ async fn run_archive_detector(
 // ---------- Lease expirer sub-job ----------
 
 /// Thin wrapper around [`crate::wiki_admin_leases::expire_stale`].
-/// Runs once per REM cycle, between the briefing/backlink emitters
-/// and the Hub Writer. Two passes (see the module docstring of
+/// Runs once per REM cycle, after the briefing/backlink emitters.
+/// Two passes (see the module docstring of
 /// `wiki_admin_leases` for the contract):
 ///
 /// 1. Active rows whose `expires_at < now - grace` get
@@ -8886,7 +8886,7 @@ mod tests {
     async fn legacy_write_jobs_skip_smart_family() {
         let (dir, mut tree, pool) = setup_workdir().await;
         // Smart wiki with children + an active fact ⇒ would normally
-        // qualify Hub Writer; the smart-family gate must filter it out.
+        // qualify for a write job; the smart-family gate must filter it out.
         let parent = "alice-lnprint";
         let child = "alice-lnprint-auth";
         let parent_dir = tree.wikis_dir().join(parent);

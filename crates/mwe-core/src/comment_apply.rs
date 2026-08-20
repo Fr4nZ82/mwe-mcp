@@ -287,8 +287,8 @@ async fn apply_page(
 ) -> Result<()> {
     let facts = fact_index::find_active_by_source_path(pool, source_path).await?;
     if facts.is_empty() {
-        // The anchor resolved to a page with no live facts (all forgotten, or a
-        // hub). Nothing to act on — drain the comments.
+        // The anchor resolved to a page with no live facts (all forgotten,
+        // or all re-homed). Nothing to act on — drain the comments.
         for (bi, _, _) in comments {
             stamp_processed(pool, *bi, now).await?;
             report.comments_processed += 1;
@@ -550,13 +550,23 @@ async fn apply_add(
     // write site: an `add` that merely rephrases an existing fact is skipped
     // rather than minting a near-duplicate row. Same discipline as
     // `capture::wiki_capture` — same-subject scope, the channel-page boundary,
-    // jaccard 6-gram against the wiki's active facts, and the embed-set guard
-    // (two distinct media with near-identical captions stay two facts). Dedup
-    // first so a hit short-circuits before the (possibly remote) embed call.
+    // jaccard 6-gram, and the embed-set guard (two distinct media with
+    // near-identical captions stay two facts). Dedup first so a hit
+    // short-circuits before the (possibly remote) embed call.
+    //
+    // Candidates are every active fact **about this subject, wherever it is**
+    // ([`fact_index::find_active_by_subject`]) — not this wiki's. A wiki is
+    // recall structure, not a container a fact is sealed in, so scoping the
+    // question to one of them makes a duplicate filed elsewhere invisible
+    // (founder, 2026-08-18: *«un fatto può essere duplicato anche tra più
+    // wiki, non ha senso controllare i doppioni solo in una wiki»*). The
+    // other two write sites were corrected that day; this one was missed
+    // while its comment already claimed the subject scope.
+    //
     // Facts a `remove` op in the same batch targets are not candidates: ops
     // apply in emission order, so the doomed fact may still be active while
     // an earlier `add` carries its corrected replacement.
-    let mut candidates = fact_index::find_active_in_wiki(pool, wiki_id.as_str()).await?;
+    let mut candidates = fact_index::find_active_by_subject(pool, &subject_id).await?;
     candidates.retain(|c| !batch_removals.contains(c.fact_id.as_str()));
     let on_channel_page = crate::wiki::is_channel_page(source_path);
     if let Some((dup, score)) = crate::capture::best_dedup_candidate(

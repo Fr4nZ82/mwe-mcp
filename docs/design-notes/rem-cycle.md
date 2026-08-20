@@ -1556,7 +1556,7 @@ every page compile the compiler updates it:
   [guard-only rewrite](narrative-compiler.md#degraded-mode--the-guard-only-rewrite))
   **also increments** — the page made progress, but the Cronista keeps failing
   there;
-- only a **clean full rewrite** (leaf / list / hub / unchanged) resets the
+- only a **clean full rewrite** (prose / list / unchanged) resets the
   streak (deletes the row).
 
 When a streak reaches `compile_failures::NOTICE_THRESHOLDS` — exactly **2**,

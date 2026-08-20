@@ -333,22 +333,21 @@ impl MemoryHandles {
     /// (founder, 2026-08-19: *«la chat operativa deve avere il suo modello
     /// dedicato»*).
     ///
-    /// It used to fall back to `hub_writer`. That slot existed to write the
-    /// prose of pages that listed other pages; when those pages went, what
-    /// was left was a mandatory setting for a job that no longer existed, so
-    /// it went too. A chat this one — interactive, multi-step function
-    /// calling, faithful fact-id handling — deserves a model chosen for it.
+    /// There is deliberately no stand-in: a chat like this one —
+    /// interactive, multi-step function calling, faithful fact-id handling —
+    /// deserves a model chosen for it, and borrowing another job's model is
+    /// how it ends up on whatever that job happened to want.
     ///
     /// # Errors
-    /// See [`BackendForError`]. `SlotMissing` here means **both** slots
-    /// are unconfigured.
+    /// See [`BackendForError`]. `SlotMissing` here means the
+    /// `operator_chat` slot is unconfigured.
     pub fn backend_for_chat(&self) -> Result<Arc<dyn LlmBackend>, BackendForError> {
         self.backend_for(LlmFunction::OperatorChat)
     }
 
-    /// Per-slot default knobs for the operational chat, mirroring
-    /// [`Self::backend_for_chat`]'s fallback: the `operator_chat` slot's
-    /// defaults, and nothing else.
+    /// Per-slot default knobs for the operational chat, from the
+    /// `operator_chat` slot and nowhere else — the same rule
+    /// [`Self::backend_for_chat`] follows.
     #[must_use]
     pub fn chat_defaults(&self) -> Option<LlmFunctionConfig> {
         self.defaults_for(LlmFunction::OperatorChat)

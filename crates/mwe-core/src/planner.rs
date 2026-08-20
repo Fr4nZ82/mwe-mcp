@@ -3,18 +3,18 @@
 //! compiler, ported from the old engine's "Forgia della Wiki" onto mwe-mcp.
 //!
 //! The planner turns the flat fact store ([`crate::fact_index`], fed by the
-//! light dream) into a [`CompilationPlan`]: a hub→leaf page graph in which every
-//! fact lives on **exactly one** page (the one-fact-one-page invariant), hubs
-//! hold only narrative + links, and a persistent [`ConceptRegistry`] stops the
-//! same concept page being re-invented run-to-run. The plan is the input the
+//! light dream) into a [`CompilationPlan`]: a page graph in which every
+//! fact lives on **exactly one** page (the one-fact-one-page invariant), and
+//! a persistent [`ConceptRegistry`] stops the same concept page being
+//! re-invented run-to-run. The plan is the input the
 //! Cronista compiles into prose; this module never writes prose itself.
 //!
 //! Five stages (run by [`build_wiki_plan`]):
 //!
 //! 1. **Fonditore** ([`build_foundation_pages`]) — deterministic, no LLM. From
-//!    [`crate::enrollment`] users + groups: one `person` page per user, one
-//!    `group_theme` hub per group, with `parent_hub` / `outgoing_links` wired
-//!    from group membership. These map onto mwe-mcp's existing identity wikis.
+//!    [`crate::enrollment`] users + groups: an identity card per user and a
+//!    parking page per wiki. A group wiki gets no card — what it is lives in
+//!    its `_meta.md` (founder, 2026-08-19).
 //! 2. **Cartografo** ([`classify_facts`]) — strong-model LLM, batched. Assigns
 //!    each fact to one page and proposes emergent concept pages (one-fact-one-
 //!    page). Reuses existing pages (foundation + registry) rather than
@@ -28,15 +28,15 @@
 //! 4. **Architetto** ([`build_compilation_plan`]) — deterministic. Materialises
 //!    pages, applies assignments (+ redirects), computes parent→child, runs a
 //!    **fixpoint** garbage-collection of empty concept pages, builds the
-//!    bidirectional link graph, and orders hubs-before-leaves.
+//!    bidirectional link graph, and orders the wiki's own pages first.
 //! 5. **Incremental** ([`build_wiki_plan`]) — carries over prior assignments,
 //!    classifies only NEW facts, skips entirely on 0-new-0-removed, and computes
 //!    the dirty set via [`page_fingerprint`] so only changed pages recompile.
 //!
 //! ## mwe-mcp adaptations (vs the flat old engine)
 //!
-//! - Foundation pages are the typed identity wikis (`wiki-user` = person,
-//!   `wiki-group` = group hub); a page's tree home is carried on
+//! - Foundation pages belong to the typed identity wikis (`wiki-user`,
+//!   `wiki-group`); a page's tree home is carried on
 //!   [`PagePlan::wiki_id`] + [`PagePlan::page_path`]. Concept pages are `.md`
 //!   pages **within** the relevant standard wiki. A page that grows is **split
 //!   into more pages** (the Cartografo's split-by-mass lever); a **sub-wiki**
@@ -309,10 +309,11 @@ pub struct PagePlan {
     /// decides the style at compile time.
     #[serde(default, deserialize_with = "de_style_lenient")]
     pub style: Option<crate::wiki::PageStyle>,
-    /// Parent hub slug (`concept_leaf` / person).
+    /// Slug of the page this one hangs under, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_hub: Option<String>,
-    /// Child leaf slugs (hub / group), recomputed every Architetto run.
+    /// Slugs of the pages that hang under this one, recomputed every
+    /// Architetto run.
     #[serde(default)]
     pub child_leaves: Vec<String>,
     /// The facts whose single home is this page.
@@ -372,8 +373,8 @@ impl PagePlan {
         }
     }
 
-    /// Compilation order: a group's card is written after its children are
-    /// placed, so it sorts first; ordinary pages last.
+    /// Compilation order: a wiki's own pages (card, parking page) first,
+    /// the pages the topology grows after them.
     fn order_rank(&self) -> u8 {
         u8::from(!self.is_foundation())
     }
@@ -390,7 +391,7 @@ pub struct CompilationPlan {
     /// Bidirectional adjacency (wikilinks).
     #[serde(default)]
     pub link_graph: BTreeMap<String, Vec<String>>,
-    /// Slugs in compile order (hubs → persons → leaves).
+    /// Slugs in compile order (a wiki's own pages first).
     #[serde(default)]
     pub compilation_order: Vec<String>,
     /// ISO-8601 build time.
@@ -463,7 +464,8 @@ impl ConceptRegistry {
     }
 }
 
-/// One persisted concept page (`concept_hub` / `concept_leaf` only).
+/// One persisted concept page — a page the Cartografo coined, never a
+/// wiki's own card or parking page.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConceptRegistryEntry {
     /// Slug.
@@ -475,7 +477,7 @@ pub struct ConceptRegistryEntry {
     /// Ingest-proposed writing style. See [`PagePlan::style`].
     #[serde(default, deserialize_with = "de_style_lenient")]
     pub style: Option<crate::wiki::PageStyle>,
-    /// Parent hub slug.
+    /// Slug of the page this one hangs under, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_hub: Option<String>,
     /// The wiki the page lives in.
@@ -509,7 +511,8 @@ pub struct NewPage {
     /// [`ingest_placement_blueprint`] from the fact's `fact_index.style`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<String>,
-    /// Parent hub slug (must be an existing or same-batch hub).
+    /// Slug of the page this one hangs under (must be an existing page, or
+    /// one proposed in the same batch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_hub: Option<String>,
 }
@@ -609,9 +612,9 @@ fn capitalize(s: &str) -> String {
 
 /// Build the foundation pages (deterministic, no LLM).
 ///
-/// A `person` page per enrolled user and a `group_theme` hub per group, wired by
-/// group membership. Returns the pages keyed by slug plus the per-group scope
-/// strings.
+/// An identity card per enrolled user and a parking page per wiki. A group
+/// wiki gets no card (founder, 2026-08-19): what the group is lives in its
+/// `_meta.md`. Returns the pages keyed by slug.
 ///
 /// # Errors
 ///
@@ -774,9 +777,9 @@ fn seed_parking_pages(tree: &WikiTree, pages: &mut BTreeMap<String, PagePlan>) -
 ///
 /// Materialises foundation + registry + accepted-new pages, applies assignments
 /// (with redirects) under the one-fact-one-page rule, deterministically homes
-/// orphan facts, computes the hub→leaf graph, **fixpoint** garbage-collects
-/// empty concept pages, builds the symmetric link graph, and orders
-/// hubs-before-leaves. Returns the plan and the updated registry.
+/// orphan facts, computes the parent→child graph, **fixpoint**
+/// garbage-collects empty concept pages, builds the symmetric link graph, and
+/// puts a wiki's own pages first. Returns the plan and the updated registry.
 #[must_use]
 #[allow(clippy::too_many_lines)] // the Architetto reads top-to-bottom; splitting hides the flow
 pub fn build_compilation_plan(
@@ -876,8 +879,8 @@ pub fn build_compilation_plan(
         if slug.is_empty() || pages.contains_key(&slug) {
             continue;
         }
-        // Option C: home the page in its facts' source wiki (else a factless
-        // hub's parent wiki); skip a homeless page rather than minting a root.
+        // Option C: home the page in its facts' source wiki (else its
+        // parent's wiki); skip a homeless page rather than minting a root.
         let Some(wiki_id) = resolve_page_wiki(
             &slug,
             np.parent_hub.as_deref(),
@@ -1176,7 +1179,7 @@ pub fn build_compilation_plan(
         // and a single source of truth has nothing to disagree with.
     }
 
-    // 10. compilation order: hubs → persons → leaves, then slug for stability.
+    // 10. compilation order: a wiki's own pages first, then slug for stability.
     let mut order: Vec<String> = pages.keys().cloned().collect();
     order.sort_by(|a, b| {
         let ra = pages[a].order_rank();
@@ -1201,7 +1204,7 @@ pub fn build_compilation_plan(
 }
 
 fn registry_to_page(e: &ConceptRegistryEntry) -> PagePlan {
-    // Concept pages (hub OR leaf) are `<slug>.md` pages WITHIN their wiki — a
+    // A concept page is a `<slug>.md` page WITHIN its wiki — a
     // wiki's reserved pages (its card, its parking) are foundation nodes or
     // nobody's, never concept pages, and `placement_slug` refuses their names
     // so one can never be minted here.
@@ -1262,8 +1265,8 @@ fn majority_fact_style(facts: &[FactForPage]) -> Option<crate::wiki::PageStyle> 
 ///
 /// A page is homed in **its facts' source wiki** — the invariant that a fact's
 /// region lives in the fact's own wiki, which also keeps `fact_index.wiki_id`
-/// and the compiled `source_path` in the same wiki. A factless concept *hub*
-/// falls back to its parent hub's wiki. Returns `None` when neither resolves —
+/// and the compiled `source_path` in the same wiki. A factless page falls
+/// back to its parent's wiki. Returns `None` when neither resolves —
 /// a homeless, factless page the caller skips. Never resolves to the retired
 /// `root` wiki (mwe-mcp's wiki tree is a forest of top-level wikis, with no
 /// single materialised root).
@@ -1488,10 +1491,10 @@ pub fn page_fingerprint(p: &PagePlan) -> String {
 /// `next`, plus pages removed since `prev`.
 ///
 /// Removed pages ride along so the compiler can delete their `.md`. The
-/// type check rides beside the fingerprint (not inside it — that would
-/// flip every stored fingerprint at once and recompile the world): a leaf
-/// normalised to hub renders through a different writer, so it must go
-/// dirty even when facts/links/children are unchanged.
+/// page-path check rides beside the fingerprint (not inside it — that
+/// would flip every stored fingerprint at once and recompile the world):
+/// a page that moved renders elsewhere, so it must go dirty even when
+/// facts/links/children are unchanged.
 #[must_use]
 pub fn compute_dirty_pages(prev: &CompilationPlan, next: &CompilationPlan) -> Vec<String> {
     let prev_fp: BTreeMap<&String, (String, String)> = prev
@@ -3489,8 +3492,7 @@ pub async fn build_wiki_plan(
 /// Meanwhile the writer puts its own card in the page's testata on every
 /// compile, so the two diverge, and the stale one is the copy the models are
 /// shown: the Cronista's page index carries every page's description
-/// (`compiler::page_index_block`), its own line included, and the Hub Writer's
-/// `{snippet}` carries its children's.
+/// (`compiler::page_index_block`), its own line included.
 ///
 /// **That is how an invented frame becomes permanent.** Production,
 /// 2026-07-24 (card 57): a turn complaining that an assistant had signed the

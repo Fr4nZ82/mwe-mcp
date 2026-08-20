@@ -1318,7 +1318,7 @@ places adjacent to this block (the hermes bridge leads with it).
      card rail or `[[wikilink]]`. **The identity page is not a
      navigation destination for its own subject** (founder's ruling,
      2026-08-03: the recalled facts already land on the pages that answer
-     the turn, so the hub's routing buys nothing and a page open is the
+     the turn, so opening the card buys nothing and a page open is the
      scarcest thing the walk has). *Another* person's card is a different
      page and stays navigable — nothing has served it.
    - **A page with no readable fact is scaffolding, not a card** — a freshly

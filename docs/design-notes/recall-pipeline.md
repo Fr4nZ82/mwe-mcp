@@ -1118,8 +1118,8 @@ Two consumers resolve the grammar:
 Every mechanical emitter writes the canonical forms —
 `capture::wiki_link`, the document-ingest dossier anchor, the smart-push
 `authored_refs`, and the compiler feeds
-(`compiler::plan_page_wikilink`: the starvation index, the recommended
-links, the Hub Writer children — a page hop everywhere, and `None` for
+(`compiler::plan_page_wikilink`: the starvation index and the recommended
+links — a page hop everywhere, and `None` for
 `index.md`, so a legacy plan node still sitting on that name contributes no
 link at all rather than a dead one). The prose-writing prompts
 (`cronista`) carries the copy-verbatim instruction: a

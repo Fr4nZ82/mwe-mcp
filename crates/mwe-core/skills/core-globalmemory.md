@@ -327,4 +327,4 @@ transversal mode without prompting.
   companion-bound): ingest pipeline.
 - Sibling skill: [`smart-consumer`](smart-consumer.md) — load this
   when the cwd promotes to companion-bound.
-- Engineering wiki: [the companion-wikis design note](https://github.com/Fr4nZ82/mwe-mcp/blob/main/the companion-wikis design note).
+- Engineering wiki: [the smart/companion wikis design note](../../../docs/design-notes/smart-wikis.md).

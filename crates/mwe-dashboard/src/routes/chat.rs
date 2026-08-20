@@ -459,8 +459,6 @@ pub async fn agentic_submission(
     })?;
     // The operational chat has its own slot and no fallback (founder,
     // 2026-08-19: *«la chat operativa deve avere il suo modello dedicato»*).
-    // It used to borrow `hub_writer`, which stopped meaning anything when the
-    // compiler stopped writing pages that list other pages.
     let backend = memory.backend_for_chat().map_err(|e| match e {
         BackendForError::SlotMissing(_) => DashboardError::Validation(
             "The dashboard-chat LLM is not configured in mwe-mcp.config.yaml. \

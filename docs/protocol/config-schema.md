@@ -1051,7 +1051,7 @@ pinned as constants in
   never `minimal`). With the model's own default (`high`) it burns the
   whole budget reasoning and returns truncated text with
   `finishReason: MAX_TOKENS`; `minimal` keeps the reasoning trace small
-  so structured callers (ingest, dedup, hub-writer JSON) get parseable
+  so structured callers (ingest, dedup, the Cartografo's JSON) get parseable
   output. **Gemini 3.x Pro rejects `minimal`** and therefore *requires*
   a non-minimal `reasoning_effort`.
 - **`temperature = 1.0`** (`GEMINI_TEMPERATURE`). Gemini 3 documentation
@@ -1131,7 +1131,7 @@ variables following the pattern:
 MWE_LLM_<FUNCTION>_<FIELD>
 ```
 
-where `<FUNCTION>` is the upper-snake slot name (`HUB_WRITER`, `INGEST`,
+where `<FUNCTION>` is the upper-snake slot name (`INGEST`, `OPERATOR_CHAT`,
 `REM_PROMOTIONS`, `REM_DEDUP_SEMANTIC`, `CRONISTA`, `NAVIGATOR`) and
 `<FIELD>` is one of:
 

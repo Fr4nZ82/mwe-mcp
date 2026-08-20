@@ -395,9 +395,9 @@ pub const AGENT_WIKI_TYPE: &str = "agent";
 
 /// The `{subject}` line for an agent's wiki; empty for every other wiki.
 ///
-/// Read by the prompts that WRITE a wiki's pages — the Cronista and the
-/// compiler's hub pass. Those passes narrate a wiki from the outside by
-/// default, which is the voice a human's memory wants. An agent's wiki is its
+/// Read by the prompt that WRITES a wiki's pages — the Cronista. It narrates
+/// a wiki from the outside by default, which is the voice a human's memory
+/// wants. An agent's wiki is its
 /// **autobiography**: left on the default voice the same pass files the
 /// agent's own memories as a third-party dossier ("l'agente ha aiutato
 /// l'utente…") — the agent reads back a report about itself instead of

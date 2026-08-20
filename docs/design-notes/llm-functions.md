@@ -161,12 +161,12 @@ chat is operational, not conversational — it operates *on* the memory
 > `LlmFunction::Ingest`, not the chat slot. Only the tool-calling agentic
 > loop uses `operator_chat`.
 
-Why a dedicated slot? The chat is a different workload from hub prose:
+Why a dedicated slot? The chat is a different workload from writing pages:
 interactive, multi-step function-calling, and it must handle fact ids
-faithfully. It wants a **strong** tool-calling model, whereas this slot's
-historical job was a cost-bound summary. Decoupling lets an operator raise the chat's tier
-without inflating the compile's cost; the fallback keeps existing
-deployments unchanged with no new YAML key.
+faithfully. It wants a **strong** tool-calling model. A separate slot lets an
+operator raise the chat's tier without inflating the compile's cost — and
+there is no stand-in, so the chat is never quietly run on whatever another
+job happened to want.
 
 | Property | Value |
 |---|---|
@@ -476,8 +476,8 @@ the `agentic-chat-panel` prompt.
 
 The English-internal policy extends to the **bundled skills** in
 [`crates/mwe-core/skills/`](../../crates/mwe-core/skills/) and the
-operational system prompts (`ingest`, the compiler's Cronista / Hub
-Writer, …): the internal LLM reads them as authoring instructions, so
+operational system prompts (`ingest`, the compiler's Cronista, …): the
+internal LLM reads them as authoring instructions, so
 their prose stays English regardless of the user's locale.
 
 **The exception — verbatim machine-parsed keys.** A few identifiers stay

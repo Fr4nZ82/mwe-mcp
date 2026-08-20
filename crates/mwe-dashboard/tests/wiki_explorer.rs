@@ -1736,7 +1736,7 @@ async fn proposals_apply_then_revert_round_trips_via_action_routes() {
 // ---------------------------------------------------------------------------
 
 /// The chat panel (`POST /dashboard/chat/agentic`) drives the
-/// `hub_writer` slot through an agentic loop: ask the model, dispatch
+/// `operator_chat` slot through an agentic loop: ask the model, dispatch
 /// any tool calls it produces, feed the results back, repeat until
 /// the model returns a textual reply. This test wires a fake backend
 /// whose script is (`tool_call` `wiki_recall`) → (final assistant
@@ -1898,7 +1898,7 @@ async fn chat_ingest_e2e_captures_fact_with_fake_backend() {
 
 /// The agentic chat panel can drive a structure-proposal apply
 /// end-to-end. We seed a pending `dedup_merge` proposal (no LLM
-/// needed by its kind handler), script a fake `hub_writer` that
+/// needed by its kind handler), script a fake `operator_chat` that
 /// produces (`tool_call` `structure_proposal_get`) → (`tool_call`
 /// `structure_proposal_apply`) → (final assistant message), and post
 /// a confirmation message to `/dashboard/chat/agentic`. We assert:
@@ -2008,7 +2008,7 @@ async fn chat_agentic_loop_applies_dedup_proposal_end_to_end() {
     assert_eq!(status.0, "applied");
 }
 
-/// Script the fake `hub_writer` for the batch flow: one
+/// Script the fake `operator_chat` for the batch flow: one
 /// `wiki_facts_for` call, then one `wiki_forget` per fact, then a
 /// final assistant message. Extracted so the test function itself
 /// stays short.
@@ -2058,7 +2058,7 @@ fn batch_forget_chat_script(facts: &[FactId]) -> Vec<ChatResponse> {
 }
 
 /// The chat panel can run a batch fact deletion end-to-end.
-/// Seed three facts on Alice's wiki, script a fake `hub_writer` that
+/// Seed three facts on Alice's wiki, script a fake `operator_chat` that
 /// (a) lists them via `wiki_facts_for`, (b) tombstones each one in
 /// turn via `wiki_forget`, (c) produces a final summary. Assert:
 ///
@@ -2139,7 +2139,7 @@ async fn chat_agentic_batch_forgets_three_facts_end_to_end() {
     assert_eq!(active, 0, "all three facts tombstoned");
 }
 
-/// Script the fake `hub_writer` for the single-fact-correction
+/// Script the fake `operator_chat` for the single-fact-correction
 /// flow: one `wiki_recall`, then one `wiki_supersede` against
 /// `old_fact`, then a final assistant message. Extracted so the test
 /// function itself stays under the clippy line cap.
@@ -2190,7 +2190,7 @@ fn supersede_correction_chat_script(old_fact: &FactId, new_body: &str) -> Vec<Ch
 
 /// The chat panel can correct a single fact end-to-end. We
 /// seed Alice's wiki with one fact ("ho deciso martedì alle 14"),
-/// script a fake `hub_writer` that (a) finds the fact via `wiki_recall`,
+/// script a fake `operator_chat` that (a) finds the fact via `wiki_recall`,
 /// (b) replaces it via `wiki_supersede` with the corrected body, then
 /// (c) emits a final summary. Assert:
 ///
@@ -2423,7 +2423,7 @@ fn seed_subwiki_under(tree: &WikiTree, parent_slug: &str, parent_id: &str, slug:
     std::fs::write(dir.join("_meta.md"), meta).unwrap();
 }
 
-/// Script the fake `hub_writer` for the hierarchical move flow:
+/// Script the fake `operator_chat` for the hierarchical move flow:
 /// a single `wiki_change_scope` call with the supplied source + parent,
 /// then a final assistant message. Extracted so the test functions
 /// themselves stay under the clippy line cap.
@@ -2461,7 +2461,7 @@ fn change_scope_chat_script(source_id: &str, new_parent: Option<&str>) -> Vec<Ch
 
 /// The chat panel can move a wiki under a different parent
 /// end-to-end. Seed Alice's wiki with a `acmecorp` sub-wiki holding
-/// one fact, plus a `lavoro` sibling root. Script a fake `hub_writer`
+/// one fact, plus a `lavoro` sibling root. Script a fake `operator_chat`
 /// that calls `wiki_change_scope` to move `alice-acmecorp` under
 /// `lavoro`, then emits a final summary. Assert:
 ///

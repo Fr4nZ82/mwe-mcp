@@ -268,7 +268,7 @@ pub fn validate(file: &EnrollmentFile) -> Result<ValidationReport, EnrollmentErr
 /// (see [`crate::types::Principal`]). It is a normal `enrollment_groups`
 /// row so the admin can edit its `scope`, but it is special-cased
 /// throughout: never hand-membered or deleted, excluded from
-/// [`list_groups`] (it seeds no `group_theme` hub), and always surfaced by
+/// [`list_groups`] (it seeds no wiki), and always surfaced by
 /// [`groups_with_scope_for`] regardless of membership.
 pub const GLOBAL_GROUP_ID: &str = "global";
 
@@ -482,8 +482,7 @@ pub async fn list_users(pool: &SqlitePool) -> Result<Vec<EnrolledUserLite>, sqlx
 
 /// A group reduced to what the planner's Fonditore needs.
 ///
-/// The `group_id` and the `scope` prose — enough to seed a `group_theme`
-/// hub page for the group. See [`list_groups`].
+/// The `group_id` and the `scope` prose. See [`list_groups`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnrolledGroupLite {
     /// Canonical group id (the `Principal::Group` payload).
@@ -494,16 +493,16 @@ pub struct EnrolledGroupLite {
 
 /// Enumerate every enrolled group (id + scope), ordered by id.
 ///
-/// The planner's Fonditore seeds one `group_theme` hub page per
-/// group from this. Sibling of [`list_users`] on the foundation side.
+/// The planner's Fonditore reads this to seed each group wiki's parking
+/// page. Sibling of [`list_users`] on the foundation side.
 ///
 /// # Errors
 ///
 /// Propagates the underlying `sqlx` error.
 pub async fn list_groups(pool: &SqlitePool) -> Result<Vec<EnrolledGroupLite>, sqlx::Error> {
     // Exclude the builtin `global` group: it is the universal ACL
-    // principal, not a collaborative group, so it seeds no `group_theme`
-    // hub and is not a navigation entry point.
+    // principal, not a collaborative group, so it seeds no page of its
+    // own and is not a navigation entry point.
     let rows: Vec<(String, Option<String>)> = sqlx::query_as(
         "SELECT group_id, scope FROM enrollment_groups
           WHERE group_id != 'global'

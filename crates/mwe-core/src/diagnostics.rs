@@ -124,20 +124,9 @@ pub struct SlotHealth {
     pub status: SlotStatus,
 }
 
-/// The canonical LLM slots, in display order — mirrors the boot
-/// health-check roster.
-#[allow(
-    deprecated,
-    reason = "Cronista is deprecated but a legacy YAML may still wire it; probe it like any other slot."
-)]
-pub const LLM_FUNCTIONS: [LlmFunction; 6] = [
-    LlmFunction::Ingest,
-    LlmFunction::OperatorChat,
-    LlmFunction::RemPromotions,
-    LlmFunction::RemDedupSemantic,
-    LlmFunction::Cronista,
-    LlmFunction::Navigator,
-];
+/// The canonical LLM slots, in display order — the boot health-check
+/// roster. An alias of [`LlmFunction::ALL`], kept for the name.
+pub const LLM_FUNCTIONS: [LlmFunction; 6] = LlmFunction::ALL;
 
 /// Probe every canonical LLM slot for reachability, non-fatally.
 ///

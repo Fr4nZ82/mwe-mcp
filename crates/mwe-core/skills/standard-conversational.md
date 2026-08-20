@@ -83,8 +83,8 @@ For each user message:
 1. **Maintain a rolling window** of the last ~6–10 conversation turns
    in `recent_messages`. The server caps it at 6 internally and uses
    it for **coreference** ("the dentist from yesterday" → which dentist?),
-   not for recall. The window is *not* persisted server-side — your
-   buffer, your responsibility.
+   not for recall. The window is *not* persisted server-side — it is yours
+   to keep.
 2. **Call `wiki_ingest_message`** with the raw text + the window. You
    may pass `context_hint` (`conversation` default,
    `dashboard_command`, `import`) and `metadata.locale` (see

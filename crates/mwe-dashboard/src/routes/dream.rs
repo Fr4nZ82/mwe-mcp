@@ -602,7 +602,7 @@ fn dream_forms() -> Markup {
             (dream_form(
                 "/dashboard/dream/compile",
                 "Compile",
-                "Narrative recompilation only (Cartographer → Conciliator → Chronicler → Hub → Reviewer) on dirty pages. For isolating the compiler."
+                "Narrative recompilation only (Cartographer → Conciliator → Architect → Chronicler → Reviewer) on dirty pages. For isolating the compiler."
             ))
             (dream_form(
                 "/dashboard/dream/full",

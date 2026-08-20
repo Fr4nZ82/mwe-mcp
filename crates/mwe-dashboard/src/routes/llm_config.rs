@@ -197,20 +197,7 @@ const REASONING_EFFORTS: &[&str] = &["low", "medium", "high", "extra-high"];
 /// the prose compiler, so a fresh setup captured facts but never rendered
 /// readable pages (see
 /// admin LLM config).
-/// `Cronista` keeps its `#[deprecated]` marker (it has not yet graduated
-/// to a full REM sub-job) but is configured like every other slot.
-#[allow(
-    deprecated,
-    reason = "Cronista is surfaced as a configurable slot despite its deprecated marker"
-)]
-const SLOTS: &[LlmFunction] = &[
-    LlmFunction::Ingest,
-    LlmFunction::OperatorChat,
-    LlmFunction::RemPromotions,
-    LlmFunction::Cronista,
-    LlmFunction::RemDedupSemantic,
-    LlmFunction::Navigator,
-];
+const SLOTS: &[LlmFunction] = &LlmFunction::ALL;
 
 /// Sub-router for `/admin/llm-config` and `/admin/api-keys/:name`.
 /// Mounted inside the authenticated tree.

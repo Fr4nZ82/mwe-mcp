@@ -578,7 +578,7 @@ pub struct EditFactForm {
 ///
 /// Composes the textual instruction from the form delta (see
 /// [`compose_edit_message`]), runs it through the dashboard's agentic
-/// loop (same chokepoint as a chat panel submit — `hub_writer` slot +
+/// loop (same chokepoint as a chat panel submit — `operator_chat` slot +
 /// whitelisted `_internal.*` tool registry + HARD RULE explicit
 /// confirmation), packages the resulting turn into a primer for the
 /// chat panel, and redirects the browser to `/dashboard/chat` with the

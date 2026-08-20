@@ -303,11 +303,10 @@ against `default_version_at_bootstrap`.
 The loop runs against a single `LlmBackend`, resolved at
 `agentic_submission` entry by `MemoryHandles::backend_for_chat()`: the
 dedicated `llm.operator_chat` slot, and **nothing else** (founder,
-2026-08-19: *«la chat operativa deve avere il suo modello dedicato»*). It
-used to fall back to `llm.hub_writer`, a slot that existed to write pages
-listing other pages; when those pages went, that slot went too. This
-workload — interactive, multi-step function-calling, faithful fact-id
-handling — wants a **strong** tool-calling model chosen for it. The per-slot
+2026-08-19: *«la chat operativa deve avere il suo modello dedicato»*). There
+is deliberately no stand-in: this workload — interactive, multi-step
+function-calling, faithful fact-id handling — wants a **strong** tool-calling
+model chosen for it, not whatever another job happened to want. The per-slot
 default knobs come from the same slot via `chat_defaults()`. No
 proposal kind needs an LLM at apply time today, so the dispatcher
 applies proposals without threading a backend through `AgenticContext`.

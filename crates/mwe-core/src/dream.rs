@@ -13,12 +13,12 @@
 //! Three compositions, mirroring the three operator-facing dreams:
 //!
 //! - [`run_compile`] — the narrative compile only (Cartografo →
-//!   Conciliatore → Cronista → Hub Writer → Reviewer) over the dirty pages.
+//!   Conciliatore → Architetto → Cronista → Reviewer) over the dirty pages.
 //! - [`run_light`] — the cheap, frequent dream: promote buffered captures into
 //!   `fact_index`, then compile the pages that went dirty.
 //! - [`run_full`] — the nightly / on-demand dream: a complete [`rem::run_cycle`]
-//!   reorg (dedup, auto-promote, archive, **parked-comment application**,
-//!   hub writer) followed by a compile pass.
+//!   reorg (dedup, auto-promote, archive, **parked-comment application**)
+//!   followed by a compile pass.
 //!
 //! The compile step is gated on the `cronista` slot: absent ⇒ it is skipped and
 //! facts stay buffered/promoted but unwritten (the prose is the product of the
@@ -58,7 +58,7 @@ pub struct LightOutcome {
 /// Outcome of a full dream: the reorg cycle report, plus the compile report.
 #[derive(Debug)]
 pub struct FullOutcome {
-    /// Legacy reorg + parked-comment application + hub writer.
+    /// The reorg sub-jobs + parked-comment application.
     pub cycle: RemCycleReport,
     /// Narrative recompile of every page the reorg left dirty.
     pub compile: CompileReport,
@@ -292,7 +292,7 @@ pub async fn run_compile(
 ///   **placement re-open**, so the Cartografo re-judges the carried
 ///   placements with the mass + identity + container signals live
 ///   (split-by-mass can finally fire on an old page; a fact-bearing
-///   container drains and the assembly normalises it to hub). A parked
+///   container drains and is garbage-collected once empty). A parked
 ///   re-open is consumed only by a build that runs the Cartografo — a
 ///   light build carries it (`planner::build_wiki_plan`).
 ///
@@ -434,8 +434,8 @@ pub async fn run_light(
 /// Run one full dream: a complete reorg followed by a compile pass.
 ///
 /// The [`rem::run_cycle`] reorg settles the fact set (dedup, auto-promote,
-/// archive, **parked-comment application**, hub writer); the compile then
-/// rewrites every page the reorg left dirty.
+/// archive, **parked-comment application**); the compile then rewrites
+/// every page the reorg left dirty.
 ///
 /// # Errors
 ///

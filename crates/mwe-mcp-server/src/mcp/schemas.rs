@@ -361,7 +361,6 @@ fn wiki_lint() -> Tool {
                             "meta_invalid",
                             "acl_inconsistent",
                             "embed_missing",
-                            "hub_outdated",
                             "superseded_chain"
                         ]
                     }

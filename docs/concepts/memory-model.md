@@ -493,6 +493,44 @@ A few invariants worth internalising here:
 
 ---
 
+## The engine's boundary — it reasons about the turn, never about the caller
+
+mwe-mcp's rules, its risk estimates and its worklist reason about **the input
+as it arrives**. Never about what kind of consumer sent it, nor about what that
+consumer will do with the answer. Founder, twice, escalating:
+
+> *«separa hermes da mwe, mwe non fa "azioni", la richiesta di azione è verso
+> hermes, la memoria ricorda, quindi la classe è "mi chiedono"»* (2026-07-31)
+
+> *«mwe non dovrebbe occuparsi di "canale vocale"… non è affare nostro, noi
+> stiamo lavorando sulla memoria, devi considerare l'input come arriva, non ci
+> interessa cosa fa il consumer»* (2026-08-01)
+
+**Why it is a rule and not a preference.** Two deployments with identical
+traffic must behave identically. The moment a rule, a cost estimate or a work
+item is justified by *"on a voice assistant most turns are…"*, the engine has
+started modelling its callers — and that reasoning stops being verifiable from
+anything mwe can see. It also silently imports the caller's bugs into mwe's own
+design.
+
+**What this forbids, concretely:**
+
+- Stating a rule in terms of the caller. Ask *does this turn name everything it
+  needs*, not *is this a voice command*. An arriving `recent_messages` that is
+  empty is a **state to classify**, not a missing precondition.
+- Putting work on a consumer into mwe's worklist. Caught once: *"the consumer
+  sends `recent_messages` on the voice channel"* had reached a planning card's
+  task list before it was pulled.
+- Inferring cost or frequency from a picture of who is calling. Those are
+  **rates to measure on real traffic**, never deductions.
+
+**Where the boundary does not fall: vocabulary.** It is a rule about
+*reasoning*. The ingest prompt legitimately says that a `group:` sender is a
+shared device channel, because that is a property of the arriving turn's
+identity — something the engine can see — not a guess about the host.
+
+---
+
 ## The region-level fact model
 
 The index is keyed on **regions, not blocks or files.** One row of
@@ -644,11 +682,13 @@ The compiler consumes a **compilation plan** (built by the planner, which
 decides *where each fact lives*) and rewrites every page the plan marks dirty.
 Per page it dispatches:
 
-- **A hub** — a page with no facts of its own but one or more child pages
-  (a group's card, or a wiki's parking page once its facts are drained) — goes to the **Hub Writer**, a cheap
-  model that emits a short overview citing every child as a `[[wikilink]]`.
-  A hub has no facts, so it carries no ACL markers.
-- **Everything else** — a leaf page — goes to **Il Cronista**, run on the
+- **A page with no facts** — a wiki's parking page once its facts are
+  drained onto real pages — renders deterministically as its card, with no
+  model call. No page lists other pages, so an empty one has nothing to
+  narrate; it holds no facts, so it carries no ACL markers.
+- **A `lista` page** goes to the **Record Writer**, which renders each fact
+  as one bullet with its ACL marker and calls no model at all.
+- **Everything else** goes to **Il Cronista**, run on the
   **strong** model (the `cronista` LLM slot; see below).
   Faithful fact→prose without invention or leak is exactly what the strong
   tier buys, so this never runs on the 9B workhorse. The prompt body lives at

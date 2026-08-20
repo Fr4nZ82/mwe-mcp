@@ -6,7 +6,7 @@
 //!
 //! ## Scope
 //!
-//! The MCP `wiki_lint` tool advertises **8 checks** ([mcp-tools.md](../../../docs/protocol/mcp-tools.md)).
+//! The MCP `wiki_lint` tool advertises **7 checks** ([mcp-tools.md](../../../docs/protocol/mcp-tools.md)).
 //! Four ship today:
 //!
 //! - [`Check::MarkerMalformed`] — re-runs [`crate::parser::parse`] on
@@ -18,8 +18,8 @@
 //! - [`Check::EmbedMissing`] — every `{{embed=…}}` whose catalog row or
 //!   blob is gone (media pipeline).
 //!
-//! The other four (`broken_crosslinks`, `acl_inconsistent`,
-//! `hub_outdated`, `superseded_chain`) ship in later
+//! The other three (`broken_crosslinks`, `acl_inconsistent`,
+//! `superseded_chain`) ship in later
 //! milestones; calling them today returns zero issues — the
 //! `summary.by_check` map still lists them so a future operator can
 //! tell at a glance which checks evaluated to "nothing wrong" vs "not
@@ -79,19 +79,16 @@ pub enum Check {
     /// `media_catalog` row for the key, or a row whose blob is gone
     /// from the content-addressed store. **Implemented**.
     EmbedMissing,
-    /// A hub page (no facts of its own, only children) older than its newest
-    /// child. **Not yet implemented**.
-    HubOutdated,
     /// Cycle or broken reference in a supersedence chain. **Not yet
     /// implemented**.
     SupersededChain,
 }
 
 impl Check {
-    /// All 8 checks. Used by the dispatcher when the caller omits
+    /// All 7 checks. Used by the dispatcher when the caller omits
     /// `checks` (default = run them all).
     #[must_use]
-    pub const fn all() -> [Self; 8] {
+    pub const fn all() -> [Self; 7] {
         [
             Self::BrokenCrosslinks,
             Self::MarkerMalformed,
@@ -99,7 +96,6 @@ impl Check {
             Self::MetaInvalid,
             Self::AclInconsistent,
             Self::EmbedMissing,
-            Self::HubOutdated,
             Self::SupersededChain,
         ]
     }
@@ -114,7 +110,6 @@ impl Check {
             Self::MetaInvalid => "meta_invalid",
             Self::AclInconsistent => "acl_inconsistent",
             Self::EmbedMissing => "embed_missing",
-            Self::HubOutdated => "hub_outdated",
             Self::SupersededChain => "superseded_chain",
         }
     }
@@ -131,7 +126,6 @@ impl Check {
             "meta_invalid" => Some(Self::MetaInvalid),
             "acl_inconsistent" => Some(Self::AclInconsistent),
             "embed_missing" => Some(Self::EmbedMissing),
-            "hub_outdated" => Some(Self::HubOutdated),
             "superseded_chain" => Some(Self::SupersededChain),
             _ => None,
         }
