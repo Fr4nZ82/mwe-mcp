@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/mwe-banner.gif" alt="mwe-mcp, the Memory Wiki Engine" width="100%">
+<img src="" alt="mwe-mcp, the Memory Wiki Engine" width="100%">
 
 **Every AI agent you use, remembering into one shared Markdown wiki. Every fact in it governed individually: who it's about, who said it, who may read it, and when it stops being true.**
 
@@ -57,7 +57,7 @@ Alice sees that verbatim. Anyone who isn't Alice sees the protected span collaps
 She weighs [redacted] as of May 10, and just cut her hair.
 ```
 
-<p align="center"><img src="docs/assets/acl-two-readers.png" alt="The same wiki page opened by two users: the person the private fact is about sees the span, the other reader sees it replaced by [redacted], with a banner explaining the declassified view" width="100%"></p>
+<p align="center"><img src="" alt="The same wiki page opened by two users: the person the private fact is about sees the span, the other reader sees it replaced by [redacted], with a banner explaining the declassified view" width="100%"></p>
 <p align="center"><sub>The same page in the built-in dashboard, opened by the person that private fact is about and by another member of the household. Reading it is decided by the fact's subject, audience and sender — not by whose wiki the page sits in. The reader is told the view is declassified, never what was withheld.</sub></p>
 
 No permissions database bolted on top, no per-document walls. Visibility is enforced fragment by fragment, sentence by sentence. **This is the thing most agent memories simply cannot express.**
@@ -176,7 +176,7 @@ The agent talks to a small surface of **high-level** MCP tools grouped into fami
 | **I — Skill catalog** | Server-served operational instructions, etag-cached, pulled on demand instead of baked into a system prompt. |
 | **J — Smart bootstrap** | Smart-consumer session start and transversal recall. |
 
-The families are the stable, semver-governed surface. Exact tool counts may still grow within them across minor versions. Full reference: [`docs/protocol/`](docs/protocol/).
+The families are the stable, semver-governed surface. Exact tool counts may still grow within them across minor versions. Call `tools/list` for the deployment's real roster and each tool's full contract.
 
 ## Built-in dashboard
 
@@ -190,7 +190,7 @@ The dashboard is also **where you correct the memory**. On the memory proper the
 - **Agentic chat.** A floating panel that *operates on* the memory, with explicit write confirmations.
 - **Admin config.** LLM-slot editor, API keys, operational prompts, full-archive export with inline governance markers.
 
-<p align="center"><img src="docs/assets/shared-shopping-list.png" alt="A shared shopping list page: open items each attributed to the family member who asked for them, bought items closed with a purchase date" width="90%"></p>
+<p align="center"><img src="" alt="A shared shopping list page: open items each attributed to the family member who asked for them, bought items closed with a purchase date" width="90%"></p>
 <p align="center"><sub>A shared list the morning after. Open items keep their asker, bought items close with a date. Narrated, never deleted.</sub></p>
 
 ## Documentation
@@ -198,9 +198,7 @@ The dashboard is also **where you correct the memory**. On the memory proper the
 - [`INSTALL.md`](INSTALL.md) — standalone install, topologies, LLM profiles, security posture.
 - [`INTEGRATING.md`](INTEGRATING.md) — wire your own agent: the per-turn contract, tokens, transports.
 - [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) — the operational contract the *consumer agent itself* follows.
-- [`docs/examples/scenarios.md`](docs/examples/scenarios.md) — six end-to-end walkthroughs, from a shopping-list item to a multi-tenant deployment.
 - [`agents-bridges/`](agents-bridges/) — ready-made bridges, plus the `/bridges` catalog your server serves.
-- [`docs/`](docs/) — the engineering wiki: [concepts](docs/concepts/), [protocol](docs/protocol/), [architecture](docs/architecture/), [design notes](docs/design-notes/), [development](docs/development/). Start at the [index](docs/index.md).
 
 ## Contributing
 

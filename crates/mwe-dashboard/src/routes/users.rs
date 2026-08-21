@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Admin-gated user management (see the
-//! dashboard design note).
+//! Admin-gated user management.
 //!
 //! Five handlers:
 //!
@@ -13,8 +12,7 @@
 //!   configured, and render the page with it as a backup.
 //! - GET  `/users/:id`        — edit form for `email` and `aliases`.
 //! - POST `/users/:id`        — apply the edit. `is_admin` is never
-//!   shown (see the
-//!   dashboard design note).
+//!   shown.
 //! - POST `/users/:id/delete` — delete the user via
 //!   [`enrollment::remove_user`]: consumers bound to the identity
 //!   (`consumers.system_user_id`) are dismantled with it, and CASCADE
@@ -833,7 +831,7 @@ async fn delete(
     // 23d: a contribution outlives its author. Reassign any fact this user
     // authored (sender = user:<id>) to its wiki's scope principal so no active
     // fact is left pointing at a vanished sender (the sender-scrub invariant —
-    // docs/concepts/identity-and-acl.md). Best-effort —
+    // ). Best-effort —
     // a failure (or absent memory handles) is logged, never blocks the delete.
     if let Some(memory) = state.memory.as_ref() {
         let gone = mwe_core::types::Principal::User(user_id.clone());

@@ -11,22 +11,29 @@
 //!
 //! ```text
 //! 1. recall context        recall::wiki_recall   (ranked hits, ACL filtered)
-//! 2. enumerate wikis       WikiTree::walk        (bounded compact list)
+//! 2. enumerate wikis       WikiTree::walk        (engine-internal — the classifier is shown NO wikis)
 //! 3. LLM intent + plan     llm::complete         (`ingest` slot, JSON out)
 //! 4. route by intent       capture::wiki_capture | recall snippet | dashboard hint | noop
-//! 5. closure confirmer     confirm_topic_closures (`ingest` slot, only when the turn closes something)
+//! 5. legacy closure path  confirm_topic_closures (`ingest` slot — see below: the SHIPPED prompt never reaches it)
 //! 6. recall-block tail     recall_nav::navigate  (`navigator` slot, optional) + recall::recall_due_soon
 //! 7. reconcile what was read  reconcile_after_reading (`ingest` slot — supersede / close / re-date / re-share)
 //! 8. assemble response     IngestResponse        (context_snippet + suggested_seed + capture_id)
 //! ```
 //!
-//! **Step 3 is one call, and that is the claim** — the classifier is asked
-//! for one strict JSON object encoding both the intent and the operational
-//! plan (target wiki, body, subject, `fact_type`, topics, disambig need)
+//! **Two model calls on the `ingest` slot per turn**, not one and not three:
+//! the classifier (step 3) and the reconciler (step 7).
+//!
+//! Step 3 is one call and that is the claim — the classifier is asked for one
+//! strict JSON object encoding both the intent and the operational plan
 //! rather than intent → routing → seed as three round trips, which keeps
-//! latency inside the conversational budget. Steps 5 and 7 are separate
-//! calls on purpose: each acts on **what the turn has since read**, which
-//! step 3 had not seen yet.
+//! latency inside the conversational budget. Step 7 is separate on purpose:
+//! it acts on **what the turn has since read**, which step 3 had not seen.
+//!
+//! **Step 5 is a compatibility path, not a phase.** The shipped classifier
+//! prompt emits neither `closures` nor `closure_topics` — reconciling against
+//! stored facts is the reconciler's job — so `plan.closures` is empty and
+//! this step does nothing. It stays wired for a deployment whose operator
+//! overrode `prompts/ingest.md` with a version that still emits them.
 //!
 //! ## Fallback policy
 //!
@@ -265,7 +272,7 @@ pub struct IngestMetadata {
 /// Coarse intent classification for one ingest turn.
 ///
 /// Surfaced verbatim back to the consumer for audit / debug visibility
-/// ([tool reference](../../../docs/protocol/tool-reference.md)).
+/// (tool reference).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntentKind {
     /// The message carried a new fact — captured into a wiki.
@@ -305,7 +312,7 @@ pub struct DisambigCandidate {
 }
 
 /// Output of [`wiki_ingest_message`]. Matches the JSON shape documented
-/// in [tool reference](../../../docs/protocol/tool-reference.md).
+/// in tool reference.
 #[derive(Debug, Clone)]
 pub struct IngestResponse {
     /// What the orchestrator decided. Always present.
@@ -4710,8 +4717,7 @@ async fn recall_behaviour_rules(
 
 /// Stable header of the `rules` field's directives section — the `YOUR
 /// RULES` role section of the injected turn context (the host places the
-/// `rules` field adjacent to the recall block; see the block layout in
-/// the ingest-pipeline design note).
+/// `rules` field adjacent to the recall block).
 const HDR_YOUR_RULES: &str = "YOUR RULES (standing directives — agent-wide, this user's for \
      every assistant, and this user's for you; apply them in your reply, never relay them):";
 
@@ -7187,7 +7193,7 @@ pub async fn wiki_ingest_message(
             // substrate of the recall-side **reconciliation stage** — one
             // cheap call after the navigator, judging against the union of the
             // flat hits, the fresh captures and the facts on the pages the
-            // navigator actually opened. See `docs/design-notes/ingest-pipeline.md`
+            // navigator actually opened. See
             // §"The reconciliation stage". An operator-overridden prompt that
             // still emits the fields keeps working meanwhile.
             //
@@ -7390,7 +7396,7 @@ pub async fn wiki_ingest_message(
     // judgement about an ALREADY-STORED fact can be made honestly: the
     // classifier that used to make it was shown a top-K similarity sample, and
     // a judgement that needs the store and gets a sample fails silently, by
-    // omission, and compounds. See `docs/design-notes/ingest-pipeline.md`
+    // omission, and compounds. See
     // §"The reconciliation stage".
     //
     // Runs on a turn that CAPTURED (a recall turn asks; it does not change
@@ -7629,8 +7635,7 @@ pub async fn wiki_ingest_message(
     // The third parties the turn names, served beside the speaker (69d).
     let people_mentioned = mentioned.map(|m| m.section);
     // One-shot notice when a non-admin asked for an agent-wide change: the rule
-    // was NOT filed; steer the agent to decline politely this turn (the
-    // behaviour-rule governance — the ingest-pipeline design note). It
+    // was NOT filed; steer the agent to decline politely this turn. It
     // rides the dedicated `rules` field (it is behaviour guidance), not the
     // recalled memory.
     let notice = list_page_refused.map(ListRefusal::notice).or_else(|| {

@@ -3,7 +3,7 @@
 //!
 //! `mwe-core::wiki` is the single owner of the `<workdir>/wikis/…` directory
 //! tree — the memory's readable surface. Per the
-//! [memory model](../../../docs/concepts/memory-model.md), authority is
+//! memory model, authority is
 //! split by wiki family: for standard wikis the `fact_index` is the
 //! authoritative fact store and the files are its prose render; for smart
 //! wikis the page content on disk is what gets indexed. Every internal API

@@ -1,7 +1,7 @@
 ---
 name: agentic-chat-panel
 description: System prompt for the dashboard chat panel's agentic loop (function-calling, 8-iteration budget)
-version: 2.22
+version: 2.23
 default_version_at_bootstrap: v2.21
 ---
 
@@ -17,17 +17,13 @@ The orchestrator drives this prompt from
 `crates/mwe-dashboard/src/routes/chat.rs::agentic_submission` via
 `mwe_core::prompts::render(...)` so the `{locale}` placeholder in the
 `LANGUAGE` section is substituted with the directive built by
-`mwe_core::locale::render_language_directive`. See also the
-agentic chat design notes
-for the design narrative. The model is the `LlmFunction::OperatorChat`
+`mwe_core::locale::render_language_directive`. The model is the `LlmFunction::OperatorChat`
 slot's, dedicated to this chat and shared with nothing.
 
 ## Runtime contract
 
 Operational specs that ship next to the prompt body so they can't
-drift from it. Code is the source of truth; the
-agentic chat design notes
-keep only the design log (changelog, narrative, pending items).
+drift from it. Code is the source of truth.
 
 **Call site**:
 `crates/mwe-dashboard/src/routes/chat.rs::agentic_submission` —
@@ -73,8 +69,7 @@ the roster):
 **Runtime parameters**: the call site uses `ChatRequest::new(messages)
 .with_tools(tools)` without setting temperature or `max_tokens`, so
 the backend's defaults apply (workhorse default is `temperature: 0.4`
-for generative tasks, see the
-LLM functions design notes).
+for generative tasks).
 `think:false` is the workhorse default on Qwen 3.x.
 
 **Identity**: the user signed into the dashboard is the deployment

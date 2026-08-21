@@ -18,9 +18,8 @@
 //!
 //! The same file format is mirrored under the bundled prompt sources
 //! at `crates/<crate>/prompts/<name>.md`. Keeping the on-disk shape
-//! identical lets the engineering wiki,
-//! the operator's edit experience, and the loader share one parse —
-//! and lets contributors look at either copy and see the same thing.
+//! identical lets the operator's edit experience and the loader share one
+//! parse — and lets contributors look at either copy and see the same thing.
 //!
 //! ## Hot-reload
 //!

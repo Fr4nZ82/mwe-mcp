@@ -1,6 +1,6 @@
 ---
 name: web-smart-consumer
-version: 1.3.0
+version: 1.4.0
 description: "Mirror-less mode for a smart consumer connected over the web (the claude.ai web app, or any custom MCP connector) via the webagentoauth OAuth flow — no local filesystem, no per-turn bridge. You own ONE dedicated smart wiki (bound at consent, markerless, wiki-level ACL). Operate stateless per session: smart_bootstrap → wiki_admin_pull into context → edit → wiki_admin_push of only the pages you touched (never re-emit the whole wiki). No always-on recall: search/recall and save only on demand. Distinct from `smart-consumer`, which assumes a local .mwe/ working copy this transport does not have."
 depends_on: ["core"]
 applies_to:
@@ -26,7 +26,8 @@ you own (its id looks like `<user>-<connection>`, e.g. `franz-claude`). It is a
 **smart wiki**: markerless, content-indexed, with a single **wiki-level ACL** in
 `_meta` (owner + `shared_with`). There are **no per-fragment `{{…}}` markers and
 no per-fragment ACL** — you write plain markdown freely (create / edit / move /
-rename / delete pages), exactly the way an engineering wiki is maintained. You
+rename / delete pages), exactly the way you maintain a documentation tree of
+your own. You
 administer it with the `wiki_admin_*` family; you do **not** go through the
 server-side ingest LLM for it.
 

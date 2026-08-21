@@ -873,7 +873,7 @@ pub fn render_status_page(
 /// status + login / logout buttons for the workdir OAuth store. Shown when
 /// the card's auth mode is "login". Test / personal use only; the `_llm`
 /// param keeps the call site's `llm` threaded for future use. See
-/// [`mwe_core::oauth`] and `docs/protocol/config-schema.md`.
+/// [`mwe_core::oauth`] and .
 fn claude_login_block(_llm: &LlmConfig) -> Markup {
     let creds = mwe_core::oauth::global_store().and_then(|s| s.load().ok().flatten());
     html! {

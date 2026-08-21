@@ -258,8 +258,7 @@ To wire a host we don't ship a bridge for, the per-turn contract is in
 
 ## More
 
-- Full CLI roster (`serve`, `doctor`, `migrate`, `token-*`, `rem run-cycle`, …),
-  building from source and a homelab walkthrough:
-  [`docs/development/build-run.md`](docs/development/build-run.md).
-- The complete config schema (every LLM slot, backend, REM knob, the secrets):
-  [`docs/protocol/config-schema.md`](docs/protocol/config-schema.md).
+- Full CLI roster: `mwe-mcp --help`, and `--help` on any subcommand.
+- The complete config schema: `mwe-mcp doctor` reports what the running
+  deployment resolved, and the dashboard's settings panels list every knob
+  with its default.

@@ -2,8 +2,7 @@
 //! `wiki_sections` + `smart_wikis` — the smart-wiki content index.
 //!
 //! A **smart wiki** is a project wiki a smart consumer authors verbatim
-//! through the family-H `wiki_admin_*` tools ([smart
-//! wikis](../../../docs/design-notes/smart-wikis.md)). Its pages carry no
+//! through the family-H `wiki_admin_*` tools. Its pages carry no
 //! per-fragment `{{f=…}}` markers, so recall indexes their **content**:
 //! each page is chunked into heading-delimited sections, each section is
 //! embedded, and each becomes one row here.

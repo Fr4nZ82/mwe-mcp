@@ -1,6 +1,6 @@
 ---
 name: core
-version: 1.3.0
+version: 1.4.0
 description: "Always-loaded mwe-mcp skill: cardinal rule, identity model (3-claim JWT), bootstrap dispatcher, the exact project_id recipe + the first_connect datum smart_bootstrap volunteers, auto recall+capture and the 3-way route (your operational wiki / a project wiki / the user's standard memory), skill catalog index, token lifecycle. Every consumer (smart or standard) loads this first."
 depends_on: []
 applies_to:
@@ -213,11 +213,6 @@ The blacklist propagates within ~60 s of a revoke; the
 
 - Bootstrap document (delivered out-of-band):
   [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md).
-- Tool surface: the MCP tools across families A–L — full schemas + the
-  current count at
-  [`tool reference`](../../../docs/protocol/tool-reference.md) and
-  `docs/protocol/mcp-tools.md`.
-- Engineering wiki overview:
-  `docs/architecture/overview.md`.
-- Companion-wikis design note:
-  the companion-wikis design note.
+- Tool surface: call `tools/list`. It is generated from the server's own
+  schema registry, so it is always the deployment's real roster — no page
+  can be more current than it is.

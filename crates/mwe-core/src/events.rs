@@ -377,7 +377,7 @@ pub struct AckOutcome {
 }
 
 /// Default `top_k` for [`poll_events`] — matches the
-/// [tool reference](../../../docs/protocol/tool-reference.md) for `events_poll`.
+/// tool reference for `events_poll`.
 pub const DEFAULT_POLL_TOP_K: i64 = 20;
 
 /// Maximum `top_k` accepted by [`poll_events`] — same spec.
@@ -505,7 +505,7 @@ pub async fn poll_events(
 ///   and the consumer never sees the event again.
 /// - Unknown `event_id` values are returned in [`AckOutcome::unknown`];
 ///   the caller surfaces them as the `unknown` field of the tool
-///   response per the [tool reference](../../../docs/protocol/tool-reference.md) for `events_ack`.
+///   response per the tool reference for `events_ack`.
 ///
 /// ## Concurrency — why this transaction writes first
 ///

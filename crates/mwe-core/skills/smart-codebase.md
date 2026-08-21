@@ -1,6 +1,6 @@
 ---
 name: smart-codebase
-version: 1.6.0
+version: 1.7.0
 description: "Maintenance pattern for a software project's smart wiki: modules/decisions/runbooks/architecture layout, module- and decision-page conventions, the change-log page, source_ref discipline, last_synced cadence. First connect (importing an existing docs/ or wiki, the CLAUDE.md documentation-rules resolution, the shape report) is not here — it lives in smart-onboarding."
 depends_on: ["core", "smart-consumer"]
 applies_to:
@@ -250,5 +250,3 @@ for "classify this file".
   connect: the import, the shape report, the repair proposal).
 - Bundled `wiki-companion` type (the `wiki_type` stem + smart-consumer
   detection): `crates/mwe-core/src/smart.rs`.
-- Engineering wiki: the smart-wikis design note.
-- `_meta` / frontmatter constraints: the smart-wikis design note.

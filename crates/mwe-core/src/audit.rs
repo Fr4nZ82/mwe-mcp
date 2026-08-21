@@ -7,7 +7,7 @@
 //! Every MCP-exposed tool call gets one row in `tool_executions` so the
 //! operator can later answer "who called what, when, with what cost,
 //! did it fail" — without the audit row ever leaking back into a
-//! consumer agent's context (see [identity and ACL](../../../docs/concepts/identity-and-acl.md)).
+//! consumer agent's context (see identity and ACL).
 //!
 //! Writes happen at the dispatcher boundary in
 //! `mwe-mcp-server::mcp::audit`, on every call regardless of success.
@@ -128,7 +128,7 @@ pub async fn record(pool: &SqlitePool, input: &ToolExecutionInput<'_>) -> Result
 /// Search filters for [`search`].
 ///
 /// Every field is optional + AND-combined. Matches the input shape of
-/// [`tool_log_search` in the tool reference](../../../docs/protocol/tool-reference.md).
+/// `tool_log_search` in the tool reference.
 #[derive(Debug, Default, Clone)]
 pub struct SearchFilters {
     /// Constrain to one sender.

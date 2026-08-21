@@ -24,9 +24,6 @@
 //!   token-registered consumers (`system_user_id` set — they own no
 //!   OAuth rows) are never touched, and a consumer whose wiki still
 //!   exists survives disconnection (a reconnect reuses it).
-//!
-//! Current state documented in
-//! the web-agent-oauth design note (§ Housekeeping).
 
 use std::collections::{BTreeMap, HashSet};
 

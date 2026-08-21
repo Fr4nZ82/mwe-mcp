@@ -50,7 +50,7 @@
 //! serve-time counterpart lives here too: [`build_reader_card`] recomputes the
 //! card **per reader** from `fact_index` for the recall navigator, so a reader
 //! never sees the topic of a fact they cannot read
-//! ([card boundary](../../../docs/concepts/identity-and-acl.md#the-acl-card-boundary--what-card-metadata-may-carry)).
+//! (card boundary).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -104,7 +104,7 @@ pub async fn sync_wiki_keywords(pool: &SqlitePool, tree: &WikiTree) -> Result<us
 /// (a cross-user region, a group-owned region on a user wiki, …) is
 /// special-cased content whose topic words must not surface on a card that is
 /// readable at wiki level. See the boundary write-up in
-/// [`identity-and-acl.md`](../../../docs/concepts/identity-and-acl.md).
+/// `identity-and-acl.md`.
 fn fact_at_default_visibility(subject: &Principal, default: &Principal) -> bool {
     subject.is_global() || subject == default
 }
@@ -232,7 +232,7 @@ async fn collect_page_topics(
 // navigator rebuilds the card PER READER from `fact_index`: topics are the
 // union over the facts the reader `can_read`, and the wiki abstract is
 // gated to readers at the wiki's default visibility.
-// See [the ACL card boundary](../../../docs/concepts/identity-and-acl.md#the-acl-card-boundary--what-card-metadata-may-carry).
+// See the ACL card boundary.
 // ---------------------------------------------------------------------
 
 /// Per-reader projection of every wiki's card, recomputed from `fact_index`.

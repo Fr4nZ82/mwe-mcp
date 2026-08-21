@@ -164,8 +164,7 @@ pub fn router() -> Router<DashboardState> {
 // surfaces below consult [`crate::reveal::active`] (so a fragment the
 // operator could not read via a consumer token renders highlighted via
 // `render::render_admin_reveal` instead of `[redacted]`) and show
-// [`crate::reveal::banner`] while it is on. Documented in
-// the redaction-policy design note.
+// [`crate::reveal::banner`] while it is on.
 
 /// Admin-only download of the wiki subtree as a portable full-marker
 /// archive (`mwe_core::export`): every DB-known region travels with its
@@ -1176,7 +1175,7 @@ async fn rendered_index_for(
 /// before rendering**: the frontmatter card (`keywords`/`description`) is
 /// owner-tier metadata, not prose, so leaving it in would leak the themes of a
 /// wiki the operator is not the default reader of (the
-/// [ACL card boundary](../../../../docs/concepts/identity-and-acl.md#the-acl-card-boundary--what-card-metadata-may-carry),
+/// ACL card boundary,
 /// dashboard half). The structured fields the viewer needs
 /// (`title`/`type`/`acl_default`) are shown separately from `meta`.
 async fn project_page(

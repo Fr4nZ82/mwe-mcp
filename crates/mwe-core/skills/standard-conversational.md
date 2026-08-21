@@ -1,6 +1,6 @@
 ---
 name: standard-conversational
-version: 1.4.0
+version: 1.5.0
 description: "Default conversational pattern for standard consumers (openclaw, hermes, nanoclaw): wiki_ingest_message passthrough, recent_messages window, disambiguation, locale plumbing, pending_attention nudges, events_poll cadence, structural notices + undo routing, on-the-fly date corrections + sharing changes on the facts the sender is the subject of, no wiki_admin_* writes."
 depends_on: ["core"]
 applies_to:
@@ -406,6 +406,3 @@ opaque id back when calling `wiki_read`.
 - Bootstrap document: [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md).
 - Sibling skills: `core-globalmemory`, `smart-consumer`,
   `smart-codebase`.
-- Engineering wiki: `docs/protocol/mcp-tools.md`.
-- Lifecycle reference: engine DB and migrations (5-state model in
-  `structure_proposals`).

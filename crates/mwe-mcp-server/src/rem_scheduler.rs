@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! REM cycle scheduler for the long-lived HTTP server.
 //!
-//! Closes the original `rem-cycle-not-scheduled` work item (see the
-//! REM cycle design note). The HTTP
+//! Closes the original `rem-cycle-not-scheduled` work item. The HTTP
 //! transport is the standard PWA-as-permanent-daemon deployment, so a
 //! tokio interval ticker inside `cmd_serve_http` is the right home for
 //! the recurring [`mwe_core::rem::run_cycle`] invocation. Operators who
@@ -405,8 +404,7 @@ pub async fn run_light_once(
 }
 
 /// Spawn the light-dream loop: drains the captures buffer into
-/// `fact_index` on the **"timer + threshold"** cadence (see the
-/// REM cycle design note).
+/// `fact_index` on the **"timer + threshold"** cadence.
 ///
 /// The loop wakes on a short poll interval and runs a light cycle when either
 /// (a) `light_interval_secs` has elapsed since the last run (timer), or (b) the

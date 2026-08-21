@@ -6,37 +6,40 @@ served over MCP. Rust server, AGPL-3.0-or-later.
 Work happens **directly on `main`, in this directory**. Never create a branch
 without asking. Pick the right way, not the easy one.
 
-## The two things called "wiki" — never conflate them
+## The code is the source of truth, and there is no second copy
 
-- **Engineering wiki = [`docs/`](docs/index.md)** — the SSOT for whoever works
-  on the code, kept **in lockstep with the code**. It is documentation.
-- **Memory wiki** — the Markdown memory the product maintains at runtime for
-  the agent that uses it, under `<workdir>/wikis/`, outside this repo. That one
-  **is the product**.
+**There is no `docs/` tree.** It was deleted on 2026-08-21, fifty pages of it,
+and the reason is the one the owner wrote when he ordered it: *a page nobody
+maintains is worse than a page that does not exist, because it has the air of
+knowing something.* Five false sentences in two days were traced to it, each
+read back to him as the state of the product.
 
-Always write the qualified term. Never a bare "wiki".
+So: **answer from the code path, not from prose.** When you state how the
+engine behaves, open the function. If you are reporting something you read in
+a comment rather than verified, say so in that sentence — they are two
+different kinds of claim and mixing them is how the five got through.
 
-## The code is the source of truth. `docs/` is a release deliverable
+**Where the durable explanation goes instead.** The *why* of a design lives in
+the doc comment beside the thing it explains, where a reader arrives with the
+code already open and where a rename drags it along. History and decisions live
+in `planning/logs.md`, dated, one entry each. Neither is a second description
+of the system.
 
-**Never treat a `docs/` page as authoritative.** It describes the current state
-of the code, but it carries **no guarantee between releases** — verify against
-the code before trusting any page. That is not a precaution, it is the contract.
+**Prompts and skills are not prose.** `crates/mwe-core/prompts/` and
+`crates/mwe-core/skills/` are read by a model at runtime and handed to the
+agents that use the product: a wrong sentence there is a **live bug**, fixed
+with the code, always, in the same commit.
 
-`docs/` is brought true **before a release**, deliberately, over the areas the
-release touched (the commits since the last tag say which). Between releases you
-may update a page along with the change that motivates it — that is welcome and
-much cheaper than reconstructing it later — but it is **not required**, and a
-page that lags is not a defect.
+## "Wiki" means the memory, and nothing else
 
-**Prompts and skills are not documentation.** `crates/mwe-core/prompts/` and
-`crates/mwe-core/skills/` are read by a model at runtime and by the agents that
-use the product: a wrong sentence there is a **live bug**, fixed with the code,
-always, in the same commit.
+A **memory wiki** is the Markdown memory the product maintains at runtime under
+`<workdir>/wikis/`. That is the product, and it is now the only thing in this
+repository that the word names.
 
 ## A change leaves no trace of what it removed
 
-**Write what is. Never what was.** This binds `docs/`, every comment, every
-prompt, every test message — the whole tracked surface.
+**Write what is. Never what was.** This binds every comment, every prompt,
+every test message — the whole tracked surface.
 
 When you delete or replace something, the sentences that described it go with
 it. Do not annotate them, do not date them, do not keep them "for context":
@@ -73,8 +76,8 @@ finds, then **run it again** — a fix creates new residue. Stop after a pass th
 finds nothing. A *first* pass that finds nothing means it was not a pass.
 
 1. **Dead names.** For every name the change removed or renamed, grep the old
-   name across `crates/`, `docs/` — and any local-only directory, which a
-   repo-root grep may skip. It must come back **empty**: a surviving mention is
+   name across `crates/` — and any local-only directory, which a repo-root
+   grep may skip. It must come back **empty**: a surviving mention is
    a trace, and traces do not stay (see the section above).
 2. **Dead code.** Anything that lost its last caller goes: functions, `pub`
    items, enum variants, config keys, test helpers, whole modules. `clippy` will

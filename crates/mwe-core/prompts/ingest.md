@@ -50,7 +50,7 @@ stored — closing, replacing, re-dating, re-sharing — is **not** emitted
 here: the engine keeps `apply_plan_closures` / `apply_plan_validity_edits`
 / `apply_plan_acl_changes` and the `LlmIngestPlan` fields that drive them,
 but nothing populates them from this slot. They are the substrate of the
-recall-side **reconciliation stage** (ingest-pipeline design note), which
+recall-side **reconciliation stage**, which
 decides against the pages actually read for the turn instead of the
 ten-fact sample this prompt is shown. Captured facts live **only** in the
 `extractions` array — one element per atomic fact, each a
@@ -101,7 +101,7 @@ section (the groups the sender belongs to, each with its operator-set
 `scope` prose; cap `policy.max_groups_in_prompt`, default `8`, each
 scope truncated to `policy.max_group_scope_chars`, default `1000`) —
 this is the context the `subject_id` group-routing rule decides on
-(see the [memory model](../../../docs/concepts/memory-model.md) wiki page),
+(see the memory model wiki page),
 the `known_users` roster
 (id + aliases, cap `policy.max_users_in_prompt`, default `24`; the
 assistant's own entry carries `is_agent: true`) for

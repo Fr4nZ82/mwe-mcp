@@ -14,9 +14,8 @@ point-and-click today: **Claude Code** (smart consumer, one command + OAuth) and
 **Hermes** (Nous Research — the ready-made per-turn plugin bridge).
 
 This guide is what's left once that path doesn't fit: the **per-turn contract** to
-write a bridge for a host we don't ship, the **deployment-security rules** for
-where the consumer runs, and the map into the engineering wiki for everything
-authoritative. It is **not** the runtime spec for the consumer agent itself — an
+write a bridge for a host we don't ship, and the **deployment-security rules**
+for where the consumer runs. It is **not** the runtime spec for the consumer agent itself — an
 LLM agent that *talks to* mwe-mcp over MCP reads
 [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) instead.
 
@@ -25,9 +24,9 @@ LLM agent that *talks to* mwe-mcp over MCP reads
 > hosts in the `/bridges` catalog have working copy-paste setup. The remaining
 > consumer-side detail — an end-to-end worked integration for a host we don't
 > ship, the identity/delegation handshake from the consumer's point of view — is
-> still being hardened against real consumers. For the authoritative,
-> lockstep-with-code detail on any topic, follow
-> the links into the engineering wiki.
+> still being hardened against real consumers. The authoritative answer on any
+> topic is the running server: `tools/list` for the surface, `mwe-mcp doctor`
+> for what the deployment resolved.
 
 ---
 
@@ -54,8 +53,6 @@ you hold a bearer token minted from its dashboard, an integration is two pieces:
    Ollama workhorse / a mix — embeddings always run locally);
 3. a **bearer token** minted for your agent (Admin → users / tokens). A consumer's
    class (`standard` vs. `smart`) and its identity claims are decided at mint time.
-   How identity, delegation, and the access-control model work is in
-   [`docs/concepts/identity-and-acl.md`](docs/concepts/identity-and-acl.md).
 
 The rest of this guide is the per-turn contract a bridge implements, plus where to
 run the consumer safely.
@@ -269,11 +266,11 @@ it is never dropped. See the `smart-consumer` skill, "Onboarding an existing wik
 | Topic | Where the detail lives |
 |---|---|
 | Standing the server up, configuring its LLM, minting tokens | [`INSTALL.md`](INSTALL.md) |
-| Transport (MCP Streamable HTTP), endpoints, JWT bearer | [`docs/architecture/runtime-topology.md`](docs/architecture/runtime-topology.md) |
-| Token / identity flow (admin invites → user → consumer) | [`docs/concepts/identity-and-acl.md`](docs/concepts/identity-and-acl.md) |
-| The tool surface and per-tool I/O contract | [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md), [`docs/protocol/tool-reference.md`](docs/protocol/tool-reference.md) |
-| Server config + LLM profiles + secrets | [`docs/protocol/config-schema.md`](docs/protocol/config-schema.md) |
-| Deployment topology (server and consumer on separate hosts, remote HTTP) | [`docs/architecture/runtime-topology.md`](docs/architecture/runtime-topology.md) |
+| Transport (MCP Streamable HTTP), endpoints, JWT bearer |  |
+| Token / identity flow (admin invites → user → consumer) |  |
+| The tool surface and per-tool I/O contract | ,  |
+| Server config + LLM profiles + secrets |  |
+| Deployment topology (server and consumer on separate hosts, remote HTTP) |  |
 | Consumer-agent runtime behaviour (what *your agent* must do) | [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) |
 | Ready-made host bridges + the bridge-authoring guide | [`agents-bridges/README.md`](agents-bridges/README.md) |
 | Smart vs. standard consumers, smart wikis | [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) §6–§8 |
@@ -404,7 +401,7 @@ below directly.
 
 Structural intent (`dashboard_link`) and the *smart*-consumer
 `wiki_admin_*` family sit on top of this; the full surface is catalogued
-in [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md), and the
+in , and the
 consumer-agent runtime contract (what *the agent itself* must do with
 these fields) is in [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md).
 

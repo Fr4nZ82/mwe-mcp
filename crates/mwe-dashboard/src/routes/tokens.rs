@@ -2,7 +2,7 @@
 //! Admin-gated token management.
 //!
 //! Canonical references: dashboard,
-//! [memory model](../../../../docs/concepts/memory-model.md).
+//! memory model.
 //!
 //! Five handlers:
 //!
@@ -589,7 +589,7 @@ async fn issue_submit(
     // Diagonal identity model: same shared validator as the CLI
     // (`mwe-mcp token-issue`) so the two never drift — standard ⇒ system
     // user + consumer_id; smart ⇒ owner. See
-    // `docs/concepts/identity-and-acl.md` §1.
+    //  §1.
     if let Err(msg) = enrollment::validate_token_identity(
         &state.pool,
         &claims.sender_id,

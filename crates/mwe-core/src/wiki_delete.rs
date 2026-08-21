@@ -3,7 +3,7 @@
 //!
 //! Deleting a wiki is the most destructive operator action mwe-mcp exposes.
 //! Under "ACL lives only in the fact" deleting *structure* (a page or a wiki) is
-//! an **admin** act ([the write-authority model](../../../docs/concepts/identity-and-acl.md)),
+//! an **admin** act (the write-authority model),
 //! and on a deletion the admin chooses how the subtree's facts are disposed.
 //! Two arms are shared with the per-page governed delete ([`crate::page`]); the
 //! third is whole-wiki only:

@@ -13,7 +13,7 @@ the maintainer first**; it avoids wasted work on a design that won't merge.
 
 ## Building and testing
 
-See [`docs/development/build-run.md`](docs/development/build-run.md). CI runs
+See . CI runs
 `cargo fmt --check`, `clippy -D warnings`, the full test suite (unit +
 integration + property + fault-injection), and `cargo deny check` on every
 push — keep it green locally before opening a PR.
@@ -41,5 +41,4 @@ contribution — open an issue describing the change instead.
 ## Style
 
 `rustfmt` and `clippy` settings are checked into the repo and enforced by CI;
-match the conventions described in
-[`docs/development/conventions.md`](docs/development/conventions.md).
+match the conventions of the code you are editing.

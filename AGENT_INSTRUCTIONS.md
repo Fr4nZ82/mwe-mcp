@@ -250,12 +250,10 @@ hook envelopes for hook-capable hosts remain at
 ## 6. Tool surface — families A–K
 
 The public MCP surface is organised by **family** (A–K); the exact
-roster and tool count are **canonical in the engineering wiki** at
-[`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md) (mirrored
-from the SSOT `schemas::all_tools()` in the code), with the full
-per-tool contract (parameters, returns, errors, side effects) in
-[`docs/protocol/tool-reference.md`](docs/protocol/tool-reference.md).
-Don't pin a count here — it drifts. What you need to know to
+roster and tool count are **canonical in the server's own schema registry**
+(`schemas::all_tools()`): call `tools/list` and you have the deployment's real
+surface, each tool with its full contract — parameters, returns, errors, side
+effects. Don't pin a count here — it drifts. What you need to know to
 bootstrap is which family covers which job:
 
 | Family | Covers | Who calls it |
@@ -277,7 +275,7 @@ etc.) internally when handling `wiki_ingest_message` or the dashboard
 chat panel. They are **not exposed via MCP** — the dispatcher returns
 `403 not_exposed` on direct calls. The illustrative roster lives
 alongside the public surface in
-[`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md); it is
+; it is
 `mwe-core`'s own seam and is not a stable API.
 
 ---
@@ -331,20 +329,20 @@ The documentation set ([`docs/`](docs/)) is the reference for what the
 system is and does. It is brought true at each release; the code is what
 is authoritative in between:
 
-- [`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md) —
+-  —
   public tool surface (roster + families).
-- [`docs/protocol/tool-reference.md`](docs/protocol/tool-reference.md) —
+-  —
   exhaustive shape of every tool (input, output, errors, paging).
-- [`docs/protocol/config-schema.md`](docs/protocol/config-schema.md) —
+-  —
   protocol / config overview, auth, transport.
-- [`docs/concepts/memory-model.md`](docs/concepts/memory-model.md) —
+-  —
   identity model, wiki structure, ingest classifier philosophy, the
   `structure_proposals` lifecycle.
-- [`docs/architecture/overview.md`](docs/architecture/overview.md) —
+-  —
   what ships today, per crate.
-- [`docs/architecture/runtime-topology.md`](docs/architecture/runtime-topology.md) —
+-  —
   runtime / cost topology, REM cycle.
-- [`docs/examples/scenarios.md`](docs/examples/scenarios.md) —
+-  —
   end-to-end usage scenarios.
 The smart-consumer contract (what a smart agent may and must do) is
 §6–§8 of this document.

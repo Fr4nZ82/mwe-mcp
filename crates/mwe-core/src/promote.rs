@@ -1139,7 +1139,7 @@ async fn rehome_rows_with_seed(
 ///
 /// The move variants carry a page over **under its own name**, so `page` — the
 /// wiki-relative path minus `.md`, which is exactly the slug half of the
-/// [link grammar](../../../docs/design-notes/recall-pipeline.md#link-grammar) —
+/// link grammar —
 /// is the same on both sides. Only the wiki changes.
 #[derive(Debug, Clone)]
 struct MovedPageAddress {
@@ -2903,7 +2903,7 @@ pub struct ParagraphToFileHints {
     /// active facts sharing the fact's page when the promotion fired.
     /// Surfaced for operator audit; the trigger is mass/ramification,
     /// not a single fact's word count (see the
-    /// [memory model](../../../docs/concepts/memory-model.md)).
+    /// memory model).
     pub trigger_page_facts: Option<usize>,
     /// Recall hits in the last 30 days, when known.
     pub recall_count_30d: Option<i64>,

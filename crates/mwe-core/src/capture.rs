@@ -29,7 +29,7 @@
 //!   Multi-step structural writes elsewhere (the REM proposal kinds)
 //!   keep their `proposal_ops_log` journaling.
 //! - **Cross-user attribution constraints.** Per
-//!   [the memory model](../../../docs/concepts/memory-model.md),
+//!   the memory model,
 //!   when `sender != subject` the sender must have read access to the
 //!   subject's wiki. The check is a later tightening — the agent
 //!   composing the call today is the only writer surface, and it is

@@ -3,8 +3,7 @@
 //! (running an LLM loop with function calling) and the whitelisted
 //! subset of `mwe-core`'s `_internal.*` operations.
 //!
-//! Per the agentic-chat design note,
-//! the chat panel is an *operative tool on the memory itself*. It composes
+//! The chat panel is an *operative tool on the memory itself*. It composes
 //! `_internal.*` directly because it lives in-process — no MCP, no
 //! JWT, no consumer-delegation gymnastics. ACLs still apply: every
 //! dispatch carries the connected `SessionUser`'s `SenderContext` and
@@ -43,7 +42,7 @@
 //!   the root. The directly moved wiki's `_meta.md.parent_wiki_id` is
 //!   rewritten, the on-disk directory is renamed, and
 //!   `fact_index.source_path` is rebased for every affected row.
-//!   `wiki_id` stays stable per the [memory model](../../../docs/concepts/memory-model.md)
+//!   `wiki_id` stays stable per the memory model
 //!   invariant, so `wiki_id`-based cross-links never need rewriting (no-op
 //!   today).
 //! - **Single-fact move**: the write tool `wiki_move_fact` relocates
@@ -171,7 +170,7 @@ pub enum AgenticTool {
     /// refile engine to its sender's home wiki when one exists, falling back
     /// to its subject's home wiki — a fact whose sender and subject both lack one
     /// is tombstoned. **Admin-only**: deleting structure is the operator's
-    /// act (see [identity and ACL](../../../docs/concepts/identity-and-acl.md)); a smart wiki is refused
+    /// act (see identity and ACL); a smart wiki is refused
     /// (wiki-level governance). Act-first: the whole deletion is wrapped in
     /// ONE born-applied `bundle` receipt
     /// ([`mwe_core::page::delete_page_direct`]), undoable from the dashboard.
@@ -179,7 +178,7 @@ pub enum AgenticTool {
     WikiDeletePage,
     /// Open a **forget request** for ONE fact the signed-in user does NOT author
     /// — the non-sender subject's path ([`mwe_core::votes::open_forget_request`];
-    /// the write-authority model, [identity and ACL](../../../docs/concepts/identity-and-acl.md)). The signed-in user must be the fact's `subject`
+    /// the write-authority model, identity and ACL). The signed-in user must be the fact's `subject`
     /// (subject) or a member of an owning group; a **sender** is refused (they
     /// delete directly via [`Self::WikiForget`]). Propose-first: the fact stays
     /// active while the fact's audience votes ([`Self::StructureProposalVote`]) —
@@ -1091,8 +1090,7 @@ const CONTEXT_SUMMARY_CHARS: usize = 120;
 /// The admin ACL-reveal switch — dashboard-wide, explicit, bannered —
 /// lifts the scope (`recipient = None`, every recipient), the same posture
 /// the facts table and wiki pages already take. `ctx.reveal` is only ever
-/// `true` for an admin (`crate::reveal::active` gates on the role). See
-/// the redaction-policy design note.
+/// `true` for an admin (`crate::reveal::active` gates on the role)..
 fn proposal_recipient_scope(ctx: &AgenticContext<'_>) -> Option<String> {
     (!ctx.reveal).then(|| format!("user:{}", ctx.sender_ctx.sender_id))
 }
@@ -2176,7 +2174,7 @@ fn move_fact_wiki_relative_page(handle: &mwe_core::wiki::WikiHandle, source_path
 /// Admin-only gate for the single-fact move. Re-categorising a fact neither
 /// destroys it nor changes its visibility, so it is the operator's (admin's)
 /// act — and REM's, server-side — never the per-fact subject's (the structure
-/// authority of [the write-authority model](../../../docs/concepts/identity-and-acl.md)). The
+/// authority of the write-authority model). The
 /// subject / sender axes gate `delete` / `edit` / `acl_change`, not `move`.
 fn enforce_move_admin(
     ctx: &AgenticContext<'_>,

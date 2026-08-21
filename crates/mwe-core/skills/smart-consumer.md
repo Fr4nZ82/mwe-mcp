@@ -1,6 +1,6 @@
 ---
 name: smart-consumer
-version: 1.20.0
+version: 1.21.0
 description: "Project-bound mode for smart consumers: authoritative management of a project's smart wiki via wiki_admin_push/pull (whole, narrowed by paths, or shape-only) + project signposts (the description and the diary are both fields on wiki_admin_push — the server writes both, so the user's standard memory knows the project exists) + _briefing.md lifecycle + cooperative lease + graceful degradation on token revoke. First connect is NOT here — it lives in smart-onboarding, fetched when the server volunteers first_connect.hint. Smart wikis are markerless and content-indexed — the consumer writes plain markdown freely (create / edit / move / rename / delete pages), exactly the way this repo's engineering wiki is maintained; the ACL is wiki-level in _meta (no per-fragment markers or ACL — those are the pillar of standard memory wikis only). Superset (group 17): the user↔agent conversation ALSO runs the standard personal-memory pipeline via wiki_ingest_message, joined to the project wiki by provenance links (authored_refs), with a per-message router (drop / personal-fact→standard / document-import / project-wiki / your-operational-wiki). Auto recall+capture, never dump everything into the user's standard memory."
 depends_on: ["core"]
 applies_to:
@@ -192,8 +192,8 @@ Three things to internalise:
 
 A smart wiki is **markerless and content-indexed**. You **own** the
 project wiki and write **plain markdown freely** — create, edit, move,
-rename, and delete pages — exactly the way the engineering wiki of
-*this* repo is maintained. There is no server-side LLM, no style engine,
+rename, and delete pages — exactly the way you maintain any documentation
+tree of your own. There is no server-side LLM, no style engine,
 and no custom-type registration: the bytes you push are the bytes
 stored.
 
@@ -214,9 +214,8 @@ stored.
   you like — keep a `roadmap.md`, a `planning/` folder, whatever fits
   the project.
 
-Those conventions are documented in
-the smart-wikis design note and, for codebases, in the
-`smart-codebase` skill — read them once and conform.
+For a codebase those conventions are in the `smart-codebase` skill — read
+it once and conform.
 
 ## `conversations.md` — one dated entry per working session
 
@@ -740,9 +739,6 @@ single-laptop single-token rotation case that motivated it.
   `smart-codebase` (codebase layout + page conventions),
   [`smart-onboarding`](smart-onboarding.md) (**first connect**: the intro,
   the faithful import, the shape report, the page-repair proposal).
-- Wire-level tool spec: `docs/protocol/mcp-tools.md` family H.
-- Engineering wiki: the smart-wikis design note.
-- Lease design: the rem-cycle design note §"Lease expirer
-  sub-job", `crates/mwe-core/src/wiki_admin_leases.rs`.
-- `_meta` / frontmatter constraints: the smart-wikis design note
-  and the `smart-codebase` skill.
+- Wire-level tool spec: `tools/list`, family H.
+- Lease design: `crates/mwe-core/src/wiki_admin_leases.rs`.
+- `_meta` / frontmatter constraints: the `smart-codebase` skill.

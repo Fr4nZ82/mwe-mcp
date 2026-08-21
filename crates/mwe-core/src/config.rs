@@ -13,7 +13,7 @@
 //! Everything else is captured verbatim in [`Config::extra`].
 //!
 //! The canonical schema lives in
-//! [the config schema reference](../../../docs/protocol/config-schema.md);
+//! the config schema reference;
 //! this module follows it.
 //!
 //! ## Lookup order
@@ -213,7 +213,7 @@ impl LogLevel {
 
 // ---------- LLM ----------
 
-/// One of the canonical LLM functions (see [the config schema reference](../../../docs/protocol/config-schema.md)).
+/// One of the canonical LLM functions (see the config schema reference).
 ///
 /// Used both as a config sub-section name and as the suffix for the
 /// env-var override convention: `MWE_LLM_<UPPER>_MODEL` /
@@ -226,7 +226,7 @@ impl LogLevel {
 /// compile pass) that rewrites each dirty standard-wiki leaf from its
 /// facts into prose. Every slot is mandatory in practice — a deployment with
 /// no model is a half-installed product, and onboarding enforces the `ingest`
-/// role (`docs/design-notes/admin-llm-config.md`); the "slot unconfigured"
+/// role; the "slot unconfigured"
 /// arms in the engine are guards against a half-wired install, never modes to
 /// design around. With this one missing the compile is skipped and the pages
 /// stay blank, so it is surfaced like every other slot. The value loads
@@ -479,7 +479,7 @@ impl LlmFunctionConfig {
                 // The reserved `claude-code` sentinel routes the slot to the
                 // Claude Code login store (resolved + refreshed per request)
                 // instead of an env var. Test/personal use only; see
-                // `crate::oauth` and `docs/protocol/config-schema.md`.
+                // `crate::oauth` and .
                 if self.api_key_env.as_deref() == Some(crate::oauth::CLAUDE_CODE_LOGIN) {
                     let store = crate::oauth::global_store().ok_or_else(|| ConfigError::Parse {
                         path: PathBuf::from(format!("llm.{}", function.yaml_key())),
@@ -661,7 +661,7 @@ where
 /// reach into the runtime config by `Config::llm.ingest` (etc.) and
 /// build the backend lazily.
 ///
-/// Env-var overrides (see [the config schema reference](../../../docs/protocol/config-schema.md))
+/// Env-var overrides (see the config schema reference)
 /// are applied by [`Self::apply_env_overrides`] after YAML parse:
 /// `MWE_LLM_INGEST_MODEL` overrides `llm.ingest.model`,
 /// `MWE_LLM_INGEST_BACKEND` overrides `llm.ingest.backend`, and so on
@@ -698,7 +698,7 @@ pub struct LlmConfig {
 
 /// Profile presets seeded by `mwe-mcp init`.
 ///
-/// The three canned profiles in [the config schema reference](../../../docs/protocol/config-schema.md)
+/// The three canned profiles in the config schema reference
 /// plus the catch-all `custom` (empty skeleton — operator fills in).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProfile {

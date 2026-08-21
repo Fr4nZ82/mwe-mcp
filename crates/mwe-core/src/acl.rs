@@ -17,9 +17,8 @@
 //! **subject** (who it is *about*), `allow` is the **audience** (who else
 //! may read), and `sender_of_region` is the **provenance** (who captured
 //! it). `subject` names who the fact is ABOUT; that the data subject also
-//! governs their own fact follows from the axis
-//! (see the engineering wiki `concepts/identity-and-acl.md`), never for
-//! authorship or visibility — both of which live on the other two axes.
+//! governs their own fact follows from the axis, never from authorship or
+//! visibility — both of which live on the other two axes.
 //!
 //! `sender_of_region` is a [`Principal`], not just a user id — it can be
 //! [`Principal::User`] (Galadriel captured a fact about Gollum on
@@ -162,7 +161,7 @@ pub fn reader_set(
 /// Whether `caller` may **delete or edit** the fact directly.
 ///
 /// The write-authority model for `delete` / `edit` / `validity_edit`
-/// ([identity and ACL](../../../docs/concepts/identity-and-acl.md)):
+/// (identity and ACL):
 /// only the fact's **sender** (its author / provenance) acts on their own
 /// contribution directly; an admin may act on any fact. A non-sender (even a
 /// non-sender `subject`) is refused here — their path is a request → vote (a
@@ -180,7 +179,7 @@ pub fn can_delete(sender_of_fact: Option<&Principal>, caller: &str, is_admin: bo
 /// bare **user ids**.
 ///
 /// This is the finite electorate a non-sender subject's forget request is put to
-/// ([the write-authority model](../../../docs/concepts/identity-and-acl.md)).
+/// (the write-authority model).
 /// The audience is the same effective read-set [`can_read`] checks,
 /// `subject ∪ allow ∪ {sender}`, but resolved to concrete humans: each
 /// [`Principal::Group`] is expanded to its members via

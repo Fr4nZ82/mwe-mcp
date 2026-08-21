@@ -129,7 +129,7 @@ pub async fn meta_set(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Result
 /// stamps `last_seen_at` every 30s), so this is not theoretical: it silently
 /// broke `events_ack` in v1.5.0. Taking the write lock at `BEGIN` removes the
 /// upgrade entirely; `busy_timeout` then serialises contenders normally. See
-/// `docs/design-notes/engine-db-and-migrations.md` →
+///  →
 /// "Multi-statement writes must write first".
 ///
 /// Do **not** use this for a transaction that awaits slow non-DB work

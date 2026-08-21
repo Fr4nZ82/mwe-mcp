@@ -28,8 +28,7 @@
 //!   later extracts or supersedes; the human reader needs it to
 //!   understand the sentence around a redacted block. The subject-of-last-
 //!   resort never filters prose. This was the source of an early
-//!   misimplementation — see
-//!   the redaction-policy design note.
+//!   misimplementation —.
 //! - **Standalone embeds in prose pass through with the prose** for the
 //!   same reason — an embed sitting between two paragraphs is part of
 //!   the file context, not a fact-region in the redaction sense. Embeds
@@ -42,9 +41,7 @@
 //!   and a block-level region between paragraphs becomes a `[redacted]`
 //!   paragraph on its own. This intentionally diverges from the literal
 //!   "callout" wording — the inline form preserves sentence flow,
-//!   which was the original intent (see
-//!   the redaction-policy design note
-//!   for the full discussion).
+//!   which was the original intent (.
 //!
 //! ## Subject-of-last-resort semantics
 //!
@@ -359,8 +356,7 @@ pub fn render_for_sender_segments(
 /// them differently. This is the counterpart of [`render_for_sender`] used
 /// **only** on the dashboard, gated server-side on the admin role — it is
 /// never reachable from the MCP tool surface, which always goes through
-/// [`render_for_sender`] and honours the ACL. See
-/// the redaction-policy design note.
+/// [`render_for_sender`] and honours the ACL..
 ///
 /// Crucially this does **not** weaken the access predicate: it calls
 /// [`can_read`] exactly as `render_for_sender` does, only to *decide

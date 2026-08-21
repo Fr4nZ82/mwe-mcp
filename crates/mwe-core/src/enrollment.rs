@@ -44,7 +44,7 @@ pub struct EnrollmentFile {
 }
 
 /// A single user entry
-/// ([identity and ACL §1.6](../../../docs/concepts/identity-and-acl.md)).
+/// (identity and ACL §1.6).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserEntry {
     /// Stable identifier. Must match `^[a-z][a-z0-9°]*$`.
@@ -53,7 +53,7 @@ pub struct UserEntry {
     #[serde(default)]
     pub aliases: Vec<String>,
     /// UI gating hint for the built-in dashboard; **does not** bypass
-    /// ACL ([identity and ACL](../../../docs/concepts/identity-and-acl.md)).
+    /// ACL (identity and ACL).
     #[serde(rename = "isAdmin", default)]
     pub is_admin: bool,
     /// Optional BCP-47 locale tag (`it-IT`, `en-US`, ...) used as the
@@ -73,7 +73,7 @@ pub struct UserEntry {
 }
 
 /// A single group entry
-/// ([identity and ACL §1.6](../../../docs/concepts/identity-and-acl.md)).
+/// (identity and ACL §1.6).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupEntry {
     /// Stable identifier. Must match `^[a-z][a-z0-9]*$` (no `°` allowed
@@ -670,7 +670,7 @@ pub async fn is_system_user(pool: &SqlitePool, user_id: &str) -> Result<bool, sq
 /// One policy shared by the `mwe-mcp token-issue` CLI and the dashboard
 /// token form, so the two can never drift. The connection pattern is a
 /// function of `consumer_class`, not a free choice (see
-/// `docs/concepts/identity-and-acl.md` §1):
+///  §1):
 ///
 /// - **`standard`** ⇒ Pattern B. `sender` must be a credential-less
 ///   **system user** (the bot's own identity) and a `consumer_id` must be
@@ -717,7 +717,7 @@ pub async fn validate_token_identity(
                 "standard consumer token must bind a system user (a credential-less bot \
                  identity), but {sender:?} is a human account with a login. Create a dedicated \
                  bot identity and issue the token for it; the bot reaches real users via \
-                 X-MWE-Act-As (diagonal identity model — docs/concepts/identity-and-acl.md §1)"
+                 X-MWE-Act-As (diagonal identity model —  §1)"
             ));
         }
         if !has_consumer_id {
@@ -740,7 +740,7 @@ pub async fn validate_token_identity(
 /// agent's own system-user identity (migration 0050).
 ///
 /// The authoritative discriminator the diagonal-identity model deferred
-/// (`docs/concepts/identity-and-acl.md` §1.5): it distinguishes a bot identity
+/// ( §1.5): it distinguishes a bot identity
 /// from a not-yet-onboarded human (both lack `user_credentials`), and is mutually
 /// exclusive with a login account. Set the moment a standard consumer token
 /// establishes its binding ([`crate::consumers::ensure_agent_identity`]).
@@ -763,8 +763,7 @@ pub async fn is_agent(pool: &SqlitePool, user_id: &str) -> Result<bool, sqlx::Er
 /// pipeline can authorise an **operational behaviour-rule** (a directive about
 /// which tools/workflow the agent uses — agent-wide, admin-only) from the
 /// sender alone. A non-admin's operational directive is refused; a *soul*
-/// (conversational) directive stays open to everyone. See
-/// the ingest-pipeline design note (behaviour-rule governance).
+/// (conversational) directive stays open to everyone.
 ///
 /// # Errors
 /// - [`sqlx::Error`] for any SQL failure.
@@ -810,7 +809,7 @@ pub async fn reject_if_agent(pool: &SqlitePool, user_id: &str) -> Result<(), Str
             "{user_id:?} is a consumer-agent identity (is_agent) and cannot also hold a \
              dashboard login: an identity is either a human account with credentials or a \
              bot's credential-less system user, never both (diagonal identity model — \
-             docs/concepts/identity-and-acl.md §1.5)"
+              §1.5)"
         ));
     }
     Ok(())

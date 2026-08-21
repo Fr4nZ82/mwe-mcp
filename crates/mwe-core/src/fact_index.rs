@@ -2,7 +2,7 @@
 //! `fact_index` — SQLite-backed region-level index.
 //!
 //! One row per region delimited by `{{f=<UUIDv7>}}…{{/}}` markers in the
-//! memory-wiki filesystem ([memory model](../../../docs/concepts/memory-model.md)).
+//! memory-wiki filesystem (memory model).
 //! The `.md` files stay authoritative for the prose; for the **region
 //! ACL** the DB is the authoritative source on the read side — redaction
 //! resolves it by fact key via [`page_acl_map`], with the inline marker
@@ -76,8 +76,7 @@ pub struct FactIndexRow {
     /// `group:<id>` | `global`). NOT its author (that is `sender_id`) and
     /// NOT its audience (that is `allow_ids`). The subject also governs their own
     /// fact's ACL, which is a consequence of the axis, not its definition.
-    /// Persisted in the `subject_id` column.
-    /// See the engineering wiki (`concepts/identity-and-acl.md`).
+    /// Persisted in the `subject_id` column. See [`crate::acl`].
     pub subject_id: Principal,
     /// Additional principals the region's `allow=` extension grants
     /// read access to (possibly empty).
@@ -119,7 +118,7 @@ pub struct FactIndexRow {
     pub recall_count_30d: i64,
     /// Start of the fact's validity interval (ISO 8601). `None` = unknown /
     /// "since forever". Part of the per-fact validity model
-    /// ([memory model](../../../docs/concepts/memory-model.md)).
+    /// (memory model).
     /// Additive + inert until the writer populates it.
     pub valid_from: Option<String>,
     /// End of the validity interval (ISO 8601). `None` = OPEN ("true now, no
@@ -1013,7 +1012,7 @@ pub async fn mark_forgotten_in_wiki(pool: &SqlitePool, wiki_id: &str, reason: &s
 ///
 /// Substitute every active fact's dangling `sender_id` — equal to the
 /// just-removed principal `gone` — with that fact's wiki **scope principal**
-/// ([the write-authority model](../../../docs/concepts/identity-and-acl.md)), so a contribution
+/// (the write-authority model), so a contribution
 /// outlives its author as the category's: a fact `franz` authored in the family
 /// wiki becomes `sender = group:famiglia` once `franz` is gone, instead of
 /// pointing at a principal that no longer exists.
@@ -1571,7 +1570,7 @@ pub async fn find_active_by_subject(
 /// Whether `wiki_id` **surfaces** to a reader under derived visibility.
 ///
 /// The enforcement of the
-/// [identity-and-acl §5](../../../docs/concepts/identity-and-acl.md) rule that a
+/// identity-and-acl §5 rule that a
 /// wiki the reader can read nothing in surfaces nowhere (`sender_id` is the
 /// reader, `sender_groups` their groups).
 ///

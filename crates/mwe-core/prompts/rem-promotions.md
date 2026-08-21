@@ -16,7 +16,7 @@ recall count — and the LLM decides whether one sub-topic has outgrown its
 siblings (mass) and/or is frequently recalled (recall), naming the
 facts that move to a new dedicated page. The trigger is **page mass +
 recall weighed together by the model**, never a hardcoded recall
-floor — see the [memory model](../../../docs/concepts/memory-model.md).
+floor — see the memory model.
 The orchestrator calls the prompt through the hybrid loader
 [`mwe_core::prompts::render`]: the override at
 `<workdir>/prompts/rem-promotions.md` wins when present, otherwise

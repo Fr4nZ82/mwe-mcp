@@ -2581,8 +2581,8 @@ impl LlmBackend for AnthropicBackend {
 // every one of those gotchas.
 //
 // ## Operational notes (carried over from a pre-1.0 dogfood post-
-// mortem 2026-05-07; mirrored in `docs/development/conventions.md`
-// + `docs/architecture/overview.md`)
+// mortem 2026-05-07; mirrored in
+// + )
 //
 // - **Combined thinking + output budget.** Gemini 3's `maxOutputTokens`
 //   is a *combined* budget for the model's internal reasoning AND the

@@ -119,7 +119,7 @@ pub struct RemPolicy {
     pub revisor_examined_cap: usize,
     /// Maximum number of structural changes the auto-promote
     /// sub-job applies per cycle. The spec
-    /// ([memory model](../../../docs/concepts/memory-model.md))
+    /// (memory model)
     /// pins it at 5/night by default — REM never carpet-bombs the
     /// operator's inbox.
     pub auto_promote_cap: usize,
@@ -222,7 +222,7 @@ pub struct RemPolicy {
     pub archive_inactivity: chrono::Duration,
     /// Max notifications emitted by each new smart-wiki sub-job
     /// (Briefing dispatcher + Backlink reciprocity detector) per wiki
-    /// per cycle. Per the [memory model](../../../docs/concepts/memory-model.md)
+    /// per cycle. Per the memory model
     /// the per-wiki cap is 10 — the global 50/h cap in
     /// [`crate::briefing`] backstops at the inbox level. Default 10.
     pub briefing_notify_cap: usize,
@@ -415,7 +415,7 @@ pub struct RevisorReport {
     /// `proposal_id`s of the born-applied `dedup_merge` receipts: each
     /// confirmed pair merged **act-first** in-cycle, revertible from the
     /// dashboard within the standard window
-    /// ([memory model](../../../docs/concepts/memory-model.md)).
+    /// (memory model).
     pub applied: Vec<String>,
     /// Soft errors.
     pub errors: Vec<String>,
@@ -1234,7 +1234,7 @@ async fn find_active_in_family(
 /// that adapts the call's report shape to the REM
 /// sub-job report shape ([`AutoApplyReport`]).
 ///
-/// Per the [memory model](../../../docs/concepts/memory-model.md)
+/// Per the memory model
 /// the sweep flips `pending → applied_pending_confirm` with
 /// `apply_mode='auto'` and starts the 7 d confirm window; silence past
 /// the deadline triggers the auto-revert sweep. Per-row
@@ -1256,7 +1256,7 @@ async fn run_auto_apply_sweep(
 /// that adapts the call's report
 /// shape to the REM sub-job report shape ([`AutoFinalizeReport`]).
 ///
-/// Per the [memory model](../../../docs/concepts/memory-model.md)
+/// Per the memory model
 /// the sweep flips `applied_pending_confirm → applied` once
 /// `confirm_deadline` has elapsed (silence = consent). No kind inverse
 /// handler, no `revert_token` minted, no event emitted — the user was
@@ -2020,7 +2020,7 @@ async fn run_auto_promote(
         // (recall), naming the facts that move out. The page floor is
         // the only deterministic gate, a cheap resource pre-filter so
         // tiny pages never reach the LLM; everything semantic is the
-        // LLM's call ([memory model](../../../docs/concepts/memory-model.md)).
+        // LLM's call (memory model).
         // The floor depends on HOW the page is read, not just how big it is
         // (founder, 2026-08-04). See [`over_mass_floor`].
         let mut pages: Vec<&str> = page_mass

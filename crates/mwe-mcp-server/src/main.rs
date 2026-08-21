@@ -89,7 +89,7 @@ enum Command {
         /// Seed `mwe-mcp.config.yaml` with the chosen LLM profile.
         /// Skipped when the file already exists. Accepted values:
         /// `all-local` (default), `hybrid`, `all-api`, `custom`. See
-        /// the [config schema](../../../docs/protocol/config-schema.md) for the
+        /// the config schema for the
         /// profile presets.
         #[arg(long, default_value = "all-local")]
         llm_profile: String,
@@ -251,9 +251,8 @@ enum Command {
     /// point-in-time copy of `engine.db` (`VACUUM INTO`, taken first)
     /// followed by the markdown tree + config. Safe next to a live
     /// `mwe-mcp serve` — no lockfile is taken and the source DB is
-    /// opened read-only. Restore is a documented manual procedure (see
-    /// the backup-and-dr design note): stop the server, replace the
-    /// workdir with the snapshot, start.
+    /// opened read-only. Restore is manual and deliberately so: stop the
+    /// server, replace the workdir with the snapshot, start.
     Backup {
         /// Destination directory for the snapshot. Created if missing;
         /// must be empty and outside the workdir.
@@ -284,8 +283,8 @@ enum RecallCommand {
     /// run next to a live `mwe-mcp serve`) and no recall-counter bumps
     /// (synthetic queries must not pollute the recency signal).
     Eval {
-        /// Path to the gold-query YAML file (`queries:` list — see the
-        /// recall-pipeline design note for the schema).
+        /// Path to the gold-query YAML file (a `queries:` list; the loader
+        /// in `mwe_core::recall_eval` defines the schema).
         #[arg(long)]
         gold: PathBuf,
         /// Skip the navigator even when the `navigator` LLM slot is
@@ -369,8 +368,7 @@ async fn main() -> Result<()> {
         },
     };
 
-    // Tracing precedence (a rotating file sink extends it — see
-    // ../../../the logging design note for the extension rationale):
+    // Tracing precedence (a rotating file sink extends it):
     //   1. RUST_LOG env var if set — operator override always wins.
     //   2. logging.level from mwe-mcp.config.yaml.
     //   3. info (default).
@@ -486,7 +484,7 @@ async fn main() -> Result<()> {
 ///    so the operator never has to `source` it manually.
 ///
 /// Identity (users, groups, the first admin) is **not** seeded here:
-/// the dashboard owns the identity lifecycle (see [identity-and-acl.md](../../../docs/concepts/identity-and-acl.md)),
+/// the dashboard owns the identity lifecycle (see identity-and-acl.md),
 /// and the first-run setup wizard at `/dashboard/setup` creates the
 /// first admin on the next `serve`.
 async fn cmd_init(workdir: &Path, llm_profile: &str, force_config: bool) -> Result<()> {
@@ -2105,7 +2103,7 @@ async fn boot_smart_wiki_passes(pool: &sqlx::SqlitePool, tree: &mwe_core::wiki::
 ///
 /// Read once, here, and never refreshed from a dashboard save: the
 /// `instance:` section is the machine operator's and has no dashboard
-/// editor by design (see `docs/protocol/config-schema.md`), so
+/// editor by design (see ), so
 /// hot-reloading it would mean the panel could reach it after all.
 fn dashboard_config_from(config: &Config) -> mwe_dashboard::DashboardConfig {
     mwe_dashboard::DashboardConfig {
@@ -2281,8 +2279,7 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
             // Shared behind Arc<RwLock<_>> so the admin
             // LLM-config editor can swap slots in place + close the
             // restart-required gap (the MCP transport still holds its
-            // own cloned copy in McpState — that side is rebuilt at
-            // boot per the design note in admin-llm-config.md).
+            // own cloned copy in McpState — that side is rebuilt at boot).
             llm_config: std::sync::Arc::new(std::sync::RwLock::new(config.llm.clone())),
             // Production path constructs the per-slot backend on every
             // request via `LlmConfig::build_backend`; only test fixtures
@@ -2829,7 +2826,7 @@ fn load_secret_from_env() -> Result<TokenSecret> {
 }
 
 /// Resolve the JWT signing secret for `serve`, self-bootstrapping it on
-/// first boot (roadmap [group 19](../../../docs/development/build-run.md)).
+/// first boot (roadmap group 19).
 ///
 /// `serve` no longer requires a prior `mwe-mcp init`: on an empty workdir
 /// it generates a fresh `MWE_TOKEN_SECRET`, persists it to

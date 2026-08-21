@@ -2232,7 +2232,7 @@ pub async fn facts_on_pages(
 
 /// Hard cap on the number of hops [`wiki_multi_hop_facts`] will follow.
 ///
-/// Matches the [memory model](../../../docs/concepts/memory-model.md)
+/// Matches the memory model
 /// — prevents pathological wiki graphs from sending the recall pipeline
 /// into a long-running scan.
 pub const MULTI_HOP_HARD_LIMIT: usize = 10;
@@ -2613,7 +2613,7 @@ mod tests {
         // subject=alice, sender_of_region=bob — bob must be able to
         // read the region he himself authored on alice's wiki
         // (cross-user attribution invariant, see
-        // [memory model](../../../docs/concepts/memory-model.md)).
+        // memory model).
         let row = sample_row(
             "018f1234-5678-7abc-9def-0123456789ab",
             "user:alice",

@@ -30,7 +30,7 @@
 //! - Collaborative-write across multiple owners (`group:` `shared_with`
 //!   members pushing to the same smart-wiki). The lease coordinates
 //!   between devices of the *same* user; cross-user collaborative
-//!   write is deferred — see [memory model](../../../docs/concepts/memory-model.md).
+//!   write is deferred — see memory model.
 //! - Pre-emption (revoke a lease held by another consumer). Out of
 //!   scope: if a lease was acquired by a crashed laptop, wait for
 //!   the TTL to expire or wait for REM's `lease_expirer` (which picks

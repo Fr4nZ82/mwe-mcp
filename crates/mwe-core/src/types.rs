@@ -61,8 +61,7 @@ impl<'de> Deserialize<'de> for FactId {
 /// to which every user implicitly belongs: a region naming `global` (in
 /// `subject`, `allow`, or `sender`) is therefore readable by anyone. The
 /// global group also carries an operator-editable `scope` like any other
-/// group; see [`crate::enrollment`] and the engineering wiki
-/// (`identity-and-acl.md`).
+/// group; see [`crate::enrollment`].
 ///
 /// Wire format:
 /// - the global group ↔ `"global"` (bare, no prefix — back-compatible with
@@ -157,8 +156,8 @@ impl fmt::Display for Principal {
 /// are independent axes. The data subject also *governs* the fact about
 /// them — an ACL change is subject-or-admin — which is a consequence of
 /// the axis, not its definition. Never read `subject` as "creator" or as
-/// "visibility". The engineering wiki (`concepts/identity-and-acl.md`) is
-/// the SSOT for the model.
+/// "visibility". [`crate::acl`] is where the three axes are resolved, and
+/// its module header states the model.
 ///
 /// Distinct from the **wiki owner** — the principal a whole memory wiki
 /// belongs to, derived from tree topology by

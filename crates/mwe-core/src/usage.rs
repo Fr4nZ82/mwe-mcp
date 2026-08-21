@@ -61,7 +61,7 @@
 //! `tag` (from `MWE_USAGE_TAG`) marks a whole process as a deliberate
 //! experiment.
 //!
-//! See `docs/design-notes/llm-usage-ledger.md`.
+//! See .
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, OnceLock};

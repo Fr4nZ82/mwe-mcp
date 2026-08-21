@@ -26,7 +26,7 @@ use sqlx::SqlitePool;
 pub struct DashboardConfig {
     /// Minimum password length accepted by the setup wizard,
     /// `/dashboard/accept-invite`, and the self-service password
-    /// change. Pinned to 12 by the [memory model](../../../docs/concepts/memory-model.md).
+    /// change. Pinned to 12 by the memory model.
     pub min_password_len: usize,
 
     /// TTL for fresh `user_invitations` rows. Per the

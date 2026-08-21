@@ -9,7 +9,7 @@ default_version_at_bootstrap: v1.3
 
 Prompt for the REM nightly **page-group → wiki** regrouping sub-pass
 (the second rung of the physical-form scale, see
-[memory model](../../../docs/concepts/memory-model.md)). Once per wiki,
+memory model). Once per wiki,
 the `rem_promotions` strong slot reads the wiki's **whole page
 inventory** and cuts groups of pages that are **already** one subject
 area. A group either founds a new sub-wiki (floor:
@@ -68,7 +68,7 @@ and `description` are stamped onto the newborn wiki's `_meta`
 (`extra["style"]` validated to the closed palette, `extra["summary"]`)
 so it is **not born blind** to placement and recall navigation. `style`
 is a **hint, not a gate** (see the
-[memory model](../../../docs/concepts/memory-model.md)): a page may
+memory model): a page may
 still deviate with reason, and a value outside the palette leaves the
 wiki generic. Parsed by `parse_page_groups` in
 `crates/mwe-core/src/rem.rs` (brace-balanced scan, tolerant to prose

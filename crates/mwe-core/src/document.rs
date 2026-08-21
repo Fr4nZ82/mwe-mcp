@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Document / long-form ingest — the async pipeline behind
-//! `wiki_ingest_external` (engineering wiki:
-//! the document-ingest design note).
+//! `wiki_ingest_external`.
 //!
 //! A document is a **unit by default**: the disposition dial decides whether
 //! it stays consultable (`consult` — a document page + the catalog blob,

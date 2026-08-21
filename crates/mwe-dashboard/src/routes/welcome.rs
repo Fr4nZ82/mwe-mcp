@@ -9,7 +9,7 @@
 //! profile data and ships it to [`mwe_core::ingest::wiki_ingest_message`].
 //!
 //! **Three steps → three destinations** (see the
-//! [memory model](../../../../docs/concepts/memory-model.md)). The form is one page with three
+//! memory model). The form is one page with three
 //! client-side steps that map to the three universal ingest
 //! destinations:
 //!

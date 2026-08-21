@@ -1,6 +1,6 @@
 ---
 name: core-globalmemory
-version: 1.8.0
+version: 1.9.0
 description: "Transversal mwe-mcp mode for smart consumers when the cwd has no .mwe/state.json: auto-recall of the facts about the user, wherever they are filed (forked subagent to prevent context bleed) AND manage your own dedicated operational wiki if you own one (general working memory + behaviour rules + conversations.md via wiki_admin_*). Facts about the user go to wiki_ingest_message; never dump everything into standard memory."
 depends_on: ["core"]
 applies_to:
@@ -321,10 +321,6 @@ transversal mode without prompting.
 
 ## Cross-references
 
-- Design narrative: [tool reference](../../../docs/protocol/tool-reference.md).
-- Memory-model invariants: [memory model](../../../docs/concepts/memory-model.md).
-- Reference scenarios A & B (transversal recall + promotion to
-  companion-bound): ingest pipeline.
 - Sibling skill: [`smart-consumer`](smart-consumer.md) — load this
   when the cwd promotes to companion-bound.
-- Engineering wiki: [the smart/companion wikis design note](../../../docs/design-notes/smart-wikis.md).
+

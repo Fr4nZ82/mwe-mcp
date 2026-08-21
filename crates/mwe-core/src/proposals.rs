@@ -65,7 +65,7 @@
 //! ([`apply_proposal`], [`confirm_proposal`], [`revert_proposal`]) are
 //! consumed exclusively by the built-in dashboard, which calls these
 //! functions directly. See
-//! [the tool reference](../../../docs/protocol/tool-reference.md)
+//! the tool reference
 //! for the rationale.
 
 use std::str::FromStr;
@@ -95,7 +95,7 @@ pub mod kind {
     /// audience as a propose-first vote ([`crate::votes`]).
     ///
     /// Part of the write-authority model
-    /// ([identity and ACL](../../../docs/concepts/identity-and-acl.md)).
+    /// (identity and ACL).
     /// The proposal opens `pending` (the fact stays active); a NO-majority
     /// within the window rejects it, and silence (or an all-voted quorum with no
     /// NO-majority) applies it — tombstoning the fact.
