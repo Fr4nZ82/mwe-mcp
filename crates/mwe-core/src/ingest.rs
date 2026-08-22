@@ -6998,7 +6998,7 @@ pub async fn wiki_ingest_message(
 
                 // Cleared when the direct path's write-time dedup proves
                 // nothing new filed — a restated fact is no news to its
-                // beneficiary. Parking page-time dedup resolves later in the
+                // beneficiary. Buffer-time dedup resolves later in the
                 // light dream, so a buffered capture always counts.
                 let mut filed_fresh = true;
                 // Snapshotted before `cap_req` is consumed by either write
@@ -14529,7 +14529,7 @@ mod tests {
     /// Why the live path is not redundant with the fresh slot: a list added to
     /// faster than the dream drains would be served **incomplete**.
     ///
-    /// Parking page more items than `recall_fresh_top_k` and ask for the list. The
+    /// Buffer more items than `recall_fresh_top_k` and ask for the list. The
     /// slot returns its top K by similarity and the rest are simply absent —
     /// which is the right shape for "the most relevant things memory knows"
     /// and the wrong shape for "everything on the list". The live path exists
