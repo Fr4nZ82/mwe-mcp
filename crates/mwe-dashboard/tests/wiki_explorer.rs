@@ -80,7 +80,7 @@ async fn capture_fact(pool: &SqlitePool, tree: &WikiTree, page: &str, body: &str
     let req = CaptureRequest {
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse("alice").unwrap(),
-        page: PathBuf::from(page),
+        page: Some(PathBuf::from(page)),
         body: body.to_owned(),
         subject: "user:alice".parse::<Principal>().unwrap(),
         allow: vec![],
@@ -2167,7 +2167,7 @@ async fn chat_agentic_changes_wiki_scope_under_new_parent_end_to_end() {
         let req = mwe_core::capture::CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice-acmecorp").unwrap(),
-            page: PathBuf::from("intro.md"),
+            page: Some(PathBuf::from("intro.md")),
             body: "ACME è un cliente storico".to_owned(),
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: vec![],
@@ -2415,7 +2415,7 @@ async fn capture_fact_in(
     let req = CaptureRequest {
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse(wiki_id).unwrap(),
-        page: PathBuf::from(page),
+        page: Some(PathBuf::from(page)),
         body: body.to_owned(),
         subject: "user:alice".parse::<Principal>().unwrap(),
         allow: vec![],

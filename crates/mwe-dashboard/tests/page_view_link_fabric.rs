@@ -89,7 +89,7 @@ async fn capture_fact(
     let req = CaptureRequest {
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse("alice").unwrap(),
-        page: PathBuf::from(page),
+        page: Some(PathBuf::from(page)),
         body: body.to_owned(),
         subject: subject.parse::<Principal>().unwrap(),
         allow: vec![],

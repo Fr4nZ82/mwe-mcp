@@ -86,6 +86,9 @@ pub enum CaptureBufferError {
     /// A persisted principal failed to parse.
     #[error("capture_buffer principal: {0}")]
     Principal(#[from] PrincipalParseError),
+    /// Reading back the `fact_index` row a re-buffer is un-writing failed.
+    #[error("capture_buffer fact index: {0}")]
+    FactIndex(#[from] crate::fact_index::FactIndexError),
     /// Body submitted was empty or whitespace-only.
     #[error("capture body is empty")]
     EmptyBody,
@@ -632,6 +635,86 @@ pub async fn mark_placement_attempted(
     Ok(res.rows_affected())
 }
 
+/// Put an already-written fact back in the queue: copy it into the buffer
+/// under its own id and drop its `fact_index` row.
+///
+/// What happens to a fact whose page goes away. The alternative — pick
+/// another page for it here — is a placement decision, and placement is the
+/// light dream's job against the memory as it stands, not a caller's guess at
+/// delete time (founder, 2026-08-22: *«i fatti rimossi dalle pagine tornano
+/// nella tabella in attesa di essere ridistribuiti»*).
+///
+/// The `fact_index` row is **hard-deleted**, not tombstoned: the buffer reuses
+/// the fact's id as its `capture_id`, so promotion re-inserts under the same
+/// primary key and a surviving tombstone would collide. The claim is not
+/// forgotten — it is un-written, and the id it comes back under is the one it
+/// left with, so every reference to it still resolves once it lands again.
+///
+/// The row's embedding rides along, so the queue does not pay to compute it a
+/// second time. Returns `false` when `fact_id` names no live row (already
+/// tombstoned, already re-buffered, never existed).
+///
+/// # Errors
+///
+/// DB errors, or a persisted column that no longer parses.
+pub async fn rebuffer_fact(pool: &SqlitePool, fact_id: &FactId, now: &str) -> Result<bool> {
+    let Some(row) = crate::fact_index::find_by_id(pool, fact_id).await? else {
+        return Ok(false);
+    };
+    if row.deleted_at.is_some() {
+        return Ok(false);
+    }
+    let allow_json = serde_json::to_string(
+        &row.allow_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+    )?;
+    let topics_json = serde_json::to_string(&row.topics)?;
+    let authored_refs_json = serde_json::to_string(&row.authored_refs)?;
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO capture_buffer
+            (capture_id, body, subject_id, allow_ids, sender_id, fact_type,
+             topics, status, captured_at, source_kind, source_ref,
+             valid_from, valid_to, decay_reason, style, salience,
+             authored_refs, embedding, embedding_dim)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'buffered', ?, 'rebuffer', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(capture_id) DO UPDATE SET
+             status = 'buffered', processed_at = NULL, resolved_fact_id = NULL",
+    )
+    .bind(row.fact_id.as_str())
+    .bind(&row.text)
+    .bind(row.subject_id.to_string())
+    .bind(allow_json)
+    .bind(row.sender_id.as_ref().map(ToString::to_string))
+    .bind(row.fact_type.clone())
+    .bind(topics_json)
+    .bind(now)
+    .bind(row.source_ref.clone())
+    .bind(row.valid_from.clone())
+    .bind(row.valid_to.clone())
+    .bind(row.decay_reason.clone())
+    .bind(row.style.map(crate::wiki::PageStyle::as_str))
+    .bind(row.salience.clone())
+    .bind(authored_refs_json)
+    .bind(crate::fact_index::encode_embedding(&row.embedding))
+    .bind(i64::try_from(row.embedding.len()).unwrap_or(i64::MAX))
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM fact_index WHERE fact_id = ?")
+        .bind(fact_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    tracing::info!(
+        fact_id = fact_id.as_str(),
+        subject = %row.subject_id,
+        "capture_buffer: fact returned to the queue"
+    );
+    Ok(true)
+}
+
 /// Stamp the turn's recall-log row onto freshly buffered captures.
 ///
 /// The linkage the promotion-time miss detector reads
@@ -1078,7 +1161,7 @@ mod tests {
         CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: body.to_owned(),
             subject: subject.parse::<Principal>().unwrap(),
             allow: Vec::new(),

@@ -3032,7 +3032,7 @@ fn merge_candidates(
     fn eligible<'p>(plan: &'p CompilationPlan, slug: &str) -> Option<&'p PagePlan> {
         plan.pages
             .get(slug)
-            .filter(|p| !p.is_foundation() && !p.primary_facts.is_empty())
+            .filter(|p| !p.is_identity_card() && !p.primary_facts.is_empty())
     }
     let same_family = |a: &str, b: &str| match (family.get(a), family.get(b)) {
         (Some(fa), Some(fb)) => fa == fb,
@@ -3070,7 +3070,7 @@ fn merge_candidates(
     let mut leaves: Vec<&PagePlan> = plan
         .pages
         .values()
-        .filter(|p| !p.is_foundation() && !p.primary_facts.is_empty())
+        .filter(|p| !p.is_identity_card() && !p.primary_facts.is_empty())
         .collect();
     leaves.sort_by_key(|p| std::cmp::Reverse(p.primary_facts.len()));
     for (i, p) in leaves.iter().enumerate() {
@@ -6490,7 +6490,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from("preferenze.md"),
+            page: Some(PathBuf::from("preferenze.md")),
             body: body.to_owned(),
             subject: Principal::User(subject.to_owned()),
             allow: Vec::new(),
@@ -6524,7 +6524,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from("preferenze.md"),
+            page: Some(PathBuf::from("preferenze.md")),
             body: body.to_owned(),
             subject: Principal::User(subject.to_owned()),
             allow,
@@ -6611,7 +6611,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from(page),
+            page: Some(PathBuf::from(page)),
             body: body.to_owned(),
             subject: Principal::User(subject.to_owned()),
             allow: Vec::new(),
@@ -7102,7 +7102,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from(page),
+            page: Some(PathBuf::from(page)),
             body: body.to_owned(),
             subject: Principal::User(subject.to_owned()),
             allow: Vec::new(),
@@ -8022,7 +8022,7 @@ mod tests {
             let req = CaptureRequest {
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse(wiki).unwrap(),
-                page: PathBuf::from(page),
+                page: Some(PathBuf::from(page)),
                 body: format!("{page}: {t}"),
                 subject: Principal::User(subject.to_owned()),
                 allow: Vec::new(),
@@ -9106,7 +9106,7 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("bot").unwrap(),
-                        page: PathBuf::from("@rules.md"),
+                        page: Some(PathBuf::from("@rules.md")),
                         body,
                         subject: Principal::User("bot".to_owned()),
                         allow: Vec::new(),
@@ -9926,7 +9926,7 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
-                        page: PathBuf::from("preferenze.md"),
+                        page: Some(PathBuf::from("preferenze.md")),
                         body: body.to_owned(),
                         subject: Principal::User("alice".to_owned()),
                         allow: Vec::new(),
@@ -10047,7 +10047,7 @@ mod tests {
             CaptureRequest {
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
-                page: PathBuf::from("@rules.md"),
+                page: Some(PathBuf::from("@rules.md")),
                 body: "Rispondi sempre anche a voce.".to_owned(),
                 subject: Principal::User("alice".to_owned()),
                 allow: Vec::new(),
@@ -10285,7 +10285,7 @@ mod tests {
         let req = crate::capture::CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from(page),
+            page: Some(PathBuf::from(page)),
             body: body.to_owned(),
             subject: Principal::User(subject.to_owned()),
             allow: Vec::new(),

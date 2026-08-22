@@ -54,6 +54,12 @@ use crate::wiki::{WikiError, WikiTree, atomic_write, is_safe_page_path};
 /// Errors raised by the capture orchestration.
 #[derive(Debug, Error)]
 pub enum CaptureError {
+    /// The request carries no page. A claim nobody placed belongs in the
+    /// capture buffer, not on disk — reaching the direct write with
+    /// `page: None` is a caller bug, not a routing fallback.
+    #[error("capture: no page named — an unplaced claim belongs in the buffer")]
+    NoPage,
+
     /// Underlying filesystem layer error.
     #[error("capture wiki io: {0}")]
     Wiki(#[from] WikiError),
@@ -151,7 +157,14 @@ pub struct CaptureRequest {
     pub wiki_id: WikiId,
     /// Page within the wiki (relative to the wiki directory) — **the live
     /// route's**, exactly as [`Self::wiki_id`].
-    pub page: PathBuf,
+    ///
+    /// `None` when nobody named a page for this claim. That is not a missing
+    /// value to fill in: it is the answer, and it means the claim waits in the
+    /// capture buffer until a placement pass decides where it goes. Only a
+    /// claim the turn itself placed — a `lista` item, a container the user
+    /// asked for now — carries a page here, and only such a claim may be
+    /// written straight to disk.
+    pub page: Option<PathBuf>,
     /// Prose body of the new region. No markers — capture wraps it
     /// with the bare runtime form `{{f=…}}body{{/}}` (the ACL goes into
     /// the `fact_index` columns, not the marker).
@@ -263,18 +276,6 @@ pub struct ForgetOutcome {
     /// True when the row transitioned from active to tombstoned.
     /// Idempotent calls (already-deleted, or never existed) return false.
     pub tombstoned: bool,
-}
-
-/// Outcome of [`wiki_link`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LinkOutcome {
-    /// Path of the page that received the new link, relative to the
-    /// workdir.
-    pub source_path: String,
-    /// Byte offset of the appended link's first character.
-    pub link_start: i64,
-    /// Byte offset one past the appended link.
-    pub link_end: i64,
 }
 
 // ---------- dedup candidate scan (shared with the light dream) ----------
@@ -448,10 +449,9 @@ pub async fn wiki_capture_with_source(
     source_ref: Option<String>,
 ) -> Result<CaptureOutcome> {
     validate_body(&req.body)?;
-    if !is_safe_page_path(&req.page) {
-        return Err(CaptureError::UnsafePagePath {
-            path: req.page.clone(),
-        });
+    let page = req.page.clone().ok_or(CaptureError::NoPage)?;
+    if !is_safe_page_path(&page) {
+        return Err(CaptureError::UnsafePagePath { path: page });
     }
     normalize_sender_attribution(&mut req)?;
     let handle = tree.locate(&req.wiki_id)?;
@@ -459,19 +459,19 @@ pub async fn wiki_capture_with_source(
     // case-insensitive mirror would collapse onto an existing entry or
     // a reserved file, and `.md` spelled in a case the index ignores.
     // Appends to an existing byte-exact page carry no such risk.
-    if !crate::wiki::page_exists_byte_exact(handle.abs_dir(), &req.page)
-        && let Some(reason) = crate::wiki::page_path_case_hazard(&req.page)
-            .or_else(|| crate::wiki::page_case_conflict(handle.abs_dir(), &req.page))
+    if !crate::wiki::page_exists_byte_exact(handle.abs_dir(), &page)
+        && let Some(reason) = crate::wiki::page_path_case_hazard(&page)
+            .or_else(|| crate::wiki::page_case_conflict(handle.abs_dir(), &page))
     {
         return Err(CaptureError::PageCaseConflict {
-            path: req.page.clone(),
+            path: page.clone(),
             reason,
         });
     }
     let wiki_id_str = req.wiki_id.as_str().to_owned();
     tracing::debug!(
         wiki_id = %wiki_id_str,
-        page = %req.page.display(),
+        page = %page.display(),
         subject = %req.subject,
         body_len = req.body.len(),
         "capture: validated request"
@@ -506,7 +506,7 @@ pub async fn wiki_capture_with_source(
     // in another one). A duplicate is the same claim about the same subject;
     // the wiki each copy lives in is provisional and moves.
     let candidates = fact_index::find_active_by_subject(pool, &req.subject).await?;
-    let on_channel_page = crate::wiki::is_channel_page(&req.page.to_string_lossy());
+    let on_channel_page = crate::wiki::is_channel_page(&page.to_string_lossy());
     let audience = Audience {
         subject: &req.subject,
         allow: &req.allow,
@@ -535,7 +535,7 @@ pub async fn wiki_capture_with_source(
             let fresh = new_fact_id()?;
             tracing::info!(
                 wiki_id = %wiki_id_str,
-                page = %req.page.display(),
+                page = %page.display(),
                 matched_fact_id = matched_row.fact_id.as_str(),
                 similarity,
                 threshold,
@@ -563,7 +563,7 @@ pub async fn wiki_capture_with_source(
     // the key only.
     let fact_id = new_fact_id()?;
     let marker = render_marker(&fact_id, &req.body);
-    let abs_page = handle.abs_dir().join(&req.page);
+    let abs_page = handle.abs_dir().join(&page);
     // A page BORN here gets its card written now, before the region is
     // appended, so the offsets below are measured against the finished file.
     //
@@ -609,7 +609,7 @@ pub async fn wiki_capture_with_source(
         // fact is already homed (real source_path), so this is the proposal the
         // classifier made — carried for parity with the standard-wiki path and for
         // the live-creation path that seeds a page's testata from it.
-        target_page: Some(req.page.to_string_lossy().into_owned()),
+        target_page: Some(page.to_string_lossy().into_owned()),
         style: req.style,
         // Per-fact salience, opaque pass-through onto the
         // fact (the promote step routes `high` facts to the subject's card).
@@ -809,93 +809,6 @@ pub async fn wiki_forget(
 
 // ---------- wiki_link ----------
 
-/// `_internal.wiki_link` — append a cross-wiki link to a page.
-///
-/// The link is rendered as a plain Obsidian-compatible wikilink:
-/// `[[target_wiki/target_page]]` — always a **page**, never a wiki alone.
-/// With no `target_page` it names that wiki's parking page (`notes`), the page a
-/// fact with no home belongs on and the only readable page every wiki has.
-/// Returns the byte offsets of the new link
-/// so a caller that wants to drop a fact-id marker around it can do
-/// so in a follow-up call to [`wiki_capture`].
-///
-/// `wiki_link` is *not* a fact: it does not produce a `fact_index`
-/// row. The watcher / re-index treats the link as ordinary markdown.
-///
-/// # Errors
-///
-/// See [`CaptureError`].
-pub fn wiki_link(
-    tree: &WikiTree,
-    in_wiki: &WikiId,
-    in_page: &Path,
-    target_wiki: &WikiId,
-    target_page: Option<&Path>,
-) -> Result<LinkOutcome> {
-    if !is_safe_page_path(in_page) {
-        return Err(CaptureError::UnsafePagePath {
-            path: in_page.to_path_buf(),
-        });
-    }
-    if let Some(p) = target_page
-        && !is_safe_page_path(p)
-    {
-        return Err(CaptureError::UnsafePagePath {
-            path: p.to_path_buf(),
-        });
-    }
-
-    let handle = tree.locate(in_wiki)?;
-    let abs_page = handle.abs_dir().join(in_page);
-    // Same create-time guard as `wiki_capture`: a link append may forge
-    // the source page, and a case-colliding name must never reach disk.
-    if !crate::wiki::page_exists_byte_exact(handle.abs_dir(), in_page)
-        && let Some(reason) = crate::wiki::page_path_case_hazard(in_page)
-            .or_else(|| crate::wiki::page_case_conflict(handle.abs_dir(), in_page))
-    {
-        return Err(CaptureError::PageCaseConflict {
-            path: in_page.to_path_buf(),
-            reason,
-        });
-    }
-    let link_target = target_page.map_or_else(
-        // No page named ⇒ the wiki's BUFFER, never the wiki alone (founder,
-        // 2026-08-05: a link on a page names a page). The parking page is the right
-        // page and not merely an available one: it is by definition where a
-        // fact with no page belongs, and it is the only readable page every
-        // wiki has — a card exists only for an enrolled person or group, and
-        // the map is refused by every route of the read path.
-        || {
-            let parking = crate::wiki::NOTES_FILENAME
-                .strip_suffix(".md")
-                .unwrap_or(crate::wiki::NOTES_FILENAME);
-            format!("[[{target_wiki}/{parking}]]")
-        },
-        |p| {
-            let p_str = p.to_string_lossy().replace('\\', "/");
-            // Strip the trailing .md so the wikilink reads naturally
-            // in Obsidian.
-            let trimmed = p_str.strip_suffix(".md").unwrap_or(&p_str);
-            format!("[[{target_wiki}/{trimmed}]]")
-        },
-    );
-    let (new_contents, start, end) = append_text(&abs_page, &link_target)?;
-    atomic_write(&abs_page, new_contents.as_bytes())?;
-
-    let source_path = crate::wiki::workdir_relative_source_path(tree.workdir(), &abs_page);
-    tracing::info!(
-        in_wiki = in_wiki.as_str(),
-        source_path,
-        target = link_target,
-        "capture: LINKED"
-    );
-    Ok(LinkOutcome {
-        source_path,
-        link_start: i64::try_from(start).unwrap_or(i64::MAX),
-        link_end: i64::try_from(end).unwrap_or(i64::MAX),
-    })
-}
-
 // ---------- Helpers ----------
 
 fn validate_body(body: &str) -> Result<()> {
@@ -1087,24 +1000,6 @@ fn append_region(abs_page: &Path, region: &str) -> Result<(String, usize, usize)
     Ok((out, start, end))
 }
 
-/// Append `text` to the page (no marker wrapping). Used by
-/// [`wiki_link`]. Returns the offsets of the appended slice.
-fn append_text(abs_page: &Path, text: &str) -> Result<(String, usize, usize)> {
-    let raw = read_page_or_empty(abs_page)?;
-    let needs_newline = !raw.is_empty() && !raw.ends_with('\n');
-    let mut out = raw;
-    if needs_newline {
-        out.push('\n');
-    }
-    let start = out.len();
-    out.push_str(text);
-    let end = out.len();
-    if !out.ends_with('\n') {
-        out.push('\n');
-    }
-    Ok((out, start, end))
-}
-
 fn read_page_or_empty(abs_page: &Path) -> Result<String> {
     match std::fs::read_to_string(abs_page) {
         Ok(s) => Ok(s),
@@ -1155,7 +1050,7 @@ mod tests {
         CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("intro.md"),
+            page: Some(PathBuf::from("intro.md")),
             body: body.to_owned(),
             subject: "user:alice".parse().unwrap(),
             allow: vec![],
@@ -1218,7 +1113,7 @@ mod tests {
         CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("index.md"),
+            page: Some(PathBuf::from("index.md")),
             body: "x".into(),
             subject: subject.parse().unwrap(),
             allow: allow.into_iter().map(|s| s.parse().unwrap()).collect(),
@@ -1376,7 +1271,7 @@ mod tests {
             .await
             .expect("seed capture");
         let mut twin = sample_request("Pizza is fine too");
-        twin.page = PathBuf::from("Intro.md");
+        twin.page = Some(PathBuf::from("Intro.md"));
         let err = wiki_capture(&tree, &pool, embedder(), twin)
             .await
             .expect_err("case twin must refuse");
@@ -1387,7 +1282,7 @@ mod tests {
 
         // A reserved-filename case variant is refused even on empty disk.
         let mut meta_variant = sample_request("sneaky");
-        meta_variant.page = PathBuf::from("_Meta.md");
+        meta_variant.page = Some(PathBuf::from("_Meta.md"));
         let err = wiki_capture(&tree, &pool, embedder(), meta_variant)
             .await
             .expect_err("reserved case variant must refuse");
@@ -1398,7 +1293,7 @@ mod tests {
 
         // A fresh uppercase page with no twin lands byte-faithfully.
         let mut fresh = sample_request("Notes on the Big Rewrite");
-        fresh.page = PathBuf::from("Rewrite-Notes.md");
+        fresh.page = Some(PathBuf::from("Rewrite-Notes.md"));
         wiki_capture(&tree, &pool, embedder(), fresh)
             .await
             .expect("fresh uppercase page");
@@ -1673,7 +1568,7 @@ mod tests {
         // threshold-0.0 probe (everything same-page would match) the
         // cross-page pair must still NOT pair — the rule captures.
         let mut rule = sample_request("Rispondi sempre in modo conciso.");
-        rule.page = PathBuf::from(crate::wiki::RULES_FILENAME);
+        rule.page = Some(PathBuf::from(crate::wiki::RULES_FILENAME));
         rule.dedup_threshold = Some(0.0);
         let first_rule = wiki_capture(&tree, &pool, embedder(), rule).await.unwrap();
         assert!(
@@ -1685,7 +1580,7 @@ mod tests {
         // Rule-vs-rule on the page still dedups (the user repeating a
         // standing directive folds into the existing rule).
         let mut repeat = sample_request("Rispondi sempre in modo conciso.");
-        repeat.page = PathBuf::from(crate::wiki::RULES_FILENAME);
+        repeat.page = Some(PathBuf::from(crate::wiki::RULES_FILENAME));
         let outcome = wiki_capture(&tree, &pool, embedder(), repeat)
             .await
             .unwrap();
@@ -1823,64 +1718,4 @@ mod tests {
     }
 
     // ---------- link ----------
-
-    #[test]
-    fn link_appends_wikilink_to_page() {
-        let dir = tempdir().unwrap();
-        let tree = WikiTree::open(dir.path()).unwrap();
-        seed_alice(&tree);
-
-        let out = wiki_link(
-            &tree,
-            &WikiId::parse("alice").unwrap(),
-            Path::new("intro.md"),
-            &WikiId::parse("alice-acmecorp").unwrap(),
-            Some(Path::new("widget-pro.md")),
-        )
-        .unwrap();
-        assert!(out.link_end > out.link_start);
-
-        let intro = std::fs::read_to_string(dir.path().join("wikis/alice/intro.md")).unwrap();
-        assert!(intro.contains("[[alice-acmecorp/widget-pro]]"));
-    }
-
-    #[test]
-    fn link_without_page_points_at_the_wikis_buffer() {
-        let dir = tempdir().unwrap();
-        let tree = WikiTree::open(dir.path()).unwrap();
-        seed_alice(&tree);
-
-        wiki_link(
-            &tree,
-            &WikiId::parse("alice").unwrap(),
-            Path::new("intro.md"),
-            &WikiId::parse("alice-acmecorp").unwrap(),
-            None,
-        )
-        .unwrap();
-
-        let intro = std::fs::read_to_string(dir.path().join("wikis/alice/intro.md")).unwrap();
-        // Never a wiki alone: with no page named, the link points at that
-        // wiki's parking page — the page a fact with no home belongs on, and the
-        // only readable page every wiki has.
-        assert!(intro.contains("[[alice-acmecorp/@notes]]"), "{intro}");
-        assert!(!intro.contains("[[alice-acmecorp]]"), "{intro}");
-    }
-
-    #[test]
-    fn link_rejects_unsafe_paths() {
-        let dir = tempdir().unwrap();
-        let tree = WikiTree::open(dir.path()).unwrap();
-        seed_alice(&tree);
-        let bad = Path::new("../escape.md");
-        let err = wiki_link(
-            &tree,
-            &WikiId::parse("alice").unwrap(),
-            bad,
-            &WikiId::parse("alice-acmecorp").unwrap(),
-            None,
-        )
-        .expect_err("must reject");
-        assert!(matches!(err, CaptureError::UnsafePagePath { .. }));
-    }
 }

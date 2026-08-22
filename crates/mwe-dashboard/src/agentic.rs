@@ -1606,7 +1606,7 @@ fn build_supersede_request(
     Ok(capture::CaptureRequest {
         authored_refs: Vec::new(),
         wiki_id,
-        page: std::path::PathBuf::from(page_str),
+        page: Some(std::path::PathBuf::from(page_str)),
         body: new_body,
         subject: old_row.subject_id.clone(),
         allow: old_row.allow_ids.clone(),
@@ -1705,12 +1705,6 @@ async fn dispatch_wiki_change_scope(
 // destination is refused (smart wikis carry wiki-level governance — moving facts
 // across that boundary corrupts it).
 // ---------------------------------------------------------------------------
-
-/// Landing page for a cross-wiki move — always the destination wiki's
-/// parking page page, because the compilation plan keys pages by bare slug
-/// forest-wide and a named cross-wiki page would collide; the dest wiki
-/// re-homes the fact on its next compile.
-const MOVE_FACT_CROSS_WIKI_DEST_PAGE: &str = mwe_core::wiki::NOTES_FILENAME;
 
 #[derive(Debug, Deserialize)]
 struct WikiMoveFactArgs {
@@ -1816,22 +1810,33 @@ async fn dispatch_wiki_move_fact(
         .filter(|s| !s.is_empty() && *s != row.wiki_id);
 
     let (applied, dest_wiki_id, dest_page, cross_wiki) = if let Some(dest) = cross_wiki_dest {
+        // A move into another wiki has to name the page it lands on. There is
+        // no per-wiki inbox to drop it in and let that wiki sort it out: a
+        // claim nobody placed waits in the capture buffer, and a fact the
+        // operator is deliberately moving is not that.
+        let dest_page = args
+            .dest_page
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AgenticToolError::InvalidArguments {
+                tool: AgenticTool::WikiMoveFact.name(),
+                detail: format!(
+                    "moving a fact into `{dest}` needs a dest_page — name the page it lands on"
+                ),
+            })?;
         let applied = move_fact_cross_wiki(
             ctx,
             &fact_id,
             &source_wiki_id,
             &source_page,
             dest,
+            dest_page,
             recipient,
             reason,
         )
         .await?;
-        (
-            applied,
-            dest.to_owned(),
-            MOVE_FACT_CROSS_WIKI_DEST_PAGE.to_owned(),
-            true,
-        )
+        (applied, dest.to_owned(), dest_page.to_owned(), true)
     } else {
         let dest_page = args.dest_page.as_deref().map_or("", str::trim);
         let applied = move_fact_same_wiki(
@@ -1968,7 +1973,7 @@ async fn dispatch_wiki_delete_page(
 }
 
 /// Cross-wiki branch of [`dispatch_wiki_move_fact`]: validate the destination
-/// wiki (locates, not smart), then refile the fact onto its parking page.
+/// wiki (locates, not smart), then refile the fact onto the named page.
 #[allow(
     clippy::too_many_arguments,
     reason = "the cross-wiki branch carries the ctx, fact, source wiki/page, dest wiki, recipient, and reason"
@@ -1979,6 +1984,7 @@ async fn move_fact_cross_wiki(
     source_wiki_id: &WikiId,
     source_page: &str,
     dest: &str,
+    dest_page: &str,
     recipient: Option<String>,
     reason: &str,
 ) -> Result<mwe_core::promote::DirectApplied, AgenticToolError> {
@@ -2006,7 +2012,7 @@ async fn move_fact_cross_wiki(
         source_wiki_id.as_str(),
         source_page,
         dest,
-        MOVE_FACT_CROSS_WIKI_DEST_PAGE,
+        dest_page,
         Some(reason),
         recipient,
     )
@@ -2819,7 +2825,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: std::path::PathBuf::from("cucina.md"),
+            page: Some(std::path::PathBuf::from("cucina.md")),
             body: body.to_owned(),
             subject: "user:alice".parse().unwrap(),
             allow: vec![],
@@ -2913,7 +2919,7 @@ mod tests {
         };
         let out = dispatch(
             "wiki_move_fact",
-            &json!({ "fact_id": fid.as_str(), "dest_wiki_id": "salute" }),
+            &json!({ "fact_id": fid.as_str(), "dest_wiki_id": "salute", "dest_page": "referti.md" }),
             &ctx,
         )
         .await
@@ -2924,8 +2930,8 @@ mod tests {
         assert_eq!(moved["fact_id"], fid.as_str());
         assert_eq!(moved["dest_wiki_id"], "salute");
         assert_eq!(
-            moved["dest_page"], "@notes.md",
-            "a cross-wiki move lands on the destination's parking page"
+            moved["dest_page"], "referti.md",
+            "a cross-wiki move lands on the page the operator named"
         );
         assert_eq!(moved["cross_wiki"], true);
         assert!(
@@ -2939,7 +2945,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.wiki_id, "salute");
-        assert_eq!(row.source_path, "wikis/salute/@notes.md");
+        assert_eq!(row.source_path, "wikis/salute/referti.md");
         drop(dir);
     }
 
@@ -2961,7 +2967,7 @@ mod tests {
         };
         let err = dispatch(
             "wiki_move_fact",
-            &json!({ "fact_id": fid.as_str(), "dest_wiki_id": "proj" }),
+            &json!({ "fact_id": fid.as_str(), "dest_wiki_id": "proj", "dest_page": "appunti.md" }),
             &ctx,
         )
         .await
@@ -3003,7 +3009,7 @@ mod tests {
         };
         let err = dispatch(
             "wiki_move_fact",
-            &json!({ "fact_id": fid.as_str(), "dest_wiki_id": "salute" }),
+            &json!({ "fact_id": fid.as_str(), "dest_wiki_id": "salute", "dest_page": "referti.md" }),
             &ctx,
         )
         .await
@@ -3036,7 +3042,7 @@ mod tests {
         };
         let err = dispatch(
             "wiki_move_fact",
-            &json!({ "fact_id": fid.as_str(), "dest_wiki_id": "salute" }),
+            &json!({ "fact_id": fid.as_str(), "dest_wiki_id": "salute", "dest_page": "referti.md" }),
             &ctx,
         )
         .await

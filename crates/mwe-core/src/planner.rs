@@ -131,43 +131,22 @@ pub enum PlannerError {
 /// Result alias for this module.
 pub type Result<T> = std::result::Result<T, PlannerError>;
 
-/// Plan key of a wiki's parking node, derived from `slugify(wiki_id)`.
-///
-/// A wiki's card already owns `slugify(wiki_id)`, so the parking page needs a second
-/// key — and it takes this one on *every* wiki, carded or not, because the
-/// callers that map a page path back to a plan slug
-/// ([`plan_slug_for_page`]) have only the wiki id and the page name to go on.
-/// One rule, no lookup, no chance of the same file entering the plan under two
-/// keys.
-///
-/// The `__` separator is **unreachable by [`slugify`]** — which collapses runs
-/// of non-alphanumerics to a single `_` — so no classifier-proposed page name
-/// can ever collide with it.
-fn buffer_slug(wiki_slug: &str) -> String {
-    format!("{wiki_slug}__notes")
-}
-
 /// Plan key of a wiki-relative page path — the single mapping every caller
 /// that re-homes a fact in the persisted plan must agree on.
 ///
-/// A wiki's **reserved** pages are foundation nodes keyed per wiki: the card
-/// ([`crate::wiki::PROFILE_FILENAME`]) takes `slugify(wiki_id)` and the parking page
-/// ([`crate::wiki::NOTES_FILENAME`]) takes [`buffer_slug`]. Everything else is
-/// a concept page keyed by its own flattened stem.
+/// A wiki's **identity card** ([`crate::wiki::PROFILE_FILENAME`]) is a
+/// foundation node keyed per wiki: it takes `slugify(wiki_id)`. Everything
+/// else is a concept page keyed by its own flattened stem.
 #[must_use]
 pub fn plan_slug_for_page(wiki_id: &str, page: &str) -> String {
     let stem = page.strip_suffix(".md").unwrap_or(page);
-    let wiki_slug = slugify(wiki_id);
     // Both spellings, and that is deliberate: the `@` marker landed on
     // 2026-08-18, and a receipt or a persisted plan written before it still
     // names the bare form. `slugify` would eat the marker anyway — it keeps
     // only letters and digits — so an unmatched `@profile` would silently
     // become the concept slug `profile` instead of the card's key.
     match stem {
-        "@profile" | "@notes" | "profile" | "notes" => match stem {
-            "@notes" | "notes" => buffer_slug(&wiki_slug),
-            _ => wiki_slug,
-        },
+        "@profile" | "profile" => slugify(wiki_id),
         other => slugify(other),
     }
 }
@@ -323,26 +302,13 @@ pub struct PagePlan {
 }
 
 impl PagePlan {
-    /// The wiki's own pages — its card and its parking page — as opposed to
-    /// the pages the topology grows. Never garbage-collected: the parking page
-    /// has to survive its facts being drained onto real pages, which is what is
-    /// supposed to happen to everything that lands there.
-    #[must_use]
-    pub fn is_foundation(&self) -> bool {
-        self.is_identity_card() || self.is_parking_page()
-    }
-
-    /// The wiki's **identity card** — who this person or group is.
+    /// The wiki's **identity card** — who this person or group is. The one
+    /// page the wiki owns rather than grows, and the one page the empty-page
+    /// GC never takes: a person exists before anybody says anything about
+    /// them.
     #[must_use]
     pub fn is_identity_card(&self) -> bool {
         self.page_path == crate::wiki::PROFILE_FILENAME
-    }
-
-    /// The wiki's **parking page** — where a fact lands when nothing more
-    /// specific fits.
-    #[must_use]
-    pub fn is_parking_page(&self) -> bool {
-        self.page_path == crate::wiki::NOTES_FILENAME
     }
 
     /// What this page is, in the words the placement prompt uses.
@@ -354,17 +320,15 @@ impl PagePlan {
     pub fn prompt_kind(&self) -> &'static str {
         if self.is_identity_card() {
             "person"
-        } else if self.is_parking_page() {
-            "parking_page"
         } else {
             "concept_leaf"
         }
     }
 
-    /// Compilation order: a wiki's own pages (card, parking page) first,
+    /// Compilation order: a wiki's own page (its card) first,
     /// the pages the topology grows after them.
     fn order_rank(&self) -> u8 {
-        u8::from(!self.is_foundation())
+        u8::from(!self.is_identity_card())
     }
 }
 
@@ -593,17 +557,14 @@ fn capitalize(s: &str) -> String {
 
 /// Build the foundation pages (deterministic, no LLM).
 ///
-/// An identity card per enrolled user and a parking page per wiki. A group
-/// wiki gets no card (founder, 2026-08-19): what the group is lives in its
-/// `_meta.md`. Returns the pages keyed by slug.
+/// An identity card per enrolled user. A group wiki gets no card (founder,
+/// 2026-08-19): what the group is lives in its `_meta.md`. Returns the pages
+/// keyed by slug.
 ///
 /// # Errors
 ///
 /// DB errors.
-pub async fn build_foundation_pages(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-) -> Result<BTreeMap<String, PagePlan>> {
+pub async fn build_foundation_pages(pool: &SqlitePool) -> Result<BTreeMap<String, PagePlan>> {
     let mut pages: BTreeMap<String, PagePlan> = BTreeMap::new();
 
     // **A group wiki has no card** (founder, 2026-08-19). It used to get one,
@@ -662,66 +623,13 @@ pub async fn build_foundation_pages(
         );
     }
 
-    let buffers = seed_parking_pages(tree, &mut pages)?;
-
     tracing::info!(
         groups = groups.len(),
         users = users.len(),
-        buffers,
         pages = pages.len(),
         "planner: foundation pages built"
     );
     Ok(pages)
-}
-
-/// The Fonditore's third source — THE PER-WIKI BUFFER PAGE.
-///
-/// Every standard (non-smart) wiki gets a **parking page** foundation
-/// node on its [`crate::wiki::NOTES_FILENAME`]: the landing page for a fact
-/// with no better home. It is plan-owned — compiled from the DB like every
-/// other page and never garbage-collected — so a wiki always has somewhere to
-/// put a fact, and REM's reorg sweep always has somewhere to drain from.
-///
-/// The key is [`buffer_slug`] on **every** wiki, carded or not — see there for
-/// why it cannot depend on whether the wiki has a card.
-///
-/// Returns how many nodes it seeded.
-fn seed_parking_pages(tree: &WikiTree, pages: &mut BTreeMap<String, PagePlan>) -> Result<usize> {
-    let mut seeded = 0usize;
-    for d in tree.walk()? {
-        if d.meta.smart {
-            continue;
-        }
-        let wiki_slug = slugify(d.meta.wiki_id.as_str());
-        if wiki_slug.is_empty() {
-            continue;
-        }
-        let slug = buffer_slug(&wiki_slug);
-        if pages.contains_key(&slug) {
-            tracing::warn!(
-                slug,
-                wiki_id = d.meta.wiki_id.as_str(),
-                "planner: wiki buffer slug collides with an enrollment foundation page, skipping"
-            );
-            continue;
-        }
-        pages.insert(
-            slug.clone(),
-            PagePlan {
-                title: d.meta.title.clone(),
-                description: d.meta.scope.clone().unwrap_or_default(),
-                style: None,
-                primary_facts: Vec::new(),
-                outgoing_links: Vec::new(),
-                incoming_links: Vec::new(),
-                wiki_id: d.meta.wiki_id.as_str().to_owned(),
-                page_path: crate::wiki::NOTES_FILENAME.to_owned(),
-                slug,
-            },
-        );
-        seeded += 1;
-    }
-    Ok(seeded)
 }
 
 // ---------- Stadio 2 — L'Architetto ----------
@@ -979,9 +887,9 @@ pub fn build_compilation_plan(
         // collects it like any other.
         let to_remove: Vec<String> = pages
             .iter()
-            .filter(|(_, p)| !p.is_foundation())
-            // An ordinary page with no facts left is nothing; the wiki's own
-            // pages are exempted by the filter above.
+            .filter(|(_, p)| !p.is_identity_card())
+            // An ordinary page with no facts left is nothing; the card is
+            // exempted by the filter above.
             .filter(|(_, p)| p.primary_facts.is_empty())
             .map(|(slug, _)| slug.clone())
             .collect();
@@ -2832,7 +2740,7 @@ pub async fn build_wiki_plan(
     let mut facts = gather_standard_facts(pool, tree).await?;
     facts.extend(waiting.iter().cloned());
     facts.sort_by(|a, b| a.fact_id.as_str().cmp(b.fact_id.as_str()));
-    let foundation = build_foundation_pages(pool, tree).await?;
+    let foundation = build_foundation_pages(pool).await?;
     let registry = load_concept_registry(tree, now)?;
     let prev = load_previous_plan(tree)?;
     let current_ids: BTreeSet<String> = facts
@@ -2861,7 +2769,7 @@ pub async fn build_wiki_plan(
     // forward for the older reason — it has no judgement to bring at all.
     // Only slugs the previous plan actually knows count.
     let reopen_consumable = matches!(placement, NewFactPlacement::Cartografo(_));
-    let mut reopen: BTreeSet<String> = if reopen_consumable {
+    let reopen: BTreeSet<String> = if reopen_consumable {
         prev.as_ref()
             .map(|p| {
                 p.reopen_pages
@@ -2874,28 +2782,6 @@ pub async fn build_wiki_plan(
     } else {
         BTreeSet::new()
     };
-
-    // **The parking page comes back into the pool at every light build**, and
-    // this is not the park above: nobody nominated it, and nothing is consumed.
-    // A fact lands there when the hourly pass found no page that was a strong
-    // enough match ([`PAGE_BIRTH_FLOOR`], founder 2026-08-18). Left carried
-    // over it would sit until the nightly strong pass read it, so the pile
-    // could never reach the floor that lets its page be born — the floor and
-    // this re-offer are one mechanism, and either alone does nothing.
-    //
-    // Cheap by construction: the re-offered facts are exactly the ones nobody
-    // has placed, and a build whose assignments do not change leaves the page's
-    // fingerprint alone, so re-offering is not a reason to recompile.
-    if matches!(placement, NewFactPlacement::NamedThenCartografo(_))
-        && let Some(prev) = &prev
-    {
-        for (slug, page) in &prev.pages {
-            if page.is_parking_page() {
-                reopen.insert(slug.clone());
-            }
-        }
-    }
-    let reopen = reopen;
 
     // Structural signals for the Cartografo (information, never a gate):
     // per-page fact mass from the carried-over placements (only facts that
@@ -3274,7 +3160,7 @@ async fn record_minted_pages(
     now: &str,
 ) {
     for (slug, page) in &next.pages {
-        if prev.pages.contains_key(slug) || page.is_foundation() {
+        if prev.pages.contains_key(slug) || page.is_identity_card() {
             continue;
         }
         let context = serde_json::json!({
@@ -3358,10 +3244,7 @@ fn mass_of(mass: &BTreeMap<String, usize>, slug: &str) -> usize {
 /// captured in the family wiki, could be kept off the family card and still
 /// not be put on Bruno's.
 ///
-/// **Foreign buffers are not offered.** A parking page is where a fact of *that*
-/// wiki waits for a home; parking a fact in another wiki's inbox is not a
-/// placement, and the local parking page is already the fallback for a fact with no
-/// page. Cards are bounded by the product limits (24 users, 8 groups), so this
+/// Cards are bounded by the product limits (24 users, 8 groups), so this
 /// list does not grow with the memory and is never cut.
 fn describe_foundation(
     foundation: &BTreeMap<String, PagePlan>,
@@ -3372,28 +3255,13 @@ fn describe_foundation(
         .values()
         .filter(|p| p.wiki_id == wiki)
         .map(|p| {
-            if p.is_parking_page() {
-                format!(
-                    "- [{}] {} — {} | {} | facts: {}",
-                    p.prompt_kind(),
-                    p.slug,
-                    p.title,
-                    if p.description.is_empty() {
-                        "—"
-                    } else {
-                        p.description.as_str()
-                    },
-                    mass_of(mass, &p.slug),
-                )
-            } else {
-                format!(
-                    "- [{}] {} — {} | facts: {}",
-                    p.prompt_kind(),
-                    p.slug,
-                    p.title,
-                    mass_of(mass, &p.slug),
-                )
-            }
+            format!(
+                "- [{}] {} — {} | facts: {}",
+                p.prompt_kind(),
+                p.slug,
+                p.title,
+                mass_of(mass, &p.slug),
+            )
         })
         .collect();
     // The other wikis' identity cards, each named with the wiki it belongs to
@@ -3732,10 +3600,10 @@ mod tests {
             "user:franz",
             "franz",
         );
-        unplaced.target_page = Some(crate::wiki::NOTES_FILENAME.to_owned());
+        unplaced.target_page = None;
 
         let mut reserved = fact(3, "Franz e celiaco", "user:franz", "franz");
-        reserved.target_page = Some(crate::wiki::NOTES_FILENAME.to_owned());
+        reserved.target_page = None;
         reserved.salience = Some("high".to_owned());
 
         let bp = place_new_facts(
@@ -3788,7 +3656,7 @@ mod tests {
         named.target_page = Some("spesa.md".to_owned());
         named.style = Some(crate::wiki::PageStyle::Lista);
         let mut unplaced = fact(2, "nuoto il martedi", "user:franz", "franz");
-        unplaced.target_page = Some(crate::wiki::NOTES_FILENAME.to_owned());
+        unplaced.target_page = None;
 
         let bp = place_new_facts(
             &NewFactPlacement::Ingest,
@@ -5393,12 +5261,6 @@ mod tests {
     fn a_proposal_from_another_wikis_batch_is_offered_not_fenced_off() {
         let mut foundation = BTreeMap::new();
         foundation.insert("alice".to_owned(), person("alice"));
-        let mut parking = person("alice");
-        parking.slug = "alice__notes".to_owned();
-        // A page IS its file name: a fixture that only renamed the slug used
-        // to pass because a separate field said "parking page". It says it here.
-        parking.page_path = crate::wiki::NOTES_FILENAME.to_owned();
-        foundation.insert("alice__notes".to_owned(), parking);
         let registry = ConceptRegistry::empty("t");
         let orto = NewPage {
             slug: "orto".to_owned(),
@@ -5419,8 +5281,8 @@ mod tests {
         );
         assert_eq!(
             describe_taken_slugs(&foundation, &registry, "bob", &ForeignPages::Whole),
-            "alice__notes",
-            "the card is offered and the parking is not, so only the parking page's name is taken"
+            "(none)",
+            "alice's card is offered by name, so its slug is not also fenced off"
         );
     }
 
@@ -5797,13 +5659,9 @@ mod tests {
     /// and scope as its description, under a prompt whose standing bias is
     /// *«when in doubt, prefer the redirect»*.
     #[test]
-    fn a_redirect_onto_a_card_or_a_buffer_is_refused_and_never_offered() {
+    fn a_redirect_onto_a_card_is_refused_and_never_offered() {
         let mut foundation = BTreeMap::new();
         foundation.insert("alice".to_owned(), person("alice"));
-        let mut parking = person("alice");
-        parking.slug = "alice__notes".to_owned();
-        parking.page_path = crate::wiki::NOTES_FILENAME.to_owned();
-        foundation.insert("alice__notes".to_owned(), parking);
         let mut registry = ConceptRegistry::empty("t");
         registry
             .entries
@@ -5812,7 +5670,6 @@ mod tests {
         let kept = vet_redirects(
             BTreeMap::from([
                 ("ricette".to_owned(), "alice".to_owned()),
-                ("appunti".to_owned(), "alice__notes".to_owned()),
                 ("piatti".to_owned(), "cucina".to_owned()),
             ]),
             &foundation,
@@ -5829,8 +5686,8 @@ mod tests {
         let offered = describe_existing(&registry, Some("alice"), &ForeignPages::Whole);
         assert!(offered.contains("cucina"), "concept pages are offered");
         assert!(
-            !offered.contains("[person]") && !offered.contains("[parking_page]"),
-            "no foundation page is offered as a merge target: {offered}"
+            !offered.contains("[person]"),
+            "a card is never offered as a merge target: {offered}"
         );
     }
 
@@ -5942,143 +5799,5 @@ mod tests {
                 .all(|p| !p.outgoing_links.contains(&"cucina".to_owned())),
             "and no surviving page still links to it"
         );
-    }
-
-    #[tokio::test]
-    async fn every_standard_wiki_gets_a_buffer_foundation_node() {
-        // The Fonditore's third source: every standard non-identity wiki gets
-        // a parking-page foundation node on `@notes.md` (plan-owned, never GC'd);
-        // smart wikis and identity/group wikis never qualify.
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
-        let wikis = dir.path().join("wikis");
-        std::fs::create_dir_all(wikis.join("famiglia/bruno-battaglia")).unwrap();
-        std::fs::create_dir_all(wikis.join("famiglia/notes-smart")).unwrap();
-        std::fs::create_dir_all(wikis.join("alice")).unwrap();
-        std::fs::write(
-            wikis.join("famiglia/_meta.md"),
-            "---\nwiki_id: famiglia\nwiki_type: wiki-group\nslug: famiglia\ntitle: Famiglia\nacl_default: 'group:famiglia'\n---\n",
-        )
-        .unwrap();
-        std::fs::write(
-            wikis.join("famiglia/bruno-battaglia/_meta.md"),
-            "---\nwiki_id: famiglia-bruno-battaglia\nwiki_type: wiki-tech\nparent_wiki_id: famiglia\nslug: bruno-battaglia\ntitle: Bruno Battaglia\nscope: 'Tutto su Bruno Battaglia'\nacl_default: 'user:franz'\n---\n",
-        )
-        .unwrap();
-        std::fs::write(
-            wikis.join("famiglia/notes-smart/_meta.md"),
-            "---\nwiki_id: famiglia-notes-smart\nwiki_type: wiki-tech\nparent_wiki_id: famiglia\nslug: notes-smart\ntitle: Notes\nsmart: true\nacl_default: 'user:franz'\n---\n",
-        )
-        .unwrap();
-        // An identity wiki with NO enrollment row: covered by neither pass.
-        std::fs::write(
-            wikis.join("alice/_meta.md"),
-            "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
-        )
-        .unwrap();
-        let tree = WikiTree::open(dir.path()).expect("tree");
-        sqlx::query(
-            "INSERT INTO enrollment_groups (group_id, members, scope) \
-             VALUES ('famiglia', '[]', 'La famiglia')",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let foundation = build_foundation_pages(&pool, &tree)
-            .await
-            .expect("fonditore");
-
-        let node = &foundation["famiglia_bruno_battaglia__notes"];
-        assert_eq!(
-            node.page_path, "@notes.md",
-            "the parking page, never the map"
-        );
-        assert_eq!(node.wiki_id, "famiglia-bruno-battaglia");
-        assert_eq!(node.description, "Tutto su Bruno Battaglia");
-        // **A group wiki has no card** (2026-08-19): it has a parking page like
-        // any other wiki, and that is its only foundation node.
-        assert!(
-            !foundation.contains_key("famiglia"),
-            "a group gets no card — what it is lives in its `_meta.md`"
-        );
-        assert!(
-            !foundation.contains_key("famiglia_notes_smart__notes"),
-            "smart wikis stay out of the compiler's perimeter"
-        );
-        assert!(
-            !foundation.contains_key("alice"),
-            "an identity wiki with no enrollment row gets no card"
-        );
-        assert!(
-            foundation.contains_key("alice__notes"),
-            "…but it still gets a buffer: every standard wiki needs somewhere \
-             to put a fact"
-        );
-        drop(dir);
-    }
-
-    #[test]
-    fn a_buffer_absorbs_the_legacy_leaf_slug_and_survives_gc() {
-        // The 4j absorption (maintainer option A): the foundation node takes
-        // the slug the legacy content leaf held, the carried facts re-attach
-        // to the parking page, the shadowed registry entry drops — and an emptied
-        // parking page is never GC'd (it is a foundation page).
-        let mut emerged = person("famiglia_bruno_battaglia");
-        emerged.page_path = "@notes.md".to_owned();
-        emerged.wiki_id = "famiglia-bruno-battaglia".to_owned();
-        let mut foundation = BTreeMap::new();
-        foundation.insert("famiglia_bruno_battaglia".to_owned(), emerged);
-        let mut registry = ConceptRegistry::empty("t");
-        registry.entries.insert(
-            "famiglia_bruno_battaglia".to_owned(),
-            concept_entry("famiglia_bruno_battaglia", "famiglia-bruno-battaglia"),
-        );
-        let facts = vec![fact(
-            1,
-            "Bruno è nato nel 1950",
-            "user:franz",
-            "famiglia-bruno-battaglia",
-        )];
-        let blueprint = Blueprint {
-            assignments: vec![Assignment {
-                fact_id: facts[0].fact_id.as_str().to_owned(),
-                page_slug: "famiglia_bruno_battaglia".to_owned(),
-            }],
-            new_pages: Vec::new(),
-        };
-        let (plan, reg) = build_compilation_plan(
-            &facts,
-            &foundation,
-            &blueprint,
-            &ConciliatorResult::default(),
-            &registry,
-            "t2",
-        );
-        let page = &plan.pages["famiglia_bruno_battaglia"];
-        assert_eq!(
-            page.page_path, "@notes.md",
-            "the slug now renders the wiki's parking page, not the legacy sibling file"
-        );
-        assert_eq!(page.primary_facts.len(), 1, "the carried fact re-attached");
-        assert!(
-            !reg.entries.contains_key("famiglia_bruno_battaglia"),
-            "the shadowed legacy entry is GC'd"
-        );
-
-        // Same node with NO facts: a foundation page survives the fixpoint GC.
-        let (plan_empty, _) = build_compilation_plan(
-            &[],
-            &foundation,
-            &Blueprint::default(),
-            &ConciliatorResult::default(),
-            &ConceptRegistry::empty("t"),
-            "t3",
-        );
-        assert!(
-            plan_empty.pages.contains_key("famiglia_bruno_battaglia"),
-            "an emptied buffer is never garbage-collected"
-        );
-        drop(plan_empty);
     }
 }

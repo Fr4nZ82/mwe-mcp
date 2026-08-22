@@ -2681,7 +2681,7 @@ mod tests {
         let mk = |body: String| CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body,
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: Vec::new(),
@@ -2759,7 +2759,7 @@ mod tests {
         let mk = |body: &str| CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: body.to_owned(),
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: Vec::new(),
@@ -2859,7 +2859,7 @@ mod tests {
         let mk = |wiki: &str, body: &str, subject: &str| CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: body.to_owned(),
             subject: subject.parse::<Principal>().unwrap(),
             allow: Vec::new(),
@@ -2946,7 +2946,7 @@ mod tests {
         let mk = |wiki: &str, body: &str, subject: &str, fact_type: Option<&str>| CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: body.to_owned(),
             subject: subject.parse::<Principal>().unwrap(),
             allow: Vec::new(),

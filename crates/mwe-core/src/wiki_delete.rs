@@ -72,11 +72,11 @@ use std::path::PathBuf;
 
 use sqlx::SqlitePool;
 
+use crate::capture_buffer;
 use crate::enrollment;
 use crate::fact_index;
 use crate::page::{self, Action, DeletionMode};
-use crate::planner;
-use crate::promote::{self, DirectPromoteError};
+use crate::promote::DirectPromoteError;
 use crate::sections;
 use crate::types::{Principal, WikiId};
 use crate::wiki::{
@@ -103,12 +103,14 @@ pub struct WikiDeleteReport {
     /// Number of fact rows tombstoned across the subtree (the deleter's own +
     /// homeless facts in `SenderKeyed` mode; **every** fact in `TombstoneAll`).
     pub facts_tombstoned: u64,
-    /// Number of foreign-authored facts evacuated to their senders' (or subjects')
-    /// wikis. Non-zero only in `SenderKeyed` mode; always 0 for `TombstoneAll`.
+    /// Number of foreign-authored facts handed back: they went into the
+    /// capture buffer, and the next placement pass writes each one wherever
+    /// its subject lives. Non-zero only in `SenderKeyed` mode; always 0 for
+    /// `TombstoneAll`.
     pub facts_evacuated: u64,
-    /// Number of facts a `Dissolve` freed: moved to a live wiki with their
-    /// placement re-opened, so the next Cartografo build re-decides where each
-    /// belongs. Non-zero only in `Dissolve` mode.
+    /// Number of facts a `Dissolve` freed into the capture buffer, so the
+    /// next placement pass re-decides where each belongs. Non-zero only in
+    /// `Dissolve` mode.
     pub facts_unplaced: u64,
     /// Number of `wiki_sections` rows hard-dropped across the subtree — a
     /// smart wiki's whole content. Disposal-independent: the modes partition
@@ -127,6 +129,9 @@ pub enum WikiDeleteError {
     /// No wiki carries the requested id.
     #[error("wiki {0:?} not found")]
     NotFound(WikiId),
+    /// Handing a freed fact back to the capture buffer failed.
+    #[error(transparent)]
+    Buffer(#[from] crate::capture_buffer::CaptureBufferError),
     /// The target is a living principal's identity wiki — refused on purpose.
     #[error("refusing to delete identity wiki {0:?} (type {1}); remove the user/group instead")]
     Identity(WikiId, String),
@@ -263,7 +268,7 @@ pub async fn delete_wiki_subtree(
     let mut facts_unplaced = 0u64;
     let mut sections_dropped = 0u64;
     let mut page_cards_dropped = 0u64;
-    let mut reopen_slugs: Vec<String> = Vec::new();
+    let now = chrono::Utc::now().to_rfc3339();
     for d in &subtree {
         let wiki_id = d.meta.wiki_id.as_str();
         match mode {
@@ -272,40 +277,12 @@ pub async fn delete_wiki_subtree(
                     fact_index::mark_forgotten_in_wiki(pool, wiki_id, DELETE_REASON).await?;
             },
             DeletionMode::Dissolve => {
-                // Structure goes, content stays. Every fact is evacuated to a
-                // live wiki — never tombstoned — and the pages it came from
-                // are parked for placement re-opening, so the next Cartografo
-                // build decides where each fact belongs across the whole
-                // corpus instead of it inheriting the page it happened to sit
-                // on. The evacuation target is transient by design.
-                reopen_slugs.extend(planner::plan_slugs_of_wiki(tree, wiki_id)?);
+                // Structure goes, content stays. Every fact goes back into the
+                // capture buffer — never tombstoned — so the next placement
+                // pass decides where it belongs across the whole corpus
+                // instead of it inheriting the page it happened to sit on.
                 for row in fact_index::find_active_in_wiki(pool, wiki_id).await? {
-                    let responsible = row.sender_id.as_ref().unwrap_or(&row.subject_id);
-                    let Some(dest) =
-                        page::dissolve_home(responsible, &row.subject_id, deleter, tree)
-                    else {
-                        // No live wiki anywhere for this fact (a `global`-owned
-                        // fact whose sender is gone and whose deleter has no
-                        // home). Leaving the row pointing into the trash would
-                        // drop it out of the plan's input and strand it
-                        // invisibly, so it is tombstoned — and **counted**, so
-                        // the operator sees the one case a dissolve cannot
-                        // keep.
-                        fact_index::mark_forgotten(pool, &row.fact_id, DELETE_REASON).await?;
-                        facts_tombstoned += 1;
-                        continue;
-                    };
-                    promote::apply_fact_refile_collect(
-                        pool,
-                        tree,
-                        &row.fact_id,
-                        wiki_id,
-                        page_basename(&row.source_path),
-                        &dest,
-                        page::EVACUATION_DEST_PAGE,
-                        Some(DISSOLVE_REASON),
-                    )
-                    .await?;
+                    capture_buffer::rebuffer_fact(pool, &row.fact_id, &now).await?;
                     facts_unplaced += 1;
                 }
             },
@@ -320,26 +297,8 @@ pub async fn delete_wiki_subtree(
                             fact_index::mark_forgotten(pool, &row.fact_id, DELETE_REASON).await?;
                             facts_tombstoned += 1;
                         },
-                        Action::Evacuate(dest) => {
-                            promote::apply_fact_refile_collect(
-                                pool,
-                                tree,
-                                &row.fact_id,
-                                wiki_id,
-                                page_basename(&row.source_path),
-                                &dest,
-                                page::EVACUATION_DEST_PAGE,
-                                Some(DELETE_REASON),
-                            )
-                            .await?;
-                            // The DESTINATION's parking page, not the source page:
-                            // the refile engine has already re-homed the fact
-                            // onto that node, so it is the only slug whose
-                            // re-open can still free it.
-                            reopen_slugs.push(planner::plan_slug_for_page(
-                                &dest,
-                                page::EVACUATION_DEST_PAGE,
-                            ));
+                        Action::Evacuate => {
+                            capture_buffer::rebuffer_fact(pool, &row.fact_id, &now).await?;
                             facts_evacuated += 1;
                         },
                     }
@@ -359,30 +318,6 @@ pub async fn delete_wiki_subtree(
         // projection too, and the card sweep only walks wikis still on disk,
         // so nothing else would ever collect them.
         page_cards_dropped += crate::page_card::drop_wiki(pool, wiki_id).await?;
-    }
-
-    // Park the placement re-opening *after* the evacuations: the refile
-    // engine re-homes each fact in the plan as it moves, so parking first
-    // would be undone by those very writes. A missing plan is a no-op —
-    // there is nothing to re-open into, and the first build will classify
-    // these facts as new anyway.
-    reopen_slugs.sort();
-    reopen_slugs.dedup();
-    if !reopen_slugs.is_empty()
-        && let Err(e) = planner::park_bridge_signals(tree, &[], &reopen_slugs)
-    {
-        // Best-effort, like every other plan-sync seam: the facts are already
-        // safe in their new wikis, so a plan write that fails must not fail
-        // the dissolve. It only means they keep the placement the evacuation
-        // gave them until the next full reorg re-judges them — loud, never
-        // silent.
-        tracing::error!(
-            error = %e,
-            wiki_id = target.as_str(),
-            slugs = reopen_slugs.len(),
-            "wiki dissolve: parking the placement re-opening failed; \
-             the freed facts stay where the evacuation put them until the next full reorg",
-        );
     }
 
     let trash_root = tree.workdir().join("trash");
@@ -409,16 +344,9 @@ pub async fn delete_wiki_subtree(
     })
 }
 
-/// The page filename (last path component) of a workdir-relative source path:
-/// `wikis/famiglia/vacanze.md` → `vacanze.md` — the `source_page` the refile
-/// engine edits.
-fn page_basename(source_path: &str) -> &str {
-    source_path.rsplit('/').next().unwrap_or(source_path)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{collect_subtree, delete_wiki_subtree, is_identity_type, page_basename};
+    use super::{collect_subtree, delete_wiki_subtree, is_identity_type};
     use crate::capture::{CaptureAction, CaptureRequest, wiki_capture};
     use crate::embedder::{Embedder, FakeEmbedder};
     use crate::fact_index;
@@ -455,7 +383,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: body.to_owned(),
             subject: format!("user:{subject_user}").parse::<Principal>().unwrap(),
             allow: vec![],
@@ -553,12 +481,6 @@ mod tests {
         assert!(!is_identity_type("custom-cliente"));
     }
 
-    #[test]
-    fn page_basename_is_the_last_path_component() {
-        assert_eq!(page_basename("wikis/famiglia/vacanze.md"), "vacanze.md");
-        assert_eq!(page_basename("cucina.md"), "cucina.md");
-    }
-
     #[tokio::test]
     async fn senderkeyed_move_evacuates_foreign_and_tombstones_own() {
         let dir = tempdir().unwrap();
@@ -598,11 +520,20 @@ mod tests {
             "only the deleter's own tombstoned"
         );
         assert_eq!(report.wikis_removed, 1);
-        let row = fact_index::find_by_id(&pool, &bob_fact)
+        assert!(
+            fact_index::find_by_id(&pool, &bob_fact)
+                .await
+                .unwrap()
+                .is_none(),
+            "the handed-back fact is un-written, waiting to be placed again"
+        );
+        let queued = crate::capture_buffer::find_all_buffered(&pool, 10)
             .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(row.wiki_id, "bob", "the evacuated fact now lives in bob");
+            .expect("queue");
+        assert!(
+            queued.iter().any(|c| c.capture_id == bob_fact),
+            "bob's fact is in the queue: {queued:?}"
+        );
 
         // The husk moved to trash, not erased.
         assert!(!tree.wikis_dir().join("acme").exists());
@@ -702,7 +633,7 @@ mod tests {
     // ---------- dissolve ----------
 
     #[tokio::test]
-    async fn dissolve_keeps_every_fact_and_reopens_its_placement() {
+    async fn dissolve_returns_every_fact_to_the_queue() {
         let dir = tempdir().unwrap();
         let db_dir = tempdir().unwrap();
         let pool = crate::db::open_or_init(db_dir.path()).await.unwrap();
@@ -732,83 +663,28 @@ mod tests {
         assert_eq!(report.facts_unplaced, 2);
         assert!(report.trash_dir.exists(), "the husk went to trash");
 
-        // Both facts are alive, and they left the dissolved wiki for their
-        // subject's live one — no row may point into the trash.
+        // Both claims are back in the queue under their own ids, and no
+        // `fact_index` row is left pointing into the trash.
+        let queued: Vec<String> = crate::capture_buffer::find_all_buffered(&pool, 10)
+            .await
+            .expect("queue")
+            .into_iter()
+            .map(|c| c.capture_id.as_str().to_owned())
+            .collect();
         for fid in [&f1, &f2] {
-            let row = fact_index::find_by_id(&pool, fid)
-                .await
-                .unwrap()
-                .expect("row survives");
-            assert!(row.deleted_at.is_none(), "a dissolve tombstones nothing");
-            assert_eq!(row.wiki_id, "alice");
+            assert!(
+                fact_index::find_by_id(&pool, fid).await.unwrap().is_none(),
+                "the written row is gone — the claim is un-written, not tombstoned"
+            );
+            assert!(
+                queued.contains(&fid.as_str().to_owned()),
+                "{fid} must be waiting in the queue: {queued:?}"
+            );
         }
     }
 
     #[tokio::test]
-    async fn dissolve_parks_the_dissolved_pages_for_replacement() {
-        let dir = tempdir().unwrap();
-        let db_dir = tempdir().unwrap();
-        let pool = crate::db::open_or_init(db_dir.path()).await.unwrap();
-        fs::create_dir_all(dir.path().join("wikis")).unwrap();
-        let tree = WikiTree::open(dir.path()).unwrap();
-        seed(&tree, "alice", "wiki-user");
-        seed(&tree, "dossier", "wiki-tech");
-        let tree = WikiTree::open(dir.path()).unwrap();
-        capture_with_subject(&tree, &pool, embedder(), "dossier", "alice", "a note").await;
-
-        // A persisted plan that knows the dissolved wiki's page: the dissolve
-        // must park its slug so the next Cartografo build re-decides where
-        // that page's facts belong instead of carrying the placement over.
-        let plan = crate::planner::CompilationPlan {
-            pages: std::iter::once((
-                "dossier".to_owned(),
-                crate::planner::PagePlan {
-                    slug: "dossier".to_owned(),
-                    title: "Dossier".to_owned(),
-                    description: String::new(),
-                    style: None,
-                    primary_facts: Vec::new(),
-                    outgoing_links: Vec::new(),
-                    incoming_links: Vec::new(),
-                    wiki_id: "dossier".to_owned(),
-                    page_path: "cucina.md".to_owned(),
-                },
-            ))
-            .collect(),
-            merged_pages: Vec::new(),
-            link_graph: std::collections::BTreeMap::new(),
-            compilation_order: Vec::new(),
-            generated_at: "2026-07-27T00:00:00Z".to_owned(),
-            fact_count: 1,
-            dirty_pages: Vec::new(),
-            force_dirty: Vec::new(),
-            refile_candidates: Vec::new(),
-            reopen_pages: Vec::new(),
-        };
-        crate::planner::save_plan(&tree, &plan).unwrap();
-
-        delete_wiki_subtree(
-            &pool,
-            &tree,
-            &WikiId::parse("dossier").unwrap(),
-            &Principal::User("admin".to_owned()),
-            DeletionMode::Dissolve,
-        )
-        .await
-        .expect("dissolve");
-
-        let saved = crate::planner::load_previous_plan(&tree)
-            .unwrap()
-            .expect("plan");
-        assert!(
-            saved.reopen_pages.contains(&"dossier".to_owned()),
-            "the dissolved page must be parked for re-placement: {:?}",
-            saved.reopen_pages,
-        );
-    }
-
-    #[tokio::test]
-    async fn dissolve_tombstones_only_a_fact_with_nowhere_live_to_go() {
+    async fn dissolve_queues_even_a_fact_with_nowhere_live_to_go() {
         let dir = tempdir().unwrap();
         let db_dir = tempdir().unwrap();
         let pool = crate::db::open_or_init(db_dir.path()).await.unwrap();
@@ -816,9 +692,9 @@ mod tests {
         let tree = WikiTree::open(dir.path()).unwrap();
         seed(&tree, "dossier", "wiki-tech");
         let tree = WikiTree::open(dir.path()).unwrap();
-        // Subject `ghost` has no wiki, and neither does the deleter: there is no
-        // live home anywhere, so this is the one fact a dissolve cannot keep —
-        // and it must be counted, never silently dropped.
+        // Subject `ghost` has no wiki, and neither does the deleter. The
+        // queue does not need one: a claim nobody can home simply keeps
+        // waiting there until somebody enrols.
         let fid =
             capture_with_subject(&tree, &pool, embedder(), "dossier", "ghost", "homeless").await;
 
@@ -832,10 +708,17 @@ mod tests {
         .await
         .expect("dissolve");
 
-        assert_eq!(report.facts_unplaced, 0);
-        assert_eq!(report.facts_tombstoned, 1, "counted, not hidden");
-        let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
-        assert!(row.deleted_at.is_some());
+        assert_eq!(report.facts_unplaced, 1);
+        assert_eq!(report.facts_tombstoned, 0, "a dissolve destroys nothing");
+        assert!(
+            fact_index::find_by_id(&pool, &fid).await.unwrap().is_none(),
+            "the row is un-written, not tombstoned"
+        );
+        assert_eq!(
+            crate::capture_buffer::count_buffered(&pool).await.unwrap(),
+            1,
+            "the homeless claim waits in the queue"
+        );
     }
 
     /// One section of a smart wiki's page, with a stand-in vector — the

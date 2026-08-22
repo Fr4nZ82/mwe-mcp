@@ -388,7 +388,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: body.to_owned(),
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: vec![],
@@ -420,7 +420,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: refs.to_vec(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: body.to_owned(),
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: vec![],

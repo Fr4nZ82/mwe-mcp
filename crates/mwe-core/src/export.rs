@@ -405,7 +405,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki_id).unwrap(),
-            page: PathBuf::from(page),
+            page: Some(PathBuf::from(page)),
             body: body.to_owned(),
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow,

@@ -530,10 +530,6 @@ pub struct IngestPolicy {
     /// is what stops a turn naming four people from spending the whole block
     /// on biographies.
     pub max_mentioned_cards: usize,
-    /// Page within the target wiki used when the LLM plan does not
-    /// supply one: the parking page, [`wiki::NOTES_FILENAME`] — never the wiki's
-    /// map. REM's reorg sweep drains it onto real pages.
-    pub default_page: PathBuf,
     /// Canned `suggested_seed` returned on every fallback path. Short
     /// on purpose — the agent will rewrite it.
     pub fallback_suggested_seed: String,
@@ -610,10 +606,6 @@ impl Default for IngestPolicy {
             // navigated prose budget. Raise it when the traces say turns name
             // more people than that and the extra card earns its characters.
             max_mentioned_cards: 2,
-            // A fact with no better destination lands on a **content page**,
-            // never on the wiki's map: the root answers "where does a fact
-            // belong", it does not hold facts (founder, 2026-08-03).
-            default_page: PathBuf::from(wiki::NOTES_FILENAME),
             fallback_suggested_seed: "I've noted that.".to_owned(),
             structural_suggested_seed:
                 "This looks like a structural change — open the dashboard to continue.".to_owned(),
@@ -1178,27 +1170,24 @@ enum CapturePlanError {
 /// Policy: canonicalise through
 /// [`crate::planner::canonical_page_path`] (one canonical spelling per
 /// segment: lowercase, non-alphanumeric runs → `_`), then require the
-/// result to pass [`is_safe_page_path`]; anything that still fails
-/// (empty segment, traversal) falls back to the wiki's default page
-/// (the parking page, `@notes.md`) so a normal message can never crash ingest. The
-/// classifier prompt shows neither wikis nor page names — the one exception
-/// being the `list_pages` inventory, whose entries are exact names to be
-/// copied — so canonicalising here is fighting a name the model **coined**,
-/// never one it read off disk; a hand-authored
-/// hyphenated page stays readable (`is_safe_page_path` still admits
-/// `-`) but ingest will not target it.
-pub(crate) fn normalize_capture_page(raw: Option<&str>, default: &Path) -> PathBuf {
-    let Some(canon) = raw.and_then(crate::planner::canonical_page_path) else {
-        // Absent, or a segment that slugifies to nothing (`".."`,
-        // `"---"`) — traversal or noise; degrade to the default page.
-        return default.to_path_buf();
-    };
+/// result to pass [`is_safe_page_path`].
+///
+/// `None` means **nobody named a usable page** — absent, or a name that
+/// slugifies to nothing, or traversal. That is an answer, not a failure: the
+/// claim waits in the capture buffer and a placement pass decides where it
+/// goes, so a normal message can never crash ingest and can never invent a
+/// page out of noise either.
+///
+/// The classifier prompt shows neither wikis nor page names — the one
+/// exception being the `list_pages` inventory, whose entries are exact names
+/// to be copied — so canonicalising here is fighting a name the model
+/// **coined**, never one it read off disk; a hand-authored hyphenated page
+/// stays readable (`is_safe_page_path` still admits `-`) but ingest will not
+/// target it.
+pub(crate) fn normalize_capture_page(raw: Option<&str>) -> Option<PathBuf> {
+    let canon = raw.and_then(crate::planner::canonical_page_path)?;
     let candidate = PathBuf::from(canon);
-    if is_safe_page_path(&candidate) {
-        candidate
-    } else {
-        default.to_path_buf()
-    }
+    is_safe_page_path(&candidate).then_some(candidate)
 }
 
 /// True when `wiki_id` is the identity wiki of `subject` itself.
@@ -1367,16 +1356,20 @@ async fn refuse_new_list_over_cap(
     cap_req: &mut CaptureRequest,
     unit: &CaptureUnit<'_>,
     list_pages: &[fact_index::ListPage],
-    policy: &IngestPolicy,
 ) -> std::result::Result<(), fact_index::FactIndexError> {
     if !is_list_shaped(unit) {
         return Ok(());
     }
     let wiki_id = cap_req.wiki_id.as_str().to_owned();
-    let Some(page) = cap_req.page.file_name().and_then(|n| n.to_str()) else {
+    let Some(page) = cap_req
+        .page
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .map(str::to_owned)
+    else {
         return Ok(());
     };
-    let page = page.to_owned();
     // Already a list here — adding to it is never growth.
     if list_pages
         .iter()
@@ -1395,7 +1388,7 @@ async fn refuse_new_list_over_cap(
         cap = MAX_LIST_PAGES_PER_WIKI,
         "ingest: wiki is at its list limit — the new list is not minted, the fact goes to the buffer"
     );
-    cap_req.page = PathBuf::from(&policy.default_page);
+    cap_req.page = None;
     Ok(())
 }
 
@@ -1435,36 +1428,33 @@ fn validate_capture_plan(
     //   Deliberately independent of `style`: a note someone asks you to keep
     //   can be prose, and it still needs the name they gave it.
     //
-    // Everything else waits, and waiting is what makes the name unnecessary:
-    // no single page is the right answer at capture time, the classifier is
-    // shown no prose pages to check against, and any name it proposes is a
-    // guess the consolidation would have to undo. Those take the wiki's parking page
-    // page ([`IngestPolicy::default_page`]) — the designed holding place
-    // placement settles from later.
+    // Everything else carries NO page, and that is what makes the name
+    // unnecessary: no single page is the right answer at capture time, the
+    // classifier is shown no prose pages to check against, and any name it
+    // proposes is a guess the consolidation would have to undo. Those claims
+    // wait in the capture buffer, and a placement pass settles them later.
     //
     // Enforced here rather than asked for in the prompt: a guessed page name
     // that reaches disk is a page, and pages outlive the turn that minted them.
     let names_its_page = is_list_shaped(unit) || unit.requested_container;
-    let page = if names_its_page {
-        let coined = normalize_capture_page(unit.target_page, &policy.default_page);
+    let page = names_its_page
+        .then(|| normalize_capture_page(unit.target_page))
+        .flatten()
         // The guarantee the prompt makes — «a capture aimed at a reserved page
         // is not filed there» — enforced, not asked for. A model that names
-        // `@rules.md` gets the parking page here, which the router then reads
-        // as "this claim knows no page": it waits, and the placement pass
-        // settles it like any other unplaced prose. Without that reading a
-        // refused `lista` was written live onto the parking page itself.
-        if wiki::names_reserved_page(&coined) {
-            tracing::warn!(
-                page = %coined.display(),
-                "ingest: capture named a reserved page — routed to the buffer instead"
-            );
-            policy.default_page.clone()
-        } else {
-            coined
-        }
-    } else {
-        policy.default_page.clone()
-    };
+        // `@rules.md` ends up with no page, which the router reads as "this
+        // claim knows no page": it waits, and the placement pass settles it
+        // like any other unplaced prose.
+        .filter(|coined| {
+            let ok = !wiki::names_reserved_page(coined);
+            if !ok {
+                tracing::warn!(
+                    page = %coined.display(),
+                    "ingest: capture named a reserved page — left for the queue to place"
+                );
+            }
+            ok
+        });
     let target_wiki_str = derive_target_wiki(
         unit,
         request,
@@ -1897,7 +1887,8 @@ async fn file_unclaimed_attachments(
         let subject = Principal::User(request.sender_id.clone());
         let cap_req = CaptureRequest {
             wiki_id: wiki_id.clone(),
-            page: policy.default_page.clone(),
+            // Nobody placed this: it waits in the queue like any other claim.
+            page: None,
             body,
             subject: subject.clone(),
             allow: Vec::new(),
@@ -4474,7 +4465,7 @@ async fn capture_behaviour_rule(
 
     let cap_req = CaptureRequest {
         wiki_id,
-        page: PathBuf::from(BEHAVIOUR_RULES_PAGE),
+        page: Some(PathBuf::from(BEHAVIOUR_RULES_PAGE)),
         body: rule.to_owned(),
         subject,
         allow: Vec::new(),
@@ -4506,20 +4497,21 @@ async fn capture_behaviour_rule(
 /// the model's proposed `target_page` — mirroring how a self-fact's wiki is
 /// already engine-pinned to the agent's own wiki. An IDENTITY fact
 /// (user-agnostic, injected every turn) stays on the wiki's parking page
-/// (`default`, i.e. [`wiki::NOTES_FILENAME`]), from which REM's reorg lifts it
-/// onto the identity pages it consolidates. A RELATIONSHIP fact goes to a
-/// per-served-user page `esperienze_<user>.md`, so the agent's history with
-/// each user grows in its own space instead of piling into one heterogeneous
-/// catch-all (`esperienze_agente.md`, the Finding-C monolith the classifier
-/// used to invent). A relationship fact with no served user degrades to the
-/// parking page too.
+/// carries no page: it waits in the capture buffer, and the placement pass
+/// lifts it onto the identity pages it consolidates. A RELATIONSHIP fact goes
+/// to a per-served-user page `esperienze_<user>.md`, so the agent's history
+/// with each user grows in its own space instead of piling into one
+/// heterogeneous catch-all (`esperienze_agente.md`, the Finding-C monolith the
+/// classifier used to invent). A relationship fact with no served user carries
+/// no page either.
+///
 /// Recall is page-agnostic (`recall_agent_self` buckets by the served-user
 /// topic tag, not the page), so this write-time routing is invisible to reads.
-fn agent_self_fact_page(is_identity: bool, sender_id: &str, default: &Path) -> PathBuf {
+fn agent_self_fact_page(is_identity: bool, sender_id: &str) -> Option<PathBuf> {
     if is_identity || sender_id.is_empty() {
-        default.to_path_buf()
+        None
     } else {
-        normalize_capture_page(Some(&format!("esperienze_{sender_id}.md")), default)
+        normalize_capture_page(Some(&format!("esperienze_{sender_id}.md")))
     }
 }
 
@@ -4591,7 +4583,7 @@ async fn capture_agent_self_fact(
     {
         topics.push(request.sender_id.clone());
     }
-    let page = agent_self_fact_page(is_identity, &request.sender_id, &policy.default_page);
+    let page = agent_self_fact_page(is_identity, &request.sender_id);
     let cap_req = CaptureRequest {
         wiki_id,
         page,
@@ -4616,6 +4608,15 @@ async fn capture_agent_self_fact(
         salience: unit.salience.map(str::to_owned),
         authored_refs: Vec::new(),
     };
+    // An identity self-fact names no page, so it waits in the queue like any
+    // other unplaced claim; a relationship fact named its own page and is
+    // written now.
+    if cap_req.page.is_none() {
+        let staging =
+            capture_buffer::BufferStaging::build(embedder.as_ref(), &cap_req.body, None).await;
+        let buffered = capture_buffer::buffer_capture_staged(pool, cap_req, None, staging).await?;
+        return Ok(Some(buffered.capture_id));
+    }
     let outcome = capture::wiki_capture(tree, pool, embedder, cap_req).await?;
     Ok(Some(outcome.fact_id))
 }
@@ -4957,9 +4958,8 @@ fn format_history_with_user(agent: &AgentSelf, policy: &IngestPolicy) -> Option<
 /// A content page like any other, except that this slot serves it
 /// deterministically. A standard wiki has no root page to confuse it with.
 ///
-/// Not [`IngestPolicy::default_page`] either, which is the *capture* fallback
-/// ([`wiki::NOTES_FILENAME`]): this is the page the classifier routes the
-/// identity core onto and the page this slot reads.
+/// This is the page the placement routes the identity core onto, and the page
+/// this slot reads.
 const IDENTITY_PAGE: &str = wiki::PROFILE_FILENAME;
 
 /// What the `WHO IS SPEAKING` slot produced.
@@ -6819,29 +6819,23 @@ pub async fn wiki_ingest_message(
                 // second copy of it live. Growth only: an existing list is
                 // always addable-to, however many the wiki already has.
                 if let Err(e) =
-                    refuse_new_list_over_cap(pool, &mut cap_req, &unit, &list_pages, policy).await
+                    refuse_new_list_over_cap(pool, &mut cap_req, &unit, &list_pages).await
                 {
                     tracing::warn!(error = %e, "ingest: list-page cap check failed");
                 }
 
-                // **A list item is never parked.** Both refusals above express
-                // themselves the same way — the page falls back to the wiki's
-                // parking page — and for list material that is not a
-                // destination: the parking page holds prose waiting to be
-                // placed, and a list item on it turns it into a shopping list.
-                //
-                // Nor may the item wait in the parking page: it would be placed an
-                // hour later by a pass that has no list to place it on, and
-                // land on the parking page anyway. So the extraction is
-                // REFUSED and the user is told. A list is a set — silently
-                // dropping one item is a wrong answer, not a partial one, and
-                // the user must know to retry or free a list.
-                if is_list_shaped(&unit) && cap_req.page == policy.default_page {
+                // **A list item never waits.** Both refusals above express
+                // themselves the same way — the claim ends up with no page —
+                // and for list material that is not a holding pattern: the
+                // item would be placed an hour later by a pass that has no
+                // list to place it on. So the extraction is REFUSED and the
+                // user is told. A list is a set — silently dropping one item
+                // is a wrong answer, not a partial one, and the user must know
+                // to retry or free a list.
+                if is_list_shaped(&unit) && cap_req.page.is_none() {
                     let reason = if unit.target_page.is_some_and(|p| {
-                        wiki::names_reserved_page(&normalize_capture_page(
-                            Some(p),
-                            &policy.default_page,
-                        ))
+                        normalize_capture_page(Some(p))
+                            .is_some_and(|c| wiki::names_reserved_page(&c))
                     }) {
                         ListRefusal::ReservedName
                     } else {
@@ -6994,15 +6988,12 @@ pub async fn wiki_ingest_message(
                 //
                 // The test is the PAGE, and asking it here rather than
                 // re-deriving the two shapes keeps one answer where there
-                // were two. `capture_request_for` already resolved it: a
+                // were two. `validate_capture_plan` already resolved it: a
                 // claim that names its own page carries it, everything else
-                // carries the wiki's parking page — and so does a name that
-                // was REFUSED, either as a reserved page or as the wiki's
-                // 33rd list. A claim sitting on the parking page is a claim
-                // nobody has placed, which is exactly what waiting means.
-                // (Deriving it from `style`/`requested_container` instead
-                // wrote a refused `lista` live ONTO `@notes.md`.)
-                let route_to_buffer = target_is_standard && cap_req.page == policy.default_page;
+                // carries none — and so does a name that was REFUSED, either
+                // as a reserved page or as the wiki's 33rd list. No page is
+                // exactly what "nobody has placed this" looks like.
+                let route_to_buffer = target_is_standard && cap_req.page.is_none();
 
                 // Cleared when the direct path's write-time dedup proves
                 // nothing new filed — a restated fact is no news to its
@@ -8318,7 +8309,7 @@ mod tests {
 
         // A list names its page, and may describe the one it is creating.
         let list = plan(Some("lista"), false);
-        assert_eq!(list.page, PathBuf::from("spesa.md"));
+        assert_eq!(list.page, Some(PathBuf::from("spesa.md")));
         assert_eq!(
             list.page_description.as_deref(),
             Some("what the family still needs to buy")
@@ -8330,7 +8321,7 @@ mod tests {
         let note = plan(Some("prosa"), true);
         assert_eq!(
             note.page,
-            PathBuf::from("spesa.md"),
+            Some(PathBuf::from("spesa.md")),
             "a requested container keeps the name the user gave it"
         );
         assert!(note.page_description.is_some());
@@ -8339,7 +8330,7 @@ mod tests {
         for style in [Some("prosa"), Some("prosa-tecnica"), None] {
             let waits = plan(style, false);
             assert_eq!(
-                waits.page, policy.default_page,
+                waits.page, None,
                 "a page named on material that can wait is discarded ({style:?})"
             );
             assert!(
@@ -8516,7 +8507,7 @@ mod tests {
             validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
                 .expect("the capture is filed, just not there");
         assert_eq!(
-            cap.page, policy.default_page,
+            cap.page, None,
             "a capture that names a reserved page lands in the buffer, and the placement \
              pass settles it like any other unplaced prose"
         );
@@ -8608,7 +8599,10 @@ mod tests {
             validate_capture_plan(&first_unit(&plan), &request, &policy, &available, &[], true)
                 .expect("validated");
         assert_eq!(cap.wiki_id.as_str(), "alice");
-        assert_eq!(cap.page, PathBuf::from("@notes.md"));
+        assert_eq!(
+            cap.page, None,
+            "prose that can wait names no page — the queue places it"
+        );
         assert!(matches!(cap.subject, Principal::User(ref id) if id == "alice"));
         assert!(matches!(cap.sender, Some(Principal::User(ref id)) if id == "alice"));
         assert_eq!(cap.fact_type.as_deref(), Some("preference"));
@@ -9583,100 +9577,77 @@ mod tests {
     }
 
     #[test]
-    fn agent_self_fact_page_parks_identity_and_splits_relationships_per_user() {
-        let default = Path::new(wiki::NOTES_FILENAME);
-        // Identity self-facts are user-agnostic → the parking page, which
-        // REM's reorg drains onto the identity pages (item 47-x3).
-        assert_eq!(
-            agent_self_fact_page(true, "morgana", default),
-            PathBuf::from(wiki::NOTES_FILENAME)
-        );
+    fn agent_self_fact_page_leaves_identity_unplaced_and_splits_relationships_per_user() {
+        // An identity self-fact names no page: it waits in the queue, and the
+        // placement pass lifts it onto the card it consolidates.
+        assert_eq!(agent_self_fact_page(true, "morgana"), None);
         // Relationship self-facts → a per-served-user page, flat slug.
         assert_eq!(
-            agent_self_fact_page(false, "morgana", default),
-            PathBuf::from("esperienze_morgana.md")
+            agent_self_fact_page(false, "morgana"),
+            Some(PathBuf::from("esperienze_morgana.md"))
         );
         assert_eq!(
-            agent_self_fact_page(false, "frodo", default),
-            PathBuf::from("esperienze_frodo.md")
+            agent_self_fact_page(false, "frodo"),
+            Some(PathBuf::from("esperienze_frodo.md"))
         );
-        // A relationship fact with no served user degrades to the parking page.
-        assert_eq!(
-            agent_self_fact_page(false, "", default),
-            PathBuf::from(wiki::NOTES_FILENAME)
-        );
+        // A relationship fact with no served user names no page either.
+        assert_eq!(agent_self_fact_page(false, ""), None);
     }
 
     #[test]
     fn normalize_capture_page_handles_untrusted_target_page() {
-        // The default IS the parking page in production
-        // ([`IngestPolicy::default_page`]) — every fall-through below lands
-        // on it, which is what "nobody named a page" looks like.
-        let default = Path::new(wiki::NOTES_FILENAME);
-
-        // None / blank → default page.
-        assert_eq!(
-            normalize_capture_page(None, default),
-            PathBuf::from(wiki::NOTES_FILENAME)
-        );
-        assert_eq!(
-            normalize_capture_page(Some("   "), default),
-            PathBuf::from(wiki::NOTES_FILENAME)
-        );
+        // `None` is the answer, not a failure: nobody named a usable page, so
+        // the claim waits in the queue.
+        assert_eq!(normalize_capture_page(None), None);
+        assert_eq!(normalize_capture_page(Some("   ")), None);
 
         // Already a canonical .md path → preserved verbatim.
         assert_eq!(
-            normalize_capture_page(Some("spesa.md"), default),
-            PathBuf::from("spesa.md")
+            normalize_capture_page(Some("spesa.md")),
+            Some(PathBuf::from("spesa.md"))
         );
         // A coined name is ONE segment: a `/` is flattened, never honoured.
         // Left alone it made the folder — the write creates missing parents —
         // so a container nobody asked for was born out of a page name
         // (founder, 2026-08-19: *«un utente non può poter creare cartelle»*).
         assert_eq!(
-            normalize_capture_page(Some("spesa/detersivi.md"), default),
-            PathBuf::from("spesa_detersivi.md")
+            normalize_capture_page(Some("spesa/detersivi.md")),
+            Some(PathBuf::from("spesa_detersivi.md"))
         );
 
         // Missing extension on a safe slug → `.md` appended (the
         // `lista_spesa` extension-less-file bug).
         assert_eq!(
-            normalize_capture_page(Some("lista_spesa"), default),
-            PathBuf::from("lista_spesa.md")
+            normalize_capture_page(Some("lista_spesa")),
+            Some(PathBuf::from("lista_spesa.md"))
         );
 
         // Spelling variants collapse to ONE canonical page (the
         // `lista-spesa.md` vs `lista_spesa.md` duplicate-page bug).
         assert_eq!(
-            normalize_capture_page(Some("lista-spesa"), default),
-            PathBuf::from("lista_spesa.md")
+            normalize_capture_page(Some("lista-spesa")),
+            Some(PathBuf::from("lista_spesa.md"))
         );
         assert_eq!(
-            normalize_capture_page(Some("Lista della Spesa.md"), default),
-            PathBuf::from("lista_della_spesa.md")
+            normalize_capture_page(Some("Lista della Spesa.md")),
+            Some(PathBuf::from("lista_della_spesa.md"))
         );
 
-        // Uppercase / accented names are slugified instead of being
-        // dumped on the default page (the `Argo` internal-error bug:
-        // the fact now lands on its own sensible page).
+        // Uppercase / accented names are slugified instead of being dropped
+        // (the `Argo` internal-error bug: the fact now lands on its own
+        // sensible page).
         assert_eq!(
-            normalize_capture_page(Some("Argo"), default),
-            PathBuf::from("argo.md")
+            normalize_capture_page(Some("Argo")),
+            Some(PathBuf::from("argo.md"))
         );
         assert_eq!(
-            normalize_capture_page(Some("attività"), default),
-            PathBuf::from("attivit.md")
+            normalize_capture_page(Some("attività")),
+            Some(PathBuf::from("attivit.md"))
         );
 
-        // Path traversal degrades to the default page.
-        assert_eq!(
-            normalize_capture_page(Some("../escape"), default),
-            PathBuf::from(wiki::NOTES_FILENAME)
-        );
-        assert_eq!(
-            normalize_capture_page(Some("---"), default),
-            PathBuf::from(wiki::NOTES_FILENAME)
-        );
+        // Path traversal names no page.
+        assert_eq!(normalize_capture_page(Some("../escape")), None);
+        assert_eq!(normalize_capture_page(Some("---")), None);
     }
 
     #[test]
@@ -12023,7 +11994,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("samvisebot").unwrap(),
-            page: PathBuf::from("behaviour_rules.md"),
+            page: Some(PathBuf::from("behaviour_rules.md")),
             body: "Dai del tu all'utente.".into(),
             subject: Principal::User("samvisebot".into()),
             allow: Vec::new(),
@@ -12092,7 +12063,7 @@ mod tests {
         CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("samvisebot").unwrap(),
-            page: PathBuf::from(page),
+            page: Some(PathBuf::from(page)),
             body: body.to_owned(),
             subject: Principal::User("samvisebot".into()),
             allow: Vec::new(),
@@ -12311,7 +12282,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: "alice prefers coffee black".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
@@ -12406,7 +12377,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: "alice is 72 kg".into(),
             subject: Principal::User("alice".into()),
             allow: vec![Principal::Group("famiglia".into())],
@@ -12478,7 +12449,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: "alice wants to watch Jumanji".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
@@ -12576,7 +12547,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: "alice wants to watch Jumanji".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
@@ -12690,7 +12661,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("lista_spesa.md"),
+            page: Some(PathBuf::from("lista_spesa.md")),
             body: "manca il latte".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
@@ -12753,7 +12724,7 @@ mod tests {
         let public = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("bacheca.md"),
+            page: Some(PathBuf::from("bacheca.md")),
             body: "la farmacia chiude alle 19".into(),
             subject: Principal::User("alice".into()),
             allow: vec![Principal::Group("global".into())],
@@ -12770,7 +12741,7 @@ mod tests {
         let private = CaptureRequest {
             body: "alice prende il lexotan la sera".into(),
             allow: Vec::new(),
-            page: PathBuf::from("salute.md"),
+            page: Some(PathBuf::from("salute.md")),
             ..public.clone()
         };
         capture_buffer::buffer_capture(&pool, public, None)
@@ -12945,7 +12916,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: "alice is building a small greenhouse in the garden".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
@@ -13025,7 +12996,7 @@ mod tests {
             CaptureRequest {
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
-                page: PathBuf::from("cucina.md"),
+                page: Some(PathBuf::from("cucina.md")),
                 body: "alice deve comprare il latte".into(),
                 subject: Principal::User("alice".into()),
                 allow: Vec::new(),
@@ -13104,7 +13075,7 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
-                        page: PathBuf::from("cucina.md"),
+                        page: Some(PathBuf::from("cucina.md")),
                         body: body.into(),
                         subject: Principal::User("alice".into()),
                         allow,
@@ -13199,7 +13170,7 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
-                        page: PathBuf::from("@notes.md"),
+                        page: Some(PathBuf::from("@notes.md")),
                         body: body.into(),
                         subject: Principal::User("alice".into()),
                         allow: Vec::new(),
@@ -13274,7 +13245,7 @@ mod tests {
             CaptureRequest {
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
-                page: PathBuf::from("@notes.md"),
+                page: Some(PathBuf::from("@notes.md")),
                 body: "alice ha comprato il latte".into(),
                 subject: Principal::User("alice".into()),
                 allow: Vec::new(),
@@ -13347,7 +13318,7 @@ mod tests {
             CaptureRequest {
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
-                page: PathBuf::from("@notes.md"),
+                page: Some(PathBuf::from("@notes.md")),
                 body: "la riunione è giovedì".into(),
                 subject: Principal::User("alice".into()),
                 allow: Vec::new(),
@@ -13421,7 +13392,7 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
-                        page: PathBuf::from("@notes.md"),
+                        page: Some(PathBuf::from("@notes.md")),
                         body: body.into(),
                         subject,
                         allow: Vec::new(),
@@ -13510,7 +13481,7 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
-                        page: PathBuf::from("@notes.md"),
+                        page: Some(PathBuf::from("@notes.md")),
                         body: body.into(),
                         subject,
                         allow,
@@ -13608,7 +13579,7 @@ mod tests {
             CaptureRequest {
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
-                page: PathBuf::from("cucina.md"),
+                page: Some(PathBuf::from("cucina.md")),
                 body: "bob lavora alla Acme".into(),
                 subject: Principal::User("bob".into()),
                 allow: vec![Principal::User("alice".into())],
@@ -13764,7 +13735,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: "alice is building a small greenhouse in the garden".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
@@ -13830,7 +13801,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("dispensa.md"),
+            page: Some(PathBuf::from("dispensa.md")),
             body: "il latte scade il 25 giugno".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
@@ -13906,7 +13877,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("public.md"),
+            page: Some(PathBuf::from("public.md")),
             body: "la biblioteca chiude il 30".into(),
             subject: Principal::global(),
             allow: Vec::new(),
@@ -13974,7 +13945,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: "alice ha un orto sul balcone".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
@@ -14047,7 +14018,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: "alice ha un cane di nome Fido".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
@@ -14375,7 +14346,7 @@ mod tests {
                 fake_embedder(),
                 CaptureRequest {
                     wiki_id: WikiId::parse("alice").unwrap(),
-                    page: PathBuf::from(format!("lista_{i}.md")),
+                    page: Some(PathBuf::from(format!("lista_{i}.md"))),
                     body: format!("voce {i}"),
                     subject: "user:alice".parse().unwrap(),
                     allow: Vec::new(),
@@ -14571,7 +14542,7 @@ mod tests {
                 crate::capture::CaptureRequest {
                     authored_refs: Vec::new(),
                     wiki_id: crate::types::WikiId::parse("alice").unwrap(),
-                    page: PathBuf::from("spesa.md"),
+                    page: Some(PathBuf::from("spesa.md")),
                     body: item.to_owned(),
                     subject: "user:alice".parse().unwrap(),
                     allow: Vec::new(),
@@ -15042,6 +15013,10 @@ mod tests {
         .await
         .expect("seed relationship");
 
+        // The identity fact named no page, so it waits in the queue; the
+        // relationship one named `esperienze_alice.md` and is already filed.
+        promote_buffer(&pool, &tree).await;
+
         // A USER turn: the recall block now carries the agent's self-context.
         let user_llm =
             FakeLlmBackend::new("fake", "{\"intent\":\"recall\",\"context_snippet\":\"\"}");
@@ -15157,6 +15132,36 @@ mod tests {
         drop(dir);
     }
 
+    /// Write the agent's bio fact straight onto a page of its own wiki, the
+    /// shape the placement pass produces once it has decided. Extracted so
+    /// the test above stays about the recall block rather than the request.
+    async fn plant_agent_bio(tree: &WikiTree, pool: &SqlitePool) {
+        capture::wiki_capture(
+            tree,
+            pool,
+            fake_embedder(),
+            CaptureRequest {
+                wiki_id: WikiId::parse("samvisebot").unwrap(),
+                page: Some(PathBuf::from("preferenze.md")),
+                body: "L'agente parla italiano e inglese.".to_owned(),
+                subject: Principal::User("samvisebot".to_owned()),
+                allow: Vec::new(),
+                sender: None,
+                fact_type: Some("bio".to_owned()),
+                topics: Vec::new(),
+                dedup_threshold: None,
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                page_description: None,
+                salience: Some("normal".to_owned()),
+                authored_refs: Vec::new(),
+            },
+        )
+        .await
+        .expect("plant the bio fact");
+    }
+
     /// Roadmap 41c + the `WHO IS SPEAKING` section: `WHO YOU ARE` opens with
     /// the agent wiki's `_meta.summary` line and a `bio`-typed self-fact
     /// joins the identity bucket regardless of salience; the sender's own
@@ -15202,21 +15207,22 @@ mod tests {
         )
         .await
         .expect("seed bio fact");
-        // Identity is user-agnostic: the bio fact must NOT carry the partner tag.
-        let agent_facts = fact_index::find_by_filters(
-            &pool,
-            &fact_index::FactFilters {
-                wiki_id: Some("samvisebot".to_owned()),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+
+        // An identity self-fact names no page, so the turn leaves it in the
+        // queue: it is the placement pass, reading the whole memory, that
+        // decides where an agent's autobiography goes.
+        let queued = crate::capture_buffer::find_all_buffered(&pool, 10)
+            .await
+            .expect("queue");
+        assert_eq!(queued.len(), 1, "the bio self-fact waits: {queued:?}");
+        // Identity is user-agnostic: it must NOT carry the partner tag.
         assert!(
-            !agent_facts[0].topics.contains(&"alice".to_owned()),
+            !queued[0].topics.contains(&"alice".to_owned()),
             "a bio identity fact stays untagged: {:?}",
-            agent_facts[0].topics
+            queued[0].topics
         );
+        // Written onto a page, so the read side has something to bucket.
+        plant_agent_bio(&tree, &pool).await;
 
         let user_llm = FakeLlmBackend::new("fake", "{\"intent\":\"recall\"}");
         let resp = wiki_ingest_message(
@@ -15506,7 +15512,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: "alice prefers coffee black".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
@@ -15581,7 +15587,7 @@ mod tests {
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: "alice prefers coffee black".into(),
             subject: Principal::User("alice".into()),
             allow: Vec::new(),
@@ -15828,7 +15834,6 @@ mod tests {
     fn ingest_policy_default_uses_recall_dedup_threshold() {
         let p = IngestPolicy::default();
         assert!((p.dedup_threshold - DEFAULT_DEDUP_THRESHOLD).abs() < 1e-6);
-        assert_eq!(p.default_page, PathBuf::from("@notes.md"));
     }
 
     // Re-test of WikiMeta to ensure setup_workdir's serialized YAML

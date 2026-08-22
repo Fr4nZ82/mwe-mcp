@@ -24,60 +24,13 @@
 //! smart-wikis.md); this primitive is for
 //! **standard** wikis.
 
-use std::collections::BTreeSet;
-
 use sqlx::SqlitePool;
 
+use crate::capture_buffer;
 use crate::fact_index::{self, FactIndexError};
-use crate::promote::{self, DirectPromoteError};
+use crate::promote::DirectPromoteError;
 use crate::types::{Principal, WikiId};
 use crate::wiki::{WikiError, WikiTree};
-
-/// Cross-wiki evacuations land on the destination wiki's **parking page**
-/// ([`crate::wiki::NOTES_FILENAME`]) — the same page the four other cross-wiki
-/// paths use (REM's refile confirmer and recall repair, `comment_apply`, the
-/// agentic single-fact move). The plan keys pages by bare slug forest-wide, so
-/// only the reserved per-wiki foundation names are collision-safe.
-///
-/// It must not be the identity card: that page carries a single subject by
-/// design and is served whole into every turn, so evacuated facts about
-/// anybody else would ride into it.
-///
-/// Shared with the whole-wiki evacuation
-/// ([`crate::wiki_delete::delete_wiki_subtree`] in `SenderKeyed` mode).
-pub(crate) const EVACUATION_DEST_PAGE: &str = crate::wiki::NOTES_FILENAME;
-
-/// Nominate a destination wiki's parking page for **placement re-open**, so the next
-/// strong pass re-judges the facts an evacuation just parked there.
-///
-/// The parking page is the right landing pad and the wrong resting place: a fact that
-/// settles there is not re-judged by the hourly build (`reopen_consumable` is
-/// deliberately the strong pass's alone, after a light build undid a considered
-/// cross-wiki move within three hours on 2026-07-04), so without this an
-/// evacuated fact waits for REM's mass floor to notice the page grew. Parking
-/// the parking page hands those facts to the nightly Cartografo instead, with the
-/// receipt that pass leaves.
-///
-/// Best-effort: a plan that cannot be read or written costs the re-judgement,
-/// never the evacuation — the facts are already safely re-homed by the time
-/// this runs.
-fn nominate_buffers_for_reopen(tree: &WikiTree, dest_wikis: &BTreeSet<String>) {
-    if dest_wikis.is_empty() {
-        return;
-    }
-    let slugs: Vec<String> = dest_wikis
-        .iter()
-        .map(|w| crate::planner::plan_slug_for_page(w, EVACUATION_DEST_PAGE))
-        .collect();
-    match crate::planner::park_bridge_signals(tree, &[], &slugs) {
-        Ok(n) if n > 0 => tracing::info!(
-            parked = n,
-            "evacuation: destination parking pages nominated for placement re-open"
-        ),
-        Ok(_) => {},
-        Err(e) => tracing::warn!(error = %e, "evacuation: re-open nomination failed"),
-    }
-}
 
 /// Failure of a page-level operation.
 #[derive(Debug, thiserror::Error)]
@@ -88,6 +41,9 @@ pub enum PageError {
     /// A `fact_index` read or tombstone failed.
     #[error(transparent)]
     FactIndex(#[from] FactIndexError),
+    /// Handing a foreign fact back to the capture buffer failed.
+    #[error(transparent)]
+    Buffer(#[from] crate::capture_buffer::CaptureBufferError),
     /// An evacuation (cross-wiki refile) failed.
     #[error(transparent)]
     Refile(#[from] DirectPromoteError),
@@ -164,9 +120,7 @@ pub async fn delete_page_direct(
     let rows = fact_index::find_active_by_source_path(pool, &source_path).await?;
 
     let mut out = PageDeletionOutcome::default();
-    // The wikis this deletion pushed facts into, so their buffers can be
-    // nominated for re-placement once — not once per fact.
-    let mut evacuated_to: BTreeSet<String> = BTreeSet::new();
+    let now = chrono::Utc::now().to_rfc3339();
     for row in &rows {
         // The principal responsible for the fact: its sender (provenance) when
         // materialized, else its subject — the sender-gone fallback.
@@ -189,32 +143,20 @@ pub async fn delete_page_direct(
                 fact_index::mark_forgotten(pool, &row.fact_id, reason).await?;
                 out.facts_tombstoned += 1;
             },
-            Action::Evacuate(dest) => {
-                promote::apply_fact_refile_collect(
-                    pool,
-                    tree,
-                    &row.fact_id,
-                    wiki_id.as_str(),
-                    page,
-                    &dest,
-                    EVACUATION_DEST_PAGE,
-                    Some(reason),
-                )
-                .await?;
-                evacuated_to.insert(dest.clone());
+            Action::Evacuate => {
+                capture_buffer::rebuffer_fact(pool, &row.fact_id, &now).await?;
                 out.facts_evacuated += 1;
             },
         }
     }
-    nominate_buffers_for_reopen(tree, &evacuated_to);
-
     Ok(out)
 }
 
 pub(crate) enum Action {
     Tombstone,
-    /// Evacuate to this home wiki id.
-    Evacuate(String),
+    /// Hand the fact back: it goes into the capture buffer, and the next
+    /// placement pass writes it wherever its subject lives now.
+    Evacuate,
 }
 
 /// The per-fact decision (module docs): tombstone the deleter's own
@@ -234,36 +176,17 @@ pub(crate) fn decide(
     if responsible == deleter {
         return Action::Tombstone;
     }
-    if let Some(dest) = existing_home_wiki(responsible, tree) {
-        return Action::Evacuate(dest);
+    if existing_home_wiki(responsible, tree).is_some() {
+        return Action::Evacuate;
     }
     // Sender gone (no home wiki) → fall back to the subject axis.
     if subject == deleter {
         return Action::Tombstone;
     }
-    existing_home_wiki(subject, tree).map_or(Action::Tombstone, Action::Evacuate)
-}
-
-/// Where one fact waits when its wiki is **dissolved** (module docs of
-/// [`crate::wiki_delete`]).
-///
-/// A dissolve destroys nothing, so — unlike [`decide`] — the deleter's
-/// authority does not enter: every fact only needs a **live** wiki to sit in
-/// while its placement is re-decided, because a row pointing into the trash
-/// would drop out of the compilation plan's input and never be re-placed.
-/// The preference order is the fact's own provenance first (sender, then
-/// subject), and the deleter's home only as the last resort that keeps it
-/// reachable. `None` means the fact has no live home anywhere — the caller
-/// must surface it rather than silently destroy it.
-pub(crate) fn dissolve_home(
-    responsible: &Principal,
-    subject: &Principal,
-    deleter: &Principal,
-    tree: &WikiTree,
-) -> Option<String> {
-    existing_home_wiki(responsible, tree)
-        .or_else(|| existing_home_wiki(subject, tree))
-        .or_else(|| existing_home_wiki(deleter, tree))
+    if existing_home_wiki(subject, tree).is_some() {
+        return Action::Evacuate;
+    }
+    Action::Tombstone
 }
 
 /// The home wiki id of a principal **if it exists** in the tree: user `alice` →
@@ -322,21 +245,21 @@ mod tests {
             decide(&franz, &franz, &franz, &tree),
             Action::Tombstone
         ));
-        // foreign sender with a home wiki → evacuate there, intact.
-        match decide(&morgana, &franz, &franz, &tree) {
-            Action::Evacuate(d) => assert_eq!(d, "morgana"),
-            Action::Tombstone => panic!("expected evacuation to morgana"),
-        }
+        // foreign sender with a home wiki → hand it back, intact.
+        assert!(matches!(
+            decide(&morgana, &franz, &franz, &tree),
+            Action::Evacuate
+        ));
         // sender gone (no wiki), subject == deleter → tombstone.
         assert!(matches!(
             decide(&ghost, &franz, &franz, &tree),
             Action::Tombstone
         ));
-        // sender gone, subject has a wiki ≠ deleter → evacuate to the subject's wiki.
-        match decide(&ghost, &morgana, &franz, &tree) {
-            Action::Evacuate(d) => assert_eq!(d, "morgana"),
-            Action::Tombstone => panic!("expected evacuation to the subject's wiki"),
-        }
+        // sender gone, subject has a wiki ≠ deleter → hand it back.
+        assert!(matches!(
+            decide(&ghost, &morgana, &franz, &tree),
+            Action::Evacuate
+        ));
         // neither sender nor subject has a home wiki → tombstone (nobody to hand
         // it to).
         assert!(matches!(

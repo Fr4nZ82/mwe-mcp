@@ -823,14 +823,14 @@ async fn compile_leaf_page(
 /// does with it is its own business — nothing here promises a turn ever sees
 /// it.
 ///
-/// It keys on the page being a **foundation node**, not on a file name: the
-/// name it used to key on stopped existing when every foundation node moved
-/// off the wiki root (2026-08-03), and the branch could then never fire again
-/// — the abstract would have gone stale for ever with nothing to say so.
+/// It keys on the page being the wiki's **identity card**, not on a file
+/// name: the name it used to key on stopped existing when the card moved off
+/// the wiki root (2026-08-03), and the branch could then never fire again —
+/// the abstract would have gone stale for ever with nothing to say so.
 ///
 /// Best-effort: a `_meta` hiccup must not fail a page that already wrote.
 fn sync_foundation_summary(page: &PagePlan, abs_dir: &std::path::Path, description: &str) {
-    if !page.is_foundation() {
+    if !page.is_identity_card() {
         return;
     }
     if let Err(e) = meta_annotate::sync_wiki_summary(abs_dir, description.trim()) {
@@ -2422,10 +2422,6 @@ mod tests {
 
         // Right type, wrong page.
         page.page_path = "viaggi.md".to_owned();
-        assert_eq!(page_kind(&page), "leaf");
-
-        // Right page, wrong type — the parking page is not a card.
-        page.page_path = crate::wiki::NOTES_FILENAME.to_owned();
         assert_eq!(page_kind(&page), "leaf");
     }
 

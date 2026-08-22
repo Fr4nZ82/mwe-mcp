@@ -36,10 +36,10 @@ an operator override at `<workdir>/prompts/comment-apply.md` wins.
   `subject`/`allow` are the LLM's (subject + audience under the ingest rules,
   defaulting to `user:<commenter>` / `[]`) with `sender` = the comment's author;
   and a `move` is refused if its destination does
-  not exist / is smart / belongs to a different owner. A cross-wiki move always lands
-  on the destination wiki's **buffer** page (`CROSS_WIKI_DEST_PAGE` =
-  `wiki::NOTES_FILENAME`; the dest wiki re-homes it on its next compile). A `move` is born-applied and final; an
-  unparseable response leaves the comments for the next cycle.
+  not exist / is smart / belongs to a different owner, or if a cross-wiki move
+  names no `dest_page` — there is no per-wiki inbox to drop a fact in. A `move`
+  is born-applied and final; an unparseable response leaves the comments for
+  the next cycle.
 
 ## System prompt
 

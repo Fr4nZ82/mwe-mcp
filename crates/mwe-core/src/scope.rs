@@ -395,7 +395,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from(page),
+            page: Some(PathBuf::from(page)),
             body: body.to_owned(),
             subject: format!("user:{}", wiki.split('-').next().unwrap_or(wiki))
                 .parse::<Principal>()

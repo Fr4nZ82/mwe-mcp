@@ -315,7 +315,7 @@ pub fn review(
 /// The per-page shape checks of the plan-level pass: empty page, oversized
 /// nomination.
 fn check_page_shape(slug: &str, page: &PagePlan, report: &mut ReviewReport) {
-    if !page.is_foundation() && page.primary_facts.is_empty() {
+    if !page.is_identity_card() && page.primary_facts.is_empty() {
         report.empty_leaves.push(slug.to_owned());
     }
     // There is no "a page has children" check any more: pages have no parent

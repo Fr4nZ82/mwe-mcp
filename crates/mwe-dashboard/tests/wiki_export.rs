@@ -86,7 +86,7 @@ async fn capture_fact(pool: &SqlitePool, tree: &WikiTree, page: &str, body: &str
     let req = CaptureRequest {
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse("alice").unwrap(),
-        page: PathBuf::from(page),
+        page: Some(PathBuf::from(page)),
         body: body.to_owned(),
         subject: "user:alice".parse::<Principal>().unwrap(),
         allow: vec![],

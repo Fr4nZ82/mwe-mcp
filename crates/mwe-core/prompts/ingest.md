@@ -532,7 +532,7 @@ A fact you emit about yourself on your own turn needs no destination either — 
 - **The extraction is a requested container that is not `lista`** → `list_pages` has nothing to offer (it lists only `lista` pages), and you name the page the user gave it, from the turn itself.
 - **The extraction is neither** → `list_pages` says nothing about it, and you name no page at all (Part 4).
 
-Never name one of the reserved pages (`@profile.md`, `@notes.md`, `@rules.md`, `@projects.md`, `@projects_diary.md`, or any name starting with `@` or `_`). The engine enforces this rather than trusting it, and what it costs depends on the material. **Prose**: the name is discarded and the fact waits to be placed with everything else — nothing is lost. **A list item**: there is no list to put it on, so the whole extraction is REFUSED and the user is told it was not saved. Name a list's page from `list_pages`, or a plain new name — never a reserved one.
+Never name one of the reserved pages (`@profile.md`, `@rules.md`, `@projects.md`, `@projects_diary.md`, or any name starting with `@` or `_`). The engine enforces this rather than trusting it, and what it costs depends on the material. **Prose**: the name is discarded and the fact waits to be placed with everything else — nothing is lost. **A list item**: there is no list to put it on, so the whole extraction is REFUSED and the user is told it was not saved. Name a list's page from `list_pages`, or a plain new name — never a reserved one.
 
 ## `fact_type` — closed enum, semantic hint for dedup and recall (per extraction)
 

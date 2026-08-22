@@ -714,7 +714,7 @@ mod tests {
         CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from("cucina.md"),
+            page: Some(PathBuf::from("cucina.md")),
             body: body.to_owned(),
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: Vec::new(),
@@ -867,7 +867,7 @@ mod tests {
         let (_dir, tree, pool) = setup().await;
         let mut req = cap_req("Alice preferisce il tè.");
         // The live route's field. The parking page drops it; asserted below.
-        req.page = PathBuf::from("preferenze.md");
+        req.page = Some(PathBuf::from("preferenze.md"));
         req.style = Some(crate::wiki::PageStyle::ProsaTecnica);
         req.page_description = Some("Le preferenze di Alice".to_owned());
         let buffered = capture_buffer::buffer_capture(&pool, req, None)

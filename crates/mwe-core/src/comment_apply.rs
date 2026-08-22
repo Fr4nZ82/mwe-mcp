@@ -65,13 +65,6 @@ pub const BUNDLED_COMMENT_APPLY_MD: &str = include_str!("../prompts/comment-appl
 /// Tombstone reason stamped on a fact a comment asks to forget.
 const REASON_COMMENT_REMOVE: &str = "dashboard_comment";
 
-/// Landing page for a cross-wiki `move`: a fact refiled into another wiki
-/// always lands on that wiki's `@notes.md`. The compilation plan keys pages by
-/// bare slug forest-wide, so a named cross-wiki page would collide; the
-/// destination wiki's own compile pass then re-homes the fact onto the right
-/// page. Same contract as the REM cross-wiki refile sweep.
-const CROSS_WIKI_DEST_PAGE: &str = crate::wiki::NOTES_FILENAME;
-
 /// Cap on the comment excerpt woven into a move receipt's `reason` so the
 /// audit string stays a single readable line.
 const MOVE_REASON_EXCERPT_CHARS: usize = 160;
@@ -634,10 +627,12 @@ async fn apply_add(
 /// intent. Two shapes, both reusing the engine REM already owns:
 ///
 /// - **cross-wiki** (`op.dest_wiki_id` set and ≠ this wiki): the fact is
-///   refiled onto the destination wiki's parking page page via
-///   [`promote::apply_fact_refile_direct`]. The destination must locate, be
-///   **owned by the same principal** as the source wiki (no move across owners), and be
-///   **standard** (a smart wiki is the consumer's — refused).
+///   refiled onto the named `dest_page` of that wiki via
+///   [`promote::apply_fact_refile_direct`]. A cross-wiki move MUST name its
+///   page — there is no per-wiki inbox to drop a fact in. The destination must
+///   locate, be **owned by the same principal** as the source wiki (no move
+///   across owners), and be **standard** (a smart wiki is the consumer's —
+///   refused).
 /// - **same-wiki page move** (`dest_wiki_id` absent / == this wiki, with a
 ///   `dest_page` that differs from the source page): the fact moves to that
 ///   page via [`promote::apply_paragraph_to_file_direct`].
@@ -696,6 +691,17 @@ async fn apply_move(
         .filter(|s| !s.is_empty() && *s != wiki_id.as_str());
 
     if let Some(dest_wiki_id) = dest_wiki_id {
+        let Some(dest_page) = op
+            .dest_page
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            report.errors.push(format!(
+                "move refused: a move into {dest_wiki_id} must name its dest_page"
+            ));
+            return Ok(());
+        };
         apply_move_cross_wiki(
             pool,
             tree,
@@ -703,6 +709,7 @@ async fn apply_move(
             wiki_id,
             source_path,
             dest_wiki_id,
+            dest_page,
             add_subject,
             recipient,
             reason,
@@ -738,6 +745,7 @@ async fn apply_move_cross_wiki(
     wiki_id: &WikiId,
     source_path: &str,
     dest_wiki_id: &str,
+    dest_page: &str,
     add_subject: &Principal,
     recipient: Option<String>,
     reason: &str,
@@ -781,7 +789,7 @@ async fn apply_move_cross_wiki(
         wiki_id.as_str(),
         &source_page,
         dest_wiki_id,
-        CROSS_WIKI_DEST_PAGE,
+        dest_page,
         Some(reason),
         recipient,
     )
@@ -1648,7 +1656,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: std::path::PathBuf::from(page),
+            page: Some(std::path::PathBuf::from(page)),
             body: body.to_owned(),
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: vec![],
@@ -1670,7 +1678,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn move_relocates_fact_cross_wiki_onto_dest_notes_and_mints_receipt() {
+    async fn move_relocates_fact_cross_wiki_onto_the_named_page_and_mints_receipt() {
         let (dir, tree, pool) = setup_with_dests().await;
         let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 2));
         let fid = capture_marker(
@@ -1688,11 +1696,12 @@ mod tests {
         )
         .await;
 
-        // The model resolves "salute" → dest_wiki_id (dest_page null → index).
+        // The model resolves "salute" → dest_wiki_id, and names the page it
+        // lands on: a move into another wiki has nowhere else to go.
         let llm = FakeLlmBackend::new(
             "fake",
             format!(
-                "{{\"ops\":[{{\"action\":\"move\",\"fact_id\":\"{fid}\",\"dest_wiki_id\":\"salute\",\"dest_page\":null}}]}}"
+                "{{\"ops\":[{{\"action\":\"move\",\"fact_id\":\"{fid}\",\"dest_wiki_id\":\"salute\",\"dest_page\":\"referti.md\"}}]}}"
             ),
         );
         let wiki_id = WikiId::parse("alice").unwrap();
@@ -1715,7 +1724,7 @@ mod tests {
         // The fact moved cross-wiki onto salute's parking page page.
         let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
         assert_eq!(row.wiki_id, "salute");
-        assert_eq!(row.source_path, "wikis/salute/@notes.md");
+        assert_eq!(row.source_path, "wikis/salute/referti.md");
 
         // A born-applied wiki_promote receipt was minted.
         let receipts: i64 = sqlx::query_scalar(
@@ -1931,7 +1940,7 @@ mod tests {
         let llm = FakeLlmBackend::new(
             "fake",
             format!(
-                "{{\"ops\":[{{\"action\":\"move\",\"fact_id\":\"{fid}\",\"dest_wiki_id\":\"proj\",\"dest_page\":null}}]}}"
+                "{{\"ops\":[{{\"action\":\"move\",\"fact_id\":\"{fid}\",\"dest_wiki_id\":\"proj\",\"dest_page\":\"appunti.md\"}}]}}"
             ),
         );
         let wiki_id = WikiId::parse("alice").unwrap();

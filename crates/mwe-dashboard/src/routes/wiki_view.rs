@@ -484,6 +484,7 @@ fn map_wiki_delete_err(e: wiki_delete::WikiDeleteError) -> DashboardError {
         E::Wiki(we) => map_wiki_err(we),
         E::FactIndex(_)
         | E::Refile(_)
+        | E::Buffer(_)
         | E::Move { .. }
         | E::Enrollment(_)
         | E::Plan(_)

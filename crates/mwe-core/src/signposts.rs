@@ -890,7 +890,7 @@ async fn put(
     }
     let capture_req = CaptureRequest {
         wiki_id: owner_wiki_id(req.wiki_id)?,
-        page: req.page.clone(),
+        page: Some(req.page.clone()),
         body: req.body,
         subject: req.subject.clone(),
         allow: req.allow.to_vec(),

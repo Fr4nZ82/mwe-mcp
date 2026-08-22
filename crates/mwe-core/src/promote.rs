@@ -2207,46 +2207,6 @@ pub async fn apply_fact_refile_direct(
     })
 }
 
-/// Move **one** fact cross-wiki **without** minting its own receipt — the
-/// bundle building block.
-///
-/// Like [`apply_fact_refile_direct`] (same handler, same on-disk effect) but
-/// it returns the `fact_refile` spec instead of emitting a born-applied
-/// receipt. The governed page-deletion bundle ([`crate::page::delete_page_direct`])
-/// evacuates each foreign-authored fact through this and folds the returned
-/// specs into the **single** `bundle` receipt, so the whole page deletion is
-/// one receipt.
-///
-/// # Errors
-///
-/// [`DirectPromoteError::Apply`] when the move handler refuses or fails
-/// (nothing changed on disk).
-pub(crate) async fn apply_fact_refile_collect(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    fact_id: &FactId,
-    source_wiki_id: &str,
-    source_page: &str,
-    dest_wiki_id: &str,
-    dest_page: &str,
-    reason: Option<&str>,
-) -> Result<Value, DirectPromoteError> {
-    let context = fact_refile_context(
-        fact_id,
-        source_wiki_id,
-        source_page,
-        dest_wiki_id,
-        dest_page,
-        reason,
-    );
-    let answers = json!({
-        "variant": VARIANT_FACT_REFILE,
-        "dest_wiki_id": dest_wiki_id,
-        "dest_page": dest_page,
-    });
-    Ok(apply_fact_refile(pool, tree, &context, &answers).await?)
-}
-
 /// Inputs of [`apply_page_merge_direct`] — the husk + survivor identity the
 /// REM merge sub-job resolved from the compilation plan, plus presentation
 /// hints for the receipt.
@@ -3034,7 +2994,7 @@ mod tests {
         let req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: PathBuf::from(page),
+            page: Some(PathBuf::from(page)),
             body: body.to_owned(),
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: vec![],

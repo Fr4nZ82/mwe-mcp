@@ -1426,7 +1426,7 @@ pub async fn classify_document(
         |_| PathBuf::from("documento.md"),
         |s| PathBuf::from(format!("{s}.md")),
     );
-    let page = normalize_capture_page(plan.page_slug.as_deref(), &fallback);
+    let page = normalize_capture_page(plan.page_slug.as_deref()).unwrap_or(fallback);
 
     let summary = plan
         .summary
@@ -1977,11 +1977,11 @@ async fn process_job(
             Arc::clone(embedder),
             CaptureRequest {
                 wiki_id,
-                page: PathBuf::from(
+                page: Some(PathBuf::from(
                     job.document_page
                         .clone()
                         .unwrap_or_else(|| "documento.md".into()),
-                ),
+                )),
                 body,
                 subject: subject.clone(),
                 allow: allow.clone(),
@@ -2219,22 +2219,19 @@ async fn process_job(
                 fact_subject_fallback.clone()
             };
             // Same guard as the live capture path, on the same class of name:
-            // one the extractor coined. A reserved name falls through to the
-            // parking page.
-            let coined = normalize_capture_page(
-                cand.target_page.as_deref(),
-                Path::new(crate::wiki::NOTES_FILENAME),
-            );
-            let page = if crate::wiki::names_reserved_page(&coined) {
-                tracing::warn!(
-                    job_id = job.job_id,
-                    page = %coined.display(),
-                    "document: extracted fact named a reserved page — routed to the buffer instead"
-                );
-                PathBuf::from(crate::wiki::NOTES_FILENAME)
-            } else {
-                coined
-            };
+            // one the extractor coined. A reserved name leaves the claim
+            // unplaced, which is what the queue is for.
+            let page = normalize_capture_page(cand.target_page.as_deref()).filter(|coined| {
+                let ok = !crate::wiki::names_reserved_page(coined);
+                if !ok {
+                    tracing::warn!(
+                        job_id = job.job_id,
+                        page = %coined.display(),
+                        "document: extracted fact named a reserved page — left for the queue to place"
+                    );
+                }
+                ok
+            });
             let body = cand.body.trim().to_owned();
             // Reverse-channel snapshot before `body` moves into the
             // request: a user-owned fact whose subject is not the uploader
