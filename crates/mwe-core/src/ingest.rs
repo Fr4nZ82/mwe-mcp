@@ -7792,6 +7792,16 @@ mod tests {
         // non-identity root cannot derive a scope principal.)
         write_wiki(&wikis, "alice", "Alice", "wiki-user", None);
         let tree = WikiTree::open(dir.path()).expect("open tree");
+        // ENROLLED, which is what gives her wiki an identity card. Since
+        // 2026-08-22 the card is the only placement that needs no model, so a
+        // test that drains the buffer deterministically places nothing
+        // without it.
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('alice','[]',0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         (dir, tree, pool)
     }
 
@@ -14464,7 +14474,10 @@ mod tests {
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
             \"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
             \"subject_id\":\"user:alice\",\"body\":\"Alice beve il caffè amaro.\",\
-            \"fact_type\":\"preference\"}]}";
+            \"fact_type\":\"preference\",\"salience\":\"high\"}]}";
+        // `salience: high` is what makes the claim placeable without a
+        // Cartografo: the identity card is the only deterministic home since
+        // 2026-08-22, and this test is about the staged vector, not placement.
         let llm = FakeLlmBackend::new("fake", json);
         let message = "il caffè lo bevo amaro";
         wiki_ingest_message(

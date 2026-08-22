@@ -1,7 +1,7 @@
 ---
 name: cartografo
 description: planner stage 1 — assigns each fact to exactly one page and proposes emergent concept pages (one-fact-one-page; identity pages carry one subject; grown pages split by content)
-version: 1.17
+version: 1.18
 default_version_at_bootstrap: v1.13
 ---
 
@@ -20,8 +20,7 @@ an operator override at `<workdir>/prompts/cartografo.md` wins.
 - **Model**: a **strong** model (the structural-judgment tier,
   NOT the 9B workhorse). `temperature` low, JSON output.
 - **Placeholders**: `{foundation_pages}` (the batch's wiki's foundation pages,
-  then **every other wiki's identity card** — foreign buffers are not offered,
-  parking a fact in somebody else's inbox is not a placement),
+  then **every other wiki's identity card**),
   `{concept_pages}` (the forest's emergent concept pages, the batch's own wiki
   first and never cut, from the registry + every page proposed earlier this
   run — the dedup context and the destination list in one),
@@ -82,12 +81,13 @@ You are the Cartografo (Cartographer) of a personal, multi-user wiki memory. Eac
 
 FUNDAMENTAL RULE — ONE FACT, ONE PAGE: every fact has EXACTLY ONE home page. Pages link to each other with [[wikilinks]] but MUST NOT duplicate fact content. Choose the single most semantically pertinent page for each fact — or, under the rule above, none.
 
-PAGE TOPOLOGY — three kinds, and each one IS a file name. You never declare a
+PAGE TOPOLOGY — two kinds, and each one IS a file name. You never declare a
 kind: you name a page, and its name says what it is.
 
 - person — a user's identity CARD (slug = the user id, file `@profile.md`). Holds that user's biographical / identity / personal-preference facts.
-- parking_page — a wiki's PARKING page (file `@notes.md`), one per wiki. Where a fact waits when no page fits it yet: it HOLDS facts like a concept_leaf, and REM's reorg later lifts them onto real pages. **Never name it in `assignments`** — you park a fact by OMITTING it, and the engine puts it there; naming it explicitly would look like a decision when it is the absence of one. On a topic sub-wiki (an emerged dossier, a hand-forged topic wiki) it is the only foundation page — a topic has no identity, its subject may be a person, a pet, a project, never a user.
-- concept_leaf — a thematic detail page. HOLDS facts, and hangs under nothing: **pages have no parent**, they are groupings of facts that belong together because they narrate one thing. **Every page you propose is one of these** — there is no other kind, and nothing to declare: a page's kind is its file name, and yours is `<slug>.md`. Its slug is never one of the reserved page names (`index`, `profile`, `notes`, `rules`, `projects`): a proposal that coins one is dropped, and its facts fall through to the buffer.
+- concept_leaf — a thematic detail page. HOLDS facts, and hangs under nothing: **pages have no parent**, they are groupings of facts that belong together because they narrate one thing. **Every page you propose is one of these** — there is no other kind, and nothing to declare: a page's kind is its file name, and yours is `<slug>.md`. Its slug is never one of the reserved page names (`profile`, `notes`, `rules`, `projects`, `project_diary`): a proposal that coins one is dropped, and its facts keep waiting.
+
+**LEAVING A FACT UNPLACED IS AN ANSWER.** A fact you do not assign is not lost and does not land anywhere: it keeps waiting where it already is, and the next pass — or the nightly one, which reads a whole wiki at once with a stronger model — sees it again. There is no page meaning "unsorted", so **never** reach for one: omitting the fact IS how you say "nothing here fits it yet", and it costs nothing.
 
 ASSIGNMENT RULES:
 1. subject=user:<id> → that user's person page IF the fact is bio / preference / personal identity; otherwise it MAY go to a thematic concept_leaf if more pertinent (e.g. a detailed work topic).

@@ -221,7 +221,7 @@ pub struct FactForPage {
     /// `.md` path; `fact_index.target_page`). A *hint*: in the LIGHT cadence the
     /// planner settles the fact here without re-running the strong-model
     /// Cartografo; the REM Cartografo may re-home it. `None`
-    /// = unproposed (older rows / the direct path) → orphan-fallback.
+    /// = unproposed (older rows / the direct path) → identity fallback.
     #[serde(default)]
     pub target_page: Option<String>,
     /// Ingest-proposed writing style (closed palette `prosa` | `prosa-tecnica` |
@@ -911,19 +911,31 @@ pub fn build_compilation_plan(
         }
     }
 
-    // 5. orphan fallback (deterministic): subject's person page, else the fact's
-    // source wiki's foundation page, else skip (never an arbitrary page).
+    // 5. The identity fallback (deterministic), and it is the only one left.
+    //
+    // A `salience: "high"` fact is always-on material the classifier
+    // *reserved* — identity, health/safety, a hard standing constraint — so it
+    // has a home whatever anybody decided: the subject's identity card.
+    //
+    // **Everything else that reaches here is simply not placed**, and that is
+    // now a state rather than a problem (founder, 2026-08-22). It used to be
+    // pushed onto the wiki's parking page, a real page holding real facts
+    // whose whole meaning was "not sorted yet"; the page is gone and the claim
+    // waits in the buffer instead, where the next pass sees it again and the
+    // nightly one reads the whole wiki at once. A claim left here is NOT
+    // dropped: `dream_light::materialise` promotes only what the plan placed,
+    // so an unplaced claim keeps its buffer row.
     for f in facts {
         if assigned.contains(f.fact_id.as_str()) {
             continue;
         }
-        let target = orphan_target(f, &pages);
-        if let Some(slug) = target
+        if f.salience.as_deref() != Some("high") {
+            continue;
+        }
+        if let Some(slug) = identity_card_target(f, &pages)
             && let Some(page) = pages.get_mut(&slug)
         {
             page.primary_facts.push(f.clone());
-        } else {
-            tracing::warn!(fact_id = %f.fact_id, "planner: orphan fact has no home page, dropped from plan");
         }
     }
 
@@ -1120,30 +1132,19 @@ fn resolve_page_wiki(slug: &str, slug_source_wiki: &BTreeMap<String, String>) ->
         .filter(|w| w != crate::types::WikiId::ROOT)
 }
 
-/// Deterministic orphan home — the subject's wiki first, then the fact's source
-/// wiki; `None` when neither has a foundation node.
+/// The identity card a `salience: "high"` fact belongs on — the subject's
+/// wiki first, then the fact's source wiki.
 ///
-/// **Which page of that wiki depends on the fact, not only on the wiki.** Two
-/// different things arrive here and they do not belong together:
+/// `None` when neither has a card, which is the ordinary case for a topic
+/// wiki and for the builtin global group: a topic has no identity to reserve,
+/// so the fact stays unplaced and keeps waiting like any other.
 ///
-/// - a `salience: "high"` fact is always-on material the classifier
-///   *reserved* — identity, health/safety, a hard standing constraint — and
-///   its home is the wiki's **identity card**
-///   ([`crate::wiki::PROFILE_FILENAME`]). This is the whole reason
-///   [`ingest_placement_blueprint`] leaves it unassigned rather than honouring
-///   its proposed page.
-/// - anything else that reached the fallback simply has no page yet, and its
-///   home is the wiki's **parking page** ([`crate::wiki::NOTES_FILENAME`]), from
-///   which REM's reorg sweep lifts it onto a real page.
-///
-/// Sending both to one page is not a smaller version of this: it either buries
-/// the card under unsorted facts or promotes every unplaced fact to identity.
-/// A wiki with no card (a topic wiki) takes the parking page for both — a topic has
-/// no identity to reserve.
-fn orphan_target(f: &FactForPage, pages: &BTreeMap<String, PagePlan>) -> Option<String> {
-    let identity = f.salience.as_deref() == Some("high");
+/// This is the last deterministic placement left. Everything that is not
+/// always-on material has no fallback at all since 2026-08-22 — there is no
+/// page that means "unsorted", so an unplaced claim simply waits.
+fn identity_card_target(f: &FactForPage, pages: &BTreeMap<String, PagePlan>) -> Option<String> {
     let subject_slug = match &f.subject {
-        // The builtin global group has no subject page to home an orphan on.
+        // The builtin global group has no subject page of its own.
         p if p.is_global() => String::new(),
         Principal::User(id) | Principal::Group(id) => slugify(id),
     };
@@ -1152,32 +1153,26 @@ fn orphan_target(f: &FactForPage, pages: &BTreeMap<String, PagePlan>) -> Option<
         if wiki_slug.is_empty() {
             continue;
         }
-        if let Some(slug) = foundation_slug_for(&wiki_slug, identity, pages) {
+        if let Some(slug) = identity_card_slug_for(&wiki_slug, pages) {
             return Some(slug);
         }
     }
     None
 }
 
-/// The foundation slug a fact should land on within the wiki keyed
-/// `wiki_slug` — its card when `identity`, else its parking page. Falls back to
-/// whichever of the two the wiki actually has (a topic wiki has no card).
-fn foundation_slug_for(
-    wiki_slug: &str,
-    identity: bool,
-    pages: &BTreeMap<String, PagePlan>,
-) -> Option<String> {
-    let card = pages
+/// The identity card's slug within the wiki keyed `wiki_slug`, or `None` when
+/// that wiki has no card.
+///
+/// **No fallback, deliberately.** It used to fall through to the wiki's
+/// parking page, which turned "always-on material with nowhere to be
+/// always-on" into "unsorted" — two different things on one page. A topic
+/// wiki has no identity to reserve, so a `high` fact whose wikis have no card
+/// stays in the buffer like any other unplaced claim.
+fn identity_card_slug_for(wiki_slug: &str, pages: &BTreeMap<String, PagePlan>) -> Option<String> {
+    pages
         .get(wiki_slug)
         .filter(|p| p.is_identity_card())
-        .map(|_| wiki_slug.to_owned());
-    let buf = buffer_slug(wiki_slug);
-    let parking = pages.get(&buf).filter(|p| p.is_parking_page()).map(|_| buf);
-    if identity {
-        card.or(parking)
-    } else {
-        parking.or(card)
-    }
+        .map(|_| wiki_slug.to_owned())
 }
 
 // ---------- fingerprint + dirty set ----------
@@ -2244,12 +2239,12 @@ pub async fn classify_facts(
         {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(error = %e, "cartografo: LLM failed for a batch, facts will orphan-fallback");
+                tracing::warn!(error = %e, "cartografo: LLM failed for a batch, facts will identity fallback");
                 continue;
             },
         };
         let Some(bp) = parse_json::<Blueprint>(&resp.text) else {
-            tracing::warn!("cartografo: unparseable batch output, facts will orphan-fallback");
+            tracing::warn!("cartografo: unparseable batch output, facts will identity fallback");
             continue;
         };
         for a in &bp.assignments {
@@ -2299,7 +2294,7 @@ pub enum NewFactPlacement<'a> {
     /// Settle each new fact onto the page the ingest classifier already
     /// proposed (`fact_index.target_page`), deterministically and with NO LLM
     /// call. A fact with no concrete proposed page (a reserved name / empty /
-    /// `None`) orphan-falls-back.
+    /// `None`) falls back to the identity card.
     ///
     /// Since the classifier stopped proposing a page for prose, this places
     /// only what the USER named — a `lista`, or a container they asked for by
@@ -2328,10 +2323,10 @@ pub enum NewFactPlacement<'a> {
     /// overnight.
     ///
     /// A `salience: "high"` fact is in neither half — it is reserved for the
-    /// subject's identity card and gets there by orphan-fallback, exactly as
+    /// subject's identity card and gets there by identity fallback, exactly as
     /// under [`Self::Ingest`].
     NamedThenCartografo(&'a dyn LlmBackend),
-    /// No placement intelligence: every new fact orphan-falls-back to its
+    /// No placement intelligence: every new fact falls back to the identity card to its
     /// subject / source-wiki foundation page — the historical `cartografo = None`
     /// degradation, kept for a Full pass on a deployment with no strong slot.
     OrphanFallback,
@@ -2357,7 +2352,7 @@ impl NewFactPlacement<'_> {
             Self::Ingest => "ingest",
             Self::Cartografo(_) => "cartografo",
             Self::NamedThenCartografo(_) => "named-then-cartografo",
-            Self::OrphanFallback => "orphan-fallback",
+            Self::OrphanFallback => "identity fallback",
         }
     }
 }
@@ -2379,7 +2374,7 @@ impl NewFactPlacement<'_> {
 ///   channel, so a fact mis-targeted there must not land among the policy or
 ///   the signposts.
 ///
-/// In every case the fact falls through to [`orphan_target`], which homes it
+/// In every case the fact falls through to [`identity_card_target`], which homes it
 /// on its wiki's card or parking page according to what the fact is. The `.md`
 /// suffix is stripped first so slugify does not fold it into a trailing
 /// `_md`.
@@ -2411,7 +2406,7 @@ fn placement_slug(target_page: &str) -> Option<String> {
 /// `build_compilation_plan` would give only `description = ""`). A slug already
 /// in the registry/foundation is skipped downstream, so this is idempotent across
 /// runs. Facts with no concrete target are left unassigned for the
-/// orphan-fallback. Pure — testable without a DB or an LLM.
+/// identity fallback. Pure — testable without a DB or an LLM.
 fn ingest_placement_blueprint(facts: &[FactForPage]) -> Blueprint {
     let mut assignments = Vec::new();
     // BTreeMap → dedup distinct target slugs deterministically; the first fact's
@@ -2423,9 +2418,9 @@ fn ingest_placement_blueprint(facts: &[FactForPage]) -> Blueprint {
         // fact is always-on material (identity, health/safety, hard standing
         // constraints) whose home is the actor's identity CARD,
         // *overriding* any concrete ingest `target_page`. We achieve that by
-        // leaving it UNASSIGNED here: the deterministic orphan-fallback in
+        // leaving it UNASSIGNED here: the deterministic identity fallback in
         // `build_compilation_plan` then homes it on the subject's card node
-        // (`@profile.md`) — see `orphan_target`, which reads the same salience
+        // (`@profile.md`) — see `identity_card_target`, which reads the same salience
         // to tell a reserved fact from one that merely has no page yet. No new
         // branch, no LLM — the same path a fact with no proposed page already
         // takes ("una pipeline sola").
@@ -2810,7 +2805,7 @@ fn backfill_accepted_new_style(accepted: &mut [NewPage], original: &[NewPage]) {
 ///
 /// `placement` chooses how NEW facts are placed ([`NewFactPlacement`]: LIGHT =
 /// the page the user named, then the cheap-tier Cartografo for the rest; FULL =
-/// the strong-model Cartografo; or deterministic orphan-fallback).
+/// the strong-model Cartografo; or deterministic identity fallback).
 /// `conciliatore` is the strong-model backend for the dedup stage; `None`
 /// accepts every proposed page as-is. Carried-over assignments of already-known
 /// facts are preserved either way — only NEW facts flow through `placement`.
@@ -3323,7 +3318,7 @@ async fn gather_standard_facts(pool: &SqlitePool, tree: &WikiTree) -> Result<Vec
             // own pipelines' perimeter, not the compiler's: their facts are
             // written directly and read back keyed on that path. The compiler
             // must NOT gather them — absent from the persisted plan they would
-            // look "new", orphan-fall-back onto the wiki's parking page, and their channel
+            // look "new", fall back to the identity card onto the wiki's parking page, and their channel
             // (which filters on the page) would stop seeing them.
             // (engine_rule governance is raw `@rules.md` prose, not a
             // `fact_index` row, so only behaviour-rule rows are spared here.)
@@ -3880,12 +3875,27 @@ mod tests {
 
     /// Insert a promoted fact in alice's wiki carrying an ingest placement
     /// proposal (`target_page` / `style`) on `fact_index`. Returns the fact id.
+    /// Plant a fact for alice. `salience: "high"` is what makes it placeable
+    /// with no model in the loop: since 2026-08-22 the identity card is the
+    /// only deterministic home, and a normal-salience fact nobody places
+    /// simply waits.
     async fn plant_alice_fact(
         pool: &SqlitePool,
         id_tail: &str,
         text: &str,
         target_page: Option<&str>,
         style: Option<&str>,
+    ) -> FactId {
+        plant_alice_fact_with_salience(pool, id_tail, text, target_page, style, None).await
+    }
+
+    async fn plant_alice_fact_with_salience(
+        pool: &SqlitePool,
+        id_tail: &str,
+        text: &str,
+        target_page: Option<&str>,
+        style: Option<&str>,
+        salience: Option<&str>,
     ) -> FactId {
         let fid = FactId::parse(&format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{id_tail}")).unwrap();
         fact_index::insert(
@@ -3908,7 +3918,7 @@ mod tests {
                 valid_to: None,
                 target_page: target_page.map(str::to_owned),
                 style: crate::wiki::PageStyle::parse_lenient(style),
-                salience: None,
+                salience: salience.map(str::to_owned),
                 source_ref: None,
             },
         )
@@ -3974,11 +3984,11 @@ mod tests {
             Some("recipes_dinner".to_owned())
         );
         // Empty → None, so the fact reaches the subject's foundation page
-        // via orphan-fallback.
+        // via identity fallback.
         assert_eq!(placement_slug(""), None);
         assert_eq!(placement_slug("  "), None);
         // `@rules.md` → None: the reserved user-policy page is never a
-        // fact-bearing concept page; a mis-targeted fact orphan-falls-back.
+        // fact-bearing concept page; a mis-targeted fact falls back to the identity card.
         assert_eq!(placement_slug("@rules.md"), None);
         assert_eq!(placement_slug("rules"), None);
     }
@@ -4062,7 +4072,7 @@ mod tests {
     fn ingest_placement_blueprint_assigns_to_target_and_leaves_the_card_to_the_page() {
         // Two facts → the same `spesa` page (dedup to ONE NewPage, the first
         // fact's style wins), one fact → a reserved name (no assignment and no
-        // page, left for orphan-fallback), one fact → no proposal at all.
+        // page, left for identity fallback), one fact → no proposal at all.
         let mut latte = fact(1, "latte", "user:alice", "alice");
         latte.target_page = Some("spesa.md".to_owned());
         latte.style = Some(crate::wiki::PageStyle::Lista);
@@ -4099,7 +4109,7 @@ mod tests {
         // A `high`-salience fact's home is the subject's identity card —
         // the routing IS the reservation. Even with a
         // concrete ingest `target_page`, it must be left UNASSIGNED here (the
-        // override) so the orphan-fallback homes it on the foundation page. A
+        // override) so the identity fallback homes it on the foundation page. A
         // `normal` fact with the same target_page is assigned as usual.
         let mut allergy = fact(1, "deathly peanut allergy", "user:alice", "alice");
         allergy.target_page = Some("preferenze.md".to_owned()); // concrete page…
@@ -4146,7 +4156,7 @@ mod tests {
             "2026-06-08T00:00:00Z",
         );
 
-        // The high fact orphan-falls-back onto alice's card.
+        // The high fact falls back to the identity card onto alice's card.
         let alice = &plan.pages["alice"];
         assert_eq!(alice.page_path, crate::wiki::PROFILE_FILENAME);
         assert_eq!(alice.primary_facts.len(), 1);
@@ -4179,9 +4189,13 @@ mod tests {
             &ConceptRegistry::empty("t"),
             "2026-05-31T00:00:00Z",
         );
-        // Both facts land on alice (1 assigned, 2 orphan→subject page).
+        // Only the ASSIGNED fact lands. The other reached the fallback and is
+        // normal-salience, so it is placed nowhere and keeps waiting — the
+        // parking page it used to land on does not decide anything any more.
         let alice = &plan.pages["alice"];
-        assert_eq!(alice.primary_facts.len(), 2);
+        assert_eq!(alice.primary_facts.len(), 1);
+        // `fact_count` is what the plan was HANDED, not what it placed — both
+        // facts are still the corpus's, one of them just has no page yet.
         assert_eq!(plan.fact_count, 2);
     }
 
@@ -4555,10 +4569,12 @@ mod tests {
             alice.primary_facts.is_empty(),
             "a normal-salience orphan belongs on the buffer, not the identity card"
         );
-        let parking = &plan.pages["alice__notes"];
-        assert_eq!(parking.page_path, "@notes.md");
-        assert_eq!(parking.primary_facts.len(), 1, "fact homed on the parking");
-        assert_eq!(parking.primary_facts[0].fact_id, fid);
+        assert!(
+            plan.pages.values().all(|p| p.primary_facts.is_empty()),
+            "a normal-salience fact nobody placed is on NO page: it keeps its \
+             buffer row and the next pass sees it again"
+        );
+        let _ = fid;
         assert_eq!(
             plan.dirty_pages.len(),
             plan.pages.len(),
@@ -4582,14 +4598,17 @@ mod tests {
             plan2.dirty_pages.is_empty(),
             "unchanged corpus → 0 dirty pages"
         );
-        assert_eq!(plan2.pages["alice__notes"].primary_facts.len(), 1);
+        assert!(
+            plan2.pages.values().all(|p| p.primary_facts.is_empty()),
+            "and it is still on no page — waiting is a stable state"
+        );
         drop(dir);
     }
 
     /// A behaviour-rule fact lives on the reserved policy page `@rules.md`
     /// (written by the rules pipeline's direct path, not the planner). The
-    /// compiler must leave it there: gathering it would orphan-fall-back it
-    /// onto the wiki's parking page, changing its `source_path` so `recall_behaviour_rules`
+    /// compiler must leave it there: gathering it would put it through the
+    /// placement pass, changing its `source_path` so `recall_behaviour_rules`
     /// (which filters on `@rules.md`) stops seeing it. Regression for the
     /// durability bug found 2026-06-30.
     #[tokio::test]
@@ -4632,7 +4651,7 @@ mod tests {
             valid_to: None,
             target_page: None,
             style: None,
-            salience: None,
+            salience: Some("high".to_owned()),
             source_ref: None,
         };
         // A normal content fact (must be homed) ...
@@ -4669,6 +4688,11 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one end-to-end seam: plant, plan, move, re-plan — splitting it \
+                  would hide the order the test is about"
+    )]
     async fn rehome_survives_the_carry_over_and_forces_the_touched_pages_dirty() {
         // The plan-sync seam: an act-first move (REM split / page merge)
         // re-homes its facts in the persisted plan, so the next build's
@@ -4693,7 +4717,15 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let fid = plant_alice_fact(&pool, "b1", "Matteo does karate on Mondays", None, None).await;
+        let fid = plant_alice_fact_with_salience(
+            &pool,
+            "b1",
+            "Matteo does karate on Mondays",
+            None,
+            None,
+            Some("high"),
+        )
+        .await;
 
         // First build: the fact orphan-homes on alice's foundation page.
         let plan = build_wiki_plan(
@@ -4706,7 +4738,7 @@ mod tests {
         )
         .await
         .expect("plan");
-        assert_eq!(plan.pages["alice__notes"].primary_facts.len(), 1);
+        assert_eq!(plan.pages["alice"].primary_facts.len(), 1);
 
         // An act-first move re-homes the fact onto a new `karate` page.
         let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
@@ -4725,12 +4757,12 @@ mod tests {
             "fact re-homed onto the destination page"
         );
         assert!(
-            edited.pages["alice__notes"].primary_facts.is_empty(),
+            edited.pages["alice"].primary_facts.is_empty(),
             "fact detached from the old page"
         );
         assert_eq!(
             edited.force_dirty,
-            vec!["alice__notes".to_owned(), "karate".to_owned()],
+            vec!["alice".to_owned(), "karate".to_owned()],
             "both touched pages parked for recompile"
         );
         assert!(
@@ -4763,7 +4795,7 @@ mod tests {
         );
         assert_eq!(
             plan2.dirty_pages,
-            vec!["alice__notes".to_owned(), "karate".to_owned()],
+            vec!["alice".to_owned(), "karate".to_owned()],
             "force-dirty pages become the recompile set"
         );
         assert!(plan2.force_dirty.is_empty(), "flag cleared after honoring");
@@ -4811,7 +4843,15 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let fid = plant_alice_fact(&pool, "b1", "Matteo does karate on Mondays", None, None).await;
+        let fid = plant_alice_fact_with_salience(
+            &pool,
+            "b1",
+            "Matteo does karate on Mondays",
+            None,
+            None,
+            Some("high"),
+        )
+        .await;
         build_wiki_plan(
             &pool,
             &tree,
@@ -4887,7 +4927,7 @@ mod tests {
             "the refile park is carried, not consumed"
         );
         assert!(
-            plan3.pages["alice__notes"]
+            plan3.pages["alice"]
                 .primary_facts
                 .iter()
                 .any(|f| f.fact_id == fid),
@@ -5057,7 +5097,7 @@ mod tests {
         // In the LIGHT cadence the planner places NEW facts on the
         // page the ingest classifier proposed — with NO LLM. A fact with a
         // concrete `target_page` lands on a concept_leaf (carrying its testata);
-        // a fact naming a reserved page orphan-falls-back to its subject's wiki.
+        // a fact naming a reserved page falls back to the identity card to its subject's wiki.
         let dir = tempfile::tempdir().unwrap();
         let pool = crate::db::open_or_init(dir.path()).await.expect("db");
         let wikis = dir.path().join("wikis");
@@ -5114,9 +5154,13 @@ mod tests {
         // fact is `normal`.
         let alice = &plan.pages["alice"];
         assert!(alice.primary_facts.is_empty());
-        let parking = &plan.pages["alice__notes"];
-        assert_eq!(parking.primary_facts.len(), 1);
-        assert_eq!(parking.primary_facts[0].fact_id, home);
+        assert!(
+            plan.pages
+                .values()
+                .all(|p| p.primary_facts.iter().all(|f| f.fact_id != home)),
+            "a normal-salience fact naming a reserved page is placed nowhere \
+             and waits in the buffer"
+        );
 
         // Incremental idempotency: re-running with no change → 0 dirty pages.
         let plan2 = build_wiki_plan(
@@ -5208,7 +5252,7 @@ mod tests {
                 // classifier placement proposal to carry.
                 target_page: None,
                 style: None,
-                salience: None,
+                salience: Some("high".to_owned()),
                 source_ref: None,
             },
         )
@@ -5257,11 +5301,11 @@ mod tests {
         .expect("plan3");
         assert_eq!(
             plan3.dirty_pages,
-            vec!["alice__notes".to_owned()],
+            vec!["alice".to_owned()],
             "corrected claim → ONLY its page dirty (contained, no whole-wiki rescan)"
         );
         assert_eq!(
-            plan3.pages["alice__notes"].primary_facts[0].text,
+            plan3.pages["alice"].primary_facts[0].text,
             "Alice was born in 1986"
         );
         drop(dir);
@@ -5845,10 +5889,10 @@ mod tests {
             plan.pages.keys().collect::<Vec<_>>()
         );
         assert!(!reg.entries.contains_key("notes"), "and none is persisted");
-        assert_eq!(
-            plan.pages["alice"].primary_facts.len(),
-            1,
-            "the fact falls back to a page that exists"
+        assert!(
+            plan.pages.values().all(|p| p.primary_facts.is_empty()),
+            "and the fact is placed nowhere — it waits rather than landing on \
+             a page nobody chose"
         );
     }
     /// An emptied page is removed, never promoted into a container.

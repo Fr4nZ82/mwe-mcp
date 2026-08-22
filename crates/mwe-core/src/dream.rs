@@ -126,7 +126,7 @@ fn tier_backend<'a>(
 /// there is no cheap tier to run it on, so it degrades to the deterministic
 /// half alone. FULL runs the strong Cartografo over everything, and it alone
 /// answers the re-open park (see [`planner::build_wiki_plan`]); with no strong
-/// slot it degrades to the orphan-fallback.
+/// slot it degrades to the identity fallback.
 ///
 /// Factored out, like [`tier_backend`] beside it, so the policy is pinned by a
 /// unit test instead of being buried in `run_compile` where changing it goes
@@ -198,7 +198,7 @@ pub async fn run_compile(
     //
     // FULL runs the strong Cartografo (the `rem_promotions` slot) over
     // everything, and it alone answers the re-open park; a Full pass with no
-    // strong slot configured degrades to the deterministic orphan-fallback
+    // strong slot configured degrades to the deterministic identity fallback
     // (the historical `None` behaviour).
     let placement = placement_for(cadence, flash, llms.auto_promote);
     tracing::debug!(
@@ -225,7 +225,7 @@ pub async fn run_compile(
     // Between the plan and the prose: each placed claim becomes a `fact_index`
     // row addressed to the page it landed on, moments before the compile writes
     // that page. A claim the plan could not place keeps waiting.
-    dream_light::materialise(pool, tree, &embedder, &mut queue, &plan)
+    dream_light::materialise(pool, tree, &embedder, &mut queue, &plan, now)
         .await
         .context("light dream: materialise")?;
     let mut report = compiler::compile_dirty_pages(pool, tree, &plan, cronista, now)
@@ -638,7 +638,7 @@ mod tests {
     ///
     /// Both degradations are part of the policy: no ingest slot ⇒ the light
     /// pass keeps the deterministic half alone; no strong slot ⇒ the full pass
-    /// falls back to the orphan-fallback.
+    /// falls back to the identity fallback.
     #[test]
     fn light_places_with_the_cheap_cartografo_and_full_with_the_strong_one() {
         let strong = FakeLlmBackend::new("pro", "x");
@@ -660,7 +660,7 @@ mod tests {
         );
         assert_eq!(
             placement_for(Cadence::Full, Some(&flash), None).label(),
-            "orphan-fallback",
+            "identity fallback",
             "a Full pass never borrows the cheap tier"
         );
     }

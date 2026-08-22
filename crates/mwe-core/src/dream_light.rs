@@ -124,6 +124,11 @@ pub struct LightCycleReport {
     pub skipped_dup: usize,
     /// Supersede hints applied (a prior fact marked superseded).
     pub superseded: usize,
+    /// Captures the placement pass read and gave no page: they keep their
+    /// buffer row and are offered again next pass. Not an error — since
+    /// 2026-08-22 there is no page meaning "unsorted", so waiting IS the
+    /// outcome for a claim nothing fits yet.
+    pub left_waiting: usize,
     /// Per-capture soft errors (`"<capture_id>: <error>"`); the cycle continues.
     pub errors: Vec<String>,
 }
@@ -249,6 +254,7 @@ pub async fn materialise(
     embedder: &Arc<dyn Embedder>,
     queue: &mut WaitingQueue,
     plan: &crate::planner::CompilationPlan,
+    now: &str,
 ) -> Result<()> {
     if queue.rows.is_empty() {
         return Ok(());
@@ -265,10 +271,18 @@ pub async fn materialise(
     }
     for cap in &queue.rows {
         let Some((wiki_id, page_path)) = placed.get(cap.capture_id.as_str()).copied() else {
-            tracing::warn!(
-                capture_id = %cap.capture_id,
-                "light dream: the plan gave this claim no page — it keeps waiting"
-            );
+            // Not an error and not a loss: a claim nobody could place keeps
+            // its buffer row and is offered to the next pass, and to the
+            // nightly one that reads a whole wiki at once. The counter is
+            // what separates *never looked at* from *looked at and declined*
+            // — the difference the parking page used to carry by existing.
+            if let Err(e) =
+                capture_buffer::mark_placement_attempted(pool, &cap.capture_id, now).await
+            {
+                tracing::warn!(capture_id = %cap.capture_id, error = %e,
+                    "light dream: placement attempt not recorded");
+            }
+            queue.report.left_waiting += 1;
             continue;
         };
         if let Err(e) = write_placed(
@@ -289,6 +303,7 @@ pub async fn materialise(
     tracing::info!(
         scanned = queue.report.scanned,
         promoted = queue.report.promoted,
+        left_waiting = queue.report.left_waiting,
         skipped_dup = queue.report.skipped_dup,
         superseded = queue.report.superseded,
         errors = queue.report.errors.len(),
@@ -340,7 +355,7 @@ async fn miss_check(
 /// write the rows.
 ///
 /// The placement is [`crate::planner::NewFactPlacement::Ingest`] — every page
-/// the user's own turn named, and the orphan fallback for the rest — so nothing
+/// the user's own turn named, and the identity fallback for the rest — so nothing
 /// here needs a Cartografo or a Cronista. Two callers:
 ///
 /// * a deployment with no prose writer configured, where the alternative is a
@@ -376,7 +391,7 @@ pub async fn drain_deterministically(
         &queue.for_plan,
     )
     .await?;
-    materialise(pool, tree, embedder, &mut queue, &plan).await?;
+    materialise(pool, tree, embedder, &mut queue, &plan, now).await?;
     Ok(queue.report)
 }
 
@@ -663,6 +678,19 @@ mod tests {
         // test with a fact about Bob needs one to exist.
         write_wiki(&wikis, "bob");
         let tree = WikiTree::open(dir.path()).expect("tree");
+        // Both are ENROLLED, which is what gives their wikis an identity card.
+        // Since 2026-08-22 the card is the only placement that needs no model:
+        // without it a deterministic drain places nothing, which is correct
+        // and would leave every test below asserting on an empty corpus.
+        for u in ["alice", "bob"] {
+            sqlx::query(
+                "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES (?,'[]',0)",
+            )
+            .bind(u)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
         (dir, tree, pool)
     }
 
@@ -676,6 +704,12 @@ mod tests {
         std::fs::write(d.join("cucina.md"), "# index\n").unwrap();
     }
 
+    /// A capture the deterministic drain can actually place.
+    ///
+    /// `salience: high` is the load-bearing field: since 2026-08-22 the only
+    /// placement that needs no model is the identity one, so a claim without
+    /// it stays in the buffer when no Cartografo runs — which is correct, and
+    /// would make every test below assert on an empty corpus.
     fn cap_req(body: &str) -> CaptureRequest {
         CaptureRequest {
             authored_refs: Vec::new(),
@@ -692,7 +726,7 @@ mod tests {
             valid_to: None,
             style: None,
             page_description: None,
-            salience: None,
+            salience: Some("high".to_owned()),
         }
     }
 
@@ -731,11 +765,11 @@ mod tests {
         assert_eq!(row.text, "Alice loves pasta.");
         // Born with a REAL page: the plan placed it before the row existed. No
         // model was involved — the deterministic placement had no page named
-        // for this claim, so the orphan fallback gave it the wiki's parking
+        // for this claim, so the identity fallback gave it the wiki's parking
         // page, which is a page like any other.
         assert_eq!(
             row.source_path,
-            format!("wikis/alice/{}", crate::wiki::NOTES_FILENAME)
+            format!("wikis/alice/{}", crate::wiki::PROFILE_FILENAME)
         );
         assert!(
             row.region_start.is_none(),
@@ -850,12 +884,12 @@ mod tests {
             .expect("promoted fact exists");
         assert_eq!(
             row.target_page.as_deref(),
-            Some(crate::wiki::NOTES_FILENAME),
+            Some(crate::wiki::PROFILE_FILENAME),
             "the page is the plan's answer, not the turn's proposal"
         );
         assert_eq!(
             row.source_path,
-            format!("wikis/alice/{}", crate::wiki::NOTES_FILENAME),
+            format!("wikis/alice/{}", crate::wiki::PROFILE_FILENAME),
             "and it is a real page in the subject's own wiki"
         );
         assert_eq!(

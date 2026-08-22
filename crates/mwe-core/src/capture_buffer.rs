@@ -208,6 +208,18 @@ pub struct BufferedCapture {
     /// (`fact_index.salience`), where `high` facts are routed to the
     /// subject's identity card. `high | normal | low`; `None` = unspecified.
     pub salience: Option<String>,
+    /// How many placement passes have read this claim and given it no page.
+    ///
+    /// `0` = never offered to one. There is no parking page any more (founder,
+    /// 2026-08-22), so a claim nobody could place simply keeps waiting — and
+    /// without this counter *never looked at* and *looked at and declined*
+    /// would be the same row. Observational: nothing gates on it. It is what
+    /// lets the nightly strong pass, and an operator reading the buffer, tell
+    /// a claim the cheap tier has declined four times from one that arrived
+    /// five minutes ago.
+    pub placement_attempts: i64,
+    /// When the most recent placement pass read this claim without placing it.
+    pub last_attempt_at: Option<String>,
     /// Project-wiki pages this turn authored, as plain `[[wiki_id/page]]`
     /// wikilinks ([`crate::fact_index::NewFact::authored_refs`]), staged here
     /// so [`promote_one`](crate::dream_light) copies them onto the fact and
@@ -462,6 +474,9 @@ pub async fn buffer_capture_with_source(
         authored_refs,
         embedding: staging.embedding,
         origin_message_hash: staging.origin_message_hash,
+        // A fresh capture has never been offered to a placement pass.
+        placement_attempts: 0,
+        last_attempt_at: None,
     };
 
     insert_row(pool, &cap).await?;
@@ -574,6 +589,40 @@ pub async fn mark_promoted(pool: &SqlitePool, capture_id: &FactId, now: &str) ->
     let res = sqlx::query(
         "UPDATE capture_buffer
             SET status = 'promoted', processed_at = ?, resolved_fact_id = capture_id
+          WHERE capture_id = ? AND status = 'buffered'",
+    )
+    .bind(now)
+    .bind(capture_id.as_str())
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// Record that a placement pass read this claim and gave it no page.
+///
+/// The claim stays `buffered` — that is the whole point. There is no parking
+/// page to put it on any more (founder, 2026-08-22: *«i fatti senza
+/// destinazione si accumuleranno nella tabella buffer … se il giro orario non
+/// trova la collocazione lo lascia lì, marcandolo come "già provato a
+/// collocare"»*), so an unplaced claim waits for the next pass, and the
+/// nightly one reads the whole wiki at once with the strong model.
+///
+/// Observational, and deliberately not a gate: nothing refuses a claim for
+/// having been declined often. What the counter buys is the difference between
+/// *never looked at* and *looked at and declined*, which without it would be
+/// the same row.
+///
+/// # Errors
+///
+/// Underlying `sqlx` errors.
+pub async fn mark_placement_attempted(
+    pool: &SqlitePool,
+    capture_id: &FactId,
+    now: &str,
+) -> Result<u64> {
+    let res = sqlx::query(
+        "UPDATE capture_buffer
+            SET placement_attempts = placement_attempts + 1, last_attempt_at = ?
           WHERE capture_id = ? AND status = 'buffered'",
     )
     .bind(now)
@@ -934,7 +983,8 @@ pub async fn restore_acl(
 const SELECT_COLS: &str = "SELECT capture_id, body, subject_id, allow_ids, \
      sender_id, fact_type, topics, supersede_hint, status, captured_at, processed_at, \
      resolved_fact_id, source_kind, source_ref, valid_from, valid_to, decay_reason, style, \
-     salience, authored_refs, embedding, origin_message_hash \
+     salience, authored_refs, embedding, origin_message_hash, placement_attempts, \
+     last_attempt_at \
      FROM capture_buffer";
 
 #[derive(sqlx::FromRow)]
@@ -961,6 +1011,8 @@ struct BufferRow {
     authored_refs: String,
     embedding: Option<Vec<u8>>,
     origin_message_hash: Option<String>,
+    placement_attempts: i64,
+    last_attempt_at: Option<String>,
 }
 
 fn decode(r: BufferRow) -> Result<BufferedCapture> {
@@ -1008,6 +1060,8 @@ fn decode(r: BufferRow) -> Result<BufferedCapture> {
                 .ok()
         }),
         origin_message_hash: r.origin_message_hash,
+        placement_attempts: r.placement_attempts,
+        last_attempt_at: r.last_attempt_at,
     })
 }
 

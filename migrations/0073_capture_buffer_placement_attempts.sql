@@ -1,0 +1,26 @@
+-- 0073_capture_buffer_placement_attempts — a waiting claim remembers that
+-- somebody already tried to place it.
+--
+-- The parking page (`@notes.md`) is gone. It was where a claim landed when the
+-- hourly placement pass looked at it and found no page it belonged on: a real
+-- page, holding real facts, whose whole meaning was "not sorted yet". Founder,
+-- 2026-08-22: *«non ne vedo l'utilità, è solo uno spreco di tempo tenerlo. I
+-- fatti senza destinazione si accumuleranno nella tabella buffer e ogni giro
+-- orario valuterà se far nascere una pagina oppure lasciare il lavoro al rem
+-- con il modello forte»*.
+--
+-- So an unplaced claim simply keeps waiting. That collapses two states the
+-- corpus used to tell apart — *never looked at* and *looked at and declined* —
+-- and this column is what keeps them apart instead:
+--
+--   * `placement_attempts` — how many placement passes have read this claim
+--                            and given it no page. `0` = it has never been
+--                            offered to one.
+--   * `last_attempt_at`    — when the most recent of those passes ran.
+--
+-- Both are observational: nothing gates on them. They exist so the nightly
+-- strong pass can tell a claim the cheap tier has already declined N times
+-- from one that arrived five minutes ago, and so an operator reading the
+-- buffer can see the difference too.
+ALTER TABLE capture_buffer ADD COLUMN placement_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE capture_buffer ADD COLUMN last_attempt_at TEXT;

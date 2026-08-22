@@ -28,7 +28,7 @@
 //! it nothing. It composes first-person prose and pushes it through the
 //! ordinary chat entry point, so where a fact lands is decided downstream:
 //! the ingest classifier marks a biographical statement `salience: high`, and
-//! `planner::orphan_target` sends a high-salience fact to the wiki's
+//! `planner::identity_card_target` sends a high-salience fact to the wiki's
 //! foundation card. That card is `@profile.md`; the split
 //! it is `@profile.md`. Nothing here was hardcoded, so the routing followed
 //! the split for free — only these words had to change.
