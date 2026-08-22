@@ -2067,9 +2067,8 @@ fn paragraph_to_file_context(
 ///
 /// Runs the `paragraph_to_file` handler now, then records a
 /// **born-applied** `wiki_promote` receipt.
-/// There is no `pending` stage and no approval step — the caller (REM)
-/// emits the `structure_applied` notice naming the affected user; the
-/// dashboard is the *reading* surface, not an approval surface.
+/// There is no `pending` stage and no approval step; the dashboard is the
+/// *reading* surface, not an approval surface.
 ///
 /// # Errors
 ///
@@ -2149,10 +2148,10 @@ fn fact_refile_context(
 /// (act-first) — the REM cross-wiki refile verb.
 ///
 /// Runs the `fact_refile` handler now, then records a **born-applied**
-/// `wiki_promote` receipt. No `pending` stage, no approval: the caller
-/// (REM) emits the `structure_applied` notice; the dashboard is where the
-/// operator reads what happened, not an approval surface. `reason` is a one-line audit string
-/// for the receipt (e.g. the LLM's stated rationale).
+/// `wiki_promote` receipt. No `pending` stage, no approval; the dashboard
+/// is where the operator reads what happened, not an approval surface.
+/// `reason` is a one-line audit string for the receipt (e.g. the LLM's
+/// stated rationale).
 ///
 /// # Errors
 ///
@@ -2276,9 +2275,8 @@ fn page_merge_context(p: &PageMergeParams<'_>) -> Value {
 /// Runs the `page_merge` handler now — every fact of the husk moves onto
 /// the survivor, the husk file is deleted, the persisted plan is re-homed —
 /// then records a **born-applied** `wiki_promote` receipt with an open
-/// No `pending` stage, no approval: the caller (REM) emits the
-/// `structure_applied` notice; the dashboard is where the operator reads
-/// what happened.
+/// No `pending` stage, no approval; the dashboard is where the operator
+/// reads what happened.
 ///
 /// # Errors
 ///
@@ -2440,9 +2438,9 @@ fn validity_close_context(closures: &[AppliedClosure], gesture: Option<&str>) ->
 ///
 /// The ingest orchestrator has already stamped every target
 /// (`fact_index::close_validity` / `capture_buffer::close_validity`);
-/// this writes the receipt — the
-/// act-first pattern: the caller emits the `structure_applied` notice and
-/// the dashboard is where the operator reads what happened.
+/// this writes the receipt — the act-first pattern. The ingest caller also
+/// notices the affected user, because somebody asked for that closure; a
+/// nightly sweep closure notices nobody.
 ///
 /// `gesture` is a short preview of the user message that triggered the
 /// closures (audit/display only). `applied_by` is the sender's raw id.

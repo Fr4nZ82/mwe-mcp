@@ -1,7 +1,7 @@
 ---
 name: rem-promotions
 description: REM auto-promote scorer — per-page paragraph→page split decision (whole page in, moved facts out)
-version: 2.5
+version: 2.6
 default_version_at_bootstrap: v2.4
 source_of_truth: crates/mwe-core/src/rem.rs (fn paragraph_split_prompt)
 ---
@@ -67,8 +67,9 @@ failure ⇒ `None` ⇒ the page stays as it is (no apply, warning logged).
 The named handles are re-validated in Rust: each must resolve on the page
 and the set must be a **proper, non-empty subset** (moving everything
 is a rename, not a split — that is the page→sub-wiki rung). On a valid
-split verdict the move is **applied directly** (act-first) and a
-`structure_applied` notice is emitted — there is no proposal step.
+split verdict the move is **applied directly** (act-first): there is no
+proposal step, and nobody is notified — the memory reorganising itself is
+not news.
 
 **Memoized**: a `{"split": false}` verdict is recorded in `rem_verdicts`
 keyed by the model id plus this prompt rendered with each recall count

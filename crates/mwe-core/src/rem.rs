@@ -421,7 +421,8 @@ pub struct RevisorReport {
 /// nominate near-synonym concept-page pairs, a dedicated LLM call confirms
 /// "same concept?" and picks the survivor, and the merge executes act-first
 /// on the move machinery (every husk fact onto the survivor, husk deleted,
-/// plan re-homed, born-applied receipt + `structure_applied` notice).
+/// plan re-homed, born-applied receipt). Silent: the nightly cycle does not
+/// report its own housekeeping.
 #[derive(Debug, Clone, Default)]
 pub struct PageMergeReport {
     /// Candidate pairs that reached the LLM confirmation call.
@@ -468,9 +469,9 @@ pub struct CompletionSweepReport {
 /// embed materially closer to a foreign wiki than to home, the revisor
 /// LLM decides whether (and where) each really belongs, and a confirmed
 /// move lands act-first via [`crate::promote::apply_fact_refile_direct`]
-/// (born-applied receipt + `structure_applied` notice — the dashboard is
-/// where the operator reads it). Smart wikis are skipped as both source
-/// and dest.
+/// (born-applied receipt; the dashboard is where the operator reads it, and
+/// nothing is pushed at anybody). Smart wikis are skipped as both source and
+/// dest.
 #[derive(Debug, Clone, Default)]
 pub struct RefileSweepReport {
     /// Reviewer-fed candidates seeded from the parked plan (the
@@ -1496,22 +1497,6 @@ async fn run_revisor_jaccard(
                         wal::complete_rem_op(pool, op_id).await?;
                         report.applied.push(receipt.proposal_id.clone());
                         proposed_losers.insert(facts[old_idx].fact_id.as_str().to_owned());
-                        events::insert_event(
-                            pool,
-                            EventKind::StructureApplied,
-                            Some(facts[old_idx].wiki_id.as_str()),
-                            Some(facts[old_idx].fact_id.as_str()),
-                            &json!({
-                                "proposal_id": receipt.proposal_id,
-                                "variant": "dedup_merge",
-                                "winner_fact_id": facts[new_idx].fact_id.as_str(),
-                                "loser_fact_id": facts[old_idx].fact_id.as_str(),
-                                "jaccard": score,
-                                "recipient_id": recipient,
-                                "dashboard_path": receipt_dashboard_path(&receipt.proposal_id),
-                            }),
-                        )
-                        .await?;
                     },
                     Err(e) => {
                         wal::fail_rem_op(pool, op_id, &format!("{e}")).await?;
@@ -1884,7 +1869,7 @@ const fn mass_floor_for_style(
 /// page** to the `rem_promotions` LLM with each fact's 30-day recall
 /// count and ask whether one sub-topic outgrew its siblings; on a
 /// split verdict **apply the move directly** (act-first: born-applied
-/// receipt + `structure_applied` notice, no pending proposal).
+/// receipt, no pending proposal, no notice).
 /// Hard-capped by `policy.auto_promote_cap`.
 ///
 /// No LLM → the sub-job short-circuits cleanly with
@@ -2172,22 +2157,6 @@ async fn run_auto_promote(
                 Ok(receipt) => {
                     wal::complete_rem_op(pool, op_id).await?;
                     report.applied.push(receipt.proposal_id.clone());
-                    events::insert_event(
-                        pool,
-                        EventKind::StructureApplied,
-                        Some(d.meta.wiki_id.as_str()),
-                        Some(moving[0].fact_id.as_str()),
-                        &json!({
-                            "proposal_id": receipt.proposal_id,
-                            "variant": "paragraph_to_file",
-                            "source_page": source_page_rel,
-                            "target_page": recommended_target,
-                            "moved_facts": fact_ids.iter().map(FactId::as_str).collect::<Vec<_>>(),
-                            "recipient_id": recipient,
-                            "dashboard_path": receipt_dashboard_path(&receipt.proposal_id),
-                        }),
-                    )
-                    .await?;
                     // Plan-sync seam: re-home the moved facts in the persisted
                     // compilation plan so the next build's carry-over does not
                     // fight the move, and the target page gets woven by the
@@ -2490,14 +2459,6 @@ fn wiki_relative_page(d: &wiki::DiscoveredWiki, source_path: &str) -> Option<Str
         .map(|p| p.to_string_lossy().replace('\\', "/"))
 }
 
-/// Relative dashboard path where one applied structural receipt can be
-/// read: the open-in-chat bridge primes the chat with a summary of that
-/// receipt. Relative on purpose — the consumer prepends whatever base
-/// URL it knows the operator serves the dashboard from.
-fn receipt_dashboard_path(proposal_id: &str) -> String {
-    format!("/dashboard/proposals/{proposal_id}/open-in-chat")
-}
-
 // ---------- Page-group → wiki regrouping ----------
 
 /// How many verbatim excerpts of a page ride in the inventory the
@@ -2765,23 +2726,6 @@ async fn run_page_grouping_for_wiki(
                         moved.insert((*source_path).to_owned());
                     }
                 }
-                events::insert_event(
-                    pool,
-                    EventKind::StructureApplied,
-                    Some(d.meta.wiki_id.as_str()),
-                    None,
-                    &json!({
-                        "proposal_id": receipt.proposal_id,
-                        "variant": variant,
-                        "source_wiki_id": d.meta.wiki_id.as_str(),
-                        "pages": pages,
-                        "target_wiki_id": receipt.spec.get("target_wiki_id"),
-                        "new_wiki_id": receipt.spec.get("new_wiki_id"),
-                        "recipient_id": recipient,
-                        "dashboard_path": receipt_dashboard_path(&receipt.proposal_id),
-                    }),
-                )
-                .await?;
             },
             Err(e) => {
                 wal::fail_rem_op(pool, op_id, &format!("{e}")).await?;
@@ -3192,8 +3136,7 @@ fn merge_prompt(
 /// **act-first** via [`promote::apply_page_merge_direct`] — every husk fact
 /// onto the survivor (re-homing its `wiki_id` when the pair crossed the
 /// line), husk file deleted, persisted plan re-homed — with a
-/// born-applied receipt and a `structure_applied` notice
-/// pointing at the dashboard. Capped by [`RemPolicy::page_merge_cap`]
+/// born-applied receipt the dashboard can show. Capped by [`RemPolicy::page_merge_cap`]
 /// confirmation calls per cycle; a pair with any prior page-merge receipt
 /// is never re-judged.
 #[allow(
@@ -3379,23 +3322,6 @@ async fn run_page_merge(
             Ok(receipt) => {
                 wal::complete_rem_op(pool, op_id).await?;
                 report.applied.push(receipt.proposal_id.clone());
-                events::insert_event(
-                    pool,
-                    EventKind::StructureApplied,
-                    Some(husk.wiki_id.as_str()),
-                    Some(fact_ids[0].as_str()),
-                    &json!({
-                        "proposal_id": receipt.proposal_id,
-                        "variant": "page_merge",
-                        "source_page": husk.page_path,
-                        "target_page": survivor.page_path,
-                        "target_wiki_id": survivor.wiki_id,
-                        "moved_facts": fact_ids.iter().map(FactId::as_str).collect::<Vec<_>>(),
-                        "recipient_id": recipient,
-                        "dashboard_path": receipt_dashboard_path(&receipt.proposal_id),
-                    }),
-                )
-                .await?;
             },
             Err(e) => {
                 wal::fail_rem_op(pool, op_id, &format!("{e}")).await?;
@@ -3520,8 +3446,10 @@ fn completion_cases<'a>(
 /// wiki (embedding similarity **nominates only** — a resource cap, not
 /// a semantic gate), a dedicated LLM call decides what the evidence
 /// actually completed, and the confirmed closures land **act-first**
-/// with the same `validity_close` receipt + `structure_applied` notice
-/// the ingest half emits.
+/// with the same `validity_close` receipt the ingest half writes. The
+/// ingest half also notices the affected user, because somebody asked for
+/// that closure; a sweep closure is the memory's own bookkeeping and says
+/// nothing to anybody.
 async fn run_completion_sweep(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -3777,20 +3705,6 @@ async fn judge_completion_case(
         },
     };
     wal::complete_rem_op(pool, op_id).await?;
-    events::insert_event(
-        pool,
-        EventKind::StructureApplied,
-        Some(applied[0].wiki_id.as_str()),
-        Some(applied[0].fact_id.as_str()),
-        &json!({
-            "proposal_id": receipt.proposal_id,
-            "variant": "validity_close",
-            "closed_facts": applied.iter().map(|c| c.fact_id.as_str()).collect::<Vec<_>>(),
-            "recipient_id": recipient,
-            "dashboard_path": receipt_dashboard_path(&receipt.proposal_id),
-        }),
-    )
-    .await?;
     let closed = applied
         .iter()
         .map(|c| c.fact_id.as_str().to_owned())
@@ -4040,8 +3954,7 @@ fn refile_candidate_block(view: &RefileWikiView<'_>) -> String {
 /// (`llms.revisor` — the low binary-classifier confirmer tier)
 /// decides whether (and where) each really belongs. A confirmed move
 /// lands **act-first** via [`promote::apply_fact_refile_direct`] with the
-/// same born-applied receipt + `structure_applied` notice the other REM
-/// act-first sub-jobs emit. Smart
+/// same born-applied receipt the other REM act-first sub-jobs write. Smart
 /// wikis are skipped as **both** source and destination: the smart-family
 /// is the consumer's, and refiling into/out of it would corrupt the
 /// ownership boundary (smart rows carry projected wiki-level ACL).
@@ -4316,24 +4229,6 @@ async fn judge_refile_case(
         dest_page,
         "rem refile: fact MOVED cross-wiki (act-first)"
     );
-
-    events::insert_event(
-        pool,
-        EventKind::StructureApplied,
-        Some(dest_view.d.meta.wiki_id.as_str()),
-        Some(case.fact.fact_id.as_str()),
-        &json!({
-            "proposal_id": applied.proposal_id,
-            "variant": "fact_refile",
-            "fact_id": case.fact.fact_id.as_str(),
-            "source_wiki_id": case.home.d.meta.wiki_id.as_str(),
-            "dest_wiki_id": dest_view.d.meta.wiki_id.as_str(),
-            "dest_page": dest_page,
-            "recipient_id": recipient,
-            "dashboard_path": receipt_dashboard_path(&applied.proposal_id),
-        }),
-    )
-    .await?;
 
     Ok(Some((
         applied.proposal_id,
@@ -4710,20 +4605,6 @@ async fn judge_contradiction_case(
         },
     };
     wal::complete_rem_op(pool, op_id).await?;
-    events::insert_event(
-        pool,
-        EventKind::StructureApplied,
-        Some(applied[0].wiki_id.as_str()),
-        Some(applied[0].fact_id.as_str()),
-        &json!({
-            "proposal_id": receipt.proposal_id,
-            "variant": "validity_close",
-            "closed_facts": applied.iter().map(|c| c.fact_id.as_str()).collect::<Vec<_>>(),
-            "recipient_id": recipient,
-            "dashboard_path": receipt_dashboard_path(&receipt.proposal_id),
-        }),
-    )
-    .await?;
     let closed = applied
         .iter()
         .map(|c| c.fact_id.as_str().to_owned())
@@ -5007,8 +4888,8 @@ async fn repair_one_miss(
     }
 
     // Proven — commit for real, act-first, same paper trail as the
-    // refile sweep (born-applied receipt + structure_applied notice), and
-    // onto the same buffer: the gate proved the flip against THAT
+    // refile sweep (a born-applied receipt), and onto the same page: the
+    // gate proved the flip against THAT
     // destination, so committing to any other page would ship a move the
     // replay never judged.
     let op_id = wal::begin_rem_op(pool, cycle_id, "recall_repair_apply", Some(home_id), None)
@@ -5036,25 +4917,6 @@ async fn repair_one_miss(
     wal::complete_rem_op(pool, op_id)
         .await
         .map_err(|e| soft(&e))?;
-    events::insert_event(
-        pool,
-        EventKind::StructureApplied,
-        Some(dest_id),
-        Some(miss.fact_id.as_str()),
-        &json!({
-            "proposal_id": applied.proposal_id,
-            "variant": "recall_repair_refile",
-            "fact_id": miss.fact_id,
-            "source_wiki_id": home_id,
-            "dest_wiki_id": dest_id,
-            "dest_page": dest_page,
-            "missed_query": miss.restated_text,
-            "recipient_id": recipient,
-            "dashboard_path": receipt_dashboard_path(&applied.proposal_id),
-        }),
-    )
-    .await
-    .map_err(|e| soft(&e))?;
     recall_log::set_miss_status(pool, miss.miss_id, "repaired", Some(&applied.proposal_id))
         .await
         .map_err(|e| soft(&e))?;
@@ -6928,16 +6790,13 @@ mod tests {
             ctx.get("loser_fact_id").and_then(|v| v.as_str()),
             Some(old_id.as_str()),
         );
-        // The event stream announces the applied merge, not a proposal.
-        let (event_kind,): (String,) = sqlx::query_as(
-            "SELECT kind FROM wiki_events WHERE json_extract(payload,'$.proposal_id') = ? \
-             ORDER BY created_at DESC LIMIT 1",
-        )
-        .bind(proposal_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(event_kind, "structure_applied");
+        // The event stream says nothing: a merge the revisor decided is
+        // housekeeping, and the receipt is where it is written down.
+        let events: i64 = sqlx::query_scalar("SELECT count(*) FROM wiki_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(events, 0, "a nightly merge notices nobody");
         drop(dir);
     }
 
@@ -7326,14 +7185,14 @@ mod tests {
                 .unwrap();
         assert_eq!(status, "applied");
 
-        // The structure_applied notice carries the merge for the dashboard.
+        // The nightly cycle reports nothing.
         let n: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM wiki_events WHERE kind = 'structure_applied' AND payload LIKE '%page_merge%'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(n, 1, "structure_applied notice emitted");
+        assert_eq!(n, 0, "the nightly cycle notices nobody");
 
         // Persisted plan re-homed: husk gone, survivor holds all the facts
         // and is parked for the next compile's weave.
@@ -7779,22 +7638,13 @@ mod tests {
             std::fs::read_to_string(tree.wikis_dir().join("alice").join("acme_corp.md")).unwrap();
         assert!(target.contains(&format!("f={}", facts[0])), "{target}");
 
-        // Exactly one notice, naming the affected user, the moved facts
-        // and the dashboard path.
-        let payloads: Vec<(String,)> =
-            sqlx::query_as("SELECT payload FROM wiki_events WHERE kind = 'structure_applied'")
-                .fetch_all(&pool)
+        // Nobody is told: reorganising itself is the memory's own business.
+        let notices: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM wiki_events WHERE kind = 'structure_applied'")
+                .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(payloads.len(), 1, "exactly one notice per applied split");
-        let notice: serde_json::Value = serde_json::from_str(&payloads[0].0).unwrap();
-        assert_eq!(notice["proposal_id"].as_str(), Some(proposal_id.as_str()));
-        assert_eq!(notice["recipient_id"], "user:alice");
-        assert_eq!(notice["moved_facts"][0].as_str(), Some(facts[0].as_str()));
-        assert_eq!(
-            notice["dashboard_path"].as_str(),
-            Some(format!("/dashboard/proposals/{proposal_id}/open-in-chat").as_str()),
-        );
+        assert_eq!(notices, 0, "a split notices nobody");
         drop(dir);
     }
 
@@ -8222,15 +8072,12 @@ mod tests {
         assert_eq!(ctx["new_wiki_style"], "prosa");
         assert_eq!(ctx["new_wiki_description"], "Everything about the garden");
 
-        let (payload,): (String,) =
-            sqlx::query_as("SELECT payload FROM wiki_events WHERE kind = 'structure_applied'")
+        let notices: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM wiki_events WHERE kind = 'structure_applied'")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        let notice: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(notice["variant"], "pages_to_subwiki");
-        assert_eq!(notice["new_wiki_id"], "alice-giardino");
-        assert_eq!(notice["recipient_id"], "user:alice");
+        assert_eq!(notices, 0, "a wiki being born notices nobody");
         drop(dir);
     }
 
@@ -8520,9 +8367,7 @@ mod tests {
                 .unwrap();
         assert!(superseded_at.is_some());
         // The sweep lands the row straight on `applied` with
-        // `apply_mode='auto'` — there is no confirmation to wait for —
-        // and emits a `wiki_events.kind='auto_applied'` row for the
-        // consumer.
+        // `apply_mode='auto'` — there is no confirmation to wait for.
         let (status, apply_mode): (String, Option<String>) = sqlx::query_as(
             "SELECT status, apply_mode FROM structure_proposals WHERE proposal_id = ?",
         )
@@ -8538,8 +8383,8 @@ mod tests {
                 .await
                 .unwrap();
         assert!(
-            event_kinds.iter().any(|k| k == "auto_applied"),
-            "expected an auto_applied wiki_events row, got {event_kinds:?}",
+            event_kinds.is_empty(),
+            "the nightly cycle tells the user nothing, got {event_kinds:?}",
         );
         drop(dir);
     }
@@ -9157,7 +9002,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(notices, 1);
+        assert_eq!(notices, 0, "the nightly cycle notices nobody");
         drop(dir);
     }
 
@@ -9414,7 +9259,7 @@ mod tests {
         assert_eq!(row.source_path, "wikis/bob/preferenze.md");
         assert!(row.deleted_at.is_none(), "refile is never a tombstone");
 
-        // Born-applied receipt + one notice.
+        // Born-applied receipt, and nobody told.
         let (status,): (String,) =
             sqlx::query_as("SELECT status FROM structure_proposals WHERE proposal_id = ?")
                 .bind(&report.receipts[0])
@@ -9427,7 +9272,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(notices, 1);
+        assert_eq!(notices, 0, "the nightly cycle notices nobody");
         drop(dir);
     }
 
@@ -10572,7 +10417,11 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(notices, 1);
+        assert_eq!(
+            notices, 1,
+            "a recall miss the engine cannot repair is the OPERATOR's problem, \
+             and that notice stays"
+        );
         let misses = crate::recall_log::recent_misses(&pool, 10).await.unwrap();
         assert!(misses.iter().any(|m| m.status == "queued"));
         assert_eq!(misses.iter().filter(|m| m.status == "discarded").count(), 2);

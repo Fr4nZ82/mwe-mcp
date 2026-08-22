@@ -7,7 +7,7 @@
 //! ## Why this module exists
 //!
 //! Event inserts come from [`rem`](crate::rem) sub-jobs
-//! (`promotion_applied`, `dedup_proposed`) and any future tool that
+//! (`structure_applied`) and any future tool that
 //! surfaces an asynchronous notification. They
 //! share the same shape and the same idempotency concern (don't fire
 //! the same notification twice in two REM cycles for the same fact), so
@@ -50,22 +50,20 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
-    /// REM jaccard-scan flagged a candidate dedup pair and the LLM
-    /// confirmed; the new fact superseded the older one. Audit-only —
-    /// the supersede itself is already in `fact_index`.
-    DedupProposed,
-    /// REM applied a structural change **directly** (paragraph→page
-    /// split or page→sub-wiki emergence) and recorded a born-applied
-    /// receipt. This is the **notice**: the system never blocks on
-    /// approval for a structural edit — it acts and tells you, and what
-    /// it did stands. The payload carries the receipt `proposal_id`, the
-    /// `variant`, source → target, a `dashboard_path` where the change
-    /// can be looked at, and — crucially — `recipient_id`, the
-    /// **affected user** (subject/sender of the changed wiki), so a
-    /// multi-user consumer agent knows whom to forward the notice to.
-    /// The dashboard is the *reading* surface, not the notification
-    /// surface: the notice reaches the causing agent here, over
-    /// `events_poll`.
+    /// A structural change the **turn itself** made and the person it
+    /// affects has not heard about: a validity closure, an ACL change, a
+    /// refile — asked for by one user, about a fact that belongs to
+    /// another.
+    ///
+    /// The payload carries the receipt `proposal_id`, the `variant`,
+    /// source → target and — crucially — `recipient_id`, the **affected
+    /// user**, so a multi-user consumer agent knows whom to tell.
+    ///
+    /// The nightly cycle emits nothing: the memory reorganises itself
+    /// every night, and reporting each split and merge back to the user
+    /// is a diary nobody asked for. What the user is told is what
+    /// somebody *did to their facts*, which is a different question and
+    /// the reason this event still exists.
     StructureApplied,
     /// REM's archive detector inserted a pending `archive_proposals`
     /// row (a page whose every active fact went stale). Unlike the
@@ -73,14 +71,6 @@ pub enum EventKind {
     /// lifecycle — the payload carries the `proposal_id`, `path`, and
     /// `reason` so a consumer can surface it.
     ArchiveProposed,
-    /// Auto-apply sweep applied a `pending` proposal whose 24 h window
-    /// elapsed without an answer, using the `recommended` answers.
-    /// Payload includes `proposal_id`, `summary`, and `dashboard_path`,
-    /// so the consumer can tell the user "we did X".
-    ///
-    /// Silence is consent: the change is applied, and applied is where
-    /// it stays.
-    AutoApplied,
     /// A document-ingest job finished
     /// (document ingest).
     /// The payload carries `job_id`, the resolved `disposition` and
@@ -140,10 +130,8 @@ impl EventKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::DedupProposed => "dedup_proposed",
             Self::StructureApplied => "structure_applied",
             Self::ArchiveProposed => "archive_proposed",
-            Self::AutoApplied => "auto_applied",
             Self::DocumentIngested => "document_ingested",
             Self::CompileFailureStreak => "compile_failure_streak",
             Self::RecallTuningProposed => "recall_tuning_proposed",
@@ -660,9 +648,7 @@ mod tests {
 
     #[test]
     fn event_kind_wire_strings_are_stable() {
-        assert_eq!(EventKind::DedupProposed.as_str(), "dedup_proposed");
         assert_eq!(EventKind::StructureApplied.as_str(), "structure_applied");
-        assert_eq!(EventKind::AutoApplied.as_str(), "auto_applied");
         assert_eq!(
             EventKind::CompileFailureStreak.as_str(),
             "compile_failure_streak"
@@ -676,7 +662,7 @@ mod tests {
         let payload = serde_json::json!({"due_at": "2026-05-19T09:00:00Z"});
         let id = insert_event(
             &pool,
-            EventKind::DedupProposed,
+            EventKind::StructureApplied,
             Some("alice"),
             Some("018f1234-5678-7abc-9def-0123456789ab"),
             &payload,
@@ -697,7 +683,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("fetch");
-        assert_eq!(kind, "dedup_proposed");
+        assert_eq!(kind, "structure_applied");
         assert_eq!(wiki.as_deref(), Some("alice"));
         assert_eq!(
             fact.as_deref(),
@@ -733,7 +719,7 @@ mod tests {
         let fact_id = "018f1234-5678-7abc-9def-0123456789ac";
         insert_event(
             &pool,
-            EventKind::DedupProposed,
+            EventKind::StructureApplied,
             Some("alice"),
             Some(fact_id),
             &serde_json::Value::Null,
@@ -742,7 +728,7 @@ mod tests {
         .expect("insert");
         let seen = find_recent_event_for(
             &pool,
-            EventKind::DedupProposed,
+            EventKind::StructureApplied,
             fact_id,
             chrono::Duration::days(30),
         )
@@ -757,7 +743,7 @@ mod tests {
         let fact_id = "018f1234-5678-7abc-9def-0123456789ad";
         insert_event(
             &pool,
-            EventKind::AutoApplied,
+            EventKind::ArchiveProposed,
             Some("alice"),
             Some(fact_id),
             &serde_json::Value::Null,
@@ -774,7 +760,7 @@ mod tests {
             .expect("backdate");
         let seen = find_recent_event_for(
             &pool,
-            EventKind::AutoApplied,
+            EventKind::ArchiveProposed,
             fact_id,
             chrono::Duration::days(30),
         )
@@ -804,7 +790,7 @@ mod tests {
         register_dummy_consumer(&pool, "samvise").await;
         insert_event(
             &pool,
-            EventKind::DedupProposed,
+            EventKind::StructureApplied,
             Some("alice"),
             None,
             &serde_json::Value::Null,
@@ -825,7 +811,7 @@ mod tests {
             .await
             .expect("poll");
         assert_eq!(out.events.len(), 2);
-        assert_eq!(out.events[0].kind, "dedup_proposed");
+        assert_eq!(out.events[0].kind, "structure_applied");
         assert_eq!(out.events[1].kind, "structure_applied");
         assert!(!out.has_more);
     }
@@ -836,7 +822,7 @@ mod tests {
         register_dummy_consumer(&pool, "samvise").await;
         insert_event(
             &pool,
-            EventKind::DedupProposed,
+            EventKind::StructureApplied,
             None,
             None,
             &serde_json::Value::Null,
@@ -852,7 +838,7 @@ mod tests {
             .unwrap();
         insert_event(
             &pool,
-            EventKind::StructureApplied,
+            EventKind::ArchiveProposed,
             None,
             None,
             &serde_json::Value::Null,
@@ -876,20 +862,20 @@ mod tests {
             1,
             "only the fresh event survives the since filter"
         );
-        assert_eq!(out.events[0].kind, "structure_applied");
+        assert_eq!(out.events[0].kind, "archive_proposed");
 
         let out_filtered = poll_events(
             &pool,
             "samvise",
             CALLER,
             None,
-            &["dedup_proposed".to_owned()],
+            &["archive_proposed".to_owned()],
             DEFAULT_POLL_TOP_K,
         )
         .await
         .unwrap();
         assert_eq!(out_filtered.events.len(), 1);
-        assert_eq!(out_filtered.events[0].kind, "dedup_proposed");
+        assert_eq!(out_filtered.events[0].kind, "archive_proposed");
     }
 
     #[tokio::test]
@@ -899,7 +885,7 @@ mod tests {
         register_dummy_consumer(&pool, "telegram-bot").await;
         let id = insert_event(
             &pool,
-            EventKind::DedupProposed,
+            EventKind::StructureApplied,
             None,
             None,
             &serde_json::Value::Null,
@@ -1075,7 +1061,7 @@ mod tests {
         let fact_id = "018f1234-5678-7abc-9def-0123456789ae";
         insert_event(
             &pool,
-            EventKind::DedupProposed,
+            EventKind::StructureApplied,
             Some("alice"),
             Some(fact_id),
             &serde_json::Value::Null,
@@ -1085,7 +1071,7 @@ mod tests {
         // Same fact, different kind ⇒ probe must return false.
         let seen = find_recent_event_for(
             &pool,
-            EventKind::StructureApplied,
+            EventKind::ArchiveProposed,
             fact_id,
             chrono::Duration::days(30),
         )

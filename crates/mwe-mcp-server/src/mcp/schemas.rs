@@ -236,13 +236,11 @@ fn events_ack() -> Tool {
     )
 }
 
-// The structure_proposal_* tools (the `_apply` / `_confirm` /
-// `_revert` writes and the `_list` read) were removed from the MCP
-// surface. Structural changes apply directly in REM and reach the
-// consumer as `structure_applied` notices over `events_poll` — there
-// is no proposal queue for an agent to read or act on. Undoing or
-// declassing an applied change requires the full context of the
-// dashboard, whose handlers call `mwe-core::proposals` directly; the
+// The structure_proposal_* tools (the `_apply` write and the `_list`
+// read) were removed from the MCP surface. Structural changes apply
+// directly in REM, silently — there is no proposal queue for an agent to
+// read or act on. Changing an applied structure requires the full context
+// of the dashboard, whose handlers call `mwe-core::proposals` directly; the
 // notice payload carries the `dashboard_path` to hand the user.
 
 fn wiki_read() -> Tool {

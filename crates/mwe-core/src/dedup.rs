@@ -28,9 +28,9 @@
 //! ## Two emitters, one authority model
 //!
 //! The REM revisor applies **act-first** via
-//! [`apply_dedup_merge_direct`]: supersede now, born-applied receipt,
-//! `structure_applied` notice — the same model as
-//! every other LLM-confirmed structural move. [`emit_dedup_merge`] (the
+//! [`apply_dedup_merge_direct`]: supersede now, born-applied receipt, and
+//! nobody told — the same model as every other LLM-confirmed structural
+//! move. [`emit_dedup_merge`] (the
 //! `pending` + 24h auto-apply lifecycle) remains for emitters that
 //! genuinely want a review gate.
 
@@ -281,8 +281,8 @@ fn dedup_context(winner: &FactId, loser: &FactId, hints: &DedupMergeHints) -> Va
 /// winner — then records a **born-applied** receipt of the merge
 /// window: the same authority model as auto-promote, the REM page merge,
 /// and the ingest validity closures. No `pending` stage, no 24h
-/// auto-apply fuse; the caller emits the `structure_applied` notice and
-/// the dashboard is where the operator reads what happened, not an approval gate.
+/// auto-apply fuse; the dashboard is where the operator reads what
+/// happened, not an approval gate.
 ///
 /// The direct path also owns the **disk half**: after the supersede
 /// lands, the loser's on-disk region is excised

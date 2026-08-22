@@ -1,6 +1,6 @@
 ---
 name: standard-conversational
-version: 1.7.0
+version: 1.8.0
 description: "Default conversational pattern for standard consumers (openclaw, hermes, nanoclaw): wiki_ingest_message passthrough, recent_messages window, disambiguation, locale plumbing, events_poll cadence, on-the-fly date corrections + sharing changes on the facts the sender is the subject of, no wiki_admin_* writes."
 depends_on: ["core"]
 applies_to:
@@ -210,27 +210,26 @@ events_poll({ consumer_id, since?, kinds?, top_k? })
 
 | Kind | What happened | What you do |
 |---|---|---|
-| `structure_applied` | REM **applied a structural change directly** (paragraph→page split or page→sub-wiki emergence) — apply + notice, no approval step | Payload names the affected user (`recipient_id`) and carries `variant`, source → target, `dashboard_path`. Forward it to that user: "I reorganized X — see it here: [dashboard link]" |
-| `auto_applied` | A questionnaire proposal auto-applied at its 24h `pending_timeout` (dedup lifecycle) | Payload has `dashboard_path` + `summary`; surface as "I did X — see it here: [dashboard link]" |
-| `dedup_proposed` | Merge proposal (REM dedup) pending the user | Surface with dashboard URL |
+| `structure_applied` | Somebody changed a fact that belongs to **another** user — a validity closure, a sharing change, a move | Payload names the affected user (`recipient_id`) and carries `variant` and source → target. Forward it to **that** user: it is their fact somebody touched |
 | `archive_proposed` | An archive proposal exists for a stale page | Surface with dashboard URL |
+| `fact_minted_for_you` | Somebody stated a fact **about** the user, and they can read it | Tell that user what was said and who said it |
+| `reminder_due` | A reminder the user asked for has come due | Tell them |
+| `document_ingested` | A document-ingest job the user started has finished | Tell them what the memory now holds |
 
-For **everything** structural, the canonical action is: get the
-dashboard URL, present it to the user. **There are no MCP tools to
-list or apply proposals yourself** (see "Anti-patterns").
+### The nightly cycle is silent
 
-### Apply + notice (structural changes are act-first)
+**mwe-mcp does not report its own housekeeping.** Every night the memory
+reorganises itself — pages split, near-duplicates merge, facts move to
+where they belong — and none of that produces an event. It is the
+memory's own business, the way you do not narrate your own thinking, and
+a nightly diary of splits and merges is noise the user never asked for.
 
-A structural change is **not** a blocking proposal: mwe-mcp applies it
-directly during REM and tells you afterwards with a
-`structure_applied` notice. There is nothing to approve and nothing to
-undo — the contract is "this happened". The memory reorganises itself;
-the user steers it by talking to you, not by rolling a change back.
+What *does* reach the user is what somebody **did to their facts**: a
+change to a fact about them, or a fact somebody stated about them. That
+is a different question, and the reason these events exist at all.
 
-The dedup questionnaire kinds (`dedup_proposed`) still ride the
-pending lifecycle: the user has **24 hours** to answer in the
-dashboard; if silent, mwe-mcp applies the `recommended` answers
-(`auto_applied` event) and the change stands.
+There is nothing to approve and nothing to undo. The memory keeps
+itself; the user steers it by talking to you.
 
 ### Polling cadence
 
@@ -300,9 +299,9 @@ opaque id back when calling `wiki_read`.
 
 - ❌ **Client-side intent classification.** Do not pattern-match on
   user text and pick an enum for `dashboard_link`. The server
-  classifies. If a structural change happens, the server applies it
-  and tells you afterwards. The memory keeps itself: there is nothing
-  for the user to confirm.
+  classifies. If a structural change happens, the server applies it and
+  says nothing: the memory keeps itself, and there is nothing for the
+  user to confirm.
 - ❌ **Trying to call any `structure_proposal_*` tool over MCP.**
   The whole family was removed from the MCP surface. The dashboard is the only surface for those
   actions. Surface a `dashboard_link` URL instead.

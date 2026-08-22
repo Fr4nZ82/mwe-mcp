@@ -1184,9 +1184,7 @@ pub struct ExpireReport {
 
 /// Try to auto-apply every `pending` proposal past `timeout_at`.
 ///
-/// Derives answers via [`build_recommended_answers`]. Each successful
-/// auto-apply emits an [`crate::events::EventKind::AutoApplied`] event
-/// so the consumer can notify the user.
+/// Derives answers via [`build_recommended_answers`].
 ///
 /// **`fact_forget` is the one exception to the two-window auto-apply.** Its
 /// `timeout_at` is the *voting* deadline, not a 24 h auto-apply timeout, and the
@@ -1249,34 +1247,6 @@ pub async fn auto_apply_overdue_proposals(
         };
         match auto_apply_proposal(pool, tree, &proposal_id, &answers).await {
             Ok(outcome) => {
-                let payload = serde_json::json!({
-                    "proposal_id": outcome.proposal_id,
-                    "kind": outcome.kind,
-                    "applied_at": outcome.applied_at,
-                    "summary": format!(
-                        "auto-applied {} (proposal {})",
-                        outcome.kind, outcome.proposal_id,
-                    ),
-                });
-                if let Err(e) = crate::events::insert_event(
-                    pool,
-                    crate::events::EventKind::AutoApplied,
-                    None,
-                    None,
-                    &payload,
-                )
-                .await
-                {
-                    // Event emission failure is soft — the row is already
-                    // flipped, the user just won't get the notification.
-                    // We surface it as a per-row error so the operator
-                    // sees something is wrong without rolling back the
-                    // auto-apply.
-                    report.errors.push((
-                        outcome.proposal_id.clone(),
-                        format!("auto_applied event emit: {e}"),
-                    ));
-                }
                 report
                     .auto_applied
                     .push((outcome.proposal_id, outcome.kind));

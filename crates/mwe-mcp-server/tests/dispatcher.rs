@@ -260,7 +260,7 @@ async fn events_poll_admin_fallback_for_any_consumer() {
     // Plant one event so the response is non-trivial.
     events::insert_event(
         &state.pool,
-        EventKind::DedupProposed,
+        EventKind::StructureApplied,
         None,
         None,
         &serde_json::Value::Null,
@@ -327,9 +327,8 @@ async fn events_ack_idempotent_across_calls() {
 // ---- structure_proposal_* removed from MCP ----
 //
 // The proposal tools no longer exist on the MCP surface. Structural
-// changes apply directly in REM and reach the consumer as
-// `structure_applied` notices over `events_poll`; the dashboard is the
-// operator surface (it calls `mwe-core::proposals` directly). The
+// changes apply directly in REM, silently; the dashboard is the operator
+// surface (it calls `mwe-core::proposals` directly). The
 // dispatcher must surface them as `not_found`, since they're not
 // registered in `schemas::all_tools()`.
 

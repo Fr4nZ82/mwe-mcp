@@ -765,13 +765,10 @@ async fn require_consumer_registered(state: &McpState, consumer_id: &str) -> Res
     }
 }
 
-// The whole `structure_proposal_*` family (the `_apply` / `_confirm` /
-// `_revert` writes and the `_list` read) has been removed from the MCP
-// surface. Structural changes apply directly in REM and reach the
-// consumer as `structure_applied` notices over `events_poll`; the
-// notice names the affected user and carries the `dashboard_path` of
-// the operator surface (the dashboard calls `mwe-core::proposals`
-// directly).
+// The whole `structure_proposal_*` family (the `_apply` write and the
+// `_list` read) has been removed from the MCP surface. Structural changes
+// apply directly in REM, silently, and the dashboard is the operator
+// surface (it calls `mwe-core::proposals` directly).
 
 // ============================================================
 // D — wiki_read / wiki_search

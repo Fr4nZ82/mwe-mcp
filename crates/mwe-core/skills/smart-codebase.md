@@ -1,6 +1,6 @@
 ---
 name: smart-codebase
-version: 1.7.0
+version: 1.8.0
 description: "Maintenance pattern for a software project's smart wiki: modules/decisions/runbooks/architecture layout, module- and decision-page conventions, the change-log page, source_ref discipline, last_synced cadence. First connect (importing an existing docs/ or wiki, the CLAUDE.md documentation-rules resolution, the shape report) is not here — it lives in smart-onboarding."
 depends_on: ["core", "smart-consumer"]
 applies_to:
@@ -102,14 +102,9 @@ references, etc.)
 ```
 
 `source_ref` is a glob (or list of globs) pointing at the code the
-page documents. It does **two** things:
-
-1. Lets REM's dedup-source sub-job detect when two pages claim the
-   same `source_ref` (likely duplicate; opens a `dedup_proposed`
-   notify in `_briefing.md`).
-2. Lets the user check coverage from the dashboard `/wikis/<id>` view
-   (planned): "which source modules have no companion
-   page?".
+page documents. It lets the user check coverage from the dashboard
+`/wikis/<id>` view (planned): "which source modules have no companion
+page?".
 
 **Do not** put per-function or per-line details in module pages. The
 companion-wiki is for the why, not the what — the what lives in the
