@@ -2037,6 +2037,16 @@ async fn run_auto_promote(
             // have gone quietly unread. Same shape as the `@projects.md` hole
             // of 2026-08-11 — a name defended on one side of the fence only.
             .filter(|&(&path, _)| !wiki::is_channel_page(path))
+            // The identity card is never split, whatever its mass (founder,
+            // 2026-08-22). Recall serves it WHOLE into every turn: a split
+            // moves facts onto a page the walk may never reach, so the turn
+            // quietly stops being told them — and the card is the one page
+            // whose whole job is that it cannot be missed. The mass floor
+            // could not see this: the card is prose, so it hit the ordinary
+            // 8-fact threshold like any topic page, and the promotions prompt
+            // even offered `@profile.md` as its worked example of a page to
+            // split.
+            .filter(|&(&path, _)| !wiki::is_identity_card_page(path))
             .filter(|&(&path, &m)| over_mass_floor(d, path, m, policy))
             .map(|(&p, _)| p)
             .filter(|p| !regrouped.contains(*p))
@@ -8028,6 +8038,49 @@ mod tests {
         assert_eq!(
             report.auto_promote.candidates_examined, 1,
             "only the ordinary page may reach the scorer: {:?}",
+            report.auto_promote
+        );
+        drop(dir);
+    }
+
+    /// **The identity card is never split, whatever its mass.**
+    ///
+    /// The negative half is what this denies, and it is what shipped until
+    /// 2026-08-22: the card is prose, so it hit the ordinary 8-fact floor
+    /// like any topic page and reached the scorer. A confirmed split moves
+    /// facts off it onto a page the walk may never reach — and the card is
+    /// the one page recall serves WHOLE into every turn, so the turn quietly
+    /// stops being told them.
+    #[tokio::test]
+    async fn auto_promote_never_splits_the_identity_card() {
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        // Well over any floor, on the card and on an ordinary page alike.
+        plant_on_page(&tree, &pool, "alice", "@profile.md", 12, "alice").await;
+        plant_on_page(&tree, &pool, "alice", "cucina.md", 12, "alice").await;
+
+        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
+        // The scorer splits anything it is shown, so whatever reaches it is
+        // split — which is what makes the absence visible.
+        let promote_llm = FakeLlmBackend::new(
+            "rp",
+            "{\"split\":true,\"fact_ids\":[\"n1\",\"n2\"],\"target_page\":\"nuova.md\"}",
+        );
+        let report = run_cycle(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &grouping_llms(&rev_llm, &promote_llm),
+            &RemPolicy::default(),
+        )
+        .await
+        .expect("cycle");
+
+        assert_eq!(
+            report.auto_promote.candidates_examined, 1,
+            "only the ordinary page may reach the scorer — without the gate \
+             both would, since both sit well over the floor: {:?}",
             report.auto_promote
         );
         drop(dir);

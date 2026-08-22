@@ -219,6 +219,19 @@ fn names_page(source_path: &str, name: &str) -> bool {
     last == name || name.strip_prefix('@').is_some_and(|bare| last == bare)
 }
 
+/// True when `source_path` is a wiki's **identity card** [`PROFILE_FILENAME`].
+///
+/// The card is not a page like the others and must never be split for size:
+/// recall serves it **whole** into every turn, it carries a single subject by
+/// construction, and it has a character ceiling of its own
+/// (`IDENTITY_CARD_CEILING_CHARS`). A split moves facts off it onto a page
+/// the reader may never open — so what the turn is handed silently loses
+/// them, which is the one failure a card exists to prevent.
+#[must_use]
+pub fn is_identity_card_page(source_path: &str) -> bool {
+    names_page(source_path, PROFILE_FILENAME)
+}
+
 /// True when `source_path` is a wiki's reserved policy page [`RULES_FILENAME`].
 ///
 /// It is the rules pipeline's home for behaviour-rule facts, **outside every

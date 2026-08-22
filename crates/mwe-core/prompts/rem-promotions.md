@@ -1,7 +1,7 @@
 ---
 name: rem-promotions
 description: REM auto-promote scorer — per-page paragraph→page split decision (whole page in, moved facts out)
-version: 2.4
+version: 2.5
 default_version_at_bootstrap: v2.4
 source_of_truth: crates/mwe-core/src/rem.rs (fn paragraph_split_prompt)
 ---
@@ -40,7 +40,9 @@ below the prompt build.
 **Placeholders** (substituted at render time by
 `mwe_core::prompts::render`):
 
-- `{page}` — the wiki-relative page path (`@profile.md`, `work.md`)
+- `{page}` — the wiki-relative page path (`work.md`, `ricette.md`). Never a
+  wiki's identity card: the card is served whole into every turn and is not
+  offered here at all.
 - `{page_facts}` — page mass: number of active facts on the page
 - `{facts}` — the whole page, one entry per fact:
   `- [n<k>] recall30d: <n>` followed by the indented fact text, where
