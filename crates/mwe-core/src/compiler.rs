@@ -650,7 +650,7 @@ async fn cached_language_directive(
 /// page whose facts have not arrived yet (or have all moved away; empty
 /// CONCEPT leaves are garbage-collected by the planner and never get
 /// here). No LLM: with nothing to narrate, anything a model writes is
-/// invention. The body is just the page's one-liner description; the
+/// invention. The body is just the page description; the
 /// next compile with real facts replaces it wholesale.
 fn compile_empty_leaf(tree: &WikiTree, page: &PagePlan, now: &str) -> Result<PageOutcome> {
     let body = if page.description.trim().is_empty() {
@@ -779,8 +779,7 @@ async fn compile_leaf_page(
     // The testata: the page's writing style prefers the ingest classifier's
     // per-page proposal (`page.style`, decided at ingest and carried through the
     // plan), falling back to the Cronista's compile-time choice (`body.style`)
-    // when ingest proposed none. Its fresh `description` is the page's «what goes
-    // in here» one-liner.
+    // when ingest proposed none.
     let contents = render_page_file(
         page,
         &merged_body,
@@ -1594,7 +1593,7 @@ async fn compile_list_page(
     let created = preserved_created(&existing, now);
     // Testata: the style is `lista` (the ingest classifier's
     // per-page choice that routed us here); the description is the plan's
-    // ingest-proposed one-liner — there is no Cronista on this path to emit one.
+    // ingest-proposed page description — there is no Cronista on this path to emit one.
     let contents = render_page_file(
         page,
         &body,
@@ -3075,7 +3074,7 @@ mod tests {
     async fn cronista_testata_records_style_and_description_in_frontmatter() {
         // The compiler writes the per-page testata — the Cronista's
         // compile-time `style` choice (normalised to the closed palette) and its
-        // free-text `description` one-liner.
+        // free-text page description.
         let (dir, tree, pool) = setup().await;
         let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d77").unwrap();
         fact_index::insert(
@@ -3272,7 +3271,7 @@ mod tests {
         // A foundation page with no facts yet must NOT reach the Cronista:
         // handed an empty fact list, the model invents colour prose from
         // wikilinks alone. The deterministic render is the description
-        // one-liner under a normal testata, idempotent across compiles.
+        // page description under a normal testata, idempotent across compiles.
         let (dir, tree, pool) = setup().await;
         let mut pages = BTreeMap::new();
         pages.insert(

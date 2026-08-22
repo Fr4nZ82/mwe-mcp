@@ -2973,7 +2973,7 @@ enum GroupAction {
         /// Dominant style **default** for the newborn wiki's `_meta`, or
         /// `None` when genuinely mixed. A hint, not a gate.
         style: Option<crate::wiki::PageStyle>,
-        /// Free-text "what goes in here" for the newborn wiki's `_meta`.
+        /// Free-text scope for the newborn wiki's `_meta`.
         description: Option<String>,
     },
     /// File them into a sub-wiki that already exists.

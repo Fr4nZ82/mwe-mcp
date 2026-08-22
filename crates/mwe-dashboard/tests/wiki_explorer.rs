@@ -555,7 +555,7 @@ fn seed_notes_wiki_with_page(tree: &WikiTree) {
     .unwrap();
 }
 
-/// The page «what goes here» (testata `description`) editor round-trips for
+/// The page-description (testata `description`) editor round-trips for
 /// an owner: GET the form, POST a description, and the testata is rewritten
 /// with the sibling field + body preserved; the page view then surfaces the
 /// affordance.
@@ -619,7 +619,7 @@ async fn dashboard_describe_round_trips_and_preserves_siblings() {
     assert_eq!(view.status(), StatusCode::OK);
     let html = body_string(view).await;
     assert!(
-        html.contains("what goes here"),
+        html.contains("Edit page description"),
         "the owner's page view must surface the describe affordance: {html}"
     );
 }

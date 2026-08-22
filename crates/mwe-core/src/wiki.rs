@@ -600,7 +600,7 @@ pub struct WikiMeta {
     pub slug: WikiSlug,
     /// Display name (free-form unicode).
     pub title: String,
-    /// Prose description of the wiki's **category** — "what goes in here" —
+    /// Prose description of the wiki's **category** — its scope —
     /// read by the ingest/document classifier as a **placement signal**
     /// (never an ACL gate). A group wiki inherits the group's `scope`
     /// prose; an emerged sub-wiki gets prose the LLM writes at creation.
@@ -643,7 +643,7 @@ pub struct WikiMeta {
     /// stamped at actor-wiki creation.
     /// Defaults to `false`. Note: **per-fact** axes (validity, ACL,
     /// `topics`) are never here — they live in `fact_index` / the page
-    /// frontmatter. The wiki-level **style default** + "what goes in here"
+    /// frontmatter. The wiki-level **style default** + its scope
     /// description *do* live on `_meta` (in [`Self::extra`] under `style`
     /// / `summary`), but only as a **hint, not a gate** for homogeneous /
     /// semi-homogeneous wikis — per-page style still wins when a page
@@ -679,7 +679,7 @@ impl WikiMeta {
     /// page.
     ///
     /// Read from [`Self::scope`], which already means *"prose description
-    /// of this container — what goes in here"*. On a standard wiki that
+    /// of this container — its scope"*. On a standard wiki that
     /// prose is a placement signal for the classifier; a smart wiki is
     /// never a placement target (it is filtered out of the router window),
     /// so the field is free here and the two readings cannot collide.

@@ -189,7 +189,7 @@ pub struct CaptureRequest {
     /// target page. Inert pass-through for now — no consumer until later
     /// stages wire it through parking page→promote→compile.
     pub style: Option<crate::wiki::PageStyle>,
-    /// Per-page "what goes here" one-liner that aids future placement. See
+    /// The page description that aids future placement. See
     /// [`Self::style`]. Inert pass-through for now.
     pub page_description: Option<String>,
     /// Per-fact salience the ingest classifier deduced,

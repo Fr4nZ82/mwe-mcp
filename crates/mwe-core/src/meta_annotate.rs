@@ -462,13 +462,13 @@ fn sync_page_topics(abs_path: &Path, topics: &[String]) -> Result<bool> {
 }
 
 /// A page's **card** as recall navigation reads it: the testata
-/// `description` one-liner plus the `keywords` mapping flattened to
+/// page description plus the `keywords` mapping flattened to
 /// `key=value` search strings ([`crate::wiki::flatten_keywords_mapping`]).
 /// This is the only card a turn is ever shown — there is no wiki-level card on
 /// the read side, because there is no wiki on the read side.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PageCard {
-    /// The page's «what goes in here» one-liner, when the testata has one.
+    /// The page description, when the testata carries one.
     pub description: Option<String>,
     /// Flattened `keywords` entries (`topics=food, wine`, …).
     pub keywords: Vec<String>,
@@ -530,7 +530,7 @@ pub(crate) fn parse_page_card(raw: &str) -> PageCard {
     }
 }
 
-/// Read a leaf page's testata `description` (its «what goes in here» one-liner).
+/// Read a leaf page's testata `description` — its page-description liner).
 ///
 /// `None` when the page has no frontmatter, no `description`, or an unparseable
 /// testata. The read side of [`set_page_description`]; the dashboard's
@@ -544,7 +544,7 @@ pub fn read_page_description(abs_path: &Path) -> Result<Option<String>> {
     Ok(read_page_card(abs_path)?.description)
 }
 
-/// Set / update / clear a leaf page's testata `description` («what goes in here»).
+/// Set / update / clear a leaf page's testata `description` (the page here»).
 ///
 /// Preserves the page **body** and every sibling frontmatter field
 /// (`keywords`, `style`, …). A blank `description` clears the key. A page with
@@ -887,10 +887,13 @@ mod tests {
         // A page with no testata gains a minimal frontmatter; body preserved.
         let page = dir.path().join("bare.md");
         std::fs::write(&page, "# Just prose\n\nNo testata here.\n").unwrap();
-        assert!(set_page_description(&page, "What goes here").unwrap());
+        assert!(set_page_description(&page, "Recipes for the freezer").unwrap());
         let raw = std::fs::read_to_string(&page).unwrap();
         assert!(raw.starts_with("---\n"), "frontmatter not prepended: {raw}");
-        assert!(raw.contains("description: What goes here"), "{raw}");
+        assert!(
+            raw.contains("description: Recipes for the freezer"),
+            "{raw}"
+        );
         assert!(raw.contains("No testata here."), "body lost: {raw}");
 
         // A bare page + blank description stays untouched (no empty fence).

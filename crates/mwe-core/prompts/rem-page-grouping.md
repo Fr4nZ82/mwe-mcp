@@ -1,7 +1,7 @@
 ---
 name: rem-page-grouping
 description: REM page-group → wiki cartographer — read a wiki's whole page inventory and group the pages that are already one subject area
-version: 1.4
+version: 1.5
 default_version_at_bootstrap: v1.3
 ---
 
@@ -60,7 +60,7 @@ plus two real sentences is ground truth.
 **Output schema**: strict JSON
 `{"groups": [ … ]}`, each group one of:
 
-- `{"action":"create","slug":"<slug>","title":"<title>","style":"<prosa|prosa-tecnica|lista|null>","description":"<what goes in here>","pages":["a.md","b.md", …]}`
+- `{"action":"create","slug":"<slug>","title":"<title>","style":"<prosa|prosa-tecnica|lista|null>","description":"<the new wiki's scope>","pages":["a.md","b.md", …]}`
 - `{"action":"move","target":"<existing wiki id>","pages":["c.md", …]}`
 
 `slug` is re-derived in Rust at apply time via `derive_slug`; `style`
@@ -129,10 +129,10 @@ For a "create" group, describe the new wiki so it is not born blind to future pl
 - "slug": short, lowercase, hyphenated.
 - "title": human-readable, in the language named under LANGUAGE below.
 - "style": its DOMINANT style default — "prosa" (interconnected knowledge), "prosa-tecnica" (bullets + short notes), or "lista" (atomic records). A HINT, not a rule: a page may deviate with reason. Use null when genuinely mixed.
-- "description": a short natural-language "what goes in here". Let the wording carry how strict the style hint is.
+- "description": the new wiki's short natural-language scope. Let the wording carry how strict the style hint is.
 
 Reply STRICT JSON, no prose:
-{"groups":[{"action":"create","slug":"<slug>","title":"<title>","style":"prosa"|"prosa-tecnica"|"lista"|null,"description":"<what goes in here>","pages":["a.md","b.md"]},{"action":"move","target":"<existing wiki id>","pages":["c.md"]}]}
+{"groups":[{"action":"create","slug":"<slug>","title":"<title>","style":"prosa"|"prosa-tecnica"|"lista"|null,"description":"<the new wiki's scope>","pages":["a.md","b.md"]},{"action":"move","target":"<existing wiki id>","pages":["c.md"]}]}
 
 Existing sub-wikis of this wiki:
 {existing}

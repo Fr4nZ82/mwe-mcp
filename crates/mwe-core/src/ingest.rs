@@ -4126,7 +4126,7 @@ pub(crate) struct AvailableWiki {
 /// Per wiki: id, title, type, `is_agent` when set, then the description as up
 /// to two lines, each omitted when empty:
 ///
-/// - `scope:` — the **authored** intent, "what goes in here" (human-written).
+/// - `scope:` — the **authored** intent of the wiki (human-written).
 /// - `holds:` — the **compiled** abstract, "what it actually holds", refreshed
 ///   by the compiler from the wiki's own foundation card.
 ///
@@ -8056,19 +8056,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tree = WikiTree::open(dir.path()).expect("tree");
         let described = "---\nwiki_id: alice\nwiki_type: wiki-user\nparent_wiki_id: null\n\
-                         slug: alice\ntitle: Alice\nscope: What goes in here\n\
+                         slug: alice\ntitle: Alice\nscope: Alice's own memory\n\
                          summary: What it actually holds\n---\n";
         write_meta(&tree, described);
         write_meta(&tree, &identity_meta_yaml("bob", "wiki-user"));
 
         let avail = available_wikis(&tree, 100).expect("available");
         let alice = avail.iter().find(|w| w.wiki_id == "alice").expect("alice");
-        assert_eq!(alice.scope.as_deref(), Some("What goes in here"));
+        assert_eq!(alice.scope.as_deref(), Some("Alice's own memory"));
         assert_eq!(alice.summary.as_deref(), Some("What it actually holds"));
 
         let mut out = String::new();
         render_available_wikis(&mut out, &avail, 1_000);
-        assert!(out.contains("scope: What goes in here"), "{out}");
+        assert!(out.contains("scope: Alice's own memory"), "{out}");
         assert!(out.contains("holds: What it actually holds"), "{out}");
         // The undescribed one says so once, instead of two empty keys.
         assert!(out.contains("about: (not described yet)"), "{out}");

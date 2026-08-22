@@ -1047,7 +1047,7 @@ async fn view_page(
     let frozen = crate::read_only::hides_writes(&state);
     let can_comment =
         !frozen && can_comment_on(&state.pool, memory, &wiki_id, &user.sender_id).await?;
-    // Whether to offer the "✎ what goes here" affordance: standard wiki +
+    // Whether to offer the "✎ page description" affordance: standard wiki +
     // owner-or-admin. A non-owner reader never sees a link that would 404.
     let can_edit_meta = !frozen && may_edit_page_meta(&state.pool, memory, &wiki_id, &user).await?;
 
@@ -1567,9 +1567,9 @@ struct PageViewFlags {
     /// The viewer may leave a comment (owner / shared / global read-access);
     /// gates the whole comment affordance vs the "can't comment" notice.
     can_comment: bool,
-    /// The viewer may edit the page's testata `description` («what goes
-    /// here») — owner of the (standard) wiki, or an admin. Gates the
-    /// "✎ what goes here" affordance.
+    /// The viewer may edit the page description (testata `description`) —
+    /// owner of the (standard) wiki, or an admin. Gates the
+    /// "✎ page description" affordance.
     can_edit_meta: bool,
     /// Admin reveal is on — render every fragment highlighted, not
     /// `[redacted]`, and show the reveal banner. (Implies admin: it can
@@ -2497,17 +2497,17 @@ async fn enforce_owner_or_not_found(
     Ok(())
 }
 
-// ---------- page «what goes here» (testata description) editor ----------
+// ---------- page description (testata `description`) editor ----------
 //
 // A leaf page's testata `description` is the one frontmatter field meant to
 // be hand-authored (the rest of the testata is compiler output that REM
-// regenerates): it labels the page «what goes here», guides the planner's
+// regenerates): it is the page description, guides the planner's
 // fact placement, and titles the page in recall navigation. Editing it is
 // LIGHTER than the raw editor (admin AND owner): it is a placement hint, not
 // content, so the gate is standard-wiki + (owner OR admin) — an operator can
 // curate any user's cards, an owner annotates their own.
 
-/// The "✎ Edit «what goes here»" affordance shown under a page view to an
+/// The "✎ Edit page description" affordance shown under a page view to an
 /// owner / admin (gated by `PageViewFlags::can_edit_meta`). Links to the
 /// page-description editor.
 fn render_describe_affordance(wiki_id: &WikiId, page_path: &str) -> Markup {
@@ -2517,13 +2517,13 @@ fn render_describe_affordance(wiki_id: &WikiId, page_path: &str) -> Markup {
                 "/dashboard/wiki/{}/describe/{}",
                 wiki_id.as_str(),
                 page_path
-            )) { "✎ Edit «what goes here»" }
+            )) { "✎ Edit page description" }
             " — the page's one-line purpose (guides fact placement + recall navigation)."
         }
     }
 }
 
-/// Cap on the page testata `description` — a one-liner card, not prose. A
+/// Cap on the page testata `description` — one line, not prose. A
 /// generous tweet-length bound that refuses an accidental whole-page paste.
 const MAX_PAGE_DESCRIPTION_LEN: usize = 280;
 
@@ -2621,7 +2621,7 @@ async fn submit_describe(
 
     if form.description.chars().count() > MAX_PAGE_DESCRIPTION_LEN {
         let msg = format!(
-            "Too long — keep «what goes here» under {MAX_PAGE_DESCRIPTION_LEN} characters."
+            "Too long — keep the page description under {MAX_PAGE_DESCRIPTION_LEN} characters."
         );
         return Ok(Html(render_describe_form(
             chrome,
@@ -2669,7 +2669,7 @@ fn render_describe_form(
             }
         }
         p.muted {
-            "The «what goes here» one-liner is the page's "
+            "The page description is the page's "
             strong { "testata description" }
             " — a short note on what this page is for. It guides where new "
             "facts get placed (the planner shows it to other pages) and labels "
@@ -2679,7 +2679,7 @@ fn render_describe_form(
         }
         form action=(format!("/dashboard/wiki/{id}/describe/{page_path}")) method="post" {
             p {
-                label for="description" { "What goes here" }
+                label for="description" { "Page description" }
                 textarea id="description" name="description" rows="3" cols="60"
                     placeholder="e.g. Alice's health: doctors, meds, appointments" {
                     (current)

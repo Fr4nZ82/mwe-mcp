@@ -2456,7 +2456,7 @@ pub struct ListPage {
     pub wiki_id: String,
     /// File name within the wiki (`spesa.md`).
     pub page: String,
-    /// The "what goes in here" line recorded when the page was proposed;
+    /// The page description recorded when the page was proposed;
     /// `None` for a list that never carried one.
     pub description: Option<String>,
 }

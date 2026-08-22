@@ -2290,7 +2290,7 @@ async fn apply_pages_to_subwiki(
 }
 
 /// The `_meta.extra` a newborn sub-wiki carries: the grouping-decided
-/// `summary` ("what goes in here") and dominant `style` default. Both
+/// `summary` (the wiki's scope) and dominant `style` default. Both
 /// are hints, not gates — an out-of-palette style leaves the wiki
 /// generic.
 fn subwiki_meta_extra(context: &Value) -> serde_yaml::Mapping {
