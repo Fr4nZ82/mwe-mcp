@@ -2,32 +2,26 @@
 //! Proposal action routes — the bridge endpoints behind the chat.
 //!
 //! The proposals **questionnaire / tray form surface is retired**:
-//! proposals are now reviewed,
-//! applied, confirmed, and reverted by talking to the dashboard chat
-//! (`/dashboard/chat`), which drives the same `mwe_core::proposals`
+//! proposals are now reviewed and applied by talking to the dashboard
+//! chat (`/dashboard/chat`), which drives the same `mwe_core::proposals`
 //! chassis through its agentic tools (`structure_proposal_*`). What
-//! survives here are the **action routes** and the **open-in-chat
+//! survives here are the **action route** and the **open-in-chat
 //! bridge**, kept mounted as endpoints the chat / consumer links target:
 //!
 //! - POST `/dashboard/proposals/:id/apply` — apply a pending proposal
 //!   (with form answers, for any deep-link that still posts them).
-//! - POST `/dashboard/proposals/:id/confirm` — confirm an
-//!   `applied_pending_confirm` proposal (the auto-apply sweep landed it;
-//!   the user keeps it).
-//! - POST `/dashboard/proposals/:id/revert` — undo an `applied` /
-//!   `applied_pending_confirm` proposal within its window.
 //! - GET `/dashboard/proposals/:id/open-in-chat` — server-side primer
 //!   that lands the operator inside the chat with the proposal already
 //!   summarised (a review/apply primer for a pending questionnaire, a
-//!   modify/undo primer for an already-applied structured-wiki
+//!   read-what-happened primer for an already-applied structured-wiki
 //!   emergence).
 //!
-//! The three POST routes no longer render a page: the form that called
-//! them is gone, so each performs its chassis action and **303-redirects
-//! to `/dashboard/chat`** (the single operational surface) on both
-//! success and classified error — the chat is where the operator
-//! continues. Their auth / `memory` wiring is unchanged; only the
-//! response shape moved from HTML to a redirect.
+//! The POST route no longer renders a page: the form that called it is
+//! gone, so it performs its chassis action and **303-redirects to
+//! `/dashboard/chat`** (the single operational surface) on both success
+//! and classified error — the chat is where the operator continues. Its
+//! auth / `memory` wiring is unchanged; only the response shape moved
+//! from HTML to a redirect.
 
 use axum::Form;
 use axum::Router;
@@ -55,20 +49,15 @@ pub fn router() -> Router<DashboardState> {
         .route("/proposals/in-flight-count", get(in_flight_count))
         .route("/proposals/in-flight/chat-turn", get(in_flight_chat_turn))
         .route("/proposals/:proposal_id/apply", post(apply))
-        .route("/proposals/:proposal_id/confirm", post(confirm))
-        .route("/proposals/:proposal_id/revert", post(revert))
         .route("/proposals/:proposal_id/open-in-chat", get(open_in_chat))
 }
 
-/// JSON shape returned by [`in_flight_count`] — the per-class counts the
-/// topnav badge reads. `total` is `pending + applied_pending_confirm +
-/// revertable_applied`, exactly [`proposals::InFlightCounts::total`].
+/// JSON shape returned by [`in_flight_count`] — what the topnav badge
+/// reads. A proposal awaiting the user's answer is the only row anybody
+/// can still act on: an applied change is not undone.
 #[derive(Debug, Serialize)]
 struct InFlightCountJson {
     pending: i64,
-    applied_pending_confirm: i64,
-    revertable_applied: i64,
-    total: i64,
 }
 
 /// `GET /dashboard/proposals/in-flight-count` — the count the topnav
@@ -91,15 +80,10 @@ async fn in_flight_count(
 ) -> Result<axum::Json<InFlightCountJson>> {
     let recipient =
         (!crate::reveal::active(&state, &user, &jar)).then(|| format!("user:{}", user.sender_id));
-    let counts = proposals::count_in_flight(&state.pool, recipient.as_deref(), chrono::Utc::now())
+    let pending = proposals::count_pending(&state.pool, recipient.as_deref())
         .await
-        .map_err(|e| DashboardError::Internal(format!("count_in_flight: {e}")))?;
-    Ok(axum::Json(InFlightCountJson {
-        pending: counts.pending,
-        applied_pending_confirm: counts.applied_pending_confirm,
-        revertable_applied: counts.revertable_applied,
-        total: counts.total(),
-    }))
+        .map_err(|e| DashboardError::Internal(format!("count_pending: {e}")))?;
+    Ok(axum::Json(InFlightCountJson { pending }))
 }
 
 /// Form fields for the apply submit — one field, because only one
@@ -166,91 +150,6 @@ async fn apply(
     Ok(Redirect::to(CHAT_SURFACE).into_response())
 }
 
-/// `POST /dashboard/proposals/:id/confirm` — promote an
-/// `applied_pending_confirm` proposal to `applied`, then redirect to the
-/// chat. `confirm_proposal` gates by recipient/admin itself.
-async fn confirm(
-    State(state): State<DashboardState>,
-    user: SessionUser,
-    Path(proposal_id): Path<String>,
-) -> Result<Response> {
-    match proposals::confirm_proposal(&state.pool, &proposal_id, &user.sender_id, user.is_admin)
-        .await
-    {
-        Ok(out) => tracing::info!(
-            proposal_id = %out.proposal_id,
-            kind = %out.kind,
-            "dashboard: proposal confirmed via action route"
-        ),
-        Err(e) => tracing::warn!(
-            error = %e,
-            %proposal_id,
-            "dashboard: proposal confirm via action route failed"
-        ),
-    }
-    Ok(Redirect::to(CHAT_SURFACE).into_response())
-}
-
-/// `POST /dashboard/proposals/:id/revert` — undo an `applied` /
-/// `applied_pending_confirm` proposal, then redirect to the chat.
-///
-/// Mirrors the chassis' status-driven `RevertAuth` selection: `applied`
-/// rows revert via [`proposals::RevertAuth::Token`] (fetched server-side
-/// from the row), `applied_pending_confirm` rows via
-/// [`proposals::RevertAuth::Caller`] (no token exists yet) with the
-/// session user as the caller. Anything else is a no-op redirect.
-async fn revert(
-    State(state): State<DashboardState>,
-    user: SessionUser,
-    Path(proposal_id): Path<String>,
-) -> Result<Response> {
-    let memory = state
-        .memory
-        .as_ref()
-        .ok_or_else(|| DashboardError::Internal("memory handles not wired".into()))?;
-
-    let row: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT status, revert_token FROM structure_proposals WHERE proposal_id = ?",
-    )
-    .bind(&proposal_id)
-    .fetch_optional(&state.pool)
-    .await?;
-
-    let auth = match row.as_ref() {
-        Some((status, _)) if status == "applied_pending_confirm" => {
-            Some(proposals::RevertAuth::Caller {
-                sender: &user.sender_id,
-                is_admin: user.is_admin,
-            })
-        },
-        Some((status, Some(token))) if status == "applied" => {
-            Some(proposals::RevertAuth::Token(token))
-        },
-        _ => None,
-    };
-
-    if let Some(auth) = auth {
-        match proposals::revert_proposal(&state.pool, &memory.tree, &proposal_id, auth).await {
-            Ok(out) => tracing::info!(
-                proposal_id = %out.proposal_id,
-                kind = %out.kind,
-                "dashboard: proposal reverted via action route"
-            ),
-            Err(e) => tracing::warn!(
-                error = %e,
-                %proposal_id,
-                "dashboard: proposal revert via action route failed"
-            ),
-        }
-    } else {
-        tracing::warn!(
-            %proposal_id,
-            "dashboard: proposal revert via action route — not in a revertable status (or no token), ignoring"
-        );
-    }
-    Ok(Redirect::to(CHAT_SURFACE).into_response())
-}
-
 /// `GET /dashboard/proposals/:id/open-in-chat` — server-side primer
 /// for the agentic chat panel.
 ///
@@ -275,7 +174,7 @@ async fn open_in_chat(
         h2 { "Proposal " code { (proposal_id) } " opened in chat" }
         p {
             "The proposal summary is in the chat panel on the right. "
-            "Tell it there what you want to do (modify, apply, confirm or undo) "
+            "Tell it there what you want to do (modify or apply) "
             "with an explicit confirmation; to close without doing anything go to the "
             a href="/dashboard/chat" { "chat" }
             "."
@@ -311,15 +210,13 @@ async fn in_flight_chat_turn(
     Ok(axum::Json(turn))
 }
 
-/// Read-only primer the in-flight badge injects: enumerate everything the
-/// user can still act on across the three in-flight classes and stop.
-/// English seed — the reply language is governed by the `{locale}`
-/// directive in the system prompt, not by this text.
-const IN_FLIGHT_PRIMER: &str = "Show me everything I have in flight: \
-     proposals to review, applications awaiting confirmation, and emergences \
-     still within their undo window. List them with `structure_proposal_list` \
-     (statuses pending, applied_pending_confirm, applied) and summarise them \
-     briefly; do nothing until I ask you to.";
+/// Read-only primer the in-flight badge injects: enumerate the proposals
+/// still waiting on the user and stop. English seed — the reply language
+/// is governed by the `{locale}` directive in the system prompt, not by
+/// this text.
+const IN_FLIGHT_PRIMER: &str = "Show me the proposals still waiting on me. \
+     List them with `structure_proposal_list` (status pending) and summarise \
+     them briefly; do nothing until I ask you to.";
 
 /// Landing render for the single-proposal open-in-chat bridge: serialise
 /// the [`AgenticTurn`] into the `window.__mweChatPrimer` payload `chat.js`
@@ -365,8 +262,8 @@ fn compose_primer(proposal_id: &str) -> String {
          a fact-forget request I am eligible to vote on, tell me I can approve or \
          reject it (`structure_proposal_vote`) — a NO majority blocks the forget (the \
          fact stays), silence lets it through. \
-         Apply, vote, or undo nothing in this turn: wait for my explicit instruction \
-         on the next turn."
+         Apply nothing and vote on nothing in this turn: wait for my explicit \
+         instruction on the next turn."
     )
 }
 

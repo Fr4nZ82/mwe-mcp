@@ -13,7 +13,7 @@
 //!   pre-populated from the current `fact_index` row. It carries two
 //!   **structured** sub-forms (the per-fragment **ACL** — subject-or-admin —
 //!   and **validity** — subject-or-admin — surfaces, engine-direct,
-//!   standard-wikis only, born-applied + revertible) plus the **body /
+//!   standard-wikis only, born-applied) plus the **body /
 //!   topics / `fact_type`**
 //!   supersede, which still rides the **form-to-chat bridge** (the chat
 //!   agentic loop takes the supersede through its cascade-aware machinery
@@ -24,8 +24,8 @@
 //!   smart-wikis). Calls
 //!   [`mwe_core::operator_edits::acl_change_operator`], posts the
 //!   `structure_applied` notice, and 303-redirects to the born-applied
-//!   receipt's open-in-chat page so the operator lands on the revertible
-//!   receipt.
+//!   receipt's open-in-chat page so the operator lands on a summary of
+//!   what changed.
 //! - `POST /dashboard/facts/:fact_id/validity` — structured validity edit
 //!   (`valid_from` / `valid_to`). **Subject-or-admin** gated (validity is the
 //!   subject's *update* of a fact about themselves — the write-authority
@@ -43,10 +43,9 @@
 //!   waiting for explicit confirmation.
 //!
 //! ACL + validity left the chat bridge because no chat tool applied them
-//! deterministically; they are now structured engine-direct actions whose
-//! revert is FREE — the born-applied receipts are `wiki_promote` variants
-//! the existing `POST /dashboard/proposals/:id/revert` route already
-//! undoes.
+//! deterministically; they are now structured engine-direct actions, and
+//! their born-applied receipts are `wiki_promote` variants that read like
+//! any other.
 
 use axum::Form;
 use axum::Router;
@@ -698,7 +697,7 @@ pub struct ValidityActionForm {
 /// smart-wikis). Calls the
 /// act-first wrapper, posts the `structure_applied` notice mirroring the
 /// chat paper-trail, and 303-redirects to the born-applied receipt's
-/// open-in-chat page so the operator lands on the revertible receipt.
+/// open-in-chat page so the operator lands on a summary of what changed.
 async fn acl_submit(
     State(state): State<DashboardState>,
     user: SessionUser,
@@ -950,7 +949,6 @@ async fn emit_structure_applied(
         "proposal_id": applied.proposal_id,
         "variant": variant,
         "recipient_id": recipient,
-        "revert_deadline": applied.revert_deadline.to_rfc3339(),
         "dashboard_path": format!("/dashboard/proposals/{}/open-in-chat", applied.proposal_id),
     });
     if let (Some(obj), serde_json::Value::Object(extra_obj)) = (payload.as_object_mut(), extra) {
@@ -970,7 +968,7 @@ async fn emit_structure_applied(
 }
 
 /// 303-redirect to the born-applied receipt's open-in-chat page so the
-/// operator lands on the revertible receipt.
+/// operator lands on a summary of what changed.
 fn redirect_to_receipt(proposal_id: &str) -> Response {
     Redirect::to(&format!("/dashboard/proposals/{proposal_id}/open-in-chat")).into_response()
 }
@@ -1919,11 +1917,11 @@ fn structured_actions_section(
                 }
             } @else {
                 p.muted {
-                    "Applied directly to the engine (act-first), with a receipt "
-                    "revertible within the undo window: after submitting you land "
-                    "on the receipt, from which you can "
-                    strong { "revert" }
-                    "."
+                    "Applied directly to the engine (act-first). After submitting "
+                    "you land on the receipt, which says what changed. The change "
+                    "is "
+                    strong { "final" }
+                    " — to put it back, make the opposite change."
                 }
                 @if can_acl {
                     form.fact-acl method="post" action=(acl_action) {

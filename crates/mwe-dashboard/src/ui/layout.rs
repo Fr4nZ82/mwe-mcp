@@ -568,7 +568,7 @@ fn chat_panel() -> Markup {
                 label for="chat-panel-text" class="sr-only" { "Chat with the engine" }
                 textarea id="chat-panel-text" name="text" rows="2"
                     class="w-full bg-bg p-2 border border-border rounded text-text font-mono text-sm resize-y focus:outline-none focus:border-phosphor"
-                    placeholder="Operate on the memory by chatting — move a wiki, retune or reshape items, undo a change, or ask what's pending." {}
+                    placeholder="Operate on the memory by chatting — move a wiki, retune or reshape items, or ask what's pending." {}
                 button type="submit"
                     class="self-end px-3 py-1.5 text-xs font-bold border border-phosphor rounded bg-bg-2 text-phosphor hover:bg-bg-3 hover:text-phosphor-bright" {
                     "Send"
@@ -649,10 +649,10 @@ pub fn help_body() -> Markup {
                 "Retune an item\u{2019}s permanence / time-to-live."))
             (help_row("\u{201C}add a \u{00AB}who-ordered\u{00BB} field to the items\u{201D}",
                 "Change the item schema."))
-            (help_row("\u{201C}undo that list\u{201D}",
-                "Undo a just-created structured wiki (within its revert window)."))
+            (help_row("\u{201C}move the shopping facts onto their own page\u{201D}",
+                "Reshape where facts live."))
             (help_row("\u{201C}what have I got pending?\u{201D}",
-                "Review pending proposals, applications awaiting confirmation, and still-revertable emergences."))
+                "Review the proposals still waiting on you."))
         }
         p style="margin:.9rem 0 0;font-size:.78rem;color:var(--text-dim);line-height:1.45" {
             "Tip: the badge in the top bar lights up when you have something in "

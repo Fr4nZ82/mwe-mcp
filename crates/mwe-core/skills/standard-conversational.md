@@ -1,7 +1,7 @@
 ---
 name: standard-conversational
-version: 1.5.0
-description: "Default conversational pattern for standard consumers (openclaw, hermes, nanoclaw): wiki_ingest_message passthrough, recent_messages window, disambiguation, locale plumbing, pending_attention nudges, events_poll cadence, structural notices + undo routing, on-the-fly date corrections + sharing changes on the facts the sender is the subject of, no wiki_admin_* writes."
+version: 1.7.0
+description: "Default conversational pattern for standard consumers (openclaw, hermes, nanoclaw): wiki_ingest_message passthrough, recent_messages window, disambiguation, locale plumbing, events_poll cadence, on-the-fly date corrections + sharing changes on the facts the sender is the subject of, no wiki_admin_* writes."
 depends_on: ["core"]
 applies_to:
   consumer_class: standard
@@ -38,10 +38,10 @@ for the dispatcher.
 - **Operation-path edits on stored facts the sender is the subject of** — a date
   correction ("the milk expires on the 20th, not the 25th") and a sharing change
   ("make this one visible to everyone", "share it with the family group") are
-  recognized in the same `wiki_ingest_message` turn and applied act-first,
-  revertible from the dashboard (the gate is server-side: only the fact's
-  **subject** — the user it is about, or a member of the group it is about —
-  may edit it; standard memory wikis only). You still just pass the raw message
+  recognized in the same `wiki_ingest_message` turn and applied act-first
+  (the gate is server-side: only the fact's **subject** — the user it is
+  about, or a member of the group it is about — may edit it; standard memory
+  wikis only). You still just pass the raw message
   through.
 - Structural proposal emission (questionnaire when a new wiki or
   type should emerge).
@@ -65,7 +65,7 @@ Server → { intent_classified: "recall",
                              71 kg yesterday, 17 May.",
            suggested_seed:  "You recorded 71 kg yesterday, down
                              from 72 kg 8 days ago.",
-           pending_attention: null, ... }
+           pending_votes: null, ... }
 Agent → injects context_snippet into its own system prompt for this
         turn, rephrases suggested_seed in product voice
 Agent → "Yes, you are at 71 kg — a kilo down since Thursday, just as you remembered."
@@ -73,8 +73,7 @@ Agent → "Yes, you are at 71 kg — a kilo down since Thursday, just as you rem
 
 The only call you make **outside** `wiki_ingest_message` during a
 normal turn is to surface a URL the server tells you about (see
-§"Events and dashboard URLs" below) and the proactive nudge from the
-`pending_attention` block.
+§"Events and dashboard URLs" below).
 
 ## The per-turn loop in detail
 
@@ -99,9 +98,8 @@ For each user message:
    must behave. Privacy is never here (it is ACL-enforced memory-side).
 4. **Use `suggested_seed`** as a starting point for your reply.
    Rephrase to match your product voice; do not change the substance.
-5. **Check `pending_attention`** — see "The pending_attention block".
-6. **Check `needs_disambig`** — see "Disambiguation".
-7. **Compose your reply** and send it back through your channel.
+5. **Check `needs_disambig`** — see "Disambiguation".
+6. **Compose your reply** and send it back through your channel.
 
 ## Wire shape
 
@@ -146,12 +144,6 @@ Verified against
   }>;
   llm_used: string;                      // diagnostic
   took_ms: number;
-  pending_attention?: {                  // present only when count > 0
-    pending_count: number;
-    applied_pending_confirm_count: number;
-    dashboard_path: string;              // typically "/dashboard/proposals"
-    note: string;                        // opaque metadata; don't branch on value
-  };
 }
 ```
 
@@ -180,48 +172,6 @@ The server's `ingest` and `agentic-chat-panel` prompts include a
 Pass `metadata.locale` explicitly when your consumer already knows
 the user's language (e.g. a Telegram bot reading `language_code` from
 the user object). Otherwise the mirror fallback handles it.
-
-## The `pending_attention` block
-
-When `wiki_ingest_message` returns a `pending_attention` block,
-**surface a short reminder to the user in your reply** before or
-after the main answer — your call where it fits, but don't drop it
-silently. Example wording, phrased in the user's own language:
-
-> *"You've got 1 structural proposal pending and 2 changes I made
-> automatically waiting for your confirmation — check them when you
-> can: [dashboard link]"*
-
-Mechanics:
-
-- The block is present **only when** `pending_count +
-  applied_pending_confirm_count > 0`. When zero, omitted — no noise
-  on the default wire shape.
-- `dashboard_path` is the relative path inside the dashboard. Compose
-  the full URL by calling `dashboard_link(intent="answer_proposal",
-  ...)` and using the signed URL, or — in known-trusted
-  environments — concatenate `<dashboard_host>` + `dashboard_path`
-  directly.
-- `note` is opaque metadata. Today `"scoped_to_recipient"`, meaning the
-  count is already filtered to the acting user — proposals addressed to
-  them (the `recipient_id` column, 0032) plus the unaddressed ones; an
-  admin caller sees the deployment-wide count. Because you call
-  `wiki_ingest_message` with `X-MWE-Act-As: <human>`, the block you get
-  back is already that human's — surface it to them, not to others.
-  Treat the value as opaque; don't branch on it.
-- This is your **proactive reminder channel**. `events_poll` (below)
-  covers "what just happened"; `pending_attention` covers "what's
-  still open" so the user is reminded every turn.
-- **Routing async events (0032).** When you drain `events_poll`
-  for the bot, the `structure_applied` / `dedup_proposed` /
-  `auto_applied` payloads carry `recipient_id` (e.g. `"user:frodo"`,
-  or `null` if unaddressed). Strip the `user:` prefix and send *that*
-  human the notification — call `dashboard_link` with
-  `X-MWE-Act-As: <that human>` and relay the returned URL (pointing at
-  the payload's `dashboard_path`). On `null`, fall back to the
-  operator/admin. For `structure_applied` this matters most: the change
-  is **already applied**; the notice tells you whom to inform and where
-  they can undo it.
 
 ## Read access on companion-wikis owned by the user
 
@@ -260,32 +210,27 @@ events_poll({ consumer_id, since?, kinds?, top_k? })
 
 | Kind | What happened | What you do |
 |---|---|---|
-| `structure_applied` | REM **applied a structural change directly** (paragraph→page split or page→sub-wiki emergence) — apply + notice, no approval step | Payload names the affected user (`recipient_id`) and carries `variant`, source → target, `revert_deadline`, `dashboard_path`. Forward it to that user: "I reorganized X — undo here: [dashboard link]" |
-| `auto_applied` | A questionnaire proposal auto-applied at its 24h `pending_timeout` (dedup lifecycle) | Payload has `dashboard_path` + `summary`; surface as "I did X — review or revert: [dashboard link]" |
+| `structure_applied` | REM **applied a structural change directly** (paragraph→page split or page→sub-wiki emergence) — apply + notice, no approval step | Payload names the affected user (`recipient_id`) and carries `variant`, source → target, `dashboard_path`. Forward it to that user: "I reorganized X — see it here: [dashboard link]" |
+| `auto_applied` | A questionnaire proposal auto-applied at its 24h `pending_timeout` (dedup lifecycle) | Payload has `dashboard_path` + `summary`; surface as "I did X — see it here: [dashboard link]" |
 | `dedup_proposed` | Merge proposal (REM dedup) pending the user | Surface with dashboard URL |
 | `archive_proposed` | An archive proposal exists for a stale page | Surface with dashboard URL |
 
 For **everything** structural, the canonical action is: get the
-dashboard URL, present it to the user. The dashboard handles the
-undo/declass buttons (and, for the dedup questionnaire kinds, the
-confirmation buttons). **There are no MCP tools to list, apply,
-confirm, or revert yourself** (see "Anti-patterns").
+dashboard URL, present it to the user. **There are no MCP tools to
+list or apply proposals yourself** (see "Anti-patterns").
 
 ### Apply + notice (structural changes are act-first)
 
 A structural change is **not** a blocking proposal: mwe-mcp applies it
 directly during REM and tells you afterwards with a
-`structure_applied` notice. There is nothing to approve — the
-contract is "this happened — here's the undo". The affected user has
-**7 days** (`revert_deadline`) to undo or declass from the dashboard;
-silence means the change simply stands.
+`structure_applied` notice. There is nothing to approve and nothing to
+undo — the contract is "this happened". The memory reorganises itself;
+the user steers it by talking to you, not by rolling a change back.
 
 The dedup questionnaire kinds (`dedup_proposed`) still ride the
 pending lifecycle: the user has **24 hours** to answer in the
-dashboard; if silent, mwe-mcp auto-applies the `recommended` answers
-(`auto_applied` event), and **silence past 7 more days is silent
-confirmation**. A manual revert remains possible within the 7-day
-`revert_deadline` of the apply.
+dashboard; if silent, mwe-mcp applies the `recommended` answers
+(`auto_applied` event) and the change stands.
 
 ### Polling cadence
 
@@ -293,8 +238,7 @@ For a chat bot, every ~30 s is fine. For an active session where the
 user is typing, piggyback the poll on user turns (one poll per turn,
 in parallel with the `wiki_ingest_message` call). Don't poll faster
 than ~5 s — events are usually minutes-to-days-old, and the server
-has rate limits. The `pending_attention` block already gives you a
-per-turn reminder of open state, so a low polling cadence is fine.
+has rate limits, so a low polling cadence is fine.
 
 ## Consumer self-configuration
 
@@ -357,12 +301,10 @@ opaque id back when calling `wiki_read`.
 - ❌ **Client-side intent classification.** Do not pattern-match on
   user text and pick an enum for `dashboard_link`. The server
   classifies. If a structural change happens, the server applies it
-  and emits a `structure_applied` notice (or surfaces
-  `pending_attention` on the next ingest); the consumer routes the
-  user to the dashboard.
+  and tells you afterwards. The memory keeps itself: there is nothing
+  for the user to confirm.
 - ❌ **Trying to call any `structure_proposal_*` tool over MCP.**
-  The whole family (list / apply / confirm / revert) was removed from
-  the MCP surface. The dashboard is the only surface for those
+  The whole family was removed from the MCP surface. The dashboard is the only surface for those
   actions. Surface a `dashboard_link` URL instead.
 - ❌ **Calling `_internal.*` tools directly.** They return `403
   not_exposed`. Use `wiki_ingest_message` for everything
@@ -371,8 +313,6 @@ opaque id back when calling `wiki_read`.
   field is **audit-only** (debug, logging). Don't branch your code
   on it. The `suggested_seed` already carries whatever the server
   wants the user to see.
-- ❌ **Dropping `pending_attention` silently.** When the block is
-  present, surface a short reminder alongside your normal reply.
 - ❌ **`wiki_admin_*` writes.** Off-limits to standard consumers
   (`403 requires_consumer_class_smart`). Notify-only is allowed
   (`wiki_admin_notify`) and is the canonical way to relay a user

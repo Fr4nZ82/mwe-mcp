@@ -44,7 +44,7 @@ fn destructive(t: Tool) -> Tool {
 /// - A — `wiki_ingest_message`
 /// - B — `events_poll`, `events_ack` (structural-change notices ride
 ///   here as `structure_applied` events; the whole `structure_proposal_*`
-///   family was removed — the dashboard is the undo surface and calls
+///   family was removed — the dashboard is the operator surface and calls
 ///   `mwe-core::proposals` directly without going through MCP)
 /// - D — `wiki_read`, `wiki_search`, `wiki_navigate`
 /// - E — `tool_log_search`, `wiki_lint`

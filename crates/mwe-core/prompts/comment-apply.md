@@ -38,7 +38,7 @@ an operator override at `<workdir>/prompts/comment-apply.md` wins.
   and a `move` is refused if its destination does
   not exist / is smart / belongs to a different owner. A cross-wiki move always lands
   on the destination wiki's **buffer** page (`CROSS_WIKI_DEST_PAGE` =
-  `wiki::NOTES_FILENAME`; the dest wiki re-homes it on its next compile). A `move` is born-applied + revertible from the dashboard; an
+  `wiki::NOTES_FILENAME`; the dest wiki re-homes it on its next compile). A `move` is born-applied and final; an
   unparseable response leaves the comments for the next cycle.
 
 ## System prompt

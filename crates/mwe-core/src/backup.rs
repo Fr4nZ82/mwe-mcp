@@ -442,7 +442,7 @@ async fn write_snapshot(workdir: &Path, dest: &Path, db_path: &Path) -> Result<B
     Ok(report)
 }
 
-/// Undo a snapshot that aborted mid-write, so what is left cannot be
+/// Roll back a snapshot that aborted mid-write, so what is left cannot be
 /// mistaken for a backup.
 ///
 /// [`is_snapshot_dir`] — and through it the dashboard list, the CLI and

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Per-kind apply / revert logic for the `wiki_promote` structure
+//! Per-kind apply logic for the `wiki_promote` structure
 //! proposal kind.
 //!
 //! The chassis in [`crate::proposals`] dispatches here when a proposal
 //! row carries `kind = "wiki_promote"`. This module is responsible for
 //! the concrete filesystem + DB work; the chassis owns the state
-//! transitions, the `revert_token`, and the deadline.
+//! transitions.
 //!
 //! ## Three variants
 //!
@@ -23,7 +23,7 @@
 //!   husk file, and re-home the move in the persisted compilation plan —
 //!   the cure front of semantic page consolidation
 //!   (rem-cycle.md §Page-merge sub-job).
-//!   Selected via `answers.variant = "page_merge"`. The revert recreates
+//!   Selected via `answers.variant = "page_merge"`. The receipt records
 //!   the husk from the shell stored in the spec.
 //!
 //! All variants preserve fact ids verbatim — the same marker on disk
@@ -67,10 +67,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
 
-use crate::capture_buffer;
 use crate::fact_index;
 use crate::parser::{self, ParseEvent};
-use crate::proposals::{self, ApplyError, EmitParams, ProposalsError, RevertError, kind};
+use crate::proposals::{self, ApplyError, EmitParams, ProposalsError, kind};
 use crate::types::{FactId, Principal, WikiId, WikiSlug};
 use crate::wiki::{self, WikiMeta, WikiTree, atomic_write, is_safe_page_path};
 
@@ -101,7 +100,7 @@ struct PromoteAnswers {
 }
 
 /// One row in the `spec.moved_facts` array — what the chassis writes
-/// to the proposal row's `spec` column for the revert path to consume.
+/// to the proposal row's `spec` column so the receipt says what moved.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MovedFactRecord {
     fact_id: String,
@@ -115,8 +114,8 @@ struct MovedFactRecord {
     new_region_end: i64,
 }
 
-/// `spec` payload written to the proposal row on a successful apply.
-/// Read back by [`revert_paragraph_to_file`].
+/// `spec` payload written to the proposal row on a successful apply —
+/// the receipt's record of what moved where.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PromoteSpec {
     /// Variant discriminator. Stable across schema evolution: future
@@ -125,16 +124,11 @@ struct PromoteSpec {
     source_wiki_id: String,
     source_page: String,
     target_page: String,
-    /// `true` iff the target page existed before the apply (revert keeps
-    /// the user's prior target content untouched in that case).
-    target_existed_before: bool,
     moved_facts: Vec<MovedFactRecord>,
 }
 
-/// `spec` payload of a successful cross-wiki single-fact refile. Read
-/// back by [`revert_fact_refile`]: the source/dest identities let the
-/// revert repoint `wiki_id` back to the source + restore the prose, and
-/// `moved` carries the same `(old/new offset)` record the
+/// `spec` payload of a successful cross-wiki single-fact refile: the
+/// source/dest identities plus the same `(old/new offset)` record the
 /// paragraph-to-file variant uses (reused verbatim for one fact).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FactRefileSpec {
@@ -148,8 +142,6 @@ struct FactRefileSpec {
     dest_wiki_id: String,
     /// Page (wiki-relative) the fact moved to.
     dest_page: String,
-    /// `true` iff the destination page existed before the apply.
-    target_existed_before: bool,
     /// The single moved fact's offset record.
     moved: MovedFactRecord,
 }
@@ -220,36 +212,6 @@ pub(crate) async fn apply_wiki_promote(
             "fact_refile receipts are born applied by REM; no chassis apply path".into(),
         )),
         other => Err(ApplyError::InvalidPayload(format!(
-            "unknown wiki_promote variant: {other}",
-        ))),
-    }
-}
-
-/// Public revert entry point for the chassis. Dispatches on the
-/// `variant` carried in the stored spec.
-///
-/// # Errors
-///
-/// All failure modes funnel into [`RevertError`].
-pub(crate) async fn revert_wiki_promote(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    spec: &Value,
-) -> Result<(), RevertError> {
-    let variant = spec
-        .get("variant")
-        .and_then(Value::as_str)
-        .unwrap_or(VARIANT_PARAGRAPH_TO_FILE);
-    match variant {
-        VARIANT_PARAGRAPH_TO_FILE => revert_paragraph_to_file(pool, tree, spec).await,
-        VARIANT_PAGES_TO_SUBWIKI => revert_pages_to_subwiki(pool, tree, spec).await,
-        VARIANT_PAGES_MOVE_WIKI => revert_pages_move_wiki(pool, tree, spec).await,
-        VARIANT_PAGE_MERGE => revert_page_merge(pool, tree, spec).await,
-        VARIANT_VALIDITY_CLOSE => revert_validity_close(pool, spec).await,
-        VARIANT_VALIDITY_EDIT => revert_validity_edit(pool, spec).await,
-        VARIANT_ACL_CHANGE => revert_acl_change(pool, spec).await,
-        VARIANT_FACT_REFILE => revert_fact_refile(pool, tree, spec).await,
-        other => Err(RevertError::InvalidPayload(format!(
             "unknown wiki_promote variant: {other}",
         ))),
     }
@@ -382,8 +344,7 @@ async fn apply_paragraph_to_file(
     }
 
     // Read existing target content (may be empty / not exist).
-    let target_existed_before = target_abs.exists();
-    let existing_target = if target_existed_before {
+    let existing_target = if target_abs.exists() {
         std::fs::read_to_string(&target_abs)
             .map_err(|e| ApplyError::HandlerIo(format!("read {target_rel}: {e}")))?
     } else {
@@ -509,182 +470,9 @@ async fn apply_paragraph_to_file(
         source_wiki_id: ctx.source_wiki_id,
         source_page: source_page_path.to_string_lossy().into_owned(),
         target_page: target_page_path.to_string_lossy().into_owned(),
-        target_existed_before,
         moved_facts: moved_records,
     };
     Ok(json!(spec))
-}
-
-// ---------- Revert ----------
-
-/// Revert a previously-applied `wiki_promote` proposal.
-///
-/// Reads the `spec` JSON the chassis stored at apply time and undoes
-/// the move: each fact's marker is taken back off the target page,
-/// re-appended at the end of the source page, and its `fact_index` row
-/// is repointed at the source. The user's manual edits to either page
-/// between apply and revert are preserved (the parser looks the regions
-/// up by `fact_id`, not by byte offset).
-///
-/// If the target page only existed because of the apply (no prior
-/// content) and revert empties it back to zero regions of *our* facts,
-/// the file is left in place — it will simply contain the user's
-/// non-marker prose, if any. The caller can `wiki_forget` the page
-/// separately if they want it gone.
-///
-/// # Errors
-///
-/// All failure modes funnel into [`RevertError`].
-#[allow(
-    clippy::too_many_lines,
-    reason = "linear revert pipeline; splitting hides the DB-first order"
-)]
-async fn revert_paragraph_to_file(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    spec: &Value,
-) -> Result<(), RevertError> {
-    let spec: PromoteSpec = serde_json::from_value(spec.clone())
-        .map_err(|e| RevertError::InvalidPayload(format!("spec is not a PromoteSpec: {e}")))?;
-    if spec.variant != VARIANT_PARAGRAPH_TO_FILE {
-        return Err(RevertError::InvalidPayload(format!(
-            "spec.variant {actual} is not paragraph_to_file",
-            actual = spec.variant,
-        )));
-    }
-    let source_page_path = validated_page_path_rev(&spec.source_page, "spec.source_page")?;
-    let target_page_path = validated_page_path_rev(&spec.target_page, "spec.target_page")?;
-    let wiki_id = WikiId::parse(&spec.source_wiki_id)
-        .map_err(|e| RevertError::InvalidPayload(format!("spec.source_wiki_id invalid: {e}")))?;
-
-    let handle = tree
-        .locate(&wiki_id)
-        .map_err(|e| RevertError::HandlerData(format!("wiki not found: {e}")))?;
-    let source_abs = handle.abs_dir().join(&source_page_path);
-    let target_abs = handle.abs_dir().join(&target_page_path);
-    let source_rel = wiki::workdir_relative_source_path(tree.workdir(), &source_abs);
-    let target_rel = wiki::workdir_relative_source_path(tree.workdir(), &target_abs);
-
-    let target_contents = std::fs::read_to_string(&target_abs)
-        .map_err(|e| RevertError::HandlerIo(format!("read {target_rel}: {e}")))?;
-
-    // Locate each fact's region on the target by fact_id (not by stored
-    // byte offsets — the user may have edited the target since apply).
-    let parsed = parser::parse(&target_contents);
-    let mut by_fact: HashMap<FactId, ParsedRegion> = HashMap::new();
-    for ev in parsed.events {
-        if let ParseEvent::Region {
-            start, end, attrs, ..
-        } = ev
-            && let Some(fid) = attrs.fact_id
-        {
-            by_fact.insert(
-                fid,
-                ParsedRegion {
-                    start,
-                    end,
-                    bytes: target_contents[start..end].to_owned(),
-                },
-            );
-        }
-    }
-
-    let mut moved_back: Vec<MovedRegion> = Vec::with_capacity(spec.moved_facts.len());
-    for rec in &spec.moved_facts {
-        let fid = FactId::parse(&rec.fact_id).map_err(|e| {
-            RevertError::InvalidPayload(format!("spec fact_id {} invalid: {e}", rec.fact_id))
-        })?;
-        let region = by_fact.remove(&fid).ok_or_else(|| {
-            RevertError::HandlerData(format!(
-                "fact {fid} not present on target {target_rel} — manual edit lost the marker",
-            ))
-        })?;
-        moved_back.push(MovedRegion {
-            fact_id: fid,
-            old_start: region.start,
-            old_end: region.end,
-            bytes: region.bytes,
-        });
-    }
-
-    // New target = current target minus the moved-back regions.
-    let new_target = compose_source_minus_moved(&target_contents, &moved_back);
-
-    // New source = current source + appended regions.
-    let source_contents = std::fs::read_to_string(&source_abs)
-        .map_err(|e| RevertError::HandlerIo(format!("read {source_rel}: {e}")))?;
-    let (new_source, source_offsets) = compose_target(&source_contents, &moved_back);
-
-    // DB rows FIRST, files second — same race shield as the apply: a
-    // row repointed at the source with NULL offsets is a pending render
-    // the orphan sweep spares, so a watcher reindex of the target page
-    // mid-revert cannot tombstone the fact when its marker leaves that
-    // page.
-    for m in &moved_back {
-        let touched = fact_index::move_region(pool, &m.fact_id, &source_rel, None, None)
-            .await
-            .map_err(|e| RevertError::HandlerIo(e.to_string()))?;
-        if touched == 0 {
-            return Err(RevertError::HandlerData(format!(
-                "fact_index::move_region updated 0 rows for {fid}",
-                fid = m.fact_id,
-            )));
-        }
-    }
-
-    atomic_write(&source_abs, new_source.as_bytes())
-        .map_err(|e| RevertError::HandlerIo(format!("atomic_write {source_rel}: {e}")))?;
-    atomic_write(&target_abs, new_target.as_bytes())
-        .map_err(|e| RevertError::HandlerIo(format!("atomic_write {target_rel}: {e}")))?;
-
-    // Stamp the rendered offsets on the source page.
-    for m in &moved_back {
-        let off = source_offsets.get(&m.fact_id).copied().ok_or_else(|| {
-            RevertError::HandlerData(format!(
-                "internal: source offsets missing for {fid}",
-                fid = m.fact_id,
-            ))
-        })?;
-        let touched = fact_index::move_region(
-            pool,
-            &m.fact_id,
-            &source_rel,
-            Some(i64::try_from(off.0).unwrap_or(i64::MAX)),
-            Some(i64::try_from(off.1).unwrap_or(i64::MAX)),
-        )
-        .await
-        .map_err(|e| RevertError::HandlerIo(e.to_string()))?;
-        if touched == 0 {
-            return Err(RevertError::HandlerData(format!(
-                "fact_index::move_region updated 0 rows for {fid} at offset stamp",
-                fid = m.fact_id,
-            )));
-        }
-    }
-
-    tracing::info!(
-        wiki_id = spec.source_wiki_id.as_str(),
-        source = source_rel,
-        target = target_rel,
-        moved_back = moved_back.len(),
-        "promote: paragraph_to_file reverted",
-    );
-
-    // Plan-sync seam (inverse): re-home the reverted facts back onto the
-    // source page's plan slug — otherwise the persisted plan keeps them on
-    // the target and the next recompile re-applies the move the operator
-    // just reverted. Best-effort: the disk/DB revert stands either way.
-    rehome_after_move(
-        pool,
-        &moved_back,
-        &plan_slug_of_page(&spec.source_wiki_id, &spec.source_page),
-        &spec.source_wiki_id,
-        &[],
-        tree,
-    )
-    .await;
-
-    Ok(())
 }
 
 // ---------- fact refile variant (cross-wiki single-fact move) ----------
@@ -810,8 +598,7 @@ async fn apply_fact_refile(
     }];
 
     // Read existing destination content (may be empty / not exist).
-    let target_existed_before = dest_abs.exists();
-    let existing_target = if target_existed_before {
+    let existing_target = if dest_abs.exists() {
         std::fs::read_to_string(&dest_abs)
             .map_err(|e| ApplyError::HandlerIo(format!("read {dest_rel}: {e}")))?
     } else {
@@ -909,7 +696,6 @@ async fn apply_fact_refile(
         source_page: source_page_path.to_string_lossy().into_owned(),
         dest_wiki_id,
         dest_page: dest_page_path.to_string_lossy().into_owned(),
-        target_existed_before,
         moved: MovedFactRecord {
             fact_id: fact_id.as_str().to_owned(),
             old_region_start: i64::try_from(moved[0].old_start).unwrap_or(i64::MAX),
@@ -919,155 +705,6 @@ async fn apply_fact_refile(
         },
     };
     Ok(json!(spec))
-}
-
-/// Revert a previously-applied `fact_refile`: take the marker back off
-/// the destination page, re-append it on the source page, and repoint
-/// the `fact_index` row's `wiki_id` back to the source wiki. The user's
-/// manual edits to either page are preserved (the parser looks the region
-/// up by `fact_id`, not by byte offset).
-///
-/// # Errors
-///
-/// All failure modes funnel into [`RevertError`].
-#[allow(
-    clippy::too_many_lines,
-    reason = "linear revert pipeline; splitting hides the DB-first order"
-)]
-async fn revert_fact_refile(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    spec: &Value,
-) -> Result<(), RevertError> {
-    let spec: FactRefileSpec = serde_json::from_value(spec.clone())
-        .map_err(|e| RevertError::InvalidPayload(format!("spec is not a FactRefileSpec: {e}")))?;
-    if spec.variant != VARIANT_FACT_REFILE {
-        return Err(RevertError::InvalidPayload(format!(
-            "spec.variant {actual} is not {VARIANT_FACT_REFILE}",
-            actual = spec.variant,
-        )));
-    }
-    let source_page_path = validated_page_path_rev(&spec.source_page, "spec.source_page")?;
-    let dest_page_path = validated_page_path_rev(&spec.dest_page, "spec.dest_page")?;
-    let source_wiki = WikiId::parse(&spec.source_wiki_id)
-        .map_err(|e| RevertError::InvalidPayload(format!("spec.source_wiki_id invalid: {e}")))?;
-    let dest_wiki = WikiId::parse(&spec.dest_wiki_id)
-        .map_err(|e| RevertError::InvalidPayload(format!("spec.dest_wiki_id invalid: {e}")))?;
-    let fact_id = FactId::parse(&spec.moved.fact_id)
-        .map_err(|e| RevertError::InvalidPayload(format!("spec.moved.fact_id invalid: {e}")))?;
-
-    let source_handle = tree
-        .locate(&source_wiki)
-        .map_err(|e| RevertError::HandlerData(format!("source wiki not found: {e}")))?;
-    let dest_handle = tree
-        .locate(&dest_wiki)
-        .map_err(|e| RevertError::HandlerData(format!("dest wiki not found: {e}")))?;
-    let source_abs = source_handle.abs_dir().join(&source_page_path);
-    let dest_abs = dest_handle.abs_dir().join(&dest_page_path);
-    let source_rel = wiki::workdir_relative_source_path(tree.workdir(), &source_abs);
-    let dest_rel = wiki::workdir_relative_source_path(tree.workdir(), &dest_abs);
-
-    // Locate the fact's region on the dest by fact_id.
-    let dest_contents = std::fs::read_to_string(&dest_abs)
-        .map_err(|e| RevertError::HandlerIo(format!("read {dest_rel}: {e}")))?;
-    let parsed = parser::parse(&dest_contents);
-    let mut region: Option<ParsedRegion> = None;
-    for ev in parsed.events {
-        if let ParseEvent::Region {
-            start, end, attrs, ..
-        } = ev
-            && attrs.fact_id.as_ref() == Some(&fact_id)
-        {
-            region = Some(ParsedRegion {
-                start,
-                end,
-                bytes: dest_contents[start..end].to_owned(),
-            });
-            break;
-        }
-    }
-    let region = region.ok_or_else(|| {
-        RevertError::HandlerData(format!(
-            "fact {fact_id} not present on dest {dest_rel} — manual edit lost the marker",
-        ))
-    })?;
-    let moved_back = vec![MovedRegion {
-        fact_id: fact_id.clone(),
-        old_start: region.start,
-        old_end: region.end,
-        bytes: region.bytes,
-    }];
-
-    let new_dest = compose_source_minus_moved(&dest_contents, &moved_back);
-    let source_contents = std::fs::read_to_string(&source_abs)
-        .map_err(|e| RevertError::HandlerIo(format!("read {source_rel}: {e}")))?;
-    let (new_source, source_offsets) = compose_target(&source_contents, &moved_back);
-
-    // DB row FIRST: repoint wiki_id + source_path back to the source with
-    // NULL offsets — the same race shield as the apply.
-    let touched = fact_index::move_to_wiki(
-        pool,
-        &fact_id,
-        source_wiki.as_str(),
-        &source_rel,
-        None,
-        None,
-    )
-    .await
-    .map_err(|e| RevertError::HandlerIo(e.to_string()))?;
-    if touched == 0 {
-        return Err(RevertError::HandlerData(format!(
-            "fact_index::move_to_wiki updated 0 rows for {fact_id}",
-        )));
-    }
-
-    atomic_write(&source_abs, new_source.as_bytes())
-        .map_err(|e| RevertError::HandlerIo(format!("atomic_write {source_rel}: {e}")))?;
-    atomic_write(&dest_abs, new_dest.as_bytes())
-        .map_err(|e| RevertError::HandlerIo(format!("atomic_write {dest_rel}: {e}")))?;
-
-    let off = source_offsets.get(&fact_id).copied().ok_or_else(|| {
-        RevertError::HandlerData(format!("internal: source offsets missing for {fact_id}"))
-    })?;
-    let touched = fact_index::move_to_wiki(
-        pool,
-        &fact_id,
-        source_wiki.as_str(),
-        &source_rel,
-        Some(i64::try_from(off.0).unwrap_or(i64::MAX)),
-        Some(i64::try_from(off.1).unwrap_or(i64::MAX)),
-    )
-    .await
-    .map_err(|e| RevertError::HandlerIo(e.to_string()))?;
-    if touched == 0 {
-        return Err(RevertError::HandlerData(format!(
-            "fact_index::move_to_wiki updated 0 rows for {fact_id} at offset stamp",
-        )));
-    }
-
-    tracing::info!(
-        source_wiki = spec.source_wiki_id.as_str(),
-        source = source_rel,
-        dest_wiki = spec.dest_wiki_id.as_str(),
-        dest = dest_rel,
-        fact_id = fact_id.as_str(),
-        "promote: fact_refile reverted",
-    );
-
-    // Plan-sync seam (inverse): re-home the fact back onto the source page
-    // (in the source wiki) so the persisted plan recompiles both pages.
-    let source_seed =
-        crate::planner::RehomePageSeed::page_in_wiki(&spec.source_page, &spec.source_wiki_id);
-    rehome_rows_with_seed(
-        pool,
-        std::slice::from_ref(&fact_id),
-        &source_seed,
-        &[],
-        tree,
-    )
-    .await;
-
-    Ok(())
 }
 
 // ---------- page merge variant ----------
@@ -1080,7 +717,7 @@ fn plan_slug_of_page(wiki_id: &str, page: &str) -> String {
     crate::planner::plan_slug_for_page(wiki_id, page)
 }
 
-/// Best-effort plan-sync after a move/revert: re-home `moved` facts onto
+/// Best-effort plan-sync after a move: re-home `moved` facts onto
 /// `dest_slug` in the persisted plan (seeding from `seed_wiki`), removing
 /// `remove_pages` husks. Failures are logged loudly, never returned — the
 /// disk/DB change already stands and the seam is repairable by hand or by
@@ -1356,7 +993,7 @@ async fn retarget_links_after_move(
 }
 
 /// Context fields for the page-merge variant: the husk's facts plus the
-/// identity of both pages (presentation + the revert's plan re-seed).
+/// identity of both pages (presentation).
 #[derive(Debug, Clone, Deserialize)]
 struct MergeContext {
     source_wiki_id: String,
@@ -1376,8 +1013,7 @@ struct MergeContext {
 }
 
 /// `spec` payload of a successful page merge. Read back by
-/// [`revert_page_merge`]: `husk_shell` (the husk contents minus the moved
-/// regions) is what lets the revert recreate the deleted file.
+/// so the receipt can name the page that went away.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MergeSpec {
     variant: String,
@@ -1390,9 +1026,7 @@ struct MergeSpec {
     source_page: String,
     /// The survivor page path.
     target_page: String,
-    /// Husk contents minus the moved regions — the revert's skeleton.
-    husk_shell: String,
-    /// Husk identity for the revert's plan re-seed.
+    /// Husk identity, kept so the receipt names the page that went away.
     husk_title: String,
     husk_description: String,
     husk_style: Option<String>,
@@ -1526,9 +1160,8 @@ async fn apply_page_merge(
         String::new()
     };
     let (new_target, target_offsets) = compose_target(&existing_target, &moved);
-    // The husk minus its regions — stored in the spec so the revert can
+    // The husk minus its regions —
     // recreate the deleted file (frontmatter + connective prose preserved).
-    let husk_shell = compose_source_minus_moved(&source_contents, &moved);
 
     // DB rows FIRST (the capture commit-point pattern): repoint every row at
     // the survivor as a pending render so neither the husk deletion nor the
@@ -1701,205 +1334,12 @@ async fn apply_page_merge(
         target_wiki_id: Some(target_wiki_str),
         source_page: source_page_path.to_string_lossy().into_owned(),
         target_page: target_page_path.to_string_lossy().into_owned(),
-        husk_shell,
         husk_title: ctx.husk_title.unwrap_or_default(),
         husk_description: ctx.husk_description.unwrap_or_default(),
         husk_style: ctx.husk_style,
         moved_facts: moved_records,
     };
     Ok(json!(spec))
-}
-
-/// Revert a `page_merge`: take each fact's region (current bytes — user
-/// edits on the survivor are preserved) back off the survivor, recreate the
-/// husk file from the stored shell, and re-home the facts onto the husk's
-/// plan slug (re-seeded from the stored identity).
-#[allow(
-    clippy::too_many_lines,
-    reason = "linear revert pipeline; splitting hides the DB-first order"
-)]
-async fn revert_page_merge(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    spec: &Value,
-) -> Result<(), RevertError> {
-    let spec: MergeSpec = serde_json::from_value(spec.clone())
-        .map_err(|e| RevertError::InvalidPayload(format!("spec is not a MergeSpec: {e}")))?;
-    if spec.variant != VARIANT_PAGE_MERGE {
-        return Err(RevertError::InvalidPayload(format!(
-            "spec.variant {actual} is not page_merge",
-            actual = spec.variant,
-        )));
-    }
-    let source_page_path = validated_page_path_rev(&spec.source_page, "spec.source_page")?;
-    let target_page_path = validated_page_path_rev(&spec.target_page, "spec.target_page")?;
-    let wiki_id = WikiId::parse(&spec.source_wiki_id)
-        .map_err(|e| RevertError::InvalidPayload(format!("spec.source_wiki_id invalid: {e}")))?;
-    // Pre-family-scope receipts carry no target wiki: same as the source.
-    let target_wiki_str = spec
-        .target_wiki_id
-        .clone()
-        .unwrap_or_else(|| spec.source_wiki_id.clone());
-    let target_wiki = WikiId::parse(&target_wiki_str)
-        .map_err(|e| RevertError::InvalidPayload(format!("spec.target_wiki_id invalid: {e}")))?;
-    let cross_wiki = target_wiki_str != spec.source_wiki_id;
-    let handle = tree
-        .locate(&wiki_id)
-        .map_err(|e| RevertError::HandlerData(format!("wiki not found: {e}")))?;
-    let target_handle = tree
-        .locate(&target_wiki)
-        .map_err(|e| RevertError::HandlerData(format!("survivor wiki not found: {e}")))?;
-    let source_abs = handle.abs_dir().join(&source_page_path);
-    let target_abs = target_handle.abs_dir().join(&target_page_path);
-    let source_rel = wiki::workdir_relative_source_path(tree.workdir(), &source_abs);
-    let target_rel = wiki::workdir_relative_source_path(tree.workdir(), &target_abs);
-
-    let target_contents = std::fs::read_to_string(&target_abs)
-        .map_err(|e| RevertError::HandlerIo(format!("read {target_rel}: {e}")))?;
-    let parsed = parser::parse(&target_contents);
-    let mut by_fact: HashMap<FactId, ParsedRegion> = HashMap::new();
-    for ev in parsed.events {
-        if let ParseEvent::Region {
-            start, end, attrs, ..
-        } = ev
-            && let Some(fid) = attrs.fact_id
-        {
-            by_fact.insert(
-                fid,
-                ParsedRegion {
-                    start,
-                    end,
-                    bytes: target_contents[start..end].to_owned(),
-                },
-            );
-        }
-    }
-    let mut moved_back: Vec<MovedRegion> = Vec::with_capacity(spec.moved_facts.len());
-    for rec in &spec.moved_facts {
-        let fid = FactId::parse(&rec.fact_id).map_err(|e| {
-            RevertError::InvalidPayload(format!("spec fact_id {} invalid: {e}", rec.fact_id))
-        })?;
-        let region = by_fact.remove(&fid).ok_or_else(|| {
-            RevertError::HandlerData(format!(
-                "fact {fid} not present on survivor {target_rel} — manual edit lost the marker",
-            ))
-        })?;
-        moved_back.push(MovedRegion {
-            fact_id: fid,
-            old_start: region.start,
-            old_end: region.end,
-            bytes: region.bytes,
-        });
-    }
-
-    let new_target = compose_source_minus_moved(&target_contents, &moved_back);
-    // Recreate the husk: the stored shell (frontmatter + connective prose)
-    // plus the regions as they read NOW on the survivor.
-    let (new_husk, husk_offsets) = compose_target(&spec.husk_shell, &moved_back);
-
-    // DB rows FIRST — same race shield as the apply (and the same
-    // wiki-flip when the merge crossed the family line).
-    for m in &moved_back {
-        let touched = if cross_wiki {
-            fact_index::move_to_wiki(
-                pool,
-                &m.fact_id,
-                &spec.source_wiki_id,
-                &source_rel,
-                None,
-                None,
-            )
-            .await
-        } else {
-            fact_index::move_region(pool, &m.fact_id, &source_rel, None, None).await
-        }
-        .map_err(|e| RevertError::HandlerIo(e.to_string()))?;
-        if touched == 0 {
-            return Err(RevertError::HandlerData(format!(
-                "fact_index repoint updated 0 rows for {fid}",
-                fid = m.fact_id,
-            )));
-        }
-    }
-    atomic_write(&source_abs, new_husk.as_bytes())
-        .map_err(|e| RevertError::HandlerIo(format!("atomic_write {source_rel}: {e}")))?;
-    atomic_write(&target_abs, new_target.as_bytes())
-        .map_err(|e| RevertError::HandlerIo(format!("atomic_write {target_rel}: {e}")))?;
-    for m in &moved_back {
-        let off = husk_offsets.get(&m.fact_id).copied().ok_or_else(|| {
-            RevertError::HandlerData(format!(
-                "internal: husk offsets missing for {fid}",
-                fid = m.fact_id,
-            ))
-        })?;
-        let touched = if cross_wiki {
-            fact_index::move_to_wiki(
-                pool,
-                &m.fact_id,
-                &spec.source_wiki_id,
-                &source_rel,
-                Some(i64::try_from(off.0).unwrap_or(i64::MAX)),
-                Some(i64::try_from(off.1).unwrap_or(i64::MAX)),
-            )
-            .await
-        } else {
-            fact_index::move_region(
-                pool,
-                &m.fact_id,
-                &source_rel,
-                Some(i64::try_from(off.0).unwrap_or(i64::MAX)),
-                Some(i64::try_from(off.1).unwrap_or(i64::MAX)),
-            )
-            .await
-        }
-        .map_err(|e| RevertError::HandlerIo(e.to_string()))?;
-        if touched == 0 {
-            return Err(RevertError::HandlerData(format!(
-                "fact_index repoint updated 0 rows for {fid} at offset stamp",
-                fid = m.fact_id,
-            )));
-        }
-    }
-
-    // Plan-sync seam (inverse): the husk page re-enters the plan + registry
-    // with its stored identity and takes its facts back; both pages park on
-    // force_dirty.
-    let husk_slug = plan_slug_of_page(&spec.source_wiki_id, &spec.source_page);
-    let seed = crate::planner::RehomePageSeed {
-        slug: husk_slug,
-        title: spec.husk_title.clone(),
-        description: spec.husk_description.clone(),
-        style: crate::wiki::PageStyle::parse_lenient(spec.husk_style.as_deref()),
-        wiki_id: spec.source_wiki_id.clone(),
-        page_path: None,
-    };
-    {
-        let mut rows = Vec::with_capacity(moved_back.len());
-        for m in &moved_back {
-            if let Ok(Some(r)) = fact_index::find_by_id(pool, &m.fact_id).await {
-                rows.push(r);
-            }
-        }
-        let moves: Vec<(&fact_index::FactIndexRow, &crate::planner::RehomePageSeed)> =
-            rows.iter().map(|r| (r, &seed)).collect();
-        if let Err(e) = crate::planner::rehome_facts_in_persisted_plan(
-            tree,
-            &moves,
-            &[],
-            &chrono::Utc::now().to_rfc3339(),
-        ) {
-            tracing::error!(error = %e, "promote: merge revert plan re-home failed — plan stale until next rebuild");
-        }
-    }
-
-    tracing::info!(
-        wiki_id = spec.source_wiki_id.as_str(),
-        husk = source_rel,
-        survivor = target_rel,
-        moved_back = moved_back.len(),
-        "promote: page_merge reverted",
-    );
-    Ok(())
 }
 
 // ---------- file → sub-wiki variant ----------
@@ -1909,9 +1349,8 @@ async fn revert_page_merge(
 /// One page carried by a group move: where it lived, its verbatim bytes
 /// at apply time, and the facts that sat on it.
 ///
-/// The bytes are what the revert rewrites, so a group move is undoable
 /// byte-for-byte. A group move never splits a page — `fact_ids` is
-/// **every** active fact on it at apply time, and the revert refuses
+/// **every** active fact on it at apply time, and the apply refuses
 /// when the set on disk has since diverged.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GroupedPage {
@@ -1925,7 +1364,6 @@ struct GroupedPage {
 
 /// `spec` payload for [`apply_pages_to_subwiki`] — a group of sibling
 /// pages that became a new sub-wiki. Read back by
-/// [`revert_pages_to_subwiki`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PagesToSubwikiSpec {
     variant: String,
@@ -1937,7 +1375,6 @@ struct PagesToSubwikiSpec {
 
 /// `spec` payload for [`apply_pages_move_wiki`] — a group of pages that
 /// moved into a wiki that already existed. Read back by
-/// [`revert_pages_move_wiki`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PagesMoveWikiSpec {
     variant: String,
@@ -2117,8 +1554,8 @@ async fn relocate_page(
 ///
 /// Takes **every** wiki whose page set changed, not only the one the pages
 /// left: a card describes what is in its wiki, so gaining pages dates it
-/// exactly as much as losing them. A wiki the move destroyed (an emergence
-/// undone) is skipped — parking a card in a wiki that is gone would leave the
+/// exactly as much as losing them. A wiki that is no longer on disk is
+/// skipped — parking a card in a wiki that is gone would leave the
 /// next build chasing a page that cannot be compiled. Best-effort: a plan that
 /// cannot be parked is repaired by the next full rebuild, and the move itself
 /// already stands.
@@ -2141,7 +1578,7 @@ fn park_wiki_cards_for_recompile(tree: &WikiTree, wiki_ids: &[&str]) {
 
 /// The two addresses of every page a group move carried, for the link
 /// retarget. Direction is the caller's: an apply passes source→destination,
-/// a revert passes them the other way round.
+/// the caller decides which way round they go.
 fn moved_addresses<'a>(
     pages: impl IntoIterator<Item = &'a std::path::Path>,
     from_wiki_id: &str,
@@ -2319,230 +1756,6 @@ fn subwiki_meta_extra(context: &Value) -> serde_yaml::Mapping {
     extra
 }
 
-/// Split a newborn sub-wiki's directory listing into what the receipt made
-/// and what **the compiler** added afterwards, refusing when either grew a
-/// fact the revert would have nowhere to put.
-///
-/// The reserved pages are the compiler's to seed on its own schedule:
-/// `planner::seed_parking_pages` gives every non-smart wiki a parking node on
-/// `@notes.md`, and a wiki born by promotion is force-dirtied at birth — so the
-/// **next hourly compile** writes `@notes.md` into it. A guard that lists the
-/// receipt's own files and nothing else therefore refused every revert from
-/// one compile after the promotion: regroup at 03:00, compile at 04:00, click
-/// Undo at 09:00 → refused, on a wiki nobody had touched. The undo window is
-/// measured in days and it was closing in an hour.
-///
-/// They are disposable *while* they carry no facts of their own. One that
-/// does means the wiki started a life the revert cannot undo, and refusing
-/// is right.
-///
-/// Returns the names that are safe to remove with the directory; `Err` when
-/// something arrived that is neither the receipt's nor the compiler's, or when
-/// a compiler page grew facts.
-fn compiler_seeded_pages(
-    dir: &std::path::Path,
-    from_the_receipt: &HashSet<&str>,
-) -> Result<Vec<String>, RevertError> {
-    let mut seeded = Vec::new();
-    let mut unexpected: Vec<String> = Vec::new();
-    for entry in std::fs::read_dir(dir)
-        .map_err(|e| RevertError::HandlerIo(format!("read {d}: {e}", d = dir.display())))?
-    {
-        let name = entry
-            .map_err(|e| RevertError::HandlerIo(format!("read dir entry: {e}")))?
-            .file_name()
-            .to_string_lossy()
-            .into_owned();
-        if name == "_meta.md" || from_the_receipt.contains(name.as_str()) {
-            continue;
-        }
-        if wiki::names_reserved_page(std::path::Path::new(&name)) {
-            let abs = dir.join(&name);
-            let bytes = std::fs::read_to_string(&abs)
-                .map_err(|e| RevertError::HandlerIo(format!("read {p}: {e}", p = abs.display())))?;
-            let facts = marker_set(&bytes);
-            if !facts.is_empty() {
-                return Err(RevertError::HandlerData(format!(
-                    "sub-wiki {d} has {n} fact(s) on its own {name} — reverting would strand \
-                     them; dissolve it by hand instead",
-                    d = dir.display(),
-                    n = facts.len(),
-                )));
-            }
-            seeded.push(name);
-            continue;
-        }
-        unexpected.push(name);
-    }
-    if !unexpected.is_empty() {
-        unexpected.sort();
-        return Err(RevertError::HandlerData(format!(
-            "sub-wiki {d} grew entries {unexpected:?} since it was created — refusing to delete \
-             it; dissolve it by hand instead",
-            d = dir.display(),
-        )));
-    }
-    seeded.sort();
-    Ok(seeded)
-}
-
-/// Revert a `pages_to_subwiki` promotion: every carried page goes back
-/// to the parent under its old name and the newborn wiki is removed.
-///
-/// Conservative, and deliberately narrower than "delete the directory":
-///
-/// 1. The wiki directory may hold only `_meta.md`, the pages the compiler
-///    seeds on its own schedule, and the pages the spec carried. A page that
-///    appeared afterwards means the wiki has a life of its own — refuse.
-/// 2. None of those seeded pages may carry a fact marker: their bytes are
-///    free to have changed since the apply, but a fact landing on one is
-///    something the revert has nowhere to put.
-/// 3. Each carried page's marker set must still match the spec — a fact
-///    that arrived after the move would be dropped by the verbatim
-///    rewrite.
-/// 4. No target path in the parent may already exist.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the four guards run before any write, on purpose; splitting them hides that order"
-)]
-async fn revert_pages_to_subwiki(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    spec: &Value,
-) -> Result<(), RevertError> {
-    let spec: PagesToSubwikiSpec = serde_json::from_value(spec.clone()).map_err(|e| {
-        RevertError::InvalidPayload(format!("spec is not a PagesToSubwikiSpec: {e}"))
-    })?;
-    if spec.variant != VARIANT_PAGES_TO_SUBWIKI {
-        return Err(RevertError::InvalidPayload(format!(
-            "spec.variant {} is not {VARIANT_PAGES_TO_SUBWIKI}",
-            spec.variant,
-        )));
-    }
-    let parent_wiki_id = WikiId::parse(&spec.source_wiki_id)
-        .map_err(|e| RevertError::InvalidPayload(format!("spec.source_wiki_id invalid: {e}")))?;
-    let parent_handle = tree
-        .locate(&parent_wiki_id)
-        .map_err(|e| RevertError::HandlerData(format!("parent wiki not found: {e}")))?;
-    let wiki_dir = parent_handle.abs_dir().join(&spec.new_wiki_slug);
-
-    // 1 + 2. Nothing in the directory beyond `_meta.md`, the pages the
-    //        receipt carried, and the reserved pages the compiler seeds on
-    //        its own schedule — and none of those seeded pages may carry a
-    //        fact.
-    let carried: HashSet<&str> = spec.pages.iter().map(|p| p.page.as_str()).collect();
-    compiler_seeded_pages(&wiki_dir, &carried)?;
-
-    // 3 + 4. Per-page guards, all of them before any write.
-    let mut restores: Vec<(PathBuf, PathBuf, &GroupedPage)> = Vec::with_capacity(spec.pages.len());
-    for page in &spec.pages {
-        let rel = validated_page_path_rev(&page.page, "spec.pages[].page")?;
-        let moved_abs = wiki_dir.join(&rel);
-        let moved_bytes = std::fs::read_to_string(&moved_abs)
-            .map_err(|e| RevertError::HandlerIo(format!("read {}: {e}", moved_abs.display())))?;
-        let on_disk = marker_set(&moved_bytes);
-        let expected: HashSet<FactId> = page
-            .fact_ids
-            .iter()
-            .filter_map(|s| FactId::parse(s).ok())
-            .collect();
-        if on_disk != expected {
-            return Err(RevertError::HandlerData(format!(
-                "{p} marker set diverged from spec (on_disk={on_disk:?}, expected={expected:?}) \
-                 — refusing to revert",
-                p = moved_abs.display(),
-            )));
-        }
-        let back_abs = parent_handle.abs_dir().join(&rel);
-        if back_abs.exists() {
-            return Err(RevertError::HandlerData(format!(
-                "{p} already exists — refusing to clobber; remove it manually if you really want \
-                 to revert",
-                p = back_abs.display(),
-            )));
-        }
-        restores.push((moved_abs, back_abs, page));
-    }
-
-    for (_, back_abs, page) in &restores {
-        let back_rel = wiki::workdir_relative_source_path(tree.workdir(), back_abs);
-        atomic_write(back_abs, page.page_bytes.as_bytes())
-            .map_err(|e| RevertError::HandlerIo(format!("atomic_write {back_rel}: {e}")))?;
-        let back_ids = move_facts_back(pool, page, parent_wiki_id.as_str(), &back_rel).await?;
-        let seed = crate::planner::RehomePageSeed::concept(
-            &plan_slug_of_page(&spec.source_wiki_id, &page.page),
-            &spec.source_wiki_id,
-        );
-        let moved_slug = crate::planner::slugify(&spec.new_wiki_id);
-        rehome_rows_with_seed(pool, &back_ids, &seed, &[moved_slug], tree).await;
-    }
-
-    std::fs::remove_dir_all(&wiki_dir).map_err(|e| {
-        RevertError::HandlerIo(format!("remove {dir}: {e}", dir = wiki_dir.display()))
-    })?;
-
-    // The pages answer to their old address again, so the links do too.
-    // After the teardown, so the corpus pass never reads the dying wiki.
-    retarget_links_after_move(
-        pool,
-        tree,
-        &moved_addresses(
-            spec.pages.iter().map(|p| std::path::Path::new(&p.page)),
-            &spec.new_wiki_id,
-            &spec.source_wiki_id,
-        ),
-    )
-    .await;
-    park_wiki_cards_for_recompile(tree, &[&spec.source_wiki_id, &spec.new_wiki_id]);
-
-    tracing::info!(
-        parent_wiki_id = parent_wiki_id.as_str(),
-        new_wiki_id = spec.new_wiki_id,
-        pages = spec.pages.len(),
-        "promote: pages_to_subwiki reverted",
-    );
-    Ok(())
-}
-
-/// Move one carried page's facts back onto `back_rel` in the parent
-/// wiki, offsets untouched (the bytes are restored verbatim).
-async fn move_facts_back(
-    pool: &SqlitePool,
-    page: &GroupedPage,
-    dest_wiki_id: &str,
-    back_rel: &str,
-) -> Result<Vec<FactId>, RevertError> {
-    let mut out = Vec::with_capacity(page.fact_ids.len());
-    for fid_str in &page.fact_ids {
-        let fid = FactId::parse(fid_str).map_err(|e| {
-            RevertError::InvalidPayload(format!("spec fact_id {fid_str} invalid: {e}"))
-        })?;
-        let row = fact_index::find_by_id(pool, &fid)
-            .await
-            .map_err(|e| RevertError::HandlerIo(e.to_string()))?
-            .ok_or_else(|| {
-                RevertError::HandlerData(format!("fact {fid_str} vanished mid-revert"))
-            })?;
-        let touched = fact_index::move_to_wiki(
-            pool,
-            &fid,
-            dest_wiki_id,
-            back_rel,
-            row.region_start,
-            row.region_end,
-        )
-        .await
-        .map_err(|e| RevertError::HandlerIo(e.to_string()))?;
-        if touched == 0 {
-            return Err(RevertError::HandlerData(format!(
-                "fact_index::move_to_wiki updated 0 rows for {fid_str}",
-            )));
-        }
-        out.push(fid);
-    }
-    Ok(out)
-}
-
 /// Apply a `pages_move_wiki` promotion: pages that belong to a wiki
 /// which **already exists** move into it.
 ///
@@ -2638,101 +1851,6 @@ async fn apply_pages_move_wiki(
     }))
 }
 
-/// Revert a `pages_move_wiki`: each page goes back to the wiki it came
-/// from. Same conservatism as the sibling revert — a page whose marker
-/// set drifted, or whose old path has been re-created, blocks the undo
-/// rather than losing content.
-async fn revert_pages_move_wiki(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    spec: &Value,
-) -> Result<(), RevertError> {
-    let spec: PagesMoveWikiSpec = serde_json::from_value(spec.clone()).map_err(|e| {
-        RevertError::InvalidPayload(format!("spec is not a PagesMoveWikiSpec: {e}"))
-    })?;
-    if spec.variant != VARIANT_PAGES_MOVE_WIKI {
-        return Err(RevertError::InvalidPayload(format!(
-            "spec.variant {} is not {VARIANT_PAGES_MOVE_WIKI}",
-            spec.variant,
-        )));
-    }
-    let source_wiki_id = WikiId::parse(&spec.source_wiki_id)
-        .map_err(|e| RevertError::InvalidPayload(format!("spec.source_wiki_id invalid: {e}")))?;
-    let target_wiki_id = WikiId::parse(&spec.target_wiki_id)
-        .map_err(|e| RevertError::InvalidPayload(format!("spec.target_wiki_id invalid: {e}")))?;
-    let source_handle = tree
-        .locate(&source_wiki_id)
-        .map_err(|e| RevertError::HandlerData(format!("source wiki not found: {e}")))?;
-    let target_handle = tree
-        .locate(&target_wiki_id)
-        .map_err(|e| RevertError::HandlerData(format!("target wiki not found: {e}")))?;
-
-    let mut restores: Vec<(PathBuf, PathBuf, &GroupedPage)> = Vec::with_capacity(spec.pages.len());
-    for page in &spec.pages {
-        let rel = validated_page_path_rev(&page.page, "spec.pages[].page")?;
-        let moved_abs = target_handle.abs_dir().join(&rel);
-        let moved_bytes = std::fs::read_to_string(&moved_abs)
-            .map_err(|e| RevertError::HandlerIo(format!("read {}: {e}", moved_abs.display())))?;
-        let on_disk = marker_set(&moved_bytes);
-        let expected: HashSet<FactId> = page
-            .fact_ids
-            .iter()
-            .filter_map(|s| FactId::parse(s).ok())
-            .collect();
-        if on_disk != expected {
-            return Err(RevertError::HandlerData(format!(
-                "{p} marker set diverged from spec (on_disk={on_disk:?}, expected={expected:?}) \
-                 — refusing to revert",
-                p = moved_abs.display(),
-            )));
-        }
-        let back_abs = source_handle.abs_dir().join(&rel);
-        if back_abs.exists() {
-            return Err(RevertError::HandlerData(format!(
-                "{p} already exists — refusing to clobber; remove it manually if you really want \
-                 to revert",
-                p = back_abs.display(),
-            )));
-        }
-        restores.push((moved_abs, back_abs, page));
-    }
-
-    for (moved_abs, back_abs, page) in &restores {
-        let back_rel = wiki::workdir_relative_source_path(tree.workdir(), back_abs);
-        atomic_write(back_abs, page.page_bytes.as_bytes())
-            .map_err(|e| RevertError::HandlerIo(format!("atomic_write {back_rel}: {e}")))?;
-        std::fs::remove_file(moved_abs)
-            .map_err(|e| RevertError::HandlerIo(format!("remove {}: {e}", moved_abs.display())))?;
-        let back_ids = move_facts_back(pool, page, source_wiki_id.as_str(), &back_rel).await?;
-        let seed = crate::planner::RehomePageSeed::concept(
-            &plan_slug_of_page(&spec.source_wiki_id, &page.page),
-            &spec.source_wiki_id,
-        );
-        let moved_slug = plan_slug_of_page(&spec.target_wiki_id, &page.page);
-        rehome_rows_with_seed(pool, &back_ids, &seed, &[moved_slug], tree).await;
-    }
-
-    retarget_links_after_move(
-        pool,
-        tree,
-        &moved_addresses(
-            spec.pages.iter().map(|p| std::path::Path::new(&p.page)),
-            &spec.target_wiki_id,
-            &spec.source_wiki_id,
-        ),
-    )
-    .await;
-    park_wiki_cards_for_recompile(tree, &[&spec.source_wiki_id, &spec.target_wiki_id]);
-
-    tracing::info!(
-        source_wiki_id = source_wiki_id.as_str(),
-        target_wiki_id = target_wiki_id.as_str(),
-        pages = spec.pages.len(),
-        "promote: pages_move_wiki reverted",
-    );
-    Ok(())
-}
-
 // ---------- Helpers ----------
 
 struct ParsedRegion {
@@ -2805,16 +1923,6 @@ fn validated_page_path(s: &str, field: &str) -> Result<PathBuf, ApplyError> {
     Ok(p)
 }
 
-fn validated_page_path_rev(s: &str, field: &str) -> Result<PathBuf, RevertError> {
-    let p = PathBuf::from(s);
-    if !is_safe_page_path(&p) {
-        return Err(RevertError::InvalidPayload(format!(
-            "{field} is not a safe page path: {s}",
-        )));
-    }
-    Ok(p)
-}
-
 /// Append every region in `moved` to `existing` and return both the
 /// composed string and a per-fact_id map of `(new_start, new_end)`
 /// byte offsets in the composed result.
@@ -2843,7 +1951,7 @@ fn compose_target(
 /// Return `source` with every byte range in `moved` (sorted by start)
 /// excised. Adjacent newlines around the excised spans are preserved
 /// verbatim — we trade slightly suboptimal whitespace for a deterministic
-/// move that round-trips losslessly through revert.
+/// move that leaves the fact's bytes intact.
 fn compose_source_minus_moved(source: &str, moved: &[MovedRegion]) -> String {
     let mut spans: Vec<(usize, usize)> = moved.iter().map(|m| (m.old_start, m.old_end)).collect();
     spans.sort_by_key(|&(s, _)| s);
@@ -2862,7 +1970,7 @@ fn compose_source_minus_moved(source: &str, moved: &[MovedRegion]) -> String {
 /// Errors from the act-first promote path.
 ///
 /// Distinguishes "the apply itself failed (nothing changed on disk)"
-/// from "the change IS applied but the undo receipt could not be
+/// from "the change IS applied but the receipt could not be
 /// recorded" — callers log the second loudly instead of retrying the
 /// apply.
 #[derive(Debug, thiserror::Error)]
@@ -2872,19 +1980,17 @@ pub enum DirectPromoteError {
     Apply(#[from] ApplyError),
     /// The structural change applied, but inserting the born-applied
     /// receipt failed. The REM WAL op is the remaining audit trail.
-    #[error("change applied but undo receipt failed: {0}")]
+    #[error("change applied but receipt failed: {0}")]
     Receipt(#[from] ProposalsError),
 }
 
 /// Receipt of a direct (act-first) structural apply: the born-applied
-/// undo row plus the spec the notice event reads.
+/// row recording what happened, plus the spec the notice event reads.
 #[derive(Debug, Clone)]
 pub struct DirectApplied {
-    /// `structure_proposals` row id of the born-applied receipt — the
-    /// undo anchor the dashboard revert path reads the token from.
+    /// `structure_proposals` row id of the born-applied receipt — what
+    /// the dashboard and the notice event point at.
     pub proposal_id: String,
-    /// Instant the undo window closes.
-    pub revert_deadline: chrono::DateTime<chrono::Utc>,
     /// Spec returned by the apply handler (the `PromoteSpec` /
     /// `PagesToSubwikiSpec` shape) — carries the concrete target
     /// (`target_page` / `new_wiki_id`).
@@ -2961,16 +2067,16 @@ fn paragraph_to_file_context(
 /// Apply a paragraph→file move **directly** (act-first).
 ///
 /// Runs the `paragraph_to_file` handler now, then records a
-/// **born-applied** `wiki_promote` receipt with an open revert window.
+/// **born-applied** `wiki_promote` receipt.
 /// There is no `pending` stage and no approval step — the caller (REM)
 /// emits the `structure_applied` notice naming the affected user; the
-/// dashboard is the *undo* surface, not an approval surface.
+/// dashboard is the *reading* surface, not an approval surface.
 ///
 /// # Errors
 ///
 /// [`DirectPromoteError::Apply`] when the handler fails (nothing
 /// changed); [`DirectPromoteError::Receipt`] when the change applied
-/// but the undo receipt could not be written.
+/// but the receipt could not be written.
 pub async fn apply_paragraph_to_file_direct(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -2999,7 +2105,6 @@ pub async fn apply_paragraph_to_file_direct(
     .await?;
     Ok(DirectApplied {
         proposal_id: receipt.proposal_id,
-        revert_deadline: receipt.revert_deadline,
         spec,
     })
 }
@@ -3045,17 +2150,16 @@ fn fact_refile_context(
 /// (act-first) — the REM cross-wiki refile verb.
 ///
 /// Runs the `fact_refile` handler now, then records a **born-applied**
-/// `wiki_promote` receipt with an open revert window (the 7-day
-/// dashboard undo). No `pending` stage, no approval: the caller (REM)
-/// emits the `structure_applied` notice; the dashboard is the undo
-/// surface, not an approval surface. `reason` is a one-line audit string
+/// `wiki_promote` receipt. No `pending` stage, no approval: the caller
+/// (REM) emits the `structure_applied` notice; the dashboard is where the
+/// operator reads what happened, not an approval surface. `reason` is a one-line audit string
 /// for the receipt (e.g. the LLM's stated rationale).
 ///
 /// # Errors
 ///
 /// [`DirectPromoteError::Apply`] when the handler refuses or fails
 /// (nothing changed on disk); [`DirectPromoteError::Receipt`] when the
-/// move applied but the undo receipt could not be written.
+/// move applied but the receipt could not be written.
 #[allow(
     clippy::too_many_arguments,
     reason = "the cross-wiki refile carries both endpoints (fact, source wiki/page, dest wiki/page) + reason + recipient; bundling into a struct would just hide the same fields"
@@ -3099,7 +2203,6 @@ pub async fn apply_fact_refile_direct(
     .await?;
     Ok(DirectApplied {
         proposal_id: receipt.proposal_id,
-        revert_deadline: receipt.revert_deadline,
         spec,
     })
 }
@@ -3112,9 +2215,7 @@ pub async fn apply_fact_refile_direct(
 /// receipt. The governed page-deletion bundle ([`crate::page::delete_page_direct`])
 /// evacuates each foreign-authored fact through this and folds the returned
 /// specs into the **single** `bundle` receipt, so the whole page deletion is
-/// one revertible unit. The returned spec is exactly what
-/// [`revert_wiki_promote`] (`fact_refile` variant) reads to undo the move, so a
-/// [`crate::bundle::revert_bundle`] can replay it.
+/// one receipt.
 ///
 /// # Errors
 ///
@@ -3163,7 +2264,7 @@ pub struct PageMergeParams<'a> {
     pub survivor_page: &'a str,
     /// Every active fact of the husk (the handler refuses partial moves).
     pub fact_ids: &'a [FactId],
-    /// Husk identity stored for the revert's plan re-seed.
+    /// Husk identity stored so the receipt names the page that went away.
     pub husk_title: &'a str,
     /// See [`Self::husk_title`].
     pub husk_description: &'a str,
@@ -3216,14 +2317,15 @@ fn page_merge_context(p: &PageMergeParams<'_>) -> Value {
 /// Runs the `page_merge` handler now — every fact of the husk moves onto
 /// the survivor, the husk file is deleted, the persisted plan is re-homed —
 /// then records a **born-applied** `wiki_promote` receipt with an open
-/// revert window. No `pending` stage, no approval: the caller (REM) emits
-/// the `structure_applied` notice; the dashboard is the undo surface.
+/// No `pending` stage, no approval: the caller (REM) emits the
+/// `structure_applied` notice; the dashboard is where the operator reads
+/// what happened.
 ///
 /// # Errors
 ///
 /// [`DirectPromoteError::Apply`] when the handler fails (nothing changed);
-/// [`DirectPromoteError::Receipt`] when the merge applied but the undo
-/// receipt could not be written.
+/// [`DirectPromoteError::Receipt`] when the merge applied but the receipt
+/// could not be written.
 pub async fn apply_page_merge_direct(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -3250,7 +2352,6 @@ pub async fn apply_page_merge_direct(
     .await?;
     Ok(DirectApplied {
         proposal_id: receipt.proposal_id,
-        revert_deadline: receipt.revert_deadline,
         spec,
     })
 }
@@ -3258,7 +2359,7 @@ pub async fn apply_page_merge_direct(
 // ---------- The validity_close variant (born-applied closures) ----------
 
 /// One closed target inside a `validity_close` receipt's spec — what was
-/// stamped and the snapshot the revert restores.
+/// stamped and the window as it was before.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ClosureRecord {
     fact_id: String,
@@ -3286,7 +2387,7 @@ struct ValidityCloseSpec {
 /// Where an applied closure landed — a promoted fact row or a
 /// still-buffered capture.
 ///
-/// The revert does not need it (it probes the fact first, then the
+/// Nothing downstream needs it (the write probes the fact first, then the
 /// parking page — the id is stable across promotion), but the receipt records
 /// it for the audit trail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3322,7 +2423,7 @@ pub struct AppliedClosure {
     pub valid_to: String,
     /// `decay_reason` stamped.
     pub reason: String,
-    /// Snapshot taken at closure time — the revert payload.
+    /// Snapshot taken at closure time — what the window was before.
     pub prev: fact_index::ClosedValidity,
     /// Which surface the closure landed on.
     pub surface: ClosureSurface,
@@ -3380,9 +2481,9 @@ fn validity_close_context(closures: &[AppliedClosure], gesture: Option<&str>) ->
 ///
 /// The ingest orchestrator has already stamped every target
 /// (`fact_index::close_validity` / `capture_buffer::close_validity`);
-/// this writes the undoable receipt with the open revert window — the
+/// this writes the receipt — the
 /// act-first pattern: the caller emits the `structure_applied` notice and
-/// the dashboard is the undo surface.
+/// the dashboard is where the operator reads what happened.
 ///
 /// `gesture` is a short preview of the user message that triggered the
 /// closures (audit/display only). `applied_by` is the sender's raw id.
@@ -3431,69 +2532,14 @@ pub async fn emit_validity_close_receipt(
     .await?;
     Ok(DirectApplied {
         proposal_id: receipt.proposal_id,
-        revert_deadline: receipt.revert_deadline,
         spec,
     })
-}
-
-/// Revert a `validity_close` receipt: restore every target's validity
-/// snapshot.
-///
-/// Probes the fact row first, then the still-buffered capture — the id
-/// is stable across promotion, so whichever surface holds the target now
-/// gets the restore. A target that vanished in the meantime (tombstoned,
-/// journal wiped) is logged and skipped: the revert restores what it
-/// can rather than failing the batch.
-async fn revert_validity_close(pool: &SqlitePool, spec: &Value) -> Result<(), RevertError> {
-    let spec: ValidityCloseSpec = serde_json::from_value(spec.clone())
-        .map_err(|e| RevertError::InvalidPayload(format!("bad validity_close spec: {e}")))?;
-    if spec.variant != VARIANT_VALIDITY_CLOSE {
-        return Err(RevertError::InvalidPayload(format!(
-            "spec.variant {} is not {VARIANT_VALIDITY_CLOSE}",
-            spec.variant
-        )));
-    }
-    for c in &spec.closures {
-        let fact_id = FactId::parse(&c.fact_id)
-            .map_err(|e| RevertError::InvalidPayload(format!("bad fact_id in spec: {e}")))?;
-        let touched = fact_index::restore_validity(
-            pool,
-            &fact_id,
-            c.prev_valid_to.as_deref(),
-            c.prev_decay_reason.as_deref(),
-            c.prev_successor_fact_id.as_deref(),
-        )
-        .await
-        .map_err(|e| RevertError::HandlerData(format!("fact restore: {e}")))?;
-        if touched > 0 {
-            continue;
-        }
-        let buffered = capture_buffer::restore_validity(
-            pool,
-            &fact_id,
-            c.prev_valid_to.as_deref(),
-            c.prev_decay_reason.as_deref(),
-        )
-        .await
-        .map_err(|e| RevertError::HandlerData(format!("buffer restore: {e}")))?;
-        if buffered == 0 {
-            tracing::warn!(
-                fact_id = c.fact_id,
-                "promote: validity_close revert target vanished — skipped"
-            );
-        }
-    }
-    tracing::info!(
-        closures = spec.closures.len(),
-        "promote: validity_close reverted"
-    );
-    Ok(())
 }
 
 // ---------- The validity_edit variant (born-applied date corrections) ----------
 
 /// One edited target inside a `validity_edit` receipt's spec — the new
-/// interval and the snapshot the revert restores.
+/// interval and the interval as it was before.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ValidityEditRecord {
     fact_id: String,
@@ -3501,7 +2547,7 @@ struct ValidityEditRecord {
     new_valid_from: Option<String>,
     /// `valid_to` the edit set (`None` = left unchanged).
     new_valid_to: Option<String>,
-    /// `valid_from` before the edit (the revert restores it verbatim).
+    /// `valid_from` before the edit.
     prev_valid_from: Option<String>,
     /// `valid_to` before the edit.
     prev_valid_to: Option<String>,
@@ -3528,7 +2574,7 @@ pub struct AppliedValidityEdit {
     pub new_valid_from: Option<String>,
     /// `valid_to` the edit set (`None` = left unchanged).
     pub new_valid_to: Option<String>,
-    /// Snapshot taken at edit time — the revert payload.
+    /// Snapshot taken at edit time — what the interval was before.
     pub prev: fact_index::PrevValidity,
     /// Which surface the edit landed on.
     pub surface: ClosureSurface,
@@ -3587,7 +2633,7 @@ fn validity_edit_context(edits: &[AppliedValidityEdit], gesture: Option<&str>) -
 /// the dates rather than a completion/retraction: the ingest orchestrator
 /// has already set every target's interval
 /// ([`fact_index::set_validity`] / [`capture_buffer::set_validity`]);
-/// this writes the undoable receipt with the open revert window.
+/// this writes the receipt.
 ///
 /// # Errors
 ///
@@ -3628,77 +2674,26 @@ pub async fn emit_validity_edit_receipt(
     .await?;
     Ok(DirectApplied {
         proposal_id: receipt.proposal_id,
-        revert_deadline: receipt.revert_deadline,
         spec,
     })
-}
-
-/// Revert a `validity_edit` receipt: restore every target's interval
-/// snapshot (both bounds), leaving `decay_reason` untouched.
-///
-/// Probes the fact row first, then the still-buffered capture — the id is
-/// stable across promotion. A vanished target is logged and skipped.
-async fn revert_validity_edit(pool: &SqlitePool, spec: &Value) -> Result<(), RevertError> {
-    let spec: ValidityEditSpec = serde_json::from_value(spec.clone())
-        .map_err(|e| RevertError::InvalidPayload(format!("bad validity_edit spec: {e}")))?;
-    if spec.variant != VARIANT_VALIDITY_EDIT {
-        return Err(RevertError::InvalidPayload(format!(
-            "spec.variant {} is not {VARIANT_VALIDITY_EDIT}",
-            spec.variant
-        )));
-    }
-    for e in &spec.edits {
-        let fact_id = FactId::parse(&e.fact_id)
-            .map_err(|err| RevertError::InvalidPayload(format!("bad fact_id in spec: {err}")))?;
-        let touched = fact_index::restore_validity_interval(
-            pool,
-            &fact_id,
-            e.prev_valid_from.as_deref(),
-            e.prev_valid_to.as_deref(),
-        )
-        .await
-        .map_err(|err| RevertError::HandlerData(format!("fact restore: {err}")))?;
-        if touched > 0 {
-            continue;
-        }
-        let buffered = capture_buffer::restore_validity_interval(
-            pool,
-            &fact_id,
-            e.prev_valid_from.as_deref(),
-            e.prev_valid_to.as_deref(),
-        )
-        .await
-        .map_err(|err| RevertError::HandlerData(format!("buffer restore: {err}")))?;
-        if buffered == 0 {
-            tracing::warn!(
-                fact_id = e.fact_id,
-                "promote: validity_edit revert target vanished — skipped"
-            );
-        }
-    }
-    tracing::info!(edits = spec.edits.len(), "promote: validity_edit reverted");
-    Ok(())
 }
 
 // ---------- The acl_change variant (born-applied ACL changes) ----------
 
 /// One changed target inside an `acl_change` receipt's spec — the new ACL,
-/// the snapshot the revert restores, and the audit row to mark reverted.
+/// the ACL as it was before, and the audit row it wrote.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AclChangeRecord {
     fact_id: String,
     /// New ACL, principals as wire strings.
-    #[serde(alias = "new_owner_id")]
     new_subject_id: String,
     new_allow_ids: Vec<String>,
     new_sender_id: Option<String>,
-    /// Previous ACL (the revert restores it verbatim).
-    #[serde(alias = "prev_owner_id")]
+    /// Previous ACL.
     prev_subject_id: String,
     prev_allow_ids: Vec<String>,
     prev_sender_id: Option<String>,
-    /// `disclosure_audit.audit_id` the change wrote — marked reverted on
-    /// undo.
+    /// `disclosure_audit.audit_id` the change wrote.
     audit_id: i64,
     /// Whether the change widened the effective read-set.
     widening: bool,
@@ -3725,7 +2720,7 @@ pub struct AppliedAclChange {
     pub new_subject: Principal,
     /// New allow-list.
     pub new_allow: Vec<Principal>,
-    /// Snapshot taken at change time — the revert payload.
+    /// Snapshot taken at change time — what the ACL was before.
     pub prev: fact_index::PrevAcl,
     /// `disclosure_audit.audit_id` the change wrote.
     pub audit_id: i64,
@@ -3793,7 +2788,7 @@ fn acl_change_context(changes: &[AppliedAclChange], gesture: Option<&str>) -> Va
 /// The sibling of [`emit_validity_close_receipt`], for a sharing change:
 /// the ingest orchestrator has already stamped every target's ACL
 /// ([`fact_index::set_acl`] / [`capture_buffer::set_acl`]) and written the
-/// [`crate::disclosure_audit`] rows; this writes the undoable receipt.
+/// [`crate::disclosure_audit`] rows; this writes the receipt.
 ///
 /// # Errors
 ///
@@ -3818,7 +2813,7 @@ pub async fn emit_acl_change_receipt(
                 // fact's cross-user attribution: `set_acl` was called with the
                 // prior sender, so the applied sender equals `prev_sender_id`.
                 // Record that (not None) so the receipt + disclosure audit
-                // match the DB. Revert restores `prev_sender_id` regardless.
+                // match the DB. The receipt records `prev_sender_id` regardless.
                 new_sender_id: c.prev.prev_sender_id.as_ref().map(ToString::to_string),
                 prev_subject_id: c.prev.prev_subject_id.to_string(),
                 prev_allow_ids: principal_strings(&c.prev.prev_allow_ids),
@@ -3843,71 +2838,8 @@ pub async fn emit_acl_change_receipt(
     .await?;
     Ok(DirectApplied {
         proposal_id: receipt.proposal_id,
-        revert_deadline: receipt.revert_deadline,
         spec,
     })
-}
-
-/// Revert an `acl_change` receipt: restore every target's ACL snapshot and
-/// mark its disclosure-audit row reverted.
-///
-/// Probes the fact row first, then the still-buffered capture — the id is
-/// stable across promotion. A vanished target is logged and skipped; the
-/// audit row is still stamped reverted (the change is logically undone).
-async fn revert_acl_change(pool: &SqlitePool, spec: &Value) -> Result<(), RevertError> {
-    let spec: AclChangeSpec = serde_json::from_value(spec.clone())
-        .map_err(|e| RevertError::InvalidPayload(format!("bad acl_change spec: {e}")))?;
-    if spec.variant != VARIANT_ACL_CHANGE {
-        return Err(RevertError::InvalidPayload(format!(
-            "spec.variant {} is not {VARIANT_ACL_CHANGE}",
-            spec.variant
-        )));
-    }
-    for c in &spec.changes {
-        let fact_id = FactId::parse(&c.fact_id)
-            .map_err(|err| RevertError::InvalidPayload(format!("bad fact_id in spec: {err}")))?;
-        let subject = c
-            .prev_subject_id
-            .parse::<Principal>()
-            .map_err(|err| RevertError::InvalidPayload(format!("bad prev_subject_id: {err}")))?;
-        let allow = c
-            .prev_allow_ids
-            .iter()
-            .map(|s| s.parse::<Principal>())
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|err| RevertError::InvalidPayload(format!("bad prev_allow_ids: {err}")))?;
-        let sender = c
-            .prev_sender_id
-            .as_deref()
-            .map(str::parse::<Principal>)
-            .transpose()
-            .map_err(|err| RevertError::InvalidPayload(format!("bad prev_sender_id: {err}")))?;
-
-        let touched = fact_index::restore_acl(pool, &fact_id, &subject, &allow, sender.as_ref())
-            .await
-            .map_err(|err| RevertError::HandlerData(format!("fact ACL restore: {err}")))?;
-        if touched == 0 {
-            let buffered =
-                capture_buffer::restore_acl(pool, &fact_id, &subject, &allow, sender.as_ref())
-                    .await
-                    .map_err(|err| {
-                        RevertError::HandlerData(format!("buffer ACL restore: {err}"))
-                    })?;
-            if buffered == 0 {
-                tracing::warn!(
-                    fact_id = c.fact_id,
-                    "promote: acl_change revert target vanished — skipped"
-                );
-            }
-        }
-        // The audit row is stamped reverted regardless — the change is
-        // logically undone even if the row itself has since vanished.
-        crate::disclosure_audit::mark_reverted(pool, c.audit_id)
-            .await
-            .map_err(|err| RevertError::HandlerData(format!("audit mark reverted: {err}")))?;
-    }
-    tracing::info!(changes = spec.changes.len(), "promote: acl_change reverted");
-    Ok(())
 }
 
 /// Hints the REM grouping pass attaches to a group receipt for the
@@ -3926,7 +2858,7 @@ pub struct PageGroupHints {
 
 /// Act-first entry point for the REM grouping pass: a group of pages
 /// becomes a **new** sub-wiki, the change applies in-cycle, and a
-/// born-applied receipt carries the undo window.
+/// born-applied receipt records the change.
 ///
 /// # Errors
 ///
@@ -3981,7 +2913,6 @@ pub async fn apply_pages_to_subwiki_direct(
     .await?;
     Ok(DirectApplied {
         proposal_id: receipt.proposal_id,
-        revert_deadline: receipt.revert_deadline,
         spec,
     })
 }
@@ -4032,7 +2963,6 @@ pub async fn apply_pages_move_wiki_direct(
     .await?;
     Ok(DirectApplied {
         proposal_id: receipt.proposal_id,
-        revert_deadline: receipt.revert_deadline,
         spec,
     })
 }
@@ -4040,51 +2970,6 @@ pub async fn apply_pages_move_wiki_direct(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// An `acl_change` receipt written before the rename must still revert.
-    ///
-    /// `prev_subject_id` is the only copy any code reads back. `disclosure_audit`
-    /// stores an independent one (`prev_subject_id` / `prev_allow_ids` /
-    /// `prev_sender_id`, migration 0043), but nothing ever selects those columns
-    /// — every read of that table takes `audit_id`, `widening` or `reverted_at`
-    /// — so the restore comes from this JSON, which lives inside
-    /// `structure_proposals.spec` where `ALTER TABLE` cannot reach it. Both
-    /// fields are non-`Option`, so without the aliases deserialization fails
-    /// outright and the undo button stops working for every change made before
-    /// the deploy, for the whole revert window.
-    #[test]
-    fn an_acl_change_receipt_written_before_the_rename_still_reverts() {
-        let legacy = serde_json::json!({
-            "fact_id": crate::types::SAMPLE_UUID_V7,
-            "new_owner_id": "group:famiglia",
-            "new_allow_ids": ["global"],
-            "new_sender_id": "user:alice",
-            "prev_owner_id": "user:alice",
-            "prev_allow_ids": [],
-            "prev_sender_id": "user:alice",
-            "audit_id": 7,
-            "widening": true,
-        });
-        let r: AclChangeRecord =
-            serde_json::from_value(legacy).expect("a receipt in the pre-rename shape must parse");
-        assert_eq!(
-            r.prev_subject_id, "user:alice",
-            "the ACL to restore survives"
-        );
-        assert_eq!(r.new_subject_id, "group:famiglia");
-
-        // Control: the fields are required, so an unrecognised spelling fails.
-        let bogus = serde_json::json!({
-            "fact_id": crate::types::SAMPLE_UUID_V7,
-            "new_proprietor_id": "group:famiglia",
-            "new_allow_ids": [],
-            "prev_proprietor_id": "user:alice",
-            "prev_allow_ids": [],
-            "audit_id": 7,
-            "widening": false,
-        });
-        assert!(serde_json::from_value::<AclChangeRecord>(bogus).is_err());
-    }
 
     use crate::capture::{CaptureAction, CaptureRequest, wiki_capture};
     use crate::embedder::{Embedder, FakeEmbedder};
@@ -4139,40 +3024,6 @@ mod tests {
         );
         std::fs::write(dir.join("_meta.md"), meta).unwrap();
     }
-
-    async fn capture_in(
-        tree: &WikiTree,
-        pool: &SqlitePool,
-        embedder: Arc<dyn Embedder>,
-        wiki: &str,
-        page: &str,
-        body: &str,
-    ) -> FactId {
-        let subject = format!("user:{wiki}");
-        let req = CaptureRequest {
-            authored_refs: Vec::new(),
-            wiki_id: WikiId::parse(wiki).unwrap(),
-            page: PathBuf::from(page),
-            body: body.to_owned(),
-            subject: subject.parse::<Principal>().unwrap(),
-            allow: vec![],
-            sender: None,
-            fact_type: None,
-            topics: vec![],
-            dedup_threshold: Some(1.01),
-            valid_from: None,
-            valid_to: None,
-            style: None,
-            page_description: None,
-            salience: None,
-        };
-        let outcome = wiki_capture(tree, pool, embedder, req).await.unwrap();
-        match outcome.action {
-            CaptureAction::Captured { .. } => outcome.fact_id,
-            other => panic!("expected Captured, got {other:?}"),
-        }
-    }
-
     async fn capture_one(
         tree: &WikiTree,
         pool: &SqlitePool,
@@ -4232,7 +3083,6 @@ mod tests {
         // Spec shape sanity.
         assert_eq!(spec["variant"], "paragraph_to_file");
         assert_eq!(spec["moved_facts"].as_array().unwrap().len(), 1);
-        assert_eq!(spec["target_existed_before"], false);
         assert_eq!(spec["moved_facts"][0]["fact_id"], f1.as_str());
 
         // Target page exists and contains the marker for f1.
@@ -4251,85 +3101,6 @@ mod tests {
         // fact_index row repointed.
         let row = fact_index::find_by_id(&pool, &f1).await.unwrap().unwrap();
         assert_eq!(row.source_path, "wikis/alice/giardinaggio.md");
-    }
-
-    #[tokio::test]
-    async fn page_merge_apply_then_revert_round_trips() {
-        let (_dir, tree, pool) = setup().await;
-        let emb = embedder();
-        let stay = capture_one(
-            &tree,
-            &pool,
-            emb.clone(),
-            "viaggi.md",
-            "Trip fact that stays",
-        )
-        .await;
-        let h1 = capture_one(
-            &tree,
-            &pool,
-            emb.clone(),
-            "viaggi_parigi.md",
-            "Hotel booked",
-        )
-        .await;
-        let h2 = capture_one(
-            &tree,
-            &pool,
-            emb,
-            "viaggi_parigi.md",
-            "Louvre tickets bought",
-        )
-        .await;
-
-        let ctx = json!({
-            "source_wiki_id": "alice",
-            "source_page": "viaggi_parigi.md",
-            "fact_ids": [h1.as_str(), h2.as_str()],
-            "husk_title": "Viaggio a Parigi",
-            "husk_description": "the paris trip",
-            "husk_style": "prosa",
-        });
-        let ans = json!({ "variant": "page_merge", "target_page": "viaggi.md" });
-        let spec = apply_page_merge(&pool, &tree, &ctx, &ans)
-            .await
-            .expect("apply");
-        assert_eq!(spec["variant"], "page_merge");
-        assert_eq!(spec["moved_facts"].as_array().unwrap().len(), 2);
-
-        // The husk is gone; the survivor carries every marker.
-        let husk_path = tree.wikis_dir().join("alice/viaggi_parigi.md");
-        assert!(!husk_path.exists(), "husk deleted");
-        let survivor = std::fs::read_to_string(tree.wikis_dir().join("alice/viaggi.md")).unwrap();
-        for f in [&stay, &h1, &h2] {
-            assert!(survivor.contains(&format!("f={f}")), "marker {f} present");
-        }
-        for f in [&h1, &h2] {
-            let row = fact_index::find_by_id(&pool, f).await.unwrap().unwrap();
-            assert_eq!(row.source_path, "wikis/alice/viaggi.md");
-            assert!(row.region_start.is_some(), "offsets stamped on survivor");
-        }
-
-        // Revert: the husk file is recreated from the stored shell, the
-        // survivor sheds the moved markers, rows repoint back.
-        revert_page_merge(&pool, &tree, &spec)
-            .await
-            .expect("revert");
-        assert!(husk_path.exists(), "husk recreated");
-        let husk = std::fs::read_to_string(&husk_path).unwrap();
-        for f in [&h1, &h2] {
-            assert!(husk.contains(&format!("f={f}")), "marker {f} restored");
-        }
-        assert!(husk.contains("Hotel booked") && husk.contains("Louvre tickets bought"));
-        let survivor2 = std::fs::read_to_string(tree.wikis_dir().join("alice/viaggi.md")).unwrap();
-        assert!(!survivor2.contains(&format!("f={h1}")));
-        assert!(!survivor2.contains(&format!("f={h2}")));
-        assert!(survivor2.contains(&format!("f={stay}")), "stayer untouched");
-        for f in [&h1, &h2] {
-            let row = fact_index::find_by_id(&pool, f).await.unwrap().unwrap();
-            assert_eq!(row.source_path, "wikis/alice/viaggi_parigi.md");
-            assert!(row.region_start.is_some(), "offsets stamped on husk");
-        }
     }
 
     #[tokio::test]
@@ -4419,10 +3190,9 @@ mod tests {
             "fact_ids": [f1.as_str()],
         });
         let ans = json!({ "target_page": "target.md" });
-        let spec = apply_paragraph_to_file(&pool, &tree, &ctx, &ans)
+        apply_paragraph_to_file(&pool, &tree, &ctx, &ans)
             .await
             .expect("apply");
-        assert_eq!(spec["target_existed_before"], true);
 
         // Target page still has the original content + the appended marker.
         let target =
@@ -4492,169 +3262,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn apply_then_revert_round_trips_to_source() {
-        let (_dir, tree, pool) = setup().await;
-        let emb = embedder();
-        let f1 = capture_one(&tree, &pool, emb.clone(), "appunti.md", "Movable A").await;
-        let f2 = capture_one(&tree, &pool, emb, "appunti.md", "Movable B").await;
-        let original_source =
-            std::fs::read_to_string(tree.wikis_dir().join("alice").join("appunti.md")).unwrap();
-
-        let ctx = json!({
-            "source_wiki_id": "alice",
-            "source_page": "appunti.md",
-            "fact_ids": [f1.as_str(), f2.as_str()],
-        });
-        let ans = json!({ "target_page": "moved.md" });
-        let spec = apply_paragraph_to_file(&pool, &tree, &ctx, &ans)
-            .await
-            .expect("apply");
-
-        revert_paragraph_to_file(&pool, &tree, &spec)
-            .await
-            .expect("revert");
-
-        // Source contents contain the two markers again (order at end is OK).
-        let restored_source =
-            std::fs::read_to_string(tree.wikis_dir().join("alice").join("appunti.md")).unwrap();
-        assert!(
-            restored_source.contains(&format!("f={f1}")),
-            "{restored_source}"
-        );
-        assert!(
-            restored_source.contains(&format!("f={f2}")),
-            "{restored_source}"
-        );
-
-        // Target page now has no markers for f1/f2 (best-effort cleanup; the
-        // file can stay on disk, but the markers must be gone).
-        let target_after =
-            std::fs::read_to_string(tree.wikis_dir().join("alice").join("moved.md")).unwrap();
-        assert!(!target_after.contains(&format!("f={f1}")), "{target_after}");
-        assert!(!target_after.contains(&format!("f={f2}")), "{target_after}");
-
-        // fact_index rows point back at source.
-        for fid in [&f1, &f2] {
-            let row = fact_index::find_by_id(&pool, fid).await.unwrap().unwrap();
-            assert_eq!(row.source_path, "wikis/alice/appunti.md");
-        }
-        // Restored source contains all the original bytes (the markers may
-        // be in a different order; just check substring equivalence on the
-        // marker presence — the surrounding prose is empty in this fixture).
-        for fid in [&f1, &f2] {
-            assert!(
-                original_source.contains(&format!("f={fid}"))
-                    && restored_source.contains(&format!("f={fid}"))
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn revert_rejects_wrong_variant() {
-        let (_dir, tree, pool) = setup().await;
-        let bogus_spec = json!({"variant": "wiki_type_forge"});
-        let err = revert_paragraph_to_file(&pool, &tree, &bogus_spec)
-            .await
-            .expect_err("must reject");
-        assert!(matches!(err, RevertError::InvalidPayload(_)));
-    }
-
     // ---- file → sub-wiki variant ----
-
-    #[tokio::test]
-    async fn fact_refile_direct_moves_cross_wiki_then_revert_restores() {
-        // The act-first cross-wiki refile: a fact captured in alice moves
-        // to bob via the direct path (born-applied receipt + open window),
-        // and revert puts it back — wiki_id + prose + offsets restored.
-        let (_dir, tree, pool) = setup().await;
-        seed_wiki(&tree, "bob");
-        let emb = embedder();
-
-        let f = capture_in(
-            &tree,
-            &pool,
-            emb.clone(),
-            "alice",
-            "appunti.md",
-            "Belongs to bob",
-        )
-        .await;
-        let _stay = capture_in(
-            &tree,
-            &pool,
-            emb.clone(),
-            "alice",
-            "appunti.md",
-            "Stays in alice",
-        )
-        .await;
-        // A pre-existing fact in bob so the dest page already has content.
-        let _b = capture_in(&tree, &pool, emb, "bob", "appunti.md", "Bob's own note").await;
-
-        let receipt = apply_fact_refile_direct(
-            &pool,
-            &tree,
-            &f,
-            "alice",
-            "appunti.md",
-            "bob",
-            "appunti.md",
-            Some("LLM: this fact is about bob"),
-            None,
-        )
-        .await
-        .expect("direct refile");
-
-        // Born-applied receipt: status applied, token + open window.
-        let (status, context, token): (String, String, Option<String>) = sqlx::query_as(
-            "SELECT status, context, revert_token FROM structure_proposals WHERE proposal_id = ?",
-        )
-        .bind(&receipt.proposal_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(status, "applied");
-        assert!(token.is_some(), "born-applied receipt must carry a token");
-        assert!(receipt.revert_deadline > chrono::Utc::now());
-        let ctx: Value = serde_json::from_str(&context).unwrap();
-        assert_eq!(ctx["variant"], "fact_refile");
-        assert_eq!(ctx["fact_id"], f.as_str());
-        assert_eq!(ctx["recommended_dest_wiki_id"], "bob");
-
-        // The fact_index row repointed to bob.
-        let row = fact_index::find_by_id(&pool, &f).await.unwrap().unwrap();
-        assert_eq!(row.wiki_id, "bob");
-        assert_eq!(row.source_path, "wikis/bob/appunti.md");
-
-        // Disk: marker gone from alice, present in bob; the stayer + bob's
-        // own note untouched.
-        let alice_idx =
-            std::fs::read_to_string(tree.wikis_dir().join("alice").join("appunti.md")).unwrap();
-        let bob_idx =
-            std::fs::read_to_string(tree.wikis_dir().join("bob").join("appunti.md")).unwrap();
-        assert!(!alice_idx.contains(&format!("f={f}")));
-        assert!(alice_idx.contains("Stays in alice"));
-        assert!(bob_idx.contains(&format!("f={f}")));
-        assert!(bob_idx.contains("Belongs to bob"));
-        assert!(bob_idx.contains("Bob's own note"));
-
-        // Revert via the chassis router restores wiki_id + prose.
-        revert_wiki_promote(&pool, &tree, &receipt.spec)
-            .await
-            .expect("revert");
-        let row = fact_index::find_by_id(&pool, &f).await.unwrap().unwrap();
-        assert_eq!(row.wiki_id, "alice");
-        assert_eq!(row.source_path, "wikis/alice/appunti.md");
-        let alice_idx =
-            std::fs::read_to_string(tree.wikis_dir().join("alice").join("appunti.md")).unwrap();
-        let bob_idx =
-            std::fs::read_to_string(tree.wikis_dir().join("bob").join("appunti.md")).unwrap();
-        assert!(alice_idx.contains(&format!("f={f}")));
-        assert!(alice_idx.contains("Belongs to bob"));
-        assert!(!bob_idx.contains(&format!("f={f}")));
-        assert!(bob_idx.contains("Bob's own note"));
-    }
 
     #[tokio::test]
     async fn fact_refile_refuses_same_wiki() {
@@ -4675,174 +3283,7 @@ mod tests {
 
     // ---------- validity_close ----------
 
-    /// The closure receipt's emit + revert round-trip: ingest closes a
-    /// fact, the receipt's spec snapshots the previous window, and the
-    /// chassis revert (dispatched on the variant) reopens it exactly.
-    #[tokio::test]
-    async fn validity_close_emit_then_revert_reopens_the_window() {
-        let (_dir, tree, pool) = setup().await;
-        let emb = embedder();
-        let f1 = capture_one(&tree, &pool, emb, "watchlist.md", "Vuole vedere Jumanji").await;
-
-        // Stamp a successor too, so the revert's pointer-clearing is covered.
-        let successor = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5dff").unwrap();
-        let prev = fact_index::close_validity(
-            &pool,
-            &f1,
-            "2026-06-10T22:00:00Z",
-            fact_index::decay::COMPLETED,
-            Some(&successor),
-        )
-        .await
-        .expect("close")
-        .expect("active");
-        let applied = emit_validity_close_receipt(
-            &pool,
-            &[AppliedClosure {
-                fact_id: f1.clone(),
-                wiki_id: "alice".to_owned(),
-                preview: "Vuole vedere Jumanji".to_owned(),
-                valid_to: "2026-06-10T22:00:00Z".to_owned(),
-                reason: fact_index::decay::COMPLETED.to_owned(),
-                prev,
-                surface: ClosureSurface::Fact,
-            }],
-            Some("ieri sera abbiamo visto Jumanji"),
-            Some("alice"),
-            Some("user:alice".to_owned()),
-        )
-        .await
-        .expect("receipt");
-        assert_eq!(applied.spec["variant"], VARIANT_VALIDITY_CLOSE);
-
-        revert_wiki_promote(&pool, &tree, &applied.spec)
-            .await
-            .expect("revert");
-        let row = fact_index::find_by_id(&pool, &f1)
-            .await
-            .unwrap()
-            .expect("row");
-        assert!(row.valid_to.is_none(), "the window reopened");
-        assert!(row.decay_reason.is_none(), "the reason cleared");
-        assert!(
-            row.successor_fact_id.is_none(),
-            "the successor pointer cleared with the closure"
-        );
-    }
-
-    /// A revert whose target vanished (tombstoned in the meantime) is
-    /// skipped softly — the batch never fails on a missing row.
-    #[tokio::test]
-    async fn validity_close_revert_skips_a_vanished_target() {
-        let (_dir, tree, pool) = setup().await;
-        let emb = embedder();
-        let f1 = capture_one(&tree, &pool, emb, "serra.md", "Vuole costruire una serra").await;
-        fact_index::close_validity(
-            &pool,
-            &f1,
-            "2026-06-11T00:00:00Z",
-            fact_index::decay::RETRACTED,
-            None,
-        )
-        .await
-        .expect("close")
-        .expect("active");
-        let spec = json!({
-            "variant": VARIANT_VALIDITY_CLOSE,
-            "closures": [{
-                "fact_id": f1.as_str(),
-                "valid_to": "2026-06-11T00:00:00Z",
-                "reason": "retracted",
-                "prev_valid_to": null,
-                "prev_decay_reason": null,
-            }],
-        });
-        fact_index::mark_forgotten(&pool, &f1, "user_request")
-            .await
-            .expect("tombstone");
-        revert_wiki_promote(&pool, &tree, &spec)
-            .await
-            .expect("soft revert");
-    }
-
     // ---------- page group → wiki (regrouping) ----------
-
-    /// Seed an existing sub-wiki under alice so the "file into a home
-    /// that already exists" branch has a target.
-    fn seed_alice_child(tree: &WikiTree, slug: &str) {
-        let dir = tree.wikis_dir().join("alice").join(slug);
-        std::fs::create_dir_all(&dir).unwrap();
-        let meta = format!(
-            "---\nwiki_id: alice-{slug}\nwiki_type: wiki-tech\nparent_wiki_id: alice\n\
-             slug: {slug}\ntitle: {slug}\nacl_default: 'user:alice'\n---\n",
-        );
-        std::fs::write(dir.join("_meta.md"), meta).unwrap();
-        std::fs::write(dir.join("appunti.md"), "# placeholder\n").unwrap();
-    }
-
-    #[tokio::test]
-    async fn pages_to_subwiki_carries_every_page_and_reverts_whole() {
-        let (_dir, tree, pool) = setup().await;
-        let emb = embedder();
-        let mut planted = Vec::new();
-        for page in ["orto.md", "potatura.md", "compost.md"] {
-            planted.push(
-                capture_one(&tree, &pool, emb.clone(), page, &format!("note on {page}")).await,
-            );
-        }
-        let ctx = json!({
-            "variant": "pages_to_subwiki",
-            "source_wiki_id": "alice",
-            "pages": ["orto.md", "potatura.md", "compost.md"],
-            "new_wiki_slug": "giardino",
-            "new_wiki_title": "Giardino",
-            "new_wiki_style": "prosa",
-            "new_wiki_description": "Everything about the garden",
-        });
-        let spec = apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_subwiki"}))
-            .await
-            .expect("apply");
-
-        // The wiki is born holding all three pages under their own
-        // names, and the parent is left without them.
-        let new_dir = tree.wikis_dir().join("alice").join("giardino");
-        for page in ["orto.md", "potatura.md", "compost.md"] {
-            assert!(new_dir.join(page).exists(), "{page} moved in");
-            assert!(!tree.wikis_dir().join("alice").join(page).exists());
-        }
-        for fid in &planted {
-            let row = fact_index::find_by_id(&pool, fid).await.unwrap().unwrap();
-            assert_eq!(row.wiki_id, "alice-giardino");
-        }
-        // The birth stamps the _meta hints so the wiki is not born blind.
-        let handle = tree
-            .locate(&WikiId::parse("alice-giardino").unwrap())
-            .unwrap();
-        assert_eq!(
-            handle
-                .meta()
-                .extra
-                .get(serde_yaml::Value::from("style"))
-                .and_then(serde_yaml::Value::as_str),
-            Some("prosa"),
-        );
-
-        // Undo puts every page back and takes the wiki with it.
-        revert_wiki_promote(&pool, &tree, &spec)
-            .await
-            .expect("revert");
-        assert!(!new_dir.exists(), "the newborn wiki is gone");
-        for page in ["orto.md", "potatura.md", "compost.md"] {
-            assert!(
-                tree.wikis_dir().join("alice").join(page).exists(),
-                "{page} is back"
-            );
-        }
-        for fid in &planted {
-            let row = fact_index::find_by_id(&pool, fid).await.unwrap().unwrap();
-            assert_eq!(row.wiki_id, "alice");
-        }
-    }
 
     /// The address swap, on every shape a link comes in. What must NOT
     /// move is as load-bearing as what must: a bare `[[wiki]]` names a
@@ -5115,113 +3556,6 @@ Un'altra pagina: [[bruno/orto]].
             assert_eq!(node.page_path, format!("{page}.md"));
             assert_eq!(node.primary_facts.len(), 1, "{page} kept its fact");
         }
-    }
-
-    #[tokio::test]
-    async fn revert_pages_to_subwiki_refuses_once_a_fact_landed_inside() {
-        let (_dir, tree, pool) = setup().await;
-        let emb = embedder();
-        for page in ["orto.md", "potatura.md"] {
-            capture_one(&tree, &pool, emb.clone(), page, &format!("note on {page}")).await;
-        }
-        let ctx = json!({
-            "variant": "pages_to_subwiki",
-            "source_wiki_id": "alice",
-            "pages": ["orto.md", "potatura.md"],
-            "new_wiki_slug": "giardino",
-        });
-        let spec = apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_subwiki"}))
-            .await
-            .expect("apply");
-
-        // A fact arrives on a carried page after the move. Restoring the
-        // recorded bytes would silently drop it, so the undo must refuse
-        // rather than lose content.
-        let moved = tree
-            .wikis_dir()
-            .join("alice")
-            .join("giardino")
-            .join("orto.md");
-        let mut bytes = std::fs::read_to_string(&moved).unwrap();
-        bytes.push_str("\n{{f=019f0000-0000-7000-8000-00000000abcd}}later note{{/}}\n");
-        std::fs::write(&moved, bytes).unwrap();
-
-        let err = revert_wiki_promote(&pool, &tree, &spec).await.unwrap_err();
-        assert!(
-            matches!(err, RevertError::HandlerData(ref m) if m.contains("marker set diverged")),
-            "unexpected error: {err:?}",
-        );
-        assert!(moved.exists(), "nothing was undone");
-    }
-
-    #[tokio::test]
-    async fn revert_pages_to_subwiki_refuses_when_the_wiki_grew_a_page() {
-        let (_dir, tree, pool) = setup().await;
-        let emb = embedder();
-        for page in ["orto.md", "potatura.md"] {
-            capture_one(&tree, &pool, emb.clone(), page, &format!("note on {page}")).await;
-        }
-        let ctx = json!({
-            "variant": "pages_to_subwiki",
-            "source_wiki_id": "alice",
-            "pages": ["orto.md", "potatura.md"],
-            "new_wiki_slug": "giardino",
-        });
-        let spec = apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_to_subwiki"}))
-            .await
-            .expect("apply");
-        // The wiki has started a life of its own.
-        std::fs::write(
-            tree.wikis_dir()
-                .join("alice")
-                .join("giardino")
-                .join("semina.md"),
-            "# semina\n",
-        )
-        .unwrap();
-
-        let err = revert_wiki_promote(&pool, &tree, &spec).await.unwrap_err();
-        assert!(
-            matches!(err, RevertError::HandlerData(ref m) if m.contains("grew entries")),
-            "unexpected error: {err:?}",
-        );
-    }
-
-    #[tokio::test]
-    async fn pages_move_wiki_files_into_an_existing_home_and_back() {
-        let (_dir, tree, pool) = setup().await;
-        seed_alice_child(&tree, "giardino");
-        let tree = WikiTree::open(tree.workdir()).unwrap();
-        let emb = embedder();
-        let fid = capture_one(&tree, &pool, emb, "orto.md", "note on orto").await;
-
-        let ctx = json!({
-            "variant": "pages_move_wiki",
-            "source_wiki_id": "alice",
-            "target_wiki_id": "alice-giardino",
-            "pages": ["orto.md"],
-        });
-        let spec = apply_wiki_promote(&pool, &tree, &ctx, &json!({"variant": "pages_move_wiki"}))
-            .await
-            .expect("apply");
-
-        let moved = tree
-            .wikis_dir()
-            .join("alice")
-            .join("giardino")
-            .join("orto.md");
-        assert!(moved.exists(), "the page found its home");
-        assert!(!tree.wikis_dir().join("alice").join("orto.md").exists());
-        let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
-        assert_eq!(row.wiki_id, "alice-giardino");
-
-        revert_wiki_promote(&pool, &tree, &spec)
-            .await
-            .expect("revert");
-        assert!(!moved.exists());
-        assert!(tree.wikis_dir().join("alice").join("orto.md").exists());
-        let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
-        assert_eq!(row.wiki_id, "alice");
     }
 
     #[tokio::test]

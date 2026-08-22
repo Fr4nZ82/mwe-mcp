@@ -522,7 +522,7 @@ pub async fn mark_superseded(
 }
 
 /// Snapshot of a fact's validity fields the moment a closure overwrote
-/// them — the revert payload of the act-first closure receipt.
+/// them — what the act-first closure receipt records as the prior state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosedValidity {
     /// `valid_to` before the closure (`None` = the window was open).
@@ -549,7 +549,7 @@ pub struct ClosedValidity {
 /// completion sweep its evidence). `Some` stamps `successor_fact_id`;
 /// `None` leaves any earlier pointer untouched.
 ///
-/// Returns the previous values for the receipt's revert payload, or
+/// Returns the previous values for the receipt's record of the change, or
 /// `None` when `fact_id` has no active row (unknown or tombstoned) — the
 /// caller skips the closure rather than failing the turn.
 ///
@@ -592,41 +592,8 @@ pub async fn close_validity(
     Ok(Some(prev))
 }
 
-/// Restore a fact's validity fields from a [`ClosedValidity`] snapshot —
-/// the revert half of the closure verb.
-///
-/// Returns the number of rows touched (0 when the fact no longer has an
-/// active row).
-///
-/// # Errors
-///
-/// As [`sqlx::Error`].
-pub async fn restore_validity(
-    pool: &SqlitePool,
-    fact_id: &FactId,
-    prev_valid_to: Option<&str>,
-    prev_decay_reason: Option<&str>,
-    prev_successor_fact_id: Option<&str>,
-) -> Result<u64> {
-    let now = chrono::Utc::now().to_rfc3339();
-    let res = sqlx::query(
-        "UPDATE fact_index
-            SET valid_to = ?, decay_reason = ?, successor_fact_id = ?,
-                updated_at = ?
-          WHERE fact_id = ? AND deleted_at IS NULL",
-    )
-    .bind(prev_valid_to)
-    .bind(prev_decay_reason)
-    .bind(prev_successor_fact_id)
-    .bind(&now)
-    .bind(fact_id.as_str())
-    .execute(pool)
-    .await?;
-    Ok(res.rows_affected())
-}
-
 /// Snapshot of a fact's validity *interval* the moment a date correction
-/// overwrote it — the revert payload of the act-first `validity_edit`
+/// overwrote it — the prior state the act-first `validity_edit`
 /// receipt.
 ///
 /// Distinct from [`ClosedValidity`]: an edit corrects the *bounds*
@@ -653,7 +620,7 @@ pub struct PrevValidity {
 /// — and the page recompiles on the next dream because the validity fields
 /// are part of the page fingerprint.
 ///
-/// Returns the previous interval for the receipt's revert payload, or
+/// Returns the previous interval for the receipt's record of the change, or
 /// `None` when `fact_id` has no active row (unknown or tombstoned) — the
 /// caller skips the edit rather than failing the turn.
 ///
@@ -696,39 +663,8 @@ pub async fn set_validity(
     Ok(Some(prev))
 }
 
-/// Restore a fact's validity *interval* from a [`PrevValidity`] snapshot —
-/// the revert half of the validity-edit verb. Sets BOTH bounds back and
-/// leaves `decay_reason` untouched.
-///
-/// Returns the number of rows touched (0 when the fact no longer has an
-/// active row).
-///
-/// # Errors
-///
-/// As [`sqlx::Error`].
-pub async fn restore_validity_interval(
-    pool: &SqlitePool,
-    fact_id: &FactId,
-    prev_valid_from: Option<&str>,
-    prev_valid_to: Option<&str>,
-) -> Result<u64> {
-    let now = chrono::Utc::now().to_rfc3339();
-    let res = sqlx::query(
-        "UPDATE fact_index
-            SET valid_from = ?, valid_to = ?, updated_at = ?
-          WHERE fact_id = ? AND deleted_at IS NULL",
-    )
-    .bind(prev_valid_from)
-    .bind(prev_valid_to)
-    .bind(&now)
-    .bind(fact_id.as_str())
-    .execute(pool)
-    .await?;
-    Ok(res.rows_affected())
-}
-
 /// Snapshot of a fact's ACL columns the moment an ACL change overwrote
-/// them — the revert payload of the act-first `acl_change` receipt.
+/// them — the prior state the act-first `acl_change` receipt records.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrevAcl {
     /// `subject_id` before the change.
@@ -748,7 +684,7 @@ pub struct PrevAcl {
 /// dream because the per-fact ACL is part of the render's authoritative
 /// resolution.
 ///
-/// Returns the previous ACL for the receipt's revert payload, or `None`
+/// Returns the previous ACL for the receipt's record of the change, or `None`
 /// when `fact_id` has no active row (unknown or tombstoned) — the caller
 /// skips the change rather than failing the turn.
 ///
@@ -827,39 +763,6 @@ pub async fn inherit_allow(
     Ok(res.rows_affected() > 0)
 }
 
-/// Restore a fact's ACL columns from a [`PrevAcl`] snapshot — the revert
-/// half of the acl-change verb.
-///
-/// Returns the number of rows touched (0 when the fact no longer has an
-/// active row).
-///
-/// # Errors
-///
-/// `sqlx::Error` + JSON serialization failures on `allow_ids`.
-pub async fn restore_acl(
-    pool: &SqlitePool,
-    fact_id: &FactId,
-    subject: &Principal,
-    allow: &[Principal],
-    sender: Option<&Principal>,
-) -> Result<u64> {
-    let allow_json = principals_to_json(allow)?;
-    let now = chrono::Utc::now().to_rfc3339();
-    let res = sqlx::query(
-        "UPDATE fact_index
-            SET subject_id = ?, allow_ids = ?, sender_id = ?, updated_at = ?
-          WHERE fact_id = ? AND deleted_at IS NULL",
-    )
-    .bind(subject.to_string())
-    .bind(&allow_json)
-    .bind(sender.map(ToString::to_string))
-    .bind(&now)
-    .bind(fact_id.as_str())
-    .execute(pool)
-    .await?;
-    Ok(res.rows_affected())
-}
-
 /// Stamp `decay_reason` on a fact that already carries its closing
 /// `valid_to`.
 ///
@@ -905,35 +808,6 @@ pub async fn mark_forgotten(pool: &SqlitePool, fact_id: &FactId, reason: &str) -
     )
     .bind(&now)
     .bind(reason)
-    .bind(&now)
-    .bind(fact_id.as_str())
-    .execute(pool)
-    .await?;
-    Ok(res.rows_affected())
-}
-
-/// Un-tombstone a fact: clear `deleted_at` / `deleted_reason` so the row
-/// rejoins the active set.
-///
-/// The exact inverse of [`mark_forgotten`], it is the per-fact primitive a
-/// `bundle` revert ([`crate::bundle::revert_bundle`]) uses to restore a fact
-/// the deleter tombstoned when a governed page deletion is undone. The fact's
-/// text + ACL never left the row (tombstoning only stamps the two columns), so
-/// the next compile re-renders its marker on the page the row still points at.
-///
-/// Guards on `deleted_at IS NOT NULL` so re-restoring a live row is a 0 update
-/// (idempotent), and returns the number of rows touched.
-///
-/// # Errors
-///
-/// As [`sqlx::Error`].
-pub async fn restore_forgotten(pool: &SqlitePool, fact_id: &FactId) -> Result<u64> {
-    let now = chrono::Utc::now().to_rfc3339();
-    let res = sqlx::query(
-        "UPDATE fact_index
-            SET deleted_at = NULL, deleted_reason = NULL, updated_at = ?
-          WHERE fact_id = ? AND deleted_at IS NOT NULL",
-    )
     .bind(&now)
     .bind(fact_id.as_str())
     .execute(pool)
@@ -1225,7 +1099,7 @@ pub async fn drop_by_source_path(pool: &SqlitePool, source_path: &str) -> Result
 /// Number of non-tombstoned rows whose region lives at `source_path`.
 ///
 /// The path is workdir-relative; superseded rows count — their marker on
-/// disk is kept for the revert path. This is the orphan-page sweep's
+/// disk is kept. This is the orphan-page sweep's
 /// safety check: a page file with ANY live pointer is never deleted.
 ///
 /// # Errors
@@ -1244,32 +1118,28 @@ pub async fn count_rows_at_source_path(pool: &SqlitePool, source_path: &str) -> 
 /// Number of rows that BLOCK the husk-page GC from removing
 /// `source_path`'s file.
 ///
-/// Blocking rows: every **active** row (its region is content — a
-/// validity-closed fact still narrates), plus every superseded row
-/// whose `superseded_at` is later than `superseded_horizon` (its
-/// on-disk marker may still serve a revert — the reason
-/// [`count_rows_at_source_path`] keeps the file unconditionally).
-/// Tombstoned rows never block, the same posture as the compiler's
-/// orphan sweep (the delete-page verb relies on it). Timestamps are
-/// RFC 3339 UTC strings, compared lexicographically like the other
-/// window queries.
+/// Blocking rows are the **active** ones: their region is content, and
+/// a validity-closed fact still narrates. A superseded row leaves only
+/// a marker behind, and a tombstoned one nothing at all — neither
+/// blocks, the same posture as the compiler's orphan sweep (the
+/// delete-page verb relies on it).
+///
+/// This is deliberately narrower than [`count_rows_at_source_path`],
+/// which counts superseded rows too: that one guards the compiler,
+/// where a marker still has to be re-emitted, while here the file is
+/// going away.
 ///
 /// # Errors
 ///
 /// As [`sqlx::Error`].
-pub async fn count_husk_blocking_rows(
-    pool: &SqlitePool,
-    source_path: &str,
-    superseded_horizon: &str,
-) -> Result<i64> {
+pub async fn count_husk_blocking_rows(pool: &SqlitePool, source_path: &str) -> Result<i64> {
     let n = sqlx::query_scalar(
         "SELECT COUNT(*) FROM fact_index
           WHERE source_path = ?
             AND deleted_at IS NULL
-            AND (superseded_at IS NULL OR superseded_at > ?)",
+            AND superseded_at IS NULL",
     )
     .bind(source_path)
-    .bind(superseded_horizon)
     .fetch_one(pool)
     .await?;
     Ok(n)
@@ -2234,7 +2104,7 @@ pub async fn set_authored_refs(
 
 /// Clear the supersede chain on a row, but only if it is still
 /// superseded by `expected_superseded_by`. Inverse of [`mark_superseded`]
-/// used by the `dedup_merge` structure-proposal revert path.
+/// used by the `dedup_merge` hygiene path.
 ///
 /// The conditional `WHERE superseded_by = ?` is load-bearing: if a
 /// later supersede has overwritten the chain (`old → new` later became
@@ -2636,7 +2506,7 @@ fn list_page_name(source_path: &str, target_page: Option<&str>) -> Option<String
 ///
 /// Called after the row's on-disk region was excised (or verified absent):
 /// NULL offsets record "no rendered bytes". If the row is later revived
-/// (a dedup-merge revert, a bundle restore) it comes back as a clean
+/// it comes back as a clean
 /// pending render the next compile re-renders.
 ///
 /// Returns the number of rows touched (0 when unknown or still active).
@@ -3841,11 +3711,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn close_validity_stamps_and_restore_round_trips() {
+    async fn close_validity_stamps_and_returns_the_prior_window() {
         // The closure verb: stamp valid_to + decay_reason (+ the successor
-        // pointer when the closer knows it) on an open fact, get the
-        // previous values back for the receipt, and a restore from that
-        // snapshot reopens the window exactly as it was.
+        // pointer when the closer knows it) on an open fact, and get the
+        // previous values back so the receipt can record what changed.
         let pool = make_pool().await;
         let f = sample_new_fact(
             SAMPLE_UUID_V7_1,
@@ -3878,24 +3747,6 @@ mod tests {
         assert_eq!(closed.valid_to.as_deref(), Some("2026-06-11T20:00:00Z"));
         assert_eq!(closed.decay_reason.as_deref(), Some(decay::COMPLETED));
         assert_eq!(closed.successor_fact_id.as_ref(), Some(&successor));
-
-        let touched = restore_validity(
-            &pool,
-            &f.fact_id,
-            prev.prev_valid_to.as_deref(),
-            prev.prev_decay_reason.as_deref(),
-            prev.prev_successor_fact_id.as_ref().map(FactId::as_str),
-        )
-        .await
-        .expect("restore");
-        assert_eq!(touched, 1);
-        let reopened = find_by_id(&pool, &f.fact_id).await.unwrap().unwrap();
-        assert!(reopened.valid_to.is_none());
-        assert!(reopened.decay_reason.is_none());
-        assert!(
-            reopened.successor_fact_id.is_none(),
-            "the revert clears the pointer the closure stamped"
-        );
     }
 
     #[tokio::test]
@@ -4012,19 +3863,12 @@ mod tests {
             "a date correction never stamps decay_reason"
         );
 
-        // Restore both bounds from the snapshot.
-        let touched = restore_validity_interval(
-            &pool,
-            &f.fact_id,
+        // The snapshot the receipt records is the window as it was.
+        assert_eq!(
             prev.prev_valid_from.as_deref(),
-            prev.prev_valid_to.as_deref(),
-        )
-        .await
-        .expect("restore");
-        assert_eq!(touched, 1);
-        let back = find_by_id(&pool, &f.fact_id).await.unwrap().unwrap();
-        assert_eq!(back.valid_from.as_deref(), Some("2026-06-10T00:00:00Z"));
-        assert_eq!(back.valid_to.as_deref(), Some("2026-06-25T00:00:00Z"));
+            Some("2026-06-10T00:00:00Z")
+        );
+        assert_eq!(prev.prev_valid_to.as_deref(), Some("2026-06-25T00:00:00Z"));
     }
 
     #[tokio::test]
@@ -4051,7 +3895,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_acl_replaces_and_restore_round_trips() {
+    async fn set_acl_replaces_and_returns_the_prior_acl() {
         // The acl-change verb: replace subject/allow/sender, get the previous
         // snapshot back, and a restore from it reinstates the prior ACL.
         let pool = make_pool().await;
@@ -4072,20 +3916,8 @@ mod tests {
         let changed = find_by_id(&pool, &f.fact_id).await.unwrap().unwrap();
         assert_eq!(changed.allow_ids, vec!["global".parse().unwrap()]);
         assert_eq!(changed.sender_id, None, "sender cleared when None passed");
-
-        let touched = restore_acl(
-            &pool,
-            &f.fact_id,
-            &prev.prev_subject_id,
-            &prev.prev_allow_ids,
-            prev.prev_sender_id.as_ref(),
-        )
-        .await
-        .expect("restore");
-        assert_eq!(touched, 1);
-        let back = find_by_id(&pool, &f.fact_id).await.unwrap().unwrap();
-        assert_eq!(back.allow_ids, vec!["group:family".parse().unwrap()]);
-        assert_eq!(back.sender_id, Some("user:bob".parse().unwrap()));
+        // The snapshot the receipt records is the ACL as it was.
+        assert_eq!(prev.prev_allow_ids, vec!["group:family".parse().unwrap()]);
     }
 
     #[tokio::test]
@@ -4286,33 +4118,6 @@ mod tests {
             .expect("hit");
         assert!(back.deleted_at.is_some());
         assert_eq!(back.deleted_reason, Some("user_request".to_owned()));
-    }
-
-    #[tokio::test]
-    async fn restore_forgotten_brings_a_tombstoned_row_back_to_active() {
-        let pool = make_pool().await;
-        let f = sample_new_fact(SAMPLE_UUID_V7_1, "alice", "user:alice", "x");
-        insert(&pool, &f).await.unwrap();
-        mark_forgotten(&pool, &f.fact_id, "user_request")
-            .await
-            .expect("forget");
-
-        let touched = restore_forgotten(&pool, &f.fact_id).await.expect("restore");
-        assert_eq!(touched, 1, "the tombstoned row is restored");
-        let active = find_active_in_wiki(&pool, "alice").await.expect("active");
-        assert_eq!(active.len(), 1, "the row rejoins the active set");
-        let back = find_by_id(&pool, &f.fact_id)
-            .await
-            .expect("find")
-            .expect("hit");
-        assert!(back.deleted_at.is_none(), "deleted_at cleared");
-        assert!(back.deleted_reason.is_none(), "deleted_reason cleared");
-
-        // Restoring an already-live row is a no-op.
-        let again = restore_forgotten(&pool, &f.fact_id)
-            .await
-            .expect("restore twice");
-        assert_eq!(again, 0, "restoring a live row touches nothing");
     }
 
     #[tokio::test]

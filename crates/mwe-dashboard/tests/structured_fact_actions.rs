@@ -5,7 +5,7 @@
 //! These replaced the old unapplyable ACL/validity chat-bridge: they hit
 //! the engine directly (subject-or-admin gated, standard-wikis only),
 //! mint a born-applied `wiki_promote` receipt, and 303-redirect the
-//! operator onto that revertible receipt.
+//! operator onto that receipt.
 //!
 //! The subject-or-admin gate's pure logic is unit-tested inside
 //! `routes::facts`; here we drive the routes end-to-end against a
@@ -368,69 +368,6 @@ async fn structured_actions_are_refused_on_smart_wikis() {
             .await
             .unwrap();
     assert_eq!(receipts, 0, "no receipt on a refused smart-wiki action");
-}
-
-#[tokio::test]
-async fn acl_action_receipt_reverts_via_proposals_route() {
-    let (app, pool, tree, _dir) = make_app_with_memory().await;
-    let cookie = login_as_admin(&app).await;
-    seed_alice_wiki(&tree);
-    let fid = capture_fact(&pool, &tree, "alice", "cucina.md", "Alice va in montagna").await;
-
-    // Apply an ACL change.
-    let response = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri(format!("/facts/{}/acl", fid.as_str()))
-            .header(header::COOKIE, &cookie)
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(Body::from("owner=user:alice&allow=group:famiglia"))
-            .unwrap(),
-    )
-    .await;
-    let location = response
-        .headers()
-        .get(header::LOCATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_owned();
-    // Pull the proposal_id out of `/dashboard/proposals/<id>/open-in-chat`.
-    let proposal_id = location
-        .strip_prefix("/dashboard/proposals/")
-        .and_then(|s| s.strip_suffix("/open-in-chat"))
-        .expect("receipt id in redirect location")
-        .to_owned();
-
-    // Revert via the existing proposals action route — the born-applied
-    // receipt is a wiki_promote variant it already handles.
-    let revert = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri(format!("/proposals/{proposal_id}/revert"))
-            .header(header::COOKIE, &cookie)
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        revert.status().is_redirection(),
-        "revert must redirect, got {}",
-        revert.status()
-    );
-
-    // The ACL is restored.
-    let row = mwe_core::fact_index::find_by_id(&pool, &fid)
-        .await
-        .unwrap()
-        .expect("row");
-    assert!(
-        row.allow_ids.is_empty(),
-        "revert must restore the prior (empty) allow set; got {:?}",
-        row.allow_ids
-    );
 }
 
 /// The dashboard delete owns both halves of retirement: the `deleted_at`

@@ -55,7 +55,7 @@
 //!   [`mwe_core::wiki_admin::push`] with
 //!   [`mwe_core::wiki_admin::ActorKind::Dashboard`] so the write
 //!   lands in `wiki_admin_op_log` exactly like an MCP push — same
-//!   audit machinery, same revert handler downstream.
+//!   audit machinery, same receipt downstream.
 //! - GET `/dashboard/wiki/:id/comment/*path?anchor=<slug>` — render
 //!   the small "leave a comment" form for the heading addressed by
 //!   `?anchor=`. Read-access required on the wiki —

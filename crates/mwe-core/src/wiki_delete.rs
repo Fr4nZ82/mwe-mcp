@@ -58,7 +58,7 @@
 //! Two things make that safe rather than harsh. Both tables are
 //! **projections** of the `.md` files ([`crate::sections`]), so moving the
 //! directory back out of the trash lets the watcher rebuild them — the same
-//! undo a standard wiki gets. And dropping the registry row is what makes the
+//! recourse a standard wiki gets. And dropping the registry row is what makes the
 //! deletion take effect for readers *at once*: the readable-wiki filter is
 //! built from that table, so a surviving row would keep serving a deleted
 //! wiki's content until the next safety-net tick.

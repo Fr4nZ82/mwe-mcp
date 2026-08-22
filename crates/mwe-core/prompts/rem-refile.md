@@ -45,7 +45,7 @@ Rules:
 - A fact belongs in the wiki whose SUBJECT it is primarily about — whose subject/topic the claim is fundamentally a fact OF, not merely a fact that references.
 - `dest_wiki_id` MUST be a wiki_id copied EXACTLY from the candidate list. Never invent one, and never name the home wiki.
 - You choose only the destination WIKI, not a page: the fact lands on that wiki's parking page (`@notes.md`, where everything unplaced waits) and the wiki's own next dream files it onto the right page.
-- Moves here are act-first but revertable from the dashboard; still, prefer leaving a fact home over a speculative move.
+- Moves here are act-first and final; prefer leaving a fact home over a speculative move.
 
 CANDIDATE FACT:
 {fact_text}

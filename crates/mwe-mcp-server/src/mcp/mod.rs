@@ -251,7 +251,7 @@ pub async fn dispatch(
         // The whole `structure_proposal_*` family was removed from the
         // MCP surface — structural changes apply directly in REM and
         // reach the consumer as `structure_applied` notices over
-        // `events_poll`; the dashboard is the undo surface and calls
+        // `events_poll`; the dashboard is the operator surface and calls
         // `mwe-core::proposals` directly.
         "wiki_read" => tools::call_wiki_read(state, identity, args).await,
         "wiki_search" => tools::call_wiki_search(state, identity, args).await,

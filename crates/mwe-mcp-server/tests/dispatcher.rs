@@ -329,7 +329,7 @@ async fn events_ack_idempotent_across_calls() {
 // The proposal tools no longer exist on the MCP surface. Structural
 // changes apply directly in REM and reach the consumer as
 // `structure_applied` notices over `events_poll`; the dashboard is the
-// undo surface (it calls `mwe-core::proposals` directly). The
+// operator surface (it calls `mwe-core::proposals` directly). The
 // dispatcher must surface them as `not_found`, since they're not
 // registered in `schemas::all_tools()`.
 
@@ -956,15 +956,6 @@ async fn dashboard_link_modify_wiki_requires_context_wiki_id() {
     assert!(err.contains("context.wiki_id"), "{err}");
 }
 
-// ---- wiki_ingest_message surfaces a `pending_attention` block ----
-//
-// When at least one `structure_proposals` row is in flight (`pending`
-// or `applied_pending_confirm`), the response from `wiki_ingest_message`
-// carries an extra `pending_attention` block the consumer agent uses
-// to nudge the user toward the dashboard. The default wire shape stays
-// quiet (no block) when the count is zero, so existing consumers do not
-// see noise on every turn.
-
 /// Build an [`LlmConfig`] whose `ingest` slot points at the
 /// `test-fakes`-only `"fake"` backend with the given canned response.
 fn fake_ingest_llm_config(canned_response: &str) -> LlmConfig {
@@ -1000,25 +991,6 @@ async fn seed_proposal_row(state: &McpState, proposal_id: &str, status: &str) {
     .execute(&state.pool)
     .await
     .expect("seed proposal");
-}
-
-#[tokio::test]
-async fn wiki_ingest_message_omits_pending_attention_when_no_proposals_in_flight() {
-    let (state, identity, _dir) =
-        fixture_with_llm(false, None, fake_ingest_llm_config(r#"{"intent":"skip"}"#)).await;
-    let out = call(
-        &state,
-        &identity,
-        "wiki_ingest_message",
-        json!({"text": "hello there"}),
-    )
-    .await
-    .expect("ingest must succeed with fake llm");
-    assert_eq!(out["intent_classified"], json!("skip"));
-    assert!(
-        out.get("pending_attention").is_none(),
-        "no in-flight proposals ⇒ block must be absent, got: {out}",
-    );
 }
 
 /// The one refusal `wiki_read` makes: the engine's own files.
@@ -1082,7 +1054,7 @@ async fn wiki_read_refuses_only_the_engines_own_files() {
 
 /// Guest wire shape (roadmap 40): the turn succeeds, the `rules` channel
 /// carries the reserved-behaviour directive, nothing is filed, and the
-/// governance blocks stay absent even with a proposal in flight — the
+/// the governance block stays absent even with a proposal in flight — the
 /// canned CAPTURE plan proves the classifier's answer is never consulted.
 #[tokio::test]
 async fn wiki_ingest_message_guest_turn_is_ephemeral_on_the_wire() {
@@ -1112,10 +1084,6 @@ async fn wiki_ingest_message_guest_turn_is_ephemeral_on_the_wire() {
     assert_eq!(out["capture_id"], json!(null), "nothing filed");
     let rules = out["rules"].as_str().expect("guest directive present");
     assert!(rules.contains("UNIDENTIFIED SPEAKER"), "got: {rules}");
-    assert!(
-        out.get("pending_attention").is_none(),
-        "governance nudges are for enrolled members, got: {out}",
-    );
     assert!(out.get("pending_votes").is_none(), "got: {out}");
 }
 
@@ -1468,41 +1436,6 @@ async fn wiki_admin_push_returns_unknown_briefing_item_id_error_class() {
         err.contains("unknown_briefing_item_id"),
         "expected the wire class, got: {err}"
     );
-}
-
-#[tokio::test]
-async fn structure_proposal_in_flight_surfaces_warning_in_wiki_ingest_message_response() {
-    let (state, identity, _dir) =
-        fixture_with_llm(false, None, fake_ingest_llm_config(r#"{"intent":"skip"}"#)).await;
-
-    // Seed three in-flight rows (2 pending + 1 applied_pending_confirm)
-    // plus terminal rows that must not be counted.
-    seed_proposal_row(&state, "p-pending-1", "pending").await;
-    seed_proposal_row(&state, "p-pending-2", "pending").await;
-    seed_proposal_row(&state, "p-apc-1", "applied_pending_confirm").await;
-    seed_proposal_row(&state, "p-applied", "applied").await;
-    seed_proposal_row(&state, "p-reverted", "reverted").await;
-    seed_proposal_row(&state, "p-expired", "expired").await;
-
-    let out = call(
-        &state,
-        &identity,
-        "wiki_ingest_message",
-        json!({"text": "anything"}),
-    )
-    .await
-    .expect("ingest must succeed with fake llm");
-
-    let block = out
-        .get("pending_attention")
-        .expect("pending_attention block must be present when count > 0");
-    // The seeded rows carry a NULL recipient (the admin-fallback bucket),
-    // so they count for any caller; only the `note` reflects the 0032
-    // recipient scoping now.
-    assert_eq!(block["pending_count"], json!(2));
-    assert_eq!(block["applied_pending_confirm_count"], json!(1));
-    assert_eq!(block["dashboard_path"], json!("/dashboard/proposals"));
-    assert_eq!(block["note"], json!("scoped_to_recipient"));
 }
 
 // ===== K family =====

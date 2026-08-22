@@ -44,7 +44,7 @@ Rules:
 - A candidate that survives the contradiction on its own merits (a durable preference, an independent plan) stays open — omit it.
 - `valid_to` = when the invalidation happened, when you can say (usually the contradiction's own moment); otherwise null — the engine uses the seed's closure instant.
 - `target` must be a fact_id copied EXACTLY from the candidate list. Never invent one.
-- Closures here are act-first but revertable from the dashboard; when in doubt, leave the candidate open (an empty list is a fine answer).
+- Closures here are act-first and final; when in doubt, leave the candidate open (an empty list is a fine answer).
 {subject_note}
 
 CONTRADICTED FACT:

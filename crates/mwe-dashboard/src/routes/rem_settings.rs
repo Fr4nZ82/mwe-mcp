@@ -155,8 +155,8 @@ fn knobs() -> Vec<Knob> {
             field: "husk_gc_cap",
             label: "Husk-page GC — removals per cycle",
             default: def.husk_gc_cap.to_string(),
-            help: "Plan-absent husk page files (every fact tombstoned or superseded past \
-                   the revert window) removed per full cycle. 0 disables the sub-job."
+            help: "Plan-absent husk page files (every fact on them tombstoned or \
+                   superseded) removed per full cycle. 0 disables the sub-job."
                 .to_owned(),
         },
         Knob {

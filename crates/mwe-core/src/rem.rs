@@ -260,9 +260,9 @@ pub struct RemPolicy {
     pub briefing_processor_grace: chrono::Duration,
     /// Husk-page GC: page FILES removed per full cycle. A husk is a
     /// plan-absent, non-reserved page whose fact rows are all tombstoned
-    /// or superseded past the receipts' revert window — the files the
-    /// compiler's orphan sweep must keep while a superseded row's marker
-    /// may still serve a revert. Default 4; `0` disables.
+    /// or superseded — the files the compiler's orphan sweep keeps
+    /// because a superseded row still points at them. Default 4; `0`
+    /// disables.
     pub husk_gc_cap: usize,
     /// Recall-repair sub-job: pending misses processed per cycle. Each
     /// candidate repair costs one proposal completion plus a gold-set
@@ -342,23 +342,19 @@ pub struct RemCycleReport {
     /// Auto-apply sweep report — applies pending proposals past
     /// `timeout_at` before the new emitters run.
     pub auto_apply: AutoApplyReport,
-    /// Auto-finalize sweep report — flips
-    /// `applied_pending_confirm` proposals past `confirm_deadline` to
-    /// `applied` (silent, locked, no `revert_token`, no event).
-    pub auto_finalize: AutoFinalizeReport,
     /// Revisor sub-job report.
     pub revisor: RevisorReport,
     /// Auto-promote sub-job report.
     pub auto_promote: AutoPromoteReport,
     /// Page-merge sub-job report — LLM-confirmed consolidation of
-    /// near-synonym concept pages (act-first, receipt + revert window).
+    /// near-synonym concept pages (act-first, with a receipt).
     pub page_merge: PageMergeReport,
     /// Completion sweep report — the REM safety net of the closure verb
     /// (closes open items whose completion ingest could not see).
     pub completion_sweep: CompletionSweepReport,
     /// Cross-wiki refile sweep report — moves single facts the revisor
-    /// LLM deems misfiled into a different existing wiki (act-first +
-    /// revert, smart-skip).
+    /// LLM deems misfiled into a different existing wiki (act-first,
+    /// smart-skip).
     pub refile_sweep: RefileSweepReport,
     /// Contradiction sweep report — closes the satellites of a freshly
     /// contradicted fact that ingest could not see.
@@ -392,8 +388,8 @@ pub struct RemCycleReport {
     /// drains pending `wiki_briefing_items` rows on non-smart
     /// wikis past the grace period.
     pub briefing_processor: BriefingProcessorReport,
-    /// Husk-page GC sub-job report — plan-absent page files whose
-    /// rows are all past any revert removed from disk.
+    /// Husk-page GC sub-job report — plan-absent page files whose rows
+    /// are all tombstoned or superseded, removed from disk.
     pub husk_gc: HuskGcReport,
     /// Negative-verdict memos dropped by the TTL sweep at cycle start
     /// ([`crate::rem_verdicts`]).
@@ -413,9 +409,7 @@ pub struct RevisorReport {
     /// Pairs the LLM confirmed as semantically equivalent.
     pub pairs_confirmed: usize,
     /// `proposal_id`s of the born-applied `dedup_merge` receipts: each
-    /// confirmed pair merged **act-first** in-cycle, revertible from the
-    /// dashboard within the standard window
-    /// (memory model).
+    /// confirmed pair merged **act-first** in-cycle.
     pub applied: Vec<String>,
     /// Soft errors.
     pub errors: Vec<String>,
@@ -436,8 +430,7 @@ pub struct PageMergeReport {
     pub candidates_confirmed: usize,
     /// Born-applied receipt ids of executed merges.
     pub applied: Vec<String>,
-    /// Pairs skipped because a page-merge receipt already covers them —
-    /// including a reverted one, which is the operator's standing veto.
+    /// Pairs skipped because a page-merge receipt already covers them.
     pub skipped_judged: usize,
     /// Pairs skipped because the husk's `fact_index` rows were not all
     /// settled on its compiled page (pending renders) — retried on a
@@ -476,7 +469,8 @@ pub struct CompletionSweepReport {
 /// LLM decides whether (and where) each really belongs, and a confirmed
 /// move lands act-first via [`crate::promote::apply_fact_refile_direct`]
 /// (born-applied receipt + `structure_applied` notice — the dashboard is
-/// the undo surface). Smart wikis are skipped as both source and dest.
+/// where the operator reads it). Smart wikis are skipped as both source
+/// and dest.
 #[derive(Debug, Clone, Default)]
 pub struct RefileSweepReport {
     /// Reviewer-fed candidates seeded from the parked plan (the
@@ -541,11 +535,10 @@ pub struct ProvenanceHygieneReport {
 /// Sub-report for the husk-page GC sweep.
 ///
 /// The aggressive tail of page cleanup: the compiler's orphan sweep
-/// keeps a plan-absent file while ANY non-tombstoned row points at it
-/// (a superseded row's on-disk marker may still serve a revert); this
-/// sweep removes the file once every remaining row is tombstoned or
-/// superseded past the receipts' revert window — the husks the
-/// delete/supersede machinery leaves behind. Inbound links degrade to
+/// keeps a plan-absent file while ANY non-tombstoned row points at it;
+/// this sweep removes the file once every remaining row is tombstoned or
+/// superseded — the husks the delete/supersede machinery leaves
+/// behind. Inbound links degrade to
 /// literal text (the link grammar's dead-rail posture) and the compile
 /// feed's dead-ref vetting keeps prose clean.
 #[derive(Debug, Clone, Default)]
@@ -638,8 +631,8 @@ pub struct BriefingProcessorReport {
     /// Standard-wiki comments applied as fact ops: facts removed.
     pub facts_removed: usize,
     /// Standard-wiki comments applied as fact ops: facts moved to another
-    /// page or wiki (born-applied + revertible — the `_direct` wrappers
-    /// mint a receipt).
+    /// page or wiki (born-applied — the `_direct` wrappers mint a
+    /// receipt).
     pub facts_moved: usize,
     /// Per-row soft errors (DB / filesystem / invalid `wiki_id` row).
     /// Hard failures bubble as [`RemError`]; everything else is
@@ -670,41 +663,18 @@ pub struct BacklinkReciprocityReport {
     pub errors: Vec<String>,
 }
 
-/// Sub-report for the auto-finalize sweep.
-///
-/// Walks every `applied_pending_confirm` proposal past
-/// `confirm_deadline` and calls
-/// [`crate::proposals::auto_finalize_unconfirmed_proposals`] which
-/// performs a single-statement flip to `applied`. **No kind inverse
-/// handler is invoked, no `revert_token` is minted, no event is
-/// emitted** — silence within the `confirm_window` is treated as
-/// consent (the user was already notified at auto-apply time via the
-/// `auto_applied` event).
-#[derive(Debug, Clone, Default)]
-pub struct AutoFinalizeReport {
-    /// Rows the sweep loaded from `structure_proposals`.
-    pub candidates_examined: usize,
-    /// `proposal_id`s the sweep flipped to `applied`.
-    pub finalized: Vec<String>,
-}
-
 /// Sub-report for the auto-apply sweep.
 ///
 /// Walks every pending proposal past `timeout_at` and calls
 /// [`crate::proposals::auto_apply_overdue_proposals`] which dispatches
 /// to [`crate::proposals::auto_apply_proposal`] with the `recommended`
-/// answers derived from the questionnaire. The 5-state lifecycle
-/// lands rows on `applied_pending_confirm` — `applied` here is
-/// a legacy field name preserved for the REM cycle JSON wire shape; it
-/// counts auto-applied rows in either state machine.
+/// answers derived from the questionnaire.
 #[derive(Debug, Clone, Default)]
 pub struct AutoApplyReport {
     /// Rows the sweep loaded from `structure_proposals`.
     pub candidates_examined: usize,
-    /// `(proposal_id, kind)` of the rows the sweep moved out of
-    /// `pending`. In the 5-state model the rows now sit in
-    /// `applied_pending_confirm` (the auto-apply path), waiting for
-    /// the user to confirm or revert within `confirm_deadline`.
+    /// `(proposal_id, kind)` of the rows the sweep moved from
+    /// `pending` to `applied`.
     pub applied: Vec<(String, String)>,
     /// `(proposal_id, error_message)` for proposals the chassis or the
     /// handler refused. Soft errors only — the sweep keeps going.
@@ -741,8 +711,8 @@ pub struct AutoPromoteReport {
     /// Receipt ids of the structural changes **applied directly** this
     /// cycle (born-applied `wiki_promote` rows: `paragraph_to_file`,
     /// `pages_to_subwiki`, and `pages_move_wiki` share the
-    /// `auto_promote_cap`). Each carries an open revert window and was
-    /// announced with a `structure_applied` notice.
+    /// `auto_promote_cap`). Each was announced with a `structure_applied`
+    /// notice.
     pub applied: Vec<String>,
     /// Reason the sub-job was a no-op for the whole cycle. `None`
     /// when the sub-job ran. `Some("no rem_promotions LLM wired")`
@@ -828,11 +798,6 @@ pub enum RemError {
     /// per-row handler failures stay in the report).
     #[error("rem proposals apply: {0}")]
     ProposalsApply(#[from] proposals::ApplyError),
-    // Note: the `ProposalsRevert` variant was removed when the
-    // auto-finalize sweep stopped calling the kind inverse
-    // handler, so it cannot surface `RevertError`. The manual revert
-    // path still uses `RevertError`, but it lives in the dashboard
-    // handler outside the REM cycle.
     /// Archive-proposal emission failure (archive detector path).
     #[error("rem archive: {0}")]
     Archive(#[from] ArchiveError),
@@ -918,7 +883,6 @@ pub async fn run_cycle(
         rem_verdicts::purge_older_than(pool, now - policy.verdict_memo_ttl).await?;
 
     let auto_apply = run_auto_apply_sweep(pool, tree, now).await?;
-    let auto_finalize = run_auto_finalize_sweep(pool, now).await?;
     let revisor = run_revisor_jaccard(
         pool,
         tree,
@@ -1024,13 +988,12 @@ pub async fn run_cycle(
         &smart_wiki_index,
     )
     .await?;
-    let husk_gc = run_husk_gc(pool, tree, &cycle_id, now, policy, &smart_wiki_index).await?;
+    let husk_gc = run_husk_gc(pool, tree, &cycle_id, policy, &smart_wiki_index).await?;
 
     let ended_at = Utc::now();
     tracing::info!(
         cycle_id,
         auto_applied = auto_apply.applied.len(),
-        auto_finalized = auto_finalize.finalized.len(),
         pairs_examined = revisor.pairs_examined,
         pairs_confirmed = revisor.pairs_confirmed,
         dedup_applied = revisor.applied.len(),
@@ -1077,7 +1040,6 @@ pub async fn run_cycle(
         started_at,
         ended_at,
         auto_apply,
-        auto_finalize,
         revisor,
         auto_promote,
         page_merge,
@@ -1234,11 +1196,8 @@ async fn find_active_in_family(
 /// that adapts the call's report shape to the REM
 /// sub-job report shape ([`AutoApplyReport`]).
 ///
-/// Per the memory model
-/// the sweep flips `pending → applied_pending_confirm` with
-/// `apply_mode='auto'` and starts the 7 d confirm window; silence past
-/// the deadline triggers the auto-revert sweep. Per-row
-/// handler failures are collected and the sweep keeps going.
+/// The sweep flips `pending → applied` with `apply_mode='auto'`.
+/// Per-row handler failures are collected and the sweep keeps going.
 async fn run_auto_apply_sweep(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -1249,27 +1208,6 @@ async fn run_auto_apply_sweep(
         candidates_examined: sweep.candidates_examined,
         applied: sweep.auto_applied,
         errors: sweep.errors,
-    })
-}
-
-/// Thin wrapper around [`proposals::auto_finalize_unconfirmed_proposals`]
-/// that adapts the call's report
-/// shape to the REM sub-job report shape ([`AutoFinalizeReport`]).
-///
-/// Per the memory model
-/// the sweep flips `applied_pending_confirm → applied` once
-/// `confirm_deadline` has elapsed (silence = consent). No kind inverse
-/// handler, no `revert_token` minted, no event emitted — the user was
-/// already notified at auto-apply time via `EventKind::AutoApplied`,
-/// silence is now a valid form of consent.
-async fn run_auto_finalize_sweep(
-    pool: &SqlitePool,
-    now: DateTime<Utc>,
-) -> Result<AutoFinalizeReport> {
-    let sweep = proposals::auto_finalize_unconfirmed_proposals(pool, now).await?;
-    Ok(AutoFinalizeReport {
-        candidates_examined: sweep.candidates_examined,
-        finalized: sweep.finalized,
     })
 }
 
@@ -1570,7 +1508,6 @@ async fn run_revisor_jaccard(
                                 "loser_fact_id": facts[old_idx].fact_id.as_str(),
                                 "jaccard": score,
                                 "recipient_id": recipient,
-                                "revert_deadline": receipt.revert_deadline.to_rfc3339(),
                                 "dashboard_path": receipt_dashboard_path(&receipt.proposal_id),
                             }),
                         )
@@ -2247,7 +2184,6 @@ async fn run_auto_promote(
                             "target_page": recommended_target,
                             "moved_facts": fact_ids.iter().map(FactId::as_str).collect::<Vec<_>>(),
                             "recipient_id": recipient,
-                            "revert_deadline": receipt.revert_deadline.to_rfc3339(),
                             "dashboard_path": receipt_dashboard_path(&receipt.proposal_id),
                         }),
                     )
@@ -2554,12 +2490,10 @@ fn wiki_relative_page(d: &wiki::DiscoveredWiki, source_path: &str) -> Option<Str
         .map(|p| p.to_string_lossy().replace('\\', "/"))
 }
 
-/// Relative dashboard path for the undo surface of one applied
-/// structural receipt: the open-in-chat bridge primes the chat with a
-/// modify/undo summary of that receipt. Relative on purpose — the
-/// consumer prepends whatever base URL it knows the operator serves
-/// the dashboard from (same contract as
-/// [`proposals::PENDING_CONFIRMS_DASHBOARD_PATH`]).
+/// Relative dashboard path where one applied structural receipt can be
+/// read: the open-in-chat bridge primes the chat with a summary of that
+/// receipt. Relative on purpose — the consumer prepends whatever base
+/// URL it knows the operator serves the dashboard from.
 fn receipt_dashboard_path(proposal_id: &str) -> String {
     format!("/dashboard/proposals/{proposal_id}/open-in-chat")
 }
@@ -2847,7 +2781,6 @@ async fn run_page_grouping_for_wiki(
                         "target_wiki_id": receipt.spec.get("target_wiki_id"),
                         "new_wiki_id": receipt.spec.get("new_wiki_id"),
                         "recipient_id": recipient,
-                        "revert_deadline": receipt.revert_deadline.to_rfc3339(),
                         "dashboard_path": receipt_dashboard_path(&receipt.proposal_id),
                     }),
                 )
@@ -3151,9 +3084,8 @@ fn merge_candidates(
 }
 
 /// Whether a page-merge receipt already covers this pair (either
-/// orientation). An `applied` row means the merge is done or inside its
-/// revert window; a `reverted` row is the **operator's standing veto** —
-/// either way the pair is not re-judged.
+/// orientation). A receipt means the pair was judged once; it is not
+/// re-judged.
 ///
 /// **Matched as whole JSON values, with the wiki, in one orientation or the
 /// other.** The predicate used to be two unanchored `LIKE '%<page>%'` over
@@ -3263,10 +3195,10 @@ fn merge_prompt(
 /// **act-first** via [`promote::apply_page_merge_direct`] — every husk fact
 /// onto the survivor (re-homing its `wiki_id` when the pair crossed the
 /// line), husk file deleted, persisted plan re-homed — with a
-/// born-applied receipt (revert window) and a `structure_applied` notice
+/// born-applied receipt and a `structure_applied` notice
 /// pointing at the dashboard. Capped by [`RemPolicy::page_merge_cap`]
 /// confirmation calls per cycle; a pair with any prior page-merge receipt
-/// (including a reverted one — the operator's veto) is never re-judged.
+/// is never re-judged.
 #[allow(
     clippy::too_many_lines,
     reason = "linear per-pair pipeline (nominate → confirm → execute); splitting hides the order, as in run_auto_promote"
@@ -3463,7 +3395,6 @@ async fn run_page_merge(
                         "target_wiki_id": survivor.wiki_id,
                         "moved_facts": fact_ids.iter().map(FactId::as_str).collect::<Vec<_>>(),
                         "recipient_id": recipient,
-                        "revert_deadline": receipt.revert_deadline.to_rfc3339(),
                         "dashboard_path": receipt_dashboard_path(&receipt.proposal_id),
                     }),
                 )
@@ -3593,7 +3524,7 @@ fn completion_cases<'a>(
 /// a semantic gate), a dedicated LLM call decides what the evidence
 /// actually completed, and the confirmed closures land **act-first**
 /// with the same `validity_close` receipt + `structure_applied` notice
-/// the ingest half emits — the dashboard stays the one undo surface.
+/// the ingest half emits.
 async fn run_completion_sweep(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -3626,7 +3557,7 @@ async fn run_completion_sweep(
     // candidates before the confirmer sees them — otherwise the same fact
     // is closed two or three times in one cycle, burning LLM calls and
     // (because `close_validity` has no re-close guard) corrupting the
-    // revert snapshot of every receipt after the first.
+    // prior-state snapshot of every receipt after the first.
     let mut closed_this_cycle: HashSet<String> = HashSet::new();
     for case in cases {
         let candidates: Vec<&FactIndexRow> = case
@@ -3859,7 +3790,6 @@ async fn judge_completion_case(
             "variant": "validity_close",
             "closed_facts": applied.iter().map(|c| c.fact_id.as_str()).collect::<Vec<_>>(),
             "recipient_id": recipient,
-            "revert_deadline": receipt.revert_deadline.to_rfc3339(),
             "dashboard_path": receipt_dashboard_path(&receipt.proposal_id),
         }),
     )
@@ -4060,7 +3990,7 @@ fn refile_wiki_line(view: &RefileWikiView<'_>) -> String {
 /// decides whether (and where) each really belongs. A confirmed move
 /// lands **act-first** via [`promote::apply_fact_refile_direct`] with the
 /// same born-applied receipt + `structure_applied` notice the other REM
-/// act-first sub-jobs emit — the dashboard is the one undo surface. Smart
+/// act-first sub-jobs emit. Smart
 /// wikis are skipped as **both** source and destination: the smart-family
 /// is the consumer's, and refiling into/out of it would corrupt the
 /// ownership boundary (smart rows carry projected wiki-level ACL).
@@ -4340,7 +4270,6 @@ async fn judge_refile_case(
             "dest_wiki_id": dest_view.d.meta.wiki_id.as_str(),
             "dest_page": dest_page,
             "recipient_id": recipient,
-            "revert_deadline": applied.revert_deadline.to_rfc3339(),
             "dashboard_path": receipt_dashboard_path(&applied.proposal_id),
         }),
     )
@@ -4731,7 +4660,6 @@ async fn judge_contradiction_case(
             "variant": "validity_close",
             "closed_facts": applied.iter().map(|c| c.fact_id.as_str()).collect::<Vec<_>>(),
             "recipient_id": recipient,
-            "revert_deadline": receipt.revert_deadline.to_rfc3339(),
             "dashboard_path": receipt_dashboard_path(&receipt.proposal_id),
         }),
     )
@@ -5061,7 +4989,6 @@ async fn repair_one_miss(
             "dest_page": wiki::NOTES_FILENAME,
             "missed_query": miss.restated_text,
             "recipient_id": recipient,
-            "revert_deadline": applied.revert_deadline.to_rfc3339(),
             "dashboard_path": receipt_dashboard_path(&applied.proposal_id),
         }),
     )
@@ -5369,17 +5296,14 @@ async fn run_provenance_hygiene(
 // ---------- Husk-page GC sub-job ----------
 
 /// Remove husk page FILES: plan-absent, non-reserved pages whose fact
-/// rows are ALL tombstoned or superseded past the receipts' revert
-/// window ([`proposals::REVERT_WINDOW`]).
+/// rows are ALL tombstoned or superseded.
 ///
 /// The compiler's orphan sweep (`sweep_orphan_page_files`, every
 /// compile) already drops a plan-absent file with **no** non-tombstoned
-/// rows; it must keep a file while a superseded row points at it,
-/// because that row's on-disk marker may still serve a supersede
-/// revert. Once the window is past nothing can revert onto the page —
-/// the file is a husk (a supersede's leftover obituary page, a
-/// placeholder whose only fact fell): this sweep removes it and settles
-/// the retired rows' stale offsets. Inbound links degrade to literal
+/// rows; it keeps a file while a superseded row still points at it. The
+/// file is a husk (a supersede's leftover obituary page, a placeholder
+/// whose only fact fell): this sweep removes it and settles the retired
+/// rows' stale offsets. Inbound links degrade to literal
 /// text at render (the link grammar's dead-rail posture — never a
 /// broken link) and the compile feed's dead-ref vetting keeps prose
 /// clean, so no link rewriter is needed.
@@ -5396,7 +5320,6 @@ async fn run_husk_gc(
     pool: &SqlitePool,
     tree: &WikiTree,
     cycle_id: &str,
-    now: DateTime<Utc>,
     policy: &RemPolicy,
     smart_wiki_index: &SmartWikiIndex,
 ) -> Result<HuskGcReport> {
@@ -5421,7 +5344,6 @@ async fn run_husk_gc(
             .or_default()
             .insert(page.page_path.as_str());
     }
-    let horizon = (now - proposals::REVERT_WINDOW).to_rfc3339();
 
     // Candidates: every plan-absent, non-reserved page file of every
     // non-smart wiki, in deterministic (wiki, page) order.
@@ -5450,11 +5372,11 @@ async fn run_husk_gc(
             }
             let source_path = wiki::workdir_relative_source_path(tree.workdir(), &entry.path());
             report.pages_examined += 1;
-            match fact_index::count_husk_blocking_rows(pool, &source_path, &horizon).await {
+            match fact_index::count_husk_blocking_rows(pool, &source_path).await {
                 Ok(0) => {
                     removable.push((wiki_id.to_owned(), source_path, entry.path()));
                 },
-                Ok(_) => {}, // an active row or a revertible marker keeps the file
+                Ok(_) => {}, // an active row keeps the file
                 Err(e) => report.errors.push(format!("husk count {source_path}: {e}")),
             }
         }
@@ -5484,7 +5406,7 @@ async fn run_husk_gc(
         tracing::info!(
             wiki_id,
             source_path,
-            "rem husk-gc: husk page removed (plan-absent, all rows past any revert)"
+            "rem husk-gc: husk page removed (plan-absent, no active row left)"
         );
         report.removed.push(source_path.clone());
     }
@@ -6815,23 +6737,23 @@ mod tests {
             "a genuine paragraph_to_file receipt must veto its own source page"
         );
 
-        // A reverted receipt must not veto; a pending one (in flight) must.
+        // An expired receipt must not veto; a pending one (in flight) must.
         let g = FactId::parse("018f1234-5678-7abc-9def-000000000002").unwrap();
         insert_wiki_promote_proposal(
             &pool,
-            "p-sub-reverted",
+            "p-sub-expired",
             "paragraph_to_file",
             "hermes1",
             "trio.md",
             &[g.as_str()],
-            "reverted",
+            "expired",
         )
         .await;
         assert!(
             !already_promoted_for(&pool, &g, "hermes1", "trio.md")
                 .await
                 .unwrap(),
-            "a reverted receipt must not veto"
+            "an expired receipt must not veto"
         );
         insert_wiki_promote_proposal(
             &pool,
@@ -6910,20 +6832,17 @@ mod tests {
                 .unwrap();
         assert!(superseded_at.is_some(), "the merge landed in-cycle");
         assert_eq!(superseded_by.as_deref(), Some(new_id.as_str()));
-        // The born-applied receipt carries the undo anchor + context shape.
+        // The born-applied receipt records what happened + the context shape.
         let proposal_id = &report.revisor.applied[0];
-        let (kind, status, context, revert_token): (String, String, String, Option<String>) =
-            sqlx::query_as(
-                "SELECT kind, status, context, revert_token FROM structure_proposals \
-                 WHERE proposal_id = ?",
-            )
-            .bind(proposal_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (kind, status, context): (String, String, String) = sqlx::query_as(
+            "SELECT kind, status, context FROM structure_proposals WHERE proposal_id = ?",
+        )
+        .bind(proposal_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(kind, "dedup_merge");
         assert_eq!(status, "applied", "born-applied receipt, no pending stage");
-        assert!(revert_token.is_some(), "revert window is open");
         let ctx: serde_json::Value = serde_json::from_str(&context).unwrap();
         assert_eq!(
             ctx.get("winner_fact_id").and_then(|v| v.as_str()),
@@ -7322,16 +7241,14 @@ mod tests {
         let row = fact_index::find_by_id(&pool, &f2).await.unwrap().unwrap();
         assert_eq!(row.source_path, "wikis/alice/viaggi.md");
 
-        // Born-applied receipt with an undo token (the dashboard's revert).
-        let (status, token): (String, Option<String>) = sqlx::query_as(
-            "SELECT status, revert_token FROM structure_proposals WHERE proposal_id = ?",
-        )
-        .bind(&report.applied[0])
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        // Born-applied receipt: a record of the merge.
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM structure_proposals WHERE proposal_id = ?")
+                .bind(&report.applied[0])
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(status, "applied");
-        assert!(token.is_some(), "undo token minted");
 
         // The structure_applied notice carries the merge for the dashboard.
         let n: i64 = sqlx::query_scalar(
@@ -7349,7 +7266,7 @@ mod tests {
         assert_eq!(plan.pages["viaggi"].primary_facts.len(), 3);
         assert!(plan.force_dirty.contains(&"viaggi".to_owned()));
 
-        // The pair is now judged: also the standing veto after a revert.
+        // The pair is now judged, so it is never re-judged.
         assert!(
             merge_already_judged(&pool, "alice", "viaggi.md", "alice", "viaggi_parigi.md")
                 .await
@@ -7752,20 +7669,17 @@ mod tests {
         assert_eq!(report.auto_promote.candidates_promoted, 1);
         assert_eq!(report.auto_promote.applied.len(), 1);
         let proposal_id = &report.auto_promote.applied[0];
-        // Act-first: the receipt is born `applied` with an undo token —
-        // there is no `pending` stage and no approval step.
-        let (kind, status, context, token): (String, String, String, Option<String>) =
-            sqlx::query_as(
-                "SELECT kind, status, context, revert_token FROM structure_proposals \
-                 WHERE proposal_id = ?",
-            )
-            .bind(proposal_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        // Act-first: the receipt is born `applied` — there is no `pending`
+        // stage and no approval step.
+        let (kind, status, context): (String, String, String) = sqlx::query_as(
+            "SELECT kind, status, context FROM structure_proposals WHERE proposal_id = ?",
+        )
+        .bind(proposal_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(kind, "wiki_promote");
         assert_eq!(status, "applied");
-        assert!(token.is_some(), "born-applied receipt must carry a token");
         let ctx: serde_json::Value = serde_json::from_str(&context).unwrap();
         assert_eq!(ctx["variant"], "paragraph_to_file");
         assert_eq!(ctx["source_wiki_id"], "alice");
@@ -7790,7 +7704,7 @@ mod tests {
         assert!(target.contains(&format!("f={}", facts[0])), "{target}");
 
         // Exactly one notice, naming the affected user, the moved facts
-        // and the undo path.
+        // and the dashboard path.
         let payloads: Vec<(String,)> =
             sqlx::query_as("SELECT payload FROM wiki_events WHERE kind = 'structure_applied'")
                 .fetch_all(&pool)
@@ -8529,21 +8443,19 @@ mod tests {
                 .await
                 .unwrap();
         assert!(superseded_at.is_some());
-        // The sweep lands the row on `applied_pending_confirm`
-        // with `apply_mode='auto'` and a `confirm_deadline`, and emits
-        // a `wiki_events.kind='auto_applied'` row for the consumer.
-        let (status, apply_mode, confirm_deadline): (String, Option<String>, Option<String>) =
-            sqlx::query_as(
-                "SELECT status, apply_mode, confirm_deadline
-                       FROM structure_proposals WHERE proposal_id = ?",
-            )
-            .bind(&proposal_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(status, "applied_pending_confirm");
+        // The sweep lands the row straight on `applied` with
+        // `apply_mode='auto'` — there is no confirmation to wait for —
+        // and emits a `wiki_events.kind='auto_applied'` row for the
+        // consumer.
+        let (status, apply_mode): (String, Option<String>) = sqlx::query_as(
+            "SELECT status, apply_mode FROM structure_proposals WHERE proposal_id = ?",
+        )
+        .bind(&proposal_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(status, "applied");
         assert_eq!(apply_mode.as_deref(), Some("auto"));
-        assert!(confirm_deadline.is_some());
         let event_kinds: Vec<String> =
             sqlx::query_scalar("SELECT kind FROM wiki_events ORDER BY id")
                 .fetch_all(&pool)
@@ -8552,120 +8464,6 @@ mod tests {
         assert!(
             event_kinds.iter().any(|k| k == "auto_applied"),
             "expected an auto_applied wiki_events row, got {event_kinds:?}",
-        );
-        drop(dir);
-    }
-
-    #[tokio::test]
-    async fn auto_finalize_sweep_locks_dedup_merge_past_confirm_deadline() {
-        // Build a row in `applied_pending_confirm` end-to-end through
-        // the auto-apply sweep, back-date `confirm_deadline`, then run
-        // the cycle again and assert the auto-revert sweep unwinds the
-        // dedup_merge (loser is no longer superseded) and emits the
-        // wiki_events row for the consumer.
-        let (dir, mut tree, pool) = setup_workdir().await;
-        write_wiki(&tree, "alice", "Alice", "wiki-user");
-        tree = WikiTree::open(dir.path()).unwrap();
-        let loser = plant_fact(&tree, &pool, "alice", "Alice has a cat", "alice").await;
-        let winner = plant_fact(&tree, &pool, "alice", "Alice owns a cat", "alice").await;
-        let proposal_id = crate::dedup::emit_dedup_merge(
-            &pool,
-            &winner,
-            &loser,
-            &crate::dedup::DedupMergeHints::default(),
-            None,
-        )
-        .await
-        .unwrap();
-        sqlx::query("UPDATE structure_proposals SET timeout_at = ? WHERE proposal_id = ?")
-            .bind((chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339())
-            .bind(&proposal_id)
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-
-        // Cycle 1: auto-apply lands the row on applied_pending_confirm.
-        run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&rev_llm),
-            &RemPolicy::default(),
-        )
-        .await
-        .unwrap();
-        // Back-date the freshly-set confirm_deadline.
-        sqlx::query("UPDATE structure_proposals SET confirm_deadline = ? WHERE proposal_id = ?")
-            .bind((chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339())
-            .bind(&proposal_id)
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        // Cycle 2: auto-finalize sweep flips silently to applied.
-        let report = run_cycle(
-            &pool,
-            &tree,
-            fake_embedder(),
-            &test_llms(&rev_llm),
-            &RemPolicy::default(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(report.auto_finalize.candidates_examined, 1);
-        assert_eq!(report.auto_finalize.finalized.len(), 1);
-        assert_eq!(report.auto_finalize.finalized[0], proposal_id);
-
-        // Contract: the kind handler is NOT re-invoked on finalize,
-        // so the loser stays superseded (the auto-apply did the work
-        // and silence = consent means we keep it).
-        let (superseded_at,): (Option<String>,) =
-            sqlx::query_as("SELECT superseded_at FROM fact_index WHERE fact_id = ?")
-                .bind(loser.as_str())
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert!(
-            superseded_at.is_some(),
-            "loser should stay superseded — silence = consent"
-        );
-
-        let (status, apply_mode, revert_token, triggered_by): (
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        ) = sqlx::query_as(
-            "SELECT status, apply_mode, revert_token, revert_triggered_by
-                   FROM structure_proposals WHERE proposal_id = ?",
-        )
-        .bind(&proposal_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(status, "applied", "silence finalizes to applied");
-        assert_eq!(apply_mode.as_deref(), Some("auto"), "apply_mode preserved");
-        assert!(
-            revert_token.is_none(),
-            "no revert_token minted on silent finalize"
-        );
-        assert!(
-            triggered_by.is_none(),
-            "finalize is not a revert, no triggered_by stamped"
-        );
-
-        // Only the `auto_applied` event from cycle 1 — finalize emits nothing.
-        let event_kinds: Vec<String> =
-            sqlx::query_scalar("SELECT kind FROM wiki_events ORDER BY id")
-                .fetch_all(&pool)
-                .await
-                .unwrap();
-        assert_eq!(
-            event_kinds,
-            vec!["auto_applied".to_owned()],
-            "only auto_applied from cycle 1; finalize sweep emits nothing",
         );
         drop(dir);
     }
@@ -9409,8 +9207,9 @@ mod tests {
     /// evidence facts can both nominate the same open item. The intra-cycle
     /// guard closes it ONCE: the second evidence finds the item already
     /// closed this cycle, drops it before the confirmer, and emits no
-    /// redundant receipt — which also keeps the single receipt's revert
-    /// snapshot honest (`close_validity` has no re-close guard of its own).
+    /// redundant receipt — which also keeps the single receipt's
+    /// prior-state snapshot honest (`close_validity` has no re-close guard
+    /// of its own).
     #[tokio::test]
     async fn completion_sweep_closes_a_shared_item_only_once_per_cycle() {
         let (dir, tree, pool) = setup_workdir().await;
@@ -10629,7 +10428,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .expect("receipt row");
-        assert_eq!(status, "applied", "born-applied receipt with revert window");
+        assert_eq!(status, "applied", "born-applied receipt");
         drop(dir);
     }
 
@@ -11573,119 +11372,15 @@ mod tests {
         drop(dir);
     }
 
-    #[tokio::test]
-    async fn page_merge_crosses_the_family_line_and_reverts() {
-        let (dir, mut tree, pool) = setup_workdir().await;
-        write_wiki(&tree, "famiglia", "Famiglia", "wiki-group");
-        write_sub_wiki(&tree, "famiglia", "bruno", "famiglia-bruno", "alice");
-        tree = WikiTree::open(dir.path()).unwrap();
-        // The dossier told twice: a parent-side page and the sub-wiki
-        // detail page. The confirmer picks the sub-wiki page as survivor.
-        let f1 = plant_fact_on_page(
-            &tree,
-            &pool,
-            "famiglia",
-            "dossier_clinico.md",
-            "gli esami del sangue mostrano anemia",
-            "alice",
-        )
-        .await;
-        let f2 = plant_fact_on_page(
-            &tree,
-            &pool,
-            "famiglia-bruno",
-            "dossier_clinico_bruno.md",
-            "il referto oculistico è pulito",
-            "alice",
-        )
-        .await;
-        save_leaf_plan(
-            &tree,
-            &pool,
-            &[
-                ("dossier_clinico", std::slice::from_ref(&f1)),
-                ("dossier_clinico_bruno", std::slice::from_ref(&f2)),
-            ],
-        )
-        .await;
-
-        let merge_llm = FakeLlmBackend::new(
-            "rev",
-            "{\"merge\": true, \"survivor\": \"dossier_clinico_bruno\", \"reason\": \"same dossier\"}",
-        );
-        let index = load_smart_wiki_index(&tree).expect("index");
-        let report = run_page_merge(
-            &pool,
-            &tree,
-            &merge_llm,
-            "cycle-fam",
-            &RemPolicy::default(),
-            &index,
-        )
-        .await
-        .expect("merge sub-job");
-        assert_eq!(report.applied.len(), 1, "errors: {:?}", report.errors);
-
-        // The husk (parent side) is gone; the moved row re-homed its
-        // wiki_id INTO the sub-wiki (move_to_wiki, not move_region).
-        assert!(
-            !tree
-                .wikis_dir()
-                .join("famiglia/dossier_clinico.md")
-                .exists()
-        );
-        let moved = fact_index::find_by_id(&pool, &f1).await.unwrap().unwrap();
-        assert_eq!(moved.wiki_id, "famiglia-bruno");
-        assert_eq!(
-            moved.source_path,
-            "wikis/famiglia/bruno/dossier_clinico_bruno.md"
-        );
-        let survivor_body = std::fs::read_to_string(
-            tree.wikis_dir()
-                .join("famiglia/bruno/dossier_clinico_bruno.md"),
-        )
-        .unwrap();
-        assert!(survivor_body.contains(&format!("f={f1}")), "marker moved");
-
-        // The revert walks the whole road back: husk file recreated in
-        // the PARENT wiki, the row's wiki_id restored.
-        let spec: String =
-            sqlx::query_scalar("SELECT spec FROM structure_proposals WHERE proposal_id = ?")
-                .bind(&report.applied[0])
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        let spec: serde_json::Value = serde_json::from_str(&spec).unwrap();
-        promote::revert_wiki_promote(&pool, &tree, &spec)
-            .await
-            .expect("revert");
-        let back = fact_index::find_by_id(&pool, &f1).await.unwrap().unwrap();
-        assert_eq!(back.wiki_id, "famiglia", "wiki_id restored by the revert");
-        assert_eq!(back.source_path, "wikis/famiglia/dossier_clinico.md");
-        assert!(
-            tree.wikis_dir()
-                .join("famiglia/dossier_clinico.md")
-                .exists(),
-            "husk recreated"
-        );
-        drop(dir);
-    }
-
     // ---------- husk-page GC ----------
 
-    /// Supersede `fact_id` and back-date the retirement past the revert
-    /// window, so the on-disk marker no longer serves any revert.
-    async fn supersede_aged(pool: &SqlitePool, fact_id: &FactId) {
+    /// Supersede `fact_id`, so its region is a marker and no longer
+    /// content.
+    async fn supersede(pool: &SqlitePool, fact_id: &FactId) {
         let succ = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5dff").unwrap();
         fact_index::mark_superseded(pool, fact_id, &succ)
             .await
             .expect("supersede");
-        sqlx::query("UPDATE fact_index SET superseded_at = ? WHERE fact_id = ?")
-            .bind("2026-01-01T00:00:00+00:00")
-            .bind(fact_id.as_str())
-            .execute(pool)
-            .await
-            .expect("age");
     }
 
     /// A present plan none of the husk fixtures belong to. The sweep
@@ -11710,30 +11405,22 @@ mod tests {
     }
 
     /// The husk shape end-to-end: a plan-absent page whose only row is
-    /// superseded past the revert window is removed (offsets settled);
-    /// the per-cycle cap defers the rest in deterministic path order; a
-    /// missing plan is a no-op.
+    /// superseded is removed (offsets settled); the per-cycle cap defers
+    /// the rest in deterministic path order; a missing plan is a no-op.
     #[tokio::test]
-    async fn husk_gc_removes_plan_absent_pages_once_rows_are_past_any_revert() {
+    async fn husk_gc_removes_plan_absent_pages_whose_rows_are_all_superseded() {
         let (dir, tree, pool) = setup_workdir().await;
         write_wiki(&tree, "alice", "Alice", "wiki-user");
         let f1 = plant_fact_on_page(&tree, &pool, "alice", "vecchia.md", "husk uno", "alice").await;
         let f2 = plant_fact_on_page(&tree, &pool, "alice", "vetusta.md", "husk due", "alice").await;
-        supersede_aged(&pool, &f1).await;
-        supersede_aged(&pool, &f2).await;
+        supersede(&pool, &f1).await;
+        supersede(&pool, &f2).await;
         let index = load_smart_wiki_index(&tree).expect("index");
 
         // No plan on disk → no-op (unplanned ≠ husk).
-        let report = run_husk_gc(
-            &pool,
-            &tree,
-            "cycle-husk",
-            Utc::now(),
-            &RemPolicy::default(),
-            &index,
-        )
-        .await
-        .expect("sweep");
+        let report = run_husk_gc(&pool, &tree, "cycle-husk", &RemPolicy::default(), &index)
+            .await
+            .expect("sweep");
         assert_eq!(report.pages_examined, 0, "no plan → nothing examined");
         assert!(report.removed.is_empty());
 
@@ -11742,7 +11429,7 @@ mod tests {
             husk_gc_cap: 1,
             ..RemPolicy::default()
         };
-        let report = run_husk_gc(&pool, &tree, "cycle-husk", Utc::now(), &capped, &index)
+        let report = run_husk_gc(&pool, &tree, "cycle-husk", &capped, &index)
             .await
             .expect("sweep");
         assert_eq!(report.pages_examined, 2);
@@ -11761,31 +11448,25 @@ mod tests {
         assert!(row.region_start.is_none() && row.region_end.is_none());
 
         // Next cycle drains the backlog.
-        let report = run_husk_gc(
-            &pool,
-            &tree,
-            "cycle-husk-2",
-            Utc::now(),
-            &RemPolicy::default(),
-            &index,
-        )
-        .await
-        .expect("sweep");
+        let report = run_husk_gc(&pool, &tree, "cycle-husk-2", &RemPolicy::default(), &index)
+            .await
+            .expect("sweep");
         assert_eq!(report.removed, vec!["wikis/alice/vetusta.md".to_owned()]);
         assert!(!dir.path().join("wikis/alice/vetusta.md").exists());
         drop(dir);
     }
 
-    /// The DB-first guards: an active row keeps the file, a supersession
-    /// still inside the revert window keeps the file, plan membership
+    /// The DB-first guards: an active row keeps the file, plan membership
     /// keeps the file (never examined), and reserved names never qualify.
+    /// A supersession does NOT keep it: a superseded row leaves only a
+    /// marker, and a marker is not content.
     #[tokio::test]
-    async fn husk_gc_keeps_active_recent_planned_and_reserved_pages() {
+    async fn husk_gc_keeps_active_planned_and_reserved_pages_but_not_a_freshly_superseded_one() {
         let (dir, tree, pool) = setup_workdir().await;
         write_wiki(&tree, "alice", "Alice", "wiki-user");
         // Active fact → blocks.
         plant_fact_on_page(&tree, &pool, "alice", "attiva.md", "fatto vivo", "alice").await;
-        // Superseded NOW (inside the revert window) → blocks.
+        // Superseded a moment ago → does NOT block.
         let fresh =
             plant_fact_on_page(&tree, &pool, "alice", "fresca.md", "appena caduto", "alice").await;
         let succ = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5dfe").unwrap();
@@ -11827,22 +11508,23 @@ mod tests {
         crate::planner::save_plan(&tree, &plan).unwrap();
 
         let index = load_smart_wiki_index(&tree).expect("index");
-        let report = run_husk_gc(
-            &pool,
-            &tree,
-            "cycle-husk",
-            Utc::now(),
-            &RemPolicy::default(),
-            &index,
-        )
-        .await
-        .expect("sweep");
+        let report = run_husk_gc(&pool, &tree, "cycle-husk", &RemPolicy::default(), &index)
+            .await
+            .expect("sweep");
         assert_eq!(
             report.pages_examined, 2,
             "only the two plan-absent, non-reserved pages are checked"
         );
-        assert!(report.removed.is_empty(), "every guard held: {report:?}");
-        for page in ["attiva.md", "fresca.md", "pianificata.md", "@rules.md"] {
+        assert_eq!(
+            report.removed,
+            vec!["wikis/alice/fresca.md".to_owned()],
+            "the freshly superseded husk goes; nothing else does: {report:?}"
+        );
+        assert!(
+            !dir.path().join("wikis/alice/fresca.md").exists(),
+            "a superseded row leaves only a marker"
+        );
+        for page in ["attiva.md", "pianificata.md", "@rules.md"] {
             assert!(
                 dir.path().join("wikis/alice").join(page).exists(),
                 "{page} must survive"

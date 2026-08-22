@@ -47,7 +47,7 @@ Rules:
 - A recurring item is completed for THIS cycle, not retired forever — closing it is still correct (it reopens when restated). Never refuse a completion because the item might recur.
 - `valid_to` = WHEN it happened, when the evidence says so (resolve relative phrases against the evidence's capture date, shown below); otherwise null — the engine then uses the evidence's own date.
 - `target` must be a fact_id copied EXACTLY from the candidate list. Never invent one.
-- Closures here are act-first but revertable from the dashboard; still, when in doubt, leave the candidate open (empty list is a fine answer).
+- Closures here are act-first and final; when in doubt, leave the candidate open (empty list is a fine answer).
 {subject_note}
 
 EVIDENCE (captured {evidence_date}):

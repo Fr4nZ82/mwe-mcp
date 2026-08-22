@@ -19,7 +19,7 @@
 //!
 //! Only a repair that flips the target *and* regresses nothing earns a
 //! [`GateVerdict::passes`]; the caller then re-applies it on the real
-//! workdir (act-first, receipt + revert as usual). An empty or absent
+//! workdir (act-first, with a receipt as usual). An empty or absent
 //! gold set degrades the gate to the target check alone — the system
 //! stays honest about what it can prove, and grows the gold set from
 //! its own confirmed misses ([`append_gold_candidate`], the 15f loop).

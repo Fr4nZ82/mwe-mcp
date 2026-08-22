@@ -9,35 +9,27 @@
 //! - a fact the `deleter` **sent** is **tombstoned** (they destroy their own
 //!   contribution);
 //! - a fact sent by **someone else** is **evacuated intact** to its sender's
-//!   home wiki ([`crate::promote::apply_fact_refile_direct`], act-first +
-//!   born-applied revert receipt) — the `subject`/`allow`/`sender` ACL rides
-//!   along untouched, so reading (per-fragment) is unchanged wherever it lands;
+//!   home wiki — the `subject`/`allow`/`sender` ACL rides along untouched, so
+//!   reading (per-fragment) is unchanged wherever it lands;
 //! - when the sender is **gone** (no home wiki — a removed/never-enrolled
 //!   principal) the **subject** is the fallback (subject == deleter → tombstone,
 //!   else evacuate to the subject's wiki); when neither has a home wiki the fact
 //!   is tombstoned (nobody to hand it to).
 //!
-//! The whole deletion is recorded as **one** born-applied
-//! [`crate::bundle`] receipt (`kind = 'bundle'`) wrapping every tombstone +
-//! evacuation, so it reverts in block — the admin/deleter (or an admin) can
-//! undo it from the dashboard within the revert window. The emptied page husk
-//! is dropped by the planner GC on the next compile. Deleting a page is **admin
-//! authority** (structure is recall shape, not access — the verb layer gates
-//! it); the per-fragment sender axis still governs how each fact on the page is
-//! disposed. Smart wikis carry no per-fragment sender and are out of scope here
+//! The emptied page husk is dropped by the planner GC on the next compile.
+//! Deleting a page is **admin authority** (structure is recall shape, not
+//! access — the verb layer gates it); the per-fragment sender axis still
+//! governs how each fact on the page is disposed. Smart wikis carry no per-fragment sender and are out of scope here
 //! (their single proprietor decides — see
 //! smart-wikis.md); this primitive is for
 //! **standard** wikis.
 
 use std::collections::BTreeSet;
 
-use serde_json::json;
 use sqlx::SqlitePool;
 
-use crate::bundle::{BundleOp, BundleSpec};
 use crate::fact_index::{self, FactIndexError};
 use crate::promote::{self, DirectPromoteError};
-use crate::proposals::{self, EmitParams, ProposalsError, kind};
 use crate::types::{Principal, WikiId};
 use crate::wiki::{WikiError, WikiTree};
 
@@ -99,9 +91,6 @@ pub enum PageError {
     /// An evacuation (cross-wiki refile) failed.
     #[error(transparent)]
     Refile(#[from] DirectPromoteError),
-    /// Emitting the bundle receipt failed (the facts already moved on disk).
-    #[error(transparent)]
-    Receipt(#[from] ProposalsError),
     /// Resolving the owning group's member roster failed.
     #[error("page deletion db: {0}")]
     Db(#[from] sqlx::Error),
@@ -118,10 +107,6 @@ pub struct PageDeletionOutcome {
     pub facts_tombstoned: u64,
     /// Foreign-authored facts evacuated to their sender's (or subject's) wiki.
     pub facts_evacuated: u64,
-    /// The single born-applied `bundle` receipt wrapping every tombstone +
-    /// evacuation, for revert. `None` only when the page had no active facts
-    /// (a no-op deletion).
-    pub bundle_proposal_id: Option<String>,
 }
 
 /// How a page deletion disposes of each fact.
@@ -157,16 +142,13 @@ pub struct DeletionPolicy {
 
 /// Delete `page` of `wiki_id`, partitioning its facts by sender (module docs).
 ///
-/// Act-first: tombstones + evacuations apply immediately and are wrapped in
-/// **one** born-applied `bundle` receipt that reverts them in block. A page with
-/// no active facts is a no-op (no receipt). The admin/deleter (or an admin)
-/// keeps a dashboard undo within the revert window; `policy` may override the
-/// per-fact disposition (the admin `TombstoneAll` mode, see [`DeletionPolicy`]).
+/// Act-first: tombstones + evacuations apply immediately. A page with no
+/// active facts is a no-op. `policy` may override the per-fact disposition
+/// (the admin `TombstoneAll` mode, see [`DeletionPolicy`]).
 ///
 /// # Errors
 ///
-/// [`PageError`] on a wiki-resolution, index, refile, or bundle-receipt
-/// failure.
+/// [`PageError`] on a wiki-resolution, index, or refile failure.
 pub async fn delete_page_direct(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -181,8 +163,6 @@ pub async fn delete_page_direct(
     let source_path = crate::wiki::workdir_relative_source_path(tree.workdir(), &abs_page);
     let rows = fact_index::find_active_by_source_path(pool, &source_path).await?;
 
-    // Perform each op now, collecting its reversible record into one bundle.
-    let mut ops: Vec<BundleOp> = Vec::new();
     let mut out = PageDeletionOutcome::default();
     // The wikis this deletion pushed facts into, so their buffers can be
     // nominated for re-placement once — not once per fact.
@@ -207,13 +187,10 @@ pub async fn delete_page_direct(
         match action {
             Action::Tombstone => {
                 fact_index::mark_forgotten(pool, &row.fact_id, reason).await?;
-                ops.push(BundleOp::Tombstone {
-                    fact_id: row.fact_id.as_str().to_owned(),
-                });
                 out.facts_tombstoned += 1;
             },
             Action::Evacuate(dest) => {
-                let spec = promote::apply_fact_refile_collect(
+                promote::apply_fact_refile_collect(
                     pool,
                     tree,
                     &row.fact_id,
@@ -225,61 +202,13 @@ pub async fn delete_page_direct(
                 )
                 .await?;
                 evacuated_to.insert(dest.clone());
-                ops.push(BundleOp::Refile { spec });
                 out.facts_evacuated += 1;
             },
         }
     }
     nominate_buffers_for_reopen(tree, &evacuated_to);
 
-    // No active facts → nothing to wrap; the husk GC drops the empty page.
-    if ops.is_empty() {
-        return Ok(out);
-    }
-
-    // The single born-applied bundle receipt. Its `context` carries only the
-    // receipt-display fields; addressed to the deleter so they (and an admin)
-    // can undo it from the dashboard within the window. Deleting a page is
-    // admin authority (3·struct), so there is no member vote — the receipt's
-    // undo is the only post-deletion lever.
-    let bundle = BundleSpec { ops };
-    let context = json!({
-        "variant": "page_deletion",
-        "wiki_id": wiki_id.as_str(),
-        "page": page,
-    });
-    let deleter_bare = match deleter {
-        Principal::User(u) => Some(u.as_str()),
-        Principal::Group(_) => None,
-    };
-    let receipt = proposals::emit_applied_proposal(
-        pool,
-        EmitParams::new(
-            kind::BUNDLE,
-            context,
-            page_deletion_questions(page, bundle.len()),
-        )
-        .with_recipient(deleter_bare.map(|u| format!("user:{u}"))),
-        bundle.to_value().map_err(ProposalsError::Json)?,
-        deleter_bare,
-    )
-    .await?;
-    out.bundle_proposal_id = Some(receipt.proposal_id);
-
     Ok(out)
-}
-
-/// Display-only questionnaire stored on a page-deletion bundle receipt (the
-/// dashboard renders it; the revert is the one-click admin/deleter undo).
-fn page_deletion_questions(page: &str, n_ops: usize) -> serde_json::Value {
-    json!([{
-        "id": "page_deletion",
-        "text": format!("Deleted page `{page}` ({n_ops} facts repatriated or tombstoned)."),
-        "options": [
-            { "id": "keep", "recommended": true },
-            { "id": "undo" },
-        ],
-    }])
 }
 
 pub(crate) enum Action {

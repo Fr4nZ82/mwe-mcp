@@ -56,16 +56,16 @@ pub enum EventKind {
     DedupProposed,
     /// REM applied a structural change **directly** (paragraph→page
     /// split or page→sub-wiki emergence) and recorded a born-applied
-    /// undo receipt. This is the **notice**: the system never blocks on
-    /// approval for a structural edit — it acts and tells you. The
-    /// payload carries the receipt `proposal_id` (the undo anchor), the
-    /// `variant`, source → target, the `revert_deadline`, a
-    /// `dashboard_path` for the undo surface, and — crucially —
-    /// `recipient_id`, the **affected user** (subject/sender of the
-    /// changed wiki), so a multi-user consumer agent knows whom to
-    /// forward the notice to. The dashboard is the *undo* surface, not
-    /// the notification surface: the notice reaches the causing agent
-    /// here, over `events_poll`.
+    /// receipt. This is the **notice**: the system never blocks on
+    /// approval for a structural edit — it acts and tells you, and what
+    /// it did stands. The payload carries the receipt `proposal_id`, the
+    /// `variant`, source → target, a `dashboard_path` where the change
+    /// can be looked at, and — crucially — `recipient_id`, the
+    /// **affected user** (subject/sender of the changed wiki), so a
+    /// multi-user consumer agent knows whom to forward the notice to.
+    /// The dashboard is the *reading* surface, not the notification
+    /// surface: the notice reaches the causing agent here, over
+    /// `events_poll`.
     StructureApplied,
     /// REM's archive detector inserted a pending `archive_proposals`
     /// row (a page whose every active fact went stale). Unlike the
@@ -73,18 +73,13 @@ pub enum EventKind {
     /// lifecycle — the payload carries the `proposal_id`, `path`, and
     /// `reason` so a consumer can surface it.
     ArchiveProposed,
-    /// Auto-apply sweep moved a `pending` proposal to
-    /// `applied_pending_confirm`. Payload includes `proposal_id`,
-    /// `summary`, `confirm_deadline`, and `dashboard_path`, so the
-    /// consumer can prompt the user with "we did X — confirm or revert
-    /// within N days".
+    /// Auto-apply sweep applied a `pending` proposal whose 24 h window
+    /// elapsed without an answer, using the `recommended` answers.
+    /// Payload includes `proposal_id`, `summary`, and `dashboard_path`,
+    /// so the consumer can tell the user "we did X".
     ///
-    /// The `confirm_window` policy (silence =
-    /// consent) means there is no symmetric `AutoReverted` event: when
-    /// the `confirm_window` elapses without user action, the finalize
-    /// sweep flips the row silently to `applied` without emitting
-    /// anything — the user has already been notified at auto-apply
-    /// time and silence is now a valid form of consent.
+    /// Silence is consent: the change is applied, and applied is where
+    /// it stays.
     AutoApplied,
     /// A document-ingest job finished
     /// (document ingest).

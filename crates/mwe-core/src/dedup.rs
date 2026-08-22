@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Per-kind apply / revert logic for the `dedup_merge` structure
+//! Per-kind apply logic for the `dedup_merge` structure
 //! proposal kind.
 //!
 //! The chassis in [`crate::proposals`] dispatches here when a proposal
@@ -29,7 +29,7 @@
 //!
 //! The REM revisor applies **act-first** via
 //! [`apply_dedup_merge_direct`]: supersede now, born-applied receipt,
-//! `structure_applied` notice, dashboard revert — the same model as
+//! `structure_applied` notice — the same model as
 //! every other LLM-confirmed structural move. [`emit_dedup_merge`] (the
 //! `pending` + 24h auto-apply lifecycle) remains for emitters that
 //! genuinely want a review gate.
@@ -43,7 +43,7 @@ use sqlx::SqlitePool;
 use crate::embedder::Embedder;
 use crate::fact_index;
 use crate::promote::{DirectApplied, DirectPromoteError};
-use crate::proposals::{self, ApplyError, EmitParams, ProposalsError, RevertError, kind};
+use crate::proposals::{self, ApplyError, EmitParams, ProposalsError, kind};
 use crate::types::FactId;
 use crate::wiki::WikiTree;
 
@@ -63,7 +63,7 @@ struct DedupContext {
 }
 
 /// `spec` payload written to the proposal row on a successful apply.
-/// Read back by [`revert_dedup_merge`].
+/// The receipt's record of which fact absorbed which.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DedupSpec {
     /// Variant discriminator. Stable across schema evolution.
@@ -85,7 +85,7 @@ const VARIANT_TWO_WAY_MERGE: &str = "two_way_merge";
 ///    valid and must differ.
 /// 2. Validate the winner row is active (not superseded, not
 ///    tombstoned). Loser must be active too — refusing to apply when
-///    the loser is already in a supersede chain keeps the revert
+///    the loser is already in a supersede chain keeps the chain
 ///    semantics clean (the inverse can only re-activate what we put
 ///    down).
 /// 3. Call [`fact_index::mark_superseded`]. The marker on disk for the
@@ -194,54 +194,6 @@ pub(crate) async fn apply_dedup_merge(
     Ok(json!(spec))
 }
 
-// ---------- Revert ----------
-
-/// Revert a previously-applied `dedup_merge`: clear the supersede
-/// tombstone on the loser row so it becomes active again.
-///
-/// Refuses cleanly if the supersede chain has grown past our pair
-/// (`old → new → newer`): the conditional clear matches zero rows and
-/// we surface [`RevertError::HandlerData`]. The operator can resolve
-/// the chain manually in that rare case.
-///
-/// # Errors
-///
-/// All failure modes funnel into [`RevertError`].
-pub(crate) async fn revert_dedup_merge(
-    pool: &SqlitePool,
-    _tree: &WikiTree,
-    spec: &Value,
-) -> Result<(), RevertError> {
-    let spec: DedupSpec = serde_json::from_value(spec.clone())
-        .map_err(|e| RevertError::InvalidPayload(format!("spec is not a DedupSpec: {e}")))?;
-    if spec.variant != VARIANT_TWO_WAY_MERGE {
-        return Err(RevertError::InvalidPayload(format!(
-            "spec.variant {} is not {VARIANT_TWO_WAY_MERGE}",
-            spec.variant,
-        )));
-    }
-    let loser = FactId::parse(&spec.loser_fact_id)
-        .map_err(|e| RevertError::InvalidPayload(format!("spec.loser_fact_id invalid: {e}")))?;
-    let winner = FactId::parse(&spec.winner_fact_id)
-        .map_err(|e| RevertError::InvalidPayload(format!("spec.winner_fact_id invalid: {e}")))?;
-
-    let touched = fact_index::clear_supersede(pool, &loser, &winner)
-        .await
-        .map_err(|e| RevertError::HandlerIo(e.to_string()))?;
-    if touched == 0 {
-        return Err(RevertError::HandlerData(format!(
-            "loser {loser} is no longer superseded by {winner} — chain has moved on (or row was tombstoned). Resolve manually if you want to revert.",
-        )));
-    }
-
-    tracing::info!(
-        loser = %loser,
-        winner = %winner,
-        "dedup_merge: reverted",
-    );
-    Ok(())
-}
-
 // ---------- Emit ----------
 
 /// Build the canonical question array for a `dedup_merge` proposal.
@@ -326,17 +278,17 @@ fn dedup_context(winner: &FactId, loser: &FactId, hints: &DedupMergeHints) -> Va
 /// Apply a two-way merge **directly** (act-first).
 ///
 /// Runs the `dedup_merge` handler now — the loser is superseded by the
-/// winner — then records a **born-applied** receipt with an open revert
+/// winner — then records a **born-applied** receipt of the merge
 /// window: the same authority model as auto-promote, the REM page merge,
 /// and the ingest validity closures. No `pending` stage, no 24h
 /// auto-apply fuse; the caller emits the `structure_applied` notice and
-/// the dashboard is the undo surface, not an approval gate.
+/// the dashboard is where the operator reads what happened, not an approval gate.
 ///
 /// The direct path also owns the **disk half**: after the supersede
 /// lands, the loser's on-disk region is excised
 /// ([`crate::reindex::strip_fact_region`], best-effort — a failure never
 /// fails the merge; residue redacts fail-closed and the light-dream
-/// hygiene sweep picks it up). A later revert reactivates the loser as a
+/// hygiene sweep picks it up). The loser stays a
 /// clean pending render (NULL offsets): plan pages re-render it at the
 /// next compile; on `@rules.md` the behaviour-rules channel keeps serving
 /// it from the DB — only the page prose waits.
@@ -345,7 +297,7 @@ fn dedup_context(winner: &FactId, loser: &FactId, hints: &DedupMergeHints) -> Va
 ///
 /// [`DirectPromoteError::Apply`] when the handler refuses (nothing
 /// changed); [`DirectPromoteError::Receipt`] when the merge applied but
-/// the undo receipt could not be written.
+/// the receipt could not be written.
 pub async fn apply_dedup_merge_direct(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -376,7 +328,6 @@ pub async fn apply_dedup_merge_direct(
     .await?;
     Ok(DirectApplied {
         proposal_id: receipt.proposal_id,
-        revert_deadline: receipt.revert_deadline,
         spec,
     })
 }
@@ -658,62 +609,9 @@ mod tests {
         }
     }
 
-    /// Act-first: the merge lands immediately, the receipt is born
-    /// applied with an open revert window, and the standard chassis
-    /// revert path undoes it from the receipt's own spec.
-    #[tokio::test]
-    async fn direct_apply_supersedes_and_writes_a_born_applied_receipt() {
-        let (_dir, tree, pool) = setup().await;
-        let loser = capture_one(&tree, &pool, "Alice pesa 62").await;
-        let winner = capture_one(&tree, &pool, "Alice pesa adesso 62").await;
-
-        let receipt = apply_dedup_merge_direct(
-            &pool,
-            &tree,
-            embedder(),
-            &winner,
-            &loser,
-            &DedupMergeHints::default(),
-            Some("user:alice".to_owned()),
-        )
-        .await
-        .expect("direct apply");
-
-        let row = fact_index::find_by_id(&pool, &loser)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            row.superseded_by.as_ref().map(FactId::as_str),
-            Some(winner.as_str()),
-            "the supersede landed in-cycle"
-        );
-        let (status, recipient, token): (String, Option<String>, Option<String>) = sqlx::query_as(
-            "SELECT status, recipient_id, revert_token FROM structure_proposals \
-                 WHERE proposal_id = ?",
-        )
-        .bind(&receipt.proposal_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(status, "applied", "born applied — no pending stage");
-        assert_eq!(recipient.as_deref(), Some("user:alice"));
-        assert!(token.is_some(), "revert window open");
-
-        // The receipt's spec drives the standard revert.
-        revert_dedup_merge(&pool, &tree, &receipt.spec)
-            .await
-            .expect("revert");
-        let row = fact_index::find_by_id(&pool, &loser)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(row.superseded_at.is_none(), "revert reactivated the loser");
-    }
-
     /// The direct apply's disk half: the superseded loser's on-disk
     /// region is excised, the winner's stays, and the settled loser row
-    /// carries no offsets (a later revert reactivates it as a pending
+    /// carries no offsets (it stays a pending
     /// render).
     #[tokio::test]
     async fn direct_apply_strips_the_losers_bytes_from_disk() {
@@ -779,85 +677,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(row.superseded_at.is_some(), "the DB half landed");
-    }
-
-    #[tokio::test]
-    async fn apply_then_revert_round_trips() {
-        let (_dir, tree, pool) = setup().await;
-        let loser = capture_one(&tree, &pool, "Alice pesa 62").await;
-        let winner = capture_one(&tree, &pool, "Alice pesa adesso 62").await;
-
-        let ctx = json!({
-            "loser_fact_id": loser.as_str(),
-            "winner_fact_id": winner.as_str(),
-        });
-        let spec = apply_dedup_merge(&pool, &tree, &ctx, &json!({}))
-            .await
-            .expect("apply");
-
-        // Round-trip via revert.
-        revert_dedup_merge(&pool, &tree, &spec)
-            .await
-            .expect("revert");
-
-        let row = fact_index::find_by_id(&pool, &loser)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(row.superseded_at.is_none());
-        assert!(row.superseded_by.is_none());
-    }
-
-    #[tokio::test]
-    async fn revert_rejects_when_chain_moved_on() {
-        let (_dir, tree, pool) = setup().await;
-        let loser = capture_one(&tree, &pool, "First").await;
-        let winner = capture_one(&tree, &pool, "Second").await;
-        let newer = capture_one(&tree, &pool, "Third").await;
-
-        // Apply loser → winner.
-        let spec = apply_dedup_merge(
-            &pool,
-            &tree,
-            &json!({
-                "loser_fact_id": loser.as_str(),
-                "winner_fact_id": winner.as_str(),
-            }),
-            &json!({}),
-        )
-        .await
-        .expect("apply");
-
-        // Simulate the chain growing past our pair: re-activate loser and
-        // re-supersede it by `newer` outside of the chassis.
-        sqlx::query(
-            "UPDATE fact_index SET superseded_at = NULL, superseded_by = NULL WHERE fact_id = ?",
-        )
-        .bind(loser.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
-        fact_index::mark_superseded(&pool, &loser, &newer)
-            .await
-            .unwrap();
-
-        let err = revert_dedup_merge(&pool, &tree, &spec)
-            .await
-            .expect_err("must reject");
-        match err {
-            RevertError::HandlerData(msg) => assert!(msg.contains("chain has moved on"), "{msg}"),
-            other => panic!("unexpected: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn revert_rejects_wrong_variant() {
-        let (_dir, tree, pool) = setup().await;
-        let bogus = json!({"variant": "paragraph_to_file"});
-        let err = revert_dedup_merge(&pool, &tree, &bogus)
-            .await
-            .expect_err("must reject");
-        assert!(matches!(err, RevertError::InvalidPayload(_)));
     }
 
     // ---------- emit_dedup_merge ----------

@@ -43,7 +43,7 @@ pub mod reason {
 ///
 /// Returns the freshly minted `proposal_id`. The chassis is much
 /// thinner than `structure_proposals` — no questionnaire, no
-/// `applied_at`, no revert token — so the emitter is also thinner.
+/// `applied_at` — so the emitter is also thinner.
 ///
 /// # Errors
 ///

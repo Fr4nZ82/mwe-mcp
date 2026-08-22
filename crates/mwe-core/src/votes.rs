@@ -32,7 +32,7 @@
 //!
 //! Votes are **final** (one row per voter, [`VoteError::AlreadyVoted`] on a
 //! re-vote), reusing the `structure_proposal_votes` table. A vote-resolved
-//! forget is final — there is no revert lever; the only undo is re-stating the
+//! forget is final; the only way back is re-stating the
 //! fact.
 
 use std::sync::Arc;
@@ -43,9 +43,13 @@ use sqlx::SqlitePool;
 
 use crate::embedder::Embedder;
 use crate::fact_index::{self, FactIndexError};
-use crate::proposals::{self, EmitParams, REVERT_WINDOW, kind};
+use crate::proposals::{self, EmitParams, kind};
 use crate::types::{FactId, Principal};
 use crate::wiki::WikiTree;
+
+/// How long the eligible voters have to object to a `fact_forget`
+/// request before silence resolves it as consent.
+pub const VOTE_WINDOW: chrono::Duration = chrono::Duration::days(7);
 
 /// A cast vote's value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -326,8 +330,8 @@ pub enum ForgetRequest {
         fact_id: String,
         /// Eligible voter ids — the fact's audience minus the requester.
         eligible_voters: Vec<String>,
-        /// RFC 3339 voting deadline (`now + REVERT_WINDOW`): silence past it is
-        /// consent (the forget then applies).
+        /// RFC 3339 voting deadline, [`VOTE_WINDOW`] from now: silence past it
+        /// is consent (the forget then applies).
         deadline: String,
     },
     /// The requester was the fact's **only** reader (the audience minus them is
@@ -387,7 +391,7 @@ pub enum ForgetRequestError {
 /// eligible audience ([`crate::acl::audience`]) minus the requester; if that is
 /// **empty** (the requester is the fact's only reader) the forget applies
 /// immediately. Otherwise a **pending** `fact_forget` proposal is emitted with a
-/// [`REVERT_WINDOW`] voting deadline, and the proposal id + eligible set +
+/// [`VOTE_WINDOW`] voting deadline, and the proposal id + eligible set +
 /// deadline are returned.
 ///
 /// # Errors
@@ -467,12 +471,12 @@ pub async fn open_forget_request(
     let proposal_id = proposals::emit_proposal(
         pool,
         EmitParams::new(kind::FACT_FORGET, context, forget_questions(fact_id))
-            .with_timeout(REVERT_WINDOW)
+            .with_timeout(VOTE_WINDOW)
             .with_recipient(Some(format!("user:{requester}"))),
     )
     .await?;
 
-    let deadline = (chrono::Utc::now() + REVERT_WINDOW).to_rfc3339();
+    let deadline = (chrono::Utc::now() + VOTE_WINDOW).to_rfc3339();
     Ok(ForgetRequest::VoteOpened {
         proposal_id,
         fact_id: fact_id.as_str().to_owned(),

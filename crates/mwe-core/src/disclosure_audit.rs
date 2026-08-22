@@ -11,9 +11,7 @@
 //! computed by [`crate::acl::widens`]). The table is durable engine state,
 //! not a cache — it is the change LOG of a DB-authoritative column.
 //!
-//! Append-only: a row is never updated except to stamp `reverted_at` when
-//! the born-applied receipt's revert restores the prior ACL
-//! ([`mark_reverted`]).
+//! Append-only: a row is written once and never updated.
 
 use sqlx::SqlitePool;
 
@@ -27,8 +25,8 @@ use crate::types::{FactId, Principal};
 /// is the raw session sender that made the change; `widening` is the
 /// disclosure signal from [`crate::acl::widens`].
 ///
-/// Returns the freshly minted `audit_id` so the caller can later
-/// [`mark_reverted`] it.
+/// Returns the freshly minted `audit_id` so the caller can thread it into
+/// the change's receipt.
 ///
 /// # Errors
 ///
@@ -75,25 +73,6 @@ pub async fn record(
     Ok(row.0)
 }
 
-/// Stamp `reverted_at` on an audit row — the revert half of the verb.
-///
-/// Idempotent: re-marking an already-reverted row overwrites the timestamp
-/// (the revert is itself idempotent). Returns the number of rows touched
-/// (0 when `audit_id` is unknown).
-///
-/// # Errors
-///
-/// As [`sqlx::Error`].
-pub async fn mark_reverted(pool: &SqlitePool, audit_id: i64) -> Result<u64, sqlx::Error> {
-    let now = chrono::Utc::now().to_rfc3339();
-    let res = sqlx::query("UPDATE disclosure_audit SET reverted_at = ? WHERE audit_id = ?")
-        .bind(&now)
-        .bind(audit_id)
-        .execute(pool)
-        .await?;
-    Ok(res.rows_affected())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,7 +92,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn record_then_mark_reverted_round_trips() {
+    async fn record_stamps_an_immutable_audit_row() {
         let pool = make_pool().await;
         let fact_id = FactId::parse("018f1234-5678-7abc-9def-0123456789ab").unwrap();
         let prev = PrevAcl {
@@ -137,28 +116,16 @@ mod tests {
         .expect("record");
         assert!(id > 0);
 
-        let (stored_id, widening, reverted): (i64, i64, Option<String>) = sqlx::query_as(
-            "SELECT audit_id, widening, reverted_at FROM disclosure_audit WHERE audit_id = ?",
-        )
-        .bind(id)
-        .fetch_one(&pool)
-        .await
-        .expect("row");
+        let (stored_id, widening): (i64, i64) =
+            sqlx::query_as("SELECT audit_id, widening FROM disclosure_audit WHERE audit_id = ?")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .expect("row");
         assert_eq!(
             stored_id, id,
             "returned audit_id round-trips to the stored row"
         );
         assert_eq!(widening, 1);
-        assert!(reverted.is_none());
-
-        let touched = mark_reverted(&pool, id).await.expect("mark");
-        assert_eq!(touched, 1);
-        let reverted: Option<String> =
-            sqlx::query_scalar("SELECT reverted_at FROM disclosure_audit WHERE audit_id = ?")
-                .bind(id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert!(reverted.is_some(), "reverted_at stamped");
     }
 }

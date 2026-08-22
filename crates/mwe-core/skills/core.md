@@ -1,6 +1,6 @@
 ---
 name: core
-version: 1.4.0
+version: 1.5.0
 description: "Always-loaded mwe-mcp skill: cardinal rule, identity model (3-claim JWT), bootstrap dispatcher, the exact project_id recipe + the first_connect datum smart_bootstrap volunteers, auto recall+capture and the 3-way route (your operational wiki / a project wiki / the user's standard memory), skill catalog index, token lifecycle. Every consumer (smart or standard) loads this first."
 depends_on: []
 applies_to:
@@ -178,7 +178,7 @@ skills.
 | `smart-consumer` | `consumer_class=smart` + `.mwe/state.json` in cwd | authoritative `wiki_admin_*` management of a per-project companion-wiki |
 | `smart-codebase` | `smart-consumer` + software project | concrete folder layout, module / decision / change-log page conventions |
 | `smart-onboarding` | `consumer_class=smart` + `first_connect.hint` (or the user asks) | **first connect, once per project**: the intro, the faithful import, the shape report, the page-repair proposal |
-| `standard-conversational` | `consumer_class=standard` (or absent) | `wiki_ingest_message` loop, `events_poll`, `pending_attention`, structural notices + undo routing |
+| `standard-conversational` | `consumer_class=standard` (or absent) | `wiki_ingest_message` loop, `events_poll`, structural notices |
 
 **If a skill names a tool you cannot see**, the server is newer than your
 session: a consumer's tool list is a snapshot taken at connect, so a tool

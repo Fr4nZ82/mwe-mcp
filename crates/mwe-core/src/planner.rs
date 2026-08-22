@@ -44,7 +44,7 @@
 //!   subject area, via the REM promote machinery — so a page never becomes a
 //!   wiki and a wiki is never born holding one page. **Emergent-page
 //!   creation leaves a receipt** in `structure_proposals`
-//!   ([`crate::proposals::kind::PAGE_CREATE`], born-applied and revertable —
+//!   ([`crate::proposals::kind::PAGE_CREATE`], born-applied —
 //!   see [`record_minted_pages`]). Until 2026-08-04 this paragraph asserted
 //!   the same thing while no page-level kind existed at all: the only kinds
 //!   were about wikis, and twelve container pages were minted over three weeks
@@ -3133,7 +3133,7 @@ pub async fn build_wiki_plan(
     }
     // Every page the machine invented this cycle gets a receipt the operator
     // can read. Not a gate: the nightly pass cannot stop and wait for an
-    // answer, so the record is **born-applied** and revertable — the same
+    // answer, so the record is **born-applied** — the same
     // act-first-with-a-receipt rung the refile sweep uses.
     //
     // This closes a promise the module doc had been making since the cutover

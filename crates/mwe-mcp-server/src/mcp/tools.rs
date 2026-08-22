@@ -31,7 +31,6 @@ use mwe_core::ingest::{
 };
 use mwe_core::jwt::{self, TokenClaims};
 use mwe_core::lint::{self, Check, LintScope};
-use mwe_core::proposals;
 use mwe_core::recall::{self, SenderContext};
 use mwe_core::types::WikiId;
 use serde::Deserialize;
@@ -510,7 +509,7 @@ pub(super) async fn call_wiki_ingest_message(
     .await
     .map_err(|e| map_ingest_err(&e))?;
 
-    let (pending_attention, pending_votes) = governance_blocks(state, identity).await?;
+    let pending_votes = governance_blocks(state, identity).await?;
 
     let mut payload = json!({
         "intent_classified": resp.intent.as_str(),
@@ -528,7 +527,6 @@ pub(super) async fn call_wiki_ingest_message(
         "took_ms": resp.took_ms,
     });
     let extra_blocks = [
-        ("pending_attention", pending_attention),
         ("pending_votes", pending_votes),
         ("document_promoted", document_promoted),
     ];
@@ -587,62 +585,24 @@ fn build_navigator(state: &McpState) -> Option<Box<dyn mwe_core::llm::LlmBackend
 /// consumer composes the user-visible URL via [`call_dashboard_link`]
 /// with `intent: "home"` and tells the user to navigate to this path,
 /// or surfaces it raw on already-authenticated dashboards.
-const PENDING_ATTENTION_DASHBOARD_PATH: &str = "/dashboard/proposals";
+const PENDING_VOTES_DASHBOARD_PATH: &str = "/dashboard/proposals";
 
-/// Build the `pending_attention` block surfaced in the
-/// [`call_wiki_ingest_message`] response when at least one
-/// `structure_proposals` row is `pending` or
-/// `applied_pending_confirm`. Returns `None` when the count is
-/// zero — we keep the default wire shape quiet so the consumer agent
-/// only sees the block when there is something to warn about.
+/// The governance block appended to an ingest response, suppressed on guest
+/// turns: a guest owes no vote and has no dashboard to open.
 ///
-/// The count is scoped to the acting caller: every identity — admins
-/// included — sees only rows addressed to them plus the unaddressed ones.
-/// The dashboard admin ACL-reveal switch deliberately does not reach the
-/// MCP tool surface (`crate::reveal` is dashboard-only); MCP tools always
-/// honour the ACL, so the count never lifts to deployment-wide here.
-/// The two governance blocks appended to an ingest response, suppressed
-/// on guest turns: the attention count includes unaddressed proposals,
-/// and a guest can neither open the dashboard nor owe a vote.
+/// There used to be a second one, `pending_attention`, counting changes the
+/// engine had made and was waiting to be blessed. It went with the whole
+/// supervise-the-memory apparatus (founder, 2026-08-22: *«la memoria deve
+/// funzionare in automatico»*) — the memory does its work and does not ask
+/// the user to sign it off.
 async fn governance_blocks(
     state: &McpState,
     identity: &IdentityProfile,
-) -> Result<(Option<Value>, Option<Value>), ToolError> {
-    if mwe_core::enrollment::is_guest(&identity.sender_id) {
-        return Ok((None, None));
-    }
-    Ok((
-        pending_attention_block(&state.pool, identity).await?,
-        pending_votes_block(&state.pool, identity).await?,
-    ))
-}
-
-async fn pending_attention_block(
-    pool: &sqlx::SqlitePool,
-    identity: &IdentityProfile,
 ) -> Result<Option<Value>, ToolError> {
-    let recipient = Some(format!("user:{}", identity.sender_id));
-    let counts = proposals::count_in_flight(pool, recipient.as_deref(), chrono::Utc::now())
-        .await
-        .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
-    // The ingest nudge is specifically about not piling more state on top
-    // of an *unconfirmed* change, so it gates on `pending` +
-    // `applied_pending_confirm` only. The third in-flight class
-    // (born-applied structural receipts with an open revert window) is
-    // already applied and surfaced by the dashboard badge + its
-    // `structure_applied` notice on the event stream; folding it in here
-    // would make the warning fire on every just-applied change, which is
-    // noise for the consumer.
-    let unconfirmed = counts.pending + counts.applied_pending_confirm;
-    if unconfirmed == 0 {
+    if mwe_core::enrollment::is_guest(&identity.sender_id) {
         return Ok(None);
     }
-    Ok(Some(json!({
-        "pending_count": counts.pending,
-        "applied_pending_confirm_count": counts.applied_pending_confirm,
-        "dashboard_path": PENDING_ATTENTION_DASHBOARD_PATH,
-        "note": "scoped_to_recipient",
-    })))
+    pending_votes_block(&state.pool, identity).await
 }
 
 /// Build the `pending_votes` block surfaced in the
@@ -669,7 +629,7 @@ async fn pending_votes_block(
     Ok(Some(json!({
         "count": pending.len(),
         "requests": pending,
-        "dashboard_path": PENDING_ATTENTION_DASHBOARD_PATH,
+        "dashboard_path": PENDING_VOTES_DASHBOARD_PATH,
         "note": "vote_no_to_block_silence_is_consent",
     })))
 }
@@ -810,7 +770,7 @@ async fn require_consumer_registered(state: &McpState, consumer_id: &str) -> Res
 // surface. Structural changes apply directly in REM and reach the
 // consumer as `structure_applied` notices over `events_poll`; the
 // notice names the affected user and carries the `dashboard_path` of
-// the undo surface (the dashboard calls `mwe-core::proposals`
+// the operator surface (the dashboard calls `mwe-core::proposals`
 // directly).
 
 // ============================================================

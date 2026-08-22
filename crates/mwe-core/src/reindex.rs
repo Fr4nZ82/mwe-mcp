@@ -442,7 +442,7 @@ pub async fn reindex_file(
 /// via the full [`fact_index::page_acl_map`]). Call it **after** the row is
 /// retired: the function refuses to touch an active fact (excising a live
 /// region would let the next reindex orphan-sweep tombstone the fact), so
-/// a caller racing a concurrent revert can never corrupt live prose.
+/// a caller racing a concurrent write can never corrupt live prose.
 ///
 /// Every act-time retire path funnels here: `capture::wiki_supersede`,
 /// `capture::wiki_forget` (the consumer/dashboard/comment forget sites),
@@ -2183,7 +2183,7 @@ mod tests {
 
     /// Safety pin: the strip refuses an ACTIVE fact — excising live prose
     /// would hand the fact to the marker-removed orphan sweep. Every
-    /// caller relies on this guard to be race-safe against reverts.
+    /// caller relies on this guard to be race-safe against concurrent writes.
     #[tokio::test]
     async fn strip_fact_region_refuses_an_active_fact() {
         let dir = tempdir().unwrap();

@@ -711,8 +711,8 @@ pub async fn mark_skipped_dup(
 /// left alone (their fact row is the closure target — the id is stable
 /// across promotion, so the fact-side verb hits first).
 ///
-/// Returns the previous staged values for the receipt's revert payload,
-/// or `None` when `capture_id` has no buffered row.
+/// Returns the previous staged values for the receipt's record of what
+/// changed, or `None` when `capture_id` has no buffered row.
 ///
 /// # Errors
 ///
@@ -752,34 +752,6 @@ pub async fn close_validity(
     }))
 }
 
-/// Restore a buffered capture's staged validity from a closure snapshot —
-/// the revert half of [`close_validity`].
-///
-/// Returns the number of rows touched (0 when the row was promoted in the
-/// meantime — the fact-side restore covers it, the id being stable).
-///
-/// # Errors
-///
-/// DB errors.
-pub async fn restore_validity(
-    pool: &SqlitePool,
-    capture_id: &FactId,
-    prev_valid_to: Option<&str>,
-    prev_decay_reason: Option<&str>,
-) -> Result<u64> {
-    let res = sqlx::query(
-        "UPDATE capture_buffer
-            SET valid_to = ?, decay_reason = ?
-          WHERE capture_id = ? AND status = 'buffered'",
-    )
-    .bind(prev_valid_to)
-    .bind(prev_decay_reason)
-    .bind(capture_id.as_str())
-    .execute(pool)
-    .await?;
-    Ok(res.rows_affected())
-}
-
 /// Correct the staged validity *interval* of a still-**buffered** capture:
 /// set `valid_from` and/or `valid_to` on the parking page row, **leaving
 /// `decay_reason` untouched**.
@@ -790,8 +762,8 @@ pub async fn restore_validity(
 /// `Some(value)` SETS that bound, a `None` LEAVES it (COALESCE-in-Rust),
 /// exactly like the fact-side write.
 ///
-/// Returns the previous staged interval for the receipt's revert payload,
-/// or `None` when `capture_id` has no buffered row.
+/// Returns the previous staged interval for the receipt's record of what
+/// changed, or `None` when `capture_id` has no buffered row.
 ///
 /// # Errors
 ///
@@ -830,35 +802,6 @@ pub async fn set_validity(
     }))
 }
 
-/// Restore a buffered capture's staged validity *interval* from a
-/// [`crate::fact_index::PrevValidity`] snapshot — the revert half of
-/// [`set_validity`]. Sets BOTH bounds back.
-///
-/// Returns the number of rows touched (0 when the row was promoted in the
-/// meantime — the fact-side restore covers it, the id being stable).
-///
-/// # Errors
-///
-/// DB errors.
-pub async fn restore_validity_interval(
-    pool: &SqlitePool,
-    capture_id: &FactId,
-    prev_valid_from: Option<&str>,
-    prev_valid_to: Option<&str>,
-) -> Result<u64> {
-    let res = sqlx::query(
-        "UPDATE capture_buffer
-            SET valid_from = ?, valid_to = ?
-          WHERE capture_id = ? AND status = 'buffered'",
-    )
-    .bind(prev_valid_from)
-    .bind(prev_valid_to)
-    .bind(capture_id.as_str())
-    .execute(pool)
-    .await?;
-    Ok(res.rows_affected())
-}
-
 /// Replace the ACL columns of a still-**buffered** capture: set
 /// `subject_id`, `allow_ids`, and `sender_id` on the parking page row.
 ///
@@ -868,8 +811,8 @@ pub async fn restore_validity_interval(
 /// NOT NULL and `allow_ids` defaults to `'[]'`, so both always carry a
 /// value.
 ///
-/// Returns the previous ACL for the receipt's revert payload, or `None`
-/// when `capture_id` has no buffered row.
+/// Returns the previous ACL for the receipt's record of what changed, or
+/// `None` when `capture_id` has no buffered row.
 ///
 /// # Errors
 ///
@@ -944,38 +887,6 @@ pub async fn inherit_allow(
     .execute(pool)
     .await?;
     Ok(res.rows_affected() > 0)
-}
-
-/// Restore a buffered capture's ACL columns from a
-/// [`crate::fact_index::PrevAcl`] snapshot — the revert half of
-/// [`set_acl`].
-///
-/// Returns the number of rows touched (0 when the row was promoted in the
-/// meantime — the fact-side restore covers it, the id being stable).
-///
-/// # Errors
-///
-/// DB errors + JSON serialization failures on `allow_ids`.
-pub async fn restore_acl(
-    pool: &SqlitePool,
-    capture_id: &FactId,
-    subject: &Principal,
-    allow: &[Principal],
-    sender: Option<&Principal>,
-) -> Result<u64> {
-    let allow_json = crate::fact_index::principals_to_json(allow)?;
-    let res = sqlx::query(
-        "UPDATE capture_buffer
-            SET subject_id = ?, allow_ids = ?, sender_id = ?
-          WHERE capture_id = ? AND status = 'buffered'",
-    )
-    .bind(subject.to_string())
-    .bind(&allow_json)
-    .bind(sender.map(ToString::to_string))
-    .bind(capture_id.as_str())
-    .execute(pool)
-    .await?;
-    Ok(res.rows_affected())
 }
 
 // ---------- DB layer ----------

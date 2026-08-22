@@ -35,8 +35,8 @@
 //!   which the move never looks at).
 //!
 //! Unlike `correct` / `remove` / `add` (which apply bare), a `move` is
-//! **born-applied + revertible** — the `promote::*_direct` wrappers mint a
-//! receipt, because a relocation (especially cross-wiki) must be undoable.
+//! **born-applied** — the `promote::*_direct` wrappers mint a receipt, so a
+//! relocation (especially cross-wiki) leaves a record of where it went.
 //!
 //! The interpreter runs on the strong **ingest** tier — turning a free-text
 //! correction into precise fact ops is the same class of judgment as ingesting a
@@ -92,8 +92,8 @@ pub struct CommentApplyReport {
     pub facts_removed: usize,
     /// Facts relocated at a comment's request — to another page of this wiki,
     /// or cross-wiki onto the destination wiki's parking page page. Unlike the other
-    /// ops these are born-applied + revertible (the `_direct` wrappers mint a
-    /// receipt), because a move — especially cross-wiki — must be undoable.
+    /// ops these are born-applied (the `_direct` wrappers mint a receipt), so
+    /// a move — especially cross-wiki — leaves a record of where it went.
     pub facts_moved: usize,
     /// Per-page soft errors (an unparseable / failed page is left for the next
     /// cycle; its comments stay unprocessed). Never aborts the other pages.
@@ -646,7 +646,7 @@ async fn apply_add(
 /// on this page (`known`), else the op is refused. A `dest_wiki_id` that does
 /// not locate is a no-op refusal (anti-hallucination), and a move with neither
 /// a different page nor a different wiki is a no-op. On success the move is
-/// **born-applied + revertible** — the `_direct` wrappers mint the receipt.
+/// **born-applied** — the `_direct` wrappers mint the receipt.
 #[allow(
     clippy::too_many_arguments,
     reason = "the contained move threads the page facts, containment set, source wiki/page, subject, the op, and the receipt reason"
@@ -1717,7 +1717,7 @@ mod tests {
         assert_eq!(row.wiki_id, "salute");
         assert_eq!(row.source_path, "wikis/salute/@notes.md");
 
-        // A born-applied wiki_promote receipt (revertible) was minted.
+        // A born-applied wiki_promote receipt was minted.
         let receipts: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM structure_proposals WHERE kind = 'wiki_promote' AND status = 'applied'",
         )

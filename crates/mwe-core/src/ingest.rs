@@ -2071,8 +2071,8 @@ struct TopicClosureDecision {
 /// What the reconciliation stage decided about facts that already existed.
 ///
 /// Deliberately the SAME per-verb types the classifier used to emit, so the
-/// three `apply_plan_*` functions — and their guards, receipts and revert
-/// tokens — are reused rather than reimplemented. All three empty is the
+/// three `apply_plan_*` functions — and their guards and receipts — are
+/// reused rather than reimplemented. All three empty is the
 /// common, correct answer.
 #[derive(Debug, Default, serde::Deserialize)]
 struct ReconcileDecision {
@@ -2704,7 +2704,7 @@ async fn confirm_topic_closures(
 /// still-buffered capture — the id is stable across promotion), emit ONE
 /// born-applied `validity_close` receipt for the turn, and post the
 /// `structure_applied` notice pointing at the dashboard, where the
-/// closure can be reverted or adjusted.
+/// closure can be read.
 ///
 /// Every step is soft: an invalid closure, a vanished target, or a DB
 /// hiccup is logged and skipped — a closure never kills the turn.
@@ -2863,7 +2863,6 @@ async fn emit_closure_paper_trail(
                     .map(|c| c.fact_id.as_str())
                     .collect::<Vec<_>>(),
                 "recipient_id": recipient,
-                "revert_deadline": receipt.revert_deadline.to_rfc3339(),
                 "dashboard_path":
                     format!("/dashboard/proposals/{}/open-in-chat", receipt.proposal_id),
             });
@@ -3218,7 +3217,6 @@ async fn emit_validity_edit_paper_trail(
                     .map(|e| e.fact_id.as_str())
                     .collect::<Vec<_>>(),
                 "recipient_id": recipient,
-                "revert_deadline": receipt.revert_deadline.to_rfc3339(),
                 "dashboard_path":
                     format!("/dashboard/proposals/{}/open-in-chat", receipt.proposal_id),
             });
@@ -3326,7 +3324,7 @@ fn validate_acl_change<'a>(
 /// acl-change verb. The twin of [`apply_plan_closures`], but it also
 /// computes the disclosure-widening signal, writes a
 /// [`crate::disclosure_audit`] row per change, and threads the returned
-/// `audit_id` into the receipt so a revert can mark it reverted.
+/// `audit_id` into the receipt so the change and its audit row line up.
 ///
 /// Every step is soft: an invalid change, a vanished target, or a DB hiccup
 /// is logged and skipped — a change never kills the turn.
@@ -3438,7 +3436,7 @@ async fn apply_plan_acl_changes(
             Err(err) => {
                 // The ACL is already changed; a missing audit row must not
                 // strand the change. Log loudly and proceed without the
-                // audit anchor (-1 sentinel — revert simply finds no row).
+                // audit anchor (-1 sentinel — nothing downstream looks it up).
                 tracing::error!(error = %err, "ingest: acl_change applied but audit row failed");
                 -1
             },
@@ -3502,7 +3500,6 @@ async fn emit_acl_change_paper_trail(
                     .collect::<Vec<_>>(),
                 "widening": applied.iter().any(|c| c.widening),
                 "recipient_id": recipient,
-                "revert_deadline": receipt.revert_deadline.to_rfc3339(),
                 "dashboard_path":
                     format!("/dashboard/proposals/{}/open-in-chat", receipt.proposal_id),
             });
@@ -12556,7 +12553,7 @@ mod tests {
         assert_eq!(spec["closures"][0]["fact_id"], planted.fact_id.as_str());
         assert!(
             spec["closures"][0]["prev_valid_to"].is_null(),
-            "the revert snapshot records the previously open window"
+            "the receipt records that the window was open before"
         );
 
         // The dashboard notice.
@@ -13970,11 +13967,10 @@ mod tests {
     // ---------- the acl-change verb (sharing change) ----------
 
     /// An `acl_changes` element widens the allow-list on a recalled OWNED
-    /// fact, writes a `disclosure_audit` row with `widening=1`, and is
-    /// revertible (restoring the prior ACL and marking the audit reverted).
+    /// fact and writes a `disclosure_audit` row with `widening=1`.
     #[tokio::test]
-    async fn ingest_acl_change_widens_and_audits_then_reverts() {
-        let (dir, tree, pool) = setup_workdir().await;
+    async fn ingest_acl_change_widens_and_audits() {
+        let (_dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
@@ -14032,42 +14028,13 @@ mod tests {
         );
 
         // One disclosure_audit row, flagged widening.
-        let (audit_id, widening): (i64, i64) =
+        let (_audit_id, widening): (i64, i64) =
             sqlx::query_as("SELECT audit_id, widening FROM disclosure_audit WHERE fact_id = ?")
                 .bind(planted.fact_id.as_str())
                 .fetch_one(&pool)
                 .await
                 .expect("audit row");
         assert_eq!(widening, 1, "going global is a widening");
-
-        // One born-applied acl_change receipt — revert restores + marks audit.
-        let spec: String =
-            sqlx::query_scalar("SELECT spec FROM structure_proposals WHERE kind = 'wiki_promote'")
-                .fetch_one(&pool)
-                .await
-                .expect("receipt");
-        let spec: serde_json::Value = serde_json::from_str(&spec).unwrap();
-        assert_eq!(spec["variant"], "acl_change");
-        promote::revert_wiki_promote(&pool, &tree, &spec)
-            .await
-            .expect("revert");
-
-        let back = fact_index::find_by_id(&pool, &planted.fact_id)
-            .await
-            .expect("find")
-            .expect("row");
-        assert!(
-            back.allow_ids.is_empty(),
-            "revert restored the empty allow-list"
-        );
-        let reverted: Option<String> =
-            sqlx::query_scalar("SELECT reverted_at FROM disclosure_audit WHERE audit_id = ?")
-                .bind(audit_id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert!(reverted.is_some(), "the audit row is stamped reverted");
-        drop(dir);
     }
 
     #[tokio::test]

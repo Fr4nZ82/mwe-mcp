@@ -101,35 +101,6 @@ async fn capture_fact(pool: &SqlitePool, tree: &WikiTree, page: &str, body: &str
     }
 }
 
-async fn seed_pending_promote_proposal(
-    pool: &SqlitePool,
-    proposal_id: &str,
-    source_page: &str,
-    fact_ids: &[FactId],
-) {
-    let now = chrono::Utc::now();
-    let timeout = now + chrono::Duration::hours(24);
-    let fact_id_strs: Vec<String> = fact_ids.iter().map(|f| f.as_str().to_owned()).collect();
-    let context = serde_json::json!({
-        "source_wiki_id": "alice",
-        "source_page": source_page,
-        "fact_ids": fact_id_strs,
-    });
-    sqlx::query(
-        "INSERT INTO structure_proposals (proposal_id, kind, context, questions, \
-         proposed_at, timeout_at, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')",
-    )
-    .bind(proposal_id)
-    .bind("wiki_promote")
-    .bind(serde_json::to_string(&context).unwrap())
-    .bind(r#"[{"id":"q1","text":"Move?","options":[]}]"#)
-    .bind(now.to_rfc3339())
-    .bind(timeout.to_rfc3339())
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
 /// Seed a pending proposal of an unshipped kind (`bundle`). Applying it
 /// fails at the chassis (`KindNotYetImplemented`) — a convenient stand-in
 /// for "the apply handler refused" without depending on any live kind.
@@ -176,50 +147,6 @@ async fn seed_pending_dedup_proposal(
     .execute(pool)
     .await
     .unwrap();
-}
-
-/// Inject a `dedup_merge` proposal already in `applied_pending_confirm`
-/// state (`apply_mode='auto'`, `confirm_deadline` set 7gg in the
-/// future) so the pending-confirms page has something to render.
-/// The loser is marked superseded via the same flip the dedup handler
-/// performs at apply time, so a subsequent revert can un-do it.
-async fn seed_applied_pending_confirm_dedup(
-    pool: &SqlitePool,
-    proposal_id: &str,
-    loser: &FactId,
-    winner: &FactId,
-) {
-    seed_pending_dedup_proposal(pool, proposal_id, loser, winner).await;
-    let applied_at = chrono::Utc::now();
-    let confirm_deadline = applied_at + chrono::Duration::days(7);
-    let spec = serde_json::json!({
-        "variant": "two_way_merge",
-        "loser_fact_id": loser.as_str(),
-        "winner_fact_id": winner.as_str(),
-    });
-    sqlx::query(
-        "UPDATE structure_proposals
-            SET status = 'applied_pending_confirm',
-                apply_mode = 'auto',
-                applied_at = ?,
-                applied_by = NULL,
-                answers = '{}',
-                spec = ?,
-                confirm_deadline = ?
-          WHERE proposal_id = ?",
-    )
-    .bind(applied_at.to_rfc3339())
-    .bind(serde_json::to_string(&spec).unwrap())
-    .bind(confirm_deadline.to_rfc3339())
-    .bind(proposal_id)
-    .execute(pool)
-    .await
-    .unwrap();
-    // Mirror the dedup_merge apply: mark loser as superseded by winner
-    // so a revert has work to undo.
-    mwe_core::fact_index::mark_superseded(pool, loser, winner)
-        .await
-        .unwrap();
 }
 
 async fn login_as_admin(app: &Router) -> String {
@@ -1387,15 +1314,12 @@ async fn home_page_lists_memory_section() {
 
 // ---- Proposal action routes ----
 //
-// The proposals questionnaire / tray FORM surface is retired: the GET
-// `/dashboard/proposals` and `/dashboard/proposals/pending-confirms`
-// pages are gone, and the page tests that asserted their HTML went with
-// them. What remains here are the action routes — POST `apply` /
-// `confirm` / `revert` and GET `open-in-chat` — kept mounted as bridge
-// endpoints. Each POST now performs its chassis action and 303-redirects
-// to `/dashboard/chat` (the single operational surface) instead of
-// rendering a page, so these tests assert the redirect + the resulting
-// DB / on-disk state rather than flash HTML.
+// There is no proposals FORM surface: what the dashboard exposes are the
+// action routes — POST `apply` and GET `open-in-chat` — mounted as bridge
+// endpoints. The POST performs its chassis action and 303-redirects to
+// `/dashboard/chat` (the single operational surface) instead of rendering
+// a page, so these tests assert the redirect + the resulting DB / on-disk
+// state rather than flash HTML.
 
 /// Assert a response is the 303 redirect to the chat surface that the
 /// retired-form action routes return on both success and classified error.
@@ -1410,57 +1334,6 @@ fn assert_redirects_to_chat(response: &axum::http::Response<Body>) {
         .get(header::LOCATION)
         .and_then(|v| v.to_str().ok());
     assert_eq!(location, Some("/dashboard/chat"));
-}
-
-#[tokio::test]
-async fn proposals_dedup_apply_then_revert_redirects_and_round_trips() {
-    let (app, pool, tree, _dir) = make_app_with_memory().await;
-    let cookie = login_as_admin(&app).await;
-    seed_alice_wiki(&tree);
-    let loser = capture_fact(&pool, &tree, "appunti.md", "Bob pesa 80").await;
-    let winner = capture_fact(&pool, &tree, "appunti.md", "Bob ora pesa 80").await;
-    seed_pending_dedup_proposal(&pool, "p-dup", &loser, &winner).await;
-
-    // Apply via the dashboard (POST with empty body) → 303 to the chat.
-    let response = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/proposals/p-dup/apply")
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .header(header::COOKIE, cookie.clone())
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_redirects_to_chat(&response);
-
-    // The loser is now superseded — the chassis ran behind the redirect.
-    let loser_row = mwe_core::fact_index::find_by_id(&pool, &loser)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(loser_row.superseded_at.is_some());
-
-    // Revert → 303 to the chat.
-    let response = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/proposals/p-dup/revert")
-            .header(header::COOKIE, cookie)
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_redirects_to_chat(&response);
-
-    // The loser is active again.
-    let loser_row = mwe_core::fact_index::find_by_id(&pool, &loser)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(loser_row.superseded_at.is_none());
 }
 
 #[tokio::test]
@@ -1484,88 +1357,6 @@ async fn proposals_apply_unknown_id_still_redirects_to_chat() {
     )
     .await;
     assert_redirects_to_chat(&response);
-}
-
-// ---- confirm/revert action routes (form tray retired) ----
-
-#[tokio::test]
-async fn pending_confirms_confirm_route_promotes_to_applied_and_redirects() {
-    let (app, pool, tree, _dir) = make_app_with_memory().await;
-    let cookie = login_as_admin(&app).await;
-    seed_alice_wiki(&tree);
-    let loser = capture_fact(&pool, &tree, "appunti.md", "Alice ha un cane").await;
-    let winner = capture_fact(&pool, &tree, "appunti.md", "Alice possiede un cane").await;
-    seed_applied_pending_confirm_dedup(&pool, "p-confirm-me", &loser, &winner).await;
-
-    let response = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/proposals/p-confirm-me/confirm")
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .header(header::COOKIE, cookie)
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_redirects_to_chat(&response);
-
-    let (status, apply_mode, confirmed_by): (String, Option<String>, Option<String>) =
-        sqlx::query_as(
-            "SELECT status, apply_mode, confirmed_by FROM structure_proposals WHERE proposal_id = ?",
-        )
-        .bind("p-confirm-me")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(status, "applied");
-    assert_eq!(
-        apply_mode.as_deref(),
-        Some("auto"),
-        "confirm must not rewrite apply_mode",
-    );
-    assert_eq!(confirmed_by.as_deref(), Some("alice"));
-}
-
-#[tokio::test]
-async fn pending_confirms_revert_route_unwinds_dedup_merge_and_redirects() {
-    let (app, pool, tree, _dir) = make_app_with_memory().await;
-    let cookie = login_as_admin(&app).await;
-    seed_alice_wiki(&tree);
-    let loser = capture_fact(&pool, &tree, "appunti.md", "Alice ha un cane").await;
-    let winner = capture_fact(&pool, &tree, "appunti.md", "Alice possiede un cane").await;
-    seed_applied_pending_confirm_dedup(&pool, "p-revert-me", &loser, &winner).await;
-
-    // POST revert with no body — the action route auto-detects
-    // `applied_pending_confirm` and uses the caller path.
-    let response = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/proposals/p-revert-me/revert")
-            .header(header::COOKIE, cookie)
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_redirects_to_chat(&response);
-
-    // Loser is un-superseded — the dedup_merge inverse actually ran.
-    let loser_row = mwe_core::fact_index::find_by_id(&pool, &loser)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(loser_row.superseded_at.is_none());
-
-    let (status, triggered_by): (String, Option<String>) = sqlx::query_as(
-        "SELECT status, revert_triggered_by FROM structure_proposals WHERE proposal_id = ?",
-    )
-    .bind("p-revert-me")
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(status, "reverted");
-    assert_eq!(triggered_by.as_deref(), Some("user"));
 }
 
 #[tokio::test]
@@ -1598,58 +1389,6 @@ async fn proposals_apply_failure_still_redirects_and_leaves_row_pending() {
             .await
             .unwrap();
     assert_eq!(status, "pending");
-}
-
-#[tokio::test]
-async fn proposals_apply_then_revert_round_trips_via_action_routes() {
-    let (app, pool, tree, _dir) = make_app_with_memory().await;
-    let cookie = login_as_admin(&app).await;
-    seed_alice_wiki(&tree);
-    let fact = capture_fact(&pool, &tree, "appunti.md", "Movable text").await;
-    seed_pending_promote_proposal(&pool, "p-1", "appunti.md", std::slice::from_ref(&fact)).await;
-
-    // Apply via the action route → 303 to the chat.
-    let response = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/proposals/p-1/apply")
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .header(header::COOKIE, cookie.clone())
-            .body(Body::from("target_page=giardinaggio.md"))
-            .unwrap(),
-    )
-    .await;
-    assert_redirects_to_chat(&response);
-
-    // The fact moved on disk.
-    let target_contents =
-        std::fs::read_to_string(tree.wikis_dir().join("alice").join("giardinaggio.md")).unwrap();
-    assert!(
-        target_contents.contains(&format!("f={fact}")),
-        "{target_contents}"
-    );
-
-    // Revert via the action route → 303 to the chat.
-    let response = send(
-        &app,
-        Request::builder()
-            .method("POST")
-            .uri("/proposals/p-1/revert")
-            .header(header::COOKIE, cookie)
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_redirects_to_chat(&response);
-
-    // The fact is back on the source page.
-    let source_after =
-        std::fs::read_to_string(tree.wikis_dir().join("alice").join("appunti.md")).unwrap();
-    assert!(
-        source_after.contains(&format!("f={fact}")),
-        "{source_after}"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1835,8 +1574,8 @@ async fn chat_ingest_e2e_captures_fact_with_fake_backend() {
 /// a confirmation message to `/dashboard/chat/agentic`. We assert:
 ///
 /// - both tool calls appear in the trace, in order;
-/// - the apply tool result carries the `revert_token` produced by the
-///   chassis (proof the apply really happened);
+/// - the apply tool result carries the `applied_at` the chassis stamped
+///   (proof the apply really happened);
 /// - the proposal row in the database has transitioned to
 ///   `applied`.
 #[tokio::test]
@@ -1878,9 +1617,7 @@ async fn chat_agentic_loop_applies_dedup_proposal_end_to_end() {
             usage: CompletionUsage::default(),
         },
         ChatResponse {
-            message: ChatMessage::assistant(
-                "Proposta applicata. Puoi revocare entro 7 giorni se cambi idea.",
-            ),
+            message: ChatMessage::assistant("Proposta applicata."),
             finish_reason: FinishReason::EndOfTurn,
             usage: CompletionUsage::default(),
         },
@@ -1921,13 +1658,10 @@ async fn chat_agentic_loop_applies_dedup_proposal_end_to_end() {
     let apply_result: serde_json::Value =
         serde_json::from_str(apply_result_str).expect("apply result is JSON");
     assert!(
-        apply_result["applied"]["revert_token"].is_string(),
-        "apply outcome should carry a revert_token: {apply_result_str}"
+        apply_result["applied"]["applied_at"].is_string(),
+        "apply outcome should carry the instant it landed: {apply_result_str}"
     );
-    assert_eq!(
-        turn["final_message"],
-        "Proposta applicata. Puoi revocare entro 7 giorni se cambi idea."
-    );
+    assert_eq!(turn["final_message"], "Proposta applicata.");
 
     // Database state: the proposal row is now `applied`.
     let status: (String,) =

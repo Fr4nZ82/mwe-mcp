@@ -294,9 +294,8 @@
   // topnav in-flight badge (#in-flight-badge) starts hidden (style.display:
   // none) and we fetch its count client-side.
   // /dashboard/proposals/in-flight-count is ACL-scoped to the signed-in user
-  // and returns { pending, applied_pending_confirm, revertable_applied,
-  // total }. When total > 0 we reveal the badge with the count
-  // ("N pending"); otherwise it stays hidden. Clicking it follows the
+  // and returns { pending }. When pending > 0 we reveal the badge with the
+  // count ("N pending"); otherwise it stays hidden. Clicking it follows the
   // anchor's href, which lands the operator in the chat on those items.
 
   const inFlightBadge = document.getElementById('in-flight-badge');
@@ -308,8 +307,8 @@
     })
       .then(function (resp) { return resp.ok ? resp.json() : null; })
       .then(function (data) {
-        if (!data || typeof data.total !== 'number' || data.total <= 0) return;
-        inFlightCount.textContent = data.total + ' pending';
+        if (!data || typeof data.pending !== 'number' || data.pending <= 0) return;
+        inFlightCount.textContent = data.pending + ' pending';
         inFlightBadge.style.display = 'inline-flex';
       })
       .catch(function () {

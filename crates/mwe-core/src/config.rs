@@ -1284,7 +1284,7 @@ pub struct RemPolicyConfig {
     #[serde(default)]
     pub briefing_processor_grace_secs: Option<u64>,
     /// Override `husk_gc_cap` (default 4) — plan-absent husk page files
-    /// (all rows tombstoned or superseded past the revert window) the
+    /// (all rows tombstoned or superseded) the
     /// GC sweep removes per full cycle; `0` disables.
     #[serde(default)]
     pub husk_gc_cap: Option<usize>,

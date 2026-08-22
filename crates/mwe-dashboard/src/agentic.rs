@@ -53,7 +53,7 @@
 //!   the destination wiki's parking page page). It reuses the same act-first engine
 //!   the REM cross-wiki refile sweep and the comment-apply `move` op use, so
 //!   the dashboard, the dream, and the chat all mint the same born-applied +
-//!   revertible receipt. Admin-only (a move is structure authority —
+//!   receipt. Admin-only (a move is structure authority —
 //!   `enforce_move_admin`); a smart source or destination
 //!   is refused (smart wikis carry wiki-level governance). Write tool.
 
@@ -64,7 +64,7 @@ use mwe_core::embedder::Embedder;
 use mwe_core::fact_index::FactFilters;
 use mwe_core::llm::Tool;
 use mwe_core::promote;
-use mwe_core::proposals::{self, ConfirmError, ListFilters, ProposalStatus};
+use mwe_core::proposals::{self, ListFilters, ProposalStatus};
 use mwe_core::recall::{self, SenderContext};
 use mwe_core::types::{FactId, WikiId};
 use mwe_core::wiki::WikiTree;
@@ -126,7 +126,7 @@ pub enum AgenticTool {
     /// chat batches multiple `wiki_forget` calls after the user
     /// confirms the candidate list. A smart-wiki target is refused
     /// (smart wikis are the consumer's — their section rows are not
-    /// fact-governed, and the consumer's next push would undo the
+    /// fact-governed, and the consumer's next push would overwrite the
     /// tombstone).
     WikiForget,
     /// Replace an existing fact with a corrected body, in-place.
@@ -171,10 +171,8 @@ pub enum AgenticTool {
     /// to its subject's home wiki — a fact whose sender and subject both lack one
     /// is tombstoned. **Admin-only**: deleting structure is the operator's
     /// act (see identity and ACL); a smart wiki is refused
-    /// (wiki-level governance). Act-first: the whole deletion is wrapped in
-    /// ONE born-applied `bundle` receipt
-    /// ([`mwe_core::page::delete_page_direct`]), undoable from the dashboard.
-    /// Write tool.
+    /// (wiki-level governance). Act-first and final
+    /// ([`mwe_core::page::delete_page_direct`]). Write tool.
     WikiDeletePage,
     /// Open a **forget request** for ONE fact the signed-in user does NOT author
     /// — the non-sender subject's path ([`mwe_core::votes::open_forget_request`];
@@ -187,30 +185,6 @@ pub enum AgenticTool {
     /// smart-wiki target is refused (forget votes are per-fact governance;
     /// smart governance is wiki-level). Write tool.
     WikiRequestForget,
-    /// Undo a previously-applied structure proposal — the inverse of
-    /// [`Self::StructureProposalApply`]. Reuses the
-    /// [`mwe_core::proposals::revert_proposal`] chassis (no new revert
-    /// logic): the dispatcher selects the `RevertAuth` from the row's
-    /// status (`applied` → token fetched server-side,
-    /// `applied_pending_confirm` → caller) exactly as the form route
-    /// does, then hands off to the per-kind inverse (auto-promotion,
-    /// dedup merge, type forge). Revert is only available inside the
-    /// 7-day window from when the proposal was applied. Write tool.
-    StructureProposalRevert,
-    /// Confirm an auto-applied structure proposal so it sticks — the
-    /// counterpart of [`Self::StructureProposalRevert`] on the
-    /// `applied_pending_confirm -> applied` edge. Thin shim over the
-    /// [`mwe_core::proposals::confirm_proposal`] chassis (no new confirm
-    /// logic): it promotes a proposal the nightly auto-apply sweep landed
-    /// on the user's behalf to permanent `applied`, minting the
-    /// `revert_token` and opening the 7-day revert window. The chassis
-    /// gates by recipient/admin internally
-    /// ([`mwe_core::proposals::ConfirmError::NotAuthorized`]), so — unlike
-    /// revert's Token path — the dispatcher needs no separate recipient
-    /// pre-check. Restores the "confirm a sweep auto-apply" action the
-    /// retired pending-confirms form tray used to carry, now living in the
-    /// chat as the single operational surface. Write tool.
-    StructureProposalConfirm,
     /// Cast a vote on a pending **fact-forget request** — the audience-facing
     /// half of the non-sender subject's forget vote (the write-authority model). The
     /// dashboard chat acts as the signed-in member, so this votes **as
@@ -244,8 +218,6 @@ impl AgenticTool {
             Self::WikiMoveFact => "wiki_move_fact",
             Self::WikiDeletePage => "wiki_delete_page",
             Self::WikiRequestForget => "wiki_request_forget",
-            Self::StructureProposalRevert => "structure_proposal_revert",
-            Self::StructureProposalConfirm => "structure_proposal_confirm",
             Self::StructureProposalVote => "structure_proposal_vote",
         }
     }
@@ -269,8 +241,6 @@ impl AgenticTool {
             "wiki_move_fact" => Some(Self::WikiMoveFact),
             "wiki_delete_page" => Some(Self::WikiDeletePage),
             "wiki_request_forget" => Some(Self::WikiRequestForget),
-            "structure_proposal_revert" => Some(Self::StructureProposalRevert),
-            "structure_proposal_confirm" => Some(Self::StructureProposalConfirm),
             "structure_proposal_vote" => Some(Self::StructureProposalVote),
             _ => None,
         }
@@ -295,8 +265,6 @@ pub fn tool_descriptors() -> Vec<Tool> {
     out.extend(move_fact_tool_descriptors());
     out.extend(delete_page_tool_descriptors());
     out.extend(request_forget_tool_descriptors());
-    out.extend(revert_tool_descriptors());
-    out.extend(confirm_tool_descriptors());
     out.extend(vote_tool_descriptors());
     out
 }
@@ -401,8 +369,8 @@ fn proposal_tool_descriptors() -> Vec<Tool> {
                 "properties": {
                     "status": {
                         "type": "string",
-                        "enum": ["pending", "applied", "applied_pending_confirm", "reverted", "expired"],
-                        "description": "Lifecycle status filter (default: pending). `applied_pending_confirm` = auto-applied by the nightly sweep, awaiting the user's confirm-or-revert."
+                        "enum": ["pending", "applied", "expired"],
+                        "description": "Lifecycle status filter (default: pending). `applied` = already in place, whether the user answered or the nightly sweep did it for them."
                     },
                     "kind": {
                         "type": "string",
@@ -441,8 +409,8 @@ fn proposal_tool_descriptors() -> Vec<Tool> {
                 payload (a JSON object whose shape is dictated by the proposal's \
                 `questions`). WRITE TOOL: call this only after the user has \
                 explicitly confirmed in the current turn — never on a vague \
-                request. On success returns the revert_token + 7d revert_deadline \
-                so the user can undo."
+                request. The change is final — do not promise the user a \
+                rollback."
                 .to_owned(),
             parameters: json!({
                 "type": "object",
@@ -602,8 +570,8 @@ fn move_fact_tool_descriptors() -> Vec<Tool> {
         description: "Move ONE fact to a different page of the same wiki, or into \
             another wiki, following the operator's instruction (e.g. 'sposta \
             questo fatto su salute'). Cross-wiki lands on the destination wiki's \
-            main page; the destination wiki reorganises it. Act-first, revertable \
-            from the dashboard. WRITE TOOL — call this only after the operator has \
+            main page; the destination wiki reorganises it. Act-first and final. \
+            WRITE TOOL — call this only after the operator has \
             explicitly confirmed in the current turn both which fact (by fact_id \
             surfaced from `wiki_recall` / `wiki_facts_for`) and where it should go. \
             ADMIN-ONLY: a move re-categorises (it neither deletes the fact nor \
@@ -640,9 +608,8 @@ fn delete_page_tool_descriptors() -> Vec<Tool> {
             tombstoned; facts contributed by OTHERS are evacuated intact to their author's \
             own wiki when one exists — or to their subject's when the author has no home \
             wiki; a fact whose author and subject both lack a home wiki is tombstoned. \
-            Report the tombstoned/evacuated counts the tool returns. The whole deletion is \
-            ONE revertable bundle, undoable from the dashboard within the revert window. \
-            Act-first. WRITE TOOL — high-risk: call ONLY after \
+            Report the tombstoned/evacuated counts the tool returns. Act-first and \
+            final. WRITE TOOL — high-risk: call ONLY after \
             the operator has explicitly confirmed in the current turn both which page (by \
             wiki_id + page) and acceptance of deletion. Use `wiki_list_pages` to confirm the \
             page exists and `wiki_facts_for` to show what is on it first. ADMIN-ONLY: deleting a \
@@ -700,59 +667,6 @@ fn request_forget_tool_descriptors() -> Vec<Tool> {
     }]
 }
 
-fn revert_tool_descriptors() -> Vec<Tool> {
-    vec![Tool {
-        name: AgenticTool::StructureProposalRevert.name().to_owned(),
-        description: "Undo a previously-applied structure proposal — the inverse of \
-            `structure_proposal_apply`. WRITE TOOL. It reverts a revertable proposal \
-            (an auto-promotion, a dedup merge, a type forge) within the 7-day window \
-            from when it was applied; outside that window, or once a per-kind guard \
-            refuses (the change has since been built upon), the tool reports why — \
-            relay that to the user. Call this only after the user has EXPLICITLY \
-            confirmed the undo in the current turn — never on a vague request. Use \
-            `structure_proposal_get` first to summarise what will be undone."
-            .to_owned(),
-        parameters: json!({
-            "type": "object",
-            "properties": {
-                "proposal_id": {
-                    "type": "string",
-                    "description": "Opaque proposal id (a UUID, e.g. \"3fa85f64-5717-4562-b3fc-2c963f66afa6\") of the applied proposal to undo. Find it via `structure_proposal_list(status=\"applied\")` or `wiki_recall`."
-                }
-            },
-            "required": ["proposal_id"]
-        }),
-    }]
-}
-
-fn confirm_tool_descriptors() -> Vec<Tool> {
-    vec![Tool {
-        name: AgenticTool::StructureProposalConfirm.name().to_owned(),
-        description: "Confirm an auto-applied proposal so it becomes permanent (promotes \
-            `applied_pending_confirm` -> `applied` and opens the 7-day revert window). WRITE \
-            TOOL. Use when the user wants to KEEP a change the nightly cycle auto-applied on \
-            their behalf; the alternative is `structure_proposal_revert` to undo it. Only \
-            proposals currently in `applied_pending_confirm` (the auto-apply sweep landed them \
-            past the pending timeout and they are awaiting the user's call) can be confirmed, \
-            and only before their confirm window expires — past that the auto-revert sweep \
-            undoes them. Find the candidates via \
-            `structure_proposal_list(status=\"applied_pending_confirm\")` and summarise each \
-            before asking which to keep. Call this only after the user has EXPLICITLY confirmed \
-            in the current turn — never on a vague request."
-            .to_owned(),
-        parameters: json!({
-            "type": "object",
-            "properties": {
-                "proposal_id": {
-                    "type": "string",
-                    "description": "Opaque proposal id (a UUID, e.g. \"3fa85f64-5717-4562-b3fc-2c963f66afa6\") of the `applied_pending_confirm` proposal to confirm. Find it via `structure_proposal_list(status=\"applied_pending_confirm\")`."
-                }
-            },
-            "required": ["proposal_id"]
-        }),
-    }]
-}
-
 fn vote_tool_descriptors() -> Vec<Tool> {
     vec![Tool {
         name: AgenticTool::StructureProposalVote.name().to_owned(),
@@ -800,8 +714,7 @@ pub struct AgenticContext<'a> {
     pub embedder: Arc<dyn Embedder>,
     pub sender_ctx: SenderContext,
     /// Whether the chat operator holds the admin role (0032). Forwarded
-    /// to `apply_proposal` / `confirm_proposal` (admins may act on any
-    /// proposal by id).
+    /// to `apply_proposal` (admins may act on any proposal by id).
     pub is_admin: bool,
     /// Whether the admin ACL-reveal switch is active for this request
     /// (`crate::reveal`). It lifts the per-recipient scope on the
@@ -859,8 +772,6 @@ pub async fn dispatch(
         AgenticTool::WikiMoveFact => dispatch_wiki_move_fact(arguments, ctx).await,
         AgenticTool::WikiDeletePage => dispatch_wiki_delete_page(arguments, ctx).await,
         AgenticTool::WikiRequestForget => dispatch_wiki_request_forget(arguments, ctx).await,
-        AgenticTool::StructureProposalRevert => dispatch_proposal_revert(arguments, ctx).await,
-        AgenticTool::StructureProposalConfirm => dispatch_proposal_confirm(arguments, ctx).await,
         AgenticTool::StructureProposalVote => dispatch_proposal_vote(arguments, ctx).await,
     }
 }
@@ -1108,15 +1019,13 @@ async fn dispatch_proposal_list(
     let status = match args.status.as_deref() {
         None | Some("pending") => Some(ProposalStatus::Pending),
         Some("applied") => Some(ProposalStatus::Applied),
-        Some("applied_pending_confirm") => Some(ProposalStatus::AppliedPendingConfirm),
-        Some("reverted") => Some(ProposalStatus::Reverted),
         Some("expired") => Some(ProposalStatus::Expired),
         Some(other) => {
             return Err(AgenticToolError::InvalidArguments {
                 tool: AgenticTool::StructureProposalList.name(),
                 detail: format!(
                     "unknown status `{other}`; expected one of \
-                     pending|applied|applied_pending_confirm|reverted|expired"
+                     pending|applied|expired"
                 ),
             });
         },
@@ -1195,7 +1104,6 @@ async fn dispatch_proposal_get(
         "expires_at": row.expires_at,
         "applied_at": row.applied_at,
         "applied_by": row.applied_by,
-        "revert_deadline": row.revert_deadline,
     });
     Ok(payload.to_string())
 }
@@ -1235,8 +1143,6 @@ async fn dispatch_proposal_apply(
                     "kind": outcome.kind,
                     "applied_at": outcome.applied_at,
                     "applied_by": outcome.applied_by,
-                    "revert_token": outcome.revert_token,
-                    "revert_deadline": outcome.revert_deadline,
                 }
             });
             Ok(payload.to_string())
@@ -1500,7 +1406,7 @@ async fn dispatch_wiki_forget(
             detail: format!("fact_id `{}` not found", args.fact_id),
         })?;
     // Smart section rows are not fact-governed (the consumer's next push would
-    // undo the tombstone) — refuse before the sender gate, which cannot catch
+    // resurrect the tombstone) — refuse before the sender gate, which cannot catch
     // a smart row (its sender is NULL).
     ensure_standard_wiki(ctx, AgenticTool::WikiForget.name(), &row.wiki_id)?;
     if !mwe_core::acl::can_delete(
@@ -1793,7 +1699,7 @@ async fn dispatch_wiki_change_scope(
 // Relocate ONE fact on the operator's instruction — same-wiki page→page or
 // cross-wiki. Reuses the same act-first engine the REM cross-wiki refile sweep
 // and the comment-apply `move` op use, so the dashboard, the dream, and the
-// chat all mint the same born-applied + revertible receipt. Admin-only (a move
+// chat all mint the same born-applied receipt. Admin-only (a move
 // re-categorises — it neither destroys the fact nor changes its visibility — so
 // it is the operator's / REM's act, not the subject's); a smart source or
 // destination is refused (smart wikis carry wiki-level governance — moving facts
@@ -1818,7 +1724,7 @@ struct WikiMoveFactArgs {
 #[derive(Debug, Serialize)]
 struct WikiMoveFactReport {
     fact_id: String,
-    /// Born-applied receipt id — the undo anchor (revert from the dashboard).
+    /// Born-applied receipt id — the record of the move.
     proposal_id: String,
     dest_wiki_id: String,
     dest_page: String,
@@ -1969,24 +1875,16 @@ struct WikiDeletePageReport {
     page: String,
     facts_tombstoned: u64,
     facts_evacuated: u64,
-    /// The single born-applied `bundle` receipt wrapping the whole deletion,
-    /// for `structure_proposal_revert`. `None` when the page had no facts.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    bundle_proposal_id: Option<String>,
-    /// Days the **rendered page file** outlives this call.
-    ///
-    /// The deletion disposes of the page's *facts*; the file itself is left in
-    /// place on purpose, because the whole thing is one revertable bundle and a
-    /// husk removed now would have nothing to be reverted into. The nightly
-    /// husk-GC ([`mwe_core::rem`], sub-job 16) drops it on the first cycle after
-    /// every row is tombstoned past [`mwe_core::proposals::REVERT_WINDOW`] — a
-    /// floor, not a schedule: that sweep is capped per cycle.
+    /// Whether the **rendered page file** outlives this call. Always true:
+    /// the deletion disposes of the page's *facts*, and the emptied husk is
+    /// dropped by the nightly husk-GC ([`mwe_core::rem`], sub-job 16), which
+    /// is capped per cycle.
     ///
     /// Reported because without it the model has only "N facts tombstoned" to
     /// summarise from and says *"page deleted"*, while the operator is looking
     /// at the page still sitting in the explorer. Recall stops immediately —
     /// it is the structure that lingers — and the answer has to say both.
-    page_file_retained_days: i64,
+    page_file_still_on_disk: bool,
 }
 
 /// Delete a page: tombstone the operator's own facts, evacuate foreign-authored
@@ -2064,8 +1962,7 @@ async fn dispatch_wiki_delete_page(
         page: args.page,
         facts_tombstoned: outcome.facts_tombstoned,
         facts_evacuated: outcome.facts_evacuated,
-        bundle_proposal_id: outcome.bundle_proposal_id,
-        page_file_retained_days: mwe_core::proposals::REVERT_WINDOW.num_days(),
+        page_file_still_on_disk: true,
     };
     serialise_result("deleted", &report)
 }
@@ -2196,7 +2093,7 @@ fn enforce_move_admin(
 /// [`AgenticToolError`]: an apply refusal (the fact moved since it was
 /// surfaced, a bad path, a smart-wiki guard in the engine) is user-actionable
 /// (`InvalidArguments` — the model relays it); a receipt-write miss means the
-/// move stands but the undo row failed, which is infrastructure
+/// move stands but the receipt row failed, which is infrastructure
 /// (`InternalFailure`).
 fn map_direct_promote_error(
     e: &mwe_core::promote::DirectPromoteError,
@@ -2211,107 +2108,6 @@ fn map_direct_promote_error(
             tool,
             detail: e.to_string(),
         },
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Structure-proposal revert
-//
-// The inverse of `structure_proposal_apply`. No new revert logic lives
-// here: this dispatcher selects the `RevertAuth` from the row's status
-// — exactly as the form route `routes::proposals::revert` does — and
-// hands off to the `mwe_core::proposals::revert_proposal` chassis, which
-// dispatches to the per-kind inverse (auto-promotion, dedup merge, type
-// forge).
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Serialize)]
-struct ProposalRevertReport {
-    proposal_id: String,
-    kind: String,
-    reverted_at: String,
-    /// The revertable status the row was in before the flip
-    /// (`applied` or `applied_pending_confirm`) — lets the chat render
-    /// "we undid your apply" vs "we undid the auto-apply we did for you".
-    prior_status: String,
-}
-
-async fn dispatch_proposal_revert(
-    arguments: &serde_json::Value,
-    ctx: &AgenticContext<'_>,
-) -> Result<String, AgenticToolError> {
-    let args: ProposalIdArgs = serde_json::from_value(arguments.clone()).map_err(|e| {
-        AgenticToolError::InvalidArguments {
-            tool: AgenticTool::StructureProposalRevert.name(),
-            detail: e.to_string(),
-        }
-    })?;
-    // Look up status + token + recipient to (a) gate non-admins to the
-    // addressee — keeping revert consistent with the recipient scoping
-    // `structure_proposal_list` / `_get` already enforce, so it is not a
-    // bypass — and (b) pick the RevertAuth path the chassis expects.
-    let (status, revert_token, recipient_id) = fetch_revert_row(ctx, &args.proposal_id).await?;
-
-    // 0032 recipient gate: a non-admin may only revert a proposal
-    // addressed to them (or an unaddressed one); admins always pass.
-    if !proposals::recipient_can_act(
-        recipient_id.as_deref(),
-        &ctx.sender_ctx.sender_id,
-        ctx.is_admin,
-    ) {
-        return Err(AgenticToolError::InvalidArguments {
-            tool: AgenticTool::StructureProposalRevert.name(),
-            detail: format!(
-                "proposal `{}` is not addressed to you — only its recipient or an admin can revert it",
-                args.proposal_id
-            ),
-        });
-    }
-
-    // Status → RevertAuth, mirroring routes::proposals::revert:
-    //   applied                 → Token (fetched server-side)
-    //   applied_pending_confirm → Caller { sender, is_admin }
-    //   anything else           → not revertable.
-    let auth = match status.as_str() {
-        "applied" => {
-            let token =
-                revert_token
-                    .as_deref()
-                    .ok_or_else(|| AgenticToolError::InternalFailure {
-                        tool: AgenticTool::StructureProposalRevert.name(),
-                        detail: format!(
-                            "proposal `{}` is applied but has no revert token on disk",
-                            args.proposal_id
-                        ),
-                    })?;
-            proposals::RevertAuth::Token(token)
-        },
-        "applied_pending_confirm" => proposals::RevertAuth::Caller {
-            sender: &ctx.sender_ctx.sender_id,
-            is_admin: ctx.is_admin,
-        },
-        other => {
-            return Err(AgenticToolError::InvalidArguments {
-                tool: AgenticTool::StructureProposalRevert.name(),
-                detail: format!(
-                    "proposal `{}` is not in a revertable status: {other}",
-                    args.proposal_id
-                ),
-            });
-        },
-    };
-
-    match proposals::revert_proposal(ctx.pool, ctx.tree, &args.proposal_id, auth).await {
-        Ok(outcome) => {
-            let report = ProposalRevertReport {
-                proposal_id: outcome.proposal_id,
-                kind: outcome.kind,
-                reverted_at: outcome.reverted_at,
-                prior_status: outcome.prior_status.as_str().to_owned(),
-            };
-            serialise_result("reverted", &report)
-        },
-        Err(e) => Err(map_revert_error(&e)),
     }
 }
 
@@ -2445,8 +2241,8 @@ async fn dispatch_proposal_vote(
 
 /// Map a [`mwe_core::votes::VoteError`] to an [`AgenticToolError`]. The
 /// member-actionable refusals (ineligible, closed, already voted, unknown id)
-/// are `InvalidArguments` so the chat relays the reason; infrastructure /
-/// revert failures are `InternalFailure`.
+/// are `InvalidArguments` so the chat relays the reason; infrastructure
+/// failures are `InternalFailure`.
 fn map_vote_error(tool: &'static str, e: &mwe_core::votes::VoteError) -> AgenticToolError {
     use mwe_core::votes::VoteError;
     match e {
@@ -2464,138 +2260,6 @@ fn map_vote_error(tool: &'static str, e: &mwe_core::votes::VoteError) -> Agentic
                 detail: e.to_string(),
             }
         },
-    }
-}
-
-/// Fetch `(status, revert_token, recipient_id)` for one proposal row, or
-/// surface `InvalidArguments` when the id is unknown. Mirrors the
-/// server-side `SELECT` the form route does before choosing a
-/// `RevertAuth`.
-async fn fetch_revert_row(
-    ctx: &AgenticContext<'_>,
-    proposal_id: &str,
-) -> Result<(String, Option<String>, Option<String>), AgenticToolError> {
-    let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT status, revert_token, recipient_id FROM structure_proposals WHERE proposal_id = ?",
-    )
-    .bind(proposal_id)
-    .fetch_optional(ctx.pool)
-    .await
-    .map_err(|e| AgenticToolError::InternalFailure {
-        tool: AgenticTool::StructureProposalRevert.name(),
-        detail: e.to_string(),
-    })?;
-    row.ok_or_else(|| AgenticToolError::InvalidArguments {
-        tool: AgenticTool::StructureProposalRevert.name(),
-        detail: format!("proposal `{proposal_id}` not found"),
-    })
-}
-
-/// Map a [`proposals::RevertError`] to an [`AgenticToolError`]. The
-/// user-actionable / refusal variants (a per-kind guard refusing via
-/// `HandlerData`) become `InvalidArguments` so the model relays them to
-/// the user as an ordinary refusal; the two infrastructure variants
-/// become `InternalFailure`. The `Display` text is used verbatim as the
-/// detail.
-fn map_revert_error(e: &proposals::RevertError) -> AgenticToolError {
-    use proposals::RevertError as R;
-    let tool = AgenticTool::StructureProposalRevert.name();
-    let detail = e.to_string();
-    match e {
-        R::Db(_) | R::HandlerIo(_) => AgenticToolError::InternalFailure { tool, detail },
-        R::NotFound(_)
-        | R::NotRevertable { .. }
-        | R::InvalidRevertToken(_)
-        | R::RevertWindowClosed { .. }
-        | R::ConfirmWindowExpired { .. }
-        | R::RevertNotAuthorized { .. }
-        | R::HandlerData(_)
-        | R::InvalidPayload(_)
-        | R::UnknownKind(_)
-        | R::KindNotYetImplemented(_) => AgenticToolError::InvalidArguments { tool, detail },
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Structure-proposal confirm
-//
-// The counterpart of `structure_proposal_revert` on the
-// `applied_pending_confirm → applied` edge. No new confirm logic lives
-// here: this dispatcher is a thin shim over the
-// `mwe_core::proposals::confirm_proposal` chassis, which already gates
-// by recipient/admin internally (`ConfirmError::NotAuthorized`) — so,
-// unlike the revert dispatcher, it does NOT pre-check the recipient or
-// SELECT the row first; it calls the chassis and maps the error. This
-// restores the "confirm a sweep auto-apply" action the retired
-// pending-confirms form tray carried, now in the chat as the single
-// operational surface.
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Serialize)]
-struct ProposalConfirmReport {
-    proposal_id: String,
-    kind: String,
-    /// ISO 8601 deadline of the freshly opened 7-day revert window — the
-    /// confirm mints a `revert_token` and starts the window, so the chat
-    /// can tell the user undo is still available until then.
-    revert_deadline: String,
-    /// `UUIDv4` minted at confirmation; echoed so a later
-    /// `structure_proposal_revert` can authorise the undo within the
-    /// window (the chat normally fetches it server-side, but surfacing it
-    /// keeps parity with `structure_proposal_apply`).
-    revert_token: String,
-}
-
-async fn dispatch_proposal_confirm(
-    arguments: &serde_json::Value,
-    ctx: &AgenticContext<'_>,
-) -> Result<String, AgenticToolError> {
-    let args: ProposalIdArgs = serde_json::from_value(arguments.clone()).map_err(|e| {
-        AgenticToolError::InvalidArguments {
-            tool: AgenticTool::StructureProposalConfirm.name(),
-            detail: e.to_string(),
-        }
-    })?;
-    // `confirm_proposal` gates by recipient/admin itself (returns
-    // `ConfirmError::NotAuthorized` for a non-addressee), validates the
-    // status is `applied_pending_confirm`, and checks the confirm window.
-    // So — unlike the revert dispatcher — we just call it and map errors.
-    match proposals::confirm_proposal(
-        ctx.pool,
-        &args.proposal_id,
-        &ctx.sender_ctx.sender_id,
-        ctx.is_admin,
-    )
-    .await
-    {
-        Ok(outcome) => {
-            let report = ProposalConfirmReport {
-                proposal_id: outcome.proposal_id,
-                kind: outcome.kind,
-                revert_deadline: outcome.revert_deadline,
-                revert_token: outcome.revert_token,
-            };
-            serialise_result("confirmed", &report)
-        },
-        Err(e) => Err(map_confirm_error(&e)),
-    }
-}
-
-/// Map a [`ConfirmError`] to an [`AgenticToolError`]. The user-actionable
-/// variants (unknown id, wrong recipient, not in a confirmable status,
-/// expired window) become `InvalidArguments` so the model relays them to
-/// the user as an ordinary refusal; the infrastructure variant (`Db`)
-/// becomes `InternalFailure`. The `Display` text is used verbatim as the
-/// detail.
-fn map_confirm_error(e: &ConfirmError) -> AgenticToolError {
-    let tool = AgenticTool::StructureProposalConfirm.name();
-    let detail = e.to_string();
-    match e {
-        ConfirmError::Db(_) => AgenticToolError::InternalFailure { tool, detail },
-        ConfirmError::NotFound(_)
-        | ConfirmError::NotPendingConfirm { .. }
-        | ConfirmError::ConfirmWindowExpired { .. }
-        | ConfirmError::NotAuthorized { .. } => AgenticToolError::InvalidArguments { tool, detail },
     }
 }
 
@@ -2632,8 +2296,6 @@ mod tests {
             AgenticTool::WikiMoveFact,
             AgenticTool::WikiDeletePage,
             AgenticTool::WikiRequestForget,
-            AgenticTool::StructureProposalRevert,
-            AgenticTool::StructureProposalConfirm,
             AgenticTool::StructureProposalVote,
         ] {
             assert_eq!(AgenticTool::from_name(t.name()), Some(t));
@@ -2793,9 +2455,7 @@ mod tests {
     /// The delete-page answer the model composes from must carry BOTH halves.
     /// With only the tombstone count in hand it says "page deleted", and the
     /// operator — who is looking at the still-present page in the explorer —
-    /// has been told something false. The retention is pinned to the revert
-    /// window itself, so lengthening the undo window cannot leave the chat
-    /// quoting a stale number.
+    /// has been told something false.
     #[test]
     fn the_delete_page_report_admits_the_page_file_outlives_the_call() {
         let report = WikiDeletePageReport {
@@ -2803,21 +2463,15 @@ mod tests {
             page: "acme_fair.md".to_owned(),
             facts_tombstoned: 1,
             facts_evacuated: 0,
-            bundle_proposal_id: Some("bundle-1".to_owned()),
-            page_file_retained_days: mwe_core::proposals::REVERT_WINDOW.num_days(),
+            page_file_still_on_disk: true,
         };
         let payload = serialise_result("deleted", &report).expect("serialises");
         let v: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
-        let days = v
-            .pointer("/deleted/page_file_retained_days")
-            .and_then(serde_json::Value::as_i64)
-            .expect("the model must be told the husk outlives the call");
         assert_eq!(
-            days,
-            mwe_core::proposals::REVERT_WINDOW.num_days(),
-            "retention must track REVERT_WINDOW, not a hand-copied constant"
+            v.pointer("/deleted/page_file_still_on_disk"),
+            Some(&serde_json::Value::Bool(true)),
+            "the model must be told the husk outlives the call"
         );
-        assert!(days > 0, "a zero would read as 'already gone'");
     }
 
     /// …and the hint is only for the mistake it describes: an id that is merely
@@ -2832,91 +2486,6 @@ mod tests {
         assert!(
             !detail.contains("/view/"),
             "no path hint when there is no path: {detail}"
-        );
-    }
-
-    /// Insert a row already in `applied` with a future `revert_deadline` and
-    /// the given `recipient_id` — a revertable proposal the chat's
-    /// `structure_proposal_revert` verb can target. A `dedup_merge` kind keeps
-    /// the row trivial; the recipient gate refuses before the chassis runs, so
-    /// the inverse handler is never invoked.
-    async fn seed_applied_revertable_proposal(
-        pool: &SqlitePool,
-        proposal_id: &str,
-        recipient: Option<&str>,
-    ) {
-        let now = chrono::Utc::now();
-        let revert_deadline = now + chrono::Duration::days(7);
-        sqlx::query(
-            "INSERT INTO structure_proposals \
-             (proposal_id, kind, context, questions, proposed_at, timeout_at, status, \
-              applied_at, applied_by, apply_mode, revert_token, revert_deadline, recipient_id) \
-             VALUES (?, ?, ?, '[]', ?, ?, 'applied', ?, 'admin', 'manual', ?, ?, ?)",
-        )
-        .bind(proposal_id)
-        .bind(proposal_kind::DEDUP_MERGE)
-        .bind(r#"{"intent":"test"}"#)
-        .bind(now.to_rfc3339())
-        .bind(now.to_rfc3339())
-        .bind(now.to_rfc3339())
-        .bind("revert-token-xyz")
-        .bind(revert_deadline.to_rfc3339())
-        .bind(recipient)
-        .execute(pool)
-        .await
-        .expect("seed applied revertable row");
-    }
-
-    /// Recipient gate (0032): a non-admin operator cannot revert a
-    /// proposal addressed to a different user. The dispatcher refuses with
-    /// `InvalidArguments` BEFORE touching the chassis, so the row is left
-    /// untouched. This keeps revert consistent with the recipient scoping
-    /// `structure_proposal_list` / `_get` enforce — revert is not a bypass.
-    /// (The revert happy-path through the chassis is covered by `mwe_core`'s
-    /// own per-kind revert tests.)
-    #[tokio::test]
-    async fn dispatch_proposal_revert_recipient_gate_blocks_non_addressee() {
-        let dir = tempfile::tempdir().unwrap();
-        let pool = mwe_core::db::open_or_init(dir.path()).await.unwrap();
-        let tree = WikiTree::open(dir.path()).unwrap();
-        // Proposal addressed to frodo; the operator is galadriel.
-        seed_applied_revertable_proposal(&pool, "p-frodo-revert", Some("user:frodo")).await;
-
-        let ctx = AgenticContext {
-            pool: &pool,
-            tree: &tree,
-            embedder: Arc::new(mwe_core::embedder::FakeEmbedder::new("fake", 4)),
-            sender_ctx: SenderContext::user("galadriel"),
-            is_admin: false,
-            reveal: false,
-        };
-        let err = dispatch(
-            "structure_proposal_revert",
-            &json!({ "proposal_id": "p-frodo-revert" }),
-            &ctx,
-        )
-        .await
-        .expect_err("non-addressee revert must be refused");
-        match err {
-            AgenticToolError::InvalidArguments { tool, detail } => {
-                assert_eq!(tool, "structure_proposal_revert");
-                assert!(
-                    detail.contains("not addressed to you"),
-                    "detail should explain the recipient gate: {detail}"
-                );
-            },
-            other => panic!("expected InvalidArguments, got {other:?}"),
-        }
-        // A refused revert leaves the row untouched.
-        let status: (String,) =
-            sqlx::query_as("SELECT status FROM structure_proposals WHERE proposal_id = ?")
-                .bind("p-frodo-revert")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(
-            status.0, "applied",
-            "a refused revert leaves the row applied"
         );
     }
 
@@ -3114,40 +2683,6 @@ mod tests {
 
     // ---------- structure_proposal_confirm ----------
 
-    /// Insert a row already in `applied_pending_confirm` with a future
-    /// `confirm_deadline` and the given `recipient_id` — the state the
-    /// nightly auto-apply sweep lands a proposal in, waiting for the user
-    /// to confirm or revert. Mirrors `proposals::mark_auto_applied`'s
-    /// column shape (which is `pub(crate)`, so unusable from this crate's
-    /// tests); a `dedup_merge` kind keeps the row trivial (confirm does
-    /// not re-run the handler). Returns the proposal id.
-    async fn seed_applied_pending_confirm(
-        pool: &SqlitePool,
-        proposal_id: &str,
-        recipient: Option<&str>,
-    ) {
-        let now = chrono::Utc::now();
-        let confirm_deadline = now + chrono::Duration::hours(24);
-        sqlx::query(
-            "INSERT INTO structure_proposals \
-             (proposal_id, kind, context, questions, proposed_at, timeout_at, status, \
-              applied_at, applied_by, apply_mode, confirm_deadline, recipient_id) \
-             VALUES (?, ?, ?, ?, ?, ?, 'applied_pending_confirm', ?, NULL, 'auto', ?, ?)",
-        )
-        .bind(proposal_id)
-        .bind(proposal_kind::DEDUP_MERGE)
-        .bind(r#"{"intent":"test"}"#)
-        .bind("[]")
-        .bind(now.to_rfc3339())
-        .bind(now.to_rfc3339())
-        .bind(now.to_rfc3339())
-        .bind(confirm_deadline.to_rfc3339())
-        .bind(recipient)
-        .execute(pool)
-        .await
-        .expect("seed applied_pending_confirm row");
-    }
-
     /// Seed a `pending` proposal whose `context` carries identifiable text,
     /// addressed to `recipient`.
     async fn seed_pending_with_context(
@@ -3236,107 +2771,6 @@ mod tests {
         assert!(
             revealed.contains("p-bob"),
             "admin WITH reveal must see bob's pending: {revealed}"
-        );
-    }
-
-    /// Happy path: an admin confirms an `applied_pending_confirm`
-    /// proposal from the chat. The dispatcher hands off to
-    /// `proposals::confirm_proposal`, which promotes the row to `applied`,
-    /// mints a `revert_token`, and opens the revert window. Asserts the
-    /// `confirmed` payload and that the row is now `applied`.
-    #[tokio::test]
-    async fn dispatch_proposal_confirm_promotes_pending_confirm() {
-        let dir = tempfile::tempdir().unwrap();
-        let pool = mwe_core::db::open_or_init(dir.path()).await.unwrap();
-        let tree = WikiTree::open(dir.path()).unwrap();
-        seed_applied_pending_confirm(&pool, "p-confirm-me", Some("user:alice")).await;
-
-        let ctx = AgenticContext {
-            pool: &pool,
-            tree: &tree,
-            embedder: Arc::new(mwe_core::embedder::FakeEmbedder::new("fake", 4)),
-            sender_ctx: SenderContext::user("alice"),
-            is_admin: true,
-            reveal: false,
-        };
-        let out = dispatch(
-            "structure_proposal_confirm",
-            &json!({ "proposal_id": "p-confirm-me" }),
-            &ctx,
-        )
-        .await
-        .expect("confirm succeeds");
-
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        let confirmed = &v["confirmed"];
-        assert_eq!(confirmed["proposal_id"], "p-confirm-me");
-        assert_eq!(confirmed["kind"], proposal_kind::DEDUP_MERGE);
-        assert!(
-            confirmed["revert_token"]
-                .as_str()
-                .is_some_and(|t| !t.is_empty()),
-            "a revert_token is minted on confirm: {v}"
-        );
-        assert!(
-            confirmed["revert_deadline"].is_string(),
-            "revert_deadline present: {v}"
-        );
-
-        let status: (String,) =
-            sqlx::query_as("SELECT status FROM structure_proposals WHERE proposal_id = ?")
-                .bind("p-confirm-me")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(status.0, "applied", "the row is now applied after confirm");
-    }
-
-    /// Recipient gate: a non-admin operator cannot confirm a
-    /// proposal addressed to a different user. The chassis itself returns
-    /// `ConfirmError::NotAuthorized`, which the dispatcher maps to
-    /// `InvalidArguments`; the row stays `applied_pending_confirm`.
-    #[tokio::test]
-    async fn dispatch_proposal_confirm_blocks_non_addressee() {
-        let dir = tempfile::tempdir().unwrap();
-        let pool = mwe_core::db::open_or_init(dir.path()).await.unwrap();
-        let tree = WikiTree::open(dir.path()).unwrap();
-        // Proposal addressed to frodo; the operator is galadriel.
-        seed_applied_pending_confirm(&pool, "p-frodo-confirm", Some("user:frodo")).await;
-
-        let ctx = AgenticContext {
-            pool: &pool,
-            tree: &tree,
-            embedder: Arc::new(mwe_core::embedder::FakeEmbedder::new("fake", 4)),
-            sender_ctx: SenderContext::user("galadriel"),
-            is_admin: false,
-            reveal: false,
-        };
-        let err = dispatch(
-            "structure_proposal_confirm",
-            &json!({ "proposal_id": "p-frodo-confirm" }),
-            &ctx,
-        )
-        .await
-        .expect_err("non-addressee confirm must be refused");
-        match err {
-            AgenticToolError::InvalidArguments { tool, detail } => {
-                assert_eq!(tool, "structure_proposal_confirm");
-                assert!(
-                    detail.contains("not authorized"),
-                    "detail should explain the recipient gate: {detail}"
-                );
-            },
-            other => panic!("expected InvalidArguments, got {other:?}"),
-        }
-        let status: (String,) =
-            sqlx::query_as("SELECT status FROM structure_proposals WHERE proposal_id = ?")
-                .bind("p-frodo-confirm")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(
-            status.0, "applied_pending_confirm",
-            "the row must survive a refused confirm (no state change)"
         );
     }
 
@@ -3655,7 +3089,7 @@ mod tests {
     }
 
     /// `wiki_forget` refuses a fact living in a smart wiki — smart section
-    /// rows are not fact-governed (the consumer's next push would undo the
+    /// rows are not fact-governed (the consumer's next push would overwrite the
     /// tombstone). Admin context, so only the smart guard can be the refusal.
     #[tokio::test]
     async fn dispatch_wiki_forget_refuses_smart_target() {
