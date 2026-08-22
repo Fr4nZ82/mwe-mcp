@@ -129,7 +129,7 @@ pub type Result<T> = std::result::Result<T, CompilerError>;
 pub struct CompileReport {
     /// What the queue did on the way in: claims screened, folded as
     /// duplicates, written, superseded. Filled by
-    /// [`crate::dream::run_compile`], which screens the parking page before planning
+    /// [`crate::dream::run_compile`], which screens the buffer before planning
     /// and writes the placed claims before compiling — default when the
     /// compile ran without a queue (a test calling `compile_dirty_pages`
     /// directly).
@@ -420,7 +420,7 @@ async fn note_page_failure(pool: &SqlitePool, tree: &WikiTree, page: &PagePlan, 
 ///
 /// - its path is not in the plan's page set for that wiki,
 /// - it is not a reserved page (`@rules.md`, any `_`-prefixed file). The card
-///   and the parking page need no exemption: they are plan nodes, so they are
+///   and the buffer need no exemption: they are plan nodes, so they are
 ///   always in the plan's page set for their wiki,
 /// - **no** non-tombstoned `fact_index` row points at it
 ///   ([`fact_index::count_rows_at_source_path`]) — the DB-first guard: a
@@ -587,7 +587,7 @@ async fn compile_page(
     page_index: &PageIndex,
     now: &str,
 ) -> Result<PageOutcome> {
-    // A wiki's parking page rides the same dispatch: it renders as prose while it
+    // A wiki's card rides the same dispatch: it renders as prose while it
     // still carries facts and flips to a bare overview once REM's reorg has
     // drained them onto children — which is what is meant to happen to
     // everything that lands there.
@@ -816,8 +816,7 @@ async fn compile_leaf_page(
 }
 
 /// Refresh the wiki's one-line abstract in `_meta` from the page that answers
-/// *what is this wiki* — its **foundation** node: an actor's card, or a topic
-/// wiki's parking page.
+/// *what is this wiki* — its **identity card**.
 ///
 /// 🚨 **The abstract has no reader on the read side.** What the write side
 /// does with it is its own business — nothing here promises a turn ever sees
@@ -1623,8 +1622,8 @@ async fn compile_list_page(
         return Ok(PageOutcome::Unchanged);
     }
 
-    // Recall navigation: a record page that IS its wiki's foundation node
-    // (a `lista`-styled card or parking page) still owns the wiki's abstract.
+    // Recall navigation: a record page that IS its wiki's identity card
+    // (a `lista`-styled card) still owns the wiki's abstract.
     sync_foundation_summary(page, handle.abs_dir(), &page.description);
 
     Ok(PageOutcome::List)
@@ -2885,7 +2884,7 @@ mod tests {
     async fn cronista_writes_prose_with_marker_and_repoints_fact() {
         let (dir, tree, pool) = setup().await;
         let fid = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d77").unwrap();
-        // Plant the fact in fact_index pointing at the parking page journal.
+        // Plant the fact in fact_index pointing at the buffer journal.
         fact_index::insert(
             &pool,
             &crate::fact_index::NewFact {
@@ -3531,7 +3530,7 @@ mod tests {
         let (dir, tree, pool) = setup().await;
         let fid1 = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d01").unwrap();
         let fid2 = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d02").unwrap();
-        // Both facts are promoted (pointing at the parking page journal). fid2 is a
+        // Both facts are promoted (pointing at the buffer journal). fid2 is a
         // non-global (group) fact — exactly the `missing_acl_markers` case.
         plant_fact(&pool, &fid1, "user:alice", "Alice loves pasta").await;
         plant_fact(
@@ -3957,7 +3956,7 @@ mod tests {
         // A fact with a validity window gets a `(validity: …)` hint the
         // Cronista phrases into prose; a durable fact (both bounds None) gets none.
         // NOTE: today every narrative-compiled fact has NULL validity (the
-        // parking page→promote path drops it), so this path is exercised at the unit
+        // buffer→promote path drops it), so this path is exercised at the unit
         // level — it lights up end-to-end once that gap is threaded.
         let now = "2026-06-08T12:00:00Z";
         let mut closed = ffp(1, "dentist appointment");

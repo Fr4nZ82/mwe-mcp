@@ -292,7 +292,7 @@ struct FactRow {
     successor_fact_id: Option<String>,
     deleted_at: Option<String>,
     deleted_reason: Option<String>,
-    /// Un-promoted parking page capture (vs a durable `fact_index` fact).
+    /// Un-promoted buffer capture (vs a durable `fact_index` fact).
     fresh: bool,
     /// Active = neither superseded nor deleted (always true for a fresh row).
     active: bool,
@@ -334,7 +334,7 @@ impl FactRow {
     fn from_capture(c: BufferedCapture) -> Self {
         Self {
             fact_id: c.capture_id.as_str().to_owned(),
-            // Empty on purpose: a capture waiting in the parking page is in no wiki
+            // Empty on purpose: a capture waiting in the buffer is in no wiki
             // yet — the light dream decides where it goes when it sorts the
             // queue. The table renders the blank as a dash.
             wiki_id: String::new(),

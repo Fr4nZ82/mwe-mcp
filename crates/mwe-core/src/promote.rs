@@ -1610,9 +1610,8 @@ async fn rehome_grouped_page(
 /// are one subject area becomes a dedicated sub-wiki, each page carried
 /// over under its own name.
 ///
-/// What the narrative compiler owns in the new wiki is its `@notes.md` parking page
-/// node plus the carried pages, so this handler invents no prose it would
-/// then fight over.
+/// What the narrative compiler owns in the new wiki is the carried pages, so
+/// this handler invents no prose it would then fight over.
 ///
 /// The page-count floor is the **caller's** (the REM grouping pass owns
 /// `auto_promote_group_min_pages`); this handler enforces only the
@@ -2348,7 +2347,7 @@ struct ValidityCloseSpec {
 /// still-buffered capture.
 ///
 /// Nothing downstream needs it (the write probes the fact first, then the
-/// parking page — the id is stable across promotion), but the receipt records
+/// buffer — the id is stable across promotion), but the receipt records
 /// it for the audit trail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClosureSurface {

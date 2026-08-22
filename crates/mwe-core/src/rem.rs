@@ -2553,10 +2553,7 @@ async fn run_page_grouping_for_wiki(
         return Ok(moved);
     }
 
-    // Candidate pages: every page carrying mass. [`wiki::NOTES_FILENAME`] is
-    // *not* excluded and must not be: it is the parking page a fact lands on
-    // when nothing better fits, and draining it onto real pages — or letting a
-    // new page emerge out of it — is exactly this sweep's job.
+    // Candidate pages: every page carrying mass.
     let mut candidates: Vec<(String, &str, usize)> = page_mass
         .iter()
         .filter_map(|(&source_path, &mass)| {
@@ -3867,10 +3864,14 @@ struct RefileDecision {
     verdict: String,
     #[serde(default)]
     dest_wiki_id: Option<String>,
-    // The judge picks only the destination WIKI; the fact always lands on
-    // that wiki's `@notes.md` (collision-safe — see the apply site), so no
-    // per-page field is read. A `dest_page` in the model's JSON is ignored
-    // by serde.
+    /// The page inside `dest_wiki_id` the fact lands on. It MUST be one the
+    /// destination already has: the compilation plan keys pages by a bare
+    /// slug across the whole forest, so a NEW name in a foreign wiki can
+    /// collide with a same-named page homed elsewhere and attach the fact to
+    /// the wrong wiki's node. Choosing among pages that already exist keeps
+    /// the key the one the plan already holds.
+    #[serde(default)]
+    dest_page: Option<String>,
     #[serde(default)]
     reason: Option<String>,
 }
@@ -3977,6 +3978,56 @@ fn refile_wiki_line(view: &RefileWikiView<'_>) -> String {
         view.d.meta.title,
         summary,
     )
+}
+
+/// The pages one wiki already holds, read off its directory.
+///
+/// The same rule as [`refile_wiki_pages`] for a caller that has the wiki but
+/// not its facts: reserved names and engine files are excluded, so what comes
+/// back is only what a foreign fact may be aimed at.
+fn wiki_pages_on_disk(d: &wiki::DiscoveredWiki) -> std::collections::BTreeSet<String> {
+    let Ok(entries) = std::fs::read_dir(&d.abs_dir) else {
+        return std::collections::BTreeSet::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_owned();
+            let path = std::path::Path::new(&name);
+            (path
+                .extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case("md"))
+                && !name.starts_with('_')
+                && !wiki::names_reserved_page(path))
+            .then_some(name)
+        })
+        .collect()
+}
+
+/// The pages a wiki already holds, derived from the facts on them — no
+/// second read, and no page the sweep may not aim at.
+///
+/// Reserved names are filtered out: an identity card carries one subject and
+/// a channel page is written by its own code path, so neither is a landing
+/// place for somebody else's fact.
+fn refile_wiki_pages(view: &RefileWikiView<'_>) -> std::collections::BTreeSet<String> {
+    view.facts
+        .iter()
+        .filter_map(|f| wiki_relative_page(view.d, &f.source_path))
+        .filter(|p| !wiki::names_reserved_page(std::path::Path::new(p)))
+        .collect()
+}
+
+/// One candidate wiki as the judge sees it: the wiki line plus the pages it
+/// already has, which are the only landing places it may name.
+fn refile_candidate_block(view: &RefileWikiView<'_>) -> String {
+    let pages = refile_wiki_pages(view);
+    let pages = if pages.is_empty() {
+        "(none yet — this wiki cannot take a fact until it has a page)".to_owned()
+    } else {
+        pages.into_iter().collect::<Vec<_>>().join(", ")
+    };
+    format!("{}\n    pages: {pages}", refile_wiki_line(view))
 }
 
 /// The cross-wiki refile sweep — the LLM-decided refile of a single
@@ -4108,7 +4159,7 @@ async fn judge_refile_case(
     let candidates_text = case
         .foreign
         .iter()
-        .map(|v| refile_wiki_line(v))
+        .map(|v| refile_candidate_block(v))
         .collect::<Vec<_>>()
         .join("\n");
     let prompt = prompts::render(
@@ -4184,18 +4235,27 @@ async fn judge_refile_case(
         );
         return Ok(None);
     };
-    // Destination page: ALWAYS the dest wiki's parking page page. The compilation
-    // plan keys pages by a bare slug across the whole forest, so landing a
-    // fact on a NAMED page of a foreign wiki can collide with a same-slug
-    // page already homed in another wiki — the rehome would attach the fact
-    // to the WRONG wiki's page and the next compile would strand
-    // `wiki_id != source_path` (a cross-wiki leak). The parking page is the
-    // one destination every wiki has and nothing else claims, so it is
-    // collision-safe: the fact crosses into the right wiki and that wiki's
-    // own dream (auto_promote / page_merge) re-files it onto the right page.
-    // Finer cross-wiki page placement waits on a wiki-qualified plan
-    // keyspace.
-    let dest_page = wiki::NOTES_FILENAME;
+    // Destination page: one the destination wiki ALREADY has. The
+    // compilation plan keys pages by a bare slug across the whole forest, so
+    // a NEW name in a foreign wiki can collide with a same-named page homed
+    // elsewhere — the rehome would attach the fact to the WRONG wiki's node
+    // and the next compile would strand `wiki_id != source_path` (a
+    // cross-wiki leak). A page the destination already holds is already in
+    // the plan under the right wiki, so naming it cannot mint a second key.
+    let dest_pages = refile_wiki_pages(dest_view);
+    let Some(dest_page) = decision
+        .dest_page
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| dest_pages.contains(*p))
+    else {
+        tracing::warn!(
+            dest = dest_wiki_id,
+            page = ?decision.dest_page,
+            "rem refile: confirmer named no page the destination already has — skipped"
+        );
+        return Ok(None);
+    };
     // Source page wiki-relative (the apply joins it onto the source wiki's
     // abs_dir, so a workdir-relative path would double the prefix).
     let Some(source_page) = wiki_relative_page(case.home.d, &case.fact.source_path) else {
@@ -4858,7 +4918,7 @@ async fn repair_one_miss(
         propose_repair(tree, llm, &miss.restated_text, &fact, home, &candidates).await
     };
 
-    let Some((dest, reason)) = decision else {
+    let Some((dest, dest_page, reason)) = decision else {
         // No local repair — on recurrence, queue the operator notice.
         return finish_unrepaired(
             pool,
@@ -4891,6 +4951,7 @@ async fn repair_one_miss(
     let home_id = fact.wiki_id.as_str();
     let scratch_recipient = recipient.clone();
     let scratch_reason = reason.clone();
+    let scratch_dest_page = dest_page.clone();
     let verdict = recall_gate::gate_repair(
         pool,
         tree.workdir(),
@@ -4907,7 +4968,7 @@ async fn repair_one_miss(
                 home_id,
                 &source_page,
                 dest_id,
-                wiki::NOTES_FILENAME,
+                &scratch_dest_page,
                 scratch_reason.as_deref(),
                 scratch_recipient,
             )
@@ -4947,7 +5008,7 @@ async fn repair_one_miss(
 
     // Proven — commit for real, act-first, same paper trail as the
     // refile sweep (born-applied receipt + structure_applied notice), and
-    // onto the same parking page page: the gate proved the flip against THAT
+    // onto the same buffer: the gate proved the flip against THAT
     // destination, so committing to any other page would ship a move the
     // replay never judged.
     let op_id = wal::begin_rem_op(pool, cycle_id, "recall_repair_apply", Some(home_id), None)
@@ -4960,7 +5021,7 @@ async fn repair_one_miss(
         home_id,
         &source_page,
         dest_id,
-        wiki::NOTES_FILENAME,
+        &dest_page,
         reason.as_deref(),
         recipient.clone(),
     )
@@ -4986,7 +5047,7 @@ async fn repair_one_miss(
             "fact_id": miss.fact_id,
             "source_wiki_id": home_id,
             "dest_wiki_id": dest_id,
-            "dest_page": wiki::NOTES_FILENAME,
+            "dest_page": dest_page,
             "missed_query": miss.restated_text,
             "recipient_id": recipient,
             "dashboard_path": receipt_dashboard_path(&applied.proposal_id),
@@ -5019,13 +5080,19 @@ async fn propose_repair<'a>(
     fact: &FactIndexRow,
     home: &wiki::DiscoveredWiki,
     candidates: &[&'a wiki::DiscoveredWiki],
-) -> Option<(&'a wiki::DiscoveredWiki, Option<String>)> {
+) -> Option<(&'a wiki::DiscoveredWiki, String, Option<String>)> {
     let candidates_text = candidates
         .iter()
         .enumerate()
         .map(|(i, d)| {
+            let pages = wiki_pages_on_disk(d);
+            let pages = if pages.is_empty() {
+                "(none yet — this wiki cannot take a fact until it has a page)".to_owned()
+            } else {
+                pages.into_iter().collect::<Vec<_>>().join(", ")
+            };
             format!(
-                "{}. {} · {} — {}",
+                "{}. {} · {} — {}\n    pages: {pages}",
                 i + 1,
                 d.meta.wiki_id.as_str(),
                 d.meta.title,
@@ -5076,7 +5143,16 @@ async fn propose_repair<'a>(
     let dest = candidates
         .iter()
         .find(|d| d.meta.wiki_id.as_str() == dest_id)?;
-    Some((dest, decision.reason))
+    // The page must be one the destination already has: a new name in a
+    // foreign wiki mints a second plan key under the bare-slug keyspace and
+    // strands `wiki_id != source_path`.
+    let dest_page = decision
+        .dest_page
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| wiki_pages_on_disk(dest).contains(*p))?
+        .to_owned();
+    Some((dest, dest_page, decision.reason))
 }
 
 /// Shared tail of every unrepaired outcome: on recurrence the operator
@@ -9301,13 +9377,12 @@ mod tests {
         )
         .await;
 
-        // The model even names a specific dest page — which the engine
-        // deliberately IGNORES, forcing the fact onto the dest wiki's
-        // collision-safe parking page page. (A named cross-wiki page can collide
-        // with a same-slug page already homed in another wiki under the
-        // bare-slug plan keyspace, stranding wiki_id != source_path — the
-        // regression this asserts.) The move must still land on bob/@notes.md.
-        let resp = "{\"verdict\":\"move\",\"dest_wiki_id\":\"bob\",\"dest_page\":\"cooking.md\",\"reason\":\"this fact is about bob\"}";
+        // The model names the page too, and it must be one bob ALREADY has
+        // (`preferenze.md`, where `plant_fact_with_embedding` files): a name
+        // bob does not hold would mint a second plan key under the bare-slug
+        // keyspace and strand `wiki_id != source_path`, so the engine
+        // refuses it and the fact stays home.
+        let resp = "{\"verdict\":\"move\",\"dest_wiki_id\":\"bob\",\"dest_page\":\"preferenze.md\",\"reason\":\"this fact is about bob\"}";
         let llm = FakeLlmBackend::new("confirmer", resp);
         let index = load_smart_wiki_index(&tree).expect("index");
         let report = run_refile_sweep(
@@ -9336,7 +9411,7 @@ mod tests {
             .unwrap()
             .expect("row");
         assert_eq!(row.wiki_id, "bob");
-        assert_eq!(row.source_path, "wikis/bob/@notes.md");
+        assert_eq!(row.source_path, "wikis/bob/preferenze.md");
         assert!(row.deleted_at.is_none(), "refile is never a tombstone");
 
         // Born-applied receipt + one notice.
@@ -9399,8 +9474,7 @@ mod tests {
         crate::planner::park_bridge_signals(&tree, &[parked.as_str().to_owned()], &[])
             .expect("park");
 
-        let resp =
-            "{\"verdict\":\"move\",\"dest_wiki_id\":\"bob\",\"reason\":\"the subject is bob\"}";
+        let resp = "{\"verdict\":\"move\",\"dest_wiki_id\":\"bob\",\"dest_page\":\"preferenze.md\",\"reason\":\"the subject is bob\"}";
         let llm = FakeLlmBackend::new("confirmer", resp);
         let index = load_smart_wiki_index(&tree).expect("index");
         let report = run_refile_sweep(
@@ -10332,14 +10406,14 @@ mod tests {
         )
         .await;
         // The destination wiki has a readable fact whose topic makes its
-        // card match the turn's seed ("ricette") for the gather fan.
-        // On `@notes.md` — the parking page, which is where a cross-wiki refile
-        // lands, so opening it is what lets the gate see the moved fact.
+        // card match the turn's seed ("ricette") for the gather fan. On
+        // `dolci.md`, which is therefore a page `ricette` already holds — the
+        // only kind of page a cross-wiki refile may name.
         plant_topic_fact(
             &tree,
             &pool,
             "ricette",
-            "@notes.md",
+            "dolci.md",
             "Le ricette di famiglia sono raccolte qui",
             "alice",
             &["ricette"],
@@ -10365,11 +10439,11 @@ mod tests {
 
         let confirmer = FakeLlmBackend::new(
             "confirmer",
-            "{\"verdict\":\"move\",\"dest_wiki_id\":\"ricette\",\"reason\":\"è una ricetta\"}",
+            "{\"verdict\":\"move\",\"dest_wiki_id\":\"ricette\",\"dest_page\":\"dolci.md\",\"reason\":\"è una ricetta\"}",
         );
         let navigator = FakeLlmBackend::new(
             "nav",
-            "{\"open\":[{\"wiki_id\":\"ricette\",\"page\":\"@notes.md\"}],\"done\":true}",
+            "{\"open\":[{\"wiki_id\":\"ricette\",\"page\":\"dolci.md\"}],\"done\":true}",
         );
         // Flat replay blind (top_k 0) → the gate's verdict rides navigation.
         let policy = RemPolicy {
@@ -10406,8 +10480,8 @@ mod tests {
             .unwrap()
             .expect("moved fact");
         assert_eq!(
-            moved.source_path, "wikis/ricette/@notes.md",
-            "the fact landed on the destination's parking page"
+            moved.source_path, "wikis/ricette/dolci.md",
+            "the fact landed on the page the judge named, which `ricette` already had"
         );
         let misses = crate::recall_log::recent_misses(&pool, 10).await.unwrap();
         assert_eq!(misses[0].status, "repaired");

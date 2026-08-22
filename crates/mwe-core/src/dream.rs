@@ -192,7 +192,7 @@ pub async fn run_compile(
     // on the cheap ingest tier. The second half is what gives the write side
     // its structure back: since the classifier stopped proposing a page for
     // prose, a fact with no name of its own had nowhere to go but the wiki's
-    // parking page, and the strong Cartografo only ever looked at it the next night
+    // buffer, and the strong Cartografo only ever looked at it the next night
     // — by which time the light build had already settled it there, so the
     // carry-over kept it. With no ingest slot wired there is no cheap tier to
     // run it on: a half-wired install, and the light pass does the
@@ -636,7 +636,7 @@ mod tests {
     /// the remainder to the Cartografo on the cheap ingest tier. Before this
     /// it settled only what the classifier had already named, which — since
     /// the classifier stopped naming a page for prose — meant every prose fact
-    /// sat on its wiki's parking page until the next REM.
+    /// waited in the buffer until the next REM.
     ///
     /// Both degradations are part of the policy: no ingest slot ⇒ the light
     /// pass keeps the deterministic half alone; no strong slot ⇒ the full pass

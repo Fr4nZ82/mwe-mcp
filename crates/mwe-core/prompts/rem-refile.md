@@ -1,7 +1,7 @@
 ---
 name: rem-refile
-description: REM cross-wiki refile sweep — given one candidate fact, its HOME wiki, and the FOREIGN candidate wikis ranked nearest first, decide whether the fact belongs in a different wiki (and which page) or stays home; strict JSON out; act-first cross-wiki move, revertable from the dashboard
-version: 1.3
+description: REM cross-wiki refile sweep — given one candidate fact, its HOME wiki, and the FOREIGN candidate wikis ranked nearest first with the pages each already holds, decide whether the fact belongs in a different wiki and on which of that wiki's pages, or stays home; strict JSON out; act-first cross-wiki move, final
+version: 1.4
 default_version_at_bootstrap: v1.3
 ---
 
@@ -25,12 +25,16 @@ The judgment prompt for the REM **cross-wiki refile sweep** sub-job
   tier, shared by every REM confirmer sweep) — REM-only.
 - **Placeholders**: `{fact_text}` (the candidate fact's claim),
   `{home_wiki}` (the wiki it lives in now: `wiki_id · title — summary`),
-  `{candidates}` (the foreign wikis, one `wiki_id · title — summary` per
-  line, **nearest first** and not numbered — on the bridged route that is
-  every other wiki of the memory, ranked, not a qualified shortlist).
+  `{candidates}` (the foreign wikis, **nearest first** and not numbered —
+  on the bridged route that is every other wiki of the memory, ranked, not
+  a qualified shortlist. Each is a `wiki_id · title — summary` line
+  followed by an indented `pages:` line listing the pages that wiki
+  already holds, reserved names excluded).
 - **Output**: one strict JSON object, parsed by the first-balanced-`{}`
   scanner. An absent / empty / `"stay"` verdict = the fact stays home
-  (no-op).
+  (no-op), and so does a `dest_page` the destination does not already
+  hold — the code checks it against that wiki's own page list before it
+  moves anything.
 - **Runtime parameters**: temperature 0.1, max_tokens 300.
 
 ## Prompt
@@ -38,13 +42,14 @@ The judgment prompt for the REM **cross-wiki refile sweep** sub-job
 ```text
 You are the cross-wiki refile sweep inside mwe-mcp's nightly REM cycle. The memory is organised as separate wikis, each holding facts about one subject (a person, a project, a topic). Sometimes a fact ends up filed in the wrong wiki — captured into wiki A when it really belongs in wiki B.
 
-You receive ONE candidate fact, the HOME wiki it currently lives in, and a list of FOREIGN candidate wikis, nearest first. Nearest is a similarity ranking, not a verdict: the list may hold every other wiki of the memory, and being on it says nothing about whether the fact belongs there. Decide whether this fact belongs in a DIFFERENT wiki, and if so which one (chosen ONLY from the candidate list).
+You receive ONE candidate fact, the HOME wiki it currently lives in, and a list of FOREIGN candidate wikis, nearest first, each with the pages it already holds. Nearest is a similarity ranking, not a verdict: the list may hold every other wiki of the memory, and being on it says nothing about whether the fact belongs there. Decide whether this fact belongs in a DIFFERENT wiki, and if so which one and on which of that wiki's existing pages (both chosen ONLY from the list you are given).
 
 Rules:
 - Be CONSERVATIVE. Move a fact ONLY when it clearly belongs in one of the candidate wikis and is plainly misfiled where it is. Topical similarity is NOT misfiling: a fact that merely mentions a subject covered by another wiki still stays home if it is genuinely about its home subject. When in doubt, keep it home (a "stay" verdict is a fine, common answer).
 - A fact belongs in the wiki whose SUBJECT it is primarily about — whose subject/topic the claim is fundamentally a fact OF, not merely a fact that references.
 - `dest_wiki_id` MUST be a wiki_id copied EXACTLY from the candidate list. Never invent one, and never name the home wiki.
-- You choose only the destination WIKI, not a page: the fact lands on that wiki's parking page (`@notes.md`, where everything unplaced waits) and the wiki's own next dream files it onto the right page.
+- `dest_page` MUST be one of the pages listed under that wiki, copied character for character. You may NOT invent a page name: a name that wiki does not already have is refused and the fact stays home. If none of its pages is a sensible home for this fact, answer "stay" — a fact on the wrong page of the right wiki is not an improvement.
+- A wiki whose `pages:` line says `(none yet)` cannot receive the fact. Do not name it.
 - Moves here are act-first and final; prefer leaving a fact home over a speculative move.
 
 CANDIDATE FACT:
@@ -53,9 +58,9 @@ CANDIDATE FACT:
 HOME WIKI (where it lives now):
 {home_wiki}
 
-FOREIGN CANDIDATE WIKIS (wiki_id · title — summary):
+FOREIGN CANDIDATE WIKIS (wiki_id · title — summary, then the pages that wiki already holds):
 {candidates}
 
 Output ONE strict JSON object, nothing else:
-{"verdict": "move" | "stay", "dest_wiki_id": "<wiki_id from the list>" | null, "reason": "<one short sentence>"}
+{"verdict": "move" | "stay", "dest_wiki_id": "<wiki_id from the list>" | null, "dest_page": "<one of that wiki's listed pages>" | null, "reason": "<one short sentence>"}
 ```

@@ -1,7 +1,7 @@
 ---
 name: rem-recall-repair
-description: REM recall-repair sub-job — given one confirmed recall miss (the query the user had to restate, and the fact memory held but recall did not surface), decide whether re-filing the fact into a different wiki would make it reachable, or whether no local repair applies; strict JSON out; the verdict is only a CANDIDATE — a gold-set gate replay must prove it before anything commits
-version: 1.2
+description: REM recall-repair sub-job — given one confirmed recall miss (the query the user had to restate, and the fact memory held but recall did not surface), decide whether re-filing the fact onto a page of a different wiki would make it reachable, or whether no local repair applies; strict JSON out; the verdict is only a CANDIDATE — a gold-set gate replay must prove it before anything commits
+version: 1.3
 default_version_at_bootstrap: v1.2
 ---
 
@@ -28,10 +28,14 @@ REM. Loaded via
 - **Placeholders**: `{query}` (the user's restatement — the turn that
   missed), `{fact_text}` (the fact recall failed to surface),
   `{home_wiki}` (where it lives: `wiki_id · page`), `{candidates}`
-  (numbered non-smart wikis: `wiki_id · title — summary`).
+  (numbered non-smart wikis: a `wiki_id · title — summary` line followed
+  by an indented `pages:` line listing the pages that wiki already holds,
+  reserved names excluded).
 - **Output**: one strict JSON object, parsed by the first-balanced-`{}`
   scanner. An absent / empty / `"stay"` verdict = no local repair
-  (the recurrence path may still queue an operator notice).
+  (the recurrence path may still queue an operator notice), and so does a
+  `dest_page` the destination does not already hold — the code checks it
+  against that wiki's own page list before the gate runs.
 - **Runtime parameters**: temperature 0.1, max_tokens 300.
 
 ## Prompt
@@ -41,14 +45,15 @@ You are the recall-repair pass inside mwe-mcp's nightly REM cycle. The memory is
 
 You receive ONE confirmed recall MISS: the user asked something (QUERY) and the memory already held the answer (FACT), but recall failed to surface it — the user had to repeat themselves. The most repairable cause is a misfiled fact: it sits in a wiki whose pages this kind of query never reaches, so neither route can find it.
 
-Decide whether moving the FACT to a different wiki (chosen ONLY from the candidate list) would make it reachable for queries like this one, or whether it should stay where it is.
+Decide whether moving the FACT onto a page of a different wiki (both chosen ONLY from the candidate list) would make it reachable for queries like this one, or whether it should stay where it is.
 
 Rules:
 - Be CONSERVATIVE. Propose a move ONLY when the fact plainly belongs in one of the candidate wikis — when its subject matter is that wiki's subject and its current home is why the query could not reach it. When in doubt, answer "stay" (a common, fine answer: not every miss has a filing cause).
 - A fact belongs in the wiki whose SUBJECT it is primarily about — whose subject/topic the claim is fundamentally a fact OF, not merely a fact that references it.
 - `dest_wiki_id` MUST be a wiki_id copied EXACTLY from the candidate list. Never invent one, and never name the home wiki.
-- You choose only the destination WIKI, not a page: the fact lands on that wiki's parking page (`@notes.md`, where everything unplaced waits) and the wiki's own next dream files it onto the right page.
-- Your verdict is a CANDIDATE only: a replay gate will verify that the move actually makes the fact reachable for this query without regressing anything, and only then does it commit (act-first, revertable from the dashboard).
+- `dest_page` MUST be one of the pages listed under that wiki, copied character for character. You may NOT invent a page name: a name that wiki does not already have is refused and nothing moves. If none of its pages is a sensible home for this fact, answer "stay".
+- A wiki whose `pages:` line says `(none yet)` cannot receive the fact. Do not name it.
+- Your verdict is a CANDIDATE only: a replay gate will verify that the move actually makes the fact reachable for this query without regressing anything, and only then does it commit (act-first and final).
 
 QUERY (what the user asked — the turn that missed):
 {query}
@@ -59,9 +64,9 @@ FACT (what memory held but recall did not surface):
 HOME (where the fact lives now):
 {home_wiki}
 
-CANDIDATE WIKIS (wiki_id · title — summary):
+CANDIDATE WIKIS (wiki_id · title — summary, then the pages that wiki already holds):
 {candidates}
 
 Output ONE strict JSON object, nothing else:
-{"verdict": "move" | "stay", "dest_wiki_id": "<wiki_id from the list>" | null, "reason": "<one short sentence>"}
+{"verdict": "move" | "stay", "dest_wiki_id": "<wiki_id from the list>" | null, "dest_page": "<one of that wiki's listed pages>" | null, "reason": "<one short sentence>"}
 ```

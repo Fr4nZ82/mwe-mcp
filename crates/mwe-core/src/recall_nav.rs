@@ -3047,7 +3047,7 @@ mod tests {
         forge_user(&tree, "alice");
         forge_user(&tree, "bob");
         // Bob has content but nothing authored as his foundation: no card,
-        // no parking page. There is nothing for `[[bob]]` to mean, so the rail is
+        // no buffer. There is nothing for `[[bob]]` to mean, so the rail is
         // dropped rather than falling back onto the wiki itself.
         write_page(&tree, "alice", "rails.md", "# Rails\n\nSee [[bob]].\n");
         write_page(&tree, "bob", "hobbies.md", "# Hobbies\n\nBob sails.\n");

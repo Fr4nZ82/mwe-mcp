@@ -1,7 +1,7 @@
 //! Cross-consumer recent window — the thread of discourse follows the user
 //! (roadmap group 43).
 //!
-//! A bounded, TTL'd per-user serving parking page of the exchanges the per-turn
+//! A bounded, TTL'd per-user serving buffer of the exchanges the per-turn
 //! ingest already receives (the user's text plus the group-27 assistant
 //! pass). Serving it back per turn — minus the requesting surface — gives
 //! every consumer the user's live thread from their OTHER channels: say a
@@ -11,7 +11,7 @@
 //! **Not a transcript store** (the 43-P principle restatement): hard cap
 //! per user AND a short TTL, both enforced in the write path; the rows are
 //! never indexed, never embedded, never REM-processed. The TTL is short by
-//! design — this parking page serves the *thread of discourse*, not history: a
+//! design — this buffer serves the *thread of discourse*, not history: a
 //! thread is live on the scale of minutes to hours, and anything older has
 //! either sedimented into facts through the ordinary ingest or wasn't
 //! worth keeping.
@@ -38,8 +38,8 @@ pub struct RecentExchange {
 /// Record one exchange and enforce the per-user bounds in the same call.
 ///
 /// Rows older than `ttl_hours` and rows beyond the newest `cap` are deleted
-/// on the way in, so the parking page can never grow past its contract even if
-/// nothing ever reads it. A `cap` of 0 disables the parking page (nothing is
+/// on the way in, so the buffer can never grow past its contract even if
+/// nothing ever reads it. A `cap` of 0 disables the buffer (nothing is
 /// written).
 #[allow(clippy::too_many_arguments)]
 pub async fn record_exchange(

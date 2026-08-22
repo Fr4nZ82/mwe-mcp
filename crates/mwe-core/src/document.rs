@@ -14,7 +14,7 @@
 //! Pipeline phases, each a checkpoint on the `document_jobs` row so a
 //! crashed worker resumes instead of re-running:
 //! classify → segment → anchor → extract (map, per segment) →
-//! conciliate (reduce) → file (capture parking page) → notice.
+//! conciliate (reduce) → file (capture buffer) → notice.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -824,9 +824,9 @@ fn hard_split(s: &str, max: usize) -> Vec<String> {
     out
 }
 
-/// Append `body` to the packing parking page, honouring both size knobs:
+/// Append `body` to the packing buffer, honouring both size knobs:
 /// `segment_max_chars` splits an oversized block, `segment_target_chars`
-/// closes the parking page before it grows past the packing target.
+/// closes the buffer before it grows past the packing target.
 ///
 /// Both bodies a paragraph can carry — a plain paragraph, and the lines
 /// that ride along with a heading on the same block — go through here, so
@@ -888,7 +888,7 @@ fn prose_blocks(text: &str) -> Vec<ProseBlock> {
             // paragraph stay with it. A heading whose text follows on the
             // very next line (no blank line between) makes the whole block
             // ONE paragraph: a changelog entry, a table, a dense list.
-            // Pushing that straight into the parking page bypassed
+            // Pushing that straight into the buffer bypassed
             // `segment_max_chars` entirely and was how a 6 994-character
             // section reached the index.
             let rest: String = trimmed.lines().skip(1).collect::<Vec<_>>().join("\n");
@@ -982,7 +982,7 @@ pub struct PageShape {
     pub chars: usize,
     /// Sections the page will produce.
     pub sections: usize,
-    /// Sections that exist because the packer closed the parking page, not
+    /// Sections that exist because the packer closed the buffer, not
     /// because a heading opened one: they carry the **same** heading
     /// chain as their predecessor. Cap-split pieces are not unlabelled —
     /// [`pack`] copies the heading chain onto every piece it emits — so
@@ -1635,7 +1635,7 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// join unless theirs are identical: same content is not the same fact when it
 /// was told by different people or is readable by different people, and a
 /// merge here has no undo — the losing members are dropped before they ever
-/// reach the capture parking page, so there is no tombstone to revert (founder,
+/// reach the capture buffer, so there is no tombstone to revert (founder,
 /// 2026-07-28). The nightly merge got this gate on 2026-08-05
 /// ([`crate::rem`]'s `reader_sets_differ`); this is the same rule on the
 /// document path, structural and ahead of the model for the same reason: a
@@ -2174,7 +2174,7 @@ async fn process_job(
             job.reduced_json = Some(json);
         }
 
-        // Phase: file — parking page each reduced fact from the progress cursor
+        // Phase: file — buffer each reduced fact from the progress cursor
         // (re-entrant after a crash, no double-buffering).
         let reduced: Vec<CandidateFact> = job
             .reduced_json
@@ -2774,7 +2774,7 @@ mod tests {
     /// Two people telling the engine the same sentence, each privately, is two
     /// memories: folding them retires one principal's and leaves the survivor
     /// addressing the other's readers, with no tombstone to undo it because
-    /// the loser is dropped before it reaches the parking page.
+    /// the loser is dropped before it reaches the buffer.
     #[test]
     fn clustering_never_joins_across_audiences() {
         let e = vec![vec![1.0, 0.0], vec![1.0, 0.0], vec![1.0, 0.0]];
@@ -2962,7 +2962,7 @@ mod tests {
             "the page carries its own card: {page}"
         );
 
-        // The extracted fact sits in the parking page with document provenance:
+        // The extracted fact sits in the buffer with document provenance:
         // the claim text stays clean (no trailing `([[…]])` link suffix) and
         // the pointer to the dossier page rides `authored_refs` instead.
         let buffered = capture_buffer::find_all_buffered(&pool, 100)

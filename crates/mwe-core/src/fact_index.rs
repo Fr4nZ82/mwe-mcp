@@ -738,7 +738,7 @@ pub async fn set_acl(
 /// subject with Alice's principal takes the fact about Bob away from Bob.
 ///
 /// Returns `false` when `fact_id` has no active row (unknown or tombstoned),
-/// so the caller can fall through to the capture parking page.
+/// so the caller can fall through to the capture buffer.
 ///
 /// # Errors
 ///
@@ -2358,7 +2358,7 @@ type ListPageAccumulator = std::collections::BTreeMap<(String, String), (Option<
 /// liste, sia di crearle che di aggiungere/togliere/modificare elementi»*).
 /// Until then this query also unioned `capture_buffer`, to catch a list
 /// created minutes ago that the hourly promotion had not reached yet; that
-/// state cannot happen any more, and the parking page names no page to find one by.
+/// state cannot happen any more, and the buffer names no page to find one by.
 ///
 /// `principals` is [`crate::acl::reader_principals`] for the sender; an
 /// empty slice returns nothing rather than everything, because unlike a
@@ -2447,7 +2447,7 @@ pub async fn list_pages_readable_by(
 /// `sqlx::Error`.
 pub async fn count_list_pages_in_wiki(pool: &SqlitePool, wiki_id: &str) -> Result<usize> {
     let rows = sqlx::query_as::<_, (String, Option<String>)>(
-        // `fact_index` alone: a `lista` never waits in the parking page — it is
+        // `fact_index` alone: a `lista` never waits in the buffer — it is
         // written live, page and row together, in the turn. See
         // [`list_pages_readable_by`].
         "SELECT source_path, target_page FROM fact_index \
@@ -3040,9 +3040,9 @@ mod tests {
     }
 
     /// A list added to minutes ago is offered immediately, and it does not
-    /// need the parking page to be: a `lista` item is written live, page and row
+    /// need the buffer to be: a `lista` item is written live, page and row
     /// together, in the turn that said it. What is still waiting in the
-    /// parking page names no page at all — that is what waiting means — so the
+    /// buffer names no page at all — that is what waiting means — so the
     /// inventory is `fact_index` and nothing else.
     ///
     /// The gap this guards is the one that mints a SECOND shopping list when
@@ -3093,7 +3093,7 @@ mod tests {
         )
         .await
         .unwrap();
-        // A claim waiting in the parking page, `lista`-styled or not, contributes
+        // A claim waiting in the buffer, `lista`-styled or not, contributes
         // nothing: it has no destination to contribute.
         sqlx::query(
             "INSERT INTO capture_buffer \

@@ -1606,7 +1606,7 @@ pub struct RecallConfig {
     #[serde(default)]
     pub ingest_timezone: Option<String>,
     /// Override `IngestPolicy::recent_window_entries` — per-user cap of the
-    /// cross-consumer recent window's parking page (default 32; `0` disables the
+    /// cross-consumer recent window's buffer (default 32; `0` disables the
     /// window entirely).
     #[serde(default)]
     pub recent_window_entries: Option<usize>,

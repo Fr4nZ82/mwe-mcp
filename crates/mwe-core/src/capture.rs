@@ -200,14 +200,14 @@ pub struct CaptureRequest {
     /// path can place the fact on the right subject page. `style` =
     /// `prosa` | `prosa-tecnica` | `lista`; the dominant writing register of the
     /// target page. Inert pass-through for now — no consumer until later
-    /// stages wire it through parking page→promote→compile.
+    /// stages wire it through buffer→promote→compile.
     pub style: Option<crate::wiki::PageStyle>,
     /// The page description that aids future placement. See
     /// [`Self::style`]. Inert pass-through for now.
     pub page_description: Option<String>,
     /// Per-fact salience the ingest classifier deduced,
-    /// threaded into [`fact_index::NewFact`] (direct path) and onto the parking page
-    /// (standard-wiki path). `high | normal | low`; `None` = unspecified. Opaque
+    /// threaded into [`fact_index::NewFact`] (direct path) and onto the
+    /// buffered claim (standard-wiki path). `high | normal | low`; `None` = unspecified. Opaque
     /// pass-through to storage here; the promote step routes `high` facts to
     /// the subject's identity card.
     pub salience: Option<String>,

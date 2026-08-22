@@ -53,10 +53,8 @@ pub const PROSE_DUP_THRESHOLD: f32 = 0.20;
 /// A **nomination** for a placement re-open (the Cartografo re-judges the
 /// page's placements with the split-by-mass lever live), never a gate: the
 /// LLM alone decides whether the page still reads as one page. This is the
-/// missing redistribution leg of two shipped designs — the refile sweep
-/// deliberately lands cross-wiki moves on the destination parking page `@notes.md`
-/// expecting "that wiki's own dream re-files them", and a grown-but-clean
-/// page otherwise never re-enters the Cartografo at all.
+/// missing redistribution leg: a grown-but-clean page otherwise never
+/// re-enters the Cartografo at all.
 pub const OVERSIZED_PAGE_THRESHOLD: usize = 30;
 
 /// Errors raised by the reviewer (only the tree walk can fail hard).

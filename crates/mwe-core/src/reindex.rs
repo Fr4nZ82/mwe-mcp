@@ -1122,7 +1122,7 @@ pub async fn reindex_full(
     let mut report = ReindexFullReport::default();
     refresh_smart_projections(pool, tree, &embedder).await;
     // Standard wikis are compiler OUTPUT — their fact_index is owned by
-    // the parking page→promote→compile chain. `reindex_file` is standard-wiki-safe
+    // the buffer→promote→compile chain. `reindex_file` is standard-wiki-safe
     // per event (offset-and-existence repair only), but the periodic tick
     // must still SKIP standard pages: unlike the watcher it has no
     // own-write suppression, so it can observe a mid-compile window (a
@@ -1133,7 +1133,7 @@ pub async fn reindex_full(
     // retired.
     let discovered = tree.walk()?;
     for d in &discovered {
-        // No captures-parking page rebuild here any more. This loop used to re-read
+        // No capture buffer rebuild here any more. This loop used to re-read
         // every wiki's captures journal on every pass — every five minutes,
         // the whole history — to re-insert rows that already existed. That file
         // is gone (2026-08-18) and `capture_buffer` is the source of truth.
@@ -2650,7 +2650,7 @@ mod tests {
         // heading whose body starts on the NEXT LINE — a changelog entry,
         // a table, a dense list — which makes heading and body a single
         // paragraph. Shape (2) used to bypass the cap entirely: the
-        // heading branch pushed its trailing lines into the parking page
+        // heading branch pushed its trailing lines into the buffer
         // without splitting them, which is how a 6 994-char section got
         // indexed.
         let body = format!(
@@ -3303,7 +3303,7 @@ mod tests {
     async fn reindex_full_section_indexes_smart_skips_standard() {
         // `reindex_full` section-indexes SMART wikis (content-indexed) but
         // SKIPS standard wikis — their fact_index is owned by the
-        // parking page→promote→compile chain, so re-reading page markers would
+        // buffer→promote→compile chain, so re-reading page markers would
         // overwrite the canonical claim text with compiled prose.
         let dir = tempdir().unwrap();
         write_smart_wiki_meta(&dir.path().join("wikis/acme"), "acme");

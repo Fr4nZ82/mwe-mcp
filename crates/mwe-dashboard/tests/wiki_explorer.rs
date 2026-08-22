@@ -1505,7 +1505,7 @@ async fn chat_ingest_e2e_captures_fact_with_fake_backend() {
     // `requested_container: true` **on a page it names** takes the live
     // direct-write path, so the fact lands in `fact_index` immediately. Both
     // halves matter: a plain capture into `alice` waits for the dream, and so
-    // does one whose page name was refused — a claim on the parking page is a
+    // does one whose page name was refused — a claim on the buffer is a
     // claim nobody has placed.
     let plan = serde_json::json!({
         "intent": "capture",

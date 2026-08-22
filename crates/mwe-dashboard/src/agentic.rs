@@ -48,9 +48,9 @@
 //! - **Single-fact move**: the write tool `wiki_move_fact` relocates
 //!   **one** fact on the operator's instruction ("sposta questo fatto su
 //!   salute") — to another page of the same wiki
-//!   ([`mwe_core::promote::apply_paragraph_to_file_direct`]) or into another
-//!   wiki ([`mwe_core::promote::apply_fact_refile_direct`], always landing on
-//!   the destination wiki's parking page page). It reuses the same act-first engine
+//!   ([`mwe_core::promote::apply_paragraph_to_file_direct`]) or onto a named
+//!   page of another wiki
+//!   ([`mwe_core::promote::apply_fact_refile_direct`]). It reuses the same act-first engine
 //!   the REM cross-wiki refile sweep and the comment-apply `move` op use, so
 //!   the dashboard, the dream, and the chat all mint the same born-applied +
 //!   receipt. Admin-only (a move is structure authority —
@@ -158,10 +158,8 @@ pub enum AgenticTool {
     /// sweep + the comment-apply `move` op use:
     /// [`mwe_core::promote::apply_paragraph_to_file_direct`] for a same-wiki
     /// page→page move, [`mwe_core::promote::apply_fact_refile_direct`] for a
-    /// cross-wiki move (which always lands on the destination wiki's parking page
-    /// page — the compilation plan keys pages by bare slug forest-wide, so a
-    /// named cross-wiki page would collide; the dest wiki re-homes it on its
-    /// next compile). Admin-only (structure authority), standard-wikis only (a smart
+    /// cross-wiki move, which must name the page it lands on — there is no
+    /// per-wiki inbox to drop a fact in. Admin-only (structure authority), standard-wikis only (a smart
     /// source or dest is refused), act-first + born-applied receipt. Write
     /// tool.
     WikiMoveFact,
@@ -593,7 +591,7 @@ fn move_fact_tool_descriptors() -> Vec<Tool> {
                 },
                 "dest_page": {
                     "type": "string",
-                    "description": "Destination page (e.g. \"salute.md\") for a SAME-WIKI page move. Ignored for a cross-wiki move (which always lands on the destination wiki's parking page)."
+                    "description": "Destination page (e.g. \"salute.md\") the fact lands on. REQUIRED for a cross-wiki move; for a same-wiki move it is the page within this wiki."
                 }
             },
             "required": ["fact_id"]
@@ -2894,7 +2892,7 @@ mod tests {
     }
 
     /// Happy path: the chat moves a fact cross-wiki (alice → salute). The
-    /// dispatcher refiles it onto salute's parking page page and returns a `moved`
+    /// dispatcher refiles it onto salute's buffer and returns a `moved`
     /// payload with the born-applied receipt id.
     #[tokio::test]
     async fn dispatch_wiki_move_fact_moves_cross_wiki() {

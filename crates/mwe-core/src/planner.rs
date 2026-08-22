@@ -13,7 +13,7 @@
 //!
 //! 1. **Fonditore** ([`build_foundation_pages`]) — deterministic, no LLM. From
 //!    [`crate::enrollment`] users + groups: an identity card per user and a
-//!    parking page per wiki. A group wiki gets no card — what it is lives in
+//!    buffer per wiki. A group wiki gets no card — what it is lives in
 //!    its `_meta.md` (founder, 2026-08-19).
 //! 2. **Cartografo** ([`classify_facts`]) — strong-model LLM, batched. Assigns
 //!    each fact to one page and proposes emergent concept pages (one-fact-one-
@@ -417,7 +417,7 @@ impl ConceptRegistry {
 }
 
 /// One persisted concept page — a page the Cartografo coined, never a
-/// wiki's own card or parking page.
+/// wiki's own card.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConceptRegistryEntry {
     /// Slug.
@@ -580,7 +580,7 @@ pub async fn build_foundation_pages(pool: &SqlitePool) -> Result<BTreeMap<String
     // What the group actually needs is already in its `_meta.md`: its title,
     // its `scope` prose (inherited from the group's enrollment scope, and read
     // by the ingest classifier as a placement signal) and its one-line
-    // abstract. Its only foundation node is now its parking page, seeded below
+    // abstract. Its only foundation node is now its buffer, seeded below
     // like any other wiki's — the same shape a topic wiki has always had.
     let groups = enrollment::list_groups(pool).await?;
     let group_slugs: BTreeSet<String> = groups
@@ -757,7 +757,7 @@ pub fn build_compilation_plan(
         };
         // Canonicalise an LLM-proposed slug, but never a key the plan
         // already holds: a foundation node's key may legitimately be one
-        // `slugify` would rewrite (a parking page's `__` separator collapses to a
+        // `slugify` would rewrite (a buffer's `__` separator collapses to a
         // single `_`), and rewriting it mints a phantom leaf beside the real
         // page and splits the fact off from it.
         let mut slug = if pages.contains_key(&a.page_slug) {
@@ -771,9 +771,9 @@ pub fn build_compilation_plan(
         if !pages.contains_key(&slug) {
             // Never mint a reserved stem. The foundation nodes are keyed by
             // [`plan_slug_for_page`] — the card takes the wiki's own slug and
-            // the parking page takes `<wiki>__notes` — so a bare `notes` or
+            // the buffer takes `<wiki>__notes` — so a bare `notes` or
             // `profile` misses the lookup above and mints a SECOND plan page
-            // on the file the parking page or the card already owns. Drop the
+            // on the file the buffer or the card already owns. Drop the
             // assignment instead; the orphan pass below homes the fact on a
             // page that exists.
             if crate::wiki::is_reserved_page_stem(&slug) {
@@ -827,9 +827,9 @@ pub fn build_compilation_plan(
     //
     // **Everything else that reaches here is simply not placed**, and that is
     // now a state rather than a problem (founder, 2026-08-22). It used to be
-    // pushed onto the wiki's parking page, a real page holding real facts
-    // whose whole meaning was "not sorted yet"; the page is gone and the claim
-    // waits in the buffer instead, where the next pass sees it again and the
+    // pushed onto a per-wiki page whose whole meaning was "not sorted yet";
+    // that page is gone and the claim waits in the buffer instead, where the
+    // next pass sees it again and the
     // nightly one reads the whole wiki at once. A claim left here is NOT
     // dropped: `dream_light::materialise` promotes only what the plan placed,
     // so an unplaced claim keeps its buffer row.
@@ -1072,7 +1072,7 @@ fn identity_card_target(f: &FactForPage, pages: &BTreeMap<String, PagePlan>) -> 
 /// that wiki has no card.
 ///
 /// **No fallback, deliberately.** It used to fall through to the wiki's
-/// parking page, which turned "always-on material with nowhere to be
+/// buffer, which turned "always-on material with nowhere to be
 /// always-on" into "unsorted" — two different things on one page. A topic
 /// wiki has no identity to reserve, so a `high` fact whose wikis have no card
 /// stays in the buffer like any other unplaced claim.
@@ -1297,12 +1297,9 @@ impl RehomePageSeed {
     ///
     /// The plan key (slug) is derived from the page the same way
     /// [`crate::promote`] flattens a page path — `slugify(<stem>)` — **except
-    /// for a wiki's reserved pages, which are foundation nodes keyed per
-    /// wiki**: `@profile.md` is the card (`slugify(wiki_id)`) and `@notes.md`
-    /// the parking page ([`buffer_slug`], or the plain wiki slug on a topic wiki
-    /// that has no card). Deriving `notes` from the stem instead would give
-    /// every wiki's parking page the same forest-wide plan key, which is exactly
-    /// the collision the cross-wiki lander exists to avoid.
+    /// for a wiki's identity card, which is a foundation node keyed per
+    /// wiki**: `@profile.md` takes `slugify(wiki_id)`, so every wiki's card
+    /// gets its own key instead of them all colliding on `profile`.
     #[must_use]
     pub fn page_in_wiki(page: &str, wiki_id: &str) -> Self {
         let slug = plan_slug_for_page(wiki_id, page);
@@ -1362,7 +1359,7 @@ pub fn rehome_facts_in_persisted_plan(
     let mut rehomed = 0usize;
     for (row, seed) in moves {
         // As in `build_compilation_plan` step 4: canonicalise a proposed slug,
-        // but leave a key the plan already holds alone — a parking page's `__`
+        // but leave a key the plan already holds alone — a buffer's `__`
         // separator does not survive `slugify`.
         let dest = if plan.pages.contains_key(&seed.slug) {
             seed.slug.clone()
@@ -1794,8 +1791,7 @@ pub async fn foreign_page_offers(
         return ForeignPages::Whole;
     }
     // slug → (wiki, card vector), for the concept pages only: identity cards
-    // are offered whole at any size (the product limits cap them) and a
-    // foreign parking page is never a destination.
+    // are offered whole at any size (the product limits cap them).
     let mut vectors: BTreeMap<String, (String, Vec<f32>)> = BTreeMap::new();
     for e in registry.entries.values() {
         let Some(path) = registry_source_path(tree, e) else {
@@ -1916,10 +1912,9 @@ pub async fn subject_scopes_for(
 /// changed.
 ///
 /// **A reserved page name is refused outright** (`rules`, `projects`,
-/// `profile`, `notes`). A page keyed by one of those stems compiles to the
-/// same file as the wiki's own card or parking page — two plan pages, one
-/// path. The facts meant for it fall through to the orphan pass, which has a
-/// real page for them.
+/// `profile`). A page keyed by one of those stems compiles to the same file
+/// as the wiki's card or one of its channels — two plan pages, one path. The
+/// facts meant for it fall through to the orphan pass.
 fn vet_accepted(mut np: NewPage, _foundation: &BTreeMap<String, PagePlan>) -> Option<NewPage> {
     let slug = slugify(&np.slug);
     if crate::wiki::is_reserved_page_stem(&slug) {
@@ -1947,7 +1942,7 @@ fn vet_accepted(mut np: NewPage, _foundation: &BTreeMap<String, PagePlan>) -> Op
 ///   compiled as prose. The prompt's contract calls this stage conservative,
 ///   *never loses a page*; an invented destination loses the page it named.
 /// - **The target is never a foundation page.** A card carries a subject's
-///   identity and a parking page is where a fact waits for a home; neither is a
+///   identity and a buffer is where a fact waits for a home; neither is a
 ///   topic something can be merged *into*. [`describe_existing`] no longer
 ///   offers them and this refuses one named anyway — the two halves of the
 ///   same rule, because the prompt's own bias is *«when in doubt, prefer the
@@ -2206,7 +2201,7 @@ pub enum NewFactPlacement<'a> {
     ///
     /// Since the classifier stopped proposing a page for prose, this places
     /// only what the USER named — a `lista`, or a container they asked for by
-    /// name — so on its own it leaves every prose fact on the wiki's parking page.
+    /// name — so on its own it leaves every prose fact waiting in the buffer.
     /// Kept as the degraded light path for a deployment with no ingest slot
     /// wired, and as the first half of [`Self::NamedThenCartografo`].
     Ingest,
@@ -2225,7 +2220,7 @@ pub enum NewFactPlacement<'a> {
     /// never reach the batch.
     ///
     /// What DOES reach it is everything the classifier left unplaced — which,
-    /// since prose stopped carrying a page name, is the material the parking page was
+    /// since prose stopped carrying a page name, is the material the buffer was
     /// filling up with. That is the whole point of running the Cartografo
     /// hourly: the write side gets its structure within the hour instead of
     /// overnight.
@@ -2274,23 +2269,23 @@ impl NewFactPlacement<'_> {
 /// `_`). Empty resolves to `None`, and so does **every reserved page name**,
 /// because none of them is a concept page a classifier may mint:
 ///
-/// - `@profile.md` and `@notes.md` — the wiki's card and parking page, which are
-///   per-wiki **foundation nodes**; minting a concept page here would put the
-///   same file in the plan under a second, forest-wide key;
+/// - `@profile.md` — the wiki's card, a per-wiki **foundation node**; minting
+///   a concept page here would put the same file in the plan under a second,
+///   forest-wide key;
 /// - `@rules.md` ([`crate::wiki::RULES_FILENAME`]) and `@projects.md`
 ///   ([`crate::wiki::PROJECTS_FILENAME`]) — written by a deterministic
 ///   channel, so a fact mis-targeted there must not land among the policy or
 ///   the signposts.
 ///
-/// In every case the fact falls through to [`identity_card_target`], which homes it
-/// on its wiki's card or parking page according to what the fact is. The `.md`
-/// suffix is stripped first so slugify does not fold it into a trailing
-/// `_md`.
+/// In every case the fact falls through to [`identity_card_target`], which
+/// homes it on its wiki's card when the fact is card material and leaves it
+/// unplaced otherwise. The `.md` suffix is stripped first so slugify does not
+/// fold it into a trailing `_md`.
 fn placement_slug(target_page: &str) -> Option<String> {
     let stripped = target_page.strip_suffix(".md").unwrap_or(target_page);
     // The reserved check runs on the RAW stem, before slugify: slugify keeps
-    // only letters and digits, so it eats the `@` marker and `@notes` would
-    // arrive here as the innocent-looking `notes`. Checking first is what
+    // only letters and digits, so it eats the `@` marker and `@profile` would
+    // arrive here as the innocent-looking `profile`. Checking first is what
     // makes the marker mean anything on this path.
     if crate::wiki::is_reserved_page_stem(&stripped.to_ascii_lowercase()) {
         return None;
@@ -2439,7 +2434,7 @@ fn birth_floor_directive(floor: Option<usize>) -> String {
              harder to find than one nobody filed, because the page's card stops describing \
              what is on it.\n\
              - When no page is a strong match, OMIT the fact from `assignments`. The engine \
-             parks it on the wiki's parking page and offers it back to you at the next pass, so \
+             leaves it waiting and offers it back to you at the next pass, so \
              nothing is lost and nothing is guessed.\n\
              - You may propose a new page ONLY when you are grouping at least {n} facts on one \
              theme. Below that, omit them: a page born from one or two facts takes its card from \
@@ -2454,17 +2449,14 @@ fn birth_floor_directive(floor: Option<usize>) -> String {
 /// How many facts on one theme must have piled up before a page is born
 /// (founder, 2026-08-18).
 ///
-/// *«Il modello economico dovrebbe evitare di creare pagine e parcheggiare in
-/// `@notes.md` i fatti di cui non è molto sicuro; quindi fare in modo che
-/// `@notes.md` venga usato se non c'è un'assonanza forte con una pagina e poi
-/// verificare se notes contiene almeno altri 4 fatti dello stesso argomento e
-/// solo a quel punto creare la pagina. Altrimenti si lasciano in notes
-/// aspettando che il modello forte faccia il suo mestiere nel REM.»*
+/// The cheap tier must not mint a page out of a fact it is merely unsure
+/// about: when nothing on disk is a strong match the claim waits, and a page
+/// is born only once at least five claims on one theme have piled up.
 ///
 /// A page born from one fact takes its card from that fact, and the card is
 /// the only thing a reader is shown before deciding whether to open the page —
 /// so a one-fact page is a page nobody can find on purpose. The floor is a
-/// **cheap-tier** rule: the hourly pass groups or parks, and the nightly strong
+/// **cheap-tier** rule: the hourly pass groups or waits, and the nightly strong
 /// pass keeps its judgement (it is the one that reads a whole wiki at once).
 ///
 /// One level up sits its sibling, `RemPolicy::auto_promote_group_min_pages`
@@ -2474,9 +2466,9 @@ pub const PAGE_BIRTH_FLOOR: usize = 5;
 
 /// Hold a cheap-tier proposal to [`PAGE_BIRTH_FLOOR`]: a page grouping fewer
 /// facts than that is **not** born, and the facts meant for it fall through to
-/// the orphan pass — which homes them on the wiki's parking page, where they
-/// wait for the theme to grow (they re-enter the pool at every light build) or
-/// for the strong pass to read them at night.
+/// the orphan pass, which leaves them in the buffer, where they wait for the
+/// theme to grow (the queue re-offers them at every light build) or for the
+/// strong pass to read them at night.
 ///
 /// Only proposals are held: an assignment onto a page that already exists is
 /// the model recognising a home, not inventing one, and no floor applies.
@@ -3147,8 +3139,8 @@ fn testata_description(page: &str) -> Option<String> {
 /// "Invented" is `next.pages ∖ prev.pages`, the same set
 /// [`compute_dirty_pages`] already walks — a page nobody asked for by name,
 /// minted because the Cartografo judged some facts fitted no existing page.
-/// Foundation pages are excluded: a person's card and a wiki's parking page appear
-/// because a *user* or a *wiki* was created, which has its own visible route.
+/// A person's card is excluded: it appears because a *user* was enrolled,
+/// which has its own visible route.
 ///
 /// Best-effort by contract. A failure here must never fail the nightly plan:
 /// a missing receipt is a gap in the record, a failed plan is a night of no
@@ -3204,7 +3196,7 @@ async fn gather_standard_facts(pool: &SqlitePool, tree: &WikiTree) -> Result<Vec
             // own pipelines' perimeter, not the compiler's: their facts are
             // written directly and read back keyed on that path. The compiler
             // must NOT gather them — absent from the persisted plan they would
-            // look "new", fall back to the identity card onto the wiki's parking page, and their channel
+            // look "new", fall back to the identity card, and their channel
             // (which filters on the page) would stop seeing them.
             // (engine_rule governance is raw `@rules.md` prose, not a
             // `fact_index` row, so only behaviour-rule rows are spared here.)
@@ -3428,14 +3420,10 @@ fn describe_facts(batch: &[FactForPage], signals: &CartografoSignals) -> String 
 /// for the homeless bucket (`None`, a proposal no assignment claims) — the
 /// forest's.
 ///
-/// **Foundation pages are not offered, because a merge cannot land on one.**
-/// A card carries a subject's identity and a parking page is where a fact waits for
-/// a home; neither is a topic a page can become part of. Listing them was
-/// worse than idle: they were rendered *first*, the parking node carries the
-/// wiki's own title and scope as its description (see [`seed_parking_pages`]),
-/// so `@notes.md` read to the model like the wiki's canonical topic page — and
-/// the prompt's standing bias is *«when in doubt, prefer the redirect»*.
-/// [`vet_redirects`] refuses one named anyway.
+/// **A wiki's card is not offered, because a merge cannot land on one.** It
+/// carries a subject's identity, which is not a topic a page can become part
+/// of, and the prompt's standing bias is *«when in doubt, prefer the
+/// redirect»*. [`vet_redirects`] refuses one named anyway.
 ///
 /// **The forest's concept pages, this wiki's first.** The scoping this
 /// replaced was justified as *«a redirect is a merge, so folding a proposal
@@ -3864,8 +3852,8 @@ mod tests {
     /// **A page is not born for one fact.** The cheap hourly pass may propose a
     /// page only when it is grouping at least [`PAGE_BIRTH_FLOOR`] facts on one
     /// theme; below that the proposal is dropped and its facts fall through to
-    /// the orphan pass, which parks them on the wiki's parking page. They come
-    /// back to the same pass next hour, so the pile can still reach the floor
+    /// the orphan pass, which leaves them in the buffer. They come back to
+    /// the same pass next hour, so the pile can still reach the floor
     /// (founder, 2026-08-18).
     #[test]
     fn a_page_is_not_born_under_the_birth_floor() {
@@ -4059,7 +4047,7 @@ mod tests {
         );
         // Only the ASSIGNED fact lands. The other reached the fallback and is
         // normal-salience, so it is placed nowhere and keeps waiting — the
-        // parking page it used to land on does not decide anything any more.
+        // buffer it used to land on does not decide anything any more.
         let alice = &plan.pages["alice"];
         assert_eq!(alice.primary_facts.len(), 1);
         // `fact_count` is what the plan was HANDED, not what it placed — both
@@ -5256,7 +5244,7 @@ mod tests {
     /// It is homed in that batch's wiki, and this batch may still assign to
     /// it: a page about to exist is a page to reuse rather than duplicate, and
     /// reusing one across wikis is a legitimate placement. What the collision
-    /// list keeps is what nothing showed — here, the other wiki's parking page.
+    /// list keeps is what nothing showed — here, the other wiki's card.
     #[test]
     fn a_proposal_from_another_wikis_batch_is_offered_not_fenced_off() {
         let mut foundation = BTreeMap::new();
@@ -5653,9 +5641,9 @@ mod tests {
     /// Neither half of a wiki's foundation is a merge target — and the model
     /// is not offered them in the first place.
     ///
-    /// A card carries a subject's identity, a parking page is where a fact waits for
+    /// A card carries a subject's identity, a buffer is where a fact waits for
     /// a home; a topic page cannot become part of either. They were rendered
-    /// FIRST in the merge-target list, the parking page wearing the wiki's own title
+    /// FIRST in the merge-target list, the buffer wearing the wiki's own title
     /// and scope as its description, under a prompt whose standing bias is
     /// *«when in doubt, prefer the redirect»*.
     #[test]
@@ -5699,7 +5687,7 @@ mod tests {
         foundation.insert("alice".to_owned(), person("alice"));
 
         assert!(
-            vet_accepted(proposal("notes"), &foundation).is_none(),
+            vet_accepted(proposal("rules"), &foundation).is_none(),
             "a reserved page name is refused outright"
         );
         assert!(
@@ -5714,12 +5702,12 @@ mod tests {
     }
 
     /// An assignment naming a reserved page never mints a second plan page on
-    /// the file the wiki's own parking page or card already owns.
+    /// the file the engine already owns.
     ///
-    /// The foundation nodes are keyed by [`plan_slug_for_page`] — the card
-    /// takes the wiki's slug, the parking page takes `<wiki>__notes` — so a bare
-    /// `notes` misses the lookup and reached the fallback mint, which would
-    /// have produced a second page writing `@notes.md` in the same wiki.
+    /// The card is keyed by [`plan_slug_for_page`] under the wiki's own slug,
+    /// so a bare `profile` misses the lookup and reached the fallback mint,
+    /// which would have produced a second page writing `@profile.md` in the
+    /// same wiki.
     #[test]
     fn an_assignment_naming_a_reserved_page_mints_nothing() {
         let mut foundation = BTreeMap::new();
@@ -5728,7 +5716,7 @@ mod tests {
         let blueprint = Blueprint {
             assignments: vec![Assignment {
                 fact_id: facts[0].fact_id.as_str().to_owned(),
-                page_slug: "notes".to_owned(),
+                page_slug: "profile".to_owned(),
             }],
             new_pages: Vec::new(),
         };
@@ -5741,11 +5729,14 @@ mod tests {
             "t2",
         );
         assert!(
-            !plan.pages.contains_key("notes"),
+            !plan.pages.contains_key("profile"),
             "no page is minted under a reserved stem: {:?}",
             plan.pages.keys().collect::<Vec<_>>()
         );
-        assert!(!reg.entries.contains_key("notes"), "and none is persisted");
+        assert!(
+            !reg.entries.contains_key("profile"),
+            "and none is persisted"
+        );
         assert!(
             plan.pages.values().all(|p| p.primary_facts.is_empty()),
             "and the fact is placed nowhere — it waits rather than landing on \

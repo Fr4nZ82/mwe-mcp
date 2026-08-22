@@ -84,7 +84,7 @@ pub struct CommentApplyReport {
     /// Facts tombstoned at a comment's request.
     pub facts_removed: usize,
     /// Facts relocated at a comment's request — to another page of this wiki,
-    /// or cross-wiki onto the destination wiki's parking page page. Unlike the other
+    /// or cross-wiki onto a named page of the destination. Unlike the other
     /// ops these are born-applied (the `_direct` wrappers mint a receipt), so
     /// a move — especially cross-wiki — leaves a record of where it went.
     pub facts_moved: usize,
@@ -154,10 +154,11 @@ struct RawOp {
     /// (or equal to the source wiki) means a same-wiki page move.
     #[serde(default)]
     dest_wiki_id: Option<String>,
-    /// `move` only: the destination page. For a same-wiki move it is a page of
-    /// this wiki; for a cross-wiki move it is ignored (the fact always lands on
-    /// the destination wiki's parking page page — the compilation plan keys pages by
-    /// bare slug forest-wide, so a named cross-wiki page would collide).
+    /// `move` only: the destination page, and it is **required both ways**.
+    /// For a same-wiki move it is a page of this wiki; for a cross-wiki move
+    /// it must be a page the destination already has — the compilation plan
+    /// keys pages by bare slug forest-wide, so a name that wiki does not
+    /// already hold would mint a second key and collide.
     #[serde(default)]
     dest_page: Option<String>,
 }
@@ -733,7 +734,7 @@ async fn apply_move(
 }
 
 /// Cross-wiki branch of [`apply_move`]: validate the destination wiki, then
-/// refile the fact onto its parking page.
+/// refile the fact onto its buffer.
 #[allow(
     clippy::too_many_arguments,
     reason = "the cross-wiki branch carries the fact, both wiki endpoints, source page, subject, recipient, and reason"
@@ -912,7 +913,7 @@ fn page_wiki_relative(handle: &WikiHandle, source_path: &str) -> String {
 ///
 /// - **other wikis** that owner can write — every **non-smart** wiki whose
 ///   resolved scope principal equals `owner`, except the source wiki itself
-///   (cross-wiki moves; a fact always lands on the dest wiki's parking page page);
+///   (cross-wiki moves, which must name their destination page);
 /// - **this wiki's other pages** (same-wiki page moves), the source page
 ///   excluded.
 ///
@@ -1721,7 +1722,7 @@ mod tests {
         assert_eq!(report.facts_moved, 1, "{:?}", report.errors);
         assert_eq!(report.comments_processed, 1);
 
-        // The fact moved cross-wiki onto salute's parking page page.
+        // The fact moved cross-wiki onto salute's buffer.
         let row = fact_index::find_by_id(&pool, &fid).await.unwrap().unwrap();
         assert_eq!(row.wiki_id, "salute");
         assert_eq!(row.source_path, "wikis/salute/referti.md");

@@ -84,10 +84,6 @@ pub const META_FILENAME: &str = "_meta.md";
 /// in the block by the time the funnel runs, the funnel treats it as visited
 /// — spending a navigation hop to re-read text the reader is looking at is
 /// the one door guaranteed to teach nothing.
-///
-/// Distinct from [`NOTES_FILENAME`] on purpose: *who someone is* and *where a
-/// fact waits until it has a page* are different questions, and one page
-/// answering both made every identity card a landing area.
 pub const PROFILE_FILENAME: &str = "@profile.md";
 
 /// How a page is written, and therefore how it is read back.
@@ -163,18 +159,6 @@ impl std::fmt::Display for PageStyle {
     }
 }
 
-/// Filename of a wiki's **parking page** (`<wiki_dir>/@notes.md`).
-///
-/// Where a fact lands when it has a wiki but no page yet: the ingest
-/// classifier's fallback placement, and the destination of every cross-wiki
-/// re-file (REM's refile sweep and recall repair, the comment channel, the
-/// dashboard's move-fact action). It is an ordinary content page in every
-/// respect — recallable, navigable, and above all **drainable**: the REM
-/// reorg sweep reads it like any other page and lifts its facts onto the
-/// pages they belong on, emerging new ones where a theme has grown enough
-/// to deserve its own.
-pub const NOTES_FILENAME: &str = "@notes.md";
-
 /// Filename of the per-actor user-policy page (`<wiki_dir>/@rules.md`).
 ///
 /// A **user-facing** page (no underscore, unlike the engine's own plumbing) seeded with a default at actor-wiki creation. It holds the user's
@@ -204,7 +188,7 @@ pub const RULES_FILENAME: &str = "@rules.md";
 ///
 /// Emit canonical, resolve legacy: writes use the constant and land on the
 /// marked name, while a row written before 2026-08-18 still says `rules.md`
-/// / `profile.md` / `notes.md`. Every predicate that asks *"is this page the
+/// / `profile.md`. Every predicate that asks *"is this page the
 /// rules page?"* keys on the path, so without this a migrated corpus would
 /// go quietly invisible to its own channel — the rule would sit on disk and
 /// the reader would never look there. Same stance the marker grammar takes
@@ -271,8 +255,8 @@ pub const PROJECTS_FILENAME: &str = "@projects.md";
 /// True when `stem` (a page name without its `.md`) names one of the five
 /// **reserved pages** no classifier may aim a capture at.
 ///
-/// The wiki's card and its parking page ([`PROFILE_FILENAME`] / [`NOTES_FILENAME`],
-/// per-wiki foundation nodes the planner owns), the three deterministic
+/// The wiki's card ([`PROFILE_FILENAME`], the per-wiki foundation node the
+/// planner owns), the three deterministic
 /// channels ([`RULES_FILENAME`] / [`PROJECTS_FILENAME`] /
 /// [`PROJECT_DIARY_FILENAME`], each written by its own code path). A capture
 /// that names any of them is not filed there: it falls through to the
@@ -307,7 +291,7 @@ pub fn is_reserved_page_stem(stem: &str) -> bool {
     stem.starts_with('@')
         || matches!(
             stem,
-            "rules" | "projects" | "project_diary" | "projects_diary" | "profile" | "notes"
+            "rules" | "projects" | "project_diary" | "projects_diary" | "profile"
         )
 }
 
@@ -325,12 +309,12 @@ pub fn is_reserved_page_stem(stem: &str) -> bool {
 /// extractor's per-fact target and its per-segment plan
 /// (`crate::document`), the Cartografo's coined slug
 /// (`planner::new_page_to_plan`), and REM's split target
-/// (`rem::run_auto_promote`). Each falls back to the wiki's **parking page** — the
-/// designed holding place a placement settles from — never to the map.
+/// (`rem::run_auto_promote`). A refused name leaves the claim with **no
+/// page**, which is what waiting in the capture buffer looks like.
 ///
-/// Only the *last* segment is judged: `spesa/@notes.md` is a page inside a
-/// folder, not the wiki's parking page. Case- and extension-insensitive, because a
-/// coined name is a guess at a spelling.
+/// Only the *last* segment is judged: `spesa/@rules.md` is a page inside a
+/// folder, not the wiki's rules channel. Case- and extension-insensitive,
+/// because a coined name is a guess at a spelling.
 #[must_use]
 pub fn names_reserved_page(page: &Path) -> bool {
     page.file_stem()
@@ -2284,10 +2268,10 @@ mod tests {
 
     // ---------- reserved page names ----------
 
-    /// All five, however a model spells them, and only in the last segment.
+    /// All of them, however a model spells them, and only in the last segment.
     #[test]
     fn names_reserved_page_covers_the_reserved_stems_and_only_the_last_segment() {
-        for stem in ["rules", "projects", "profile", "notes"] {
+        for stem in ["rules", "projects", "profile"] {
             assert!(
                 names_reserved_page(Path::new(&format!("{stem}.md"))),
                 "{stem}.md is reserved"
@@ -2298,12 +2282,13 @@ mod tests {
             );
         }
         // A page inside a folder called after a reserved name is a page.
-        assert!(!names_reserved_page(Path::new("notes/spesa.md")));
-        // …but the wiki's own parking page is, wherever it is addressed from.
-        assert!(names_reserved_page(Path::new("spesa/@notes.md")));
+        assert!(!names_reserved_page(Path::new("profile/spesa.md")));
+        // …but the `@` marker is the engine's, wherever it is addressed from.
+        assert!(names_reserved_page(Path::new("spesa/@rules.md")));
         assert!(!names_reserved_page(Path::new("lista_spesa.md")));
         // A page a model coins is free unless it hits a reserved stem.
         assert!(!names_reserved_page(Path::new("index.md")));
+        assert!(!names_reserved_page(Path::new("notes.md")));
         assert!(!names_reserved_page(Path::new("")));
     }
 
