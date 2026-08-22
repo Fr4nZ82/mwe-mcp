@@ -712,7 +712,6 @@ async fn compile_leaf_page(
             ("locale", language_directive),
             ("title", page.title.as_str()),
             ("slug", page.slug.as_str()),
-            ("parent_hub", page.parent_hub.as_deref().unwrap_or("—")),
             ("tone", tone),
             ("page_kind", page_kind(page)),
             (
@@ -2058,11 +2057,10 @@ fn page_index_block(plan: &CompilationPlan) -> String {
 
 /// The rails the plan recommends for one page, as canonical wikilinks.
 ///
-/// The plan's `link_graph` is not a list of suggestions: it is hub→child
-/// plus the page's own authored outgoing links, made symmetric
-/// (`planner`, step 9) — i.e. the structure the planner asserts. That is
-/// what makes it enforceable by [`missing_rails`] rather than merely
-/// offered.
+/// The plan's `link_graph` is not a list of suggestions: it is the links the
+/// pages themselves carry, made symmetric (`planner`, step 9) — i.e. the
+/// structure the planner asserts. That is what makes it enforceable by
+/// [`missing_rails`] rather than merely offered.
 fn recommended_link_targets(plan: &CompilationPlan, slug: &str) -> Vec<String> {
     plan.link_graph
         .get(slug)
@@ -2169,9 +2167,6 @@ fn render_page_file(
     let desc = desc.trim();
     if !desc.is_empty() {
         let _ = writeln!(fm, "description: \"{desc}\"");
-    }
-    if let Some(h) = &page.parent_hub {
-        let _ = writeln!(fm, "parent_hub: {h}");
     }
     fm.push_str("---\n\n");
     fm.push_str(body.trim());
@@ -2481,8 +2476,6 @@ mod tests {
             title: "Pagina".to_owned(),
             description: String::new(),
             style: None,
-            parent_hub: None,
-            child_leaves: Vec::new(),
             primary_facts: subjects
                 .iter()
                 .enumerate()
@@ -2680,8 +2673,6 @@ mod tests {
                 title: slug.to_owned(),
                 description: String::new(),
                 style: None,
-                parent_hub: None,
-                child_leaves: Vec::new(),
                 primary_facts: vec![fact],
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),
@@ -2857,8 +2848,6 @@ mod tests {
                 title: "Alice".to_owned(),
                 description: "Alice".to_owned(),
                 style: None,
-                parent_hub: None,
-                child_leaves: Vec::new(),
                 primary_facts: vec![FactForPage {
                     authored_refs: Vec::new(),
                     fact_id: fid.clone(),
@@ -3197,8 +3186,6 @@ mod tests {
                 title: "Spesa".to_owned(),
                 description: "La lista della spesa".to_owned(),
                 style: Some(crate::wiki::PageStyle::Lista),
-                parent_hub: None,
-                child_leaves: Vec::new(),
                 primary_facts: vec![f1.clone(), f2.clone()],
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),
@@ -3281,8 +3268,6 @@ mod tests {
                 title: "Alice".to_owned(),
                 description: "Identity wiki for alice.".to_owned(),
                 style: None,
-                parent_hub: None,
-                child_leaves: Vec::new(),
                 primary_facts: Vec::new(),
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),
@@ -3349,8 +3334,6 @@ mod tests {
                 title: "Spesa".to_owned(),
                 description: "La lista della spesa".to_owned(),
                 style: Some(crate::wiki::PageStyle::Lista),
-                parent_hub: None,
-                child_leaves: Vec::new(),
                 primary_facts: vec![f1.clone()],
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),
@@ -3462,8 +3445,6 @@ mod tests {
                 title: "Spesa".to_owned(),
                 description: "La lista della spesa".to_owned(),
                 style: Some(crate::wiki::PageStyle::Lista),
-                parent_hub: None,
-                child_leaves: Vec::new(),
                 primary_facts: vec![open.clone(), bought.clone(), dropped, expired],
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),
@@ -3580,8 +3561,6 @@ mod tests {
                 title: "Alice".to_owned(),
                 description: "Alice".to_owned(),
                 style: None,
-                parent_hub: None,
-                child_leaves: Vec::new(),
                 primary_facts: vec![
                     FactForPage {
                         authored_refs: Vec::new(),
@@ -3681,8 +3660,6 @@ mod tests {
                 title: slug.to_owned(),
                 description: "d".to_owned(),
                 style: crate::wiki::PageStyle::parse_lenient(style),
-                parent_hub: None,
-                child_leaves: Vec::new(),
                 primary_facts: vec![f],
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),
@@ -4115,8 +4092,6 @@ mod tests {
                     title: slug.to_owned(),
                     description: format!("{slug} desc"),
                     style: None,
-                    parent_hub: None,
-                    child_leaves: Vec::new(),
                     primary_facts: Vec::new(),
                     outgoing_links: Vec::new(),
                     incoming_links: Vec::new(),
@@ -4220,8 +4195,6 @@ mod tests {
                     title: s.to_owned(),
                     description: format!("{s} desc"),
                     style: None,
-                    parent_hub: None,
-                    child_leaves: Vec::new(),
                     primary_facts: vec![ffp(2, "secret bob fact")],
                     outgoing_links: Vec::new(),
                     incoming_links: Vec::new(),
@@ -4270,8 +4243,6 @@ mod tests {
             title: slug.to_owned(),
             description: format!("{slug} desc"),
             style: None,
-            parent_hub: None,
-            child_leaves: Vec::new(),
             primary_facts: Vec::new(),
             outgoing_links: Vec::new(),
             incoming_links: Vec::new(),
@@ -4527,8 +4498,6 @@ mod tests {
                 title: neighbour.to_owned(),
                 description: "il vicino".to_owned(),
                 style: None,
-                parent_hub: None,
-                child_leaves: Vec::new(),
                 primary_facts: Vec::new(),
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),

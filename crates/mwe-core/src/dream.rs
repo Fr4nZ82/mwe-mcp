@@ -286,8 +286,7 @@ pub async fn run_compile(
 ///
 /// - each `cross_subject_bloat` fact → a **refile candidate** (the refile
 ///   judge still decides, and refuses what does not apply);
-/// - each `cross_subject_bloat` page, each topology-anomalous page
-///   (`leaf_with_children`), each `oversized` page, plus
+/// - each `cross_subject_bloat` page, each `oversized` page, plus
 ///   every page failing its compile repeatedly (the ledger's streak) → a
 ///   **placement re-open**, so the Cartografo re-judges the carried
 ///   placements with the mass + identity + container signals live
@@ -313,7 +312,6 @@ async fn park_bridge_signals(
         .iter()
         .map(|(slug, _, _)| slug.clone())
         .collect();
-    reopen.extend(r.leaf_with_children.iter().map(|(s, _)| s.clone()));
     reopen.extend(r.oversized_pages.iter().map(|(s, _)| s.clone()));
     // Pages failing their compile twice in a row re-open too. Map the
     // ledger's source_path key back to a plan slug via the same helper

@@ -1,7 +1,7 @@
 ---
 name: cartografo
 description: planner stage 1 — assigns each fact to exactly one page and proposes emergent concept pages (one-fact-one-page; identity pages carry one subject; grown pages split by content)
-version: 1.16
+version: 1.17
 default_version_at_bootstrap: v1.13
 ---
 
@@ -86,19 +86,19 @@ PAGE TOPOLOGY — three kinds, and each one IS a file name. You never declare a
 kind: you name a page, and its name says what it is.
 
 - person — a user's identity CARD (slug = the user id, file `@profile.md`). Holds that user's biographical / identity / personal-preference facts.
-- parking_page — a wiki's PARKING page (file `@notes.md`), one per wiki. Where a fact waits when no page fits it yet: it HOLDS facts like a concept_leaf, and REM's reorg later lifts them onto concept_leaf pages UNDER it (parent_hub = its slug). **Never name it in `assignments`** — you park a fact by OMITTING it, and the engine puts it there; naming it explicitly would look like a decision when it is the absence of one. On a topic sub-wiki (an emerged dossier, a hand-forged topic wiki) it is the only foundation page — a topic has no identity, its subject may be a person, a pet, a project, never a user.
-- concept_leaf — a thematic detail page. HOLDS facts. Has a parent_hub: an EXISTING foundation page of this wiki — its person page on a user's wiki, its parking_page anywhere else. **Every page you propose is one of these** — there is no other kind, and nothing to declare: a page's kind is its file name, and yours is `<slug>.md`. Its slug is never one of the reserved page names (`index`, `profile`, `notes`, `rules`, `projects`): a proposal that coins one is dropped, and its facts fall through to the buffer.
+- parking_page — a wiki's PARKING page (file `@notes.md`), one per wiki. Where a fact waits when no page fits it yet: it HOLDS facts like a concept_leaf, and REM's reorg later lifts them onto real pages. **Never name it in `assignments`** — you park a fact by OMITTING it, and the engine puts it there; naming it explicitly would look like a decision when it is the absence of one. On a topic sub-wiki (an emerged dossier, a hand-forged topic wiki) it is the only foundation page — a topic has no identity, its subject may be a person, a pet, a project, never a user.
+- concept_leaf — a thematic detail page. HOLDS facts, and hangs under nothing: **pages have no parent**, they are groupings of facts that belong together because they narrate one thing. **Every page you propose is one of these** — there is no other kind, and nothing to declare: a page's kind is its file name, and yours is `<slug>.md`. Its slug is never one of the reserved page names (`index`, `profile`, `notes`, `rules`, `projects`): a proposal that coins one is dropped, and its facts fall through to the buffer.
 
 ASSIGNMENT RULES:
 1. subject=user:<id> → that user's person page IF the fact is bio / preference / personal identity; otherwise it MAY go to a thematic concept_leaf if more pertinent (e.g. a detailed work topic).
-2. subject=group:<id> → a concept_leaf in that group's wiki. **A group has no identity card**: its only foundation page is its parking_page, so a leaf you create there takes parent_hub = the parking_page's slug — subject to the rule at the top on how many facts a page needs to be born; below it, omit the fact.
+2. subject=group:<id> → a concept_leaf in that group's wiki — subject to the rule at the top on how many facts a page needs to be born; below it, omit the fact.
 3. subject=global → a thematic concept_leaf.
 
 WHICH WIKI — a fact is not confined to the one it arrived in:
 - The pages listed below belong to several wikis; the foreign ones say `wiki: <id>`. ANY of them is a legitimate destination. Choose by pertinence alone — who may read a fact is decided by the fact itself, never by the page it sits on, so moving it exposes nothing and hides nothing.
 - This is the ONLY way a fact ever gets re-homed: a fact filed in the wrong place is re-offered to you exactly once per cycle, on this list. If the right page is in another wiki, say so.
 - Between two pages that fit equally well, prefer this batch's own wiki — a fact that moves for no gain rewrites two pages instead of none. "Equally well" is a genuine tie, not a tiebreak to reach for.
-- A page you PROPOSE is born in this batch's wiki, so its parent_hub must be one of THIS wiki's foundation pages. You cannot create a page inside another wiki; if the fact belongs there, assign it to a page that already exists there.
+- A page you PROPOSE is born in this batch's wiki, where its facts are. You cannot create a page inside another wiki; if the fact belongs there, assign it to a page that already exists there.
 
 IDENTITY-PAGE DISCIPLINE — a person page carries ONE subject:
 - A person page is a user's identity CARD (the reserved `@profile.md`). Every fact carries an identity_pages= tag: the person pages its SUBJECT covers — the subject user's own page; for a group-owned fact, the pages of that group's members (a group the user belongs to is their own shared context, never foreign); "any" = global/world context, allowed anywhere; "none" = it covers no person page.
@@ -120,12 +120,12 @@ HARD RULES:
 - Do NOT create a slug listed in NAMES ALREADY TAKEN. A page name is unique across the whole memory, so coining one that exists would file these facts onto a page you never saw and did not choose. Coin a more specific name instead. (You were not shown what those pages hold; the ones you may file into are the ones described above.)
 - Do NOT create a new concept_leaf when an existing one is semantically equivalent — assign the fact there.
 - New slugs are descriptive snake_case (e.g. "health_routine_alice", not a bare generic "health" when specifics already exist).
-- A concept_leaf's parent_hub MUST be an EXISTING foundation page slug. You cannot propose a page to be another page's parent: a grouping deep enough to need its own container is a WIKI, not a page, and wikis are not yours to create — propose the leaves and the nightly promote machinery raises a wiki when they grow.
+- You cannot propose a page to hold other pages: a grouping deep enough to need its own container is a WIKI, not a page, and wikis are not yours to create — propose the pages and the nightly promote machinery raises a wiki when a group of them grows.
 
 OUTPUT — one strict JSON object, no prose around it:
 {
   "assignments": [ { "fact_id": "<uuid from the batch>", "page_slug": "<page>" }, ... ],
-  "new_pages":   [ { "slug": "<snake_case>", "title": "<title>", "description": "<one line: what belongs on this page>", "parent_hub": "<existing foundation slug>" }, ... ]
+  "new_pages":   [ { "slug": "<snake_case>", "title": "<title>", "description": "<one line: what belongs on this page>" }, ... ]
 }
 
 EXISTING FOUNDATION PAGES — this wiki's, then the identity cards of the other wikis (marked `wiki:`):

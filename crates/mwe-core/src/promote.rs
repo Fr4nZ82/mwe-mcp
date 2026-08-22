@@ -5069,8 +5069,6 @@ Un'altra pagina: [[bruno/orto]].
                     title: slug.clone(),
                     description: String::new(),
                     style: None,
-                    parent_hub: None,
-                    child_leaves: Vec::new(),
                     primary_facts: vec![FactForPage::from_row(&row)],
                     outgoing_links: Vec::new(),
                     incoming_links: Vec::new(),

@@ -305,13 +305,6 @@ pub struct PagePlan {
     /// decides the style at compile time.
     #[serde(default, deserialize_with = "de_style_lenient")]
     pub style: Option<crate::wiki::PageStyle>,
-    /// Slug of the page this one hangs under, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_hub: Option<String>,
-    /// Slugs of the pages that hang under this one, recomputed every
-    /// Architetto run.
-    #[serde(default)]
-    pub child_leaves: Vec<String>,
     /// The facts whose single home is this page.
     #[serde(default)]
     pub primary_facts: Vec<FactForPage>,
@@ -472,9 +465,6 @@ pub struct ConceptRegistryEntry {
     /// Ingest-proposed writing style. See [`PagePlan::style`].
     #[serde(default, deserialize_with = "de_style_lenient")]
     pub style: Option<crate::wiki::PageStyle>,
-    /// Slug of the page this one hangs under, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_hub: Option<String>,
     /// The wiki the page lives in.
     pub wiki_id: String,
     /// ISO-8601 creation time.
@@ -506,10 +496,6 @@ pub struct NewPage {
     /// [`ingest_placement_blueprint`] from the fact's `fact_index.style`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<String>,
-    /// Slug of the page this one hangs under (must be an existing page, or
-    /// one proposed in the same batch).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_hub: Option<String>,
 }
 
 /// The Cartografo's merged output across batches.
@@ -642,7 +628,7 @@ pub async fn build_foundation_pages(
         .filter(|s| !s.is_empty())
         .collect();
 
-    // PERSON PAGES. parent_hub = the user's first group (if it is a known group).
+    // PERSON PAGES.
     let users = enrollment::list_users(pool).await?;
     for u in &users {
         let slug = slugify(&u.user_id);
@@ -658,18 +644,14 @@ pub async fn build_foundation_pages(
             );
             continue;
         }
-        // A person's card hangs from nothing and links to no group: it used to
-        // parent under its first group's card and carry a rail to each of
-        // them, and both pointed at a page that no longer exists. What ties a
-        // person to a group is the ACL on a fact, never a link on a page.
+        // A person's card links to no group. What ties a person to a group is
+        // the ACL on a fact, never a link on a page.
         pages.insert(
             slug.clone(),
             PagePlan {
                 title: capitalize(&u.user_id),
                 description: format!("Personal page of {}", capitalize(&u.user_id)),
                 style: None,
-                parent_hub: None,
-                child_leaves: Vec::new(),
                 primary_facts: Vec::new(),
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),
@@ -723,35 +705,12 @@ fn seed_parking_pages(tree: &WikiTree, pages: &mut BTreeMap<String, PagePlan>) -
             );
             continue;
         }
-        // Hang the parking page under its own wiki's card when there is one,
-        // else under the PARENT wiki's foundation node. Since a group wiki
-        // stopped having a card (2026-08-19) the parent's node is usually its
-        // own parking page, and that one may not be seeded yet — this loop
-        // walks the tree in its own order — so it is named by slug and the
-        // assembly's dangling-parent heal settles anything that never appears.
-        let has_card = pages
-            .get(&wiki_slug)
-            .is_some_and(PagePlan::is_identity_card);
-        let parent_hub = if has_card {
-            Some(wiki_slug.clone())
-        } else {
-            d.meta.parent_wiki_id.as_ref().map(|p| {
-                let pslug = slugify(p.as_str());
-                if pages.get(&pslug).is_some_and(PagePlan::is_identity_card) {
-                    pslug
-                } else {
-                    buffer_slug(&pslug)
-                }
-            })
-        };
         pages.insert(
             slug.clone(),
             PagePlan {
                 title: d.meta.title.clone(),
                 description: d.meta.scope.clone().unwrap_or_default(),
                 style: None,
-                parent_hub,
-                child_leaves: Vec::new(),
                 primary_facts: Vec::new(),
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),
@@ -816,13 +775,7 @@ pub fn build_compilation_plan(
         if e.wiki_id != crate::types::WikiId::ROOT {
             return true;
         }
-        match resolve_page_wiki(
-            slug,
-            e.parent_hub.as_deref(),
-            foundation,
-            registry,
-            &slug_source_wiki,
-        ) {
+        match resolve_page_wiki(slug, &slug_source_wiki) {
             Some(w) => {
                 e.wiki_id = w;
                 true
@@ -851,7 +804,6 @@ pub fn build_compilation_plan(
     // 1. seed foundation (preserve nothing yet — foundation holds no DB facts).
     for (slug, p) in foundation {
         let mut np = p.clone();
-        np.child_leaves.clear();
         np.primary_facts.clear();
         np.incoming_links.clear();
         pages.insert(slug.clone(), np);
@@ -873,13 +825,7 @@ pub fn build_compilation_plan(
         }
         // Option C: home the page in its facts' source wiki (else its
         // parent's wiki); skip a homeless page rather than minting a root.
-        let Some(wiki_id) = resolve_page_wiki(
-            &slug,
-            np.parent_hub.as_deref(),
-            foundation,
-            registry,
-            &slug_source_wiki,
-        ) else {
+        let Some(wiki_id) = resolve_page_wiki(&slug, &slug_source_wiki) else {
             continue;
         };
         let entry = ConceptRegistryEntry {
@@ -887,7 +833,6 @@ pub fn build_compilation_plan(
             title: np.title.clone(),
             description: np.description.clone(),
             style: crate::wiki::PageStyle::parse_lenient(np.style.as_deref()),
-            parent_hub: np.parent_hub.as_deref().map(slugify),
             wiki_id: wiki_id.clone(),
             created_at: now.to_owned(),
         };
@@ -940,8 +885,6 @@ pub fn build_compilation_plan(
                     title: title.clone(),
                     description: String::new(),
                     style: None,
-                    parent_hub: None,
-                    child_leaves: Vec::new(),
                     primary_facts: Vec::new(),
                     outgoing_links: Vec::new(),
                     incoming_links: Vec::new(),
@@ -958,7 +901,6 @@ pub fn build_compilation_plan(
                     title,
                     description: String::new(),
                     style: None,
-                    parent_hub: None,
                     wiki_id,
                     created_at: now.to_owned(),
                 });
@@ -1010,66 +952,6 @@ pub fn build_compilation_plan(
         }
     }
 
-    // 6.bis heal dangling parents: a `parent_hub` naming no plan page would
-    // silently skip step 7 (the parent lookup fails, the child joins no
-    // `child_leaves`) and survive as a broken pointer on the compiled page —
-    // the shape an absorbed/GC'd hub leaves behind. Re-point to the page's
-    // own wiki foundation page when the plan has one, else clear. The
-    // registry entry heals too, or the same pointer resurrects every build.
-    // Prefer the wiki's card; a topic wiki has only its parking page. (`BTreeMap`
-    // iterates by slug, and a carded wiki's parking page sorts after its card under
-    // the `__notes` suffix, so the card is inserted first and kept.)
-    let mut foundation_by_wiki: BTreeMap<String, String> = BTreeMap::new();
-    for (slug, p) in &pages {
-        if !p.is_foundation() {
-            continue;
-        }
-        let entry = foundation_by_wiki.entry(p.wiki_id.clone());
-        match entry {
-            std::collections::btree_map::Entry::Vacant(v) => {
-                v.insert(slug.clone());
-            },
-            std::collections::btree_map::Entry::Occupied(mut o) if p.is_identity_card() => {
-                o.insert(slug.clone());
-            },
-            std::collections::btree_map::Entry::Occupied(_) => {},
-        }
-    }
-    let known_slugs: BTreeSet<String> = pages.keys().cloned().collect();
-    for (slug, page) in &mut pages {
-        if let Some(h) = &page.parent_hub
-            && !known_slugs.contains(h)
-        {
-            let heal = foundation_by_wiki.get(&page.wiki_id).cloned();
-            tracing::info!(
-                slug = %slug,
-                dangling = %h,
-                healed_to = heal.as_deref().unwrap_or("—"),
-                "planner: healed dangling parent_hub"
-            );
-            page.parent_hub.clone_from(&heal);
-            if let Some(e) = updated_registry.entries.get_mut(slug) {
-                e.parent_hub = heal;
-            }
-        }
-    }
-
-    // 7. parent → child.
-    let parents: Vec<(String, String)> = pages
-        .iter()
-        .filter_map(|(slug, p)| p.parent_hub.clone().map(|h| (slug.clone(), h)))
-        .collect();
-    for (slug, hub) in parents {
-        if let Some(parent) = pages.get_mut(&hub)
-            && !parent.child_leaves.contains(&slug)
-        {
-            parent.child_leaves.push(slug);
-        }
-    }
-    for p in pages.values_mut() {
-        p.child_leaves.sort();
-    }
-
     // 8. FIXPOINT garbage collection of empty concept pages (the TS single-pass
     // bug fix): repeat until no removals — an empty hub whose only child is a
     // removed empty leaf must also go.
@@ -1082,9 +964,7 @@ pub fn build_compilation_plan(
         // una wiki»*. A grouping deep enough to need its own container is a
         // wiki, and wikis are raised by the promote machinery, which is
         // visible. So the emptied page stays a leaf and the sweep below
-        // collects it like any other; `reparent_to_foundation` re-homes its
-        // children first, which is what the flip used to be protecting
-        // against.
+        // collects it like any other.
         let to_remove: Vec<String> = pages
             .iter()
             .filter(|(_, p)| !p.is_foundation())
@@ -1093,38 +973,32 @@ pub fn build_compilation_plan(
             .filter(|(_, p)| p.primary_facts.is_empty())
             .map(|(slug, _)| slug.clone())
             .collect();
-        // A page about to go must not take its children's parent with it.
-        reparent_to_foundation(&mut pages, &to_remove);
         if to_remove.is_empty() {
             break;
         }
         for slug in to_remove {
             let reason = "page with 0 facts";
-            let parent = pages.get(&slug).and_then(|p| p.parent_hub.clone());
             merged.push(MergedPage {
                 from: slug.clone(),
-                into: parent.clone().unwrap_or_else(|| "—".to_owned()),
+                into: "—".to_owned(),
                 reason: reason.to_owned(),
             });
-            if let Some(h) = &parent
-                && let Some(parent_page) = pages.get_mut(h)
-            {
-                parent_page.child_leaves.retain(|c| c != &slug);
-            }
             pages.remove(&slug);
             updated_registry.entries.remove(&slug);
         }
     }
 
-    // 9. directed link graph (hub→child + foundation outgoing), then symmetric.
+    // 9. directed link graph, then symmetric.
+    //
+    // Built from the links the PROSE carries and nothing else. There used to
+    // be a second source — an edge from a page to each page that named it as
+    // its parent — and it went with the parenthood itself (founder,
+    // 2026-08-22: *«le pagine non hanno un genitore»*). A page is reached
+    // because one of its facts ranked, not because something above it points
+    // down.
     let mut link_graph: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (slug, page) in &pages {
         let entry = link_graph.entry(slug.clone()).or_default();
-        for child in &page.child_leaves {
-            if pages.contains_key(child) && !entry.contains(child) {
-                entry.push(child.clone());
-            }
-        }
         for link in &page.outgoing_links {
             if link != slug && pages.contains_key(link) && !entry.contains(link) {
                 entry.push(link.clone());
@@ -1186,8 +1060,6 @@ fn registry_to_page(e: &ConceptRegistryEntry) -> PagePlan {
         title: e.title.clone(),
         description: e.description.clone(),
         style: e.style,
-        parent_hub: e.parent_hub.clone(),
-        child_leaves: Vec::new(),
         primary_facts: Vec::new(),
         outgoing_links: Vec::new(),
         incoming_links: Vec::new(),
@@ -1204,8 +1076,6 @@ fn new_page_to_plan(np: &NewPage, slug: &str, wiki_id: &str) -> PagePlan {
         title: np.title.clone(),
         description: np.description.clone(),
         style: crate::wiki::PageStyle::parse_lenient(np.style.as_deref()),
-        parent_hub: np.parent_hub.as_deref().map(slugify),
-        child_leaves: Vec::new(),
         primary_facts: Vec::new(),
         outgoing_links: Vec::new(),
         incoming_links: Vec::new(),
@@ -1237,28 +1107,17 @@ fn majority_fact_style(facts: &[FactForPage]) -> Option<crate::wiki::PageStyle> 
 ///
 /// A page is homed in **its facts' source wiki** — the invariant that a fact's
 /// region lives in the fact's own wiki, which also keeps `fact_index.wiki_id`
-/// and the compiled `source_path` in the same wiki. A factless page falls
-/// back to its parent's wiki. Returns `None` when neither resolves —
-/// a homeless, factless page the caller skips. Never resolves to the retired
-/// `root` wiki (mwe-mcp's wiki tree is a forest of top-level wikis, with no
-/// single materialised root).
-fn resolve_page_wiki(
-    slug: &str,
-    parent_hub: Option<&str>,
-    foundation: &BTreeMap<String, PagePlan>,
-    registry: &ConceptRegistry,
-    slug_source_wiki: &BTreeMap<String, String>,
-) -> Option<String> {
-    let candidate = if let Some(w) = slug_source_wiki.get(slug) {
-        Some(w.clone())
-    } else {
-        let hs = slugify(parent_hub?);
-        foundation
-            .get(&hs)
-            .map(|p| p.wiki_id.clone())
-            .or_else(|| registry.entries.get(&hs).map(|e| e.wiki_id.clone()))
-    };
-    candidate.filter(|w| w != crate::types::WikiId::ROOT)
+/// and the compiled `source_path` in the same wiki. Returns `None` for a page
+/// with no facts to home it: a factless page has nothing to be about, and the
+/// caller skips it. (It used to fall back to the wiki of the page it hung
+/// under; pages do not hang under anything since 2026-08-22.) Never resolves
+/// to the retired `root` wiki — the wiki tree is a forest of top-level wikis
+/// with no single materialised root.
+fn resolve_page_wiki(slug: &str, slug_source_wiki: &BTreeMap<String, String>) -> Option<String> {
+    slug_source_wiki
+        .get(slug)
+        .cloned()
+        .filter(|w| w != crate::types::WikiId::ROOT)
 }
 
 /// Deterministic orphan home — the subject's wiki first, then the fact's source
@@ -1318,52 +1177,6 @@ fn foundation_slug_for(
         card.or(parking)
     } else {
         parking.or(card)
-    }
-}
-
-/// Re-home the children of every page about to be garbage-collected onto
-/// their wiki's foundation page, so a removal never orphans a `parent_hub`.
-///
-/// Needed since the planner stopped promoting an emptied page into a
-/// container (founder, 2026-08-04: *«un contenitore è una wiki»*). Before
-/// that a page with children could not be collected — it turned into a
-/// container and lived on — so the question never arose. Now it is
-/// collected like any other empty page, and its children have to land
-/// somewhere first.
-///
-/// The wiki's own foundation is the only safe destination: it always exists,
-/// it belongs to the same wiki (so nothing crosses an ACL boundary), and a
-/// page parented there is exactly a page with no grouping above it. A child
-/// whose wiki resolves to no foundation at all keeps its old parent — a
-/// dangling `parent_hub` is inert, an invented one is not.
-fn reparent_to_foundation(pages: &mut BTreeMap<String, PagePlan>, doomed: &[String]) {
-    if doomed.is_empty() {
-        return;
-    }
-    let doomed: BTreeSet<&str> = doomed.iter().map(String::as_str).collect();
-    let snapshot = pages.clone();
-    for page in pages.values_mut() {
-        let Some(parent) = page.parent_hub.as_deref() else {
-            continue;
-        };
-        if !doomed.contains(parent) {
-            continue;
-        }
-        let wiki_slug = slugify(&page.wiki_id);
-        let Some(foundation) = foundation_slug_for(&wiki_slug, false, &snapshot) else {
-            continue;
-        };
-        tracing::info!(
-            slug = %page.slug,
-            from = %parent,
-            to = %foundation,
-            "planner: child re-homed onto its wiki's foundation — its parent page is going"
-        );
-        page.parent_hub = Some(foundation);
-    }
-    // Drop the stale child links from whatever still names them.
-    for page in pages.values_mut() {
-        page.child_leaves.retain(|c| !doomed.contains(c.as_str()));
     }
 }
 
@@ -1448,15 +1261,7 @@ pub fn page_fingerprint(p: &PagePlan) -> String {
     facts.sort_unstable();
     let mut out = p.outgoing_links.clone();
     out.sort();
-    let mut children = p.child_leaves.clone();
-    children.sort();
-    format!(
-        "{}|{}|{}|{}",
-        facts.join(","),
-        out.join(","),
-        p.parent_hub.as_deref().unwrap_or(""),
-        children.join(",")
-    )
+    format!("{}|{}", facts.join(","), out.join(","))
 }
 
 /// The recompile set: pages new, fingerprint-changed, or type-changed in
@@ -1681,8 +1486,6 @@ pub fn rehome_facts_in_persisted_plan(
                     title: seed.title.clone(),
                     description: seed.description.clone(),
                     style: seed.style,
-                    parent_hub: None,
-                    child_leaves: Vec::new(),
                     primary_facts: Vec::new(),
                     outgoing_links: Vec::new(),
                     incoming_links: Vec::new(),
@@ -1704,7 +1507,6 @@ pub fn rehome_facts_in_persisted_plan(
                     title: seed.title.clone(),
                     description: seed.description.clone(),
                     style: seed.style,
-                    parent_hub: None,
                     wiki_id: seed.wiki_id.clone(),
                     created_at: now.to_owned(),
                 });
@@ -1753,7 +1555,6 @@ pub fn rehome_facts_in_persisted_plan(
                 links.retain(|s| s != &husk);
             }
             for page in plan.pages.values_mut() {
-                page.child_leaves.retain(|s| s != &husk);
                 page.outgoing_links.retain(|s| s != &husk);
                 page.incoming_links.retain(|s| s != &husk);
             }
@@ -2204,82 +2005,19 @@ pub async fn subject_scopes_for(
     Ok(scopes)
 }
 
-/// Hold a proposed page to the two rules the prompt states and nothing
-/// enforced — **a container is a wiki** (founder, 2026-08-04).
+/// Hold a page the Conciliatore **accepted** to the one rule left.
 ///
-/// 1. **Every proposal is an ordinary page**, and there is nothing to check:
-///    since 2026-08-19 a proposal carries no page kind at all — what a page is
-///    is its file name, and a proposed one is `<slug>.md`.
-/// 2. **`parent_hub` is a foundation page of this wiki**, or nothing. A page
-///    parented under another *page* is exactly the container the ruling
-///    abolished, and it used to arrive by two routes at once: nobody checked,
-///    and the prompt's own container rule then told the model to treat the
-///    malformed page as a legitimate hub and keep filling it. Dropping the
-///    bad parent is the right correction rather than dropping the page — the
-///    facts still need a home, and `resolve_page_wiki` then homes it where
-///    its facts are instead of following an invented parent into a foreign
-///    wiki.
+/// What comes back from this stage is materialised into the plan *and
+/// persisted into the concept registry*, and it arrives as free-form JSON —
+/// the model re-emits `slug` while it decides merges, so it can come back
+/// changed.
 ///
-/// **The `this wiki` half of rule 2 survived the un-fencing of 2026-08-14,
-/// with a different reason.** It is not a fence around where a fact may
-/// live: a fact may be assigned to any page in the forest. It is what
-/// *proposing* a page means. A new page is born where its facts are
-/// ([`resolve_page_wiki`] reads `slug_source_wiki` first), and this batch's
-/// facts are this wiki's — so a page it coins lands in this wiki, and a hub
-/// in another one would be a parent the page does not live under. That also
-/// keeps `{locale}` honest: the batch coins titles for its own wiki only.
-/// [`vet_accepted`] asks only that the hub exist, because by the time the
-/// Conciliatore runs the page may have been merged into one that is already
-/// homed elsewhere.
-///
-/// Corrected, not refused: a rejected proposal costs the batch a page its
-/// facts were meant to have, and the model has no second chance to fix it.
-fn vet_proposal(mut np: NewPage, foundation: &BTreeMap<String, PagePlan>, wiki: &str) -> NewPage {
-    if let Some(hub) = &np.parent_hub {
-        let hub = slugify(hub);
-        let is_local_foundation = foundation
-            .get(&hub)
-            .is_some_and(|p| p.wiki_id == wiki && p.is_foundation());
-        if is_local_foundation {
-            np.parent_hub = Some(hub);
-        } else {
-            tracing::warn!(
-                slug = %np.slug,
-                parent_hub = %hub,
-                wiki,
-                "cartografo: parent_hub is not a foundation page of this wiki — dropped"
-            );
-            np.parent_hub = None;
-        }
-    }
-    np
-}
-
-/// Hold a page the Conciliatore **accepted** to the rules [`vet_proposal`]
-/// holds a proposal to.
-///
-/// That stage runs one earlier, on the Cartografo's raw output; what comes
-/// back from this one is materialised into the plan *and persisted into the
-/// concept registry*, and it arrives as free-form JSON — the model is asked to
-/// re-emit `slug` / `parent_hub` while it decides merges, so
-/// every field can come back changed. Three checks, in the order the damage
-/// would land:
-///
-/// 1. **A reserved page name is refused outright** (`index`, `rules`,
-///    `projects`, `profile`, `notes`). A concept page keyed by one of those
-///    stems compiles to the same file as the wiki's own card or parking page — two
-///    plan pages, one path. The Cartografo path drops such a proposal too; the
-///    facts meant for it fall through to the orphan pass, which has a real
-///    page for them.
-/// 2. **Every accepted page is a `concept_leaf`** — the only kind anything may
-///    create since *a container is a wiki* (founder, 2026-08-04).
-/// 3. **`parent_hub` names a real foundation page**, or nothing. Deliberately
-///    weaker than [`vet_proposal`]'s: that one also demands the hub belong to
-///    *this* wiki, and a cross-wiki placement is the engine's prerogative
-///    (founder, 2026-08-10 — see card 72f, where that fence is the work item).
-///    What has to hold here is that the hub exists at all; `resolve_page_wiki`
-///    then homes the page under it.
-fn vet_accepted(mut np: NewPage, foundation: &BTreeMap<String, PagePlan>) -> Option<NewPage> {
+/// **A reserved page name is refused outright** (`rules`, `projects`,
+/// `profile`, `notes`). A page keyed by one of those stems compiles to the
+/// same file as the wiki's own card or parking page — two plan pages, one
+/// path. The facts meant for it fall through to the orphan pass, which has a
+/// real page for them.
+fn vet_accepted(mut np: NewPage, _foundation: &BTreeMap<String, PagePlan>) -> Option<NewPage> {
     let slug = slugify(&np.slug);
     if crate::wiki::is_reserved_page_stem(&slug) {
         tracing::warn!(
@@ -2287,19 +2025,6 @@ fn vet_accepted(mut np: NewPage, foundation: &BTreeMap<String, PagePlan>) -> Opt
             "conciliatore: accepted a reserved page name — page dropped"
         );
         return None;
-    }
-    if let Some(hub) = &np.parent_hub {
-        let hub = slugify(hub);
-        if foundation.get(&hub).is_some_and(PagePlan::is_foundation) {
-            np.parent_hub = Some(hub);
-        } else {
-            tracing::warn!(
-                slug = %slug,
-                parent_hub = %hub,
-                "conciliatore: parent_hub is not a foundation page — dropped"
-            );
-            np.parent_hub = None;
-        }
     }
     np.slug = slug;
     Some(np)
@@ -2551,9 +2276,7 @@ pub async fn classify_facts(
             }
             if !slug.is_empty() && known.insert(slug.clone()) {
                 proposal_wikis.insert(slug.clone(), wiki.to_owned());
-                merged
-                    .new_pages
-                    .push(vet_proposal(NewPage { slug, ..np }, foundation, wiki));
+                merged.new_pages.push(NewPage { slug, ..np });
             }
         }
     }
@@ -2725,7 +2448,6 @@ fn ingest_placement_blueprint(facts: &[FactForPage]) -> Blueprint {
             // the file into this plan and the registry.
             description: String::new(),
             style: f.style.map(|s| s.as_str().to_owned()),
-            parent_hub: None,
         });
     }
     Blueprint {
@@ -3043,15 +2765,14 @@ async fn conciliate_one_wiki(
 
 /// Re-attach each accepted page's writing `style` from the original proposal.
 ///
-/// The conciliatore output schema carries only slug / title / description /
-/// `parent_hub` — not `style` — so a parsed `accepted_new` item
-/// comes back with `style: None`. Left as-is, an ingest-proposed `lista` page
+/// The conciliatore output schema carries only slug / title / description —
+/// not `style` — so a parsed `accepted_new` item comes back with
+/// `style: None`. Left as-is, an ingest-proposed `lista` page
 /// would lose its style through conciliation and be demoted to full-prose
 /// compilation. We restore it from the original `new_pages` by slug (matching
 /// the canonical `slugify` form so a re-slugged proposal still lands), never
 /// trusting the LLM to transcribe it. `style` is the only `NewPage` field the
-/// schema drops; the rest (title / description / `parent_hub`)
-/// the model is asked to preserve verbatim.
+/// schema drops; the rest the model is asked to preserve verbatim.
 fn backfill_accepted_new_style(accepted: &mut [NewPage], original: &[NewPage]) {
     use std::collections::btree_map::Entry;
     // First proposal wins on a slugified-key collision — the same collapse
@@ -3363,8 +3084,7 @@ pub async fn build_wiki_plan(
     // Vet the Conciliatore's output before either half of it reaches the plan:
     // its accepted pages are materialised AND persisted into the registry, and
     // its redirects rewrite assignments here and again in the plan builder. Both
-    // ran unchecked until 2026-08-10 — `vet_proposal` sits one stage earlier, on
-    // the Cartografo's raw output only.
+    // ran unchecked until 2026-08-10.
     let accepted = std::mem::take(&mut conciliation.accepted_new);
     conciliation.accepted_new = accepted
         .into_iter()
@@ -3568,7 +3288,6 @@ async fn record_minted_pages(
             "page_path": page.page_path,
             "title": page.title,
             "description": page.description,
-            "parent_hub": page.parent_hub,
             "fact_count": page.primary_facts.len(),
             "minted_at": now,
         });
@@ -3660,11 +3379,10 @@ fn describe_foundation(
         .map(|p| {
             if p.is_parking_page() {
                 format!(
-                    "- [{}] {} — {} (parent_hub: {}) | {} | facts: {}",
+                    "- [{}] {} — {} | {} | facts: {}",
                     p.prompt_kind(),
                     p.slug,
                     p.title,
-                    p.parent_hub.as_deref().unwrap_or("—"),
                     if p.description.is_empty() {
                         "—"
                     } else {
@@ -3674,11 +3392,10 @@ fn describe_foundation(
                 )
             } else {
                 format!(
-                    "- [{}] {} — {} (parent_hub: {}) | facts: {}",
+                    "- [{}] {} — {} | facts: {}",
                     p.prompt_kind(),
                     p.slug,
                     p.title,
-                    p.parent_hub.as_deref().unwrap_or("—"),
                     mass_of(mass, &p.slug),
                 )
             }
@@ -3917,11 +3634,8 @@ fn describe_new_pages(new_pages: &[NewPage]) -> String {
         .iter()
         .map(|np| {
             format!(
-                "- [concept_leaf] {} — {} | {} (parent_hub: {})",
-                np.slug,
-                np.title,
-                np.description,
-                np.parent_hub.as_deref().unwrap_or("—")
+                "- [concept_leaf] {} — {} | {}",
+                np.slug, np.title, np.description
             )
         })
         .collect::<Vec<_>>()
@@ -4101,8 +3815,6 @@ mod tests {
             title: capitalize(slug),
             description: format!("Personal page of {slug}"),
             style: None,
-            parent_hub: None,
-            child_leaves: Vec::new(),
             primary_facts: Vec::new(),
             outgoing_links: Vec::new(),
             incoming_links: Vec::new(),
@@ -4284,7 +3996,6 @@ mod tests {
             title: slug.to_owned(),
             description: "cosa ci va".to_owned(),
             style: None,
-            parent_hub: None,
         };
         let assign = |id: u8, slug: &str| Assignment {
             fact_id: format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{id:02}"),
@@ -4376,7 +4087,6 @@ mod tests {
         let np = &bp.new_pages[0];
         assert_eq!(np.slug, "spesa");
         assert_eq!(np.title, "Spesa");
-        assert_eq!(np.parent_hub, None);
         assert_eq!(np.style.as_deref(), Some("lista"));
         assert_eq!(
             np.description, "",
@@ -4491,7 +4201,6 @@ mod tests {
                     title: title.to_owned(),
                     description: "d".to_owned(),
                     style: None, // persisted style-less
-                    parent_hub: None,
                     wiki_id: "alice".to_owned(),
                     created_at: "t".to_owned(),
                 },
@@ -4547,80 +4256,6 @@ mod tests {
         );
         assert_eq!(plan.pages["hobby"].style, None);
     }
-
-    #[test]
-    fn resolve_page_wiki_uses_facts_source_else_parent_never_root() {
-        // Option C (forest model): a concept page lives in its facts' source
-        // wiki; a factless hub falls back to its parent's wiki; the retired
-        // `root` wiki never surfaces; a homeless factless page resolves to None.
-        let foundation = BTreeMap::new();
-        let mut registry = ConceptRegistry::empty("t");
-        registry.entries.insert(
-            "famiglia".to_owned(),
-            ConceptRegistryEntry {
-                slug: "famiglia".to_owned(),
-                title: "Famiglia".to_owned(),
-                description: "d".to_owned(),
-                style: None,
-                parent_hub: None,
-                wiki_id: "famiglia".to_owned(),
-                created_at: "t".to_owned(),
-            },
-        );
-        registry.entries.insert(
-            "rootish".to_owned(),
-            ConceptRegistryEntry {
-                slug: "rootish".to_owned(),
-                title: "R".to_owned(),
-                description: "d".to_owned(),
-                style: None,
-                parent_hub: None,
-                wiki_id: "root".to_owned(),
-                created_at: "t".to_owned(),
-            },
-        );
-        let mut src = BTreeMap::new();
-        src.insert("siti_personali".to_owned(), "frodo".to_owned());
-
-        // facts win: a global fact's page → its source wiki, no parent needed.
-        assert_eq!(
-            resolve_page_wiki("siti_personali", None, &foundation, &registry, &src),
-            Some("frodo".to_owned())
-        );
-        // facts win even over a parent in a different wiki (kills the divergence).
-        assert_eq!(
-            resolve_page_wiki(
-                "siti_personali",
-                Some("famiglia"),
-                &foundation,
-                &registry,
-                &src
-            ),
-            Some("frodo".to_owned())
-        );
-        // factless hub → parent's wiki.
-        assert_eq!(
-            resolve_page_wiki("eventi", Some("famiglia"), &foundation, &registry, &src),
-            Some("famiglia".to_owned())
-        );
-        // a parent that itself resolves to the retired root → filtered to None.
-        assert_eq!(
-            resolve_page_wiki(
-                "x",
-                Some("rootish"),
-                &foundation,
-                &registry,
-                &BTreeMap::new()
-            ),
-            None
-        );
-        // homeless: no facts, no resolvable parent → None (skipped, never root).
-        assert_eq!(
-            resolve_page_wiki("orfana", None, &foundation, &registry, &BTreeMap::new()),
-            None
-        );
-    }
-
     #[test]
     fn architetto_fixpoint_gc_removes_empty_concept_chain() {
         let foundation = BTreeMap::new();
@@ -4633,7 +4268,6 @@ mod tests {
                 title: "Hub".to_owned(),
                 description: "d".to_owned(),
                 style: None,
-                parent_hub: None,
                 wiki_id: "alice".to_owned(),
                 created_at: "t".to_owned(),
             },
@@ -4645,7 +4279,6 @@ mod tests {
                 title: "Leaf".to_owned(),
                 description: "d".to_owned(),
                 style: None,
-                parent_hub: Some("hub".to_owned()),
                 wiki_id: "alice".to_owned(),
                 created_at: "t".to_owned(),
             },
@@ -4702,7 +4335,7 @@ mod tests {
         let llm = FakeLlmBackend::new(
             "fake",
             "{\"assignments\":[{\"fact_id\":\"0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d01\",\"page_slug\":\"salute_alice\"}],\
-              \"new_pages\":[{\"slug\":\"salute_alice\",\"title\":\"Salute\",\"description\":\"d\",\"parent_hub\":\"alice\"}]}",
+              \"new_pages\":[{\"slug\":\"salute_alice\",\"title\":\"Salute\",\"description\":\"d\"}]}",
         );
         let bp = classify_facts(
             &llm,
@@ -5705,190 +5338,6 @@ mod tests {
         assert!(out.contains("subject=group:famiglia identity_pages=bruno,franz"));
     }
 
-    #[test]
-    fn page_descriptions_carry_fact_mass() {
-        // The split-by-mass signal: every page line shows how many facts
-        // currently live on it — a number the model weighs, never a gate.
-        let mut foundation = BTreeMap::new();
-        foundation.insert("alice".to_owned(), person("alice"));
-        let mut registry = ConceptRegistry::empty("t");
-        registry.entries.insert(
-            "dossier".to_owned(),
-            ConceptRegistryEntry {
-                slug: "dossier".to_owned(),
-                title: "Dossier".to_owned(),
-                description: "d".to_owned(),
-                style: None,
-                parent_hub: None,
-                wiki_id: "alice".to_owned(),
-                created_at: "t".to_owned(),
-            },
-        );
-        registry.entries.insert(
-            "dossier_terapie".to_owned(),
-            ConceptRegistryEntry {
-                slug: "dossier_terapie".to_owned(),
-                title: "Terapie".to_owned(),
-                description: "t".to_owned(),
-                style: None,
-                parent_hub: Some("dossier".to_owned()),
-                wiki_id: "alice".to_owned(),
-                created_at: "t".to_owned(),
-            },
-        );
-        let mut mass = BTreeMap::new();
-        mass.insert("alice".to_owned(), 7usize);
-        mass.insert("dossier".to_owned(), 51usize);
-
-        let f = describe_foundation(&foundation, "alice", &mass);
-        assert!(f.contains("- [person] alice — Alice (parent_hub: —) | facts: 7"));
-        let c = describe_concepts(&registry, "alice", &[], &mass, &ForeignPages::Whole);
-        assert!(
-            c.contains("dossier — Dossier | d | facts: 51"),
-            "a page line carries its fact mass"
-        );
-        assert!(
-            c.contains("dossier_terapie — Terapie | t | facts: 0\n")
-                || c.ends_with("dossier_terapie — Terapie | t | facts: 0"),
-            "a childless page carries no children suffix"
-        );
-    }
-
-    /// The assembled Cartografo prompt input carries both structural
-    /// signals: the per-page fact-mass counts and the per-fact identity
-    /// scope tags — and the running mass folds in this run's own
-    /// assignments so a later batch sees the pile grow.
-    #[tokio::test]
-    async fn cartografo_prompt_input_carries_mass_and_identity_signals() {
-        use crate::llm::FakeLlmBackend;
-        let dir = tempfile::tempdir().unwrap();
-        let tree = WikiTree::open(dir.path()).expect("tree");
-        let mut foundation = BTreeMap::new();
-        foundation.insert("franz".to_owned(), person("franz"));
-        let registry = ConceptRegistry::empty("t");
-        let mut signals = CartografoSignals::default();
-        signals.page_mass.insert("franz".to_owned(), 12);
-        signals
-            .subject_scopes
-            .insert("user:bruno".to_owned(), "bruno".to_owned());
-        // In `franz`'s wiki: the pages a batch is shown are its own wiki's,
-        // so the page under test has to live where the fact does.
-        let facts = vec![fact(1, "Bruno's therapy schedule", "user:bruno", "franz")];
-        let llm = FakeLlmBackend::new("fake", "{\"assignments\":[],\"new_pages\":[]}");
-        classify_facts(
-            &llm,
-            &facts,
-            &foundation,
-            &registry,
-            tree.workdir(),
-            &signals,
-        )
-        .await
-        .expect("classify");
-        let system = llm.last_system_prompt().expect("system prompt captured");
-        assert!(
-            system.contains("- [person] franz — Franz (parent_hub: —) | facts: 12"),
-            "page mass visible to the model"
-        );
-        assert!(
-            system.contains("identity_pages=bruno"),
-            "identity scope tag visible to the model"
-        );
-        drop(dir);
-    }
-
-    /// A batch is shown the **whole forest** as destinations — its own wiki's
-    /// pages and everyone else's — and the collision list keeps only the names
-    /// nothing offered.
-    ///
-    /// The fence this replaced let a fact reach only pages of the wiki it was
-    /// already in, so a fact could never be re-homed: *a fact is free to live
-    /// in any wiki, and the engine moving one there is its judgment, not
-    /// damage* (founder, 2026-08-10). Read permission is judged per fact, so a
-    /// move changes nothing about who may see it.
-    ///
-    /// The bare-name half is permanent, with its remaining job: a plan is
-    /// keyed by slug across the whole memory, so a model that *coins* a name
-    /// another wiki owns files these facts onto that page by accident.
-    /// Choosing a page is a judgement; colliding with its name is not. What
-    /// stays on that list is what the described lists leave out — here, the
-    /// other wiki's parking page.
-    #[tokio::test]
-    async fn a_batch_is_offered_the_whole_forest_and_only_unshown_names_are_taken() {
-        use crate::llm::FakeLlmBackend;
-        let dir = tempfile::tempdir().unwrap();
-        let tree = WikiTree::open(dir.path()).expect("tree");
-        let mut foundation = BTreeMap::new();
-        foundation.insert("alice".to_owned(), person("alice"));
-        foundation.insert("bob".to_owned(), person("bob"));
-        let mut alice_buffer = person("alice");
-        alice_buffer.slug = "alice__notes".to_owned();
-        alice_buffer.page_path = crate::wiki::NOTES_FILENAME.to_owned();
-        foundation.insert("alice__notes".to_owned(), alice_buffer);
-        let mut registry = ConceptRegistry::empty("t");
-        for (slug, wiki) in [("cucina_alice", "alice"), ("cucina_bob", "bob")] {
-            registry.entries.insert(
-                slug.to_owned(),
-                ConceptRegistryEntry {
-                    slug: slug.to_owned(),
-                    title: "Cucina".to_owned(),
-                    description: "what gets cooked".to_owned(),
-                    style: None,
-                    parent_hub: None,
-                    wiki_id: wiki.to_owned(),
-                    created_at: "t".to_owned(),
-                },
-            );
-        }
-        let facts = vec![fact(1, "bob roasted a chicken", "user:bob", "bob")];
-        let llm = FakeLlmBackend::new("fake", "{\"assignments\":[],\"new_pages\":[]}");
-        classify_facts(
-            &llm,
-            &facts,
-            &foundation,
-            &registry,
-            tree.workdir(),
-            &CartografoSignals::default(),
-        )
-        .await
-        .expect("classify");
-        let system = llm.last_system_prompt().expect("system prompt captured");
-        assert!(
-            system.contains("- [person] bob"),
-            "this wiki's own card is offered"
-        );
-        assert!(
-            system.contains("- [person] alice — Alice | wiki: alice"),
-            "another wiki's identity card IS a destination, named with its wiki: {system}"
-        );
-        assert!(
-            system.contains("cucina_bob — Cucina"),
-            "this wiki's concept page is offered, described"
-        );
-        assert!(
-            system.contains("cucina_alice — Cucina | wiki: alice"),
-            "and so is another wiki's, with the place it lives in: {system}"
-        );
-        // What is left of the collision list: the names of pages nothing
-        // offered. Here that is the other wiki's parking page — a fact parked in
-        // somebody else's inbox is not a placement.
-        assert!(
-            system.contains("NAMES ALREADY TAKEN"),
-            "the collision guard is in the prompt"
-        );
-        let taken_line = system
-            .lines()
-            .zip(system.lines().skip(1))
-            .find(|(l, _)| l.starts_with("NAMES ALREADY TAKEN by pages NOT listed above"))
-            .map(|(_, next)| next.to_owned())
-            .expect("the taken list follows its heading");
-        assert_eq!(
-            taken_line, "alice__notes",
-            "only the unshown names are taken — the offered pages left the list"
-        );
-        drop(dir);
-    }
-
     /// A page proposed by an EARLIER batch of another wiki is a destination,
     /// not a forbidden name.
     ///
@@ -5912,7 +5361,6 @@ mod tests {
             title: "Orto".to_owned(),
             description: "the vegetable patch".to_owned(),
             style: None,
-            parent_hub: None,
         };
         let shown = describe_concepts(
             &registry,
@@ -5951,7 +5399,7 @@ mod tests {
         ] {
             registry
                 .entries
-                .insert(slug.to_owned(), concept_entry(slug, None, wiki));
+                .insert(slug.to_owned(), concept_entry(slug, wiki));
         }
         // The selection picked two of alice's three, in this order.
         let foreign = ForeignPages::Selected(BTreeMap::from([(
@@ -6050,7 +5498,6 @@ mod tests {
             title: slug.to_owned(),
             description: String::new(),
             style: None,
-            parent_hub: None,
         };
         let mut page_wikis = BTreeMap::new();
         page_wikis.insert("salute".to_owned(), "alice".to_owned());
@@ -6080,14 +5527,13 @@ mod tests {
             title: "Spesa".to_owned(),
             description: "La lista della spesa".to_owned(),
             style: Some("lista".to_owned()),
-            parent_hub: Some("famiglia".to_owned()),
         }];
         // The LLM echoes the page back exactly as the schema asks — no `style`.
         let llm = FakeLlmBackend::new(
             "fake",
             "{\"redirects\":{},\"accepted_new\":[{\"slug\":\"spesa\",\"title\":\"Spesa\",\
              \"description\":\"La lista della spesa\",\
-             \"parent_hub\":\"famiglia\"}]}",
+}]}",
         );
         let result = conciliate_new_pages(
             &llm,
@@ -6144,58 +5590,9 @@ mod tests {
         );
         assert!(
             !BUNDLED_CARTOGRAFO_MD.contains("children:"),
-            "no children signal: it could only ever count a parent_hub the rules forbid"
+            "no children signal: nothing lists pages"
         );
     }
-
-    /// A proposal is held to the two rules the prompt states and nothing used
-    /// to enforce: it is always a leaf, and its parent is a foundation page of
-    /// its own wiki or nothing at all.
-    ///
-    /// Both malformed shapes are the abolished container arriving by the back
-    /// door — one as a page type that may no longer be minted, the other as a
-    /// page parented under a page.
-    ///
-    /// The other half of this check used to be a page TYPE the model could
-    /// smuggle back in. It went with the type itself (2026-08-19): a proposal
-    /// is a page, there is no second kind to ask for, and what a page is is
-    /// its file name.
-    #[test]
-    fn a_proposal_may_not_smuggle_a_container_back_in() {
-        let mut foundation = BTreeMap::new();
-        foundation.insert("alice".to_owned(), person("alice"));
-        foundation.insert("bob".to_owned(), person("bob"));
-        let proposal = |hub: Option<&str>| NewPage {
-            slug: "cucina".to_owned(),
-            title: "Cucina".to_owned(),
-            description: "d".to_owned(),
-            style: None,
-            parent_hub: hub.map(str::to_owned),
-        };
-
-        // Parented under another PAGE — the container itself.
-        let under_page = vet_proposal(proposal(Some("dossier")), &foundation, "alice");
-        assert_eq!(
-            under_page.parent_hub, None,
-            "a parent that is not a foundation page is dropped, and the page kept"
-        );
-
-        // Parented under ANOTHER WIKI's card: dropped too, or `resolve_page_wiki`
-        // would follow the invented parent and home the page in Bob's wiki.
-        let foreign = vet_proposal(proposal(Some("bob")), &foundation, "alice");
-        assert_eq!(
-            foreign.parent_hub, None,
-            "a foreign foundation page is not a parent either"
-        );
-
-        let good = vet_proposal(proposal(Some("alice")), &foundation, "alice");
-        assert_eq!(
-            good.parent_hub.as_deref(),
-            Some("alice"),
-            "the legitimate parent survives"
-        );
-    }
-
     #[test]
     fn dirty_set_is_changed_plus_new_plus_removed() {
         let mut prev_pages = BTreeMap::new();
@@ -6236,8 +5633,7 @@ mod tests {
         // (facts empty, links/children/parent equal) — the type check beside
         // it must still mark the page for recompile (hub renders through a
         // different writer).
-        let mut old_leaf = person("alice");
-        old_leaf.child_leaves = vec!["child".to_owned()];
+        let old_leaf = person("alice");
         let mut prev_pages = BTreeMap::new();
         prev_pages.insert("alice".to_owned(), old_leaf);
         let prev = CompilationPlan {
@@ -6262,13 +5658,12 @@ mod tests {
         assert_eq!(dirty, vec!["alice".to_owned()], "a move alone → dirty");
     }
 
-    fn concept_entry(slug: &str, parent_hub: Option<&str>, wiki_id: &str) -> ConceptRegistryEntry {
+    fn concept_entry(slug: &str, wiki_id: &str) -> ConceptRegistryEntry {
         ConceptRegistryEntry {
             slug: slug.to_owned(),
             title: capitalize(slug),
             description: "d".to_owned(),
             style: None,
-            parent_hub: parent_hub.map(str::to_owned),
             wiki_id: wiki_id.to_owned(),
             created_at: "t".to_owned(),
         }
@@ -6282,10 +5677,9 @@ mod tests {
         let mut foundation = BTreeMap::new();
         foundation.insert("matteo".to_owned(), person("matteo"));
         let mut registry = ConceptRegistry::empty("t");
-        registry.entries.insert(
-            "matteo".to_owned(),
-            concept_entry("matteo", Some("famiglia"), "famiglia"),
-        );
+        registry
+            .entries
+            .insert("matteo".to_owned(), concept_entry("matteo", "famiglia"));
         let (plan, reg) = build_compilation_plan(
             &[],
             &foundation,
@@ -6304,13 +5698,12 @@ mod tests {
         );
     }
 
-    fn proposal(slug: &str, parent_hub: Option<&str>) -> NewPage {
+    fn proposal(slug: &str) -> NewPage {
         NewPage {
             slug: slug.to_owned(),
             title: capitalize(slug),
             description: "d".to_owned(),
             style: None,
-            parent_hub: parent_hub.map(str::to_owned),
         }
     }
 
@@ -6326,7 +5719,7 @@ mod tests {
         let mut registry = ConceptRegistry::empty("t");
         registry
             .entries
-            .insert("spesa".to_owned(), concept_entry("spesa", None, "alice"));
+            .insert("spesa".to_owned(), concept_entry("spesa", "alice"));
         let proposed = BTreeMap::from([
             ("lista_spesa".to_owned(), "spesa".to_owned()),
             ("film_visti".to_owned(), "cinema".to_owned()),
@@ -6346,7 +5739,7 @@ mod tests {
             BTreeMap::from([("film_visti".to_owned(), "cinema".to_owned())]),
             &BTreeMap::new(),
             &registry,
-            &[proposal("cinema", None)],
+            &[proposal("cinema")],
         );
         assert_eq!(kept.get("film_visti").map(String::as_str), Some("cinema"));
     }
@@ -6370,7 +5763,7 @@ mod tests {
         let mut registry = ConceptRegistry::empty("t");
         registry
             .entries
-            .insert("cucina".to_owned(), concept_entry("cucina", None, "alice"));
+            .insert("cucina".to_owned(), concept_entry("cucina", "alice"));
 
         let kept = vet_redirects(
             BTreeMap::from([
@@ -6405,26 +5798,17 @@ mod tests {
         foundation.insert("alice".to_owned(), person("alice"));
 
         assert!(
-            vet_accepted(proposal("notes", None), &foundation).is_none(),
+            vet_accepted(proposal("notes"), &foundation).is_none(),
             "a reserved page name is refused outright"
         );
         assert!(
-            vet_accepted(proposal("Profile", None), &foundation).is_none(),
+            vet_accepted(proposal("Profile"), &foundation).is_none(),
             "the check is on the canonical slug, not the raw string"
         );
 
-        let vetted = vet_accepted(proposal("karate", Some("nowhere")), &foundation).expect("kept");
-        assert_eq!(
-            vetted.parent_hub, None,
-            "a parent_hub naming no foundation page is dropped"
-        );
-        assert_eq!(
-            vet_accepted(proposal("karate", Some("alice")), &foundation)
-                .expect("kept")
-                .parent_hub
-                .as_deref(),
-            Some("alice"),
-            "a real foundation page survives as the hub"
+        assert!(
+            vet_accepted(proposal("karate"), &foundation).is_some(),
+            "an ordinary slug is kept"
         );
     }
 
@@ -6467,90 +5851,22 @@ mod tests {
             "the fact falls back to a page that exists"
         );
     }
-
-    #[test]
-    fn dangling_parent_hub_heals_to_the_wiki_foundation_or_clears() {
-        // `karate` (wiki alice) points at an absorbed hub → re-pointed to
-        // alice's foundation page (and the registry entry heals with it);
-        // `stray` lives in a wiki with no foundation page → cleared.
-        let mut foundation = BTreeMap::new();
-        foundation.insert("alice".to_owned(), person("alice"));
-        let mut registry = ConceptRegistry::empty("t");
-        registry.entries.insert(
-            "karate".to_owned(),
-            concept_entry("karate", Some("gone_hub"), "alice"),
-        );
-        registry.entries.insert(
-            "stray".to_owned(),
-            concept_entry("stray", Some("gone_hub"), "ghost"),
-        );
-        let facts = vec![
-            fact(1, "kick practice", "user:alice", "alice"),
-            fact(2, "stray note", "user:alice", "ghost"),
-        ];
-        let blueprint = Blueprint {
-            assignments: vec![
-                Assignment {
-                    fact_id: facts[0].fact_id.as_str().to_owned(),
-                    page_slug: "karate".to_owned(),
-                },
-                Assignment {
-                    fact_id: facts[1].fact_id.as_str().to_owned(),
-                    page_slug: "stray".to_owned(),
-                },
-            ],
-            new_pages: Vec::new(),
-        };
-        let (plan, reg) = build_compilation_plan(
-            &facts,
-            &foundation,
-            &blueprint,
-            &ConciliatorResult::default(),
-            &registry,
-            "t2",
-        );
-        assert_eq!(
-            plan.pages["karate"].parent_hub.as_deref(),
-            Some("alice"),
-            "dangling parent re-pointed to the wiki's foundation page"
-        );
-        assert!(
-            plan.pages["alice"]
-                .child_leaves
-                .contains(&"karate".to_owned()),
-            "the healed parent gains the child in step 7"
-        );
-        assert_eq!(
-            reg.entries["karate"].parent_hub.as_deref(),
-            Some("alice"),
-            "the registry entry heals too — no resurrection next build"
-        );
-        assert_eq!(
-            plan.pages["stray"].parent_hub, None,
-            "no foundation page in that wiki → cleared"
-        );
-    }
-
-    /// An emptied page is removed, and its children are re-homed onto their
-    /// wiki's foundation — never promoted into a container.
+    /// An emptied page is removed, never promoted into a container.
     ///
-    /// This test used to assert the opposite (*"the emptied container flips to
-    /// hub instead of being GC'd"*), which was the planner's own second route
-    /// to minting a container page and half the reason twelve of them existed.
     /// Founder's ruling 2026-08-04: a container is a wiki, and wikis are
-    /// raised by the visible promote machinery. The re-homing is what the flip
-    /// was really protecting against — an orphaned `parent_hub`.
+    /// raised by the visible promote machinery — so a page that runs out of
+    /// facts has nothing left to be and goes.
     #[test]
-    fn an_emptied_page_is_removed_and_its_children_rise_to_the_foundation() {
+    fn an_emptied_page_is_removed() {
         let mut foundation = BTreeMap::new();
         foundation.insert("alice".to_owned(), person("alice"));
         let mut registry = ConceptRegistry::empty("t");
         registry
             .entries
-            .insert("cucina".to_owned(), concept_entry("cucina", None, "alice"));
+            .insert("cucina".to_owned(), concept_entry("cucina", "alice"));
         registry.entries.insert(
             "cucina_tecniche".to_owned(),
-            concept_entry("cucina_tecniche", Some("cucina"), "alice"),
+            concept_entry("cucina_tecniche", "alice"),
         );
         let facts = vec![fact(1, "impasto lievitato", "user:alice", "alice")];
         let blueprint = Blueprint {
@@ -6576,16 +5892,11 @@ mod tests {
             !reg.entries.contains_key("cucina"),
             "and it leaves the registry, so the next build does not resurrect it"
         );
-        assert_eq!(
-            plan.pages["cucina_tecniche"].parent_hub.as_deref(),
-            Some("alice"),
-            "the child rises to its wiki's foundation instead of dangling"
-        );
         assert!(
             plan.pages
                 .values()
-                .all(|p| !p.child_leaves.contains(&"cucina".to_owned())),
-            "nothing still names the removed page as a child"
+                .all(|p| !p.outgoing_links.contains(&"cucina".to_owned())),
+            "and no surviving page still links to it"
         );
     }
 
@@ -6640,22 +5951,12 @@ mod tests {
             "the parking page, never the map"
         );
         assert_eq!(node.wiki_id, "famiglia-bruno-battaglia");
-        assert_eq!(
-            node.parent_hub.as_deref(),
-            Some("famiglia__notes"),
-            "a topic wiki's parking page hangs under its parent's foundation \
-             node — and a group's is now its own parking page"
-        );
         assert_eq!(node.description, "Tutto su Bruno Battaglia");
         // **A group wiki has no card** (2026-08-19): it has a parking page like
         // any other wiki, and that is its only foundation node.
         assert!(
             !foundation.contains_key("famiglia"),
             "a group gets no card — what it is lives in its `_meta.md`"
-        );
-        assert_eq!(
-            foundation["famiglia__notes"].parent_hub, None,
-            "and its parking page hangs from nothing"
         );
         assert!(
             !foundation.contains_key("famiglia_notes_smart__notes"),
@@ -6687,7 +5988,7 @@ mod tests {
         let mut registry = ConceptRegistry::empty("t");
         registry.entries.insert(
             "famiglia_bruno_battaglia".to_owned(),
-            concept_entry("famiglia_bruno_battaglia", None, "famiglia-bruno-battaglia"),
+            concept_entry("famiglia_bruno_battaglia", "famiglia-bruno-battaglia"),
         );
         let facts = vec![fact(
             1,

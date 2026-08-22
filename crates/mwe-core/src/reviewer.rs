@@ -147,11 +147,6 @@ pub struct ReviewReport {
     /// identity card (a `wiki-user`'s `@profile.md`) — the identity-page
     /// discipline violated. Observability only, never a gate.
     pub cross_subject_bloat: Vec<(String, String, String)>,
-    /// `(slug, children)` — `concept_leaf` pages other pages parent under.
-    /// A page functioning as a container is the two-rank topology violated;
-    /// parked as a placement re-open so the Cartografo re-homes its facts
-    /// (once emptied, the assembly garbage-collects it).
-    pub leaf_with_children: Vec<(String, usize)>,
     /// `(slug, facts)` — fact-bearing pages at/over
     /// [`OVERSIZED_PAGE_THRESHOLD`]; parked as a placement re-open so
     /// split-by-mass becomes reachable for a clean grown page.
@@ -168,7 +163,6 @@ impl ReviewReport {
             + self.duplicate_prose.len()
             + self.missing_acl_markers.len()
             + self.cross_subject_bloat.len()
-            + self.leaf_with_children.len()
             + self.oversized_pages.len()
     }
 
@@ -312,31 +306,20 @@ pub fn review(
         duplicate_prose = report.duplicate_prose.len(),
         missing_acl_markers = report.missing_acl_markers.len(),
         cross_subject_bloat = report.cross_subject_bloat.len(),
-        leaf_with_children = report.leaf_with_children.len(),
         oversized_pages = report.oversized_pages.len(),
         "reviewer: review done"
     );
     Ok(report)
 }
 
-/// The per-page shape checks of the plan-level pass: empty page,
-/// two-rank topology (a page other pages hang under), oversized nomination.
+/// The per-page shape checks of the plan-level pass: empty page, oversized
+/// nomination.
 fn check_page_shape(slug: &str, page: &PagePlan, report: &mut ReviewReport) {
     if !page.is_foundation() && page.primary_facts.is_empty() {
         report.empty_leaves.push(slug.to_owned());
     }
-    // Two-rank topology: a page holds facts and parents nothing. (An
-    // *empty* page with children is garbage-collected by the assembly
-    // itself — what reaches this check is the fact-bearing container,
-    // which needs its facts re-homed first.)
-    if !page.is_foundation() && !page.child_leaves.is_empty() {
-        report
-            .leaf_with_children
-            .push((slug.to_owned(), page.child_leaves.len()));
-    }
-    // There is no `hub_with_facts` check: it was about a group's card, the
-    // last overview page, and a group wiki has no card any more (2026-08-19).
-    // Nothing lists pages, so nothing can list them and hold facts at once.
+    // There is no "a page has children" check any more: pages have no parent
+    // since 2026-08-22, so a page that contains pages is not representable.
     // Oversized nomination: mass alone re-opens nothing today, so a
     // clean grown page could never split (see the const's doc).
     if page.primary_facts.len() >= OVERSIZED_PAGE_THRESHOLD {
@@ -387,8 +370,6 @@ mod tests {
             title: slug.to_owned(),
             description: slug.to_owned(),
             style: None,
-            parent_hub: None,
-            child_leaves: Vec::new(),
             primary_facts: facts,
             outgoing_links: Vec::new(),
             incoming_links: Vec::new(),
@@ -459,10 +440,7 @@ mod tests {
         // `pile`: a subject-clean page at the oversized nomination threshold.
         // Both park as placement re-opens via the findings→healing bridge.
         //
-        // There used to be a third case here, a page holding no facts and
-        // listing its children. No such page is written any more.
-        let mut cucina = leaf("cucina", vec![ffp(0x40, "user:alice")]);
-        cucina.child_leaves = vec!["cucina_tecniche".to_owned()];
+        let cucina = leaf("cucina", vec![ffp(0x40, "user:alice")]);
         let pile_facts: Vec<FactForPage> = (0..OVERSIZED_PAGE_THRESHOLD)
             .map(|i| ffp(u8::try_from(i).unwrap(), "user:alice"))
             .collect();
@@ -479,11 +457,6 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
         let r = review(&tree, &plan, &IdentityContext::default()).unwrap();
-        assert_eq!(
-            r.leaf_with_children,
-            vec![("cucina".to_owned(), 1)],
-            "a fact-bearing leaf with children is the two-rank topology violated"
-        );
         assert_eq!(
             r.oversized_pages,
             vec![("pile".to_owned(), OVERSIZED_PAGE_THRESHOLD)],

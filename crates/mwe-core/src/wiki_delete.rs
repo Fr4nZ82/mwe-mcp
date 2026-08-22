@@ -767,8 +767,6 @@ mod tests {
                     title: "Dossier".to_owned(),
                     description: String::new(),
                     style: None,
-                    parent_hub: None,
-                    child_leaves: Vec::new(),
                     primary_facts: Vec::new(),
                     outgoing_links: Vec::new(),
                     incoming_links: Vec::new(),

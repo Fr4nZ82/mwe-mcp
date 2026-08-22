@@ -2345,8 +2345,6 @@ mod tests {
                 title: "Topic".to_owned(),
                 description: "a plan page".to_owned(),
                 style: None,
-                parent_hub: None,
-                child_leaves: Vec::new(),
                 primary_facts: Vec::new(),
                 outgoing_links: Vec::new(),
                 incoming_links: Vec::new(),
