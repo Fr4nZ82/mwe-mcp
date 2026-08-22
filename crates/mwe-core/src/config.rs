@@ -10,6 +10,14 @@
 //!   `rem_promotions`, `rem_dedup_semantic`, `cronista`, `navigator`);
 //!   needed by the ingest orchestrator that consumes `llm.ingest`.
 //!
+//!   ⚠️ **All six are mandatory. A deployment without a working model is not
+//!   a deployment** — the product does not work without one, and onboarding
+//!   refuses to finish. Every `None`/"slot unconfigured" arm downstream is
+//!   what a half-wired install looks like while somebody fixes it: they make
+//!   the failure visible instead of panicking. They are **not modes**. Never
+//!   describe a behaviour as "what happens without a model", and never design
+//!   for that shape — it is not a shape the product has.
+//!
 //! Everything else is captured verbatim in [`Config::extra`].
 //!
 //! The canonical schema lives in
@@ -224,12 +232,16 @@ impl LogLevel {
 /// `RemDedupSemantic`, `Navigator`. `Cronista` drives the narrative
 /// compiler ([`crate::compiler::compile_leaf_page`], via the dream
 /// compile pass) that rewrites each dirty standard-wiki leaf from its
-/// facts into prose. Every slot is mandatory in practice — a deployment with
-/// no model is a half-installed product, and onboarding enforces the `ingest`
-/// role; the "slot unconfigured"
-/// arms in the engine are guards against a half-wired install, never modes to
-/// design around. With this one missing the compile is skipped and the pages
-/// stay blank, so it is surfaced like every other slot. The value loads
+/// facts into prose.
+///
+/// **Every slot is mandatory. There is no such thing as a deployment without
+/// a model** — without one this product does not work, and onboarding refuses
+/// to finish. The `None` arms scattered through the engine are what a
+/// half-wired install looks like on its way to being fixed: they exist so the
+/// failure is visible instead of a panic, and **never** as a mode to design
+/// around or to describe a behaviour by. With `cronista` missing the compile
+/// is skipped and the pages stay blank, which is a broken install, not a
+/// cheaper one. The value loads
 /// from an `llm.cronista:` section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmFunction {

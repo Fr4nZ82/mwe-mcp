@@ -243,8 +243,9 @@ pub async fn process_submission(
     // `recall:` config section, hot-editable from the recall-settings
     // page); the classifier prompt-budget knobs stay at their defaults.
     let policy = state.recall_snapshot().resolved_ingest_policy();
-    // The navigator slot is optional by contract: missing or unbuildable
-    // degrades to flat-only recall (navigation off), never a failed turn.
+    // A missing or unbuildable navigator slot leaves flat-only recall
+    // (navigation off) rather than failing the turn — the shape of a
+    // half-wired install, not a mode: all six slots are mandatory.
     let navigator = memory.backend_for(LlmFunction::Navigator).ok();
     let response = ingest::wiki_ingest_message(
         &state.pool,

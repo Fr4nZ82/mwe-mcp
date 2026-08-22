@@ -765,7 +765,7 @@ pub struct RemLlms<'a> {
     /// `ingest` slot — the cheap (Flash-tier) backend the **light** dream
     /// runs every compile stage on (tier-per-cadence: the strong
     /// model works only at REM, the light pass uses this slot via
-    /// [`crate::dream`]). `None` ⇒ the light dream degrades to whatever
+    /// [`crate::dream`]). `None` ⇒ the light dream is left with whatever
     /// strong slots are configured. `run_cycle` itself does not read this
     /// slot — only the [`crate::dream`] compositions do.
     pub apply: Option<&'a dyn LlmBackend>,

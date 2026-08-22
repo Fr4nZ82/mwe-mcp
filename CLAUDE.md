@@ -127,6 +127,21 @@ tailwindcss -i tailwind/app.css -o crates/mwe-dashboard/assets/tailwind.css --mi
 Never commit hand-built assets outside this flow — they are embedded via
 `rust-embed` from the sources in `tailwind/`.
 
+## The six model slots are mandatory — there is no "without a model"
+
+`ingest`, `operator_chat`, `rem_promotions`, `rem_dedup_semantic`, `cronista`,
+`navigator`. **All six.** Without a working model this product does not work,
+and onboarding refuses to finish.
+
+The engine is full of `None` arms for an unconfigured slot. They exist so a
+half-wired install fails visibly instead of panicking, **and that is all they
+are**. They are not modes, not a cheap tier, not a supported configuration.
+
+So: never explain a behaviour by what happens "if no model is configured",
+never offer that as a trade-off, and never let it into a design. The owner has
+had to correct this ten times — it keeps coming back because the `None` arms
+read like alternatives when you meet them in the code, and they are not.
+
 ## Hard rules
 
 - Edition **2024**; `#![forbid(unsafe_code)]` in every crate. The toolchain is

@@ -5976,7 +5976,7 @@ fn fallback_response(
 /// `IntentKind::Skip` with a canned seed rather than bubbling.
 ///
 /// `navigator` is the recall navigator's backend (the `navigator` config
-/// slot) — `None` turns navigation off and the recall block degrades to
+/// slot) — `None` turns navigation off and the recall block falls to
 /// the flat snippet + due-soon slot. Kept separate from `llm` because
 /// the two are different slots by design: the classifier wants the
 /// fast workhorse profile, the navigator a strong-but-cheap one.
@@ -10486,7 +10486,7 @@ mod tests {
     }
 
     /// A page carrying no readable fact is scaffolding, not a card — the
-    /// slot degrades to the pre-69a one-line summary rather than serving a
+    /// slot yields the pre-69a one-line summary rather than serving a
     /// heading on every turn forever, and reports no page (it duplicates
     /// nothing).
     #[tokio::test]

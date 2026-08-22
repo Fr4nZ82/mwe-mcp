@@ -60,7 +60,7 @@ pub struct OwnedRemLlms {
     /// `ingest` slot — optional; the cheap (Flash-tier) backend the
     /// **light** dream runs every compile stage on (tier-per-cadence:
     /// the strong model works only at REM). Absent ⇒ the light dream
-    /// degrades to whatever strong slots are configured.
+    /// leaves whatever strong slots are configured to carry the cycle.
     pub apply: Option<Box<dyn LlmBackend>>,
     /// `cronista` slot (strong model) — optional; drives the
     /// narrative compiler ([`mwe_core::compiler`]). Absent ⇒ the compile

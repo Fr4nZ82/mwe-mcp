@@ -565,7 +565,7 @@ fn parse_recent_messages(args: Vec<RecentMessageArg>) -> Result<Vec<RecentMessag
 }
 
 /// Build the recall navigator's backend from the `navigator` config slot.
-/// Optional by contract: a missing or unbuildable slot degrades to
+/// Optional on this call path only — a missing or unbuildable slot yields
 /// flat-only recall (navigation off), never a failed turn.
 fn build_navigator(state: &McpState) -> Option<Box<dyn mwe_core::llm::LlmBackend>> {
     state
@@ -1253,7 +1253,8 @@ async fn navigate_seeds(
 /// built the context) **and** the flat hits, so depth is a superset of the
 /// breadth `wiki_search` would have returned. Smart wikis are funnel-skipped
 /// (handled in `recall_nav`); their content still surfaces via the flat
-/// component. Degrades to flat-only when no `navigator` LLM slot is wired.
+/// component. Flat-only when no `navigator` slot is wired, which is a
+/// half-wired install rather than a lighter mode.
 #[allow(
     clippy::too_many_lines,
     reason = "two-corpus flat recall + funnel + JSON shaping + trace live as one linear handler; splitting hides the order the pieces depend on"
@@ -1302,7 +1303,8 @@ pub(super) async fn call_wiki_navigate(
     .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
 
     // Funnel (depth): only when a `navigator` LLM slot is wired — otherwise
-    // degrade to flat-only (flat runs on the embedder alone).
+    // fall to flat-only (flat runs on the embedder alone) — the shape of a
+    // half-wired install, never a supported one.
     let start = std::time::Instant::now();
     // One read of the settings serves both the funnel and the journal: the
     // navigator knobs, and the trace retention window the write below prunes
@@ -1416,7 +1418,7 @@ struct NavigateFunnel {
 }
 
 /// Resolve seeds (the 24b cascade), gather the fan and run the funnel —
-/// or degrade to the empty outcome when no `navigator` slot is wired.
+/// or yield the empty outcome when no `navigator` slot is wired.
 async fn run_navigate_funnel(
     state: &McpState,
     sender: &SenderContext,

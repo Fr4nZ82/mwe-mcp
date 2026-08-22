@@ -123,10 +123,11 @@ fn tier_backend<'a>(
 /// LIGHT honours every page the USER named and hands only the remainder to the
 /// Cartografo on the cheap ingest tier — the half that gives the write side its
 /// structure back within the hour instead of overnight. With no ingest slot
-/// there is no cheap tier to run it on, so it degrades to the deterministic
+/// there is no cheap tier to run it on — a half-wired install, and what it
+/// does meanwhile is the deterministic
 /// half alone. FULL runs the strong Cartografo over everything, and it alone
 /// answers the re-open park (see [`planner::build_wiki_plan`]); with no strong
-/// slot it degrades to the identity fallback.
+/// slot only the identity fallback runs, which is a broken install showing.
 ///
 /// Factored out, like [`tier_backend`] beside it, so the policy is pinned by a
 /// unit test instead of being buried in `run_compile` where changing it goes
@@ -194,11 +195,12 @@ pub async fn run_compile(
     // parking page, and the strong Cartografo only ever looked at it the next night
     // — by which time the light build had already settled it there, so the
     // carry-over kept it. With no ingest slot wired there is no cheap tier to
-    // run it on, and the light pass degrades to the deterministic half alone.
+    // run it on: a half-wired install, and the light pass does the
+    // deterministic half alone until somebody fixes it.
     //
     // FULL runs the strong Cartografo (the `rem_promotions` slot) over
     // everything, and it alone answers the re-open park; a Full pass with no
-    // strong slot configured degrades to the deterministic identity fallback
+    // strong slot configured leaves only the deterministic identity fallback
     // (the historical `None` behaviour).
     let placement = placement_for(cadence, flash, llms.auto_promote);
     tracing::debug!(

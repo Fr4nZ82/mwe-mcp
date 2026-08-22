@@ -752,11 +752,14 @@ async fn wiki_search_runs_against_empty_corpus() {
     assert_eq!(out["total"], json!(0));
 }
 
-/// `wiki_navigate` with no `navigator` LLM slot wired (the fixture default)
-/// degrades to flat-only — never an error, `navigator_available: false`, an
-/// empty navigated path, and the flat hits (empty corpus here).
+/// `wiki_navigate` on a **half-wired install** — no `navigator` slot, which
+/// all six slots being mandatory makes a broken deployment, not a mode.
+///
+/// What it must not do is fail the turn: `navigator_available: false`, an
+/// empty navigated path, and the flat hits (empty corpus here). The point is
+/// that the breakage is visible and survivable while somebody fixes it.
 #[tokio::test]
-async fn wiki_navigate_degrades_to_flat_only_without_a_navigator() {
+async fn wiki_navigate_is_flat_only_on_a_half_wired_install() {
     let (state, identity, _dir) = fixture(false, None).await;
     let out = call(
         &state,
