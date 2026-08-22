@@ -784,8 +784,6 @@ pub fn build_compilation_plan(
     registry: &ConceptRegistry,
     now: &str,
 ) -> (CompilationPlan, ConceptRegistry) {
-    // group scopes ride on each group_theme page's `owner_scope` (set by the
-    // Fonditore and preserved when foundation pages are seeded below).
     let mut pages: BTreeMap<String, PagePlan> = BTreeMap::new();
     let mut merged: Vec<MergedPage> = Vec::new();
     let mut updated_registry = ConceptRegistry {
