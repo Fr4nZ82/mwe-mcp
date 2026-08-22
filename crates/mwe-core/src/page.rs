@@ -79,11 +79,9 @@ pub enum DeletionMode {
     /// (see the `WikiDeletePage` verb).
     TombstoneAll,
     /// **Dissolve**: destroy the *structure*, keep every fact. Nothing is
-    /// tombstoned — each fact is evacuated to a live wiki
-    /// ([`dissolve_home`]) as a **pending render**, and its placement is
-    /// re-opened on the compilation plan so the Cartografo decides where it
-    /// belongs next, corpus-wide, instead of it inheriting the page it
-    /// happened to sit on. Whole-wiki only (see
+    /// tombstoned — each fact goes back into the capture buffer, so the next
+    /// placement pass decides where it belongs, corpus-wide, instead of it
+    /// inheriting the page it happened to sit on. Whole-wiki only (see
     /// [`crate::wiki_delete::delete_wiki_subtree`]).
     Dissolve,
 }

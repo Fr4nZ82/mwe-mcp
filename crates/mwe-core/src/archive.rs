@@ -3,7 +3,7 @@
 //! engine DB and migrations).
 //!
 //! Distinct from the `structure_proposals` flow (which carries forge /
-//! promote / `dedup_merge` / bundle): archive proposals target whole
+//! promote / `dedup_merge`): archive proposals target whole
 //! filesystem paths and answer the question "should we move this stale
 //! corner of the wiki to `_archive/`". The decision is binary
 //! (approve / reject) with an optional `selection` JSON for

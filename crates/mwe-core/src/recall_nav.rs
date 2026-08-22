@@ -2099,7 +2099,7 @@ mod tests {
                 &pool,
                 &fid(n),
                 w,
-                &format!("wikis/{w}/@notes.md"),
+                &format!("wikis/{w}/appunti.md"),
                 Principal::global(),
                 &[],
             )
@@ -2334,8 +2334,8 @@ mod tests {
             &["food".to_owned()],
             &[
                 rag_hit("alice", "wikis/alice/menu.md", 0.9, false), // same door, heavier
-                rag_hit("bob", "wikis/bob/@notes.md", 0.3, false),
-                rag_hit("bob", "wikis/bob/@notes.md", 0.7, false), // duplicate, heavier
+                rag_hit("bob", "wikis/bob/appunti.md", 0.3, false),
+                rag_hit("bob", "wikis/bob/appunti.md", 0.7, false), // duplicate, heavier
             ],
             &[],
         )
@@ -2348,7 +2348,7 @@ mod tests {
         assert_eq!(alice_page.origin, EntryOrigin::Rag);
         assert!((alice_page.weight - 0.9).abs() < f32::EPSILON);
         // bob's page: the heavier rag duplicate survived.
-        let bob_page = find(&fan, "bob", "@notes.md").unwrap();
+        let bob_page = find(&fan, "bob", "appunti.md").unwrap();
         assert!((bob_page.weight - 0.7).abs() < f32::EPSILON);
         for pair in fan.windows(2) {
             assert!(pair[0].weight >= pair[1].weight);
@@ -2359,8 +2359,8 @@ mod tests {
     fn page_within_strips_the_wiki_prefix_and_rejects_foreign_paths() {
         // Nested wiki: rel_dir carries the parent chain.
         assert_eq!(
-            page_within(Path::new("wikis/alice/acme"), "wikis/alice/acme/@notes.md"),
-            Some(PathBuf::from("@notes.md"))
+            page_within(Path::new("wikis/alice/acme"), "wikis/alice/acme/appunti.md"),
+            Some(PathBuf::from("appunti.md"))
         );
         assert_eq!(
             page_within(Path::new("wikis/alice"), "wikis/alice/sub/page.md"),
@@ -2793,7 +2793,7 @@ mod tests {
         write_page(
             &tree,
             "alice",
-            "@notes.md",
+            "appunti.md",
             &format!(
                 "---\ntitle: \"Notes\"\n---\n\nShared prose.\n\n\
                  {{{{subject=user:alice f={UUID_1}}}}}secret{{{{/}}}}\n"
@@ -2804,7 +2804,7 @@ mod tests {
         // no directory listing to stand in for one. What this test is about is
         // the projection of the page that WAS opened.
         let llm = ScriptedLlm::new(&[
-            r#"{"open":[{"wiki_id":"alice","page":"@notes.md"}],"done":false,"note":"go"}"#,
+            r#"{"open":[{"wiki_id":"alice","page":"appunti.md"}],"done":false,"note":"go"}"#,
         ]);
 
         let out = navigate(
@@ -2813,7 +2813,7 @@ mod tests {
             &llm,
             &sender("mallory", &[]),
             "what do we know?",
-            &[entry("alice", "@notes.md", EntryOrigin::Topic, 0.8)],
+            &[entry("alice", "appunti.md", EntryOrigin::Topic, 0.8)],
             &NavigatorPolicy::default(),
             Served::default(),
         )
@@ -2825,7 +2825,7 @@ mod tests {
         assert_eq!(out.fragments.len(), 1);
         let f = &out.fragments[0];
         assert_eq!(f.wiki_id, "alice");
-        assert_eq!(f.page, PathBuf::from("@notes.md"));
+        assert_eq!(f.page, PathBuf::from("appunti.md"));
         assert!(f.text.contains("Shared prose."));
         assert!(
             !f.text.contains("secret") && f.text.contains("[redacted]"),
@@ -2865,7 +2865,7 @@ mod tests {
         write_page(
             &tree,
             "alice",
-            "@notes.md",
+            "appunti.md",
             &format!("Shared prose.\n\n{{{{subject=global f={UUID_1}}}}}secret{{{{/}}}}\n"),
         );
         let pool = make_pool().await;
@@ -2875,7 +2875,7 @@ mod tests {
                 authored_refs: Vec::new(),
                 fact_id: FactId::parse(UUID_1).unwrap(),
                 wiki_id: "alice".to_owned(),
-                source_path: "wikis/alice/@notes.md".to_owned(),
+                source_path: "wikis/alice/appunti.md".to_owned(),
                 region_start: None,
                 region_end: None,
                 text: "secret".to_owned(),
@@ -2896,7 +2896,7 @@ mod tests {
         .await
         .expect("insert fact row");
         let llm = ScriptedLlm::new(&[
-            r#"{"open":[{"wiki_id":"alice","page":"@notes.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"alice","page":"appunti.md"}],"done":false}"#,
             r#"{"open":[],"done":true}"#,
         ]);
 
@@ -2906,7 +2906,7 @@ mod tests {
             &llm,
             &sender("mallory", &[]),
             "what do we know?",
-            &[entry("alice", "@notes.md", EntryOrigin::Topic, 0.8)],
+            &[entry("alice", "appunti.md", EntryOrigin::Topic, 0.8)],
             &NavigatorPolicy::default(),
             Served::default(),
         )
@@ -3315,11 +3315,11 @@ mod tests {
         write_page(
             &tree,
             "alice",
-            "@notes.md",
+            "appunti.md",
             "---\ntitle: \"Notes\"\n---\n\nA very long body that does not fit the budget at all.\n",
         );
         let llm = ScriptedLlm::new(&[
-            r#"{"open":[{"wiki_id":"alice","page":"@notes.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"alice","page":"appunti.md"}],"done":false}"#,
             r#"{"open":[{"wiki_id":"alice","page":"@rules.md"}],"done":false}"#,
         ]);
         let policy = NavigatorPolicy {
@@ -3333,7 +3333,7 @@ mod tests {
             &llm,
             &sender("alice", &[]),
             "turn",
-            &[entry("alice", "@notes.md", EntryOrigin::Rag, 0.9)],
+            &[entry("alice", "appunti.md", EntryOrigin::Rag, 0.9)],
             &policy,
             Served::default(),
         )
@@ -3367,13 +3367,13 @@ mod tests {
             "@profile.md",
             "# Alice\n\nHer whole card.\n",
         );
-        write_page(&tree, "alice", "@notes.md", "Ordinary prose.\n");
+        write_page(&tree, "alice", "appunti.md", "Ordinary prose.\n");
         // Hop 1 asks for the wiki with no page — which resolves to the
         // foundation page, `@profile.md` — and for a real page beside it.
         // Hop 2 asks for `@profile.md` by name: `open_target`'s gate is the
         // central fail-safe and this is the case that exercises it.
         let llm = ScriptedLlm::new(&[
-            r#"{"open":[{"wiki_id":"alice"},{"wiki_id":"alice","page":"@notes.md"}],"done":false}"#,
+            r#"{"open":[{"wiki_id":"alice"},{"wiki_id":"alice","page":"appunti.md"}],"done":false}"#,
             r#"{"open":[{"wiki_id":"alice","page":"@profile.md"}],"done":false}"#,
         ]);
 
@@ -3385,7 +3385,7 @@ mod tests {
             "what do we know?",
             &[
                 entry("alice", "rails.md", EntryOrigin::Rag, 0.9),
-                entry("alice", "@notes.md", EntryOrigin::Rag, 0.5),
+                entry("alice", "appunti.md", EntryOrigin::Rag, 0.5),
             ],
             &NavigatorPolicy::default(),
             Served {
@@ -3406,7 +3406,7 @@ mod tests {
         assert!(
             out.fragments
                 .iter()
-                .any(|f| f.page == Path::new("@notes.md")),
+                .any(|f| f.page == Path::new("appunti.md")),
             "and refusing it must not cost the walk its other choice"
         );
         assert!(
@@ -3430,7 +3430,7 @@ mod tests {
         let (_dir, tree) = open_tree();
         forge_user(&tree, "alice");
         write_page(&tree, "alice", "@rules.md", "# Rules\n\nStanding policy.\n");
-        write_page(&tree, "alice", "@notes.md", "Ordinary prose.\n");
+        write_page(&tree, "alice", "appunti.md", "Ordinary prose.\n");
         write_page(&tree, "alice", "rails.md", "Entry prose.\n");
         // The navigator asks for the rules page **verbatim**, which is the
         // case that matters: `open_target`'s gate is the central fail-safe and

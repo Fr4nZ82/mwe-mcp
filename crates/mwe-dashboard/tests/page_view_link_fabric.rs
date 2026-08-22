@@ -116,12 +116,12 @@ async fn page_view_linkifies_canonical_wikilinks_and_leaves_dangling_literal() {
     let cookie = login_as_admin(&app).await; // auto-creates wiki `alice`
     seed_bob_wiki(&tree);
     let alice_dir = tree.wikis_dir().join("alice");
-    std::fs::write(alice_dir.join("@notes.md"), "# Notes\n\nTarget page.\n").unwrap();
+    std::fs::write(alice_dir.join("appunti.md"), "# Notes\n\nTarget page.\n").unwrap();
     std::fs::write(
         alice_dir.join("links.md"),
-        "# Links\n\nA wiki hop [[bob]], a page hop [[alice/@notes]], an aliased \
-         [[alice/@notes|My Notes]], a ghost [[ghost]], a missing [[alice/missing]] \
-         and the mutant [[famiglia_bruno_battaglia/referto_oculistica]].\n",
+        "# Links\n\nA wiki hop [[bob]], a page hop [[alice/appunti]], an aliased \
+         [[alice/appunti|My Notes]], a ghost [[ghost]], a missing [[alice/missing]] \
+         and the mutant [[famiglia_carol/referto_oculistica]].\n",
     )
     .unwrap();
 
@@ -144,14 +144,14 @@ async fn page_view_linkifies_canonical_wikilinks_and_leaves_dangling_literal() {
     );
     assert!(
         html.contains(
-            r#"<a class="wikilink" href="/dashboard/wiki/alice/view/%40notes.md">alice/@notes</a>"#
+            r#"<a class="wikilink" href="/dashboard/wiki/alice/view/appunti.md">alice/appunti</a>"#
         ),
         "page hop must linkify: {html}"
     );
     // The alias renders as the label.
     assert!(
         html.contains(
-            r#"<a class="wikilink" href="/dashboard/wiki/alice/view/%40notes.md">My Notes</a>"#
+            r#"<a class="wikilink" href="/dashboard/wiki/alice/view/appunti.md">My Notes</a>"#
         ),
         "alias must render as the label: {html}"
     );
@@ -159,7 +159,7 @@ async fn page_view_linkifies_canonical_wikilinks_and_leaves_dangling_literal() {
     assert!(html.contains("[[ghost]]"), "{html}");
     assert!(html.contains("[[alice/missing]]"), "{html}");
     assert!(
-        html.contains("[[famiglia_bruno_battaglia/referto_oculistica]]"),
+        html.contains("[[famiglia_carol/referto_oculistica]]"),
         "the mutant grammar must stay literal: {html}"
     );
     assert!(
@@ -175,11 +175,18 @@ async fn page_view_readable_region_carries_fact_anchor_and_redacted_one_does_not
 
     // Two promoted facts on the same page: one alice can read (her own),
     // one she cannot (bob's — no allow, no sender shortcut).
-    let readable = capture_fact(&pool, &tree, "@notes.md", "Alice pesa 72 kg.", "user:alice").await;
+    let readable = capture_fact(
+        &pool,
+        &tree,
+        "appunti.md",
+        "Alice pesa 72 kg.",
+        "user:alice",
+    )
+    .await;
     let hidden = capture_fact(
         &pool,
         &tree,
-        "@notes.md",
+        "appunti.md",
         "Bob ha un segreto sulla dieta.",
         "user:bob",
     )
@@ -188,7 +195,7 @@ async fn page_view_readable_region_carries_fact_anchor_and_redacted_one_does_not
     let response = send(
         &app,
         Request::builder()
-            .uri("/wiki/alice/view/@notes.md")
+            .uri("/wiki/alice/view/appunti.md")
             .header(header::COOKIE, &cookie)
             .body(Body::empty())
             .unwrap(),
@@ -217,7 +224,7 @@ async fn page_view_readable_region_carries_fact_anchor_and_redacted_one_does_not
     let response = send(
         &app,
         Request::builder()
-            .uri("/wiki/alice/view/@notes.md")
+            .uri("/wiki/alice/view/appunti.md")
             .header(header::COOKIE, format!("{cookie}; mwe_admin_reveal=1"))
             .body(Body::empty())
             .unwrap(),

@@ -1024,8 +1024,8 @@ pub struct WikiIdReconcileReport {
 ///
 /// The wiki of a path is the discovered wiki whose directory is the
 /// **longest prefix** of the row's `source_path` — sub-wikis nest
-/// (`wikis/famiglia/bruno-battaglia/…` belongs to
-/// `famiglia-bruno-battaglia`, not `famiglia`), which is why this is a
+/// (`wikis/famiglia/carol/…` belongs to
+/// `famiglia-carol`, not `famiglia`), which is why this is a
 /// tree-aware Rust pass and not a SQL migration: only the walked `_meta.md`
 /// set knows the sub-wiki directories. Prefixes match on a directory
 /// boundary (trailing `/`), so `wikis/alice-bis/…` can never fall under
@@ -2427,12 +2427,9 @@ mod tests {
     #[tokio::test]
     async fn reconcile_wiki_ids_fixes_divergence_by_longest_prefix() {
         let dir = tempdir().unwrap();
-        // Nested layout: famiglia + its sub-wiki famiglia-bruno-battaglia.
+        // Nested layout: famiglia + its sub-wiki famiglia-carol.
         write_wiki_meta(&dir.path().join("wikis/famiglia"), "famiglia");
-        write_wiki_meta(
-            &dir.path().join("wikis/famiglia/bruno-battaglia"),
-            "famiglia-bruno-battaglia",
-        );
+        write_wiki_meta(&dir.path().join("wikis/famiglia/carol"), "famiglia-carol");
         let tree = WikiTree::open(dir.path()).expect("open tree");
         let pool = make_pool().await;
 
@@ -2447,28 +2444,22 @@ mod tests {
             &pool,
             &divergent,
             "famiglia",
-            "wikis/famiglia/bruno-battaglia/dossier.md",
+            "wikis/famiglia/carol/dossier.md",
         )
         .await;
         // Consistent rows (one per level) — untouched.
         seed_fact_in(
             &pool,
             &nested_ok,
-            "famiglia-bruno-battaglia",
-            "wikis/famiglia/bruno-battaglia/cucina.md",
+            "famiglia-carol",
+            "wikis/famiglia/carol/cucina.md",
         )
         .await;
         seed_fact_in(&pool, &parent_ok, "famiglia", "wikis/famiglia/cucina.md").await;
         // Under no known wiki: left alone (WARN).
         seed_fact_in(&pool, &stray, "famiglia", "trash/famiglia/cucina.md").await;
         // Retired + divergent: not an ACTIVE row, so out of scope.
-        seed_fact_in(
-            &pool,
-            &retired,
-            "famiglia",
-            "wikis/famiglia/bruno-battaglia/old.md",
-        )
-        .await;
+        seed_fact_in(&pool, &retired, "famiglia", "wikis/famiglia/carol/old.md").await;
         fact_index::mark_forgotten(&pool, &retired, "user_request")
             .await
             .unwrap();
@@ -2483,11 +2474,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            fixed.wiki_id, "famiglia-bruno-battaglia",
+            fixed.wiki_id, "famiglia-carol",
             "longest directory prefix wins"
         );
         for (id, expected) in [
-            (&nested_ok, "famiglia-bruno-battaglia"),
+            (&nested_ok, "famiglia-carol"),
             (&parent_ok, "famiglia"),
             (&stray, "famiglia"),
             (&retired, "famiglia"),

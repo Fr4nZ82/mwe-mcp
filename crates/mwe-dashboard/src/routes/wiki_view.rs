@@ -2871,20 +2871,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let alice = dir.path().join("alice");
         std::fs::create_dir_all(alice.join("modules")).unwrap();
-        std::fs::write(alice.join("@notes.md"), "x").unwrap();
+        std::fs::write(alice.join("@profile.md"), "x").unwrap();
         std::fs::write(alice.join("cucina.md"), "x").unwrap();
         std::fs::write(alice.join("modules/auth.md"), "x").unwrap();
         let famiglia = dir.path().join("famiglia");
-        let sub = famiglia.join("bruno-battaglia");
+        let sub = famiglia.join("carol");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(famiglia.join("dossier.md"), "x").unwrap();
-        std::fs::write(famiglia.join("@notes.md"), "x").unwrap();
+        std::fs::write(famiglia.join("@profile.md"), "x").unwrap();
         std::fs::write(famiglia.join("cucina.md"), "x").unwrap();
         std::fs::write(sub.join("referto.md"), "x").unwrap();
         let mut index = std::collections::BTreeMap::new();
         index.insert("alice".to_owned(), alice);
         index.insert("famiglia".to_owned(), famiglia);
-        index.insert("famiglia-bruno-battaglia".to_owned(), sub);
+        index.insert("famiglia-carol".to_owned(), sub);
         (dir, index)
     }
 
@@ -2896,10 +2896,10 @@ mod tests {
             Some("/dashboard/wiki/alice")
         );
         assert_eq!(
-            resolve_wikilink_href(&index, None, "alice/@notes").as_deref(),
+            resolve_wikilink_href(&index, None, "alice/@profile").as_deref(),
             // `@` is not in RFC 3986's unreserved set, so the href carries it
             // percent-encoded; the route decodes it back.
-            Some("/dashboard/wiki/alice/view/%40notes.md")
+            Some("/dashboard/wiki/alice/view/%40profile.md")
         );
         // Nested page slug keeps its separators.
         assert_eq!(
@@ -2908,8 +2908,8 @@ mod tests {
         );
         // Flat sub-wiki id — never a directory path.
         assert_eq!(
-            resolve_wikilink_href(&index, None, "famiglia-bruno-battaglia/referto").as_deref(),
-            Some("/dashboard/wiki/famiglia-bruno-battaglia/view/referto.md")
+            resolve_wikilink_href(&index, None, "famiglia-carol/referto").as_deref(),
+            Some("/dashboard/wiki/famiglia-carol/view/referto.md")
         );
     }
 
@@ -2919,7 +2919,7 @@ mod tests {
         // Unknown wiki (the underscored mutant class included).
         assert_eq!(resolve_wikilink_href(&index, None, "ghost"), None);
         assert_eq!(
-            resolve_wikilink_href(&index, None, "famiglia_bruno_battaglia/referto"),
+            resolve_wikilink_href(&index, None, "famiglia_carol/referto"),
             None
         );
         // Known wiki, missing page.
@@ -2943,14 +2943,14 @@ mod tests {
         // Ancestor next: `[[dossier]]` on a page of the emerged sub-wiki
         // reaches the parent's page (the prod dossier-stub shape).
         assert_eq!(
-            resolve_wikilink_href(&index, Some("famiglia-bruno-battaglia"), "dossier").as_deref(),
+            resolve_wikilink_href(&index, Some("famiglia-carol"), "dossier").as_deref(),
             Some("/dashboard/wiki/famiglia/view/dossier.md")
         );
         // Unrelated wikis last: the corpus cross-links by bare name
         // (`[[referto]]` on an alice page names the sub-wiki's page).
         assert_eq!(
             resolve_wikilink_href(&index, Some("alice"), "referto").as_deref(),
-            Some("/dashboard/wiki/famiglia-bruno-battaglia/view/referto.md")
+            Some("/dashboard/wiki/famiglia-carol/view/referto.md")
         );
         // A wiki id always wins over a same-named page: `alice/alice.md`
         // exists, but the bare target is the wiki.
@@ -2981,8 +2981,8 @@ mod tests {
         let alice = &index["alice"];
         // From the wiki root (the home page's base).
         assert_eq!(
-            resolve_relative_page_href(alice, "alice", "", "@notes.md").as_deref(),
-            Some("/dashboard/wiki/alice/view/%40notes.md")
+            resolve_relative_page_href(alice, "alice", "", "@profile.md").as_deref(),
+            Some("/dashboard/wiki/alice/view/%40profile.md")
         );
         assert_eq!(
             resolve_relative_page_href(alice, "alice", "", "modules/auth.md").as_deref(),
@@ -2994,8 +2994,8 @@ mod tests {
             Some("/dashboard/wiki/alice/view/modules/auth.md")
         );
         assert_eq!(
-            resolve_relative_page_href(alice, "alice", "modules", "../@notes.md").as_deref(),
-            Some("/dashboard/wiki/alice/view/%40notes.md")
+            resolve_relative_page_href(alice, "alice", "modules", "../@profile.md").as_deref(),
+            Some("/dashboard/wiki/alice/view/%40profile.md")
         );
         // `./` and case variants normalize to the on-disk spelling — only
         // where the filesystem keeps spellings apart. On macOS/Windows
@@ -3010,8 +3010,8 @@ mod tests {
         }
         // A fragment rides along on the rewritten href.
         assert_eq!(
-            resolve_relative_page_href(alice, "alice", "", "@notes.md#history").as_deref(),
-            Some("/dashboard/wiki/alice/view/%40notes.md#history")
+            resolve_relative_page_href(alice, "alice", "", "@profile.md#history").as_deref(),
+            Some("/dashboard/wiki/alice/view/%40profile.md#history")
         );
     }
 
@@ -3025,7 +3025,7 @@ mod tests {
             "/dashboard/wiki/alice",    // site-absolute
             "https://example.com/x.md", // scheme'd URL
             "mailto:bob@example.com",   // scheme'd, no path
-            "@notes.md?raw=1",          // query-carrying
+            "@profile.md?raw=1",        // query-carrying
             "notes.txt",                // non-.md target
             "missing.md",               // known-shape, dead file
             "../secret.md",             // escapes the wiki root

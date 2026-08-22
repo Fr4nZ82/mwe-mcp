@@ -1162,14 +1162,14 @@ mod tests {
         // A non-fact_forget proposal is NotVotable.
         sqlx::query(
             "INSERT INTO structure_proposals (proposal_id, kind, context, questions, \
-             proposed_at, timeout_at, status) VALUES ('bundle-x', 'bundle', '{}', '[]', ?, ?, 'applied')",
+             proposed_at, timeout_at, status) VALUES ('promote-x', 'wiki_promote', '{}', '[]', ?, ?, 'applied')",
         )
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(chrono::Utc::now().to_rfc3339())
         .execute(&pool)
         .await
         .unwrap();
-        let err = cast_vote(&pool, &tree, &embedder(), "bundle-x", "bilbo", Vote::No)
+        let err = cast_vote(&pool, &tree, &embedder(), "promote-x", "bilbo", Vote::No)
             .await
             .expect_err("non fact_forget");
         assert!(matches!(err, VoteError::NotVotable(_)));

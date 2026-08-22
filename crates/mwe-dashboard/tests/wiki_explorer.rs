@@ -101,7 +101,8 @@ async fn capture_fact(pool: &SqlitePool, tree: &WikiTree, page: &str, body: &str
     }
 }
 
-/// Seed a pending proposal of an unshipped kind (`bundle`). Applying it
+/// Seed a pending proposal of a kind the chassis does not apply
+/// (`page_create`, which is only ever born-applied). Applying it
 /// fails at the chassis (`KindNotYetImplemented`) — a convenient stand-in
 /// for "the apply handler refused" without depending on any live kind.
 async fn seed_pending_unshipped_proposal(pool: &SqlitePool, proposal_id: &str) {
@@ -112,7 +113,7 @@ async fn seed_pending_unshipped_proposal(pool: &SqlitePool, proposal_id: &str) {
          proposed_at, timeout_at, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')",
     )
     .bind(proposal_id)
-    .bind("bundle")
+    .bind("page_create")
     .bind(r#"{"intent":"test"}"#)
     .bind(r#"[{"id":"q1","text":"do it?","options":[]}]"#)
     .bind(now.to_rfc3339())
@@ -271,7 +272,7 @@ async fn dashboard_editor_save_writes_op_log_row_with_actor_kind_dashboard() {
         &app,
         Request::builder()
             .method("POST")
-            .uri("/wiki/alice/edit/@notes.md")
+            .uri("/wiki/alice/edit/appunti.md")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .header(header::COOKIE, cookie.clone())
             .body(Body::from(
@@ -318,7 +319,7 @@ async fn dashboard_editor_save_writes_op_log_row_with_actor_kind_dashboard() {
     let response = send(
         &app,
         Request::builder()
-            .uri("/wiki/alice/edit/@notes.md")
+            .uri("/wiki/alice/edit/appunti.md")
             .header(header::COOKIE, cookie)
             .body(Body::empty())
             .unwrap(),
@@ -781,12 +782,12 @@ async fn dashboard_revert_button_succeeds_on_revertable_row() {
     let (app, pool, _tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
 
-    // Two saves on `@notes.md`: the second is the target we will revert.
+    // Two saves on `appunti.md`: the second is the target we will revert.
     // (We need a second op_log row so the first save's `pre_image_json`
     // is non-NULL — that's the row whose pre-image carries the original
     // body and whose revert restores it.)
-    dashboard_editor_save(&app, &cookie, "alice", "@notes.md", "# v1 body\n").await;
-    dashboard_editor_save(&app, &cookie, "alice", "@notes.md", "# v2 body\n").await;
+    dashboard_editor_save(&app, &cookie, "alice", "appunti.md", "# v1 body\n").await;
+    dashboard_editor_save(&app, &cookie, "alice", "appunti.md", "# v2 body\n").await;
 
     // GET the op-log view: the page must render a Revert form for the
     // second row (the upsert).
@@ -888,11 +889,11 @@ async fn dashboard_revert_button_returns_409_with_conflict_details_on_target_cha
     let (app, pool, _tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
 
-    // Save v1 (creates `@notes.md`), then v2 (overwrites with the body
+    // Save v1 (creates `appunti.md`), then v2 (overwrites with the body
     // we'll try to revert), then v3 (an independent later edit on the
     // same page — this is the conflict).
-    dashboard_editor_save(&app, &cookie, "alice", "@notes.md", "# v1 body\n").await;
-    dashboard_editor_save(&app, &cookie, "alice", "@notes.md", "# v2 body\n").await;
+    dashboard_editor_save(&app, &cookie, "alice", "appunti.md", "# v1 body\n").await;
+    dashboard_editor_save(&app, &cookie, "alice", "appunti.md", "# v2 body\n").await;
     // The middle row is our revert target (its pre-image is "# v1 body\n").
     let target_op_id: i64 = sqlx::query_scalar(
         "SELECT op_id FROM wiki_admin_op_log
@@ -902,7 +903,7 @@ async fn dashboard_revert_button_returns_409_with_conflict_details_on_target_cha
     .fetch_one(&pool)
     .await
     .unwrap();
-    dashboard_editor_save(&app, &cookie, "alice", "@notes.md", "# v3 body\n").await;
+    dashboard_editor_save(&app, &cookie, "alice", "appunti.md", "# v3 body\n").await;
 
     let response = send(
         &app,
@@ -967,7 +968,7 @@ async fn dashboard_revert_button_hidden_for_pull_rows() {
     // Build a revertable history first so the table has at least one
     // pull-discriminated assertion: a dashboard save (push_upsert) +
     // a manually inserted pull row simulating an MCP `wiki_admin_pull`.
-    dashboard_editor_save(&app, &cookie, "alice", "@notes.md", "# body\n").await;
+    dashboard_editor_save(&app, &cookie, "alice", "appunti.md", "# body\n").await;
     sqlx::query(
         "INSERT INTO wiki_admin_op_log
             (wiki_id, sender_id, consumer_id, actor_kind, op_kind, op_mode,
@@ -1023,8 +1024,8 @@ async fn dashboard_revert_button_admin_only() {
     let admin_cookie = login_as_admin(&app).await;
 
     // Seed a revertable row.
-    dashboard_editor_save(&app, &admin_cookie, "alice", "@notes.md", "# body\n").await;
-    dashboard_editor_save(&app, &admin_cookie, "alice", "@notes.md", "# body2\n").await;
+    dashboard_editor_save(&app, &admin_cookie, "alice", "appunti.md", "# body\n").await;
+    dashboard_editor_save(&app, &admin_cookie, "alice", "appunti.md", "# body2\n").await;
     let target_op_id: i64 = sqlx::query_scalar(
         "SELECT op_id FROM wiki_admin_op_log
           WHERE wiki_id = 'alice' AND op_kind = 'push_upsert'

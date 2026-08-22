@@ -733,9 +733,7 @@ mod tests {
         assert_eq!(journal_counts(Some(&report)), (0, 0));
         assert_eq!(journal_counts(None), (0, 0));
 
-        report
-            .errors
-            .push("famiglia_bruno_battaglia: boom".to_owned());
+        report.errors.push("famiglia_carol: boom".to_owned());
         report.degraded.push("salute: degraded append".to_owned());
         let summary = summarize_compile(&report);
         assert!(

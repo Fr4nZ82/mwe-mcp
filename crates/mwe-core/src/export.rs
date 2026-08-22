@@ -486,7 +486,7 @@ mod tests {
             pool,
             tree,
             "alice-garden",
-            "@notes.md",
+            "appunti.md",
             "Tomatoes in June",
             vec![],
             None,
@@ -545,7 +545,7 @@ mod tests {
         assert!(entries.contains_key("alice/cucina.md"), "{entries:?}");
         assert!(entries.contains_key("alice/garden/_meta.md"), "{entries:?}");
         assert!(
-            entries.contains_key("alice/garden/@notes.md"),
+            entries.contains_key("alice/garden/appunti.md"),
             "{entries:?}"
         );
         assert!(
@@ -610,7 +610,7 @@ mod tests {
         assert_eq!(orphan_body, "mystery prose");
 
         // Descendant page rewritten too.
-        let garden = &entries["alice/garden/@notes.md"];
+        let garden = &entries["alice/garden/appunti.md"];
         assert!(
             garden.contains("subject=user:alice") && garden.contains(fx.garden.as_str()),
             "{garden}"
@@ -647,7 +647,7 @@ mod tests {
             &pool,
             &tree,
             "alice-garden",
-            "@notes.md",
+            "appunti.md",
             "Nested fact",
             vec![],
             None,
@@ -660,7 +660,7 @@ mod tests {
         assert_eq!(export.root_dir, "garden");
         let entries = untar(&export.tar_bytes);
         assert!(entries.contains_key("garden/_meta.md"), "{entries:?}");
-        assert!(entries.contains_key("garden/@notes.md"), "{entries:?}");
+        assert!(entries.contains_key("garden/appunti.md"), "{entries:?}");
         assert!(
             entries.keys().all(|k| k.starts_with("garden/")),
             "ancestor pages must stay out: {entries:?}"

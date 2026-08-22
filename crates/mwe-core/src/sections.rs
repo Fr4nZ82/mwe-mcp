@@ -1399,7 +1399,7 @@ mod tests {
     #[tokio::test]
     async fn the_lexical_index_tracks_edits_and_deletions() {
         let (_workdir, pool) = pool().await;
-        let page = "wikis/alice/proj/@notes.md";
+        let page = "wikis/alice/proj/appunti.md";
         let readable = vec!["alice-proj".to_owned()];
         replace_page_sections(&pool, page, &[section(page, 0, "the pineapple protocol")])
             .await

@@ -599,7 +599,7 @@ mod tests {
         let (pool, tree, _td) = fresh_pool_and_tree().await;
         let wiki_dir = tree.wikis_dir().join("alice");
         write_meta(&wiki_dir, "alice", "alice");
-        std::fs::write(wiki_dir.join("@notes.md"), "stuff {{subject=user:alice").unwrap();
+        std::fs::write(wiki_dir.join("appunti.md"), "stuff {{subject=user:alice").unwrap();
 
         let r = run(
             &pool,
@@ -634,13 +634,13 @@ mod tests {
         let (pool, tree, _td) = fresh_pool_and_tree().await;
         let wiki_dir = tree.wikis_dir().join("alice");
         write_meta(&wiki_dir, "alice", "alice");
-        std::fs::write(wiki_dir.join("@notes.md"), "no markers here").unwrap();
+        std::fs::write(wiki_dir.join("appunti.md"), "no markers here").unwrap();
 
         let fact_id = crate::types::FactId::parse(
             &uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::ContextV7::new())).to_string(),
         )
         .unwrap();
-        let source_path = "wikis/alice/@notes.md".to_owned();
+        let source_path = "wikis/alice/appunti.md".to_owned();
         fact_index::insert(
             &pool,
             &fact_index::NewFact {
@@ -695,8 +695,8 @@ mod tests {
             "{{{{subject=user:alice f={id}}}}}hello{{{{/}}}}",
             id = fact_id.as_str()
         );
-        std::fs::write(wiki_dir.join("@notes.md"), &body).unwrap();
-        let source_path = "wikis/alice/@notes.md".to_owned();
+        std::fs::write(wiki_dir.join("appunti.md"), &body).unwrap();
+        let source_path = "wikis/alice/appunti.md".to_owned();
         fact_index::insert(
             &pool,
             &fact_index::NewFact {
@@ -779,7 +779,7 @@ mod tests {
         .expect("store");
         let good = stored.row.catalog_id;
         std::fs::write(
-            wiki_dir.join("@notes.md"),
+            wiki_dir.join("appunti.md"),
             format!(
                 "ok {{{{embed={good}}}}}\n\ndangling {{{{embed=c-2020-01-01-photo-009.jpg}}}}\n"
             ),

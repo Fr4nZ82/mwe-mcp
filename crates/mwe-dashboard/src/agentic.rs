@@ -625,7 +625,7 @@ fn delete_page_tool_descriptors() -> Vec<Tool> {
                 },
                 "page": {
                     "type": "string",
-                    "description": "Page file name within the wiki (e.g. \"salute.md\", \"@notes.md\")."
+                    "description": "Page file name within the wiki (e.g. \"salute.md\", \"appunti.md\")."
                 },
                 "delete_all_facts": {
                     "type": "boolean",

@@ -296,7 +296,7 @@ pub struct PagePlan {
     /// The standard wiki this page lives in (its tree home).
     pub wiki_id: String,
     /// The `.md` path within `wiki_id`. A foundation node uses its type's
-    /// reserved page (`@profile.md` / `@notes.md`) — and it is that name, not
+    /// reserved page (`@profile.md` / `appunti.md`) — and it is that name, not
     /// a separate field, that says which kind of page this is.
     pub page_path: String,
 }

@@ -9,13 +9,10 @@
 //! third is whole-wiki only:
 //!
 //! - [`crate::page::DeletionMode::Dissolve`] — **the default**: destroy the
-//!   *structure*, keep every fact. Nothing is tombstoned. Each fact is moved to
-//!   a live wiki ([`crate::page::dissolve_home`] — its sender's home, else its
-//!   subject's, else the deleter's) and the dissolved wiki's pages are parked on
-//!   the compilation plan as `reopen_pages`, so the next Cartografo build
-//!   **re-decides where each fact belongs** corpus-wide instead of letting it
-//!   inherit the page it happened to sit on. The evacuation target is a
-//!   transient waiting room, not the answer. The one fact a dissolve cannot
+//!   *structure*, keep every fact. Nothing is tombstoned. Each fact goes back
+//!   into the capture buffer, so the next placement pass **decides where it
+//!   belongs** corpus-wide instead of letting it inherit the page it happened
+//!   to sit on. The one fact a dissolve cannot
 //!   keep is one with no live home anywhere (a `global`-owned fact whose sender
 //!   is gone and whose deleter has none): leaving its row pointing into the
 //!   trash would drop it out of the plan's input and strand it invisibly, so it

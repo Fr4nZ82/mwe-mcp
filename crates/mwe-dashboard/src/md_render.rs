@@ -229,7 +229,7 @@ where
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 let level_num = heading_level_to_u8(level);
-                // Parking page the inner events + accumulate the visible
+                // Buffer the inner events + accumulate the visible
                 // text so the slug derivation sees a clean string.
                 // Inner text runs go through the same rewriter (a
                 // wikilink inside a heading still clicks through); the
@@ -755,17 +755,15 @@ e un documento {{embed=c-2026-06-12-doc-001.pdf}}.\n",
     // ---------- wikilink click-through + fact-ref anchors ----------
 
     /// A fixed resolver for the linkifier tests: `alice` and the sub-wiki
-    /// `famiglia-bruno-battaglia` are known wikis; only `alice/notes` and
-    /// `famiglia-bruno-battaglia/referto` exist as pages.
+    /// `famiglia-carol` are known wikis; only `alice/notes` and
+    /// `famiglia-carol/referto` exist as pages.
     fn test_resolver(target: &str) -> Option<String> {
         match target {
             "alice" => Some("/dashboard/wiki/alice".to_owned()),
-            "famiglia-bruno-battaglia" => {
-                Some("/dashboard/wiki/famiglia-bruno-battaglia".to_owned())
-            },
-            "alice/@notes" => Some("/dashboard/wiki/alice/view/@notes.md".to_owned()),
-            "famiglia-bruno-battaglia/referto" => {
-                Some("/dashboard/wiki/famiglia-bruno-battaglia/view/referto.md".to_owned())
+            "famiglia-carol" => Some("/dashboard/wiki/famiglia-carol".to_owned()),
+            "alice/@profile" => Some("/dashboard/wiki/alice/view/@profile.md".to_owned()),
+            "famiglia-carol/referto" => {
+                Some("/dashboard/wiki/famiglia-carol/view/referto.md".to_owned())
             },
             _ => None,
         }
@@ -789,14 +787,14 @@ e un documento {{embed=c-2026-06-12-doc-001.pdf}}.\n",
 
     #[test]
     fn wikilinks_linkify_both_canonical_forms() {
-        let html = render_linkified("See [[alice]] and [[alice/@notes]] today.\n");
+        let html = render_linkified("See [[alice]] and [[alice/@profile]] today.\n");
         assert!(
             html.contains(r#"<a class="wikilink" href="/dashboard/wiki/alice">alice</a>"#),
             "wiki hop: {html}"
         );
         assert!(
             html.contains(
-                r#"<a class="wikilink" href="/dashboard/wiki/alice/view/@notes.md">alice/@notes</a>"#
+                r#"<a class="wikilink" href="/dashboard/wiki/alice/view/@profile.md">alice/@profile</a>"#
             ),
             "page hop: {html}"
         );
@@ -833,14 +831,14 @@ e un documento {{embed=c-2026-06-12-doc-001.pdf}}.\n",
 
     #[test]
     fn wikilink_alias_renders_as_the_label() {
-        let html = render_linkified("Read [[alice/@notes|My Notes]].\n");
+        let html = render_linkified("Read [[alice/@profile|My Profile]].\n");
         assert!(
             html.contains(
-                r#"<a class="wikilink" href="/dashboard/wiki/alice/view/@notes.md">My Notes</a>"#
+                r#"<a class="wikilink" href="/dashboard/wiki/alice/view/@profile.md">My Profile</a>"#
             ),
             "{html}"
         );
-        assert!(!html.contains("alice/@notes|"), "{html}");
+        assert!(!html.contains("alice/@profile|"), "{html}");
     }
 
     #[test]
@@ -849,32 +847,29 @@ e un documento {{embed=c-2026-06-12-doc-001.pdf}}.\n",
         // all render as plain text — never an <a>.
         let html = render_linkified(
             "Ghost [[ghost]] and [[alice/missing]] and \
-             [[famiglia_bruno_battaglia/referto_oculistica]] stay.\n",
+             [[famiglia_carol/referto_oculistica]] stay.\n",
         );
         assert!(!html.contains("<a "), "{html}");
         assert!(html.contains("[[ghost]]"), "{html}");
         assert!(html.contains("[[alice/missing]]"), "{html}");
         assert!(
-            html.contains("[[famiglia_bruno_battaglia/referto_oculistica]]"),
+            html.contains("[[famiglia_carol/referto_oculistica]]"),
             "{html}"
         );
     }
 
     #[test]
     fn sub_wiki_id_linkifies_as_flat_id() {
-        let html = render_linkified(
-            "Dossier at [[famiglia-bruno-battaglia/referto]] in [[famiglia-bruno-battaglia]].\n",
-        );
+        let html =
+            render_linkified("Dossier at [[famiglia-carol/referto]] in [[famiglia-carol]].\n");
         assert!(
             html.contains(
-                r#"href="/dashboard/wiki/famiglia-bruno-battaglia/view/referto.md">famiglia-bruno-battaglia/referto</a>"#
+                r#"href="/dashboard/wiki/famiglia-carol/view/referto.md">famiglia-carol/referto</a>"#
             ),
             "{html}"
         );
         assert!(
-            html.contains(
-                r#"href="/dashboard/wiki/famiglia-bruno-battaglia">famiglia-bruno-battaglia</a>"#
-            ),
+            html.contains(r#"href="/dashboard/wiki/famiglia-carol">famiglia-carol</a>"#),
             "{html}"
         );
     }
@@ -900,7 +895,7 @@ e un documento {{embed=c-2026-06-12-doc-001.pdf}}.\n",
 
     #[test]
     fn wikilinks_in_code_stay_literal_and_render_without_ctx_is_inert() {
-        let html = render_linkified("```\n[[alice]]\n```\n\nAnd `[[alice/@notes]]` inline.\n");
+        let html = render_linkified("```\n[[alice]]\n```\n\nAnd `[[alice/@profile]]` inline.\n");
         assert!(!html.contains("<a "), "code stays literal: {html}");
         assert!(html.contains("[[alice]]"), "{html}");
         // The plain `render` (no ctx — e.g. the chat reply) never linkifies.

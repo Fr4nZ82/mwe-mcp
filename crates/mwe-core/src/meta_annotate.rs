@@ -1213,25 +1213,39 @@ mod tests {
         write_page(
             &tree,
             "alice",
-            "@notes.md",
+            "appunti.md",
             "---\ntitle: \"Notes\"\nstyle: prosa\n---\n\nBody.\n",
         );
 
         // alice's wiki (acl_default user:alice): her own fact and a global
         // fact contribute; bob's cross-user region must not leak its topic
         // words onto either card.
-        insert_fact_with_subject(&pool, UUID_1, "alice", "@notes.md", "user:alice", &["food"])
-            .await;
-        insert_fact_with_subject(&pool, UUID_2, "alice", "@notes.md", "global", &["public"]).await;
-        insert_fact_with_subject(&pool, UUID_3, "alice", "@notes.md", "user:bob", &["secret"])
-            .await;
+        insert_fact_with_subject(
+            &pool,
+            UUID_1,
+            "alice",
+            "appunti.md",
+            "user:alice",
+            &["food"],
+        )
+        .await;
+        insert_fact_with_subject(&pool, UUID_2, "alice", "appunti.md", "global", &["public"]).await;
+        insert_fact_with_subject(
+            &pool,
+            UUID_3,
+            "alice",
+            "appunti.md",
+            "user:bob",
+            &["secret"],
+        )
+        .await;
 
         sync_wiki_keywords(&pool, &tree).await.unwrap();
         sync_page_keywords(&pool, &tree).await.unwrap();
 
         assert_eq!(read_topics(&tree, "alice").as_deref(), Some("food, public"));
         assert_eq!(
-            read_page_topics(&tree, "alice", "@notes.md").as_deref(),
+            read_page_topics(&tree, "alice", "appunti.md").as_deref(),
             Some("food, public")
         );
     }

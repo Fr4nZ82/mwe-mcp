@@ -3132,7 +3132,7 @@ mod tests {
             Some("spesa.md".to_owned()),
             "an engine file is never a list — fall back to the proposed page"
         );
-        assert_eq!(list_page_name("", Some("@notes.md")), None);
+        assert_eq!(list_page_name("", Some("@rules.md")), None);
         assert_eq!(list_page_name("wikis/famiglia/@profile.md", None), None);
         assert_eq!(list_page_name("", None), None);
     }
@@ -4383,7 +4383,7 @@ mod tests {
         let mut f1 = sample_new_fact(SAMPLE_UUID_V7_1, "alice", "user:alice", "a");
         f1.source_path = "wikis/alice/intro.md".into();
         let mut f2 = sample_new_fact(SAMPLE_UUID_V7_2, "alice", "user:alice", "b");
-        f2.source_path = "wikis/alice/@notes.md".into();
+        f2.source_path = "wikis/alice/appunti.md".into();
         // A row that must NOT match — sibling with shared prefix bytes.
         let mut f3 = sample_new_fact(SAMPLE_UUID_V7_3, "alice-bis", "user:alice", "c");
         f3.source_path = "wikis/alice-bis/intro.md".into();
@@ -4399,7 +4399,7 @@ mod tests {
         let row1 = find_by_id(&pool, &f1.fact_id).await.unwrap().unwrap();
         assert_eq!(row1.source_path, "wikis/bob/family/alice/intro.md");
         let row2 = find_by_id(&pool, &f2.fact_id).await.unwrap().unwrap();
-        assert_eq!(row2.source_path, "wikis/bob/family/alice/@notes.md");
+        assert_eq!(row2.source_path, "wikis/bob/family/alice/appunti.md");
         // The sibling stays untouched — its prefix differs after the trailing slash.
         let row3 = find_by_id(&pool, &f3.fact_id).await.unwrap().unwrap();
         assert_eq!(row3.source_path, "wikis/alice-bis/intro.md");

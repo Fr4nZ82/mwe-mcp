@@ -1120,8 +1120,8 @@ struct FamilyScope {
 ///
 /// Membership is DIRECTORY nesting (component-wise prefix on
 /// `abs_dir`) — never the id string: a legit top-level wiki id may
-/// contain hyphens (`famiglia-bruno-battaglia` is famiglia's child
-/// because it lives at `wikis/famiglia/bruno-battaglia/`, not because
+/// contain hyphens (`famiglia-carol` is famiglia's child
+/// because it lives at `wikis/famiglia/carol/`, not because
 /// of its name). `walk()` is path-sorted, so a root always precedes
 /// its descendants and the linear scan below sees the root first.
 fn family_scopes(tree: &WikiTree, smart_wiki_index: &SmartWikiIndex) -> Result<Vec<FamilyScope>> {
@@ -2218,7 +2218,7 @@ async fn run_auto_promote(
 /// - **Source scope.** A receipt records the page a fact was promoted
 ///   FROM. Matching `source_wiki_id`/`source_page` stops an old receipt
 ///   from vetoing a fact that has since migrated onto a *different* page
-///   (a fact promoted off `@notes.md` that later landed on
+///   (a fact promoted off `appunti.md` that later landed on
 ///   `esperienze_agente.md` must not freeze the latter).
 async fn already_promoted_for(
     pool: &SqlitePool,
@@ -10767,7 +10767,7 @@ mod tests {
             &tree,
             &pool,
             "alice-lnprint",
-            "Design note. ([[alice-lnprint/@notes]])",
+            "Design note. ([[alice-lnprint/appunti]])",
             "alice",
         )
         .await;
@@ -10995,7 +10995,7 @@ mod tests {
             &pool,
             "alice",
             "preferenze.md",
-            "Bruno Battaglia è il padre di Franz e vive a Ferrara",
+            "Carol è la sorella di Franz e vive a Bologna",
             "alice",
         )
         .await;
@@ -11004,7 +11004,7 @@ mod tests {
             &pool,
             "alice",
             "preferenze.md",
-            "Bruno Battaglia è il padre di Franz e vive a Ferrara in centro",
+            "Carol è la sorella di Franz e vive a Bologna in centro",
             "alice",
         )
         .await;
@@ -11058,7 +11058,7 @@ mod tests {
                 &pool,
                 "alice",
                 "preferenze.md",
-                &format!("Bruno Battaglia è il padre di Franz e vive a Ferrara {tail}"),
+                &format!("Carol è la sorella di Franz e vive a Bologna {tail}"),
                 "alice",
             )
             .await;
@@ -11098,8 +11098,8 @@ mod tests {
             &tree,
             &pool,
             "famiglia",
-            "bruno_battaglia.md",
-            "Bruno Battaglia è il padre di Franz e vive a Ferrara",
+            "carol.md",
+            "Carol è la sorella di Franz e vive a Bologna",
             "alice",
         )
         .await;
@@ -11108,7 +11108,7 @@ mod tests {
             &pool,
             "famiglia-bruno",
             "anagrafica.md",
-            "Bruno Battaglia è il padre di Franz e vive a Ferrara in centro",
+            "Carol è la sorella di Franz e vive a Bologna in centro",
             "alice",
         )
         .await;
@@ -11167,8 +11167,8 @@ mod tests {
             &tree,
             &pool,
             "famiglia",
-            "bruno_battaglia.md",
-            "Bruno Battaglia è il padre di Franz e vive a Ferrara",
+            "carol.md",
+            "Carol è la sorella di Franz e vive a Bologna",
             "alice",
         )
         .await;
@@ -11183,7 +11183,7 @@ mod tests {
             &pool,
             "famiglia-bruno",
             "anagrafica.md",
-            "Bruno Battaglia è il padre di Franz e vive a Ferrara in centro",
+            "Carol è la sorella di Franz e vive a Bologna in centro",
             "alice",
         )
         .await;

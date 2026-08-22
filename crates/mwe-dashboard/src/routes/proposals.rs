@@ -94,7 +94,8 @@ async fn in_flight_count(
 ///   every field from the proposal's own context.
 /// - `dedup_merge`: ignores every field (the act of posting is the
 ///   confirmation).
-/// - `bundle`: still surfaces `not_implemented_phase_c`.
+/// - `page_create`: a born-applied receipt, never `pending`, so the chassis
+///   refuses it here.
 ///
 /// The variant is on the **proposal row**, never on the form: the
 /// chassis dispatches on it, so an operator cannot pick one.

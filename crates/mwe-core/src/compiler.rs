@@ -4254,33 +4254,29 @@ mod tests {
         assert_eq!(
             plan_page_wikilink(&leaf(
                 "referto_oculistica",
-                "famiglia-bruno-battaglia",
+                "famiglia-carol",
                 "referto_oculistica.md"
             )),
-            "[[famiglia-bruno-battaglia/referto_oculistica]]"
+            "[[famiglia-carol/referto_oculistica]]"
         );
         // The starvation index and the recommended links both ride the
         // same helper.
         let mut pages = BTreeMap::new();
         pages.insert("hub".to_owned(), leaf("hub", "famiglia", "ricette.md"));
         pages.insert(
-            "salute_bruno".to_owned(),
-            leaf(
-                "salute_bruno",
-                "famiglia-bruno-battaglia",
-                "salute_bruno.md",
-            ),
+            "salute_carol".to_owned(),
+            leaf("salute_carol", "famiglia-carol", "salute_carol.md"),
         );
         let mut link_graph = BTreeMap::new();
         link_graph.insert(
             "hub".to_owned(),
-            vec!["salute_bruno".to_owned(), "vanished".to_owned()],
+            vec!["salute_carol".to_owned(), "vanished".to_owned()],
         );
         let plan = CompilationPlan {
             pages,
             merged_pages: Vec::new(),
             link_graph,
-            compilation_order: vec!["hub".to_owned(), "salute_bruno".to_owned()],
+            compilation_order: vec!["hub".to_owned(), "salute_carol".to_owned()],
             generated_at: "t".to_owned(),
             fact_count: 0,
             dirty_pages: Vec::new(),
@@ -4290,13 +4286,13 @@ mod tests {
         };
         let idx = page_index_block(&plan);
         assert!(
-            idx.contains("- [[famiglia-bruno-battaglia/salute_bruno]]: salute_bruno desc"),
+            idx.contains("- [[famiglia-carol/salute_carol]]: salute_carol desc"),
             "{idx}"
         );
         let targets = recommended_link_targets(&plan, "hub");
         assert_eq!(
             recommended_links(&targets),
-            "[[famiglia-bruno-battaglia/salute_bruno]]",
+            "[[famiglia-carol/salute_carol]]",
             "graph slugs resolve through the plan; a vanished slug is skipped"
         );
     }

@@ -13171,7 +13171,7 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
-                        page: Some(PathBuf::from("@notes.md")),
+                        page: Some(PathBuf::from("appunti.md")),
                         body: body.into(),
                         subject: Principal::User("alice".into()),
                         allow: Vec::new(),
@@ -13246,7 +13246,7 @@ mod tests {
             CaptureRequest {
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
-                page: Some(PathBuf::from("@notes.md")),
+                page: Some(PathBuf::from("appunti.md")),
                 body: "alice ha comprato il latte".into(),
                 subject: Principal::User("alice".into()),
                 allow: Vec::new(),
@@ -13319,7 +13319,7 @@ mod tests {
             CaptureRequest {
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
-                page: Some(PathBuf::from("@notes.md")),
+                page: Some(PathBuf::from("appunti.md")),
                 body: "la riunione è giovedì".into(),
                 subject: Principal::User("alice".into()),
                 allow: Vec::new(),
@@ -13393,7 +13393,7 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
-                        page: Some(PathBuf::from("@notes.md")),
+                        page: Some(PathBuf::from("appunti.md")),
                         body: body.into(),
                         subject,
                         allow: Vec::new(),
@@ -13482,7 +13482,7 @@ mod tests {
                     CaptureRequest {
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
-                        page: Some(PathBuf::from("@notes.md")),
+                        page: Some(PathBuf::from("appunti.md")),
                         body: body.into(),
                         subject,
                         allow,
@@ -14322,7 +14322,7 @@ mod tests {
             "and nothing was written"
         );
         assert!(
-            !dir.path().join("wikis/alice/@notes.md").exists(),
+            !dir.path().join("wikis/alice/appunti.md").exists(),
             "above all the buffer was not turned into a shopping list"
         );
         let rules = resp.rules.unwrap_or_default();

@@ -2672,7 +2672,7 @@ mod tests {
         assert!(shape.chars > 25_000, "a genuinely long page: {shape:?}");
         assert_eq!(shape.oversize_blocks, 0);
         assert!(!shape.needs_repair());
-        assert!(shape.warning("@notes.md").is_none());
+        assert!(shape.warning("appunti.md").is_none());
         // It still splits into many sections — that is packing, not damage.
         assert!(shape.sections > 10);
         assert!(shape.sections_sharing_a_heading > 0);

@@ -390,7 +390,7 @@ async fn wiki_read_returns_not_found_for_unknown_wiki() {
         &state,
         &identity,
         "wiki_read",
-        json!({"wiki_id": "nope", "path": "@notes.md"}),
+        json!({"wiki_id": "nope", "path": "appunti.md"}),
     )
     .await
     .expect_err("must reject");
@@ -1372,7 +1372,7 @@ async fn wiki_admin_push_queues_section_indexing_when_reindex_channel_is_wired()
         json!({
             "mode": "upsert",
             "wiki_id": wiki_id.as_str(),
-            "pages": [{"path": "@notes.md", "content": "# Notes\n"}],
+            "pages": [{"path": "appunti.md", "content": "# Notes\n"}],
         }),
     )
     .await
@@ -1385,7 +1385,7 @@ async fn wiki_admin_push_queues_section_indexing_when_reindex_channel_is_wired()
     );
     match rx.try_recv().expect("one queued change") {
         mwe_core::watcher::WatchedChange::Touched(p) => {
-            assert!(p.ends_with("@notes.md"), "queued path: {}", p.display());
+            assert!(p.ends_with("appunti.md"), "queued path: {}", p.display());
         },
         other => panic!("expected Touched, got {other:?}"),
     }
@@ -1402,7 +1402,7 @@ async fn wiki_admin_push_indexes_inline_without_reindex_channel() {
         json!({
             "mode": "upsert",
             "wiki_id": wiki_id.as_str(),
-            "pages": [{"path": "@notes.md", "content": "# Notes\n"}],
+            "pages": [{"path": "appunti.md", "content": "# Notes\n"}],
         }),
     )
     .await
