@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! TOTP two-factor: the user-facing enrollment page (authenticated) and
 //! the login-time challenge (public). Engine in [`crate::twofa`];
-//! enforcement gate in [`crate::auth::session`] (roadmap 28).
+//! enforcement gate in [`crate::auth::session`].
 //!
 //! ## Two trees
 //!

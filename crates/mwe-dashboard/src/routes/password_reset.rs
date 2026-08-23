@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Self-service password recovery (roadmap 28) — the public
+//! Self-service password recovery — the public
 //! forgot-password / reset-password flow.
 //!
 //! Four routes, all **public** (mounted outside `refresh_session_layer`,

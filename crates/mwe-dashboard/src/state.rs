@@ -35,8 +35,8 @@ pub struct DashboardConfig {
     /// (only the CLI `mwe-mcp admin-reset` does), so it lives here.
     pub invitation_ttl_hours: i64,
 
-    /// TTL for self-service password-reset links (`password_resets`,
-    /// roadmap 28). Much shorter than an invitation — a recovery link is
+    /// TTL for self-service password-reset links (`password_resets`).
+    /// Much shorter than an invitation — a recovery link is
     /// acted on immediately. Default 30 minutes.
     pub reset_ttl_minutes: i64,
 

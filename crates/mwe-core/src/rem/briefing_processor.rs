@@ -39,8 +39,8 @@
 //!
 //! The MVP ships **mark-passive** because it is the simplest +
 //! safest behaviour to validate the loop end-to-end before adding
-//! semantic teeth. Action-taking remains a deferred follow-up tracked
-//! in the roadmap; the public [`ProcessOutcome`] exposes
+//! semantic teeth. Action-taking is not implemented; the public
+//! [`ProcessOutcome`] exposes
 //! `context_loaded` so the operator can see how often the processor
 //! was given a citable target to read versus how often it was a free
 //! comment with no anchor.

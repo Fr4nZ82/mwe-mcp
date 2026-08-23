@@ -438,14 +438,14 @@ pub struct PushResponse {
     /// `wiki_ingest_message` (`metadata.authored_refs`) so the standard
     /// personal-memory pipeline records a **reference** to the project
     /// page instead of re-storing its body — the "link, don't duplicate"
-    /// provenance tube (roadmap group 17). The form matches what
+    /// provenance tube. The form matches what
     /// [`crate::capture::wiki_link`] emits and recall-as-navigation
     /// follows.
     pub authored_refs: Vec<String>,
 }
 
 /// Format the `[[wiki_id/page]]` provenance breadcrumbs for the pages a
-/// push wrote — the upstream half of the group-17 provenance tube.
+/// push wrote — the upstream half of the provenance tube.
 ///
 /// One link per authored page (`_meta.md` and deletes are not authorship),
 /// with the trailing `.md` stripped and `\` normalised to `/` so the link
@@ -1022,7 +1022,7 @@ async fn push_upsert(
 /// whole-wiki picture is what [`pull`]'s shape mode is for.
 const MAX_SHAPE_WARNINGS_PER_PUSH: usize = 5;
 
-/// Roadmap 51f — the write half of "page shape is measured and reported,
+/// The write half of "page shape is measured and reported,
 /// never asked".
 ///
 /// A page whose blocks are too long to index as one retrieves badly, and
@@ -1068,7 +1068,7 @@ fn shape_warnings(pages: &[PushPage], smart: bool) -> Vec<String> {
 /// Three shapes, one call: the whole wiki (the default), a named subset
 /// ([`PullRequest::paths`] — the narrowing the smart-consumer skill has
 /// always documented), and the per-page section shape instead of the
-/// bytes ([`PullRequest::shape`], roadmap 51f).
+/// bytes ([`PullRequest::shape`]).
 ///
 /// # Errors
 ///
@@ -2279,7 +2279,7 @@ mod tests {
         assert_eq!(resp.ops_applied.deleted, 0);
         assert!(resp.warnings.is_empty());
 
-        // Provenance breadcrumbs (group 17): one [[wiki_id/page]] per
+        // Provenance breadcrumbs: one [[wiki_id/page]] per
         // written page, `.md` stripped, in request order. `_meta.md` is
         // not authorship and must not appear.
         assert_eq!(
@@ -3009,8 +3009,8 @@ mod tests {
     /// `group:<id>` scope principal — the case the dashboard 500-ed on.
     ///
     /// Ownership is not declared in `_meta.md`; it is derived from the root
-    /// identity wiki's type. So we (1) create the `group_id` group
-    /// identity wiki (a `wiki-group` root) and (2) rewrite this wiki's
+    /// identity wiki's type. So we create the `group_id` group
+    /// identity wiki (a `wiki-group` root) and rewrite this wiki's
     /// `parent_wiki_id` to point at it. `resolve_scope_principal` resolves
     /// the parent by id (not physical nesting), walks up to the `wiki-group`
     /// root, and yields `group:<group_id>`.

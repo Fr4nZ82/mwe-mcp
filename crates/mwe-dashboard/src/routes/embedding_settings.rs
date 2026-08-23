@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Admin-only editor for `<workdir>/mwe-mcp.config.yaml > embedding` —
-//! the embedder backend selector + device toggle (roadmap 18e).
+//! the embedder backend selector + device toggle.
 //!
 //! Two routes, both behind [`AdminUser`]:
 //!
@@ -13,7 +13,7 @@
 //! here takes effect on the **next server restart**, not the next turn —
 //! there is no live handle to hot-swap. When the backend or model changes
 //! the store's vectors no longer match the new embedder, so a full reindex
-//! is needed; the embedder-identity guard (roadmap 18g) warns on the next
+//! is needed; the embedder-identity guard warns on the next
 //! startup.
 
 use std::collections::HashMap;
@@ -68,7 +68,7 @@ fn render(
     flash: Option<Flash<'_>>,
 ) -> String {
     let bundled_ok = bundled_embedder_available();
-    // GPU acceleration needs a CUDA-enabled build (roadmap 18f); the shipped
+    // GPU acceleration needs a CUDA-enabled build; the shipped
     // default artifact is CPU-only, so the GPU option stays disabled here.
     let gpu_ok = false;
 
@@ -162,7 +162,7 @@ fn embedding_form(cfg: &EmbeddingConfig, bundled_ok: bool, gpu_ok: bool) -> Mark
                                 option value="gpu" selected[cfg.device.as_str() == "gpu"]
                                     disabled[!gpu_ok] {
                                     "GPU"
-                                    @if !gpu_ok { " — needs a CUDA build (roadmap 18f)" }
+                                    @if !gpu_ok { " — needs a CUDA build" }
                                 }
                             }
                         }

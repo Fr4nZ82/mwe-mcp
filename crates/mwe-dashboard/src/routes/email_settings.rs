@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Admin-only editor for `<workdir>/mwe-mcp.config.yaml > email` — the
-//! SMTP backend that powers self-service password recovery (roadmap 28).
+//! SMTP backend that powers self-service password recovery.
 //!
 //! No page of its own: the editor renders as an admin-only **section of
 //! the Settings page** (`/dashboard/settings/me`, [`super::settings`]),

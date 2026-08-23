@@ -75,7 +75,7 @@ fn forbid_sender_mismatch(
 }
 
 /// Refuse a tool to the builtin `guest` pseudo-identity (the
-/// unidentified-human sender, roadmap 40).
+/// unidentified-human sender).
 ///
 /// Guest turns are ephemeral by contract: an unidentified person must not
 /// leave permanent state (documents, briefing notes, registry writes) nor
@@ -104,8 +104,8 @@ struct IngestArgs {
     text: String,
     sender_id: Option<String>,
     /// `"user"` (default) or `"assistant"`. The consumer sets `"assistant"`
-    /// only when feeding back the agent's OWN reply for extraction (roadmap 27,
-    /// agent-authored memory).
+    /// only when feeding back the agent's OWN reply for extraction
+    /// (agent-authored memory).
     #[serde(default)]
     author: Option<String>,
     #[serde(default)]
@@ -117,7 +117,7 @@ struct IngestArgs {
     #[serde(default)]
     attachments: Vec<AttachmentArg>,
     /// `always` | `never` — forces the paste-into-chat promotion
-    /// backstop (roadmap 46c); absent = oversized document-shaped
+    /// backstop; absent = oversized document-shaped
     /// user turns are promoted automatically.
     #[serde(default)]
     promote: Option<String>,
@@ -250,7 +250,7 @@ fn parse_ingest_metadata(
 
     // Provenance breadcrumbs (`[[wiki_id/page]]`) the consumer carries from
     // its preceding `wiki_admin_push` so consolidation can link instead of
-    // duplicate (roadmap group 17). Accept a JSON array of strings; trim and
+    // duplicate. Accept a JSON array of strings; trim and
     // drop blanks. Non-array / non-string entries are ignored rather than
     // rejected — additive, never breaks an existing turn.
     let authored_refs = metadata
@@ -266,7 +266,7 @@ fn parse_ingest_metadata(
         })
         .unwrap_or_default();
 
-    // Opaque surface label for the cross-consumer recent window (group 43):
+    // Opaque surface label for the cross-consumer recent window:
     // multi-channel consumers tag their surfaces apart so only the
     // requesting one is excluded from what the window serves back.
     let channel = metadata
@@ -299,7 +299,7 @@ struct TurnPromotion {
     receipt: Value,
 }
 
-/// Verbatim source promotion, the paste-into-chat door (roadmap 46c).
+/// Verbatim source promotion, the paste-into-chat door.
 ///
 /// An oversized document-shaped user turn is archived verbatim on the
 /// media rail and extracted by the document pipeline; the
@@ -453,7 +453,7 @@ pub(super) async fn call_wiki_ingest_message(
         )
     })?;
 
-    // Verbatim source promotion, the paste-into-chat door (roadmap 46c).
+    // Verbatim source promotion, the paste-into-chat door.
     let promotion = maybe_promote_turn(
         state,
         identity,
@@ -1161,7 +1161,7 @@ struct WikiNavigateArgs {
 }
 
 /// Resolve the navigator's `(topics, subjects)` seeds for `wiki_navigate`
-/// (roadmap 24b cascade): **C** — the caller named `topics`/`subjects` — wins;
+/// as a cascade: **C** — the caller named `topics`/`subjects` — wins;
 /// otherwise **B** extracts them from the query via the navigator slot
 /// ([`mwe_core::recall_nav::extract_query_seeds`], which degrades to empty →
 /// **A**, principal + RAG only). Unparseable subject principals are dropped.
@@ -1707,8 +1707,8 @@ struct WikiIngestExternalArgs {
     /// The document's semantic clock (ISO-8601).
     #[serde(default)]
     occurred_at: Option<String>,
-    /// `always` | `never` — forces the inline→media promotion backstop
-    /// (roadmap 46); absent = the shape heuristic decides. Meaningful
+    /// `always` | `never` — forces the inline→media promotion backstop;
+    /// absent = the shape heuristic decides. Meaningful
     /// for `source.type == "inline"` only.
     #[serde(default)]
     promote: Option<String>,
@@ -1752,7 +1752,7 @@ fn first_line_excerpt(text: &str) -> Option<String> {
     Some(s)
 }
 
-/// Verbatim source promotion, the mechanics (roadmap 46b): materialise
+/// Verbatim source promotion, the mechanics: materialise
 /// pasted text as a content-addressed blob + `media_catalog` row (kind
 /// `doc`, mime `text/plain`) so the document rail cites a real
 /// original. The blob bytes are the text verbatim — the blob's sha256
@@ -1816,7 +1816,7 @@ struct ResolvedDocumentSource {
     allow: Vec<mwe_core::types::Principal>,
 }
 
-/// Verbatim source promotion inside source resolution (roadmap 46).
+/// Verbatim source promotion inside source resolution.
 ///
 /// Document-shaped inline text is backstopped onto the media rail so
 /// the original stays citable; the resolved source then looks exactly
@@ -2455,7 +2455,7 @@ pub(super) async fn call_wiki_admin_push(
         // background — recall over brand-new sections may lag by the
         // queue depth. "inline": indexed before this ack.
         "section_indexing": section_indexing,
-        // Roadmap 48f. The moment a push lands is the moment something
+        // The moment a push lands is the moment something
         // worth signposting just happened, and the agent is already
         // here — a nudge attached to an action it already performs beats
         // "remember at the end of the session", because sessions end
@@ -2578,7 +2578,7 @@ pub(super) async fn call_wiki_admin_pull(
     let resp = mwe_core::wiki_admin::pull(&state.pool, &state.tree, &caller, &req)
         .await
         .map_err(|e| admin_error_to_tool_error(&e))?;
-    // Roadmap 51f. In shape mode the page bytes stay on the server: what
+    // In shape mode the page bytes stay on the server: what
     // comes back is what the index will make of each page, plus the one
     // line the consumer can relay to a human as-is.
     let needing_repair = resp
@@ -3104,7 +3104,7 @@ pub(super) async fn call_smart_bootstrap(
             })
         })
         .collect();
-    // Roadmap 51a. Volunteered, not asked for: the agent learns a project
+    // Volunteered, not asked for: the agent learns a project
     // has no memory from the response it already reads, the way
     // `wiki_admin_push` volunteers `signpost_hint`. `null` unless the
     // caller passed a `project_id`.

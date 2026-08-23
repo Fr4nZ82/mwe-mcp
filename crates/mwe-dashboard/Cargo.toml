@@ -41,7 +41,7 @@ password-hash = { workspace = true }
 time = { workspace = true }
 serde_html_form = { workspace = true }
 
-# Password recovery + 2FA (roadmap 28). lettre = SMTP over rustls;
+# Password recovery + 2FA. lettre = SMTP over rustls;
 # totp-rs/qrcode = TOTP enrollment; chacha20poly1305/sha2 = encrypt the
 # TOTP shared secret at rest with a key derived from MWE_TOKEN_SECRET.
 lettre = { workspace = true }

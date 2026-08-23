@@ -50,7 +50,7 @@ tower = { workspace = true }
 [features]
 default = []
 mwe-mcp-test-faults = ["mwe-core/mwe-mcp-test-faults"]
-# Bundle the in-binary Candle embedder (roadmap group 18). The published
+# Bundle the in-binary Candle embedder. The published
 # GitHub release artifact (5m) is built with this so a downloaded binary
 # defaults to the bundled embedder and needs no external embedding service;
 # the dev/CI default build leaves it off to stay lean.

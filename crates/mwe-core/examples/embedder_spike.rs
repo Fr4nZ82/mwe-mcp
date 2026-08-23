@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Engine spike for the bundled embedder — roadmap 18a (the gate).
+//! Engine spike for the bundled embedder.
 //!
 //! Validates that bge-m3 runs in Candle on CPU and produces vectors that
 //! match the Ollama bge-m3 baseline closely enough to reuse existing
@@ -16,7 +16,7 @@
 //!
 //! Gate: PASS when the minimum cosine(Candle, Ollama) across the set is at
 //! least 0.98 (same direction, so indexes are reusable). Lower means a
-//! reindex (roadmap 18g) or a pooling/normalization mismatch to investigate.
+//! reindex or a pooling/normalization mismatch to investigate.
 
 // Throwaway measurement harness: the means below cast tiny element counts
 // (single digits) to f32, where the precision-loss lint is pure noise.

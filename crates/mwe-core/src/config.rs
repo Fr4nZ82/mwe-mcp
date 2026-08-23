@@ -166,9 +166,9 @@ pub enum ConfigError {
 
     /// `embedding` selected a supported backend that cannot be built in
     /// this configuration — `bundled` on a binary compiled without the
-    /// `local-embedder` feature, `device: gpu` without a CUDA build
-    /// (roadmap 18f), a missing `model_dir` before the
-    /// weight-distribution work (roadmap 18c), or the backend
+    /// `local-embedder` feature, `device: gpu` without a CUDA build,
+    /// a missing `model_dir` before the
+    /// weight-distribution work, or the backend
     /// constructor failing.
     #[error("config embedding: {detail}")]
     EmbeddingUnavailable {
@@ -1720,8 +1720,8 @@ impl RecallConfig {
 /// backend drives recall / capture / dedup.
 ///
 /// Until this section existed the embedder was hardcoded to
-/// `OllamaEmbedder::local_bge_m3()` at the server construction sites
-/// (roadmap group 18). The section is honoured by
+/// `OllamaEmbedder::local_bge_m3()` at the server construction sites.
+/// The section is honoured by
 /// [`EmbeddingConfig::build_embedder`], the single factory those sites now
 /// call. An absent section deserializes to [`EmbeddingConfig::default`]:
 /// `bge-m3` / 1024-dim, with the backend chosen by the build — `bundled`
@@ -1750,7 +1750,7 @@ pub struct EmbeddingConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     /// Compute device for the `bundled` backend: `cpu` (default) or
-    /// `gpu`. `gpu` requires a CUDA build (roadmap 18f); on a CPU-only
+    /// `gpu`. `gpu` requires a CUDA build; on a CPU-only
     /// binary it is refused.
     #[serde(default = "default_embedding_device")]
     pub device: String,
@@ -1761,8 +1761,9 @@ pub struct EmbeddingConfig {
     pub dimensions: usize,
     /// Directory holding the `bundled` backend's weights (`config.json`,
     /// `tokenizer.json`, `pytorch_model.bin`) — the offline / air-gapped
-    /// path. Download-on-first-run into a default cache lands with roadmap
-    /// 18c. Ignored by other backends.
+    /// path. Leave it unset and the weights land in the default cache,
+    /// auto-downloaded on first use ([`crate::local_embedder`]). Ignored by
+    /// other backends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_dir: Option<String>,
 }
@@ -1817,8 +1818,7 @@ impl Default for EmbeddingConfig {
 impl EmbeddingConfig {
     /// Build the configured [`Embedder`](crate::embedder::Embedder), ready
     /// to share behind an `Arc`. The single chokepoint the server
-    /// construction sites call instead of hardcoding a backend
-    /// (roadmap group 18).
+    /// construction sites call instead of hardcoding a backend.
     ///
     /// # Errors
     ///
@@ -1856,7 +1856,7 @@ impl EmbeddingConfig {
     /// `bundled` arm of [`Self::build_embedder`] when the `local-embedder`
     /// feature is compiled in. Resolves the weights — an explicit
     /// `model_dir` (offline / air-gapped) wins; otherwise the default cache,
-    /// auto-downloaded on first use (bge-m3 only, roadmap 18c) — then loads
+    /// auto-downloaded on first use (bge-m3 only) — then loads
     /// the model onto the chosen device.
     #[cfg(feature = "local-embedder")]
     async fn build_bundled(&self) -> Result<std::sync::Arc<dyn crate::embedder::Embedder>> {
@@ -1865,9 +1865,7 @@ impl EmbeddingConfig {
             "cpu" => candle_core::Device::Cpu,
             "gpu" => {
                 return Err(ConfigError::EmbeddingUnavailable {
-                    detail:
-                        "device `gpu` needs a CUDA build (roadmap 18f); this binary is CPU-only"
-                            .to_owned(),
+                    detail: "device `gpu` needs a CUDA build; this binary is CPU-only".to_owned(),
                 });
             },
             other => {
@@ -1919,10 +1917,10 @@ impl EmbeddingConfig {
     }
 }
 
-// ---------- Email (SMTP password recovery, roadmap 28) ----------
+// ---------- Email (SMTP password recovery) ----------
 
 /// `email:` section — the SMTP backend that powers self-service
-/// password recovery (roadmap 28).
+/// password recovery.
 ///
 /// Off by default: with `enabled: false` (or any required field unset)
 /// the dashboard hides the "forgot password" affordance and the request
@@ -2161,7 +2159,7 @@ impl ModelPrice {
 
 // ---------- Backup ----------
 
-/// `backup:` section — automatic workdir snapshots (roadmap 4d).
+/// `backup:` section — automatic workdir snapshots.
 ///
 /// On by default: a live deployment holds real memory, and the daily
 /// snapshot is the floor of the recovery story. The scheduler persists
@@ -2458,7 +2456,7 @@ pub struct Config {
     #[serde(default)]
     pub embedding: EmbeddingConfig,
     /// `email:` section — SMTP backend for self-service password
-    /// recovery (roadmap 28). Off by default. See [`EmailConfig`].
+    /// recovery. Off by default. See [`EmailConfig`].
     #[serde(default)]
     pub email: EmailConfig,
     /// `rem:` section — scheduler for [`crate::rem::run_cycle`].

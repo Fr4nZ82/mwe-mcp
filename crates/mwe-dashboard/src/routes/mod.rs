@@ -132,11 +132,11 @@ pub fn build(state: DashboardState) -> Router {
         // and redirects to the deep-link. Must sit OUTSIDE the auth layer.
         .merge(auth_link::router())
         .merge(invitations::router())
-        // Self-service password recovery (roadmap 28). Public like
+        // Self-service password recovery. Public like
         // `accept-invite`: the one-shot `password_resets` token is the
         // guard, so it must sit OUTSIDE the auth layer.
         .merge(password_reset::router())
-        // 2FA login challenge (roadmap 28). Public: it sits between a
+        // 2FA login challenge. Public: it sits between a
         // verified password and the session mint, holding state in
         // `pending_2fa` keyed by an opaque cookie — no session yet.
         .merge(two_factor::challenge_router())
@@ -146,7 +146,7 @@ pub fn build(state: DashboardState) -> Router {
         // alias `/dashboard/cite/:bi_id`; the canonical short form
         // `/cite/:bi_id` is mounted by `mwe-mcp-server` at the root.
         .merge(cite::router())
-        // `webagentoauth` consent step (roadmap 19c). Mounted in the public tree
+        // `webagentoauth` consent step. Mounted in the public tree
         // so it can verify the session itself and bounce to /dashboard/login?next=
         // when absent, rather than the middleware's context-less redirect — but it
         // still sits under /dashboard, where the session cookie (Path=/dashboard)
@@ -201,7 +201,7 @@ pub fn public_site_router() -> Router {
     bridges::public_site_router()
 }
 
-/// Public `webagentoauth` OAuth router (roadmap 19).
+/// Public `webagentoauth` OAuth router.
 ///
 /// Discovery + Dynamic Client Registration + token endpoint, mounted at the
 /// **root** of the HTTP tree by `mwe-mcp-server` so the `.well-known` paths and

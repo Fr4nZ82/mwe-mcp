@@ -1,8 +1,7 @@
 # mwe-mcp-tray
 
-An **optional** desktop control surface for the `mwe-mcp` systemd service —
-roadmap group 14,
-item 14d. It is a **separate binary**: the server never links any GUI code, so
+An **optional** desktop control surface for the `mwe-mcp` systemd service.
+It is a **separate binary**: the server never links any GUI code, so
 a headless server runs the daemon unchanged and simply does not run this.
 
 ## What it does
@@ -54,5 +53,5 @@ daemon runs headless regardless.
 
 ## Scope
 
-Linux/KDE only for now; the macOS/Windows form is roadmap 14e (required for
-v1.0). The tray targets the production instance on `127.0.0.1:8742`.
+Linux/KDE only for now; there is no macOS or Windows form. The tray
+targets the production instance on `127.0.0.1:8742`.

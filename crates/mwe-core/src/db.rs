@@ -86,7 +86,7 @@ pub fn engine_db_path(workdir: &Path) -> PathBuf {
 /// migration 0041). `None` when the key is absent.
 ///
 /// `engine_meta` holds state that is neither per-fact nor per-wiki — today
-/// the embedder-identity guard (roadmap 18g).
+/// the embedder-identity guard.
 ///
 /// # Errors
 ///

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Automatic-snapshot scheduler — the `backup:` config section's
-//! runtime (roadmap 4d).
+//! runtime.
 //!
 //! A due-check loop, not a fire-on-tick interval like the REM
 //! scheduler: every [`CHECK_INTERVAL_SECS`] it reads the shared

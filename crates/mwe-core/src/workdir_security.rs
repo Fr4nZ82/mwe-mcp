@@ -78,7 +78,7 @@ pub fn remediation(workdir: &Path) -> String {
 
 /// Classification of the account `mwe-mcp serve` is running under, for the
 /// dedicated-user startup gate (the production half of the trust boundary —
-/// see `INTEGRATING.md` and roadmap group 14).
+/// see `INTEGRATING.md`).
 ///
 /// The advisory [`audit`] catches *other* users reaching the workdir, but
 /// 0700 does nothing against the **same** uid: a co-located agent running as
@@ -121,7 +121,7 @@ impl UserClass {
 ///
 /// Linux-only (reads `/proc/self/status` + `/etc/passwd`, no FFI so the crate
 /// stays `#![forbid(unsafe_code)]`); other targets return [`UserClass::Dedicated`]
-/// since the gate's macOS/Windows form is tracked separately (roadmap 14f). A
+/// since the gate's macOS/Windows form is tracked separately. A
 /// uid we cannot resolve is treated as dedicated — the human-mistake case
 /// (running as your own login account) always has a `/etc/passwd` entry with a
 /// real shell and is caught.
@@ -145,7 +145,7 @@ pub fn classify_current_user() -> UserClass {
     }
 }
 
-/// Non-Linux: the gate's form for this OS is tracked separately (roadmap 14f);
+/// Non-Linux: the gate's form for this OS is tracked separately;
 /// do not block here.
 #[cfg(not(target_os = "linux"))]
 #[must_use]

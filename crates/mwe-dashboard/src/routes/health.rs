@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Admin-only live diagnostics page (roadmap 19b).
+//! Admin-only live diagnostics page.
 //!
 //! Surfaces the lockfile-free subset of `mwe-mcp doctor` against the
 //! **running** server: DB / migration / WAL / blacklist counts, the

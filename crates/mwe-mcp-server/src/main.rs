@@ -139,7 +139,7 @@ enum Command {
         /// memory-wiki fragment, bypassing the per-reader ACL. Pass this
         /// only where a dedicated service account is genuinely impossible
         /// (some managed/remote hosts, containers) — the co-location
-        /// boundary is then NOT enforced (roadmap group 14).
+        /// boundary is then NOT enforced.
         #[arg(long = "bypassdedicateduser")]
         bypassdedicateduser: bool,
     },
@@ -219,7 +219,7 @@ enum Command {
         #[arg(long)]
         invited_by: Option<String>,
         /// Also clear the user's two-factor (TOTP) enrollment — the
-        /// break-glass for a lost authenticator (roadmap 28). The user
+        /// break-glass for a lost authenticator. The user
         /// re-enrolls after they sign in with the new password.
         #[arg(long, default_value_t = false)]
         clear_2fa: bool,
@@ -1112,7 +1112,7 @@ enum GateOutcome {
     HandedToService,
 }
 
-/// Dedicated-user startup gate (roadmap 14b/14c). `warn_loose_workdir` catches
+/// Dedicated-user startup gate. `warn_loose_workdir` catches
 /// *other* users reaching the workdir; this catches the same-user case 0700
 /// cannot — a co-located agent running as the same login user reads the
 /// cleartext bytes regardless.
@@ -1519,7 +1519,7 @@ async fn cmd_serve_http(
     let (bind, port) = resolve_exposure(bind, port);
     info!(workdir = %workdir.display(), %bind, port, transport = "http", "mwe-mcp serve: starting");
 
-    // Production trust boundary (roadmap 14b/14c): boot only under a dedicated
+    // Production trust boundary: boot only under a dedicated
     // account (or explicit opt-out). On a login/root account with a terminal,
     // this offers to provision the systemd service; once it owns the port the
     // foreground command returns without binding a second listener.
@@ -1611,7 +1611,7 @@ async fn cmd_serve_http(
         // in agent responses. Anonymous on purpose — auth fires on the
         // destination `/dashboard/wiki/...` page.
         .merge(mwe_dashboard::cite_router(dashboard_state.clone()))
-        // Inbound OAuth 2.x authorization server (`webagentoauth`, roadmap 19):
+        // Inbound OAuth 2.x authorization server (`webagentoauth`):
         // discovery (`/.well-known/oauth-*`), Dynamic Client Registration and the
         // token endpoint, mounted at the root so a remote MCP client (the
         // claude.ai web app) can run the OAuth dance with no hand-copied token.
@@ -2202,7 +2202,7 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
     boot_smart_wiki_passes(&pool, &tree).await;
 
     // The embedder backend is operator-configurable via the `embedding:`
-    // section (roadmap group 18); `build_embedder` honours it, defaulting
+    // section; `build_embedder` honours it, defaulting
     // to Ollama bge-m3 on localhost. The Ollama constructor does no startup
     // probe, so the dispatcher comes up regardless of whether Ollama is
     // reachable — per-call embedding requests surface the failure to the
@@ -2213,7 +2213,7 @@ async fn bootstrap_state(workdir: &Path, config: &Config) -> Result<(McpState, D
         .await
         .context("building embedder")?;
 
-    // Embedder-identity guard (roadmap 18g): if the configured embedder
+    // Embedder-identity guard: if the configured embedder
     // differs from the one the store's vectors were built with, similarity
     // search is wrong until a full reindex re-embeds every fact. Surface it
     // loudly; never fatal (the operator may be mid-migration).
@@ -2634,7 +2634,7 @@ async fn cmd_admin_reset(
 /// checks an in-server endpoint cannot serve. The lockfile-free subset
 /// (DB / WAL / blacklist / perms / LLM-slot reachability) is the shared
 /// [`mwe_core::diagnostics`] collector the dashboard health page surfaces
-/// against the *running* server (roadmap group 19).
+/// against the *running* server.
 async fn cmd_doctor(workdir: &Path) -> Result<()> {
     println!("workdir       : {}", workdir.display());
     println!(

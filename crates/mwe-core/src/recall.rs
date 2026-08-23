@@ -1269,7 +1269,7 @@ async fn smart_wikis_named_in(
 
 /// The readable projects a **signpost surfaced this turn** points at.
 ///
-/// The other half of the project-docs trigger, roadmap group 48. A
+/// The other half of the project-docs trigger. A
 /// signpost is a short fact on its subject's reserved page
 /// ([`crate::signposts`]) saying that a project exists; when one comes
 /// back in the turn's ordinary fact recall, the project it names becomes

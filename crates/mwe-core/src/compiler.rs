@@ -3781,7 +3781,7 @@ mod tests {
 
     #[tokio::test]
     async fn plan_move_prepoints_the_row_before_the_source_rewrite_can_strand_it() {
-        // The dogfood loss (roadmap 10c): a plan reassigns a fact from page A
+        // The dogfood loss: a plan reassigns a fact from page A
         // to page B, A is rewritten without the marker while the row still
         // points at A, and the orphan sweep tombstones the live fact. The
         // compiler must repoint the row DB-first — BEFORE any page write.

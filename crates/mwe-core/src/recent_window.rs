@@ -1,8 +1,7 @@
-//! Cross-consumer recent window — the thread of discourse follows the user
-//! (roadmap group 43).
+//! Cross-consumer recent window — the thread of discourse follows the user.
 //!
 //! A bounded, TTL'd per-user serving buffer of the exchanges the per-turn
-//! ingest already receives (the user's text plus the group-27 assistant
+//! ingest already receives (the user's text plus the assistant
 //! pass). Serving it back per turn — minus the requesting surface — gives
 //! every consumer the user's live thread from their OTHER channels: say a
 //! thing to the voice assistant, walk to Telegram, and the conversation

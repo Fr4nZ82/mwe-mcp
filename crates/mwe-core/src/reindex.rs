@@ -97,7 +97,7 @@ pub enum ReindexError {
 /// Result alias for the reindex pipeline.
 pub type Result<T> = std::result::Result<T, ReindexError>;
 
-// ---------- Embedder-identity guard (roadmap 18g) ----------
+// ---------- Embedder-identity guard ----------
 
 /// `engine_meta` key: the model id the store's vectors were built with.
 const META_EMBEDDER_MODEL: &str = "embedder_model_id";
@@ -130,7 +130,7 @@ pub enum EmbedderIdentity {
 }
 
 /// Compare the configured embedder against the identity the store's vectors
-/// were built with (roadmap 18g), so swapping the embedding model is caught
+/// were built with, so swapping the embedding model is caught
 /// instead of silently corrupting cosine similarity.
 ///
 /// On a store with no recorded identity (fresh, or upgraded from before the
@@ -462,8 +462,8 @@ pub async fn reindex_file(
 ///
 /// Known write-path caveat: page writes are not serialized per page, so
 /// two concurrent strips (or a strip racing a compile) can lose one
-/// excision — degraded, not corrupting; the wider fix is the concurrency
-/// hardening tracked in the roadmap (group 4e).
+/// excision — degraded, not corrupting. Serialising page writes is the
+/// wider fix and is not done here.
 ///
 /// # Errors
 ///
@@ -2777,7 +2777,7 @@ mod tests {
 
     #[tokio::test]
     async fn reindex_file_smart_caps_section_length() {
-        // Roadmap 48h. A section is a retrieval unit: it is quoted whole
+        // A section is a retrieval unit: it is quoted whole
         // into a bounded recall slot, and the slot always admits its first
         // hit whatever the size — so an uncapped section swallows the
         // budget and starves every other hit. The smart indexer therefore
@@ -2841,7 +2841,7 @@ mod tests {
 
     #[tokio::test]
     async fn reindex_file_smart_dedups_identical_sections() {
-        // Regression (report #5 / roadmap 26): a smart page with two
+        // A smart page with two
         // identical sections must index to ONE row, not two — else the same
         // block comes back twice in wiki_navigate's flat hits (same text,
         // same score, distinct fact_id).

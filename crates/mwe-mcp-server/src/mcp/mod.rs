@@ -263,7 +263,7 @@ pub async fn dispatch(
         "wiki_admin_push" => tools::call_wiki_admin_push(state, identity, args).await,
         "wiki_admin_pull" => tools::call_wiki_admin_pull(state, identity, args).await,
         // Project signposts: the smart consumer tells its owner's
-        // standard memory that this project exists (roadmap 48).
+        // standard memory that this project exists.
         "wiki_admin_signpost" => tools::call_wiki_admin_signpost(state, identity, args).await,
         // Open to any read-access token (NOT gated on smart),
         // so a standard openclaw can relay user observations into the

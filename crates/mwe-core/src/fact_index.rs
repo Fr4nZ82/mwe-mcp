@@ -159,8 +159,8 @@ pub struct FactIndexRow {
     /// `[[wiki_id/page]]` wikilinks (a smart consumer carried them in via
     /// `wiki_ingest_message`'s `metadata.authored_refs`). Lets
     /// consolidation record a **reference** to the project page instead of
-    /// re-storing its body — the "link, don't duplicate" provenance tube
-    /// (roadmap group 17). Empty for a pure-standard capture.
+    /// re-storing its body — the "link, don't duplicate" provenance tube.
+    /// Empty for a pure-standard capture.
     pub authored_refs: Vec<String>,
 }
 
@@ -401,7 +401,7 @@ where
     let allow_json = principals_to_json(&fact.allow_ids)?;
     let topics_json = topics_to_json(&fact.topics)?;
     // `topics_to_json` is a generic Vec<String> → JSON serializer; reused
-    // here for the group-17 provenance breadcrumbs (same shape as topics).
+    // here for the provenance breadcrumbs (same shape as topics).
     let authored_refs_json = topics_to_json(&fact.authored_refs)?;
     let sender = fact.sender_id.as_ref().map(ToString::to_string);
     let subject = fact.subject_id.to_string();
@@ -895,7 +895,7 @@ pub async fn mark_forgotten_in_wiki(pool: &SqlitePool, wiki_id: &str, reason: &s
 /// ([`crate::wiki::WikiTree::resolve_scope_principal`]). A wiki whose scope is
 /// *itself* `gone` (the removed principal's own identity wiki) is **skipped** —
 /// the substitute would not lift the dangle; those facts belong to the
-/// forget-user pass (roadmap 5g). A wiki that fails
+/// forget-user pass. A wiki that fails
 /// to locate or resolve is logged and skipped, never aborting the removal. Only
 /// active (non-tombstoned) rows are touched. Returns the number reassigned.
 ///
@@ -1148,7 +1148,7 @@ pub async fn count_husk_blocking_rows(pool: &SqlitePool, source_path: &str) -> R
 /// The vector dimension of an arbitrary **live** stored embedding.
 ///
 /// `None` when the index has no live rows. The embedder-identity guard
-/// ([`crate::reindex::check_embedder_identity`], roadmap 18g) uses it to
+/// ([`crate::reindex::check_embedder_identity`]) uses it to
 /// catch a dimension change even on a store that predates the recorded
 /// identity (`engine_meta`).
 ///

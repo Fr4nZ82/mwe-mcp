@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Due-commitment sweep — the runtime of the `reminders:` config section
-//! (roadmap 8d).
+//! Due-commitment sweep — the runtime of the `reminders:` config section.
 //!
 //! A cheap tick, not a cron: every [`CHECK_INTERVAL_SECS`] it asks
 //! [`mwe_core::reminders::sweep`] whether any dated commitment the memory

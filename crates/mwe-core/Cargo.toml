@@ -40,7 +40,7 @@ reqwest = { workspace = true }
 rust-embed = { workspace = true }
 tempfile = { workspace = true }
 
-# Bundled local embedder (roadmap group 18). Heavy ML deps, so kept
+# Bundled local embedder. Heavy ML deps, so kept
 # optional and gated behind the off-by-default `local-embedder` feature
 # during the engine spike (18a); flips to a default feature once the
 # group lands (18b/18e).
@@ -57,7 +57,7 @@ mwe-mcp-test-faults = []
 # (mwe-dashboard tests, integration suites in Phase B) can build a
 # recall/REM pipeline without hitting the network.
 test-fakes = []
-# Bundled local embedder (Candle / bge-m3) — roadmap group 18. Gates the
+# Bundled local embedder (Candle / bge-m3). Gates the
 # Candle stack (heavy ML deps + a build-time C compiler for onig), so it is
 # kept off in the default dev/CI build to keep those fast; the published
 # GitHub release artifact is built WITH this feature so a downloaded binary
@@ -82,7 +82,7 @@ tokio = { workspace = true, features = ["test-util", "macros"] }
 name = "parser_throughput"
 harness = false
 
-# Engine spike for the bundled embedder (roadmap 18a). Downloads bge-m3,
+# Engine spike for the bundled embedder. Downloads bge-m3,
 # runs it through Candle on CPU, and compares the vectors against the
 # Ollama bge-m3 baseline. Manual tool, not part of `cargo test`.
 [[example]]

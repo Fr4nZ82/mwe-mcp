@@ -223,7 +223,7 @@ pub struct BufferedCapture {
     /// Project-wiki pages this turn authored, as plain `[[wiki_id/page]]`
     /// wikilinks ([`crate::fact_index::NewFact::authored_refs`]), staged here
     /// so [`promote_one`](crate::dream_light) copies them onto the fact and
-    /// consolidation links instead of duplicating (roadmap group 17). Empty
+    /// consolidation links instead of duplicating. Empty
     /// for a pure-standard capture.
     pub authored_refs: Vec<String>,
     /// The capture's embedding, computed **once** at buffer time over the

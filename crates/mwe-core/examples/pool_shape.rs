@@ -28,7 +28,7 @@
 //!
 //! One thing the harness asserts rather than derives: the ingest turn serves
 //! the sender's `cucina.md` in `WHO IS SPEAKING` and hands it to the funnel as
-//! already delivered (roadmap 69a/69b), so the walk never opens it. This runs
+//! already delivered, so the walk never opens it. This runs
 //! with that exclusion in place, because the ingest funnel is what is being
 //! measured. The engine additionally checks that the page carries a readable
 //! fact before serving it; here it is assumed to, which holds for every

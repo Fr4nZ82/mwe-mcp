@@ -215,7 +215,7 @@ pub struct CaptureRequest {
     /// `[[wiki_id/page]]` wikilinks ([`fact_index::NewFact::authored_refs`]).
     /// Threaded from `wiki_ingest_message`'s `metadata.authored_refs` so
     /// consolidation links to the project page instead of duplicating its
-    /// body (roadmap group 17). Empty for a pure-standard capture.
+    /// body. Empty for a pure-standard capture.
     pub authored_refs: Vec<String>,
 }
 

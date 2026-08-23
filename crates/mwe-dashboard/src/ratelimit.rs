@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Tiny process-global fixed-window rate limiter (roadmap 28).
+//! Tiny process-global fixed-window rate limiter.
 //!
 //! Shared by the password-recovery request route and the 2FA challenge.
 //! A single-process server, so an in-memory map is enough; entries are

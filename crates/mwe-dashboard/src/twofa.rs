@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! TOTP two-factor authentication engine (roadmap 28).
+//! TOTP two-factor authentication engine.
 //!
 //! Holds everything the 2FA routes ([`crate::routes`]) build on: the
 //! at-rest encryption of the TOTP secret, the TOTP verify, recovery-code

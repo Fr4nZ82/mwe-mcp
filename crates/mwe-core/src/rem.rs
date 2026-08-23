@@ -1956,7 +1956,7 @@ do) closes only on evidence the agent DELIVERED it, never on evidence it discuss
 /// The same rubric switch for the **page-merge** confirmer.
 ///
 /// The agent's diary is one page per served person (`esperienze_<user>`,
-/// the founder's 47-x3 choice), and `slug_kinship` nominates exactly that
+/// the founder's choice), and `slug_kinship` nominates exactly that
 /// shape as a merge pair — two slugs sharing the `esperienze` token. Merging
 /// them would collapse the threads the split exists to keep apart, so the
 /// confirmer is told the per-person page IS the organising principle here.
@@ -7217,7 +7217,7 @@ mod tests {
 
     use chrono::TimeZone;
 
-    // ---------- auto-promote gate: already_promoted_for scoping (item 47-x1) ----------
+    // ---------- auto-promote gate: already_promoted_for scoping ----------
 
     /// Insert a `wiki_promote` structure proposal with a chosen variant and
     /// source page, for the [`already_promoted_for`] gate tests.

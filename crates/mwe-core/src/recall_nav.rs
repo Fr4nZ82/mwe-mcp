@@ -251,7 +251,7 @@ pub async fn gather_entry_points(
 /// sweep).
 ///
 /// This is a **settled decision, not an omission**: teaching the funnel to
-/// descend was weighed and withdrawn (roadmap 48g, 2026-07-27). A project
+/// descend was weighed and withdrawn (2026-07-27). A project
 /// wiki's retrieval quality stays a property of its sections alone, so nobody
 /// has to author link topology to be found; and a graph walk would spend one
 /// model call per hop on the per-turn budget. If a hit ever needs its
@@ -322,7 +322,7 @@ fn gather_card_seeds(
 
 /// True when a wiki-relative page path is the reserved `@rules.md` policy
 /// page ([`wiki::RULES_FILENAME`]) — channel-only, never navigable
-/// (roadmap 41e; the `&str` twin is [`wiki::is_rules_page`]).
+/// (the `&str` twin is [`wiki::is_rules_page`]).
 fn is_rules_page_path(page: &Path) -> bool {
     page.file_name()
         .is_some_and(|n| n == std::ffi::OsStr::new(wiki::RULES_FILENAME))
@@ -729,9 +729,8 @@ impl Candidate {
     /// which arrives unconditionally on every turn — it is evidence about the
     /// *person*, never about the question. Ranked with the rails it would put
     /// the sender's whole neighbourhood ahead of the pages the question
-    /// actually found, which is the shape of the regression
-    /// [69b](../../planning/69_identity-seed-family.md) removed (identity
-    /// pages took 79 % of first opens). Below the fan it can only ever
+    /// actually found — a fan in which identity pages take most of the
+    /// first opens. Below the fan it can only ever
     /// consume slack the content doors left.
     fn prune_tier(&self) -> u8 {
         match self.origin {
@@ -804,7 +803,7 @@ struct NavOpen {
 /// already gone before it can become a door.
 ///
 /// The ingest recall block passes the sender's identity card, which
-/// `WHO IS SPEAKING` serves deterministically every turn (roadmap 69a), so
+/// `WHO IS SPEAKING` serves deterministically every turn, so
 /// that card is not a navigation destination for its own subject at all
 /// (69b; founder, 2026-08-03: *«non ci frega dell'indice se col rag arriviamo
 /// già sulle pagine giuste»* — the recalled facts land on the right pages
@@ -1017,7 +1016,7 @@ struct QuerySeedsJson {
 
 /// Extract topic + subject seeds from a free-text query via the `navigator` slot.
 ///
-/// The `wiki_navigate` fallback **B** (roadmap 24b: the caller's explicit
+/// The `wiki_navigate` fallback **B** (the caller's explicit
 /// `topics`/`subjects` first (C), then this, then principal+RAG only (A)). Ingest
 /// gets these seeds from its classifier; a standalone search has no classifier
 /// in the loop, so this is a small dedicated extraction (not the heavy ingest
@@ -1200,7 +1199,7 @@ async fn open_target(
     };
     let d = by_id.get(cand.wiki_id.as_str())?;
     let page = cand.page.clone();
-    // The reserved `@rules.md` policy page is not navigable (roadmap 41e):
+    // The reserved `@rules.md` policy page is not navigable:
     // standing directives reach the consumer through the dedicated `rules`
     // field only, and the page's seeded boilerplate is noise as recalled
     // prose. Central fail-safe — the offer-side filters keep the fan clean,
@@ -2236,7 +2235,7 @@ mod tests {
 
     /// A RAG hit is a door only when it names a page the funnel may read. The
     /// two that do not — an un-promoted `fresh` capture with no published
-    /// page, and a hit on the channel-only `@rules.md` (roadmap 41e) — surface
+    /// page, and a hit on the channel-only `@rules.md` — surface
     /// through the flat slot and seed nothing.
     #[tokio::test]
     async fn rag_seeds_map_to_their_page_and_the_unreadable_ones_seed_nothing() {
@@ -3304,7 +3303,7 @@ mod tests {
         assert_eq!(out.stop, NavStop::Budget);
     }
 
-    /// Roadmap 69b — a page the caller has **already delivered** is not a
+    /// A page the caller has **already delivered** is not a
     /// navigation destination by any route. The ingest turn passes the
     /// sender's identity page, which `WHO IS SPEAKING` serves in full every
     /// turn (69a): re-reading it would spend a page open and a slice of the
@@ -3379,7 +3378,7 @@ mod tests {
         );
     }
 
-    /// Roadmap 41e — the reserved `@rules.md` policy page is channel-only:
+    /// The reserved `@rules.md` policy page is channel-only:
     /// no route offers it as a door, and even a navigator that asks for it
     /// verbatim is discarded by the `open_target` fail-safe.
     #[tokio::test]

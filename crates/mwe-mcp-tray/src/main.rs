@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![forbid(unsafe_code)]
 //! `mwe-mcp-tray` — optional KDE/Linux desktop control surface for the
-//! `mwe-mcp` systemd service (roadmap group 14, item 14d).
+//! `mwe-mcp` systemd service.
 //!
 //! Headless-safe by construction: this is a **separate** binary, so the
 //! server never links any of it. The tray is a `StatusNotifierItem` over

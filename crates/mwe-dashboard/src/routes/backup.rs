@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Admin-only Backup console — the recovery surface (roadmap 4d).
+//! Admin-only Backup console — the recovery surface.
 //!
 //! One page, `/admin/backup`, carrying the whole recovery story:
 //!

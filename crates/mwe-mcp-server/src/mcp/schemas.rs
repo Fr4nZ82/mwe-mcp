@@ -507,7 +507,7 @@ fn wiki_admin_pull() -> Tool {
 fn wiki_admin_signpost() -> Tool {
     materialize(
         "wiki_admin_signpost",
-        "Tell the owner's standard memory that this project exists (H family, roadmap 48). Smart consumers only, and only for a smart-wiki the caller owns. Writes two kinds of short **signpost** into the owner's reserved `projects.md`: a `description` (what the project is, in plain language) and an `activity` line for one day (what happened that day). A signpost is a POINTER, not a record — it exists so a conversational turn that never names the project can still discover it and dig into the documentation; what was actually done belongs in the project wiki. Caps are enforced server-side (400 chars description, 250 activity) and an over-long field is REFUSED with the measured length, never truncated. Activity lines older than the 5-day window are dropped automatically. Re-writing an unchanged signpost is a no-op, so refreshing on every `wiki_admin_push` is free.",
+        "Tell the owner's standard memory that this project exists (H family). Smart consumers only, and only for a smart-wiki the caller owns. Writes two kinds of short **signpost** into the owner's reserved `projects.md`: a `description` (what the project is, in plain language) and an `activity` line for one day (what happened that day). A signpost is a POINTER, not a record — it exists so a conversational turn that never names the project can still discover it and dig into the documentation; what was actually done belongs in the project wiki. Caps are enforced server-side (400 chars description, 250 activity) and an over-long field is REFUSED with the measured length, never truncated. Activity lines older than the 5-day window are dropped automatically. Re-writing an unchanged signpost is a no-op, so refreshing on every `wiki_admin_push` is free.",
         json!({
             "type": "object",
             "required": ["wiki_id"],
@@ -777,7 +777,7 @@ mod tests {
         // opened in family D → 20. `wiki_forget` (authority-routed forget)
         // opened family L → 21; `wiki_forget_bulk` (bulk self-delete) → 22;
         // `wiki_admin_signpost` (project signposts into the owner's
-        // standard memory, roadmap 48) extended H → 23.
+        // standard memory) extended H → 23.
         let tools = all_tools();
         assert_eq!(tools.len(), 23);
         let names: std::collections::HashSet<_> = tools.iter().map(|t| t.name.as_ref()).collect();

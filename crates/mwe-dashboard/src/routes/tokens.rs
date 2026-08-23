@@ -455,7 +455,7 @@ fn render_revoke_form() -> Markup {
     }
 }
 
-/// The active `webagentoauth` connections (roadmap 19f), each with a Disconnect
+/// The active `webagentoauth` connections, each with a Disconnect
 /// button that revokes its refresh tokens. The dedicated wiki is left intact.
 fn render_connections_section(connections: &[oauth_server::Connection]) -> Markup {
     html! {
@@ -722,7 +722,7 @@ async fn ensure_system_user(state: &DashboardState, bot_id: &str) -> Result<Opti
         .await?;
     if exists > 0 {
         if enrollment::is_system_user(&state.pool, bot_id).await? {
-            // Backfill the `is_agent` marker (roadmap 27d / 4i) on an agent wiki
+            // Backfill the `is_agent` marker on an agent wiki
             // that predates the marker — idempotent, best-effort, so an existing
             // bot self-describes from its next token mint without a reconcile job.
             if let Some(memory) = state.memory.as_ref()

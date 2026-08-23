@@ -326,7 +326,7 @@ async fn delegation_edit_updates_allowed_senders() {
 
 /// The builtin `guest` pseudo-identity is delegable without being an
 /// enrolled user — granting it from the delegation editor is the guest
-/// feature's enable switch (roadmap 40).
+/// feature's enable switch.
 #[tokio::test]
 async fn delegation_edit_accepts_builtin_guest() {
     let (app, _dir) = make_app().await;

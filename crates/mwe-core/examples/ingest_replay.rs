@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Ingest replay differential — the measurement instrument roadmap 49
-//! (prompt mass) and 45b (golden set) both need.
+//! Ingest replay differential — the measurement instrument the
+//! prompt-mass and golden-set work both need.
 //!
 //! Every remaining lever on the ingest prompt — gate a section, retire a
 //! section, split the classifier in two — has the same failure mode: the
@@ -178,7 +178,7 @@ struct Record {
     locale: String,
     /// The recorded user message (`build_prompt` output), replayed verbatim.
     user: String,
-    /// This turn fed the agent's own reply back (roadmap 27) — the gate for
+    /// This turn fed the agent's own reply back — the gate for
     /// Part 9.
     author_is_assistant: bool,
     /// This turn carried media — the gate for Part 8.
@@ -249,10 +249,10 @@ enum Variant {
     /// Send today's bundled prompt verbatim. The reference, and the
     /// noise-floor run.
     Baseline,
-    /// Roadmap 49e: drop the sections this turn provably cannot reach —
+    /// Drop the sections this turn provably cannot reach —
     /// Part 12 on a user-authored turn, Part 9 on a turn with no media.
     Gated,
-    /// Roadmap 49f: drop these sections unconditionally, to measure whether
+    /// Drop these sections unconditionally, to measure whether
     /// the prompt still decides the same way without them.
     Drop(Vec<String>),
 }

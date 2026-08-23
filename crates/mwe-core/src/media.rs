@@ -443,7 +443,7 @@ pub fn row_visible_to(row: &MediaRow, sender_id: &str, sender_groups: &[String])
 /// the row's `allow_ids` (minus the row's own subject, which already
 /// reads). The row's `subject`/`sender` slots never change. Widening is a
 /// disclosure-relevant event, so it is traced; a dedicated audit verb is
-/// the open ACL-change design (roadmap group 6) and deliberately not
+/// the open ACL-change design and deliberately not
 /// built here.
 ///
 /// Returns `true` when the row changed.

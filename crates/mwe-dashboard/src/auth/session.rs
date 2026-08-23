@@ -204,7 +204,7 @@ pub async fn refresh_session_layer(
     };
     request.extensions_mut().insert(user.clone());
 
-    // 2FA enforcement (roadmap 28): a user obliged to have 2FA but not yet
+    // 2FA enforcement: a user obliged to have 2FA but not yet
     // enrolled is trapped on the setup page — every other page redirects
     // there until they enroll. The setup/logout/keepalive routes are
     // exempt so they can actually complete it. Fail open on a DB error so

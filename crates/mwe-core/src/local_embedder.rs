@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Bundled local embedder — Candle backend for bge-m3 (roadmap group 18).
+//! Bundled local embedder — Candle backend for bge-m3.
 //!
 //! ## Why this exists
 //!
@@ -15,7 +15,7 @@
 //! [Candle](https://github.com/huggingface/candle) — a Rust ML stack whose
 //! CPU kernels compile into the binary with no external `onnxruntime` / `.so`
 //! at runtime, keeping the self-contained-binary invariant. GPU is an opt-in
-//! build feature (roadmap 18f); the shipped default runs on CPU. Caveat
+//! build feature; the shipped default runs on CPU. Caveat
 //! surfaced by the 18a spike: candle-core transitively pulls a vendored,
 //! statically-linked Oniguruma (`tokenizers[onig]`, a C regex engine) — the
 //! runtime binary stays self-contained, but the *build* needs a C compiler.
@@ -26,10 +26,10 @@
 //! state of the first token (`<s>` / CLS), L2-normalized — the same CLS
 //! pooling llama.cpp (and therefore Ollama) applies, so the vectors point the
 //! same way as the existing Ollama-built indexes (validated by the
-//! `embedder_spike` example, roadmap 18a).
+//! `embedder_spike` example).
 //!
 //! The *engine* lives in the binary; the *weights* are fetched once
-//! (roadmap 18c) — `load` takes a directory that already holds
+//! — `load` takes a directory that already holds
 //! `config.json`, `tokenizer.json`, and `pytorch_model.bin`.
 
 use std::path::{Path, PathBuf};
@@ -310,7 +310,7 @@ impl Embedder for LocalEmbedder {
     }
 }
 
-// ---------- Weight distribution (roadmap 18c) ----------
+// ---------- Weight distribution ----------
 
 /// `HuggingFace` base URL for the bge-m3 weights (`resolve/main` serves the
 /// raw LFS blobs over HTTPS).
@@ -344,7 +344,7 @@ const BGE_M3_FILES: &[WeightFile] = &[
 ///
 /// `$XDG_CACHE_HOME/mwe-mcp/models/<model_id>`, falling back to
 /// `$HOME/.cache/...`, then a relative `.cache/...`. The *engine* lives in
-/// the binary; the *weights* live here, fetched once (roadmap 18c).
+/// the binary; the *weights* live here, fetched once.
 #[must_use]
 pub fn default_cache_dir(model_id: &str) -> PathBuf {
     resolve_cache_dir(

@@ -95,7 +95,7 @@ async fn call(
         .map_err(|e| e.to_string())
 }
 
-/// The builtin `guest` pseudo-identity (roadmap 40): every tool that
+/// The builtin `guest` pseudo-identity: every tool that
 /// leaves permanent state or hands out an operator surface refuses it,
 /// with one uniform wire class so a bridge can map it once.
 #[tokio::test]
@@ -1051,7 +1051,7 @@ async fn wiki_read_refuses_only_the_engines_own_files() {
     );
 }
 
-/// Guest wire shape (roadmap 40): the turn succeeds, the `rules` channel
+/// Guest wire shape: the turn succeeds, the `rules` channel
 /// carries the reserved-behaviour directive, nothing is filed, and the
 /// the governance block stays absent even with a proposal in flight — the
 /// canned CAPTURE plan proves the classifier's answer is never consulted.

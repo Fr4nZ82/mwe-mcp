@@ -30,7 +30,7 @@
 //! `state` ("in Berlin this week") expires rather than falls due, and a
 //! `rule` never rings.
 //!
-//! The firing instant is **derived**, not stored (roadmap 8b, decided on
+//! The firing instant is **derived**, not stored (decided on
 //! the data): of the future-dated facts on the first production
 //! deployment, **87 % carried a `valid_to` on a day boundary** —
 //! `00:00:00` or `23:59:59`, a date with no hour in it. Firing *at*
@@ -48,8 +48,7 @@
 //! resolve wall-clock times), and giving this one module a timezone
 //! database to itself would be the wrong place to start. For a deployment
 //! whose people share a zone — a household, a team — one configured hour is
-//! exactly right; per-user local resolution is future work, noted on the
-//! roadmap beside the per-turn timezone item.
+//! exactly right. Per-user local resolution is not implemented.
 //!
 //! ## Why a grace window, not a backlog
 //!

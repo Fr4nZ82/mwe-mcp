@@ -141,8 +141,8 @@ pub struct CompletionUsage {
     pub completion_tokens: Option<u32>,
     /// Prompt tokens served from the provider's **prefix cache** at a
     /// discount — the observable that tells us whether the repeated
-    /// standing half of a prompt is actually being billed once
-    /// (roadmap 49). `None` when the backend does not report it,
+    /// standing half of a prompt is actually being billed once.
+    /// `None` when the backend does not report it,
     /// `Some(0)` when it reports a miss.
     ///
     /// Provider semantics differ and the difference matters when
@@ -183,7 +183,7 @@ pub struct CompletionUsage {
 }
 
 impl CompletionUsage {
-    /// Emit the prefix-cache accounting for one call (roadmap 49).
+    /// Emit the prefix-cache accounting for one call.
     ///
     /// Silent on backends that report nothing, so this is safe to call
     /// unconditionally from any completion path. A `0` read is logged

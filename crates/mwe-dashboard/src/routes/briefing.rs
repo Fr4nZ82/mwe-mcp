@@ -48,8 +48,8 @@
 //! [`mwe_core::rem::briefing_processor`] for the policy rationale.
 //! In short: the processor stamps `processed_at = NOW()` after a
 //! pro-forma read of the cited context. No supersede / promote /
-//! archive on the target fact in the MVP — that is a deferred
-//! evolution tracked in the roadmap.
+//! archive on the target fact: the processor records that the item was
+//! read, and what to do about it is the operator's call.
 
 use axum::Router;
 use axum::extract::{Path as AxumPath, State};

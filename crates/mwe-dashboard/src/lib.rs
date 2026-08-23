@@ -88,7 +88,7 @@ pub fn public_site_router() -> Router {
     routes::public_site_router()
 }
 
-/// Public, anonymous **`webagentoauth`** OAuth router (roadmap 19), mounted at
+/// Public, anonymous **`webagentoauth`** OAuth router, mounted at
 /// the root of the HTTP tree by `mwe-mcp-server` alongside [`public_site_router`].
 ///
 /// Serves OAuth discovery (`/.well-known/oauth-authorization-server` +

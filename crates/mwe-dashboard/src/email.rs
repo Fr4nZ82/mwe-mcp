@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! SMTP sender for self-service password recovery (roadmap 28).
+//! SMTP sender for self-service password recovery.
 //!
 //! The transport is built per-send from the [`EmailConfig`] section of
 //! `mwe-mcp.config.yaml` (the admin edits it in the Email section of

@@ -569,7 +569,7 @@ pub struct EditUserSubmission {
     #[serde(default)]
     pub locale: String,
     /// Admin "require 2FA on this account" checkbox — present only when
-    /// checked (roadmap 28).
+    /// checked.
     #[serde(default)]
     pub require_2fa: Option<String>,
 }

@@ -229,7 +229,7 @@ pub fn is_rules_page(source_path: &str) -> bool {
 }
 
 /// Filename of the per-actor **project signposts** page
-/// (`<wiki_dir>/@projects.md`), roadmap group 48.
+/// (`<wiki_dir>/@projects.md`).
 ///
 /// Home of the *signposts*: one short non-technical description per
 /// project the actor owns, plus a handful of by-day activity lines. They
@@ -654,7 +654,7 @@ pub struct WikiMeta {
     /// Obsidian, and the dashboard / REM can spot it from the `_meta.md` alone.
     /// Round-tripped only when set (the vast majority of wikis stay lean).
     /// Defaults to `false`. SSOT for "is this an agent?" stays the binding; this
-    /// is the cache. See `roadmap` item 27d / 4i.
+    /// is the cache.
     pub is_agent: bool,
     /// Wall-clock creation time. ISO 8601 string preserved verbatim so
     /// the wire format is stable even across `chrono` revisions.
@@ -963,7 +963,7 @@ impl WikiMeta {
         if self.smart {
             out.insert(yk("smart"), serde_yaml::Value::Bool(true));
         }
-        // Agent-wiki self-description (roadmap 27d / 4i): round-trip only when
+        // Agent-wiki self-description: round-trip only when
         // set so ordinary `_meta.md` stay lean.
         if self.is_agent {
             out.insert(yk("is_agent"), serde_yaml::Value::Bool(true));
@@ -1907,7 +1907,7 @@ pub enum IdentityKind {
     /// A shared group owns the wiki — a `wiki-group` root, so its scope
     /// principal derives to `group:<id>`.
     Group,
-    /// A consumer agent's own identity wiki (roadmap 27d / 4i). Same shape as
+    /// A consumer agent's own identity wiki. Same shape as
     /// [`Self::User`] — a `wiki-user` whose scope principal derives to
     /// `user:<id>` — but stamped `is_agent: true` so it self-describes as an
     /// agent's wiki, not a human's.
@@ -1944,8 +1944,8 @@ pub struct IdentityWikiCreation {
 /// honours — who may see your facts (privacy & sharing) and what must never
 /// be stored (do-not-store). Per-agent behaviour rules ("address me
 /// formally") are NOT here — they belong to the consumer's own wiki — but a
-/// USER-GLOBAL behaviour rule (one the user sets for every assistant,
-/// roadmap 42) is filed on this page as a `{{f=…}}` fact region, alongside
+/// USER-GLOBAL behaviour rule (one the user sets for every assistant) is
+/// filed on this page as a `{{f=…}}` fact region, alongside
 /// the prose. Neutral on purpose: the decided default posture is "the agent
 /// decides, as now" — no conservative ACL override is baked in
 /// (no hardcoded gates). The
@@ -2101,7 +2101,7 @@ pub fn create_identity_wiki(
     })
 }
 
-/// Stamp the `is_agent` marker (roadmap 27d / 4i) on an **identity** wiki.
+/// Stamp the `is_agent` marker on an **identity** wiki.
 ///
 /// The self-describing mirror of the authoritative binding, written by the
 /// server where an agent identity comes into being or reconnects: at creation
@@ -2161,7 +2161,7 @@ pub fn ensure_is_agent_marker_in(wiki_dir: &Path) -> Result<bool> {
     atomic_write(&meta_path, meta_doc.as_bytes())?;
     tracing::info!(
         wiki_id = meta.wiki_id.as_str(),
-        "is_agent marker stamped on agent wiki (roadmap 27d / 4i)"
+        "is_agent marker stamped on agent wiki"
     );
     Ok(true)
 }

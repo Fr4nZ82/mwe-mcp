@@ -196,7 +196,7 @@ pub async fn jwt_auth_middleware(
 }
 
 /// Build the `WWW-Authenticate: Bearer resource_metadata="…"` value pointing at
-/// this server's protected-resource metadata (roadmap 19, `webagentoauth`).
+/// this server's protected-resource metadata (`webagentoauth`).
 ///
 /// The origin is taken from the request `Host` header (`http` for loopback,
 /// `https` otherwise — the same heuristic the onboarding pages use), so behind a

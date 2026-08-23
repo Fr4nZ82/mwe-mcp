@@ -165,8 +165,8 @@ pub struct IngestRequest {
     /// Who authored `text` this turn. [`MessageRole::User`] is the default and
     /// the overwhelming common case — a message from the end user. The
     /// orchestrator flips to [`MessageRole::Assistant`] only when the consumer
-    /// agent feeds back its OWN prior reply for extraction (roadmap 27,
-    /// agent-authored memory): then the classifier applies the agent-turn
+    /// agent feeds back its OWN prior reply for extraction
+    /// (agent-authored memory): then the classifier applies the agent-turn
     /// discriminator (prompt Part 9) and any captured fact is attributed with
     /// `sender = <the calling agent>` (resolved from [`Self::consumer_id`]) instead
     /// of the user — so the agent remembers the synthesis in its own reply (a
@@ -254,14 +254,14 @@ pub struct IngestMetadata {
     /// `wiki_admin_push` carries the breadcrumbs that call returned
     /// (`PushResponse::authored_refs`) into this turn's ingest, so
     /// consolidation can record a **reference** to that page instead of
-    /// re-storing the body — the "link, don't duplicate" provenance tube
-    /// (roadmap group 17). Empty for a pure-standard turn. Downstream
+    /// re-storing the body — the "link, don't duplicate" provenance tube.
+    /// Empty for a pure-standard turn. Downstream
     /// persistence + reference-not-body consolidation land in 17d.
     pub authored_refs: Vec<String>,
     /// Opaque surface label the consumer chose for this conversation
     /// (`telegram:123`, `salotto`, ...). Multi-channel consumers — one
     /// token, many chats — use it so the cross-consumer recent window
-    /// (group 43) can tag their surfaces apart and exclude only the
+    /// can tag their surfaces apart and exclude only the
     /// requesting one from what it serves back. Unset → the consumer is
     /// treated as a single surface.
     pub channel: Option<String>,
@@ -333,8 +333,8 @@ pub struct IngestResponse {
     /// Standing **behaviour directives** the consumer agent must apply when
     /// composing its reply this turn — kept structurally separate from the
     /// recalled memory in [`context_snippet`](Self::context_snippet) so a
-    /// binding rule is never indistinguishable from a remembered fact
-    /// (roadmap 29d). Carries the served user's behaviour rules (how to
+    /// binding rule is never indistinguishable from a remembered fact.
+    /// Carries the served user's behaviour rules (how to
     /// converse / operate with them, recalled from the agent's own
     /// `@rules.md`) and, leading, any one-shot governance notice (e.g. an
     /// agent-wide change refused for a non-admin this turn). `None` when the
@@ -345,7 +345,7 @@ pub struct IngestResponse {
     /// `None` is legal — the agent decides what to say.
     pub suggested_seed: Option<String>,
     /// The user's live thread from their OTHER surfaces — the
-    /// cross-consumer recent window (group 43). A self-labelled section
+    /// cross-consumer recent window. A self-labelled section
     /// (`RECENT EXCHANGES ON YOUR OTHER CHANNELS …`) the consumer injects
     /// verbatim, like [`rules`](Self::rules): entries carry their relative
     /// age and origin surface, oldest first, newest kept under the char
@@ -505,7 +505,7 @@ pub struct IngestPolicy {
     pub max_agent_history_chars: usize,
     /// Character cap on the recall block's `WHO IS SPEAKING` section — the
     /// sender's identity card, served deterministically from their
-    /// `@profile.md` (roadmap 69a).
+    /// `@profile.md`.
     ///
     /// A **failsafe, not a curation knob**: what belongs on the card and how
     /// dense it is are REM's judgement (69c, hard ceiling 2 500 characters),
@@ -514,7 +514,7 @@ pub struct IngestPolicy {
     /// card silently drops whatever the author put last.
     pub max_sender_identity_chars: usize,
     /// How many **named third parties** get their identity card served into
-    /// the block alongside the sender's (roadmap 69d). `0` disables the slot.
+    /// the block alongside the sender's. `0` disables the slot.
     ///
     /// Founder's ruling, 2026-08-04: *«la scheda degli utenti nominati va
     /// inserita deterministicamente nel recall, ci costa caratteri, ma ci dà
@@ -557,7 +557,7 @@ pub struct IngestPolicy {
     /// database is compiled in. `None` keeps the pre-existing UTC-only anchor.
     pub ingest_timezone: Option<String>,
     /// Hard cap on buffered exchanges per user in the cross-consumer
-    /// recent window (group 43). `0` disables the window entirely —
+    /// recent window. `0` disables the window entirely —
     /// nothing is buffered, nothing is served.
     pub recent_window_entries: usize,
     /// TTL of a buffered exchange, in hours. Short by design (43-P): the
@@ -761,7 +761,7 @@ struct LlmIngestPlan {
     needs_disambig: bool,
     #[serde(default)]
     disambig_candidates: Vec<LlmDisambig>,
-    /// Turn-level judgement (roadmap 48i): would this project's
+    /// Turn-level judgement: would this project's
     /// documentation help answer the turn? Set when the recall block
     /// surfaced a **project signpost** and the message is actually about
     /// what that project does — not merely near it (an invoice, an
@@ -921,7 +921,7 @@ struct LlmExtraction {
     #[serde(default)]
     behaviour_rule: bool,
     /// Behaviour-rule scope (only read when `behaviour_rule` is `true`),
-    /// read from the grammatical addressee (roadmap 29b + 42).
+    /// read from the grammatical addressee.
     /// `"per-user"` (or absent) = addressed to the speaker ("with me / my
     /// things", or a bare imperative) — open to any user, filed per-user.
     /// `"agent-wide"` = impersonal / universal ("with everyone", or a how-the-agent-
@@ -986,7 +986,7 @@ struct CaptureUnit<'a> {
     /// identity wiki for user-global), never as a fact about the user.
     behaviour_rule: bool,
     /// Behaviour-rule scope discriminator (only read when `behaviour_rule`),
-    /// read from the addressee (roadmap 29b + 42).
+    /// read from the addressee.
     /// `Some("per-user")` / `None` → addressed to the speaker → any user may
     /// set it, filed subject = user in the agent's wiki.
     /// `Some("agent-wide")` → impersonal / universal → admin-only, filed
@@ -1105,9 +1105,9 @@ enum CapturePlanError {
     BadPrincipal(#[from] PrincipalParseError),
     /// A non-`self` fact (owned by a user or group) named an AGENT's own wiki
     /// as its `target_wiki_id`. The agent wiki is reserved for the agent's
-    /// `subject_id:"self"` autobiography (roadmap 27); a user/group fact there
-    /// fragments that principal's memory across two wikis (item 47-x2 /
-    /// Finding D). When the subject's own wiki is in the window the plan is
+    /// `subject_id:"self"` autobiography; a user/group fact there
+    /// fragments that principal's memory across two wikis. When the
+    /// subject's own wiki is in the window the plan is
     /// redirected there; when it is not, the extraction is dropped with this
     /// error rather than misfiled.
     #[error(
@@ -1466,15 +1466,15 @@ fn validate_capture_plan(
     .ok_or(CapturePlanError::MissingTargetWiki)?;
     let target_wiki_str = target_wiki_str.as_str();
     let mut wiki_id = WikiId::parse(target_wiki_str)?;
-    // Guard (item 47-x2): a fact about SOMEONE ELSE must never be physically
-    // filed into an AGENT's own wiki — that space is the agent's autobiography
-    // (roadmap 27). subject↔wiki are otherwise DECOUPLED by design (a
-    // group-owned fact may live in a user wiki and vice versa — 47-x2a), so
+    // Guard: a fact about SOMEONE ELSE must never be physically
+    // filed into an AGENT's own wiki — that space is the agent's autobiography.
+    // subject↔wiki are otherwise DECOUPLED by design (a
+    // group-owned fact may live in a user wiki and vice versa), so
     // this fires ONLY when the target wiki is flagged `is_agent`. `self` and
     // behaviour-rule facts are handled before this function and never reach
     // here. Redirect to the subject's OWN wiki when it is in the window;
     // otherwise drop this extraction rather than fragment the principal's
-    // memory across two wikis (Finding D).
+    // memory across two wikis.
     //
     // The subject being the agent ITSELF is the exception, and it is why the
     // test is `home != target` and not "is the target an agent wiki": an
@@ -1506,7 +1506,7 @@ fn validate_capture_plan(
                     from = %target_wiki_str,
                     to = %w.wiki_id,
                     subject = %subject,
-                    "ingest: non-self fact targeted an agent wiki — redirected to the subject's own wiki (47-x2)"
+                    "ingest: non-self fact targeted an agent wiki — redirected to the subject's own wiki"
                 );
                 wiki_id = WikiId::parse(w.wiki_id.as_str())?;
             },
@@ -1568,7 +1568,7 @@ fn validate_capture_plan(
         // Thread the per-fact salience the classifier
         // deduced through to the capture row (`high` is routed to the card).
         salience: unit.salience.map(str::to_owned),
-        // Turn-level provenance breadcrumbs (group 17): the project-wiki
+        // Turn-level provenance breadcrumbs: the project-wiki
         // pages this conversation turn authored, carried in via
         // `metadata.authored_refs`. Attached to every capture from the turn;
         // the personal-vs-project precision is the skill's judgement +
@@ -3064,8 +3064,7 @@ fn normalize_capture_bound(raw: Option<&str>, field: &'static str) -> Option<Str
 /// Returns the number of edits applied.
 /// Whether a recalled hit's wiki is a SMART wiki — per-fragment ACL /
 /// validity edits are refused on smart wikis (their governance is
-/// wiki-level and markerless; see `smart-wikis`
-/// and roadmap 6j.4). Fails closed: a wiki that cannot be resolved is
+/// wiki-level and markerless). Fails closed: a wiki that cannot be resolved is
 /// treated as smart, so an edit never mutates a row whose family is
 /// unknown.
 fn hit_wiki_is_smart(tree: &WikiTree, wiki_id: &str) -> bool {
@@ -3730,7 +3729,7 @@ fn build_prompt(
     // author: who wrote `text` this turn. The default `user` path stays silent
     // — the whole prompt already assumes a user message, and emitting nothing
     // keeps that 99% path byte-identical. When the consumer agent feeds back its
-    // OWN prior reply for extraction (roadmap 27) the line flips to `assistant`
+    // OWN prior reply for extraction the line flips to `assistant`
     // and arms Part 9, so the model reads `text` as its own words and keeps only
     // the durable sediment it synthesised.
     if request.author == MessageRole::Assistant {
@@ -4258,7 +4257,7 @@ pub(crate) fn available_wikis(tree: &WikiTree, cap: usize) -> Result<Vec<Availab
 ///
 /// The sender's identity wiki is `wiki_id == sender_id`; its `@rules.md`
 /// ([`crate::wiki::RULES_FILENAME`]) holds the standing privacy/sharing policy
-/// the classifier honours when it assigns per-fact ACL. Since roadmap 42 the
+/// the classifier honours when it assigns per-fact ACL. The
 /// same page also carries the user's USER-GLOBAL behaviour rules as `{{f=…}}`
 /// fact regions — those reach the classifier separately, with `fact_id`s, via
 /// `agent_behaviour_rules` ([`push_behaviour_rules_section`]), so the regions
@@ -4312,12 +4311,12 @@ fn append_sender_rule(tree: &WikiTree, sender_id: &str, rule: &str) -> Result<bo
 }
 
 /// Page where behaviour rules are filed (the ingest prompt's Part 7b).
-/// Unified with the engine-policy page name (roadmap 29c): in the *agent's*
+/// Unified with the engine-policy page name: in the *agent's*
 /// wiki this `@rules.md` holds the per-user and agent-wide behaviour facts —
 /// no collision, since [`sender_rules`] (the engine-policy reader) never runs
 /// for the agent (it is never a sender). In the *user's* identity wiki the
 /// same page carries their USER-GLOBAL behaviour facts alongside the
-/// governance prose (roadmap 42) — [`sender_rules`] reads the prose only and
+/// governance prose — [`sender_rules`] reads the prose only and
 /// skips the fact regions. The per-fact `subject` scopes each rule (the served
 /// user for a per-user or user-global rule, the agent for an agent-wide one);
 /// the home wiki tells per-user and user-global apart.
@@ -4343,7 +4342,7 @@ enum BehaviourScope {
     AgentWide,
     /// Explicitly addressed to EVERY assistant the user talks to ("tutti gli
     /// assistenti", "con qualunque assistente", "chiunque tu sia"): the user's
-    /// own standing rule for all their consumers (roadmap 42). Open to
+    /// own standing rule for all their consumers. Open to
     /// **anyone** — it binds only their own conversations; filed `subject = the
     /// sender` in the sender's IDENTITY wiki, recalled by every consumer
     /// serving them.
@@ -4356,7 +4355,7 @@ impl BehaviourScope {
     /// agent, admin-gated) and `"user-global"` (this user on every agent);
     /// anything else — including absent or a bare imperative — defaults to
     /// **per-user**, the open side that touches only the speaker on this one
-    /// agent (roadmap 29b).
+    /// agent.
     fn from_hint(hint: Option<&str>) -> Self {
         match hint {
             Some("agent-wide") => Self::AgentWide,
@@ -4377,8 +4376,8 @@ impl BehaviourScope {
     }
 }
 
-/// File a behaviour-rule fact on the `@rules.md` page its scope calls home
-/// (roadmap 29c + 42), written LIVE (direct path) so it is in effect on the
+/// File a behaviour-rule fact on the `@rules.md` page its scope calls home,
+/// written LIVE (direct path) so it is in effect on the
 /// next turn.
 ///
 /// `scope` decides BOTH the home wiki and the subject, which together decide
@@ -4492,7 +4491,7 @@ async fn capture_behaviour_rule(
 
 /// File a fact the agent states about ITSELF — the self side of agent-authored
 /// memory (ingest pipeline).
-/// Which page a `self` fact lands on (item 47-x3). The engine decides — not
+/// Which page a `self` fact lands on. The engine decides — not
 /// the model's proposed `target_page` — mirroring how a self-fact's wiki is
 /// already engine-pinned to the agent's own wiki. An IDENTITY fact
 /// (user-agnostic, injected every turn) carries no page: it waits in the
@@ -4552,7 +4551,7 @@ async fn capture_agent_self_fact(
     // ([`recall_agent_self`]): `salience high` ∨ `fact_type bio` ⇒ identity
     // ⇒ no user tag; otherwise ⇒ relationship ⇒ tag with the served user.
     //
-    // The partner tag is EXCLUSIVE (roadmap 41d): on an agent self-fact a
+    // The partner tag is EXCLUSIVE: on an agent self-fact a
     // user-id topic means "an action WITH that user", so any *other*
     // enrolled user's id the classifier put in `topics` (a mere mention —
     // "advised Morgana about Matteo") is stripped. Without this, the
@@ -4626,7 +4625,7 @@ const BEHAVIOUR_RULES_RECALL_CAP: usize = 50;
 
 /// Pull the behaviour-rule facts whose SUBJECT is this principal, on the
 /// agent's `@rules.md`
-/// page (roadmap 29c), via [`fact_index::find_behaviour_rules`]. Page-scoped
+/// page, via [`fact_index::find_behaviour_rules`]. Page-scoped
 /// on purpose: a `subject = agent` query would otherwise drag in the agent's
 /// self-facts, which live on its content pages, not here. The
 /// rules-page predicate sits **in the SQL, before the cap**, so unrelated
@@ -4659,7 +4658,7 @@ async fn behaviour_rows_on_page(
 }
 
 /// Recall the behaviour rules in force for THIS turn — the read side of the
-/// behaviour-rule loop. Three scopes, two homes (roadmap 42):
+/// behaviour-rule loop. Three scopes, two homes:
 /// **agent-wide** (the agent's wiki, `subject = the agent`) applies for every
 /// user of this agent; **user-global** (the SENDER's identity wiki, `subject =
 /// the sender`) applies on every consumer serving this user; **per-user** (the
@@ -4737,7 +4736,7 @@ fn format_behaviour_rules(
 }
 
 /// Stable header of the `recent_window` field — the user's live thread
-/// from their OTHER surfaces (cross-consumer recent window, group 43).
+/// from their OTHER surfaces (the cross-consumer recent window).
 /// The "do not re-answer" framing is load-bearing: replayed turns at a
 /// context tail invite a model to answer them again.
 const HDR_RECENT_EXCHANGES: &str = "RECENT EXCHANGES ON YOUR OTHER CHANNELS WITH THIS USER \
@@ -4880,7 +4879,7 @@ async fn recall_agent_self(
     // `last_recall_at = NULL` forever — the agent's autobiography IS injected
     // each turn but reads as never-used, and recall-weighted REM (the
     // paragraph-split scorer) treats the whole agent wiki as cold
-    // (item 47-i6 / Finding F).
+    //.
     let mut surfaced: Vec<FactId> = Vec::new();
     for row in rows {
         // The agent's agent-wide behaviour-rules are subject=agent too, but they
@@ -4968,7 +4967,7 @@ struct SpeakerCard {
     section: String,
     /// Workdir-relative path of the identity page whose prose the section
     /// carries. Three consumers: the flat slot drops a hit homed there, the
-    /// funnel treats it as already visited (roadmap 69b — it is never
+    /// funnel treats it as already visited (it is never
     /// navigated), and the recall log counts it among the pages this turn
     /// surfaced, so restating one of its facts is not scored as a miss.
     /// `None` when only the one-line summary was served — that duplicates
@@ -4982,7 +4981,7 @@ struct SpeakerCard {
 
 /// Render the `WHO IS SPEAKING` section — the sender's identity card.
 ///
-/// Roadmap 69a. The slot serves the sender's **`@profile.md`**, not a one-line
+/// The slot serves the sender's **`@profile.md`**, not a one-line
 /// abstract of it: the card is the set of facts the classifier deterministically
 /// routed to the identity page (name, birthdate, contacts, family ties — but
 /// also the standing health constraints and the characterising preferences a
@@ -5070,7 +5069,7 @@ struct MentionedCards {
 }
 
 /// **`PEOPLE THIS TURN NAMES`** — the identity card of each enrolled person
-/// the turn names, served deterministically (roadmap 69d).
+/// the turn names, served deterministically.
 ///
 /// Founder's ruling, 2026-08-04, on the measurement below: *«la scheda degli
 /// utenti nominati va inserita deterministicamente nel recall, ci costa
@@ -5607,7 +5606,7 @@ struct NavigatedTail {
 /// and returns `None` — the turn survives on the flat snippet.
 ///
 /// `served_identity` is the sender's identity page, when `WHO IS SPEAKING`
-/// served it this turn (roadmap 69a). It is handed to the funnel as
+/// served it this turn. It is handed to the funnel as
 /// **already visited**, so the walk neither offers nor opens it by any route
 /// — fan seed, card rail or `[[wikilink]]`. Founder's ruling,
 /// 2026-08-03: *«la pagina di identità la escluderei dai risultati del rag,
@@ -5828,8 +5827,8 @@ fn assemble_recall_block(
 }
 
 /// Assemble the dedicated `rules` field — standing **behaviour directives**,
-/// kept structurally apart from the recalled memory in `context_snippet`
-/// (roadmap 29d). A one-shot `notice` (e.g. an agent-wide change refused for a
+/// kept structurally apart from the recalled memory in `context_snippet`.
+/// A one-shot `notice` (e.g. an agent-wide change refused for a
 /// non-admin this turn) leads, then the served user's `behaviour` rules (how to
 /// converse / operate with them). `None` when both are empty.
 fn assemble_rules_block(notice: Option<String>, behaviour: Option<String>) -> Option<String> {
@@ -6047,7 +6046,7 @@ pub async fn wiki_ingest_message(
     };
     let seed_tail: Vec<RecallHit> = ranked.split_off(ranked.len().min(policy.recall_top_k));
     let mut recall_hits = ranked;
-    // Cross-consumer recent window (group 43), fetched HERE rather than at the
+    // Cross-consumer recent window, fetched HERE rather than at the
     // end of the turn: it is served back to the consumer as its own field, but
     // it is also half the answer to "what is this agent already looking at",
     // which the fresh slot below needs before it decides what to repeat. The
@@ -6291,11 +6290,11 @@ pub async fn wiki_ingest_message(
     // Best-effort — absent/unreadable → the classifier decides as before.
     let sender_policy = sender_rules(tree, &request.sender_id);
     // The behaviour rules in force for this user (all three scopes — agent's
-    // wiki + the sender's identity wiki, roadmap 42) — surfaced to the
+    // wiki + the sender's identity wiki) — surfaced to the
     // classifier WITH fact_ids and scopes so it can supersede one, and reused
     // below as the recall block's leading slot.
     let behaviour_rules = recall_behaviour_rules(pool, &request).await;
-    // Roadmap 27 — agent-authored memory. When this turn is the consumer
+    // Agent-authored memory. When this turn is the consumer
     // agent's OWN reply fed back for extraction, any fact it derives must carry
     // the AGENT as its provenance (`sender`), not the user it was talking to.
     // Resolve the agent principal once — the same system-user binding the
@@ -6325,7 +6324,7 @@ pub async fn wiki_ingest_message(
                 .map(ToString::to_string)
                 .as_deref()
                 .unwrap_or("none"),
-            "ingest: assistant-authored turn (roadmap 27) — captures attributed to the agent"
+            "ingest: assistant-authored turn — captures attributed to the agent"
         );
     }
     let mut prompt = build_prompt(
@@ -6575,8 +6574,8 @@ pub async fn wiki_ingest_message(
                 // about the user nor an engine governance rule. The classifier
                 // flags it and tags its scope; the orchestrator files it on
                 // the scope's home rules page, never in the user's fact
-                // memory. GOVERNANCE (behaviour-rule scope from the addressee,
-                // prompt Part 7b — roadmap 29b + 42):
+                // memory. GOVERNANCE (behaviour-rule scope from the
+                // addressee, prompt Part 7b):
                 //  - PER-USER (addressed to the speaker, or a bare imperative)
                 //    is open to anyone — filed subject=user in the agent's wiki,
                 //    recalled only for them on this agent.
@@ -6887,7 +6886,7 @@ pub async fn wiki_ingest_message(
                     continue;
                 }
 
-                // Roadmap 27 — stamp the AGENT as provenance on a fact it derived
+                // Stamp the AGENT as provenance on a fact it derived
                 // from its own reply. Only the `sender` axis flips: `subject` stays
                 // whoever the fact is ABOUT (the user, for an episode or advice;
                 // `global` for kept generic knowledge), so the fact still lands in
@@ -7112,8 +7111,8 @@ pub async fn wiki_ingest_message(
                 // Reverse-channel accumulation: a fact owned by a user who
                 // is not the human of this conversation is news TO that
                 // user (`request.sender_id` stays the interlocutor on an
-                // assistant turn — the roadmap-27 flip touches only the
-                // fact's `sender` axis above).
+                // assistant turn — the assistant-turn flip touches only
+                // the fact's `sender` axis above).
                 if filed_fresh
                     && let Principal::User(subject_uid) = &media_acl.0
                     && subject_uid != &request.sender_id
@@ -7296,14 +7295,14 @@ pub async fn wiki_ingest_message(
     // survives on whatever the flat path already produced.
     let seeds = nav_seeds(&plan);
     // `WHO IS SPEAKING` — the sender's identity card, served from their
-    // `@profile.md` (roadmap 69a). It runs FIRST of the tail because it is the
+    // `@profile.md`. It runs FIRST of the tail because it is the
     // deterministic slot the other two defer to: it costs no completion, it
     // arrives whatever the navigator decides, and the page it serves must
     // then be injected nowhere else.
     let speaker = who_is_speaking_section(pool, tree, &sender_ctx, policy).await;
     let identity_path = speaker.as_ref().and_then(|c| c.page_path.as_deref());
     // The same page in the funnel's own `(wiki, page)` terms, so the walk
-    // treats it as already visited (roadmap 69b). The wiki id *is* the sender
+    // treats it as already visited. The wiki id *is* the sender
     // id — `who_is_speaking_section` locates the wiki by parsing it — and the
     // page is always `IDENTITY_PAGE`, so this one key closes both shapes.
     let mut served_identity: Vec<(String, PathBuf)> = identity_path
@@ -7311,7 +7310,7 @@ pub async fn wiki_ingest_message(
         .into_iter()
         .collect();
     // `PEOPLE THIS TURN NAMES` — the same treatment for the third parties the
-    // turn names (roadmap 69d, founder 2026-08-04). It runs here, beside the
+    // turn names (founder 2026-08-04). It runs here, beside the
     // speaker's card and before the walk, for the same three reasons: no
     // completion, arrives whatever the navigator decides, and the pages it
     // serves must then be injected nowhere else.
@@ -7429,7 +7428,7 @@ pub async fn wiki_ingest_message(
         }
     }
 
-    // Step 5b — project-docs slot, second half (roadmap 48i). A signpost
+    // Step 5b — project-docs slot, second half. A signpost
     // in the recall block says a project exists; whether READING that
     // project's docs would help this turn is a judgement, and the
     // classifier has just made it. It is deliberately not a similarity
@@ -7493,10 +7492,10 @@ pub async fn wiki_ingest_message(
     let due_soon = due_soon_tail.as_ref().map(|(section, _)| section.clone());
 
     // Self-correcting REM's detection floor — all best-effort telemetry,
-    // never touching the turn. (1) Log what this turn surfaced (flat +
+    // never touching the turn. Log what this turn surfaced (flat +
     // fresh + due hits, navigated pages) so the promotion-time detector
-    // can look back at it; (2) stamp the log row onto this turn's
-    // buffered captures; (3) judge the direct path's dedup hits now that
+    // can look back at it; stamp the log row onto this turn's
+    // buffered captures; judge the direct path's dedup hits now that
     // the full surfaced set is known: a restated fact absent from it is a
     // recall MISS — memory held it, recall did not surface it, the user
     // had to re-say it. Rules-page facts are out of scope (channel-
@@ -7583,7 +7582,7 @@ pub async fn wiki_ingest_message(
     }
     // The behaviour rules in force for this user — the `YOUR RULES` section
     // of the dedicated `rules` field. All three scopes (agent's wiki + the
-    // sender's identity wiki, roadmap 42) — never the user's fact memory.
+    // sender's identity wiki) — never the user's fact memory.
     // Re-read post-write so a rule SET this turn is already in effect for the
     // consumer's reply (the classifier above saw the pre-write set, which is
     // what it supersedes against).
@@ -7616,7 +7615,7 @@ pub async fn wiki_ingest_message(
                 .to_owned()
         })
     });
-    // Behaviour directives ride their own first-level field (roadmap 29d), kept
+    // Behaviour directives ride their own first-level field, kept
     // apart from the recalled memory in `context_snippet`.
     let rules = assemble_rules_block(notice, behaviour);
     let context_snippet = assemble_recall_block(
@@ -7639,7 +7638,7 @@ pub async fn wiki_ingest_message(
         suggested_seed = Some(policy.fallback_suggested_seed.clone());
     }
 
-    // The write half of the cross-consumer recent window (group 43): buffer
+    // The write half of the cross-consumer recent window: buffer
     // this turn for the user's other surfaces — the thread of discourse
     // follows the user. It stays HERE, after everything the turn serves, so a
     // requester can never be handed back the very message it just sent (the
@@ -8086,7 +8085,7 @@ mod tests {
         );
 
         // A user-global behaviour rule lives on the same page as a `{{f=…}}`
-        // region (roadmap 42) — the governance read strips it: the rule
+        // region — the governance read strips it: the rule
         // reaches the classifier via `agent_behaviour_rules` (with its
         // fact_id), never as policy prose.
         handle
@@ -8213,7 +8212,7 @@ mod tests {
 
     #[test]
     fn parse_plan_reads_the_project_docs_judgement_and_defaults_it_off() {
-        // Roadmap 48i: the classifier decides whether a signposted
+        // The classifier decides whether a signposted
         // project's documentation would help this turn. Absent (an older
         // prompt, or a fallback plan) must mean "do not dig" — the
         // expensive direction is never the default.
@@ -8835,7 +8834,7 @@ mod tests {
         }
     }
 
-    /// An `AvailableWiki` flagged as an agent's own wiki (item 47-x2 tests).
+    /// An `AvailableWiki` flagged as an agent's own wiki.
     fn sample_agent_available(id: &str) -> AvailableWiki {
         AvailableWiki {
             is_agent: true,
@@ -10098,7 +10097,7 @@ mod tests {
             },
         ];
         let snippet = format_snippet(&hits, &[], &[], 0.0).expect("non-empty hits render");
-        // The flat slot is a labelled role section now (roadmap 41f).
+        // The flat slot is a labelled role section now.
         assert!(snippet.starts_with(HDR_RELEVANT_MEMORY), "{snippet}");
         assert!(snippet.contains("(alice) alice likes coffee"));
         assert!(snippet.contains("(bob) bob likes tea"));
@@ -10147,7 +10146,7 @@ mod tests {
         );
     }
 
-    // ---------- WHO IS SPEAKING — the identity card (roadmap 69a) ----------
+    // ---------- WHO IS SPEAKING — the identity card ----------
 
     /// Add the one-line `summary` key to a wiki's `_meta.md`, so
     /// [`crate::wiki::meta_summary`] has a line to fall back to.
@@ -10598,8 +10597,8 @@ mod tests {
         let llm = FakeLlmBackend::new("fake", "{\"intent\":\"recall\"}");
         // The navigator asks for both alice's wiki root — which resolves to
         // the identity page `WHO IS SPEAKING` already served — and a real
-        // second page of the same wiki. Only the second may be opened
-        // (roadmap 69b): the served page is not a destination, and refusing
+        // second page of the same wiki. Only the second may be opened:
+        // the served page is not a destination, and refusing
         // it must not cost the walk its other choice.
         let nav = FakeLlmBackend::new(
             "fake-nav",
@@ -10670,7 +10669,7 @@ mod tests {
     fn fit_paragraphs_keeps_whole_paragraphs_and_flags_the_cut() {
         let text = "first para\n\nsecond para\n\nthird para";
         assert_eq!(fit_paragraphs(text, 1_000), (text.to_owned(), false));
-        // "first para" (10) + "\n\n" + "second para" (11) = 23; the third
+        // "first para" + "\n\n" + "second para" = 23; the third
         // does not fit and the cut is reported, never silent.
         assert_eq!(
             fit_paragraphs(text, 25),
@@ -10884,7 +10883,7 @@ mod tests {
         drop(dir);
     }
 
-    /// Cross-consumer recent window (group 43 + 43j): a turn from one
+    /// Cross-consumer recent window: a turn from one
     /// surface is served to the user's other surfaces — tagged with its
     /// origin and relative age. A requester that brings its own local
     /// window never gets its surface echoed back; one that brings none (a
@@ -11312,7 +11311,7 @@ mod tests {
 
     /// Group 17 (17f) — a conversation-borne dated commitment becomes a fact
     /// with a validity window and surfaces in the due-soon recall slot. It is
-    /// the same group-7 mechanism, reached from a conversational turn: the
+    /// the same mechanism, reached from a conversational turn: the
     /// classifier resolves the date and emits `valid_to`, capture persists it
     /// (here on the live `requested_container` path), and `recall_due_soon`
     /// pulls it within the horizon.
@@ -11501,14 +11500,14 @@ mod tests {
                 .as_deref()
                 .unwrap_or_default()
                 .contains("Rispondi sempre in modo conciso."),
-            "the behaviour rule surfaces in the dedicated `rules` field (roadmap 29d), \
+            "the behaviour rule surfaces in the dedicated `rules` field, \
              not in the recalled-memory snippet"
         );
         assert!(
             resp.context_snippet.is_none(),
             "a pure behaviour-rule turn surfaces no recalled memory in context_snippet"
         );
-        // The rule lands on the agent wiki's `@rules.md` page (roadmap 29c).
+        // The rule lands on the agent wiki's `@rules.md` page.
         assert!(
             rows[0].source_path.ends_with("@rules.md")
                 && !rows[0].source_path.ends_with("behaviour_rules.md"),
@@ -11753,7 +11752,7 @@ mod tests {
         drop(dir);
     }
 
-    /// A USER-GLOBAL behaviour-rule (explicitly every-assistant, roadmap 42)
+    /// A USER-GLOBAL behaviour-rule (explicitly every-assistant)
     /// is filed in the SENDER's identity wiki, owned by the sender — and the
     /// rules channel serves it to every consumer serving that user, the
     /// bindingless smart consumer included. No admin gate: it binds only the
@@ -12695,7 +12694,7 @@ mod tests {
     /// A guest turn is ephemeral: recall runs on the public slice only, the
     /// classifier never fires (a scripted-empty LLM would panic if called),
     /// nothing lands in the buffer, and the `rules` channel carries the
-    /// reserved-behaviour directive (roadmap 40).
+    /// reserved-behaviour directive.
     #[tokio::test]
     async fn guest_turn_is_ephemeral_and_recalls_public_slice_only() {
         let (dir, tree, pool) = setup_workdir().await;
@@ -14564,7 +14563,7 @@ mod tests {
         drop(dir);
     }
 
-    // ---------- roadmap 27: agent-authored memory ----------
+    // ---------- agent-authored memory ----------
 
     /// The capstone of agent-authored memory: when the consumer feeds the
     /// agent's OWN reply back with `author: assistant`, a fact derived from
@@ -14764,7 +14763,7 @@ mod tests {
         );
     }
 
-    /// Roadmap 27d — the self side. An assistant turn with `subject_id: "self"`
+    /// The self side. An assistant turn with `subject_id: "self"`
     /// files the fact into the AGENT's OWN wiki, owned by the agent and tagged
     /// with the served user (so the read side can scope "history with THIS
     /// user"), while the user's wiki stays untouched. The model's
@@ -14938,7 +14937,7 @@ mod tests {
         drop(dir);
     }
 
-    /// Roadmap 27d — the read side closes the loop. Two assistant turns seed the
+    /// The read side closes the loop. Two assistant turns seed the
     /// agent's self (a high-salience IDENTITY fact, untagged; a normal
     /// RELATIONSHIP fact, tagged with the user). A later USER turn's recall block
     /// then carries both, leading: WHO YOU ARE (always) + YOUR HISTORY WITH THIS
@@ -15035,7 +15034,7 @@ mod tests {
         drop(dir);
     }
 
-    /// Finding F / 47-i6: `recall_agent_self` surfaces the agent's self-facts
+    /// `recall_agent_self` surfaces the agent's self-facts
     /// every turn, so it must also bump their recall hit counters like the
     /// normal recall path — otherwise self-memory reads as never-used forever
     /// and recall-weighted REM treats the whole agent wiki as cold.
@@ -15238,7 +15237,7 @@ mod tests {
         drop(dir);
     }
 
-    /// Roadmap 41d — the partner tag is exclusive: on an agent self-fact,
+    /// The partner tag is exclusive: on an agent self-fact,
     /// another enrolled user's id in the classifier's `topics` is a mere
     /// mention and is stripped, so the mentioned user's turns never inherit
     /// someone else's history. Content tags survive.
@@ -16131,8 +16130,8 @@ mod tests {
 
     #[test]
     fn assemble_recall_block_joins_memory_sections_in_order_all_empty_is_none() {
-        // The recall block is recalled MEMORY only (roadmap 29d): the role
-        // sections of roadmap 41, never behaviour directives.
+        // The recall block is recalled MEMORY only: the role
+        // sections, never behaviour directives.
         assert_eq!(
             assemble_recall_block(None, None, None, None, None, None, None),
             None
@@ -16214,7 +16213,7 @@ mod tests {
 
     #[test]
     fn assemble_rules_block_leads_with_the_notice_all_empty_is_none() {
-        // The dedicated behaviour-directive field (roadmap 29d): a one-shot
+        // The dedicated behaviour-directive field: a one-shot
         // notice leads, then the served user's behaviour rules.
         assert_eq!(assemble_rules_block(None, None), None);
         assert_eq!(

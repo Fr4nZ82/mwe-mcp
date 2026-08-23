@@ -192,7 +192,7 @@ impl TrainingSpool {
                 "usage": {
                     "prompt_tokens": response.usage.prompt_tokens,
                     "completion_tokens": response.usage.completion_tokens,
-                    // Prefix-cache read (roadmap 49): the observable that
+                    // Prefix-cache read: the observable that
                     // says whether a prompt's repeated standing half is
                     // actually billed once. Null on backends that don't
                     // report it; 0 on a genuine miss.
@@ -240,7 +240,7 @@ impl TrainingSpool {
                 "usage": {
                     "prompt_tokens": response.usage.prompt_tokens,
                     "completion_tokens": response.usage.completion_tokens,
-                    // Prefix-cache read (roadmap 49): the observable that
+                    // Prefix-cache read: the observable that
                     // says whether a prompt's repeated standing half is
                     // actually billed once. Null on backends that don't
                     // report it; 0 on a genuine miss.

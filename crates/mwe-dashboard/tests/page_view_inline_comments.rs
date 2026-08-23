@@ -1129,7 +1129,7 @@ async fn submit_process_refuses_standard_wiki_comment() {
 /// The page view renders the body but never the **testata** (the
 /// frontmatter card): its owner-tier `keywords`/`description` must not leak
 /// into the dashboard, exactly as `wiki_read` strips it for a consumer
-/// (the card-exposure fix, dashboard half — roadmap 25b).
+/// (the card boundary, dashboard half).
 #[tokio::test]
 async fn page_view_strips_the_testata_so_card_topics_never_leak() {
     let (app, _pool, tree, _dir) = make_app_with_memory().await;

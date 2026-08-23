@@ -39,7 +39,7 @@
 //!   opting only to consume the page does not get a noisy UI.
 //! - GET `/dashboard/wiki/:id/edit/*path`      — textual editor for
 //!   the page at `path`. The raw free-text editor is a
-//!   **discouraged escape hatch**, gated per roadmap 6j: **hard-
+//!   **discouraged escape hatch**: **hard-
 //!   forbidden on smart wikis** (the smart consumer is the sole
 //!   writer — surfaced as a `404` so the editor is not even
 //!   discoverable), **admin-only on standard wikis** (non-admins get
@@ -786,7 +786,7 @@ async fn view(
                         // that's the page-reading + comment surface. No
                         // raw-edit sibling: manual free-text editing is
                         // forbidden (smart) / admin-only-discouraged
-                        // (standard) per roadmap 6j.
+                        // (standard).
                         a href=(format!(
                             "/dashboard/wiki/{}/view/{}",
                             wiki_id.as_str(),
@@ -880,7 +880,7 @@ fn render_index_preview(
             // View link is the only affordance — it lands on the
             // read-only surface where the "Add comments" toggle lives. The
             // raw editor is forbidden (smart) / admin-only-discouraged
-            // (standard) per roadmap 6j, so we do NOT surface a
+            // (standard), so we do NOT surface a
             // discoverable edit link here.
             a href=(format!("/dashboard/wiki/{}/view/index.md", wiki_id.as_str())) {
                 "Open index.md"
@@ -1707,7 +1707,7 @@ fn blessed_channels_footer(comment_mode_url: &str, can_comment: bool, frozen: bo
     }
     html! {
         // Manual free-text editing from the dashboard is forbidden
-        // (smart) / admin-only-discouraged (standard) per roadmap 6j —
+        // (smart) / admin-only-discouraged (standard) —
         // there is NO discoverable "open the raw editor" link here. The
         // blessed write channels are the inline comments above, the
         // operative chat, and the structured ACL / validity / supersede
@@ -2668,7 +2668,7 @@ fn render_describe_form(
     layout::authenticated_reading_page(chrome, &title, user, &body)
 }
 
-/// Gate the raw free-text page editor (roadmap 6j: manual wiki editing
+/// Gate the raw free-text page editor (manual wiki editing
 /// from the dashboard is forbidden / discouraged; the blessed channels
 /// are inline comments, the operative chat, and the structured fact
 /// actions).

@@ -221,7 +221,7 @@ pub async fn process_submission(
     let request = IngestRequest {
         text: text.to_owned(),
         // The dashboard chat is always the human operator typing — never the
-        // agent's own reply fed back (roadmap 27 is a bridge/MCP path).
+        // agent's own reply fed back (that arrives over the MCP bridge).
         author: MessageRole::User,
         sender_id: user.sender_id.clone(),
         // The operational dashboard chat is the operator, not a bot

@@ -124,7 +124,7 @@ async fn upload_media(
             "this instance is read-only: media cannot be uploaded",
         );
     }
-    // Guest turns are ephemeral (roadmap 40): an upload is a permanent
+    // Guest turns are ephemeral: an upload is a permanent
     // catalog row + blob, so the builtin guest pseudo-identity gets none.
     if mwe_core::enrollment::is_guest(&profile.sender_id) {
         return error_response(
@@ -619,7 +619,7 @@ mod tests {
     }
 
     /// A delegated `guest` act-as passes the auth middleware (the grant is
-    /// the enable switch, roadmap 40) but the upload handler refuses it:
+    /// the enable switch) but the upload handler refuses it:
     /// guest turns are ephemeral, and a catalog row + blob is permanent.
     #[tokio::test]
     async fn delegated_guest_act_as_reaches_upload_and_is_refused() {

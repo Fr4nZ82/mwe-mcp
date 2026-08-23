@@ -216,9 +216,9 @@ pub struct BootstrapResponse {
     /// [`BootstrapRequest::project_id`]. See [`FirstConnect`].
     pub first_connect: Option<FirstConnect>,
     /// One entry per smart-family wiki owned by the caller, sorted:
-    /// (1) exact `project_id` match first, (2) hint matches, (3) the
-    /// caller's own operational wiki, (4) most-recent
-    /// `wiki_admin_op_log` activity, (5) `wiki_id` alphabetical as a
+    /// exact `project_id` match first, hint matches, the
+    /// caller's own operational wiki, most-recent
+    /// `wiki_admin_op_log` activity, `wiki_id` alphabetical as a
     /// stable tie-break.
     pub smart_wikis: Vec<SmartWikiSummary>,
 }
@@ -440,8 +440,8 @@ async fn wiki_activity(
 /// It says the fact and names the skill, and stops there. Every rule that
 /// governs *whether and when* to act on it — propose once, respect a
 /// recorded decline, never open an intro in the middle of a task — lives
-/// in `smart-onboarding`, because the whole point of group 51 was to stop
-/// writing the one-shot procedure in three places.
+/// in `smart-onboarding`, so the one-shot procedure is written in one
+/// place and not three.
 fn first_connect_hint() -> String {
     "This project has no wiki of yours yet, so nothing about it is remembered between sessions. \
      Before proposing anything, `skill_fetch` the `smart-onboarding` skill and follow it: it \
