@@ -7,13 +7,15 @@
 //!
 //! - a fact the `deleter` **sent** is **tombstoned** (they destroy their own
 //!   contribution);
-//! - a fact sent by **someone else** is **evacuated intact** to its sender's
-//!   home wiki — the `subject`/`allow`/`sender` ACL rides along untouched, so
-//!   reading (per-fragment) is unchanged wherever it lands;
-//! - when the sender is **gone** (no home wiki — a removed/never-enrolled
-//!   principal) the **subject** is the fallback (subject == deleter → tombstone,
-//!   else evacuate to the subject's wiki); when neither has a home wiki the fact
-//!   is tombstoned (nobody to hand it to).
+//! - a fact sent by **someone else** is **handed back intact** to the capture
+//!   buffer, and the next placement pass writes it wherever its subject lives
+//!   — the `subject`/`allow`/`sender` ACL rides along untouched, so reading
+//!   (per-fragment) is unchanged wherever it lands;
+//! - the hand-back needs somebody with a home wiki to be placed into: when the
+//!   sender is **gone** (no home wiki — a removed/never-enrolled principal) the
+//!   **subject** is the fallback (subject == deleter → tombstone, else hand
+//!   back); when neither has a home wiki the fact is tombstoned (nobody to hand
+//!   it to).
 //!
 //! The emptied page husk is dropped by the planner GC on the next compile.
 //! Deleting a page is **admin authority** (structure is recall shape, not
@@ -26,7 +28,6 @@ use sqlx::SqlitePool;
 
 use crate::capture_buffer;
 use crate::fact_index::{self, FactIndexError};
-use crate::promote::DirectPromoteError;
 use crate::types::{Principal, WikiId};
 use crate::wiki::{WikiError, WikiTree};
 
@@ -42,9 +43,6 @@ pub enum PageError {
     /// Handing a foreign fact back to the capture buffer failed.
     #[error(transparent)]
     Buffer(#[from] crate::capture_buffer::CaptureBufferError),
-    /// An evacuation (cross-wiki refile) failed.
-    #[error(transparent)]
-    Refile(#[from] DirectPromoteError),
     /// Resolving the owning group's member roster failed.
     #[error("page deletion db: {0}")]
     Db(#[from] sqlx::Error),
@@ -59,7 +57,8 @@ pub enum PageError {
 pub struct PageDeletionOutcome {
     /// Facts tombstoned (the deleter's own, or facts with no enrolled home).
     pub facts_tombstoned: u64,
-    /// Foreign-authored facts evacuated to their sender's (or subject's) wiki.
+    /// Foreign-authored facts handed back to the capture buffer, to be
+    /// re-placed where their subject lives.
     pub facts_evacuated: u64,
 }
 
@@ -67,7 +66,7 @@ pub struct PageDeletionOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DeletionMode {
     /// Default: partition by the per-fragment sender (module docs) — the
-    /// deleter's own facts are tombstoned, foreign-authored ones evacuated.
+    /// deleter's own facts are tombstoned, foreign-authored ones handed back.
     /// The only mode a non-admin may use.
     #[default]
     SenderKeyed,
@@ -156,8 +155,9 @@ pub(crate) enum Action {
 }
 
 /// The per-fact decision (module docs): tombstone the deleter's own
-/// contribution; evacuate a foreign one to its sender's home wiki; fall back to
-/// the subject when the sender has no home wiki; tombstone when neither does.
+/// contribution; hand a foreign one back when its sender has a home wiki to be
+/// placed into; fall back to the subject when the sender has none; tombstone
+/// when neither does.
 ///
 /// Shared with [`crate::wiki_delete::delete_wiki_subtree`], whose `SenderKeyed`
 /// whole-wiki evacuation partitions every fact in the subtree by exactly this

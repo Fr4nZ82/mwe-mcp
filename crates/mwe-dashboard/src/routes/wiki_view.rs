@@ -220,9 +220,11 @@ struct DeleteWikiForm {
     /// refused server-side.
     #[serde(default)]
     confirm_id: String,
-    /// How to dispose of the subtree's facts: `"move"` (the default — evacuate
-    /// each foreign-authored fact to its sender's wiki, destroying nothing) or
-    /// `"tombstone"` (tombstone every fact). Maps to [`DeletionMode`].
+    /// How to dispose of the subtree's facts, one of `"dissolve"` (the
+    /// default — free every fact for re-placement, destroying nothing),
+    /// `"authors"` (hand each foreign-authored fact back, tombstone the
+    /// operator's own) or `"tombstone"` (tombstone every fact). Maps to
+    /// [`DeletionMode`]; anything unrecognised reads as the default.
     #[serde(default)]
     disposition: String,
 }
@@ -382,8 +384,8 @@ fn disposition_fieldset() -> Markup {
                 label {
                     input type="radio" name="disposition" value="authors";
                     " " strong { "Return to each author" }
-                    " — each fact someone else contributed goes back to that person's own "
-                    "wiki, intact; the ones "
+                    " — each fact someone else contributed is handed back intact and "
+                    "re-placed where its subject lives; the ones "
                     em { "you" }
                     " contributed are tombstoned, and so are facts with no home to return to."
                 }
@@ -404,9 +406,9 @@ fn disposition_fieldset() -> Markup {
 ///
 /// Refuses unless `confirm_id` matches the path id exactly, then runs the
 /// recoverable subtree delete ([`mwe_core::wiki_delete::delete_wiki_subtree`])
-/// with the admin's chosen disposition — `move` (sender-keyed evacuation, the
-/// default) or `tombstone` (tombstone every fact) — and moves the directory
-/// into `<workdir>/trash/`. Redirects 303 back to the wiki list.
+/// with the admin's chosen disposition — `dissolve` (the default),
+/// `authors` or `tombstone` ([`DeleteWikiForm::disposition`]) — and moves the
+/// directory into `<workdir>/trash/`. Redirects 303 back to the wiki list.
 async fn delete_apply(
     State(state): State<DashboardState>,
     admin: AdminUser,
@@ -483,11 +485,9 @@ fn map_wiki_delete_err(e: wiki_delete::WikiDeleteError) -> DashboardError {
         E::Identity(_, _) => DashboardError::Validation(e.to_string()),
         E::Wiki(we) => map_wiki_err(we),
         E::FactIndex(_)
-        | E::Refile(_)
         | E::Buffer(_)
         | E::Move { .. }
         | E::Enrollment(_)
-        | E::Plan(_)
         | E::Sections(_)
         | E::PageCards(_)
         | E::LinkKeys(_) => DashboardError::Internal(e.to_string()),

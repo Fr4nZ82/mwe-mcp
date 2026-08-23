@@ -12,19 +12,18 @@
 //!   *structure*, keep every fact. Nothing is tombstoned. Each fact goes back
 //!   into the capture buffer, so the next placement pass **decides where it
 //!   belongs** corpus-wide instead of letting it inherit the page it happened
-//!   to sit on. The one fact a dissolve cannot
-//!   keep is one with no live home anywhere (a `global`-owned fact whose sender
-//!   is gone and whose deleter has none): leaving its row pointing into the
-//!   trash would drop it out of the plan's input and strand it invisibly, so it
-//!   is tombstoned — and **counted** in `facts_tombstoned`, never silent.
+//!   to sit on. A fact with no live home anywhere (a `global`-owned fact whose
+//!   sender is gone and whose deleter has none) waits in the queue like any
+//!   other: the queue needs no destination to hold a claim, so a dissolve
+//!   destroys nothing at all.
 //! - [`crate::page::DeletionMode::SenderKeyed`] — **return to each author**: each fact is
 //!   partitioned by its per-fragment `sender`, so no one's contribution is
 //!   destroyed. A fact the `deleter` sent is tombstoned (their own); a
-//!   foreign-authored one is **evacuated intact** to its sender's home wiki (the
-//!   `subject` is the fallback when the sender has no home), carrying its
-//!   `subject`/`allow`/`sender` ACL untouched — reading is per-fragment, so it
-//!   keeps its audience wherever it lands. Reuses [`crate::page::decide`] + the
-//!   cross-wiki refile engine.
+//!   foreign-authored one is **handed back intact** to the capture buffer,
+//!   carrying its `subject`/`allow`/`sender` ACL untouched, and the next
+//!   placement pass writes it wherever its subject lives — reading is
+//!   per-fragment, so it keeps its audience wherever it lands. The partition
+//!   is [`crate::page::decide`], the same one the per-page delete applies.
 //! - [`crate::page::DeletionMode::TombstoneAll`] — **tombstone them all**: every
 //!   fact in the subtree is tombstoned regardless of sender, destroying others'
 //!   contributions; the verb layer requires an informed confirmation.
@@ -33,7 +32,7 @@
 //! never `rm -rf`'d — an operator who deleted the wrong wiki can move the
 //! directory back and let the watcher re-index it. Tombstoned rows survive as
 //! audit tombstones (visible under the dashboard "include inactive" filter);
-//! evacuated facts are already safe in their senders' wikis.
+//! evacuated facts are already safe in the queue.
 //!
 //! Identity wikis (`wiki-user` / `wiki-group`) are refused here **while their
 //! principal is enrolled**: they are an account's autobiographical store and
@@ -73,7 +72,6 @@ use crate::capture_buffer;
 use crate::enrollment;
 use crate::fact_index;
 use crate::page::{self, Action, DeletionMode};
-use crate::promote::DirectPromoteError;
 use crate::sections;
 use crate::types::{Principal, WikiId};
 use crate::wiki::{
@@ -82,13 +80,6 @@ use crate::wiki::{
 
 /// `deleted_reason` stamped on every fact the deleted subtree carried.
 pub const DELETE_REASON: &str = "wiki_deleted";
-
-/// Refile reason stamped on a fact a **dissolve** freed.
-///
-/// Distinct from [`DELETE_REASON`] on purpose: nothing was deleted, the fact
-/// only left a structure that no longer exists, and the audit trail should
-/// say so.
-pub const DISSOLVE_REASON: &str = "wiki_dissolved";
 
 /// What the deletion touched — surfaced to the operator and the logs.
 #[derive(Debug, Clone)]
@@ -136,11 +127,6 @@ pub enum WikiDeleteError {
     /// The target is a living principal's identity wiki — refused on purpose.
     #[error("refusing to delete identity wiki {0:?} (type {1}); remove the user/group instead")]
     Identity(WikiId, String),
-    /// Reading the persisted compilation plan failed. Raised only by the
-    /// `Dissolve` arm, and only **before** it touches a fact, so the subtree
-    /// is left intact and the operator can retry.
-    #[error("compilation plan: {0}")]
-    Plan(#[from] crate::planner::PlannerError),
     /// Checking whether the identity wiki's principal is still enrolled failed.
     #[error("enrollment lookup: {0}")]
     Enrollment(#[from] sqlx::Error),
@@ -150,10 +136,6 @@ pub enum WikiDeleteError {
     /// Tombstone pass failure.
     #[error("fact index: {0}")]
     FactIndex(#[from] fact_index::FactIndexError),
-    /// Evacuating a foreign-authored fact to its sender's wiki (the
-    /// `SenderKeyed` move arm) failed.
-    #[error("evacuating a fact: {0}")]
-    Refile(#[from] DirectPromoteError),
     /// Dropping the subtree's smart-wiki sections or registry rows failed.
     #[error("wiki sections: {0}")]
     Sections(#[from] sections::SectionError),
@@ -222,16 +204,17 @@ pub fn collect_subtree(tree: &WikiTree, target: &WikiId) -> Result<Vec<Discovere
 /// Soft-delete the wiki `target` and its whole subtree (see module docs),
 /// disposing of its facts by `mode` on the `deleter`'s authority.
 ///
-/// `mode` is the admin's choice: [`DeletionMode::SenderKeyed`] **moves** every
-/// foreign-authored fact to its sender's home wiki (tombstoning only the
-/// deleter's own + homeless facts); [`DeletionMode::TombstoneAll`] **tombstones
-/// every** fact. Disposal runs before the directory move so the refile engine
-/// still sees the source pages.
+/// `mode` is the admin's choice: [`DeletionMode::Dissolve`] **frees every**
+/// fact for re-placement; [`DeletionMode::SenderKeyed`] **hands
+/// back** every foreign-authored one (tombstoning only the deleter's own +
+/// homeless facts); [`DeletionMode::TombstoneAll`] **tombstones every** fact.
+/// Disposal runs before the directory move, so a failure leaves a retry-able
+/// subtree instead of rows pointing at a vanished directory.
 ///
 /// # Errors
 ///
 /// [`WikiDeleteError`] — unknown id, identity-wiki refusal, tree/engine
-/// failure, a fact evacuation, or the directory move.
+/// failure, a hand-back to the buffer, or the directory move.
 #[allow(
     clippy::too_many_lines,
     reason = "one linear disposition pass per mode, then the husk move; splitting hides the order the guarantees depend on"
@@ -378,8 +361,8 @@ mod tests {
     }
 
     /// Capture a fact into `wiki` whose SUBJECT is `user:<subject_user>` (sender unset, so
-    /// the subject is the responsible principal the evacuation keys on) — writes
-    /// the page on disk so the refile can read it.
+    /// the subject is the responsible principal the disposal keys on) — writes
+    /// the page on disk, which is the state a delete starts from.
     async fn capture_with_subject(
         tree: &WikiTree,
         pool: &SqlitePool,
@@ -494,14 +477,14 @@ mod tests {
         let dir = tempdir().unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
         seed(&tree, "acme", "wiki-cliente"); // a deletable container
-        seed(&tree, "bob", "wiki-user"); // a home wiki to evacuate into
+        seed(&tree, "bob", "wiki-user"); // a home wiki, so bob's fact is handed back
         let tree = WikiTree::open(dir.path()).unwrap(); // pick up the seeded wikis
         let db_dir = tempdir().unwrap();
         let pool = crate::db::open_or_init(db_dir.path()).await.unwrap();
         let emb = embedder();
 
-        // a note about bob lives in his own wiki (so bob/cucina.md exists as a dest),
-        // plus a fact that landed in acme; franz (the deleter) has one too.
+        // a note about bob lives in his own wiki, plus a fact that landed in
+        // acme; franz (the deleter) has one too.
         capture_with_subject(&tree, &pool, emb.clone(), "bob", "bob", "Bob's own note").await;
         let bob_fact =
             capture_with_subject(&tree, &pool, emb.clone(), "acme", "bob", "About bob").await;
@@ -517,7 +500,7 @@ mod tests {
         .await
         .expect("delete acme (move)");
 
-        // Move: bob's foreign fact is evacuated to bob, only franz's own is
+        // Move: bob's foreign fact goes back to the queue, only franz's own is
         // tombstoned — no one's contribution is destroyed.
         assert_eq!(
             report.facts_evacuated, 1,

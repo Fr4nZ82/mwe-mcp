@@ -164,10 +164,11 @@ pub enum AgenticTool {
     /// tool.
     WikiMoveFact,
     /// Delete **one page** of a standard wiki. Facts the operator *sent* are
-    /// tombstoned; a foreign-authored fact is *evacuated* intact via the same
-    /// refile engine to its sender's home wiki when one exists, falling back
-    /// to its subject's home wiki — a fact whose sender and subject both lack one
-    /// is tombstoned. **Admin-only**: deleting structure is the operator's
+    /// tombstoned; a foreign-authored fact is *handed back* intact to the
+    /// capture buffer, and the next placement pass writes it where its subject
+    /// lives. The hand-back needs somebody with a home wiki to be placed into —
+    /// its sender when one exists, its subject otherwise — and a fact whose
+    /// sender and subject both lack one is tombstoned. **Admin-only**: deleting structure is the operator's
     /// act (see identity and ACL); a smart wiki is refused
     /// (wiki-level governance). Act-first and final
     /// ([`mwe_core::page::delete_page_direct`]). Write tool.
@@ -603,9 +604,11 @@ fn delete_page_tool_descriptors() -> Vec<Tool> {
     vec![Tool {
         name: AgenticTool::WikiDeletePage.name().to_owned(),
         description: "Delete ONE page of a (standard) wiki. Facts the operator SENT are \
-            tombstoned; facts contributed by OTHERS are evacuated intact to their author's \
-            own wiki when one exists — or to their subject's when the author has no home \
-            wiki; a fact whose author and subject both lack a home wiki is tombstoned. \
+            tombstoned; facts contributed by OTHERS are handed back intact to the capture \
+            buffer, and the next placement pass writes each one where its subject lives. \
+            That hand-back needs somebody with a home wiki to place it into — the author \
+            when one exists, the subject otherwise; a fact whose author and subject both \
+            lack a home wiki is tombstoned. \
             Report the tombstoned/evacuated counts the tool returns. Act-first and \
             final. WRITE TOOL — high-risk: call ONLY after \
             the operator has explicitly confirmed in the current turn both which page (by \
@@ -1888,8 +1891,8 @@ struct WikiDeletePageReport {
     page_file_still_on_disk: bool,
 }
 
-/// Delete a page: tombstone the operator's own facts, evacuate foreign-authored
-/// ones to their senders' wikis (the governed delete-page path).
+/// Delete a page: tombstone the operator's own facts, hand foreign-authored
+/// ones back to the capture buffer (the governed delete-page path).
 /// Two-level authority — the
 /// operator must be an admin (structure is the operator's to change); the per-fact
 /// sender axis governs each fact inside. Smart wikis are refused.
