@@ -14,9 +14,6 @@
 //!   bug).
 //! - **duplicate fact home** — a `fact_id` appearing on two or more pages
 //!   (a one-fact-one-page violation).
-//! - **asymmetric link** — a link `a → b` in the graph with no `b → a`
-//!   back-edge (the Architetto makes the graph symmetric, so any asymmetry is
-//!   a regression).
 //! - **duplicate prose** — two leaf pages whose stripped bodies share a
 //!   char-6-gram Jaccard above [`PROSE_DUP_THRESHOLD`] (the starvation invariant
 //!   should make cross-page prose duplication near-zero; fact-less pages are
@@ -134,8 +131,6 @@ pub struct ReviewReport {
     pub empty_leaves: Vec<String>,
     /// `(fact_id, slugs)` for facts homed on more than one page.
     pub duplicate_fact_homes: Vec<(String, Vec<String>)>,
-    /// `(from, to)` links missing their back-edge.
-    pub asymmetric_links: Vec<(String, String)>,
     /// `(slug_a, slug_b, jaccard)` leaf pairs over the prose-dup threshold.
     pub duplicate_prose: Vec<(String, String, f32)>,
     /// `(slug, fact_id)` owned facts with no matching non-public marker on the
@@ -157,7 +152,6 @@ impl ReviewReport {
     pub const fn finding_count(&self) -> usize {
         self.empty_leaves.len()
             + self.duplicate_fact_homes.len()
-            + self.asymmetric_links.len()
             + self.duplicate_prose.len()
             + self.missing_acl_markers.len()
             + self.cross_subject_bloat.len()
@@ -223,18 +217,6 @@ pub fn review(
             report.duplicate_fact_homes.push((fid, slugs));
         }
     }
-    for (from, targets) in &plan.link_graph {
-        for to in targets {
-            let symmetric = plan
-                .link_graph
-                .get(to)
-                .is_some_and(|back| back.contains(from));
-            if !symmetric {
-                report.asymmetric_links.push((from.clone(), to.clone()));
-            }
-        }
-    }
-
     // --- page-content checks (read compiled bodies) ---
     // Collect (slug, stripped_body) for leaf pages that have a compiled file.
     let mut leaf_bodies: Vec<(String, String)> = Vec::new();
@@ -298,7 +280,6 @@ pub fn review(
     tracing::info!(
         empty_leaves = report.empty_leaves.len(),
         duplicate_fact_homes = report.duplicate_fact_homes.len(),
-        asymmetric_links = report.asymmetric_links.len(),
         duplicate_prose = report.duplicate_prose.len(),
         missing_acl_markers = report.missing_acl_markers.len(),
         cross_subject_bloat = report.cross_subject_bloat.len(),
@@ -459,20 +440,27 @@ mod tests {
         assert!(!r.is_clean());
     }
 
+    /// **A one-way link is not a defect** (founder, 2026-08-23: *«la
+    /// reciprocità non serve … può capitare ma non è obbligatoria»*). The
+    /// review must not report one, because a page that links somewhere puts
+    /// no obligation on the page it links to.
     #[test]
-    fn flags_asymmetric_link() {
+    fn a_one_way_link_is_not_a_finding() {
         let mut links = BTreeMap::new();
         links.insert("a".to_owned(), vec!["b".to_owned()]);
-        links.insert("b".to_owned(), Vec::new()); // missing b->a
-        let plan = plan_with(vec![leaf("a", vec![]), leaf("b", vec![])], links);
+        links.insert("b".to_owned(), Vec::new());
+        let plan = plan_with(
+            vec![
+                leaf("a", vec![ffp(1, "user:alice")]),
+                leaf("b", vec![ffp(2, "user:alice")]),
+            ],
+            links,
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
         let r = review(&tree, &plan, &IdentityContext::default()).unwrap();
-        assert!(
-            r.asymmetric_links
-                .contains(&("a".to_owned(), "b".to_owned()))
-        );
+        assert!(r.is_clean(), "{r:?}");
     }
 
     #[test]

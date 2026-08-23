@@ -27,7 +27,7 @@
 //!    Folds semantically-duplicate proposed pages into existing ones (redirects).
 //! 4. **Architetto** ([`build_compilation_plan`]) — deterministic. Materialises
 //!    pages, applies assignments (+ redirects), homes the facts nobody placed,
-//!    collects the concept pages left with no facts, builds the symmetric link
+//!    collects the concept pages left with no facts, builds the directed link
 //!    graph, and orders the wiki's own pages first.
 //! 5. **Incremental** ([`build_wiki_plan`]) — carries over prior assignments,
 //!    classifies only NEW facts, skips entirely on 0-new-0-removed, and computes
@@ -290,11 +290,12 @@ pub struct PagePlan {
     pub primary_facts: Vec<FactForPage>,
     /// The plan slugs this page links to.
     ///
-    /// Taken from the page's own prose at every build and made symmetric
-    /// ([`build_compilation_plan`] step 9), so it is both what the page says
-    /// and what the compiler will require of it next time. Part of
-    /// [`page_fingerprint`]: a page whose neighbourhood changed is a page
-    /// whose prose has to be written again.
+    /// Taken from the page's own prose at every build ([`build_compilation_plan`]
+    /// step 9), so it is both what the page says and what the compiler will
+    /// require of it next time. **Outgoing only** — a page that links here does
+    /// not appear, because a link does not oblige the page at the other end
+    /// (founder, 2026-08-23). Part of [`page_fingerprint`]: a page whose links
+    /// changed is a page whose prose has to be written again.
     #[serde(default)]
     pub outgoing_links: Vec<String>,
     /// The standard wiki this page lives in (its tree home).
@@ -649,9 +650,9 @@ pub async fn build_foundation_pages(pool: &SqlitePool) -> Result<BTreeMap<String
 /// Materialises foundation + registry + accepted-new pages, applies assignments
 /// (with redirects) under the one-fact-one-page rule, deterministically homes
 /// orphan facts, collects the concept pages left with no facts, takes each
-/// page's links from `prose_links` ([`harvest_prose_links`]) and makes the
-/// graph symmetric, and puts a wiki's own pages first. Returns the plan and
-/// the updated registry.
+/// page's links from `prose_links` ([`harvest_prose_links`]) into a **directed**
+/// graph, and puts a wiki's own pages first. Returns the plan and the updated
+/// registry.
 #[must_use]
 #[allow(clippy::too_many_lines)] // the Architetto reads top-to-bottom; splitting hides the flow
 pub fn build_compilation_plan(
@@ -906,8 +907,7 @@ pub fn build_compilation_plan(
         updated_registry.entries.remove(&slug);
     }
 
-    // 9. Each page's links come from its own prose, then the graph is made
-    // symmetric.
+    // 9. Each page's links come from its own prose. **The graph is directed.**
     //
     // One source, and it is what somebody wrote: the `[[wikilinks]]` on the
     // page's own file, harvested by [`harvest_prose_links`] — by the Cronista
@@ -915,6 +915,16 @@ pub fn build_compilation_plan(
     // reached because one of its facts ranked, its description matched, or
     // another page's prose links it. There is no fourth way in, and nothing
     // points down at it from above.
+    //
+    // **A link does not oblige the page at the other end** (founder,
+    // 2026-08-23: *«la reciprocità non serve, non è detto che ci debba essere,
+    // può capitare ma non è obbligatoria»*). The rule the Cronista writes by
+    // is that a link is worth writing when a search phrased in THIS page's
+    // words would never have found the destination — a question about this
+    // page, asked from this page. The page at the other end may have no reason
+    // at all to point back, and requiring it would make the return link
+    // exactly the decorative one the same prompt forbids. It can happen; it
+    // is never owed.
     //
     // Recording them is what makes a link **survive**: at the next rewrite the
     // compiler hands them back as this page's mandatory rails, so a Cronista
@@ -934,9 +944,10 @@ pub fn build_compilation_plan(
         if !pages.contains_key(from) || !pages.contains_key(to) || from == to {
             continue;
         }
-        let written = pages[from].outgoing_links.iter().any(|l| l == to)
-            || pages[to].outgoing_links.iter().any(|l| l == from);
-        if written {
+        // Retired when THIS page says it. A link on the other page is a
+        // different link now that the graph is directed, and it does not
+        // discharge a rail this page was asked to write.
+        if pages[from].outgoing_links.iter().any(|l| l == to) {
             continue;
         }
         if let Some(p) = pages.get_mut(from)
@@ -953,19 +964,6 @@ pub fn build_compilation_plan(
             if link != slug && pages.contains_key(link) && !entry.contains(link) {
                 entry.push(link.clone());
             }
-        }
-    }
-    // Make symmetric. A rail is a road, not a sign: a reader who walked from
-    // A to B can walk back, and the reciprocal edge becomes a mandatory rail
-    // on B at its next rewrite, so the road gets written on both pages.
-    let edges: Vec<(String, String)> = link_graph
-        .iter()
-        .flat_map(|(s, ts)| ts.iter().map(move |t| (s.clone(), t.clone())))
-        .collect();
-    for (s, t) in edges {
-        let back = link_graph.entry(t).or_default();
-        if !back.contains(&s) {
-            back.push(s);
         }
     }
     for links in link_graph.values_mut() {
@@ -1160,15 +1158,18 @@ fn fact_render_key(f: &FactForPage) -> String {
     )
 }
 
-/// Per-page fingerprint over content AND topology.
+/// Per-page fingerprint over what the page's prose has to say.
 ///
-/// Captures fact ids + their render content ([`fact_render_key`]: claim
-/// text + validity fields), plus links/parent/children, so a page goes
-/// dirty when a fact is added/removed, when an existing fact's claim text
-/// or validity changes, or when its link neighbourhood changes. Exactly:
-/// `factId:hash,…|outgoing|parentHub|childLeaves`, each list sorted.
-/// (Folding validity into the hash changed the fingerprint format — one
-/// full recompile per wiki on the first plan build after the change.)
+/// Two halves, and both are things a rewrite would have to put on the page:
+/// the facts it carries with their render content ([`fact_render_key`]: claim
+/// text plus the validity fields), and the links it carries. So a page goes
+/// dirty when a fact is added or removed, when an existing fact's claim text
+/// or validity changes, or when its own links change. Exactly
+/// `factId:hash,…|outgoing`, each list sorted.
+///
+/// **The links are the page's own.** A page another page points at is not
+/// dirty on that account, because nothing new is being asked of its text —
+/// a link puts no obligation on the page it points at (founder, 2026-08-23).
 #[must_use]
 pub fn page_fingerprint(p: &PagePlan) -> String {
     // Each fact contributes `id:<content-hash>` rather than the bare id, so an
@@ -4816,10 +4817,10 @@ mod tests {
             "t",
         );
         assert_eq!(plan.link_graph["cucina"], vec!["intolleranze".to_owned()]);
-        assert_eq!(
-            plan.link_graph["intolleranze"],
-            vec!["cucina".to_owned()],
-            "and reciprocal, like any other link"
+        assert!(
+            plan.link_graph["intolleranze"].is_empty(),
+            "and the page at the other end owes nothing: {:?}",
+            plan.link_graph["intolleranze"]
         );
         assert_eq!(plan.authored_rails, rails, "still waiting to be written");
 
@@ -4972,10 +4973,11 @@ mod tests {
             "the page hop is an edge; the bare wiki and the page nobody has are not: {:?}",
             plan.pages["cucina"].outgoing_links
         );
-        assert_eq!(
-            plan.pages["garage"].outgoing_links,
-            vec!["cucina".to_owned()],
-            "and the edge is reciprocal, so a reader who walked here can walk back"
+        assert!(
+            plan.pages["garage"].outgoing_links.is_empty(),
+            "and `garage` owes nothing for being pointed at — a link is one \
+             page's sentence, not a contract between two: {:?}",
+            plan.pages["garage"].outgoing_links
         );
         assert_eq!(
             plan.link_graph["cucina"],
@@ -4985,11 +4987,11 @@ mod tests {
         drop(dir);
     }
 
-    /// A page whose neighbourhood changed is a page whose prose has to be
-    /// written again — that is what puts the link back when a rewrite drops
-    /// it, and what carries a new one onto the page at the other end.
+    /// A page whose own links changed is a page whose prose has to be written
+    /// again — that is what puts a link back when a rewrite drops it, and what
+    /// carries a rail the REM decided into the text.
     #[test]
-    fn a_changed_neighbourhood_makes_a_page_dirty() {
+    fn a_page_whose_links_changed_is_dirty() {
         let mut before = person("alice");
         before.outgoing_links = vec!["cucina".to_owned()];
         let mut after = before.clone();
@@ -4997,7 +4999,7 @@ mod tests {
         assert_ne!(
             page_fingerprint(&before),
             page_fingerprint(&after),
-            "gaining a neighbour changes the fingerprint"
+            "gaining a link changes the fingerprint"
         );
     }
 

@@ -1136,6 +1136,11 @@ struct RailDecision {
 /// first. A page with none at all leads, because it can only be reached by a
 /// search landing on one of its own facts and from it a reader can go nowhere.
 ///
+/// The count is a page's **own** links, because that is what a reader standing
+/// on it can follow. A page ten others point at still leads nowhere, and is
+/// nominated like any other: links have a direction and being pointed at is
+/// not being connected.
+///
 /// **What it may link to comes from [`crate::candidates`]** — the same four
 /// sources the placement and the writing stages use, so a `far` candidate
 /// (one this page resembles in nothing) is in front of the model at all. A
@@ -2079,8 +2084,8 @@ pub struct MissingRail {
 /// **A link counts only if it is written on the page**, read with the same
 /// extractor the funnel uses ([`crate::recall::extract_wikilinks`]).
 ///
-/// The plan's `link_graph` is the obvious source — symmetric, slug-keyed,
-/// and the graph the compiler writes rails *from* — and it is the wrong one.
+/// The plan's `link_graph` is the obvious source — slug-keyed, and the graph
+/// the compiler writes rails *from* — and it is the wrong one.
 /// The compiler hands those links to the writing model as *recommended*, and
 /// a model that does not weave one in leaves no link behind. The navigator
 /// harvests rails from the **prose**, so a pair the plan calls linked can be
@@ -2172,8 +2177,10 @@ pub async fn detect_missing_rails(
     let mut out: Vec<MissingRail> = counts
         .into_iter()
         .filter(|&(_, n)| n >= min_co_opens)
-        // Railed in either direction? One written link is enough to travel,
-        // and the funnel does not care which page carries it.
+        // Railed in either direction? The pair is joined, and that is what
+        // this detector is about. Whether the return is also worth writing is
+        // a separate judgement and not one made here: a link puts no
+        // obligation on the page it points at (founder, 2026-08-23).
         .filter(|&((a, b), _)| !written.contains(&(a, b)) && !written.contains(&(b, a)))
         .map(|((a, b), co_opens)| MissingRail {
             a_slug: a.to_owned(),

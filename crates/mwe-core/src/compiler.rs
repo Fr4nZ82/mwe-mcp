@@ -2057,10 +2057,12 @@ fn page_index_block(plan: &CompilationPlan) -> String {
 
 /// The rails the plan recommends for one page, as canonical wikilinks.
 ///
-/// The plan's `link_graph` is not a list of suggestions: it is the links the
-/// pages themselves carry, made symmetric (`planner`, step 9) — i.e. the
-/// structure the planner asserts. That is what makes it enforceable by
-/// [`missing_rails`] rather than merely offered.
+/// The plan's `link_graph` is not a list of suggestions: it is what **this
+/// page** already says, plus what the REM decided it should say (`planner`,
+/// step 9). That is what makes it enforceable by [`missing_rails`] rather than
+/// merely offered — and why a page that somebody else links to is handed
+/// nothing on that account: a link puts no obligation on the page it points
+/// at (founder, 2026-08-23).
 fn recommended_link_targets(plan: &CompilationPlan, slug: &str) -> Vec<String> {
     plan.link_graph
         .get(slug)
