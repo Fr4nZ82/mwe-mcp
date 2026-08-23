@@ -2720,10 +2720,10 @@ pub const BUNDLED_REM_RAILS_MD: &str = include_str!("../prompts/rem-rails.md");
 /// not a sweep»*. A page with more links than facts is not a page with good
 /// links, it is a page of addresses.
 ///
-/// ⚠️ **A number chosen from the constants that exist, not from a corpus.**
-/// The card that ordered this pass said to pick it by looking at how long a
-/// real page is, and there is no live corpus to look at. It is the one number
-/// here that a first week of real pages should be allowed to move.
+/// Approved by the founder on 2026-08-23. It is still a number derived from
+/// other numbers rather than from a corpus — there was no live one to look at —
+/// so it is the one constant here that a first week of real pages is expected
+/// to be allowed to move.
 pub const PAGE_RAIL_BUDGET: usize = 6;
 
 /// Bundled default for the `rem-page-grouping` system prompt
