@@ -139,10 +139,6 @@ struct RoleGuide {
 
 /// Roles in display order — conversational first, then the nightly /
 /// per-turn functions. All six [`LlmFunction`] slots, ordered for the UX.
-#[allow(
-    deprecated,
-    reason = "Cronista is surfaced as a role card despite its deprecated marker"
-)]
 const ROLE_GUIDES: &[RoleGuide] = &[
     RoleGuide {
         slot: LlmFunction::Ingest,
@@ -389,9 +385,9 @@ fn api_key_rows(memory: &MemoryHandles) -> Vec<ApiKeyRow> {
             names.insert(key.to_owned());
         }
     }
-    // An override set for an env-var that is no longer referenced by
-    // any slot still deserves to be shown, otherwise the operator
-    // who sets a key before wiring the slot would see "not set".
+    // An override set for an env-var no slot references still deserves
+    // to be shown, otherwise the operator who sets a key before wiring
+    // the slot would see "not set".
     for key in overrides.keys() {
         names.insert(key.clone());
     }
@@ -597,7 +593,7 @@ fn render(
             // Role cards flow in an auto-fit grid (≈2–3 columns on a wide
             // screen, one column on mobile) so they use the page width instead
             // of stacking in a tall narrow strip. `.card-grid` also opts this
-            // form out of the single-column form width cap (see app.css).
+            // form out of the single-column form width cap (see `tailwind/app.css`).
             div.card-grid {
                 @for guide in ROLE_GUIDES {
                     (role_row(guide, llm.slot(guide.slot)))
@@ -1175,7 +1171,6 @@ fn derive_api_key_env(backend: &str, anthropic_login: bool) -> Option<String> {
     }
 }
 
-#[allow(deprecated, reason = "Cronista arm kept for YAML backward compat")]
 const fn slot_mut(llm: &mut LlmConfig, slot: LlmFunction) -> &mut Option<LlmFunctionConfig> {
     match slot {
         LlmFunction::Ingest => &mut llm.ingest,

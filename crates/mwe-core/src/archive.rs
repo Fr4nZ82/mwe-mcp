@@ -31,12 +31,9 @@ pub type Result<T> = std::result::Result<T, ArchiveError>;
 
 /// Canonical reason strings stored in `archive_proposals.reason`.
 pub mod reason {
-    /// No `wiki_search` / `wiki_recall` hit in 365 days — REM weekly
-    /// candidate, lowest-confidence archival signal.
+    /// No `wiki_search` / `wiki_recall` hit in 365 days — the signal
+    /// behind the REM's weekly archive proposal.
     pub const NO_RECALL_HIT_365D: &str = "no_recall_hit_365d";
-    /// No filesystem modification in 180 days. Reserved for a future
-    /// sub-job that mixes recall and modification recency.
-    pub const NO_MODIFY_180D: &str = "no_modify_180d";
 }
 
 /// Emit one `archive_proposals` row.

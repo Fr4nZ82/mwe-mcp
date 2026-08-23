@@ -206,7 +206,6 @@ pub struct LlmBackendOverrides {
     pub navigator: Option<Arc<dyn LlmBackend>>,
 }
 
-#[allow(deprecated, reason = "Cronista arm kept for YAML backward compat")]
 impl LlmBackendOverrides {
     /// Look up the override for `slot`, or `None` if production
     /// should fall back to [`LlmConfig`].
