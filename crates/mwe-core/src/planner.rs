@@ -1628,6 +1628,12 @@ pub fn take_refile_candidates(tree: &WikiTree) -> Result<Vec<String>> {
 /// [`build_compilation_plan`] drops it once the page's own text carries the
 /// link — so nothing here ever needs draining.
 ///
+/// **A rail is one direction, and the park reads only that one.** `from → to`
+/// and `to → from` are two different links (founder, 2026-08-23), so a rail
+/// the other page carries neither counts as this one already parked nor is
+/// reachable by `instead_of`: it belongs to the page that was asked to write
+/// it, and this call is about `from`'s links.
+///
 /// `instead_of` is the swap half of the founder's ruling of 2026-08-22
 /// (*«può decidere di rimuoverne uno per far spazio ad un altro migliore»*):
 /// when it names a rail **the REM itself parked on the same page**, that rail
@@ -1649,13 +1655,13 @@ pub fn park_authored_rail(
     };
     if let Some(dropped) = instead_of {
         plan.authored_rails
-            .retain(|(a, b)| !(a == from && b == dropped || a == dropped && b == from));
+            .retain(|(a, b)| !(a == from && b == dropped));
     }
-    let already = plan
+    if plan
         .authored_rails
         .iter()
-        .any(|(a, b)| (a == from && b == to) || (a == to && b == from));
-    if already {
+        .any(|(a, b)| a == from && b == to)
+    {
         return Ok(false);
     }
     plan.authored_rails.push((from.to_owned(), to.to_owned()));
@@ -4841,6 +4847,69 @@ mod tests {
             plan.authored_rails.is_empty(),
             "the page says it now, so the park lets go: {:?}",
             plan.authored_rails
+        );
+    }
+
+    /// **The park reads one direction, because a rail has one.**
+    ///
+    /// `b → a` is not `a → b` under any of the three questions this function
+    /// asks. It is not the same rail already parked, so it may not refuse
+    /// `a → b` — a refusal here throws away a decision the night paid a model
+    /// for, and the next night pays for it again. It is not `a`'s to drop
+    /// either: `instead_of` names something on the page being written, and
+    /// `b`'s rail belongs to `b`.
+    #[test]
+    fn the_park_reads_one_direction_because_a_rail_has_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        let plan = CompilationPlan {
+            pages: BTreeMap::new(),
+            merged_pages: vec![],
+            link_graph: BTreeMap::new(),
+            // A plan with no pages and no order reads back as no plan at all
+            // ([`load_previous_plan`]), and the park has nothing to write on.
+            compilation_order: vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            generated_at: "t".to_owned(),
+            fact_count: 0,
+            dirty_pages: vec![],
+            force_dirty: vec![],
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: vec![("b".to_owned(), "a".to_owned())],
+        };
+        save_plan(&tree, &plan).expect("plan");
+
+        assert!(
+            park_authored_rail(&tree, "a", "b", None).expect("park"),
+            "b→a is a different link and does not stand in for a→b"
+        );
+        assert_eq!(
+            load_previous_plan(&tree).unwrap().unwrap().authored_rails,
+            vec![
+                ("b".to_owned(), "a".to_owned()),
+                ("a".to_owned(), "b".to_owned())
+            ],
+            "both survive: two pages, two decisions"
+        );
+
+        // The same direction twice is the one that is already parked.
+        assert!(
+            !park_authored_rail(&tree, "a", "b", None).expect("park"),
+            "a→b is already there"
+        );
+
+        // A swap reaches only what this page parked. `b`'s rail is `b`'s.
+        assert!(
+            park_authored_rail(&tree, "a", "c", Some("b")).expect("park"),
+            "a→c replaces a→b"
+        );
+        assert_eq!(
+            load_previous_plan(&tree).unwrap().unwrap().authored_rails,
+            vec![
+                ("b".to_owned(), "a".to_owned()),
+                ("a".to_owned(), "c".to_owned())
+            ],
+            "a's rail was swapped and b's was left alone"
         );
     }
 
