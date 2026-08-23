@@ -3411,6 +3411,7 @@ Un'altra pagina: [[bruno/orto]].
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
         save_plan(&tree, &plan).expect("save plan");
 
@@ -3486,6 +3487,7 @@ Un'altra pagina: [[bruno/orto]].
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
         save_plan(&tree, &plan).expect("save plan");
 

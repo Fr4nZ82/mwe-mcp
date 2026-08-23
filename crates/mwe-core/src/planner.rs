@@ -384,6 +384,20 @@ pub struct CompilationPlan {
     /// compile failures), consumed + cleared by the next plan build.
     #[serde(default)]
     pub reopen_pages: Vec<String>,
+    /// `(from, to)` rails the **REM decided**, as opposed to the ones a page's
+    /// prose already carries.
+    ///
+    /// Every other link in a plan is read off the prose ([`harvest_prose_links`]),
+    /// which is why a link survives a rewrite. A rail the REM authored has no
+    /// prose to be read from yet: it is a decision waiting to be written, so
+    /// it is parked here, unioned into the graph at the next build, and handed
+    /// to the Cronista as a mandatory rail. **It retires by itself**: once the
+    /// prose carries the link, the harvest finds it and the park drops it, so
+    /// nothing accumulates a second copy of what the page already says.
+    ///
+    /// Carried across plan rebuilds, like the refile park.
+    #[serde(default)]
+    pub authored_rails: Vec<(String, String)>,
 }
 
 /// One folded-away page (GC or dedup redirect), recorded for audit.
@@ -647,6 +661,7 @@ pub fn build_compilation_plan(
     conciliation: &ConciliatorResult,
     registry: &ConceptRegistry,
     prose_links: &BTreeMap<(String, String), Vec<String>>,
+    authored_rails: &[(String, String)],
     now: &str,
 ) -> (CompilationPlan, ConceptRegistry) {
     let mut pages: BTreeMap<String, PagePlan> = BTreeMap::new();
@@ -911,6 +926,26 @@ pub fn build_compilation_plan(
             .cloned()
             .unwrap_or_default();
     }
+    // Then the rails the REM decided and the prose has not caught up with.
+    // A rail whose link the prose now carries is already in the vector above
+    // and takes no second seat — which is how the park retires itself.
+    let mut carried_rails: Vec<(String, String)> = Vec::new();
+    for (from, to) in authored_rails {
+        if !pages.contains_key(from) || !pages.contains_key(to) || from == to {
+            continue;
+        }
+        let written = pages[from].outgoing_links.iter().any(|l| l == to)
+            || pages[to].outgoing_links.iter().any(|l| l == from);
+        if written {
+            continue;
+        }
+        if let Some(p) = pages.get_mut(from)
+            && !p.outgoing_links.contains(to)
+        {
+            p.outgoing_links.push(to.clone());
+        }
+        carried_rails.push((from.clone(), to.clone()));
+    }
     let mut link_graph: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (slug, page) in &pages {
         let entry = link_graph.entry(slug.clone()).or_default();
@@ -961,6 +996,7 @@ pub fn build_compilation_plan(
         force_dirty: Vec::new(),
         refile_candidates: Vec::new(),
         reopen_pages: Vec::new(),
+        authored_rails: carried_rails,
     };
     (plan, updated_registry)
 }
@@ -1586,6 +1622,49 @@ pub fn take_refile_candidates(tree: &WikiTree) -> Result<Vec<String>> {
     Ok(taken)
 }
 
+/// Park a rail the REM decided on the persisted plan.
+///
+/// Same shape as the refile park and for the same reason: the decision is
+/// taken in the cycle, and the plan that will act on it is built afterwards.
+/// A rail whose prose the next rewrite writes retires itself at that build —
+/// [`build_compilation_plan`] drops it once the page's own text carries the
+/// link — so nothing here ever needs draining.
+///
+/// `instead_of` is the swap half of the founder's ruling of 2026-08-22
+/// (*«può decidere di rimuoverne uno per far spazio ad un altro migliore»*):
+/// when it names a rail **the REM itself parked on the same page**, that rail
+/// goes. It can never name a link the prose carries — those belong to whoever
+/// wrote them, the Cronista or the owner in Obsidian, and the REM does not
+/// take a page's own sentences away.
+///
+/// # Errors
+///
+/// IO / JSON errors from the plan read-modify-write.
+pub fn park_authored_rail(
+    tree: &WikiTree,
+    from: &str,
+    to: &str,
+    instead_of: Option<&str>,
+) -> Result<bool> {
+    let Some(mut plan) = load_previous_plan(tree)? else {
+        return Ok(false);
+    };
+    if let Some(dropped) = instead_of {
+        plan.authored_rails
+            .retain(|(a, b)| !(a == from && b == dropped || a == dropped && b == from));
+    }
+    let already = plan
+        .authored_rails
+        .iter()
+        .any(|(a, b)| (a == from && b == to) || (a == to && b == from));
+    if already {
+        return Ok(false);
+    }
+    plan.authored_rails.push((from.to_owned(), to.to_owned()));
+    save_plan(tree, &plan)?;
+    Ok(true)
+}
+
 /// Persist the concept registry (crash-safe atomic write).
 ///
 /// # Errors
@@ -1939,7 +2018,8 @@ fn harvest_prose_links(tree: &WikiTree) -> BTreeMap<(String, String), Vec<String
 }
 
 /// The `page_card` key of a planned page — its workdir-relative source path.
-fn plan_page_source_path(tree: &WikiTree, p: &PagePlan) -> Option<String> {
+#[must_use]
+pub fn plan_page_source_path(tree: &WikiTree, p: &PagePlan) -> Option<String> {
     let handle = tree
         .locate(&crate::types::WikiId::parse(&p.wiki_id).ok()?)
         .ok()?;
@@ -3127,6 +3207,13 @@ pub async fn build_wiki_plan(
     // The links the pages themselves carry, read off disk: written by the
     // Cronista on their last rewrite, or by the owner editing them by hand.
     let prose_links = harvest_prose_links(tree);
+    // The rails the REM decided on an earlier night and the prose has not
+    // caught up with yet. They ride the previous plan; the build below drops
+    // the ones the prose now carries.
+    let authored_rails: Vec<(String, String)> = prev
+        .as_ref()
+        .map(|p| p.authored_rails.clone())
+        .unwrap_or_default();
     let (mut plan, mut updated_registry) = build_compilation_plan(
         &facts,
         &foundation,
@@ -3134,6 +3221,7 @@ pub async fn build_wiki_plan(
         &conciliation,
         &registry,
         &prose_links,
+        &authored_rails,
         now,
     );
     // A page's card is whatever the writer wrote on it, not the guess the
@@ -3857,6 +3945,7 @@ mod tests {
             force_dirty: vec![],
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
 
         let mut next = prev.clone();
@@ -4218,6 +4307,7 @@ mod tests {
             &ConciliatorResult::default(),
             &ConceptRegistry::empty("t"),
             &BTreeMap::new(),
+            &[],
             "2026-06-08T00:00:00Z",
         );
 
@@ -4253,6 +4343,7 @@ mod tests {
             &ConciliatorResult::default(),
             &ConceptRegistry::empty("t"),
             &BTreeMap::new(),
+            &[],
             "2026-05-31T00:00:00Z",
         );
         // Only the ASSIGNED fact lands. The other reached the fallback and is
@@ -4314,6 +4405,7 @@ mod tests {
             &ConciliatorResult::default(),
             &registry,
             &BTreeMap::new(),
+            &[],
             "2026-07-04T00:00:00Z",
         );
         assert_eq!(
@@ -4370,6 +4462,7 @@ mod tests {
             &ConciliatorResult::default(),
             &registry,
             &BTreeMap::new(),
+            &[],
             "t",
         );
         // Both go, and the registry loses them too — a page nobody filed a
@@ -4672,6 +4765,118 @@ mod tests {
             "and it is still on no page — waiting is a stable state"
         );
         drop(dir);
+    }
+
+    /// **A rail the REM decided becomes a link, and then gets out of the
+    /// way.**
+    ///
+    /// Every other link in a plan is read off the prose, which is what makes
+    /// one survive a rewrite. A rail the REM authored has no prose to be read
+    /// from yet: it is a decision waiting to be written. So it is parked, the
+    /// next build unions it into the graph, the compiler hands it to the
+    /// Cronista as mandatory — and once the page says it, the harvest finds it
+    /// and the park lets go, so nothing keeps a second copy of what the page
+    /// already carries.
+    #[test]
+    fn an_authored_rail_joins_the_graph_and_retires_when_the_prose_says_it() {
+        let mut registry = ConceptRegistry::empty("t");
+        for slug in ["cucina", "intolleranze"] {
+            registry
+                .entries
+                .insert(slug.to_owned(), concept_entry(slug, "alice"));
+        }
+        let facts = vec![
+            fact(1, "cucina la sera", "user:alice", "alice"),
+            fact(2, "non tollera il glutine", "user:alice", "alice"),
+        ];
+        let blueprint = Blueprint {
+            assignments: vec![
+                Assignment {
+                    fact_id: facts[0].fact_id.as_str().to_owned(),
+                    page_slug: "cucina".to_owned(),
+                },
+                Assignment {
+                    fact_id: facts[1].fact_id.as_str().to_owned(),
+                    page_slug: "intolleranze".to_owned(),
+                },
+            ],
+            new_pages: Vec::new(),
+        };
+        let rails = vec![("cucina".to_owned(), "intolleranze".to_owned())];
+
+        // Nothing in the prose yet: the rail is what puts the edge there.
+        let (plan, _) = build_compilation_plan(
+            &facts,
+            &BTreeMap::new(),
+            &blueprint,
+            &ConciliatorResult::default(),
+            &registry,
+            &BTreeMap::new(),
+            &rails,
+            "t",
+        );
+        assert_eq!(plan.link_graph["cucina"], vec!["intolleranze".to_owned()]);
+        assert_eq!(
+            plan.link_graph["intolleranze"],
+            vec!["cucina".to_owned()],
+            "and reciprocal, like any other link"
+        );
+        assert_eq!(plan.authored_rails, rails, "still waiting to be written");
+
+        // The Cronista wrote it. The harvest now carries the edge, so the
+        // park has nothing left to add.
+        let prose: BTreeMap<(String, String), Vec<String>> = std::iter::once((
+            ("alice".to_owned(), "cucina.md".to_owned()),
+            vec!["intolleranze".to_owned()],
+        ))
+        .collect();
+        let (plan, _) = build_compilation_plan(
+            &facts,
+            &BTreeMap::new(),
+            &blueprint,
+            &ConciliatorResult::default(),
+            &registry,
+            &prose,
+            &rails,
+            "t",
+        );
+        assert_eq!(plan.link_graph["cucina"], vec!["intolleranze".to_owned()]);
+        assert!(
+            plan.authored_rails.is_empty(),
+            "the page says it now, so the park lets go: {:?}",
+            plan.authored_rails
+        );
+    }
+
+    /// A rail naming a page that is gone is dropped rather than carried
+    /// forever — the graph is built from the plan's own page set.
+    #[test]
+    fn an_authored_rail_to_a_page_that_is_gone_is_dropped() {
+        let mut registry = ConceptRegistry::empty("t");
+        registry
+            .entries
+            .insert("cucina".to_owned(), concept_entry("cucina", "alice"));
+        let (plan, _) = build_compilation_plan(
+            &[fact(1, "cucina la sera", "user:alice", "alice")],
+            &BTreeMap::new(),
+            &Blueprint {
+                assignments: vec![Assignment {
+                    fact_id: fact(1, "cucina la sera", "user:alice", "alice")
+                        .fact_id
+                        .as_str()
+                        .to_owned(),
+                    page_slug: "cucina".to_owned(),
+                }],
+                new_pages: Vec::new(),
+            },
+            &ConciliatorResult::default(),
+            &registry,
+            &BTreeMap::new(),
+            &[("cucina".to_owned(), "sparita".to_owned())],
+            "t",
+        );
+        assert!(plan.authored_rails.is_empty(), "{:?}", plan.authored_rails);
+        assert!(plan.link_graph["cucina"].is_empty());
     }
 
     /// **The engine stops forgetting the links it wrote.**
@@ -6035,6 +6240,7 @@ mod tests {
             force_dirty: vec![],
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
         let mut next_pages = BTreeMap::new();
         let mut alice = person("alice");
@@ -6072,6 +6278,7 @@ mod tests {
             force_dirty: vec![],
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
         // A page that MOVED FILE is dirty even with identical content: the
         // fingerprint is the same, the address is not — and what a page IS is
@@ -6111,6 +6318,7 @@ mod tests {
             &ConciliatorResult::default(),
             &registry,
             &BTreeMap::new(),
+            &[],
             "t2",
         );
         assert!(
@@ -6258,6 +6466,7 @@ mod tests {
             &ConciliatorResult::default(),
             &ConceptRegistry::empty("t"),
             &BTreeMap::new(),
+            &[],
             "t2",
         );
         assert!(
@@ -6307,6 +6516,7 @@ mod tests {
             &ConciliatorResult::default(),
             &registry,
             &BTreeMap::new(),
+            &[],
             "t2",
         );
         assert!(

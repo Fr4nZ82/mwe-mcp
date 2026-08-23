@@ -86,8 +86,23 @@ pub mod kind {
     /// owner to read (founder, 2026-08-04).
     pub const PAGE_CREATE: &str = "page_create";
 
+    /// **Receipt only** — the REM decided a page should link somewhere.
+    ///
+    /// The link is a decision, not prose: the plan carries it and the next
+    /// rewrite of that page is required to write it. Emitted **born-applied**
+    /// for the same reason as [`PAGE_CREATE`] — the nightly pass cannot stop
+    /// and wait — and for the same purpose: what the engine decided about the
+    /// shape of the memory must be readable by the person whose memory it is.
+    pub const RAIL_ADD: &str = "rail_add";
+
     /// Every canonical kind.
-    pub const ALL: &[&str] = &[WIKI_PROMOTE, DEDUP_MERGE, FACT_FORGET, PAGE_CREATE];
+    pub const ALL: &[&str] = &[
+        WIKI_PROMOTE,
+        DEDUP_MERGE,
+        FACT_FORGET,
+        PAGE_CREATE,
+        RAIL_ADD,
+    ];
 
     /// `true` when `s` matches one of the canonical kinds.
     #[must_use]
@@ -1430,19 +1445,21 @@ mod tests {
     // ---- kind constants ----
 
     #[test]
-    fn kind_constants_match_d15() {
+    fn kind_constants_are_the_five_the_engine_emits() {
         assert_eq!(kind::WIKI_PROMOTE, "wiki_promote");
         assert_eq!(kind::DEDUP_MERGE, "dedup_merge");
         assert_eq!(kind::FACT_FORGET, "fact_forget");
         assert_eq!(kind::PAGE_CREATE, "page_create");
-        // Two questionnaire kinds, the fact-forget vote, and the
-        // receipt-only `page_create` (2026-08-04): a kind that is never
-        // `pending`, emitted born-applied so a page the machine invented
-        // leaves a record the operator can read.
-        assert_eq!(kind::ALL.len(), 4);
+        assert_eq!(kind::RAIL_ADD, "rail_add");
+        // Two questionnaire kinds, the fact-forget vote, and two receipt-only
+        // kinds — never `pending`, emitted born-applied so what the engine
+        // decided about the shape of the memory (a page it invented, a link it
+        // required) leaves a record the owner can read.
+        assert_eq!(kind::ALL.len(), 5);
         assert!(kind::is_canonical("wiki_promote"));
         assert!(kind::is_canonical("fact_forget"));
         assert!(kind::is_canonical("page_create"));
+        assert!(kind::is_canonical("rail_add"));
         // `wiki_type_forge` was removed with the `wiki_type` registry
         // teardown — it must no longer be canonical.
         assert!(!kind::is_canonical("wiki_type_forge"));

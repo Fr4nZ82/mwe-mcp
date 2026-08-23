@@ -404,6 +404,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         }
     }
 

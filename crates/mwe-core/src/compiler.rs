@@ -2696,6 +2696,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
 
         assert_eq!(
@@ -2874,6 +2875,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         }
     }
 
@@ -3194,6 +3196,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
 
         // If the Cronista were (wrongly) invoked, this distinctive prose would
@@ -3275,6 +3278,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
 
         // If the Cronista were (wrongly) invoked, this prose would land.
@@ -3340,6 +3344,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
 
         let alice_dir = dir.path().join("wikis/alice");
@@ -3450,6 +3455,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
 
         let cronista = FakeLlmBackend::new("fake", "unused — lista path has no LLM");
@@ -3600,6 +3606,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
         let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-01T00:00:00Z")
             .await
@@ -3663,6 +3670,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         }
     }
 
@@ -4100,6 +4108,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         }
     }
 
@@ -4337,6 +4346,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
         let idx = page_index_block(&plan);
         assert!(
@@ -4408,6 +4418,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
         let idx = page_index_block(&plan);
         assert!(
@@ -5021,6 +5032,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
 
         // Both Cronista attempts die on transport; the lista page needs no LLM.

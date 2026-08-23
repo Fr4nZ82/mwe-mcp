@@ -47,7 +47,7 @@
 //! | The compile pass (planner + Cronista + reviewer) | Composed in [`crate::dream`], which runs it after this cycle on the full cadence — not a `run_cycle` sub-job. |
 //! | Per-step rollback driver for `proposal_ops_log` | Deferred alongside the proposal apply engine (rollback shape mirrors REM's). |
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -188,6 +188,11 @@ pub struct RemPolicy {
     /// `0` disables the sub-job. Smart wikis are skipped as both source
     /// and destination (the ownership boundary is the consumer's).
     pub refile_sweep_cap: usize,
+    /// How many under-linked pages the rail writer sends to the LLM per cycle.
+    /// A **resource** cap like every other one here: which page needs a rail
+    /// is deterministic, whether one is worth writing is the model's call.
+    /// `0` disables the sub-job.
+    pub rail_writer_cap: usize,
     /// How far back the two closure sweeps look for fresh seeds — new
     /// evidence facts (completion sweep, by `created_at`) and freshly
     /// contradicted rows (contradiction sweep, by `superseded_at` /
@@ -307,6 +312,11 @@ impl Default for RemPolicy {
             page_merge_cap: 3,
             completion_sweep_cap: 8,
             refile_sweep_cap: 5,
+            // One page per night is the shape this pass wants, not a sweep:
+            // a rail is written into prose at the next rewrite, so a night
+            // that adds twelve of them rewrites twelve pages, and a link the
+            // model was unsure about costs a clause on every rewrite after.
+            rail_writer_cap: 8,
             closure_sweep_window: chrono::Duration::hours(48),
             contradiction_sweep_cap: 8,
             date_normalize_cap: 16,
@@ -361,6 +371,9 @@ pub struct RemCycleReport {
     /// Contradiction sweep report — closes the satellites of a freshly
     /// contradicted fact that ingest could not see.
     pub contradiction_sweep: ContradictionSweepReport,
+    /// Rail-writer report — the pass that decides a page should point
+    /// somewhere, and parks the decision for the next rewrite to write.
+    pub rail_writer: RailWriterReport,
     /// Recall-repair sub-job report — self-correcting REM's repair
     /// stage: pending recall misses judged, re-files committed only
     /// through the gold-set gate, recurrence notices queued.
@@ -951,6 +964,11 @@ pub async fn run_cycle(
         &smart_wiki_index,
     )
     .await?;
+    // After the moves, before the compile: a rail is judged against where the
+    // facts ended up tonight, and it is written into prose by the compile that
+    // follows this cycle.
+    let rail_writer =
+        run_rail_writer(pool, tree, llms.auto_promote, &cycle_id, &day, policy).await?;
     // The recall-repair sub-job runs after the refile sweep so a fact the
     // sweep just moved is re-checked against its NEW home (a repaired miss
     // goes stale instead of double-moving).
@@ -1056,6 +1074,7 @@ pub async fn run_cycle(
         completion_sweep,
         refile_sweep,
         contradiction_sweep,
+        rail_writer,
         recall_repair,
         provenance_hygiene,
         date_normalizer,
@@ -1068,6 +1087,367 @@ pub async fn run_cycle(
         verdict_memo_purged,
         verdict_memo_rows,
     })
+}
+
+/// Sub-report for the rail writer.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct RailWriterReport {
+    /// Under-linked pages the pass nominated, before the cap.
+    pub nominated: usize,
+    /// Pages that reached a model verdict.
+    pub judged: usize,
+    /// `(from, to)` rails the pass parked on the plan.
+    pub written: Vec<(String, String)>,
+    /// `(from, to)` rails it replaced to make room.
+    pub replaced: Vec<(String, String)>,
+    /// Born-applied `rail_add` receipt ids.
+    pub receipts: Vec<String>,
+    /// Soft errors.
+    pub errors: Vec<String>,
+    /// Why the pass did nothing at all, when it did nothing.
+    pub disabled_reason: Option<String>,
+}
+
+/// One page's answer from the rail writer.
+#[derive(Debug, Default, serde::Deserialize)]
+struct RailDecision {
+    #[serde(default)]
+    link: String,
+    #[serde(default)]
+    instead_of: Option<String>,
+    #[serde(default)]
+    why: String,
+}
+
+/// The rail writer — the pass that makes the founder's sentence true.
+///
+/// *«è dal lavoro del REM che si conta la bontà della memoria, perché i link
+/// che il navigatore segue alla fine li ha decisi il REM»* (2026-08-04). Every
+/// other link in this engine is decided by whoever is writing one page at a
+/// time and never revisits the choice; this is the pass that looks at a page
+/// from outside and decides it should point somewhere.
+///
+/// **Who is nominated is structural, not behavioural.** The right evidence is
+/// which pages a reader opens together and cannot walk between —
+/// [`detect_missing_rails`] measures exactly that, and it has nothing to read:
+/// the service has been stopped since 2026-08-04 and the corpus written before
+/// it is not evidence about this engine. So the first version reads the
+/// **shape**: a page carrying fewer than [`PAGE_RAIL_BUDGET`] links, fewest
+/// first. A page with none at all leads, because it can only be reached by a
+/// search landing on one of its own facts and from it a reader can go nowhere.
+///
+/// **What it may link to comes from [`crate::candidates`]** — the same four
+/// sources the placement and the writing stages use, so a `far` candidate
+/// (one this page resembles in nothing) is in front of the model at all. A
+/// nearest-N list would offer exactly the pages the linking rule says not to
+/// link.
+///
+/// **It acts and leaves a receipt.** A rail is parked on the plan
+/// ([`crate::planner::park_authored_rail`]) and becomes a mandatory
+/// recommended link at that page's next rewrite: the decision becomes prose
+/// the next time the page is written, and from then on the harvest reads it
+/// off the page like any other.
+async fn run_rail_writer(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    llm: Option<&dyn LlmBackend>,
+    cycle_id: &str,
+    day: &day::DayPerimeter,
+    policy: &RemPolicy,
+) -> Result<RailWriterReport> {
+    let mut report = RailWriterReport::default();
+    if policy.rail_writer_cap == 0 {
+        report.disabled_reason = Some("rail_writer_cap is 0".to_owned());
+        return Ok(report);
+    }
+    let Some(llm) = llm else {
+        report.disabled_reason = Some("no rem_promotions LLM wired".to_owned());
+        return Ok(report);
+    };
+    // A plan that cannot be read is a night without this pass, never a night
+    // that fails: nothing here is a repair, only an addition.
+    let plan = match crate::planner::load_previous_plan(tree) {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            report.disabled_reason = Some("no plan yet".to_owned());
+            return Ok(report);
+        },
+        Err(e) => {
+            report.disabled_reason = Some(format!("plan unreadable: {e}"));
+            return Ok(report);
+        },
+    };
+
+    // Under-linked pages, fewest links first, then what the day touched, then
+    // the slug so two runs over one plan agree.
+    let mut nominees: Vec<&str> = plan
+        .pages
+        .iter()
+        .filter(|(_, p)| !p.primary_facts.is_empty())
+        .filter(|(_, p)| !crate::wiki::names_reserved_page(std::path::Path::new(&p.page_path)))
+        .filter(|(slug, _)| plan.link_graph.get(*slug).map_or(0, Vec::len) < PAGE_RAIL_BUDGET)
+        .map(|(slug, _)| slug.as_str())
+        .collect();
+    nominees.sort_by(|a, b| {
+        let n = |s: &str| plan.link_graph.get(s).map_or(0, Vec::len);
+        n(a).cmp(&n(b))
+            .then_with(|| day.touched_page(b).cmp(&day.touched_page(a)))
+            .then_with(|| a.cmp(b))
+    });
+    // Behavioural evidence first, where there is any: a pair a reader opened
+    // together and could not walk between is a measured gap, where "carries
+    // few links" is only a shape. It is silent on a memory nobody has talked
+    // to yet, which is why it leads the list instead of being it.
+    let measured: BTreeSet<String> =
+        match detect_missing_rails(pool, tree, &plan, 2, policy.rail_writer_cap).await {
+            Ok(pairs) => pairs
+                .into_iter()
+                .flat_map(|r| [r.a_slug, r.b_slug])
+                .collect(),
+            Err(e) => {
+                report
+                    .errors
+                    .push(format!("rails: co-open evidence unread: {e}"));
+                BTreeSet::new()
+            },
+        };
+    if !measured.is_empty() {
+        nominees.sort_by_key(|s| !measured.contains(*s));
+    }
+    report.nominated = nominees.len();
+    nominees.truncate(policy.rail_writer_cap);
+    if nominees.is_empty() {
+        return Ok(report);
+    }
+
+    // The candidate pool, once for the pass.
+    let by_source_path: BTreeMap<String, String> = plan
+        .pages
+        .iter()
+        .filter_map(|(slug, p)| {
+            Some((
+                crate::planner::plan_page_source_path(tree, p)?,
+                slug.clone(),
+            ))
+        })
+        .collect();
+    let mut candidates = crate::candidates::CandidatePool::load(pool, &by_source_path).await;
+    for (path, slug) in &by_source_path {
+        if let Ok(Some(row)) = crate::page_card::get(pool, path).await
+            && let Some(v) = row.embedding
+        {
+            candidates.set_embedding(slug, v);
+        }
+    }
+
+    for slug in nominees {
+        match judge_one_rail(pool, tree, llm, cycle_id, &plan, &candidates, slug).await {
+            Ok(Some(outcome)) => {
+                report.judged += 1;
+                report.written.push((slug.to_owned(), outcome.to));
+                if let Some(dropped) = outcome.replaced {
+                    report.replaced.push((slug.to_owned(), dropped));
+                }
+                report.receipts.push(outcome.receipt);
+            },
+            Ok(None) => report.judged += 1,
+            Err(e) => report.errors.push(format!("rail {slug}: {e}")),
+        }
+    }
+    Ok(report)
+}
+
+/// What the model is shown about one under-linked page.
+///
+/// The links it already carries are **labelled by who wrote them**, because
+/// that decides what the model may do with them: a rail this pass wrote before
+/// may be replaced, a link the page's own prose carries may not — it belongs
+/// to whoever wrote it, the Cronista or the owner editing in Obsidian.
+fn rail_prompt(
+    tree: &WikiTree,
+    plan: &CompilationPlan,
+    slug: &str,
+    page: &crate::planner::PagePlan,
+    offered: &[crate::candidates::Candidate],
+    mine: &BTreeSet<&str>,
+) -> Result<String> {
+    let links = plan
+        .link_graph
+        .get(slug)
+        .filter(|l| !l.is_empty())
+        .map_or_else(
+            || "none".to_owned(),
+            |ls| {
+                ls.iter()
+                    .map(|l| {
+                        let tag = if mine.contains(l.as_str()) {
+                            " (written by this pass — may be replaced)"
+                        } else {
+                            " (written into the prose — not yours to remove)"
+                        };
+                        format!("- {l}{tag}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
+        );
+    let facts = page
+        .primary_facts
+        .iter()
+        .map(|f| format!("- {}", f.text.replace('\n', " ")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let page_block = format!(
+        "{slug} — {}\n  what belongs on it: {}\n  its facts:\n{facts}",
+        page.title, page.description
+    );
+    let candidates_block = offered
+        .iter()
+        .filter_map(|c| {
+            let p = plan.pages.get(&c.key)?;
+            Some(format!(
+                "- [{}] {}: {}",
+                c.source.tag(),
+                c.key,
+                p.description
+            ))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    prompts::render(
+        "rem-rails",
+        tree.workdir(),
+        BUNDLED_REM_RAILS_MD,
+        &[
+            ("page", page_block.as_str()),
+            ("links", links.as_str()),
+            ("candidates", candidates_block.as_str()),
+        ],
+    )
+    .map_err(RemError::from)
+}
+
+/// What one accepted rail did.
+struct RailOutcome {
+    to: String,
+    replaced: Option<String>,
+    receipt: String,
+}
+
+/// Ask the model for the one link worth writing from `slug`, and park it.
+///
+/// `Ok(None)` is the common answer and not a failure: a link nobody needs
+/// costs a clause of prose on every future rewrite of the page.
+async fn judge_one_rail(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    llm: &dyn LlmBackend,
+    cycle_id: &str,
+    plan: &CompilationPlan,
+    candidates: &crate::candidates::CandidatePool,
+    slug: &str,
+) -> Result<Option<RailOutcome>> {
+    let Some(page) = plan.pages.get(slug) else {
+        return Ok(None);
+    };
+    let exclude: BTreeSet<String> = std::iter::once(slug.to_owned())
+        .chain(plan.link_graph.get(slug).into_iter().flatten().cloned())
+        .collect();
+    // The fallback, for a page `page_card` has no vector for — a page born
+    // this cycle, or a corpus whose cards have never been embedded. Its own
+    // wiki, heaviest first: without it the pass would do nothing at all on a
+    // fresh memory, which is the memory that most needs its first rails.
+    let mut home: Vec<&crate::planner::PagePlan> = plan
+        .pages
+        .values()
+        .filter(|p| p.wiki_id == page.wiki_id && p.slug != slug)
+        .collect();
+    home.sort_by_key(|p| std::cmp::Reverse(p.primary_facts.len()));
+    let home: Vec<String> = home.into_iter().map(|p| p.slug.clone()).collect();
+
+    let ask = candidates.ask_for([slug]);
+    let offered = candidates.pick(&ask, &exclude, crate::candidates::SELECTION_PAGES, &home);
+    if offered.is_empty() {
+        return Ok(None);
+    }
+
+    let mine: BTreeSet<&str> = plan
+        .authored_rails
+        .iter()
+        .filter(|(a, _)| a == slug)
+        .map(|(_, b)| b.as_str())
+        .collect();
+    let prompt = rail_prompt(tree, plan, slug, page, &offered, &mine)?;
+    // A page whose neighbourhood has not changed gets the same answer, so a
+    // byte-identical re-ask is the most expensive no-op in the cycle.
+    let memo_key = rem_verdicts::key(llm.model_id(), &prompt);
+    if rem_verdicts::is_settled(pool, rem_verdicts::kind::PAGE_SPLIT, &memo_key).await? {
+        return Ok(None);
+    }
+
+    let resp = llm
+        .complete(
+            CompletionRequest::new(prompt)
+                .with_temperature(0.2)
+                .with_max_tokens(400),
+        )
+        .await
+        .map_err(|e| RemError::Llm(format!("rail writer failed on {slug}: {e}")))?;
+    let decision: RailDecision = first_json_object(&resp.text)
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    let to = decision.link.trim();
+    if to.is_empty() || to.eq_ignore_ascii_case("none") {
+        rem_verdicts::record_negative(pool, rem_verdicts::kind::PAGE_SPLIT, &memo_key, slug)
+            .await?;
+        return Ok(None);
+    }
+    // Anti-hallucination: the destination must be one of the pages offered.
+    if !offered.iter().any(|c| c.key == to) {
+        tracing::warn!(
+            slug,
+            to,
+            "rem rails: model named a page it was not offered — skipped"
+        );
+        return Ok(None);
+    }
+    // The swap half, and its fence: only a rail this pass wrote may go.
+    let replaced = decision
+        .instead_of
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| mine.contains(d))
+        .map(ToOwned::to_owned);
+    match crate::planner::park_authored_rail(tree, slug, to, replaced.as_deref()) {
+        Ok(true) => {},
+        Ok(false) => return Ok(None),
+        Err(e) => {
+            tracing::warn!(slug, to, error = %e, "rem rails: rail not parked");
+            return Ok(None);
+        },
+    }
+
+    let context = serde_json::json!({
+        "from": slug,
+        "to": to,
+        "instead_of": replaced,
+        "why": decision.why,
+        "cycle_id": cycle_id,
+    });
+    let params = crate::proposals::EmitParams::new(
+        crate::proposals::kind::RAIL_ADD,
+        context.clone(),
+        serde_json::json!([]),
+    );
+    let receipt = crate::proposals::emit_applied_proposal(pool, params, context, Some("rem"))
+        .await
+        .map(|e| e.proposal_id)
+        .unwrap_or_default();
+    Ok(Some(RailOutcome {
+        to: to.to_owned(),
+        replaced,
+        receipt,
+    }))
 }
 
 // ---------- Smart family index ----------
@@ -1682,18 +2062,15 @@ pub struct MissingRail {
 /// Nominate the rails the corpus is missing: pages repeatedly opened
 /// **together** by the walk, with no `[[wikilink]]` between them.
 ///
-/// Deterministic, read-only, **no model call** — the structural half of
-/// [62](../../../planning/62_rem-rumination.md)'s lever 2.
+/// Deterministic, read-only, **no model call** — the behavioural nominator of
+/// [`run_rail_writer`], and the strongest evidence there is: a reader opened
+/// both and could not walk between them.
 ///
-/// ⚠️ **Nominates into nothing.** Nothing calls this outside its own unit
-/// tests: `run_cycle` does not, no confirmer exists, and no code authors a
-/// rail from a co-open pair. The link concern it was built for was answered
-/// a different way on 2026-08-09, in the Cronista prompt, with
-/// unreachability as the criterion. **Do not read it as a live pass**, and
-/// do not delete it either: the founder kept it deliberately on 2026-08-20,
-/// because the REM review it belongs to is the next piece of work and this
-/// is the instrument that review starts from. It is unwired on purpose,
-/// pending that review — not a leftover somebody forgot to sweep.
+/// ⚠️ **It reads `recall_log`, so it is silent until there is traffic to
+/// read.** On a memory nobody has talked to it returns nothing, which is
+/// correct and is why the rail writer also nominates on **shape** — a page
+/// carrying few links — instead of waiting for evidence that may be months
+/// away.
 ///
 /// Founder, 2026-08-04: *«è dal lavoro del REM che si conta la bontà della
 /// memoria, perché i link che il navigatore segue alla fine li ha decisi il
@@ -2317,6 +2694,30 @@ async fn already_promoted_for(
 /// Bundled default for the `rem-promotions` system prompt.
 /// See [`BUNDLED_REM_DEDUP_MD`] for the loader contract.
 pub const BUNDLED_REM_PROMOTIONS_MD: &str = include_str!("../prompts/rem-promotions.md");
+
+/// Bundled default for the `rem-rails` system prompt.
+/// See [`BUNDLED_REM_DEDUP_MD`] for the loader contract.
+pub const BUNDLED_REM_RAILS_MD: &str = include_str!("../prompts/rem-rails.md");
+
+/// How many links a page may carry before the rail writer stops adding to it.
+///
+/// **Not a cap on what a page may say** — the Cronista and the owner write
+/// what the prose needs. It is the ceiling on what this pass will *push* a
+/// page to, and past it a new rail has to take an old one's place (founder,
+/// 2026-08-22: *«se su una pagina ci son già tanti collegamenti può decidere
+/// di rimuoverne uno per far spazio ad un altro migliore»*).
+///
+/// Six, and where it comes from: a prose page is split once it carries eight
+/// facts ([`RemPolicy::auto_promote_min_page_facts`]), so a page holds a
+/// handful of facts, and the Cronista's own rule asks for *«a handful, chosen;
+/// not a sweep»*. A page with more links than facts is not a page with good
+/// links, it is a page of addresses.
+///
+/// ⚠️ **A number chosen from the constants that exist, not from a corpus.**
+/// The card that ordered this pass said to pick it by looking at how long a
+/// real page is, and there is no live corpus to look at. It is the one number
+/// here that a first week of real pages should be allowed to move.
+pub const PAGE_RAIL_BUDGET: usize = 6;
 
 /// Bundled default for the `rem-page-grouping` system prompt
 /// (page-group → wiki cartography verdict). Same hybrid loader
@@ -7335,6 +7736,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
         crate::planner::save_plan(tree, &plan).unwrap();
     }
@@ -7569,6 +7971,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
         // alice and bob are their own families; famiglia-bruno is
         // famiglia's sub-wiki (one family line).
@@ -7649,6 +8052,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
         let family: BTreeMap<String, String> =
             std::iter::once(("alice".to_owned(), "alice".to_owned())).collect();
@@ -7725,6 +8129,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
 
         // Three turns opened documenti+fisco; three opened diario+fisco.
@@ -8102,6 +8507,266 @@ mod tests {
         drop(dir);
     }
 
+    // ---------- rail writer ----------
+
+    /// **The REM decides a link, and the decision becomes a mandatory rail.**
+    ///
+    /// The founder's sentence — *«i link che il navigatore segue alla fine li
+    /// ha decisi il REM»* — was false while nothing in the cycle wrote one.
+    /// This is the pass that makes it true: it looks at a page from outside,
+    /// picks one destination out of the four candidate sources, parks it on
+    /// the plan, and leaves a receipt.
+    #[tokio::test]
+    async fn the_rail_writer_parks_the_link_it_chose_and_leaves_a_receipt() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let mut pages = std::collections::BTreeMap::new();
+        for slug in ["cucina", "intolleranze", "auto"] {
+            pages.insert(slug.to_owned(), kin_leaf(slug, "alice", 2));
+        }
+        let plan = CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph: BTreeMap::new(),
+            compilation_order: Vec::new(),
+            generated_at: "t".to_owned(),
+            fact_count: 6,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
+        };
+        crate::planner::save_plan(&tree, &plan).expect("save plan");
+
+        let llm = FakeLlmBackend::new(
+            "pro",
+            "{\"link\":\"intolleranze\",\"instead_of\":null,\"why\":\"a reader on the cooking page needs it and would never search for it\"}",
+        );
+        let policy = RemPolicy {
+            rail_writer_cap: 1,
+            ..RemPolicy::default()
+        };
+        let report = run_rail_writer(
+            &pool,
+            &tree,
+            Some(&llm),
+            "cycle-rails",
+            &day::DayPerimeter::default(),
+            &policy,
+        )
+        .await
+        .expect("rail writer");
+
+        assert_eq!(report.nominated, 3, "three pages carry no link at all");
+        assert_eq!(report.judged, 1, "and the cap judges one of them");
+        assert_eq!(report.written.len(), 1, "{report:?}");
+        assert_eq!(report.written[0].1, "intolleranze");
+        assert_eq!(report.receipts.len(), 1);
+
+        // The decision is on the plan, waiting for the next rewrite to write
+        // it into prose.
+        let saved = crate::planner::load_previous_plan(&tree)
+            .expect("load")
+            .expect("plan");
+        assert!(
+            saved
+                .authored_rails
+                .contains(&(report.written[0].0.clone(), "intolleranze".to_owned())),
+            "{:?}",
+            saved.authored_rails
+        );
+
+        // And the owner can read what the engine decided.
+        let (kind, status): (String, String) =
+            sqlx::query_as("SELECT kind, status FROM structure_proposals WHERE proposal_id = ?")
+                .bind(&report.receipts[0])
+                .fetch_one(&pool)
+                .await
+                .expect("receipt");
+        assert_eq!(kind, "rail_add");
+        assert_eq!(status, "applied", "act-first: born applied");
+
+        // The model was shown the candidates with the source that offered
+        // each — the whole point of the fourth source is that the model can
+        // tell a `far` page from a `near` one.
+        let shown = llm.last_prompt().expect("the model was asked");
+        assert!(shown.contains("CANDIDATE DESTINATIONS"), "{shown}");
+        assert!(shown.contains("] intolleranze:"), "{shown}");
+        drop(dir);
+    }
+
+    /// `none` is a real answer, and the common one: a link nobody needs costs
+    /// a clause of prose on every future rewrite and buys nothing.
+    #[tokio::test]
+    async fn the_rail_writer_writes_nothing_when_the_model_says_none() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let mut pages = std::collections::BTreeMap::new();
+        for slug in ["cucina", "auto"] {
+            pages.insert(slug.to_owned(), kin_leaf(slug, "alice", 2));
+        }
+        let plan = CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph: BTreeMap::new(),
+            compilation_order: Vec::new(),
+            generated_at: "t".to_owned(),
+            fact_count: 4,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
+        };
+        crate::planner::save_plan(&tree, &plan).expect("save plan");
+
+        let llm = FakeLlmBackend::new(
+            "pro",
+            "{\"link\":\"none\",\"why\":\"a search reaches it already\"}",
+        );
+        let report = run_rail_writer(
+            &pool,
+            &tree,
+            Some(&llm),
+            "cycle-rails",
+            &day::DayPerimeter::default(),
+            &RemPolicy::default(),
+        )
+        .await
+        .expect("rail writer");
+        assert!(report.written.is_empty(), "{report:?}");
+        assert!(report.receipts.is_empty());
+        assert!(
+            crate::planner::load_previous_plan(&tree)
+                .expect("load")
+                .expect("plan")
+                .authored_rails
+                .is_empty()
+        );
+        drop(dir);
+    }
+
+    /// **A page whose prose carries a link is not this pass's to change.**
+    ///
+    /// The swap half of the founder's ruling is a swap of *its own* rails: a
+    /// link the Cronista wrote, or one the owner typed in Obsidian, belongs to
+    /// whoever wrote it. A model naming one in `instead_of` is ignored, and
+    /// the new rail is added beside it.
+    #[tokio::test]
+    async fn the_rail_writer_never_removes_a_link_the_prose_carries() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let mut pages = std::collections::BTreeMap::new();
+        for slug in ["cucina", "intolleranze", "spesa"] {
+            pages.insert(slug.to_owned(), kin_leaf(slug, "alice", 2));
+        }
+        // `cucina` already links `spesa`, and the prose is where that came
+        // from — the plan carries no authored rail for it. The other two are
+        // pushed to the budget so `cucina` is the only page nominated.
+        let mut link_graph = BTreeMap::new();
+        link_graph.insert("cucina".to_owned(), vec!["spesa".to_owned()]);
+        for slug in ["spesa", "intolleranze"] {
+            link_graph.insert(
+                slug.to_owned(),
+                (0..PAGE_RAIL_BUDGET).map(|i| format!("v{i}")).collect(),
+            );
+        }
+        let plan = CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph,
+            compilation_order: Vec::new(),
+            generated_at: "t".to_owned(),
+            fact_count: 6,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
+        };
+        crate::planner::save_plan(&tree, &plan).expect("save plan");
+
+        let llm = FakeLlmBackend::new(
+            "pro",
+            "{\"link\":\"intolleranze\",\"instead_of\":\"spesa\",\"why\":\"better\"}",
+        );
+        let policy = RemPolicy {
+            rail_writer_cap: 1,
+            ..RemPolicy::default()
+        };
+        let report = run_rail_writer(
+            &pool,
+            &tree,
+            Some(&llm),
+            "cycle-rails",
+            &day::DayPerimeter::default(),
+            &policy,
+        )
+        .await
+        .expect("rail writer");
+        assert!(
+            report.replaced.is_empty(),
+            "a link the prose carries is not this pass's to remove: {report:?}"
+        );
+        let saved = crate::planner::load_previous_plan(&tree)
+            .expect("load")
+            .expect("plan");
+        assert_eq!(saved.authored_rails.len(), 1, "{:?}", saved.authored_rails);
+
+        // And the model was told which of its links it may touch.
+        let shown = llm.last_prompt().expect("asked");
+        assert!(
+            shown.contains("not yours to remove"),
+            "the list says who wrote each link: {shown}"
+        );
+        drop(dir);
+    }
+
+    /// A page already at the budget is not nominated: the pass adds links, it
+    /// does not fill pages with addresses.
+    #[tokio::test]
+    async fn a_page_at_the_rail_budget_is_not_nominated() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let mut pages = std::collections::BTreeMap::new();
+        pages.insert("piena".to_owned(), kin_leaf("piena", "alice", 2));
+        let mut link_graph = BTreeMap::new();
+        link_graph.insert(
+            "piena".to_owned(),
+            (0..PAGE_RAIL_BUDGET).map(|i| format!("v{i}")).collect(),
+        );
+        let plan = CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph,
+            compilation_order: Vec::new(),
+            generated_at: "t".to_owned(),
+            fact_count: 2,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
+        };
+        crate::planner::save_plan(&tree, &plan).expect("save plan");
+
+        let llm = FakeLlmBackend::new("pro", "{\"link\":\"qualcosa\"}");
+        let report = run_rail_writer(
+            &pool,
+            &tree,
+            Some(&llm),
+            "cycle-rails",
+            &day::DayPerimeter::default(),
+            &RemPolicy::default(),
+        )
+        .await
+        .expect("rail writer");
+        assert_eq!(report.nominated, 0, "{report:?}");
+        assert!(llm.last_prompt().is_none(), "and no call was bought");
+        drop(dir);
+    }
+
     /// **A pair the day touched leads**, whatever put it on the list.
     ///
     /// The caller spends a fixed budget of judgements. Two pages that both
@@ -8134,6 +8799,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
         let family: BTreeMap<String, String> =
             std::iter::once(("alice".to_owned(), "alice".to_owned())).collect();
@@ -11949,6 +12615,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
         crate::planner::save_plan(tree, &plan).unwrap();
     }
@@ -12052,6 +12719,7 @@ mod tests {
             force_dirty: Vec::new(),
             refile_candidates: Vec::new(),
             reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
         };
         crate::planner::save_plan(&tree, &plan).unwrap();
 
