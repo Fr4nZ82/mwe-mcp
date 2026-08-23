@@ -17,9 +17,8 @@
 //! 2. `wiki.owner_user == token.owner_user` — a smart consumer is
 //!    custodian of writes only for wikis its own user owns. Cross-user
 //!    write attempts yield [`AdminError::WikiOwnedByOtherUser`].
-//! 3. The target wiki's `_meta` smart flag is `true` — the per-wiki bool
-//!    that replaced the retired `wiki_types_registry`, derived on
-//!    `create` from the `wiki-companion` type-string prefix. Standard
+//! 3. The target wiki's `_meta` smart flag is `true` — the per-wiki bool,
+//!    derived on `create` from the `wiki-companion` type-string prefix. Standard
 //!    wikis continue to accept writes via `wiki_ingest_message` only;
 //!    [`AdminError::WikiTypeNotAdminWritable`] is the rejection here.
 //!
@@ -750,8 +749,8 @@ async fn push_create(
         no_archive: false,
         // Stamp the per-wiki smart flag into `_meta.md` from the
         // explicit `smart` request flag. This is the authoritative marker
-        // the smart/standard family gates read: they query no
-        // `wiki_types_registry` and sniff no `wiki_type` id. A dashboard
+        // the smart/standard family gates read: they read this flag and
+        // sniff no `wiki_type` id. A dashboard
         // power-user create lands `false` (the default); a smart-consumer
         // smart-wiki create passes `smart: true`.
         smart: is_smart_family,
@@ -1611,8 +1610,7 @@ async fn enforce_admin_auth(
     // reach those wikis via the regular `wiki_ingest_message`
     // LLM-mediated path. Dashboard writes bypass the gate by design:
     // a human at the editor is the intended escape hatch. Read
-    // per-wiki from `_meta.smart` (the `wiki_types_registry`
-    // describe is retired; the marker was stamped at create time).
+    // per-wiki from `_meta.smart`, stamped at create time.
     if actor_kind == ActorKind::SmartConsumer && !handle.meta().smart {
         return Err(AdminError::WikiTypeNotAdminWritable {
             wiki_type: handle.meta().wiki_type.clone(),

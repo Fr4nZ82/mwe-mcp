@@ -1458,8 +1458,7 @@ async fn judge_one_rail(
 // ---------- Smart family index ----------
 
 /// Cycle-scoped cache of `wiki_id -> smart`. One tree walk reading
-/// the per-wiki smart flag from each `_meta.md` (replaces
-/// the old `wiki_types_registry` round-trip). The 5 legacy write-jobs
+/// the per-wiki smart flag from each `_meta.md`. The 5 write-jobs
 /// and the 3 smart-wiki-aware sub-jobs share the same map so they all
 /// classify the same wikis identically (no race between sub-jobs).
 type SmartWikiIndex = HashMap<String, bool>;
@@ -1475,8 +1474,8 @@ fn load_smart_wiki_index(tree: &WikiTree) -> Result<SmartWikiIndex> {
 /// `true` when this is a **smart wiki** — its per-wiki smart
 /// flag (`_meta.md`) is set. Unknown `wiki_id`s — typically a wiki
 /// deleted between the snapshot and now — default to `false` (treated
-/// like a non-smart standard wiki). This keeps the legacy
-/// write-jobs working on partially-broken trees rather than silently
+/// like a non-smart standard wiki). This keeps the write-jobs
+/// working on partially-broken trees rather than silently
 /// dropping work.
 fn is_smart_wiki(smart_wiki_index: &SmartWikiIndex, wiki_id: &str) -> bool {
     smart_wiki_index.get(wiki_id).copied().unwrap_or(false)

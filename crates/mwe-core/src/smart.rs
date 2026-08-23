@@ -477,8 +477,7 @@ pub struct RecallCoreGlobalFilter {
     pub subject_user: String,
     /// Companion-family `wiki_type` stems excluded from this search.
     /// Returned for diagnostic clarity; collected at query time from the
-    /// per-wiki `_meta.md` smart flag of every wiki on disk (derived
-    /// from the on-disk flag, not the `wiki_types_registry` lookup).
+    /// per-wiki `_meta.md` smart flag of every wiki on disk.
     pub excluded_wiki_types: Vec<String>,
 }
 

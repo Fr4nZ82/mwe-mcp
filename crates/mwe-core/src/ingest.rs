@@ -6922,8 +6922,8 @@ pub async fn wiki_ingest_message(
                 // Standard wikis buffer the capture for the hourly round;
                 // a smart-wiki target would keep the direct-write path,
                 // but smart wikis are filtered out of `available` above so in
-                // practice every reachable target is a standard wiki. `standard` =
-                // "not smart" now that the `wiki_type` registry is retired.
+                // practice every reachable target is a standard wiki.
+                // `standard` = "not smart": the per-wiki flag is the whole test.
                 let target_is_standard = available
                     .iter()
                     .find(|w| w.wiki_id.as_str() == cap_req.wiki_id.as_str())
@@ -7898,7 +7898,7 @@ mod tests {
     #[test]
     fn available_wikis_reads_smart_flag_from_meta() {
         // The smart-family gate reads the per-wiki smart
-        // flag straight from `_meta.md` (no `wiki_types_registry`). A
+        // flag straight from `_meta.md`. A
         // wiki stamped `smart: true` is hidden from the router
         // window; a plain standard wiki is offered. This is precisely
         // what protects `wiki_ingest_message` from routing writes to a

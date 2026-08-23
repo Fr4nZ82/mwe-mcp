@@ -912,8 +912,7 @@ fn locate_smart_wiki_target(
     let handle = tree
         .locate(wiki_id)
         .map_err(|_| BriefingError::NotFound(wiki_id.clone()))?;
-    // Smart-wiki-only gate, read per-wiki from the `_meta` smart flag (the
-    // `wiki_types_registry` describe is retired).
+    // Smart-wiki-only gate, read per-wiki from the `_meta` smart flag.
     if !handle.meta().smart {
         return Err(BriefingError::WikiTypeNotBriefingCapable {
             wiki_type: handle.meta().wiki_type.clone(),
@@ -952,8 +951,7 @@ fn gate_notify_target_matrix(
         .locate(wiki_id)
         .map_err(|_| BriefingError::NotFound(wiki_id.clone()))?;
     let wiki_type_label = handle.meta().wiki_type.clone();
-    // The family read per-wiki from the `_meta` smart flag (the
-    // `wiki_types_registry` describe is retired).
+    // The family read per-wiki from the `_meta` smart flag.
     let outcome = match (consumer_class, handle.meta().smart) {
         // smart consumer × smart wiki: should administer via
         // `wiki_admin_push`, not notify itself.

@@ -631,11 +631,9 @@ pub struct WikiMeta {
     /// consumer owns and maintains via `wiki_admin_*` (never written by
     /// `wiki_ingest_message`); `false` for the standard-wiki family the
     /// narrative compiler authors. On disk the key is `smart:`, with
-    /// `companion:` accepted forever as the legacy read alias (the
-    /// family's pre-rename name); writes emit `smart:`. This per-wiki
-    /// flag is the canonical family marker that replaced the retired
-    /// `wiki_types_registry` lookup: read by the smart-family gates,
-    /// stamped at actor-wiki creation.
+    /// `companion:` accepted forever as a read alias; writes emit
+    /// `smart:`. This per-wiki flag is the canonical family marker: read
+    /// by the smart-family gates, stamped at actor-wiki creation.
     /// Defaults to `false`. Note: **per-fact** axes (validity, ACL,
     /// `topics`) are never here — they live in `fact_index` / the page
     /// frontmatter. The wiki-level **style default** + its scope
