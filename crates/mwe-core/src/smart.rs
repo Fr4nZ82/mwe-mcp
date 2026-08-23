@@ -22,7 +22,7 @@
 //!   "transversal recall" filter documented in the bundled skill
 //!   `core-globalmemory.md`: keep only facts whose **subject** is the
 //!   caller (`subject_id = user:<sender>` — facts *about* them, wherever
-//!   they are filed) **and** exclude the `the smart family` set so
+//!   they are filed) **and** exclude the smart-wiki family so
 //!   project-bound memory does not leak into unrelated work. It is a
 //!   filter on the fact's subject, not on which wiki holds it.
 //!
@@ -471,11 +471,9 @@ pub struct RecallCoreGlobalFilter {
     /// This is a predicate on `fact_index.subject_id`, NOT on which wiki a
     /// fact lives in: a wiki whose proprietor is the caller can perfectly
     /// well hold facts about other people, and this filter does not return
-    /// them. The field was called `owner_user` and documented as wiki
-    /// scoping until the subject rename; the name said one thing and the
-    /// code did another, and it is the code that was right.
+    /// them.
     pub subject_user: String,
-    /// Companion-family `wiki_type` stems excluded from this search.
+    /// Smart-family `wiki_type` stems excluded from this search.
     /// Returned for diagnostic clarity; collected at query time from the
     /// per-wiki `_meta.md` smart flag of every wiki on disk.
     pub excluded_wiki_types: Vec<String>,

@@ -469,7 +469,7 @@ mod tests {
 
     async fn setup() -> (SqlitePool, WikiId) {
         let pool = make_pool().await;
-        let wiki_id = WikiId::parse("companion-test").unwrap();
+        let wiki_id = WikiId::parse("smart-test").unwrap();
         (pool, wiki_id)
     }
 

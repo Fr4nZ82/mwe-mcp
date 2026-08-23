@@ -1125,7 +1125,7 @@ async fn smart_fixture_with_smart_wiki() -> (
         wiki_id: None,
         parent_wiki_id: Some(alice_id.clone()),
         slug: Some("lnprint".into()),
-        title: Some("lnprint companion".into()),
+        title: Some("lnprint smart wiki".into()),
         wiki_type: Some("wiki-companion".into()),
         smart: true,
         project_id: None,

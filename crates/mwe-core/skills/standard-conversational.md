@@ -173,10 +173,10 @@ Pass `metadata.locale` explicitly when your consumer already knows
 the user's language (e.g. a Telegram bot reading `language_code` from
 the user object). Otherwise the mirror fallback handles it.
 
-## Read access on companion-wikis owned by the user
+## Read access on smart wikis owned by the user
 
-Standard consumers of the same `sender_id` as the companion-wiki's
-owner can **read** companion-wikis (visible in `wiki_search`,
+Standard consumers of the same `sender_id` as the smart wiki's
+owner can **read** smart wikis (visible in `wiki_search`,
 fetchable via `wiki_read`) and can **notify** their `_briefing.md`
 via `wiki_admin_notify`. They cannot **write** — `wiki_admin_push` /
 `wiki_admin_pull` return `403 requires_consumer_class_smart`.
@@ -316,7 +316,7 @@ opaque id back when calling `wiki_read`.
 - ❌ **`wiki_admin_*` writes.** Off-limits to standard consumers
   (`403 requires_consumer_class_smart`). Notify-only is allowed
   (`wiki_admin_notify`) and is the canonical way to relay a user
-  observation into a companion-wiki.
+  observation into a smart wiki.
 - ❌ **Path-shaped `wiki_id`.** See "Use opaque `wiki_id`".
 - ❌ **Forgetting `X-MWE-Act-As` when capturing a real user's memory.**
   You are a standard (Pattern B) consumer: your `sender_id` is your own
@@ -339,7 +339,7 @@ opaque id back when calling `wiki_read`.
 | F | `consumer_register` | first-time daemon registration |
 | F | `wiki_ingest_external` | bulk import (`variant: inline` only today) |
 | G | `dashboard_link` | mint a one-shot URL into the dashboard |
-| H | `wiki_admin_notify` | relay observations into a companion-wiki's `_briefing.md` |
+| H | `wiki_admin_notify` | relay observations into a smart wiki's `_briefing.md` |
 
 ## Cross-references
 

@@ -14,9 +14,9 @@ status: implemented
 This skill is for **smart consumers** (Claude Code, Cowork, Codex —
 agents that bring their own subscription LLM) working inside a
 project directory that has, or will get, a `.mwe/state.json` marker.
-It defines how to manage the project's companion-wiki authoritatively
+It defines how to manage the project's smart wiki authoritatively
 without going through mwe-mcp's server-side LLM (the "double-bill"
-that motivated the entire companion-wiki design).
+that motivated the entire smart wiki design).
 
 ## When this skill applies
 
@@ -24,16 +24,16 @@ The dispatcher in `core` loads this skill when **both**:
 
 - Your JWT carries `consumer_class: smart` and a `consumer_id` claim.
 - The current working directory contains `.mwe/state.json`, **or**
-  the user explicitly asks to bootstrap a companion-wiki for the
+  the user explicitly asks to bootstrap a smart wiki for the
   current directory.
 
 If only the first holds (smart consumer, no cwd marker), the
 dispatcher loads `core-globalmemory` instead and you operate in
-transversal recall mode — no companion-wiki, no `wiki_admin_*`.
+transversal recall mode — no smart wiki, no `wiki_admin_*`.
 
 ## The smart-consumer contract in one paragraph
 
-A companion-wiki is **owned by the user** (`owner_user = sender_id`)
+A smart wiki is **owned by the user** (`owner_user = sender_id`)
 and **administered by smart consumers of that user**. You — the smart
 consumer — push markdown pages to it via `wiki_admin_push` and pull the
 authoritative state back via `wiki_admin_pull`. `_briefing.md` is your
@@ -42,7 +42,7 @@ administer it yourself with an ordinary push — the server refuses a
 smart consumer notifying its own wiki (`403
 smart_does_not_notify_own_wiki`), because writing your own inbox is a
 write, not a message. mwe-mcp's REM cycle skips all
-write-jobs on companion-wikis (no auto-promote, no auto-archive, no
+write-jobs on smart wikis (no auto-promote, no auto-archive, no
 page compilation), runs read-jobs (recall pre-indexing, dedup source), and
 adds one notify-only sub-job (the Briefing dispatcher) that drops
 items into `_briefing.md`.
@@ -515,7 +515,7 @@ whether the user's question has anything to do with it.
 ## `_briefing.md` lifecycle
 
 `_briefing.md` is a single markdown file at the root of every
-companion-wiki. It is the **inbox** through which the rest of the
+smart wiki. It is the **inbox** through which the rest of the
 mwe-mcp ecosystem talks to the smart consumer: REM's Briefing
 dispatcher drops stale-draft and recall-hot observations there,
 openclaw forwards user observations from chat there, and shared-with
@@ -605,9 +605,9 @@ The user gets a click-through from `_briefing.md` straight to the
 relevant heading inside Obsidian (or the dashboard `/cite/` resolver
 when it lands).
 
-## Shared-with companion-wikis
+## Shared-with smart wikis
 
-The owner can extend read access to the companion-wiki via the
+The owner can extend read access to the smart wiki via the
 dashboard `/wikis/<id>/sharing` page, adding `user:<id>` /
 `group:<id>` / `global` entries to `_meta.md` field `shared_with`.
 Read-side resolution (owner → user → group → global → denied) is
@@ -673,7 +673,7 @@ single-laptop single-token rotation case that motivated it.
 | Family | Tool | Purpose |
 |---|---|---|
 | A | `wiki_ingest_message` | route the user↔agent conversation into the user's standard personal memory (the superset path); carry `metadata.authored_refs` to link a digest to a just-pushed project page |
-| D | `wiki_search` | flat top-K lookup — locate the project's existing companion-wiki at bootstrap, quick one-line recall |
+| D | `wiki_search` | flat top-K lookup — locate the project's existing smart wiki at bootstrap, quick one-line recall |
 | D | `wiki_navigate` | **deep** recall — a navigator walks the wiki structure hop by hop (the path becomes the context) and returns the flat hits too. For a question that needs depth or to connect things across pages; pass `topics`/`subjects` you know (`owners` still accepted). Costs an LLM call per hop, so keep `wiki_search` for quick lookups. Smart wikis aren't funnel-navigated (read your own with `wiki_admin_pull`) |
 | F | `wiki_ingest_external` | document-import: a long body the user asks to keep whole becomes its own page + pointer |
 | H | `wiki_admin_push` | create + upsert pages (modes `create` / `upsert`; deletes ride the `upsert` push); response carries `authored_refs` |

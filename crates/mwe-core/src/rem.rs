@@ -6465,7 +6465,7 @@ async fn run_briefing_processor_non_smart(
         // absent from the index and fall through to the per-row handler which
         // surfaces them as `WikiNotFound`.
         match smart_wiki_index.get(&wiki_id) {
-            // Companion: the smart consumer owns the drain — skip (no-op).
+            // Smart wiki: the smart consumer owns the drain — skip (no-op).
             Some(true) => {},
             Some(false) if comment_applier.is_some() => {
                 standard_by_wiki.entry(wiki_id).or_default().push(bi_id);
@@ -9381,9 +9381,9 @@ mod tests {
 
     // ---------- smart-wiki-aware sub-jobs ----------
 
-    /// Materialise a smart-family wiki on disk + sync the registry.
-    /// Mirrors `write_wiki` but for `wiki-companion` (companion = true;
-    /// renamed from `wiki-project-companion`).
+    /// Materialise a smart wiki on disk + sync the registry.
+    /// Mirrors `write_wiki` but stamps the `wiki-companion` type and the
+    /// `smart: true` flag that goes with it.
     /// Returns the wiki id so callers can plant facts in it.
     fn write_smart_wiki(tree: &WikiTree, slug: &str, title: &str, owner: &str) {
         let dir = tree.wikis_dir().join(slug);
@@ -9392,13 +9392,13 @@ mod tests {
             "---\nwiki_id: {slug}\nwiki_type: wiki-companion\nslug: {slug}\ntitle: {title}\nacl_default: 'user:{owner}'\nsmart: true\n---\n",
         );
         std::fs::write(dir.join("_meta.md"), frontmatter).unwrap();
-        std::fs::write(dir.join("index.md"), "# placeholder companion\n").unwrap();
+        std::fs::write(dir.join("index.md"), "# placeholder page\n").unwrap();
     }
 
     #[tokio::test]
     async fn briefing_dispatcher_emits_stale_draft_notify_for_smart_wiki() {
         let (dir, mut tree, pool) = setup_workdir().await;
-        write_smart_wiki(&tree, "alice-lnprint", "lnprint companion", "alice");
+        write_smart_wiki(&tree, "alice-lnprint", "lnprint smart wiki", "alice");
         tree = WikiTree::open(dir.path()).unwrap();
 
         let draft = "status: draft\ntopic: MFA recovery codes\nbody: 'TODO write up'\n";
@@ -9445,7 +9445,7 @@ mod tests {
     #[tokio::test]
     async fn briefing_dispatcher_is_idempotent_across_cycles() {
         let (dir, mut tree, pool) = setup_workdir().await;
-        write_smart_wiki(&tree, "alice-lnprint", "lnprint companion", "alice");
+        write_smart_wiki(&tree, "alice-lnprint", "lnprint smart wiki", "alice");
         tree = WikiTree::open(dir.path()).unwrap();
         let draft = "status: draft\ntopic: stale\nbody: 'TODO'\n";
         let _ = plant_section(&pool, "alice-lnprint", draft).await;
@@ -9524,7 +9524,7 @@ mod tests {
             "---\nwiki_id: {parent}\nwiki_type: wiki-companion\nslug: {parent}\ntitle: lnprint\nacl_default: 'user:alice'\nsmart: true\nchildren:\n  - wiki_id: {child}\n    slug: auth\n    title: Auth\n    wiki_type: wiki-tech\n---\n"
         );
         std::fs::write(parent_dir.join("_meta.md"), fm).unwrap();
-        std::fs::write(parent_dir.join("index.md"), "# companion-original\n").unwrap();
+        std::fs::write(parent_dir.join("index.md"), "# smart-original\n").unwrap();
         write_wiki(&tree, child, "Auth", "wiki-tech");
         tree = WikiTree::open(dir.path()).unwrap();
         plant_fact(&tree, &pool, parent, "active fact body", "alice").await;
@@ -9537,7 +9537,7 @@ mod tests {
 
         let index = std::fs::read_to_string(parent_dir.join("index.md")).unwrap();
         assert!(
-            index.contains("companion-original"),
+            index.contains("smart-original"),
             "smart-wiki index.md must remain untouched, got {index:?}",
         );
         drop(dir);
@@ -9703,7 +9703,7 @@ mod tests {
     #[tokio::test]
     async fn briefing_processor_skips_smart_wikis() {
         let (dir, mut tree, pool) = setup_workdir().await;
-        write_smart_wiki(&tree, "alice-lnprint", "lnprint companion", "alice");
+        write_smart_wiki(&tree, "alice-lnprint", "lnprint smart wiki", "alice");
         tree = WikiTree::open(dir.path()).unwrap();
         let bi_id =
             insert_pending_briefing_row(&pool, "alice-lnprint", chrono::Duration::hours(48), None)
@@ -11806,7 +11806,7 @@ mod tests {
     #[tokio::test]
     async fn provenance_hygiene_skips_smart_wikis() {
         let (dir, mut tree, pool) = setup_workdir().await;
-        write_smart_wiki(&tree, "alice-lnprint", "lnprint companion", "alice");
+        write_smart_wiki(&tree, "alice-lnprint", "lnprint smart wiki", "alice");
         tree = WikiTree::open(dir.path()).unwrap();
         plant_fact(
             &tree,
@@ -11862,7 +11862,7 @@ mod tests {
         // A top-level wiki whose id LOOKS like a child of famiglia — the
         // partition must not be fooled by the hyphen.
         write_wiki(&tree, "famiglia-amici", "Amici", "wiki-group");
-        write_smart_wiki(&tree, "alice-lnprint", "lnprint companion", "alice");
+        write_smart_wiki(&tree, "alice-lnprint", "lnprint smart wiki", "alice");
         tree = WikiTree::open(dir.path()).unwrap();
 
         let index = load_smart_wiki_index(&tree).expect("index");

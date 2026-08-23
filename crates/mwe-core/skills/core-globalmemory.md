@@ -12,11 +12,11 @@ status: implemented
 # mwe-mcp / core-globalmemory skill
 
 This skill governs the **transversal mode** of a smart consumer: the
-cwd does not belong to a companion-wiki, but mwe-mcp is connected and
+cwd does not belong to a smart wiki, but mwe-mcp is connected and
 the user expects the agent to use it as a memory layer that survives
 across sessions, projects, and machines.
 
-Companion-bound work is a separate contract — see [`smart-consumer`](smart-consumer.md).
+Smart-wiki-bound work is a separate contract — see [`smart-consumer`](smart-consumer.md).
 The bootstrap dispatcher in [`core`](core.md) decides which of the two
 applies on each session start; this document only covers what to do
 when the dispatcher lands here.
@@ -27,7 +27,7 @@ All three conditions must hold:
 
 - Your `consumer_class` claim is `smart`.
 - Your current working directory does **not** contain `.mwe/state.json`
-  (so this is not a companion-bound session — see `smart-consumer`
+  (so this is not a smart-wiki-bound session — see `smart-consumer`
   for that).
 - You are connected to a mwe-mcp server (the connection is active,
   not overridden to `null` for this workspace, and the JWT is valid).
@@ -88,7 +88,7 @@ filter:
 - `recall_core_global` is gated on `consumer_class=smart` — a
   standard/conversational token can't accidentally trigger it.
 - The filter is centralised: when a new "standard" family is added
-  (or when we tighten the companion exclusion semantics), the
+  (or when we tighten the smart-wiki exclusion semantics), the
   filter changes in one place, not in every consumer's prompt.
 
 If you do not have the K-family tool yet (older deployment) or
@@ -249,17 +249,17 @@ For mwe-mcp writes from transversal mode, route by target (see `core`):
 a fact **about the user** → `wiki_ingest_message` against the user's
 `wiki-user` (the server's internal LLM handles routing + capture); your
 own **operational** notes / behaviour rules / conversation log → your
-**operational wiki** via `wiki_admin_push`. Only *project* companion-wikis
+**operational wiki** via `wiki_admin_push`. Only *project* smart wikis
 are off-limits here (no project cwd) — your own operational wiki is not.
 
-## Cwd discrimination — recognizing a companion candidate
+## Cwd discrimination — recognizing a smart-wiki candidate
 
 Even though the dispatcher landed on this skill (no `.mwe/state.json`
 in cwd), the cwd may still be a candidate for **promotion** to a
-companion-bound session — for example, the user opened a real project
+smart-wiki-bound session — for example, the user opened a real project
 folder for the first time and never bootstrapped it.
 
-Heuristics that the cwd is a companion candidate (not a generic
+Heuristics that the cwd is a smart-wiki candidate (not a generic
 folder):
 
 - Contains a VCS marker (`.git/`, `.hg/`, `.svn/`).
@@ -290,7 +290,7 @@ Either way **do not auto-bootstrap silently.** The user might be browsing
 a read-only checkout, or want this folder to remain transversal-only.
 
 If the user consents, switch to `smart-consumer` — load it via
-`skill_fetch` — and stay companion-bound for the rest of the session;
+`skill_fetch` — and stay smart-wiki-bound for the rest of the session;
 this skill becomes irrelevant for this cwd until `.mwe/state.json` is
 removed again.
 
@@ -304,9 +304,9 @@ transversal mode without prompting.
   per prompt. The user is paying for your token budget; redundant
   recalls burn it without information gain.
 - ❌ **Don't drop the `wiki_types` allowlist from `scope`.** Without the
-  allowlist, the search will hit companion-wikis the user owns and
+  allowlist, the search will hit smart wikis the user owns and
   leak project context into a generic session.
-- ❌ **Don't write to a *project* companion-wiki from here.** Without a
+- ❌ **Don't write to a *project* smart wiki from here.** Without a
   project cwd you have no `project_id` context and no `.mwe/state.json` to
   track op_log_head, so a project-wiki write would be guesswork. Your own
   **operational wiki** is the exception — it is not project-bound, so
@@ -322,5 +322,5 @@ transversal mode without prompting.
 ## Cross-references
 
 - Sibling skill: [`smart-consumer`](smart-consumer.md) — load this
-  when the cwd promotes to companion-bound.
+  when the cwd promotes to smart-wiki-bound.
 

@@ -7907,10 +7907,10 @@ mod tests {
         let tree = WikiTree::open(dir.path()).expect("tree");
         let normal = "---\nwiki_id: alice\nwiki_type: wiki-user\nparent_wiki_id: null\n\
                       slug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n";
-        let comp = "---\nwiki_id: proj\nwiki_type: wiki-companion\nparent_wiki_id: null\n\
-                    slug: proj\ntitle: Proj\nacl_default: 'user:alice'\nsmart: true\n---\n";
+        let smart = "---\nwiki_id: proj\nwiki_type: wiki-companion\nparent_wiki_id: null\n\
+                     slug: proj\ntitle: Proj\nacl_default: 'user:alice'\nsmart: true\n---\n";
         let (nmeta, _) = WikiMeta::parse(Path::new("_meta.md"), normal).expect("normal meta");
-        let (cmeta, _) = WikiMeta::parse(Path::new("_meta.md"), comp).expect("smart-wiki meta");
+        let (cmeta, _) = WikiMeta::parse(Path::new("_meta.md"), smart).expect("smart-wiki meta");
         crate::wiki::write_wiki_dir(&tree, &nmeta, false).expect("create alice");
         crate::wiki::write_wiki_dir(&tree, &cmeta, false).expect("create proj");
 

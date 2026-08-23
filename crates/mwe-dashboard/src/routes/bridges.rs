@@ -143,7 +143,7 @@ fn catalog_body(base: &str, origin: &str) -> Markup {
             strong { "standard" } " consumer (hermes) is wired at full fidelity "
             "— one ingest per turn, recall block, per-sender attribution. A "
             strong { "smart" } " consumer (Claude Code) brings its own LLM and "
-            "authors a project's companion-wiki over MCP. Pick your host for the "
+            "authors a project's smart wiki over MCP. Pick your host for the "
             "setup, or hand the agent its " code { "install.md" } " directly."
         }
         table {

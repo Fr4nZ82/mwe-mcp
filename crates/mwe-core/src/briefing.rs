@@ -678,7 +678,7 @@ pub async fn notify(
             caller_owner: caller.sender_id.clone(),
         });
     }
-    let write_file = matches!(outcome, NotifyOutcome::FullCompanion);
+    let write_file = matches!(outcome, NotifyOutcome::FullSmartWiki);
     notify_append(pool, &handle, req, write_file).await
 }
 
@@ -929,7 +929,7 @@ enum NotifyOutcome {
     /// [`wiki_briefing_items`] **and** the rendered section to
     /// `_briefing.md` (created on demand). The smart consumer rotates
     /// the file at `smart_bootstrap`.
-    FullCompanion,
+    FullSmartWiki,
     /// `smart consumer × standard wiki`: append a row to [`wiki_briefing_items`]
     /// only. `_briefing.md` is **not** written — standard wikis don't
     /// own one, and the REM Briefing-processor sub-job
@@ -963,7 +963,7 @@ fn gate_notify_target_matrix(
         (crate::jwt::ConsumerClass::Smart, false) => NotifyOutcome::NarrativeDbOnly,
         // standard consumer × smart wiki: classic openclaw-style relay onto the
         // smart consumer's briefing inbox.
-        (crate::jwt::ConsumerClass::Standard, true) => NotifyOutcome::FullCompanion,
+        (crate::jwt::ConsumerClass::Standard, true) => NotifyOutcome::FullSmartWiki,
         // standard consumer × standard wiki: canonical channel is `wiki_ingest_message`.
         (crate::jwt::ConsumerClass::Standard, false) => {
             return Err(BriefingError::StandardUsesIngestForMemory {
@@ -1257,7 +1257,7 @@ mod tests {
             wiki_id: None,
             parent_wiki_id: Some(alice.clone()),
             slug: Some("lnprint".into()),
-            title: Some("lnprint companion".into()),
+            title: Some("lnprint smart wiki".into()),
             wiki_type: Some("wiki-companion".into()),
             smart: true,
             project_id: None,

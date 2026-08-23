@@ -305,7 +305,7 @@ pub async fn reindex_file(
     let resolved_wiki = resolve_wiki_for_path(tree, abs_path)?;
     // Narrative rows without region offsets are pending renders (the
     // committed fact exists, its prose does not yet) — the existence
-    // sweep must spare them. Companion rows are filesystem-authored, so
+    // sweep must spare them. Smart-wiki rows are filesystem-authored, so
     // every row is expected on disk; same for the odd row whose path
     // resolves to no wiki at all.
     let spare_pending = matches!(&resolved_wiki, Some(r) if !r.smart);

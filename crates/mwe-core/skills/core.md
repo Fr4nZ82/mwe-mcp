@@ -175,7 +175,7 @@ skills.
 |---|---|---|
 | `core` | always | this file |
 | `core-globalmemory` | `consumer_class=smart`, no `.mwe/state.json` in cwd | transversal recall across the user's standard wikis on first prompt |
-| `smart-consumer` | `consumer_class=smart` + `.mwe/state.json` in cwd | authoritative `wiki_admin_*` management of a per-project companion-wiki |
+| `smart-consumer` | `consumer_class=smart` + `.mwe/state.json` in cwd | authoritative `wiki_admin_*` management of a per-project smart wiki |
 | `smart-codebase` | `smart-consumer` + software project | concrete folder layout, module / decision / change-log page conventions |
 | `smart-onboarding` | `consumer_class=smart` + `first_connect.hint` (or the user asks) | **first connect, once per project**: the intro, the faithful import, the shape report, the page-repair proposal |
 | `standard-conversational` | `consumer_class=standard` (or absent) | `wiki_ingest_message` loop, `events_poll`, structural notices |

@@ -2229,7 +2229,7 @@ mod tests {
             wiki_id: None,
             parent_wiki_id: Some(WikiId::parse("alice").unwrap()),
             slug: Some(slug.into()),
-            title: Some("Alice's lnprint companion".into()),
+            title: Some("Alice's lnprint smart wiki".into()),
             wiki_type: Some("wiki-companion".into()),
             smart: true,
             project_id: Some("lnprint-abc123".into()),
@@ -2292,7 +2292,7 @@ mod tests {
         // expected content.
         let handle = tree.locate(&resp.wiki_id).expect("locate after create");
         assert_eq!(handle.meta().wiki_type, "wiki-companion");
-        assert_eq!(handle.meta().title, "Alice's lnprint companion");
+        assert_eq!(handle.meta().title, "Alice's lnprint smart wiki");
         let owner = resolve_owner_user(&tree, &handle).expect("owner");
         assert_eq!(owner, "alice");
         // project_id round-trips into extra.
@@ -2575,7 +2575,7 @@ mod tests {
             wiki_id: None,
             parent_wiki_id: Some(WikiId::parse("alice").unwrap()),
             slug: Some("lnprint".into()),
-            title: Some("Alice's lnprint companion".into()),
+            title: Some("Alice's lnprint smart wiki".into()),
             wiki_type: Some("wiki-companion".into()),
             smart: true,
             project_id: None,

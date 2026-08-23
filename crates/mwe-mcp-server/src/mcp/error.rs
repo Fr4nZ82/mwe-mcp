@@ -46,8 +46,7 @@ pub enum ToolErrorClass {
     /// custodian of writes only for wikis its owner owns.
     WikiOwnedByOtherUser,
     /// `400 wiki_type_not_admin_writable` — `wiki_admin_push` /
-    /// `_pull` targeted a wiki whose smart flag is `false`
-    /// (refactor of the previous `family != "companion"` check).
+    /// `_pull` targeted a wiki whose smart flag is `false`.
     /// Standard wikis are written via `wiki_ingest_message`.
     WikiTypeNotAdminWritable,
     /// `400 wiki_type_not_briefing_capable` — `wiki_admin_notify`

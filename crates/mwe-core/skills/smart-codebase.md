@@ -13,7 +13,7 @@ status: implemented
 # mwe-mcp / smart-codebase skill
 
 This skill concretises `smart-consumer` for the most common case:
-**a software project's companion-wiki**. It defines how the bundled
+**a software project's smart wiki**. It defines how the bundled
 `wiki-companion` type maps to a real codebase, what belongs on a module,
 decision or change-log page, and the day-to-day discipline (`source_ref`
 frontmatter, `last_synced` bumps) that keeps REM's read-side sub-jobs
@@ -56,7 +56,7 @@ surprise:
 | `_meta.md` (root) | Auto-managed metadata: `owner_user`, `shared_with`, `wiki_type`. Edited via dashboard `/wikis/<id>/sharing`, not by the smart consumer. | (managed by the server) |
 
 Other folders (`adr/`, `notes/`, `playbooks/`, `glossary/`) are simply
-tolerated: there is a single bundled companion type and no custom-type
+tolerated: there is a single bundled smart-wiki type and no custom-type
 registration, and nothing on the server objects to a layout of your own.
 Never force the four folders onto a wiki already organised its own way.
 
@@ -103,11 +103,11 @@ references, etc.)
 
 `source_ref` is a glob (or list of globs) pointing at the code the
 page documents. It lets the user check coverage from the dashboard
-`/wikis/<id>` view (planned): "which source modules have no companion
-page?".
+`/wikis/<id>` view (planned): "which source modules have no page on the
+smart wiki?".
 
 **Do not** put per-function or per-line details in module pages. The
-companion-wiki is for the why, not the what — the what lives in the
+smart wiki is for the why, not the what — the what lives in the
 source itself, where it can't drift.
 
 ## `last_synced` discipline
@@ -220,7 +220,7 @@ rotation meet: the log survives whole, just paged and navigable.
   decays fastest. Write the why and the contracts; trust the source
   for the what.
 - ❌ **Embedding diagrams as binary attachments.** Use mermaid /
-  asciidiagrams in the page body. The companion-wiki is markdown +
+  asciidiagrams in the page body. The smart wiki is markdown +
   Obsidian — binary attachments don't render in the dashboard and
   REM can't index them.
 - ❌ **Bumping `last_synced` on cosmetic edits.** You burn the
