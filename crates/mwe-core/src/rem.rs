@@ -2063,8 +2063,8 @@ struct MissingRail {
 /// `recall_log` stores workdir-relative page paths, so the plan's pages are
 /// resolved to those paths through the tree to key the two together.
 ///
-/// Reserved pages never nominate: the map is not readable, and the rules page
-/// is channel-only.
+/// Reserved pages never nominate: the rules page is channel-only, so a rail
+/// leading to it would point at a page nobody can open.
 ///
 /// # Errors
 ///

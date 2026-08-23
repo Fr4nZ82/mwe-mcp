@@ -1189,8 +1189,8 @@ async fn chat_panel_embeds_elements_required_by_chat_js() {
 /// The agentic endpoint surfaces the missing `llm.operator_chat` slot as a
 /// 422 with an actionable message. Same UX contract the wizard relies on for
 /// the `llm.ingest` slot — an operator should see a clear "go wire the slot in
-/// the YAML" notice, not a generic 500. Since 2026-08-19 that slot has no
-/// fallback, so this is the only way the chat can be missing a model.
+/// the YAML" notice, not a generic 500. That slot has no fallback, so this is
+/// the only way the chat can be missing a model.
 #[tokio::test]
 async fn chat_agentic_returns_422_when_the_chat_slot_is_missing() {
     let (app, _pool, _tree, _dir) = make_app_with_memory().await;

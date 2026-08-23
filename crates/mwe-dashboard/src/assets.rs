@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Static asset handler for the dashboard.
 //!
-//! Serves the compiled CSS, the PWA manifest, the service worker, and
-//! the icons from inside the binary via [`rust_embed`]. Anything under
-//! the `assets/` folder at compile time lands at
-//! `/dashboard/static/<path>`.
+//! Serves the compiled CSS, the page scripts, the fonts and the SVG
+//! marks from inside the binary via [`rust_embed`]. Anything under the
+//! `assets/` folder at compile time lands at `/dashboard/static/<path>`,
+//! with its content type decided by extension.
 //!
-//! Pass 1 ships a single hand-written `app.css` so the layout has a
-//! style baseline; passes 2+ may add `manifest.json`, `sw.js`, and
-//! the icons referenced by the dashboard.
+//! `assets/tailwind.css` is **built, never hand-edited**: the sources are
+//! `tailwind/app.css` + `tailwind/tokens.css` and the Tailwind CLI compiles
+//! them into it.
 
 use axum::Router;
 use axum::body::Body;

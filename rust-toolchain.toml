@@ -1,7 +1,7 @@
 [toolchain]
 # Pin to the latest stable channel for development; the MSRV (the actual
-# floor) is declared in Cargo.toml `rust-version` — currently 1.88, per
-# docs/development/conventions.md (MSRV).
+# floor) is declared in Cargo.toml `rust-version`, and that declaration is
+# the compatibility promise — this channel is not.
 channel = "stable"
 components = ["rustfmt", "clippy", "rust-src"]
 profile = "default"

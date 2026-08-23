@@ -26,8 +26,8 @@
 //! ```
 //!
 //! The tree is a **forest**: `wikis/` is a plain container and every wiki is a
-//! top-level (or nested) `<slug>/` directory — there is no single materialised
-//! root wiki (the `WikiId::ROOT` id survives only as a defensive sentinel). A
+//! top-level (or nested) `<slug>/` directory — no single materialised root wiki
+//! exists, and the `WikiId::ROOT` id is a defensive sentinel naming none. A
 //! `<slug>` is a [`WikiSlug`]; its `wiki_id` is recorded inside
 //! `_meta.md.wiki_id` and is derived from the chain of slugs
 //! ([`WikiId::child_of`]); a top-level wiki's `parent_wiki_id` is `null`.

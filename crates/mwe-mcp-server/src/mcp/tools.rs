@@ -1394,7 +1394,7 @@ async fn run_navigate_funnel(
         &state.tree,
         sender,
         &topics,
-        // `subjects` is resolved and journalled but no longer seeds: a principal
+        // `subjects` is resolved and journalled but seeds no door: a principal
         // names a wiki, and recall opens content pages, never wikis (founder,
         // 2026-08-03). Who the turn is about reaches the block by being served.
         flat_hits,
@@ -3176,7 +3176,7 @@ pub(super) async fn call_recall_core_global(
         "query": resp.query,
         "filter_applied": {
             "subject_user": resp.filter_applied.subject_user,
-            // Deprecated echo of the same value under its pre-rename key,
+            // Deprecated echo of the same value under the `owner_user` key,
             // kept one release so a consumer reading the diagnostic block
             // by name does not silently find nothing.
             "owner_user": resp.filter_applied.subject_user,

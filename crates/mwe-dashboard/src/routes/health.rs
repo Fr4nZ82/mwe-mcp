@@ -280,7 +280,7 @@ mod tests {
             out.contains("Owner-only"),
             "empty findings render the healthy banner"
         );
-        // The slow probe is no longer part of this fast section.
+        // The slow probe belongs to a section of its own.
         assert!(
             !out.contains("LLM slots"),
             "slot probe is rendered separately, fetched client-side"

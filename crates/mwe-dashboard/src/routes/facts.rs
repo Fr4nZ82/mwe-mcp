@@ -1464,7 +1464,7 @@ fn render_index(
     layout::authenticated_page(chrome, "Facts", user, &body)
 }
 
-/// The page's lead paragraph. Under the reveal lens the list is no longer
+/// The page's lead paragraph. Under the reveal lens the list is not
 /// "facts you can read" but every user's facts, so the banner replaces it.
 fn index_intro(reveal: bool) -> Markup {
     html! {

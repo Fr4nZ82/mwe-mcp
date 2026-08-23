@@ -8,7 +8,7 @@ use std::fmt::Write;
 use maud::{Markup, html};
 
 /// Render a flash banner. `kind` should be `"error"`, `"success"`,
-/// or `"info"`; the CSS in `app.css` covers the first two.
+/// or `"info"`; the CSS in `tailwind/app.css` covers the first two.
 #[must_use]
 pub fn flash(kind: &str, message: &str) -> Markup {
     html! {

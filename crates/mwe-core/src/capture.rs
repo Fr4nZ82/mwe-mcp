@@ -1113,7 +1113,7 @@ mod tests {
         CaptureRequest {
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
-            page: Some(PathBuf::from("index.md")),
+            page: Some(PathBuf::from("spesa.md")),
             body: "x".into(),
             subject: subject.parse().unwrap(),
             allow: allow.into_iter().map(|s| s.parse().unwrap()).collect(),

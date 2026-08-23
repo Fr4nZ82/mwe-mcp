@@ -39,8 +39,9 @@ it needs and nothing else borrows it.
   reaches the model. The value is the single-line `LANGUAGE`
   directive produced by `mwe_core::locale::render_language_directive`
   from `enrollment_users.locale` of the signed-in user. When the
-  column is NULL the renderer emits the legacy "mirror the user's
-  message" clause, so an unset deployment keeps today's behaviour.
+  column is NULL the renderer emits the "mirror the language of the
+  user's message" clause instead, so a deployment that declares no
+  locale still gets a LANGUAGE directive.
 
 **Output**: a function-calling sequence (not a single JSON object).
 The model alternates between emitting `tool_calls` (against the

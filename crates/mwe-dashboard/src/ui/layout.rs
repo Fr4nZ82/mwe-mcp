@@ -15,12 +15,9 @@
 //! [`error_page`] is what [`crate::error::DashboardError`] uses to
 //! render its HTTP responses.
 //!
-//! Phase 2 of the phosphor-terminal restyle: this shell renders with
-//! Tailwind v4 utility classes coming from `tailwind/app.css` (loaded
-//! at `/dashboard/static/tailwind.css`). The legacy hand-written
-//! `app.css` is still linked second so per-page bodies that have not
-//! yet been migrated keep their styles; Phase 3 migrates the bodies
-//! and removes the legacy link.
+//! The shell renders in the phosphor-terminal style, with Tailwind v4
+//! utility classes compiled from `tailwind/app.css` into the single
+//! stylesheet it links (`/dashboard/static/tailwind.css`).
 
 use axum::http::StatusCode;
 use maud::{DOCTYPE, Markup, PreEscaped, html};
@@ -116,7 +113,7 @@ document.addEventListener('keydown',ping,true);\
 #[must_use]
 pub fn anonymous_page(title: &str, body: &Markup) -> String {
     // No nav, a single focused form (login / setup / invite / recovery): the
-    // `anon-shell` class centers it as a narrow column (see app.css) instead of
+    // `anon-shell` class centers it as a narrow column (see `tailwind/app.css`) instead of
     // pinning it to the left of a wide empty page.
     shell(Chrome::default(), title, None, "anon-shell", body).into_string()
 }
@@ -128,7 +125,7 @@ pub fn anonymous_page(title: &str, body: &Markup) -> String {
 /// These read as content pages (intro copy, the consumer table, the long
 /// `mcp add` command blocks), so the 30rem login-form width of `anon-shell`
 /// cramps them. They reuse the `reading-main` cap — a centered reading-width
-/// column (see app.css), auth-agnostic — instead. Still no top nav or chat
+/// column (see `tailwind/app.css`), auth-agnostic — instead. Still no top nav or chat
 /// panel: the visitor is anonymous.
 #[must_use]
 pub fn anonymous_reading_page(title: &str, body: &Markup) -> String {
@@ -263,10 +260,10 @@ fn shell(
             }
             body class=(body_class) {
                 (header(read_only, &demo_identities, user))
-                // Content width: the old hard 1040px cap left big dead zones
-                // on wide (≥2k / 4k) screens. We now let `main` use the width
-                // up to a generous cap and manage readability at the element
-                // level instead — inputs/forms cap their own width and
+                // Content width: `main` takes the viewport up to a generous
+                // cap, so a wide (≥2k / 4k) screen gets no dead zones, and
+                // readability is managed at the element level instead —
+                // inputs/forms cap their own width and
                 // flex-wrap into columns (.field-grid), prose columns cap their
                 // line length, tables take the full width and scroll inside
                 // their own container. Mobile-first is preserved: the padding
@@ -497,7 +494,7 @@ fn nav_link(href: &str, label: &str) -> Markup {
 ///   `localStorage.mwe-mcp.chat.width` and rehydrated on subsequent
 ///   loads.
 /// - `.chat-panel-header` carries the H2 title and the close
-///   button. `#chat-close` is the close affordance added in Phase 2;
+///   button. `#chat-close` is the close affordance;
 ///   `ui.js` toggles the body class and persists the choice under
 ///   `localStorage.mwe-mcp.chat.open`.
 /// - `.chat-panel-messages` is the scroll area populated entirely

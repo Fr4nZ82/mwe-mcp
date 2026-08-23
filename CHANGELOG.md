@@ -5,9 +5,9 @@ All notable changes to **mwe-mcp** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-From 1.0, the public interface (the MCP tool surface, by family — see
-[`docs/protocol/mcp-tools.md`](docs/protocol/mcp-tools.md)) is a stable,
-semver-governed surface — breaking changes are called out explicitly.
+From 1.0, the public interface — the MCP tool surface, family by family, as
+the dispatcher in `crates/mwe-mcp-server/src/mcp/` declares it — is a stable,
+semver-governed surface: breaking changes are called out explicitly.
 
 ## Unreleased
 

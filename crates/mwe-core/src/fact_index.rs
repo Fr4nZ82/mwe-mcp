@@ -2345,9 +2345,9 @@ type ListPageAccumulator = std::collections::BTreeMap<(String, String), (Option<
 /// it: a list the classifier cannot see is a list the turn mints a second copy
 /// of, live, in front of the user.
 ///
-/// Recency is the right axis rather than the turn's text (a per-turn ranking
-/// here was built and backed out the same day — *«è un cerotto su un guasto
-/// che sta a monte»*). A list somebody wrote to this morning is the one
+/// Recency is the right axis rather than the turn's text: ranking this list by
+/// what the turn happens to say is *«un cerotto su un guasto che sta a monte»*
+/// — the choice belongs upstream. A list somebody wrote to this morning is the one
 /// *«add it to the shopping list»* means; a list untouched for months is the
 /// one that can be dropped without inventing a duplicate. Ties fall back to
 /// `(wiki_id, page)` so the result is stable for a given corpus.

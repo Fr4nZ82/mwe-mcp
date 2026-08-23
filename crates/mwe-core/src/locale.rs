@@ -192,10 +192,10 @@ pub async fn memory_directive_for_user(pool: &sqlx::SqlitePool, user_id: &str) -
     render_memory_language_directive(resolved.as_deref())
 }
 
-/// Mirror clause used when no explicit locale is known. Equivalent
-/// to the pre-plumbing LANGUAGE section so the bundled prompts keep
-/// working out of the box on a deployment that has not populated any
-/// of the three sources.
+/// Mirror clause used when no explicit locale is known: it tells the
+/// model to follow the language of the message it is answering, so a
+/// deployment that has populated none of the three sources still gets
+/// a complete LANGUAGE section.
 const MIRROR_FALLBACK: &str = "Mirror the language of the user's message. Never mix languages in a single response. \
      Never use non-Latin alphabets unless the user's text explicitly uses them. The tool \
      names, JSON keys and argument enums above stay in English; only the natural-language \

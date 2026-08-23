@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Admin-only editors for the YAML config sections that previously had
-//! **no dashboard surface**: the ingest timezone
-//! (`recall.ingest_timezone`), the dream cadence (`rem.schedule`),
-//! `logging`, and the `document` pipeline resources.
+//! Admin-only editors for four YAML config sections: the ingest
+//! timezone (`recall.ingest_timezone`), the dream cadence
+//! (`rem.schedule`), `logging`, and the `document` pipeline resources.
 //!
 //! No page of their own: like [`super::email_settings`], each renders
 //! as an admin-only **section of the Settings page**
