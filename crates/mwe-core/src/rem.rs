@@ -1036,6 +1036,9 @@ pub async fn run_cycle(
         refile_bridge_seeded = refile_sweep.bridge_candidates,
         refile_candidates = refile_sweep.candidates_examined,
         refiled = refile_sweep.refiled.len(),
+        rails_nominated = rail_writer.nominated,
+        rails_judged = rail_writer.judged,
+        rails_written = rail_writer.written.len(),
         contradiction_seeds = contradiction_sweep.seeds_examined,
         satellites_closed = contradiction_sweep.closed.len(),
         provenance_flagged = provenance_hygiene.flagged,
@@ -1127,14 +1130,14 @@ struct RailDecision {
 /// time and never revisits the choice; this is the pass that looks at a page
 /// from outside and decides it should point somewhere.
 ///
-/// **Who is nominated is structural, not behavioural.** The right evidence is
-/// which pages a reader opens together and cannot walk between —
-/// [`detect_missing_rails`] measures exactly that, and it has nothing to read:
-/// the service has been stopped since 2026-08-04 and the corpus written before
-/// it is not evidence about this engine. So the first version reads the
-/// **shape**: a page carrying fewer than [`PAGE_RAIL_BUDGET`] links, fewest
-/// first. A page with none at all leads, because it can only be reached by a
-/// search landing on one of its own facts and from it a reader can go nowhere.
+/// **Who is nominated is shape, with measured evidence on top.** The shape is
+/// a page carrying fewer than [`PAGE_RAIL_BUDGET`] links, fewest first: a page
+/// with none at all leads, because it can only be reached by a search landing
+/// on one of its own facts and from it a reader can go nowhere. Then
+/// [`detect_missing_rails`] lifts the pages a reader opened beside another and
+/// could not walk to — a gap that was measured, where "carries few links" is
+/// only a shape. It reads `recall_log`, so it is silent on a memory nobody has
+/// talked to yet, and that is why it orders the list instead of being it.
 ///
 /// The count is a page's **own** links, because that is what a reader standing
 /// on it can follow. A page ten others point at still leads nowhere, and is
@@ -1199,16 +1202,16 @@ async fn run_rail_writer(
             .then_with(|| day.touched_page(b).cmp(&day.touched_page(a)))
             .then_with(|| a.cmp(b))
     });
-    // Behavioural evidence first, where there is any: a pair a reader opened
-    // together and could not walk between is a measured gap, where "carries
-    // few links" is only a shape. It is silent on a memory nobody has talked
-    // to yet, which is why it leads the list instead of being it.
+    // Behavioural evidence first, where there is any: a page a reader opened
+    // beside another and could not walk to it from is a measured gap, where
+    // "carries few links" is only a shape. It is silent on a memory nobody has
+    // talked to yet, which is why it leads the list instead of being it.
+    //
+    // Only the page the reader was standing on is lifted. The one at the far
+    // end may already point here, and pointing back is not owed.
     let measured: BTreeSet<String> =
         match detect_missing_rails(pool, tree, &plan, 2, policy.rail_writer_cap).await {
-            Ok(pairs) => pairs
-                .into_iter()
-                .flat_map(|r| [r.a_slug, r.b_slug])
-                .collect(),
+            Ok(gaps) => gaps.into_iter().map(|r| r.from_slug).collect(),
             Err(e) => {
                 report
                     .errors
@@ -1386,7 +1389,7 @@ async fn judge_one_rail(
     // A page whose neighbourhood has not changed gets the same answer, so a
     // byte-identical re-ask is the most expensive no-op in the cycle.
     let memo_key = rem_verdicts::key(llm.model_id(), &prompt);
-    if rem_verdicts::is_settled(pool, rem_verdicts::kind::PAGE_SPLIT, &memo_key).await? {
+    if rem_verdicts::is_settled(pool, rem_verdicts::kind::RAIL, &memo_key).await? {
         return Ok(None);
     }
 
@@ -1403,8 +1406,7 @@ async fn judge_one_rail(
         .unwrap_or_default();
     let to = decision.link.trim();
     if to.is_empty() || to.eq_ignore_ascii_case("none") {
-        rem_verdicts::record_negative(pool, rem_verdicts::kind::PAGE_SPLIT, &memo_key, slug)
-            .await?;
+        rem_verdicts::record_negative(pool, rem_verdicts::kind::RAIL, &memo_key, slug).await?;
         return Ok(None);
     }
     // Anti-hallucination: the destination must be one of the pages offered.
@@ -2050,21 +2052,28 @@ fn parse_llm_yes(raw: &str) -> bool {
     false
 }
 
-// ---------- Auto-promote sub-job ----------
-/// One pair of pages the walk keeps opening together with no rail between
-/// them — a **missing link**, nominated deterministically.
+// ---------- Rail writer: the measured half of its nomination ----------
+/// One page the walk keeps opening beside another it cannot reach from there
+/// — a **missing link**, nominated deterministically.
+///
+/// **It names a direction, because that is what a reader walks.** A page pair
+/// linked one way is a gap for the page at the far end and for nobody else, so
+/// it is nominated once, for that page. A pair linked neither way is two gaps
+/// and is nominated twice, once from each side: each of those pages has its own
+/// reason to point, and a link puts no obligation on the page it points at.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MissingRail {
-    /// Plan slug of one page (the lexicographically smaller of the pair).
-    pub a_slug: String,
-    /// Plan slug of the other.
-    pub b_slug: String,
+struct MissingRail {
+    /// Plan slug of the page a reader would be standing on.
+    from_slug: String,
+    /// Plan slug of the page they could not walk to from there.
+    to_slug: String,
     /// How many turns opened both.
-    pub co_opens: usize,
+    co_opens: usize,
 }
 
 /// Nominate the rails the corpus is missing: pages repeatedly opened
-/// **together** by the walk, with no `[[wikilink]]` between them.
+/// **together** by the walk, with no `[[wikilink]]` leading from one to the
+/// other.
 ///
 /// Deterministic, read-only, **no model call** — the behavioural nominator of
 /// [`run_rail_writer`], and the strongest evidence there is: a reader opened
@@ -2100,7 +2109,7 @@ pub struct MissingRail {
 /// # Errors
 ///
 /// Underlying `sqlx` errors from the recall-log read.
-pub async fn detect_missing_rails(
+async fn detect_missing_rails(
     pool: &SqlitePool,
     tree: &WikiTree,
     plan: &crate::planner::CompilationPlan,
@@ -2173,18 +2182,23 @@ pub async fn detect_missing_rails(
         }
     }
 
+    // Each way round is its own question, because each is its own walk: the
+    // reader stands on one page and asks whether they can get to the other.
+    // A pair joined one way leaves the far page just as stranded as a pair
+    // joined neither way, and the side that already points has no gap at all.
     let mut out: Vec<MissingRail> = counts
         .into_iter()
         .filter(|&(_, n)| n >= min_co_opens)
-        // Railed in either direction? The pair is joined, and that is what
-        // this detector is about. Whether the return is also worth writing is
-        // a separate judgement and not one made here: a link puts no
-        // obligation on the page it points at (founder, 2026-08-23).
-        .filter(|&((a, b), _)| !written.contains(&(a, b)) && !written.contains(&(b, a)))
-        .map(|((a, b), co_opens)| MissingRail {
-            a_slug: a.to_owned(),
-            b_slug: b.to_owned(),
-            co_opens,
+        .flat_map(|((a, b), co_opens)| {
+            [(a, b), (b, a)]
+                .into_iter()
+                .filter(|pair| !written.contains(pair))
+                .map(|(from, to)| MissingRail {
+                    from_slug: from.to_owned(),
+                    to_slug: to.to_owned(),
+                    co_opens,
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
     // Strongest evidence first; slugs break ties so the list is stable across
@@ -2192,8 +2206,8 @@ pub async fn detect_missing_rails(
     out.sort_by(|x, y| {
         y.co_opens
             .cmp(&x.co_opens)
-            .then_with(|| x.a_slug.cmp(&y.a_slug))
-            .then_with(|| x.b_slug.cmp(&y.b_slug))
+            .then_with(|| x.from_slug.cmp(&y.from_slug))
+            .then_with(|| x.to_slug.cmp(&y.to_slug))
     });
     out.truncate(cap);
     Ok(out)
@@ -2204,6 +2218,7 @@ pub async fn detect_missing_rails(
 /// the meaningful window is `recall_log`'s own retention.
 const LINK_DETECTOR_SCAN_LIMIT: usize = 5_000;
 
+// ---------- Auto-promote sub-job ----------
 /// The page-mass floor for a page written in `style`, or `None` when mass is
 /// not a reason to split that kind of page at all.
 ///
@@ -8072,11 +8087,16 @@ mod tests {
         );
     }
 
-    /// Pages opened together enough times, with no rail, are nominated —
-    /// strongest evidence first; an already-linked pair never is.
-    #[tokio::test]
-    async fn co_opened_pages_with_no_rail_are_nominated_and_linked_ones_are_not() {
-        let (_wd, pool, tree) = crate::test_db::TestWorkdir::with_db_and_tree().await;
+    /// The corpus both rail-detector tests read: `diario` points at `fisco`,
+    /// the other two pages point nowhere, and the walk opened
+    /// `documenti`+`fisco` and `diario`+`fisco` three times each.
+    async fn co_open_corpus() -> (
+        crate::test_db::TestWorkdir,
+        SqlitePool,
+        WikiTree,
+        CompilationPlan,
+    ) {
+        let (wd, pool, tree) = crate::test_db::TestWorkdir::with_db_and_tree().await;
         let wid = crate::types::WikiId::parse("alice").expect("id");
         crate::wiki::create_identity_wiki(&tree, &wid, "alice", crate::wiki::IdentityKind::User)
             .expect("wiki");
@@ -8167,16 +8187,50 @@ mod tests {
             .await
             .expect("log");
         }
+        (wd, pool, tree, plan)
+    }
 
+    /// Pages opened together enough times, with no rail leading from one to
+    /// the other, are nominated — strongest evidence first, one entry per
+    /// direction that is missing.
+    ///
+    /// **The one-way pair is the case that matters.** `diario` points at
+    /// `fisco`, so a reader on `diario` is fine and `diario` has no gap. A
+    /// reader on `fisco` has nowhere to go, and that gap is exactly as real as
+    /// one on a pair linked neither way — reading the pair as "joined" would
+    /// hide it, which is the flattering direction this detector exists not to
+    /// look in.
+    #[tokio::test]
+    async fn co_opened_pages_are_nominated_for_each_direction_nobody_can_walk() {
+        let (_wd, pool, tree, plan) = co_open_corpus().await;
         let rails = detect_missing_rails(&pool, &tree, &plan, 3, 10)
             .await
             .expect("detect");
-        assert_eq!(rails.len(), 1, "only the unlinked pair: {rails:?}");
-        assert_eq!(rails[0].a_slug, "documenti");
-        assert_eq!(rails[0].b_slug, "fisco");
-        assert_eq!(rails[0].co_opens, 3);
+        let got: Vec<(&str, &str)> = rails
+            .iter()
+            .map(|r| (r.from_slug.as_str(), r.to_slug.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                // `documenti` and `fisco` are linked neither way: a gap from
+                // each side. `fisco` is stranded beside `diario` too, and its
+                // two gaps sort together, destination first.
+                ("documenti", "fisco"),
+                ("fisco", "diario"),
+                ("fisco", "documenti"),
+            ],
+            "and nothing for `diario`, which points at `fisco` already and owes \
+             nothing more: {rails:?}"
+        );
+        assert!(rails.iter().all(|r| r.co_opens == 3), "{rails:?}");
+    }
 
-        // Under the floor nothing is nominated.
+    /// Under the co-open floor nothing is nominated at all: the detector's
+    /// whole claim is that a reader went there repeatedly.
+    #[tokio::test]
+    async fn a_pair_opened_under_the_floor_is_not_nominated() {
+        let (_wd, pool, tree, plan) = co_open_corpus().await;
         assert!(
             detect_missing_rails(&pool, &tree, &plan, 4, 10)
                 .await

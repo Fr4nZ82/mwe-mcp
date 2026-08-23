@@ -647,8 +647,15 @@ pub fn summarize_full(out: &FullOutcome) -> String {
     } else {
         format!(" · husk-gc {}", out.cycle.husk_gc.removed.len())
     };
+    // Named only on a night that decided one, like husk-gc: a rail is the
+    // rarest thing the cycle does and the line must not carry a zero for it.
+    let rails = if out.cycle.rail_writer.written.is_empty() {
+        String::new()
+    } else {
+        format!(" · rails {}", out.cycle.rail_writer.written.len())
+    };
     format!(
-        "cycle {} · dedup {} · auto-promote {} · comments applied {}{husks} — then compiled {} pages ({} lists){}{}",
+        "cycle {} · dedup {} · auto-promote {} · comments applied {}{husks}{rails} — then compiled {} pages ({} lists){}{}",
         out.cycle.cycle_id,
         out.cycle.revisor.applied.len(),
         out.cycle.auto_promote.applied.len(),

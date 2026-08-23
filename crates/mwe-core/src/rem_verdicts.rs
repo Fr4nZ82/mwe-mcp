@@ -70,6 +70,8 @@ pub mod kind {
     pub const CONTRADICTION: &str = "contradiction";
     /// Cross-wiki refile verdict (`rem-refile`).
     pub const REFILE: &str = "refile";
+    /// Rail writer's one-link-or-none verdict (`rem-rails`).
+    pub const RAIL: &str = "rail";
 }
 
 /// Derive the memo key for one confirmer question.
