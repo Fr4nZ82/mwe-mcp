@@ -627,7 +627,8 @@ mod tests {
             "`user:alice` is on every page, so it discriminates nothing: {picked:?}"
         );
 
-        // The same pool, with the owner no longer ubiquitous: now it selects.
+        // The same pool with one more owner, so nobody is on more than half
+        // of it: now the source selects.
         let p = pool(vec![
             ("me", traits(None, &["user:alice"], &[])),
             ("a", traits(None, &["user:alice"], &[])),
