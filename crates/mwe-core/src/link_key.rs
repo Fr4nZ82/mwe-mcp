@@ -35,7 +35,7 @@
 //! before scoring — and the clause text is never returned to anyone. A key
 //! written on a page a reader cannot open still shows them nothing.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use sqlx::{Row, SqlitePool};
 
@@ -409,21 +409,6 @@ pub async fn stored_for_page(pool: &SqlitePool, source_path: &str) -> Result<Vec
                 embedding: blob.as_deref().and_then(|b| decode_embedding(b).ok()),
             }
         })
-        .collect())
-}
-
-/// How many keys each page carries — for the dashboard and the tests.
-///
-/// # Errors
-///
-/// Propagates the SQL failure.
-pub async fn count_by_page(pool: &SqlitePool) -> Result<BTreeMap<String, i64>> {
-    let rows = sqlx::query("SELECT source_path, count(*) AS n FROM link_key GROUP BY source_path")
-        .fetch_all(pool)
-        .await?;
-    Ok(rows
-        .iter()
-        .map(|r| (r.get::<String, _>("source_path"), r.get::<i64, _>("n")))
         .collect())
 }
 
