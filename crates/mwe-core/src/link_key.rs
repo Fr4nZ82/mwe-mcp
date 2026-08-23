@@ -101,6 +101,21 @@ pub struct LinkKeyRow {
     pub embedding: Option<Vec<f32>>,
 }
 
+/// A stored key, as the write path sees it — see [`stored_for_page`].
+///
+/// The read path's [`LinkKeyRow`] carries the target and not the clause,
+/// because it scores and never compares; this one carries the clause and not
+/// the target, because it compares and never scores.
+#[derive(Debug, Clone)]
+pub struct StoredKey {
+    /// The span of prose, exactly as it was embedded.
+    pub clause: String,
+    /// The `fact_id`s it stands in for.
+    pub covers: Vec<String>,
+    /// Its vector; `None` when the embedder was down when it was written.
+    pub embedding: Option<Vec<f32>>,
+}
+
 /// Cut a page body into the clauses that carry a `[[wikilink]]`.
 ///
 /// A clause is the span between sentence boundaries **and** the marks that
@@ -360,22 +375,41 @@ pub fn best_scores(keys: &[LinkKeyRow], query: &[f32]) -> HashMap<String, f32> {
     best
 }
 
-/// The clause texts one page currently has stored, for the write path's
-/// change test.
+/// One page's keys as stored, in write order — the write path's change test.
 ///
-/// Comparing the texts is exact and costs one `SELECT`. Comparing anything
-/// coarser — the file stamp, the page's card — would re-embed every link on
-/// every page whose testata moved, which is most of them on a compile night.
+/// **Both halves are compared, because a key can go stale in two ways.** The
+/// clause text moves when the prose is rewritten, and then the vector has to
+/// be made again. What it *covers* moves on its own: a fact written next to a
+/// link changes which facts are beside the clause without touching a word of
+/// it, and a test that read the texts alone would freeze the coverage until
+/// somebody happened to rewrite the sentence.
+///
+/// The vector comes along so the write path can keep it: a clause whose text
+/// survived the rewrite was embedded from exactly those words, and embedding
+/// them again would buy the same numbers.
 ///
 /// # Errors
 ///
 /// Propagates the SQL failure.
-pub async fn texts_for_page(pool: &SqlitePool, source_path: &str) -> Result<Vec<String>> {
-    let rows = sqlx::query("SELECT clause FROM link_key WHERE source_path = ? ORDER BY id")
-        .bind(source_path)
-        .fetch_all(pool)
-        .await?;
-    Ok(rows.iter().map(|r| r.get::<String, _>("clause")).collect())
+pub async fn stored_for_page(pool: &SqlitePool, source_path: &str) -> Result<Vec<StoredKey>> {
+    let rows = sqlx::query(
+        "SELECT clause, covers, embedding FROM link_key WHERE source_path = ? ORDER BY id",
+    )
+    .bind(source_path)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            let blob: Option<Vec<u8>> = r.get("embedding");
+            let covers: String = r.get("covers");
+            StoredKey {
+                clause: r.get("clause"),
+                covers: serde_json::from_str(&covers).unwrap_or_default(),
+                embedding: blob.as_deref().and_then(|b| decode_embedding(b).ok()),
+            }
+        })
+        .collect())
 }
 
 /// How many keys each page carries — for the dashboard and the tests.

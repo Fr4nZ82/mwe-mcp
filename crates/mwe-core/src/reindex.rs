@@ -1393,9 +1393,14 @@ async fn drop_page_caches(pool: &SqlitePool, source_path: &str) {
 /// its own — the clauses have to be located in the same coordinate space as
 /// the fact regions, and only the parser knows where those are.
 ///
-/// **Re-embeds only when the clauses actually moved**, compared text by text.
-/// A coarser test — the file stamp, the card — would re-embed every link of
-/// every page whose testata shifted, which on a compile night is most of them.
+/// **Compared against what is stored, clause and coverage both**
+/// ([`crate::link_key::stored_for_page`]). A page changes under a key in two
+/// independent ways: its prose moves, and the facts beside the link move. A
+/// coarser test — the file stamp, the card — would redo every link of every
+/// page whose testata shifted, which on a compile night is most of them.
+///
+/// A clause whose text came through unchanged **keeps its vector**, so a fact
+/// landing next to a link costs one `UPDATE` and no embedding at all.
 ///
 /// Soft throughout, like the card: a page with no keys is a page whose facts
 /// are found by their own words, which is what happens without this table at
@@ -1408,35 +1413,64 @@ async fn refresh_link_keys(
     raw: &str,
 ) {
     let clauses = crate::link_key::clauses_of(raw);
-    let stored = crate::link_key::texts_for_page(pool, source_path)
+    let stored = crate::link_key::stored_for_page(pool, source_path)
         .await
         .unwrap_or_default();
-    let fresh: Vec<&str> = clauses.iter().map(|c| c.text.as_str()).collect();
-    if stored.len() == fresh.len() && stored.iter().zip(&fresh).all(|(a, b)| a == b) {
+    if clauses.is_empty() {
+        if !stored.is_empty()
+            && let Err(e) = crate::link_key::drop_page(pool, source_path).await
+        {
+            tracing::warn!(source_path, error = %e, "reindex: link keys not dropped");
+        }
         return;
     }
-    if clauses.is_empty() {
+    // Past the guard above, so only a page that carries a link pays for it.
+    let regions = crate::link_key::fact_regions(&crate::parser::parse(raw));
+    let fresh: Vec<(crate::link_key::Clause, Vec<String>)> = clauses
+        .into_iter()
+        .map(|c| {
+            let covers = crate::link_key::covered_facts(&regions, c.at);
+            (c, covers)
+        })
+        // A page with no facts has nothing for a clause to stand in for.
+        .filter(|(_, covers)| !covers.is_empty())
+        .collect();
+    if stored.len() == fresh.len()
+        && stored
+            .iter()
+            .zip(&fresh)
+            .all(|(s, (c, covers))| s.clause == c.text && s.covers == *covers)
+    {
+        return;
+    }
+    if fresh.is_empty() {
         if let Err(e) = crate::link_key::drop_page(pool, source_path).await {
             tracing::warn!(source_path, error = %e, "reindex: link keys not dropped");
         }
         return;
     }
-    let regions = crate::link_key::fact_regions(&crate::parser::parse(raw));
+    // Reuse the stored vector for any clause whose text is unchanged — keyed
+    // by text, so a clause that merely moved on the page, or that now stands
+    // in for a different fact, is not re-embedded either.
+    let reuse: std::collections::HashMap<&str, &[f32]> = stored
+        .iter()
+        .filter_map(|s| s.embedding.as_deref().map(|v| (s.clause.as_str(), v)))
+        .collect();
     let now = chrono::Utc::now().to_rfc3339();
-    let mut keys = Vec::with_capacity(clauses.len());
-    for clause in clauses {
-        let covers = crate::link_key::covered_facts(&regions, clause.at);
-        if covers.is_empty() {
-            continue;
-        }
-        let embedding = match embedder.embed(&clause.text).await {
-            Ok(v) => Some(v),
-            // Soft: an un-embedded key simply does not score, which is a
-            // smaller offer and never a wrong one.
-            Err(e) => {
-                tracing::warn!(source_path, error = %e, "reindex: clause not embedded");
-                None
-            },
+    let mut keys = Vec::with_capacity(fresh.len());
+    for (clause, covers) in fresh {
+        let embedding = if let Some(v) = reuse.get(clause.text.as_str()) {
+            Some((*v).to_vec())
+        } else {
+            match embedder.embed(&clause.text).await {
+                Ok(v) => Some(v),
+                // Soft: an un-embedded key simply does not score, which is a
+                // smaller offer and never a wrong one.
+                Err(e) => {
+                    tracing::warn!(source_path, error = %e, "reindex: clause not embedded");
+                    None
+                },
+            }
         };
         keys.push((clause, covers, embedding));
     }
@@ -2144,6 +2178,92 @@ mod tests {
                 .expect("read")
                 .is_empty(),
             "a key outliving its page would score for a fact nobody can open"
+        );
+    }
+
+    /// **A fact landing beside a link is covered by it, and costs no
+    /// embedding.**
+    ///
+    /// A clause stands in for the facts beside it, and which facts those are
+    /// changes without a word of the clause changing: the fact arrives, the
+    /// sentence that points somewhere does not move. A refresh that compared
+    /// the clause texts alone would leave the coverage as it was until
+    /// somebody happened to rewrite the prose — and the fact that just
+    /// arrived, the one most likely to be asked about, would be the one
+    /// reachable only by its own words.
+    ///
+    /// The vector is the other half: the clause was embedded from exactly
+    /// those words, so it survives the rewrite and the page pays one `UPDATE`.
+    #[tokio::test]
+    async fn a_fact_written_beside_a_link_is_covered_without_re_embedding_the_clause() {
+        let dir = tempdir().unwrap();
+        let wiki_dir = dir.path().join("wikis/alice");
+        write_wiki_meta(&wiki_dir, "alice");
+        let tree = WikiTree::open(dir.path()).expect("open tree");
+        let pool = make_pool().await;
+
+        let first = FactId::parse("018f1234-5678-7abc-9def-00000000ff01").unwrap();
+        let later = FactId::parse("018f1234-5678-7abc-9def-00000000ff02").unwrap();
+        let head = "---\ntitle: \"Cucina\"\ndescription: \"d\"\n---\n\n";
+        let a = format!("{{{{f={first} subject=user:alice}}}}Alice cucina la sera.{{{{/}}}}");
+        let clause = "Le abitudini e le ricette che ne derivano sono raccolte in \
+                      [[alice/ricette]].";
+        write_page(&wiki_dir, "cucina.md", &format!("{head}{a}\n\n{clause}\n"));
+        seed_fact(
+            &pool,
+            &first,
+            "wikis/alice/cucina.md",
+            "Alice cucina la sera.",
+            None,
+        )
+        .await;
+
+        // A vector nothing else would produce, so a re-embed is visible.
+        let planted = vec![0.25_f32; 8];
+        let embedder = Arc::new(FakeEmbedder::with_fixed_embedding(
+            "fake-bge-m3",
+            planted.clone(),
+        ));
+        reindex_file(&pool, &tree, embedder, &wiki_dir.join("cucina.md"))
+            .await
+            .expect("reindex");
+        let keys = crate::link_key::all_embedded(&pool).await.expect("read");
+        assert_eq!(keys.len(), 1, "one link, one key: {keys:?}");
+        assert_eq!(keys[0].covers, vec![first.as_str().to_owned()]);
+
+        // The second fact lands after the clause. The clause itself is
+        // written back byte for byte.
+        let b =
+            format!("{{{{f={later} subject=user:alice}}}}Alice non tollera il glutine.{{{{/}}}}");
+        write_page(
+            &wiki_dir,
+            "cucina.md",
+            &format!("{head}{a}\n\n{clause}\n\n{b}\n"),
+        );
+        seed_fact(
+            &pool,
+            &later,
+            "wikis/alice/cucina.md",
+            "Alice non tollera il glutine.",
+            None,
+        )
+        .await;
+        let embedder = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
+        reindex_file(&pool, &tree, embedder, &wiki_dir.join("cucina.md"))
+            .await
+            .expect("reindex again");
+
+        let keys = crate::link_key::all_embedded(&pool).await.expect("read");
+        assert_eq!(keys.len(), 1, "still one link: {keys:?}");
+        assert_eq!(
+            keys[0].covers,
+            vec![first.as_str().to_owned(), later.as_str().to_owned()],
+            "the fact that just arrived is beside the clause too"
+        );
+        assert_eq!(
+            keys[0].embedding.as_deref(),
+            Some(planted.as_slice()),
+            "the clause did not move, so its vector was kept"
         );
     }
 
