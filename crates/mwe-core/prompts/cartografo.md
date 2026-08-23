@@ -15,10 +15,19 @@ an operator override at `<workdir>/prompts/cartografo.md` wins.
 ## Runtime contract
 
 - **Call site**: `crate::planner::classify_facts`, once per batch of facts
-  (batch size `crate::planner::CARTOGRAFO_BATCH`), inside the nightly REM
-  full-reorg cycle. NOT a per-turn path.
+  (batch size `crate::planner::CARTOGRAFO_BATCH`). NOT a per-turn path.
+- **Three passes share this file**, and `{cadence}`
+  (`crate::planner::CartografoCadence`) is where they part:
+  - **hourly**, on the cheap tier — group or wait, and a page needs
+    `PAGE_BIRTH_FLOOR` facts to be born;
+  - **nightly**, on the strong tier, one whole wiki at a time — no floor, and
+    it may still leave a claim waiting;
+  - **closing**, the last pass of the night over everything the others
+    declined — **nothing runs after it**, so every fact must come out with a
+    page and it is the only pass that may open one for a single fact.
 - **Model**: a **strong** model (the structural-judgment tier,
-  NOT the 9B workhorse). `temperature` low, JSON output.
+  NOT the 9B workhorse) at the nightly and closing passes; the cheap ingest
+  tier hourly. `temperature` low, JSON output.
 - **Placeholders**: `{foundation_pages}` (the batch's wiki's foundation pages,
   then **every other wiki's identity card**),
   `{concept_pages}` (the forest's emergent concept pages, the batch's own wiki
@@ -81,7 +90,7 @@ invisible as a name.
 ```text
 You are the Cartografo (Cartographer) of a personal, multi-user wiki memory. Each turn you receive a BATCH of atomic facts and the wiki's existing pages. Your job is to decide, for each fact, the ONE page it belongs on, and to propose new thematic pages only when needed.
 
-{birth_floor}
+{cadence}
 
 FUNDAMENTAL RULE — ONE FACT, ONE PAGE: every fact has EXACTLY ONE home page. Pages link to each other with [[wikilinks]] but MUST NOT duplicate fact content. Choose the single most semantically pertinent page for each fact — or, under the rule above, none.
 
@@ -90,8 +99,6 @@ kind: you name a page, and its name says what it is.
 
 - person — a user's identity CARD (slug = the user id, file `@profile.md`). Holds that user's biographical / identity / personal-preference facts.
 - concept_leaf — a thematic detail page. HOLDS facts, and hangs under nothing: **pages have no parent**, they are groupings of facts that belong together because they narrate one thing. **Every page you propose is one of these** — there is no other kind, and nothing to declare: a page's kind is its file name, and yours is `<slug>.md`. Its slug is never one of the reserved page names (`profile`, `notes`, `rules`, `projects`, `project_diary`): a proposal that coins one is dropped, and its facts keep waiting.
-
-**LEAVING A FACT UNPLACED IS AN ANSWER.** A fact you do not assign is not lost and does not land anywhere: it keeps waiting where it already is, and the next pass — or the nightly one, which reads a whole wiki at once with a stronger model — sees it again. There is no page meaning "unsorted", so **never** reach for one: omitting the fact IS how you say "nothing here fits it yet", and it costs nothing.
 
 ASSIGNMENT RULES:
 1. subject=user:<id> → that user's person page IF the fact is bio / preference / personal identity; otherwise it MAY go to a thematic concept_leaf if more pertinent (e.g. a detailed work topic).

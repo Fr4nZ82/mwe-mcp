@@ -820,8 +820,8 @@ pub fn build_compilation_plan(
     //
     // **Everything else that reaches here is simply not placed**, and that is
     // a state, not a problem (founder, 2026-08-22): the claim waits in the
-    // buffer, where the next pass sees it again and the nightly one reads the
-    // whole wiki at once. A claim left here is NOT dropped —
+    // buffer, where the next pass sees it again — and the last pass of the
+    // night has to give it a page. A claim left here is NOT dropped:
     // `dream_light::materialise` promotes only what the plan placed, so an
     // unplaced claim keeps its buffer row.
     for f in facts {
@@ -1662,11 +1662,35 @@ pub struct CartografoSignals {
     /// person reads, so each batch is cut to one wiki and carries that
     /// wiki's language. Built by [`wiki_locales_for`].
     pub wiki_locales: BTreeMap<String, String>,
-    /// How many facts a proposal must group before a page is born, when the
-    /// cadence imposes a floor at all ([`PAGE_BIRTH_FLOOR`] — the cheap hourly
-    /// tier). `None` at REM: the strong pass reads a whole wiki at once and its
-    /// judgement is the point.
-    pub birth_floor: Option<usize>,
+    /// Which pass is asking, and therefore what it is allowed to leave
+    /// undone. Rendered into the prompt's `{cadence}` slot — the one place
+    /// where the passes that share this prompt part company.
+    pub cadence: CartografoCadence,
+}
+
+/// Which of the three passes is calling the Cartografo.
+///
+/// One prompt, three jobs, and they differ on exactly two questions: how many
+/// facts must group before a page may be born, and whether "I could not place
+/// this one" is an acceptable answer. Rendering the difference instead of
+/// writing it into the body is what keeps one pass from reading another's
+/// rule.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum CartografoCadence {
+    /// The hourly pass, on the cheap tier. Groups or waits; a page needs
+    /// [`PAGE_BIRTH_FLOOR`] facts to be born.
+    #[default]
+    Hourly,
+    /// The nightly pass, on the strong tier, reading a whole wiki at once. No
+    /// floor — its judgement is the point — and it may still leave a claim
+    /// waiting, because [`Self::Closing`] runs after it.
+    Nightly,
+    /// The last pass of the night, over what every other pass declined.
+    ///
+    /// **Nothing runs after it**, so "leave it waiting" stops being an answer:
+    /// a claim it does not place waits another whole day. It is the only pass
+    /// that may open a page for a single fact, and it is expected to.
+    Closing,
 }
 
 impl CartografoSignals {
@@ -2129,7 +2153,7 @@ pub async fn classify_facts(
         let taken_desc = describe_taken_slugs(foundation, registry, wiki, &signals.foreign_pages);
         let facts_desc = describe_facts(batch, signals);
         let language_directive = signals.language_for(wiki);
-        let birth_floor_directive = birth_floor_directive(signals.birth_floor);
+        let cadence_directive = cadence_directive(signals.cadence);
         let system = prompts::render(
             "cartografo",
             workdir,
@@ -2140,7 +2164,7 @@ pub async fn classify_facts(
                 ("concept_pages", concept_desc.as_str()),
                 ("taken_slugs", taken_desc.as_str()),
                 ("facts", facts_desc.as_str()),
-                ("birth_floor", birth_floor_directive.as_str()),
+                ("cadence", cadence_directive.as_str()),
             ],
         )?;
         let resp = match llm
@@ -2243,6 +2267,15 @@ pub enum NewFactPlacement<'a> {
     /// subject's identity card and gets there by identity fallback, exactly as
     /// under [`Self::Ingest`].
     NamedThenCartografo(&'a dyn LlmBackend),
+    /// The LAST pass of the night: the strong Cartografo over what every
+    /// earlier pass left waiting, with the whole forest in view and no next
+    /// pass to defer to.
+    ///
+    /// Same model and same shape as [`Self::Cartografo`]; what differs is the
+    /// question. The nightly pass asks *where does this belong*, and declining
+    /// is a fine answer because this one comes after it. This one asks *what
+    /// page does this need*, and declining costs the claim another day.
+    ClosingCartografo(&'a dyn LlmBackend),
     /// No placement intelligence: every new fact falls back to the identity card to its
     /// subject / source-wiki foundation page — the historical `cartografo = None`
     /// degradation, kept for a Full pass on a deployment with no strong slot.
@@ -2258,7 +2291,20 @@ impl NewFactPlacement<'_> {
     /// [`build_wiki_plan`], where that is the strong pass's alone.
     #[must_use]
     pub const fn runs_cartografo(&self) -> bool {
-        matches!(self, Self::Cartografo(_) | Self::NamedThenCartografo(_))
+        matches!(
+            self,
+            Self::Cartografo(_) | Self::NamedThenCartografo(_) | Self::ClosingCartografo(_)
+        )
+    }
+
+    /// Which pass this placement is, for the prompt's `{cadence}` slot.
+    #[must_use]
+    pub const fn cadence(&self) -> CartografoCadence {
+        match self {
+            Self::NamedThenCartografo(_) => CartografoCadence::Hourly,
+            Self::ClosingCartografo(_) => CartografoCadence::Closing,
+            Self::Ingest | Self::Cartografo(_) | Self::OrphanFallback => CartografoCadence::Nightly,
+        }
     }
 
     /// Stable name of the placement, for the compile log and for the test that
@@ -2269,6 +2315,7 @@ impl NewFactPlacement<'_> {
             Self::Ingest => "ingest",
             Self::Cartografo(_) => "cartografo",
             Self::NamedThenCartografo(_) => "named-then-cartografo",
+            Self::ClosingCartografo(_) => "closing-cartografo",
             Self::OrphanFallback => "identity fallback",
         }
     }
@@ -2382,7 +2429,7 @@ async fn place_new_facts(
     signals: &CartografoSignals,
 ) -> Result<Blueprint> {
     match placement {
-        NewFactPlacement::Cartografo(llm) => {
+        NewFactPlacement::Cartografo(llm) | NewFactPlacement::ClosingCartografo(llm) => {
             classify_facts(*llm, facts, foundation, registry, workdir, signals).await
         },
         NewFactPlacement::Ingest => Ok(ingest_placement_blueprint(facts)),
@@ -2427,37 +2474,55 @@ async fn place_new_facts(
     }
 }
 
-/// The `{birth_floor}` block of the Cartografo prompt.
+/// The `{cadence}` block of the Cartografo prompt.
 ///
-/// Two different jobs share one prompt file, and this is where they part: the
-/// cheap hourly tier groups or parks, the nightly strong tier judges. Rendered
-/// rather than written into the body so neither reads the other's rule.
-fn birth_floor_directive(floor: Option<usize>) -> String {
-    floor.map_or_else(
-        || {
-            "YOUR JUDGEMENT DECIDES — you are the nightly pass and you are shown the whole \
-             wiki. Propose the pages the material actually needs; there is no floor on how \
-             many facts a page must group."
-                .to_owned()
-        },
-        |n| {
-            format!(
-                "PARK RATHER THAN GUESS — you are the hourly pass, and you are cheap on purpose.\n\
+/// Three passes share one prompt file, and this is where they part: the cheap
+/// hourly tier groups or waits, the nightly strong tier judges, and the
+/// closing pass finishes the queue. Rendered rather than written into the body
+/// so no pass reads another's rule.
+fn cadence_directive(cadence: CartografoCadence) -> String {
+    match cadence {
+        CartografoCadence::Hourly => format!(
+            "PARK RATHER THAN GUESS — you are the hourly pass, and you are cheap on purpose.\n\
              - Assign a fact to an existing page only when that page is a STRONG match. \
              \"Related\" is not a match: a fact filed on a page it only brushes against is \
              harder to find than one nobody filed, because the page's card stops describing \
              what is on it.\n\
-             - When no page is a strong match, OMIT the fact from `assignments`. The engine \
-             leaves it waiting and offers it back to you at the next pass, so \
-             nothing is lost and nothing is guessed.\n\
-             - You may propose a new page ONLY when you are grouping at least {n} facts on one \
+             - **LEAVING A FACT UNPLACED IS AN ANSWER.** When no page is a strong match, OMIT \
+             the fact from `assignments`. It is not lost and it lands nowhere: it keeps \
+             waiting where it is, and the next pass — or tonight's, which reads a whole wiki \
+             at once with a stronger model — sees it again. There is no page meaning \
+             \"unsorted\", so never reach for one.\n\
+             - You may propose a new page ONLY when you are grouping at least {PAGE_BIRTH_FLOOR} facts on one \
              theme. Below that, omit them: a page born from one or two facts takes its card from \
              them, and that card is the only thing a reader is shown before deciding whether to \
              open the page. Let the pile grow — you will see it again — or leave it to the \
-             nightly pass, which reads the whole wiki at once."
-            )
-        },
-    )
+             nightly pass, which reads the whole wiki at once.",
+        ),
+        CartografoCadence::Nightly => "YOUR JUDGEMENT DECIDES — you are the nightly pass and \
+             you are shown the whole wiki. Propose the pages the material actually needs; \
+             there is no floor on how many facts a page must group.\n\
+             - **LEAVING A FACT UNPLACED IS AN ANSWER**, still: omit a fact no page here \
+             suits, and it keeps waiting. A closing pass runs after you, over everything \
+             every pass declined, and it is the one that has to finish the queue."
+            .to_owned(),
+        CartografoCadence::Closing => "YOU ARE THE LAST PASS — every fact in front of you was \
+             shown to an earlier pass, which declined it, and NOTHING RUNS AFTER YOU. A fact \
+             you leave unassigned waits another whole day.\n\
+             - **Every fact must come out with a page.** Omitting one is not an answer here; \
+             it is the one outcome this pass exists to prevent.\n\
+             - **A page for a single fact is allowed, and you are the only pass that may open \
+             one.** If a fact belongs with nothing that exists, that is not a reason to leave \
+             it waiting — it is the reason to give it a page of its own. Write its card for \
+             the fact itself: what a reader looking for THIS would search for. A thin page is \
+             a state, not a mistake; it grows, or a later night folds it into a better home.\n\
+             - Prefer an existing page when one genuinely fits — a strong match is still \
+             better than a new page. `far` candidates are in front of you precisely because \
+             they resemble nothing here: read them before inventing.\n\
+             - The one thing you may not do is force a fact onto a page it does not belong \
+             on. If no page fits, open one."
+            .to_owned(),
+    }
 }
 
 /// How many facts on one theme must have piled up before a page is born
@@ -2469,9 +2534,11 @@ fn birth_floor_directive(floor: Option<usize>) -> String {
 ///
 /// A page born from one fact takes its card from that fact, and the card is
 /// the only thing a reader is shown before deciding whether to open the page —
-/// so a one-fact page is a page nobody can find on purpose. The floor is a
-/// **cheap-tier** rule: the hourly pass groups or waits, and the nightly strong
-/// pass keeps its judgement (it is the one that reads a whole wiki at once).
+/// so a page opened on a guess is a page nobody can find on purpose. The floor
+/// is a **cheap-tier** rule and nothing more: the nightly pass reads a whole
+/// wiki at once and keeps its judgement, and the closing pass
+/// ([`CartografoCadence::Closing`]) opens a page for a single fact on purpose,
+/// because by then the alternative is not "wait an hour" but "wait a day".
 ///
 /// One level up sits its sibling, `RemPolicy::auto_promote_group_min_pages`
 /// (default 9): how many pages must group before a **wiki** is born. Same
@@ -2482,7 +2549,8 @@ pub const PAGE_BIRTH_FLOOR: usize = 5;
 /// facts than that is **not** born, and the facts meant for it fall through to
 /// the orphan pass, which leaves them in the buffer, where they wait for the
 /// theme to grow (the queue re-offers them at every light build) or for the
-/// strong pass to read them at night.
+/// night to read them — first the nightly pass, then the closing one, which
+/// has to give each of them a page whatever the pile looks like.
 ///
 /// Only proposals are held: an assignment onto a page that already exists is
 /// the model recognising a home, not inventing one, and no floor applies.
@@ -2796,10 +2864,10 @@ pub async fn build_wiki_plan(
     // when the Cartografo actually runs — the enrollment-derived
     // identity-page scopes.
     let mut signals = CartografoSignals {
-        // The floor is the cheap tier's; the strong REM pass keeps its
-        // judgement (founder, 2026-08-18).
-        birth_floor: matches!(placement, NewFactPlacement::NamedThenCartografo(_))
-            .then_some(PAGE_BIRTH_FLOOR),
+        // Which pass is asking. It decides the whole of what the prompt's
+        // `{cadence}` slot says — the floor, and whether declining a fact is
+        // an answer.
+        cadence: placement.cadence(),
         ..CartografoSignals::default()
     };
     if let Some(prev) = &prev {
@@ -3934,16 +4002,65 @@ mod tests {
         );
     }
 
-    /// The floor is the cheap tier's. The nightly strong pass reads a whole
-    /// wiki at once and keeps its judgement, so its prompt says so instead.
+    /// One prompt, three passes, and the two questions they part on: how many
+    /// facts a page needs to be born, and whether declining is an answer.
+    ///
+    /// The last one is the whole of this slot's job. The hourly and nightly
+    /// passes may leave a claim waiting because something runs after them; the
+    /// closing pass has nothing after it, so for it the same sentence would
+    /// cost the claim another day.
     #[test]
-    fn the_birth_floor_is_the_cheap_tiers_only() {
-        let cheap = birth_floor_directive(Some(PAGE_BIRTH_FLOOR));
-        assert!(cheap.contains("at least 5"), "{cheap}");
-        assert!(cheap.contains("OMIT"), "{cheap}");
-        let strong = birth_floor_directive(None);
-        assert!(strong.contains("no floor"), "{strong}");
-        assert!(!strong.contains("OMIT"), "{strong}");
+    fn each_pass_is_told_what_it_may_leave_undone() {
+        let hourly = cadence_directive(CartografoCadence::Hourly);
+        assert!(hourly.contains("at least 5"), "{hourly}");
+        assert!(
+            hourly.contains("LEAVING A FACT UNPLACED IS AN ANSWER"),
+            "{hourly}"
+        );
+
+        let nightly = cadence_directive(CartografoCadence::Nightly);
+        assert!(nightly.contains("no floor"), "{nightly}");
+        assert!(!nightly.contains("at least 5"), "{nightly}");
+        assert!(
+            nightly.contains("LEAVING A FACT UNPLACED IS AN ANSWER"),
+            "a closing pass runs after it, so it may still decline: {nightly}"
+        );
+
+        let closing = cadence_directive(CartografoCadence::Closing);
+        assert!(
+            !closing.contains("LEAVING A FACT UNPLACED IS AN ANSWER"),
+            "nothing runs after the closing pass: {closing}"
+        );
+        assert!(
+            closing.contains("Every fact must come out with a page"),
+            "{closing}"
+        );
+        assert!(
+            closing.contains("single fact is allowed"),
+            "it is the only pass that may open a page for one fact: {closing}"
+        );
+    }
+
+    /// Which pass each placement is. The closing pass shares the nightly
+    /// model and the nightly shape; what it does not share is permission to
+    /// leave the queue as it found it.
+    #[test]
+    fn a_placement_knows_which_pass_it_is() {
+        use crate::llm::FakeLlmBackend;
+        let llm = FakeLlmBackend::new("fake", "{}");
+        assert_eq!(
+            NewFactPlacement::NamedThenCartografo(&llm).cadence(),
+            CartografoCadence::Hourly
+        );
+        assert_eq!(
+            NewFactPlacement::Cartografo(&llm).cadence(),
+            CartografoCadence::Nightly
+        );
+        assert_eq!(
+            NewFactPlacement::ClosingCartografo(&llm).cadence(),
+            CartografoCadence::Closing
+        );
+        assert!(NewFactPlacement::ClosingCartografo(&llm).runs_cartografo());
     }
 
     #[test]

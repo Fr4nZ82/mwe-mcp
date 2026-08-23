@@ -7384,6 +7384,47 @@ mod tests {
         );
     }
 
+    /// **A page carrying one fact is a merge candidate like any other**, and
+    /// that is the net under the closing pass.
+    ///
+    /// The closing pass may open a page for a single claim rather than leave
+    /// it waiting another day (founder, 2026-08-22: *«la pagina risultante con
+    /// una sola frase poi crescerà oppure sarà rivista le notti
+    /// successive»*). The second half of that ruling is this sweep: if mass
+    /// were a floor here, every thin page the closing pass opened would be
+    /// invisible to the one thing that can fold it into a better home.
+    #[test]
+    fn a_one_fact_page_is_a_merge_candidate_like_any_other() {
+        let mut pages = std::collections::BTreeMap::new();
+        pages.insert("nuoto".to_owned(), kin_leaf("nuoto", "alice", 1));
+        pages.insert(
+            "nuoto_martedi".to_owned(),
+            kin_leaf("nuoto_martedi", "alice", 1),
+        );
+        let plan = CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph: BTreeMap::new(),
+            compilation_order: Vec::new(),
+            generated_at: "t".to_owned(),
+            fact_count: 0,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+        };
+        let family: BTreeMap<String, String> =
+            std::iter::once(("alice".to_owned(), "alice".to_owned())).collect();
+
+        let pairs = merge_candidates(&plan, &[], &family);
+        assert!(
+            pairs
+                .iter()
+                .any(|(a, b, _)| a == "nuoto" && b == "nuoto_martedi"),
+            "two one-fact kin pages are a pair: {pairs:?}"
+        );
+    }
+
     /// Pages opened together enough times, with no rail, are nominated —
     /// strongest evidence first; an already-linked pair never is.
     #[tokio::test]

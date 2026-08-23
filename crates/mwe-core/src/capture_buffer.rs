@@ -607,8 +607,9 @@ pub async fn mark_promoted(pool: &SqlitePool, capture_id: &FactId, now: &str) ->
 /// is on no page at all (founder, 2026-08-22: *«i fatti senza destinazione si
 /// accumuleranno nella tabella buffer … se il giro orario non trova la
 /// collocazione lo lascia lì, marcandolo come "già provato a collocare"»*), so
-/// it waits for the next pass, and the nightly one reads the whole wiki at
-/// once with the strong model.
+/// it waits for the next pass: the next hour's, then tonight's, which reads a
+/// whole wiki at once with the strong model — and finally the closing pass,
+/// which has to give it a page whatever the pile looks like.
 ///
 /// Observational, and deliberately not a gate: nothing refuses a claim for
 /// having been declined often. What the counter buys is the difference between

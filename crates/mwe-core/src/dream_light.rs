@@ -125,9 +125,11 @@ pub struct LightCycleReport {
     /// Supersede hints applied (a prior fact marked superseded).
     pub superseded: usize,
     /// Captures the placement pass read and gave no page: they keep their
-    /// buffer row and are offered again next pass. Not an error — since
-    /// 2026-08-22 there is no page meaning "unsorted", so waiting IS the
-    /// outcome for a claim nothing fits yet.
+    /// buffer row and are offered again next pass. There is no page meaning
+    /// "unsorted", so waiting IS the outcome for a claim nothing fits yet —
+    /// **except in the closing pass** ([`crate::dream::run_closing_pass`]),
+    /// which has nothing after it, so a non-zero count there is the one thing
+    /// the night was supposed to prevent.
     pub left_waiting: usize,
     /// Per-capture soft errors (`"<capture_id>: <error>"`); the cycle continues.
     pub errors: Vec<String>,

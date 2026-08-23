@@ -62,6 +62,9 @@ pub struct FullOutcome {
     pub cycle: RemCycleReport,
     /// Narrative recompile of every page the reorg left dirty.
     pub compile: CompileReport,
+    /// The closing pass over whatever was still waiting after that — empty on
+    /// the usual night. See [`run_closing_pass`].
+    pub closing: CompileReport,
 }
 
 /// Which dream cadence is driving a compile pass.
@@ -175,6 +178,108 @@ pub async fn run_compile(
     cadence: Cadence,
     now: &str,
 ) -> Result<CompileReport> {
+    let placement = placement_for(cadence, llms.apply, llms.auto_promote);
+    compile_with(pool, tree, embedder, llms, cadence, placement, now).await
+}
+
+/// The last pass of the night: place what every earlier pass declined.
+///
+/// **The queue has to end the night empty** (founder, 2026-08-22: *«il REM
+/// deve svuotare il buffer»*). Every other pass may answer "nothing here fits
+/// this yet", because another pass comes after it. This one has nothing after
+/// it, so the same answer costs the claim a whole day — and a thing said once
+/// is exactly the kind of thing that would wait for weeks for four more like
+/// it. So the strong Cartografo sees the leftovers with the whole forest in
+/// view, told it is last, and allowed to open a page for a single fact:
+/// *«la pagina risultante con una sola frase poi crescerà oppure sarà rivista
+/// le notti successive»*. A one-fact page is a state of passage, and
+/// `run_page_merge` is the net under it — it nominates a page of any mass.
+///
+/// Costs one `COUNT` on the usual night, when the nightly pass already placed
+/// everything.
+///
+/// **One bound it does not lift:** `LightPolicy::max_promotions_per_cycle`
+/// caps how many claims one pass reads, so a queue longer than that empties
+/// over several nights rather than one. That cap is a guard on the embedder,
+/// not a placement rule, and hitting it is reported separately from a claim
+/// the model declined — the two mean different things.
+///
+/// # Errors
+///
+/// As [`run_compile`].
+pub async fn run_closing_pass(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: Arc<dyn Embedder>,
+    llms: &RemLlms<'_>,
+    now: &str,
+) -> Result<CompileReport> {
+    let Some(strong) = llms.auto_promote else {
+        tracing::debug!("dream: rem_promotions slot unconfigured — no closing pass");
+        return Ok(CompileReport::default());
+    };
+    let waiting = capture_buffer::count_buffered(pool)
+        .await
+        .context("closing pass: count buffered")?;
+    if waiting == 0 {
+        return Ok(CompileReport::default());
+    }
+    tracing::info!(waiting, "dream: closing pass over the claims still waiting");
+    let report = compile_with(
+        pool,
+        tree,
+        embedder,
+        llms,
+        Cadence::Full,
+        planner::NewFactPlacement::ClosingCartografo(strong),
+        now,
+    )
+    .await?;
+    // The one outcome this pass exists to prevent. Not an error — a claim is
+    // never lost, and the next night tries again — but it is the thing to look
+    // at, so it is said once, loudly, with the counter that says how long each
+    // one has been going round.
+    let over_cap = waiting.saturating_sub(i64::try_from(report.queue.scanned).unwrap_or(i64::MAX));
+    if over_cap > 0 {
+        tracing::info!(
+            waiting,
+            read = report.queue.scanned,
+            over_cap,
+            "closing pass: the per-pass cap held some back — they go to the next night"
+        );
+    }
+    if report.queue.left_waiting > 0 {
+        match capture_buffer::find_all_buffered(pool, 20).await {
+            Ok(rows) => {
+                let stuck: Vec<String> = rows
+                    .iter()
+                    .map(|c| format!("{} (declined {}×)", c.capture_id, c.placement_attempts))
+                    .collect();
+                warn!(
+                    left_waiting = report.queue.left_waiting,
+                    stuck = stuck.join(", "),
+                    "closing pass: the queue did not empty"
+                );
+            },
+            Err(e) => warn!(
+                left_waiting = report.queue.left_waiting,
+                error = %e,
+                "closing pass: the queue did not empty, and the leftovers could not be read"
+            ),
+        }
+    }
+    Ok(report)
+}
+
+async fn compile_with(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    embedder: Arc<dyn Embedder>,
+    llms: &RemLlms<'_>,
+    cadence: Cadence,
+    placement: planner::NewFactPlacement<'_>,
+    now: &str,
+) -> Result<CompileReport> {
     let Some(cronista_strong) = llms.cronista else {
         tracing::debug!("dream: cronista slot unconfigured — skipping narrative compilation");
         return Ok(CompileReport::default());
@@ -202,7 +307,6 @@ pub async fn run_compile(
     // everything, and it alone answers the re-open park; a Full pass with no
     // strong slot configured leaves only the deterministic identity fallback
     // (the historical `None` behaviour).
-    let placement = placement_for(cadence, flash, llms.auto_promote);
     tracing::debug!(
         cadence = ?cadence,
         placement = placement.label(),
@@ -452,16 +556,16 @@ pub async fn run_full(
     let cycle = rem::run_cycle(pool, tree, Arc::clone(&embedder), llms, policy)
         .await
         .context("rem cycle")?;
-    let compile = run_compile(
-        pool,
-        tree,
-        embedder.clone(),
-        llms,
-        Cadence::Full,
-        &Utc::now().to_rfc3339(),
-    )
-    .await?;
-    Ok(FullOutcome { cycle, compile })
+    let now = Utc::now().to_rfc3339();
+    let compile = run_compile(pool, tree, embedder.clone(), llms, Cadence::Full, &now).await?;
+    // Last, and it must be last: it is the pass that answers for whatever the
+    // others left, so nothing may run behind it and put something back.
+    let closing = run_closing_pass(pool, tree, embedder, llms, &now).await?;
+    Ok(FullOutcome {
+        cycle,
+        compile,
+        closing,
+    })
 }
 
 // ---------- one-line outcome summaries ----------
@@ -544,7 +648,7 @@ pub fn summarize_full(out: &FullOutcome) -> String {
         format!(" · husk-gc {}", out.cycle.husk_gc.removed.len())
     };
     format!(
-        "cycle {} · dedup {} · auto-promote {} · comments applied {}{husks} — then compiled {} pages ({} lists){}",
+        "cycle {} · dedup {} · auto-promote {} · comments applied {}{husks} — then compiled {} pages ({} lists){}{}",
         out.cycle.cycle_id,
         out.cycle.revisor.applied.len(),
         out.cycle.auto_promote.applied.len(),
@@ -555,6 +659,29 @@ pub fn summarize_full(out: &FullOutcome) -> String {
         out.compile.leaves,
         out.compile.lists,
         failure_note(&out.compile),
+        closing_note(&out.closing),
+    )
+}
+
+/// What the closing pass did, for the one-line summary — empty on the usual
+/// night, when the queue was already empty when it looked.
+///
+/// A claim it could not place is named here because it is the outcome the pass
+/// exists to prevent: a reader of the journal row must not have to go looking
+/// for it.
+fn closing_note(c: &CompileReport) -> String {
+    let q = &c.queue;
+    if q.scanned == 0 {
+        return String::new();
+    }
+    let left = if q.left_waiting == 0 {
+        " · queue empty".to_owned()
+    } else {
+        format!(" · {} STILL WAITING", q.left_waiting)
+    };
+    format!(
+        " — closing pass: {} waiting, {} placed{left}",
+        q.scanned, q.promoted
     )
 }
 
@@ -604,6 +731,189 @@ mod tests {
         .await
         .expect("compile must succeed on an empty workdir");
         assert_eq!(report.leaves, 0);
+    }
+
+    /// A workdir with one enrolled person, her wiki on disk, and nothing else.
+    async fn setup_alice() -> (tempfile::TempDir, WikiTree, SqlitePool) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pool = db::open_or_init(dir.path()).await.expect("db");
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(wikis.join("alice")).expect("wiki dir");
+        std::fs::write(
+            wikis.join("alice/_meta.md"),
+            "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
+        )
+        .expect("meta");
+        sqlx::query(
+            "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES ('alice','[]',0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("enrol");
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        (dir, tree, pool)
+    }
+
+    /// One claim nobody named a page for and nobody would place on the
+    /// identity card — the shape that waits.
+    async fn buffer_one(pool: &SqlitePool, body: &str) -> crate::types::FactId {
+        capture_buffer::buffer_capture(
+            pool,
+            crate::capture::CaptureRequest {
+                authored_refs: Vec::new(),
+                wiki_id: crate::types::WikiId::parse("alice").unwrap(),
+                page: None,
+                body: body.to_owned(),
+                subject: "user:alice".parse::<crate::types::Principal>().unwrap(),
+                allow: Vec::new(),
+                sender: None,
+                fact_type: Some("episode".to_owned()),
+                topics: Vec::new(),
+                dedup_threshold: None,
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                page_description: None,
+                salience: None,
+            },
+            None,
+        )
+        .await
+        .expect("buffer")
+        .capture_id
+    }
+
+    /// **The queue ends the night empty**, and a page for a single fact is how
+    /// it does.
+    ///
+    /// The claim here is the shape that otherwise waits for weeks: nobody
+    /// named a page for it, its salience does not reserve the identity card,
+    /// and the hourly pass will not coin a page under the birth floor. The
+    /// closing pass is the only one allowed to open a page for one fact, and
+    /// this is the assertion that it does.
+    #[tokio::test]
+    async fn the_closing_pass_opens_a_page_for_the_claim_nothing_else_would_place() {
+        let (_dir, tree, pool) = setup_alice().await;
+        let id = buffer_one(&pool, "Alice ha cominciato il nuoto il martedì.").await;
+        assert_eq!(capture_buffer::count_buffered(&pool).await.unwrap(), 1);
+
+        let cartografo = FakeLlmBackend::new(
+            "pro",
+            format!(
+                "{{\"assignments\":[{{\"fact_id\":\"{id}\",\"page_slug\":\"nuoto\"}}],\
+                  \"new_pages\":[{{\"slug\":\"nuoto\",\"title\":\"Nuoto\",\"description\":\"Il nuoto di Alice\"}}]}}"
+            ),
+        );
+        let cronista = FakeLlmBackend::new(
+            "pro",
+            "{\"mergedBody\":\"<f1>Alice ha cominciato il nuoto il martedì.</f1>\",\"description\":\"Il nuoto di Alice\"}",
+        );
+        let rev = FakeLlmBackend::new("rev", "{\"same\": false}");
+        let llms = RemLlms {
+            revisor: &rev,
+            auto_promote: Some(&cartografo),
+            apply: None,
+            comment_applier: None,
+            cronista: Some(&cronista),
+            navigator: None,
+        };
+
+        let report = run_closing_pass(
+            &pool,
+            &tree,
+            Arc::new(FakeEmbedder::new("fake", 4)),
+            &llms,
+            "2026-08-23T02:00:00Z",
+        )
+        .await
+        .expect("closing pass");
+
+        assert_eq!(report.queue.scanned, 1);
+        assert_eq!(report.queue.promoted, 1, "{report:?}");
+        assert_eq!(report.queue.left_waiting, 0, "{report:?}");
+        assert_eq!(
+            capture_buffer::count_buffered(&pool).await.unwrap(),
+            0,
+            "the buffer ends the night empty"
+        );
+
+        let row = crate::fact_index::find_by_id(&pool, &id)
+            .await
+            .unwrap()
+            .expect("the claim became a fact");
+        assert_eq!(
+            row.source_path, "wikis/alice/nuoto.md",
+            "on the page the closing pass opened for it, not on the card"
+        );
+        assert!(
+            tree.workdir().join("wikis/alice/nuoto.md").exists(),
+            "and the page was written"
+        );
+
+        // And the model was told which pass it is — the whole difference
+        // between this call and the nightly one is that sentence.
+        let shown = cartografo.last_system_prompt().expect("cartografo ran");
+        assert!(shown.contains("YOU ARE THE LAST PASS"), "{shown}");
+        assert!(
+            !shown.contains("LEAVING A FACT UNPLACED IS AN ANSWER"),
+            "the pass with nothing after it is not offered that answer: {shown}"
+        );
+    }
+
+    /// On the usual night the queue is already empty when the closing pass
+    /// looks, and it costs one `COUNT` — no plan, no model, no compile.
+    #[tokio::test]
+    async fn an_empty_queue_costs_the_closing_pass_one_count() {
+        let (_dir, tree, pool) = setup_alice().await;
+        let cartografo = FakeLlmBackend::new("pro", "{}");
+        let cronista = FakeLlmBackend::new("pro", "{}");
+        let rev = FakeLlmBackend::new("rev", "{}");
+        let llms = RemLlms {
+            revisor: &rev,
+            auto_promote: Some(&cartografo),
+            apply: None,
+            comment_applier: None,
+            cronista: Some(&cronista),
+            navigator: None,
+        };
+        let report = run_closing_pass(
+            &pool,
+            &tree,
+            Arc::new(FakeEmbedder::new("fake", 4)),
+            &llms,
+            "2026-08-23T02:00:00Z",
+        )
+        .await
+        .expect("closing pass");
+        assert_eq!(report.queue.scanned, 0);
+        assert!(
+            cartografo.last_system_prompt().is_none(),
+            "no claim waiting means no call"
+        );
+        assert!(cronista.last_system_prompt().is_none());
+    }
+
+    /// What the journal row says. Silent when the queue was already empty,
+    /// and loud when it did not empty — that is the outcome the pass exists
+    /// to prevent, and a reader must not have to go looking for it.
+    #[test]
+    fn the_closing_pass_reports_itself_only_when_it_had_work() {
+        let mut c = CompileReport::default();
+        assert_eq!(closing_note(&c), "");
+
+        c.queue.scanned = 3;
+        c.queue.promoted = 3;
+        assert_eq!(
+            closing_note(&c),
+            " — closing pass: 3 waiting, 3 placed · queue empty"
+        );
+
+        c.queue.promoted = 2;
+        c.queue.left_waiting = 1;
+        assert_eq!(
+            closing_note(&c),
+            " — closing pass: 3 waiting, 2 placed · 1 STILL WAITING"
+        );
     }
 
     /// The Conciliatore runs at BOTH cadences (placement-time near-synonym
