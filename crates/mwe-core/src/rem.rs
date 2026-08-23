@@ -56,6 +56,7 @@ use sqlx::SqlitePool;
 use thiserror::Error;
 
 pub mod briefing_processor;
+pub mod day;
 
 use crate::archive::{self, ArchiveError};
 use crate::briefing::{self, BriefingError, BriefingSourceKind, NotifyRequest};
@@ -884,6 +885,11 @@ pub async fn run_cycle(
     let verdict_memo_purged =
         rem_verdicts::purge_older_than(pool, now - policy.verdict_memo_ttl).await?;
 
+    // What the day did, read before any sub-job acts so nothing this cycle
+    // writes counts as the day's. It orders the sweeps that ask a question
+    // about a placement somebody just made; it never drops a candidate.
+    let day = day::perimeter(pool).await;
+
     let auto_apply = run_auto_apply_sweep(pool, tree, now).await?;
     let revisor = run_revisor_jaccard(
         pool,
@@ -938,7 +944,7 @@ pub async fn run_cycle(
         tree,
         llms.revisor,
         &cycle_id,
-        now,
+        &day,
         policy,
         &smart_wiki_index,
     )
@@ -3808,15 +3814,20 @@ fn best_cosine_to_wiki(fact: &FactIndexRow, view: &RefileWikiView<'_>) -> f32 {
 /// each non-smart wiki, compare its best similarity to its HOME wiki's
 /// other facts against its best similarity to facts in OTHER non-smart
 /// wikis; nominate when a foreign wiki beats home by at least
-/// [`REFILE_COSINE_MARGIN`]. Facts created inside `policy.closure_sweep_window`
-/// are preferred (newest-first), and the result is truncated to
-/// `policy.refile_sweep_cap`.
+/// [`REFILE_COSINE_MARGIN`].
+///
+/// **What the day wrote comes first**, then newest-first inside each band, and
+/// the cap then cuts the tail. The perimeter is an ordering and never a
+/// filter: a fact the day did not touch is still nominated, just behind the
+/// ones that landed since the last cycle — because *is this fact on the right
+/// page?* is a question about a placement somebody just made, and asking it
+/// first about material nothing has touched in months spends the night's
+/// budget on the part of the corpus least likely to have moved.
 fn refile_cases<'a>(
     views: &'a [RefileWikiView<'a>],
-    now: DateTime<Utc>,
+    day: &day::DayPerimeter,
     policy: &RemPolicy,
 ) -> Vec<RefileCase<'a>> {
-    let since = now - policy.closure_sweep_window;
     let mut cases: Vec<(bool, &str, RefileCase<'a>)> = Vec::new();
     for home in views {
         for fact in &home.facts {
@@ -3837,9 +3848,8 @@ fn refile_cases<'a>(
             if foreign.is_empty() {
                 continue;
             }
-            let fresh = DateTime::parse_from_rfc3339(&fact.created_at).is_ok_and(|c| c >= since);
             cases.push((
-                fresh,
+                day.touched_fact(fact.fact_id.as_str()),
                 fact.created_at.as_str(),
                 RefileCase {
                     fact,
@@ -3849,7 +3859,7 @@ fn refile_cases<'a>(
             ));
         }
     }
-    // Fresh candidates first, then newest-first within each band; the cap
+    // What the day wrote first, then newest-first inside each band; the cap
     // then favours what just landed.
     cases.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(a.1)));
     cases.truncate(policy.refile_sweep_cap);
@@ -3965,7 +3975,7 @@ async fn run_refile_sweep(
     tree: &WikiTree,
     llm: &dyn LlmBackend,
     cycle_id: &str,
-    now: DateTime<Utc>,
+    day: &day::DayPerimeter,
     policy: &RemPolicy,
     smart_wiki_index: &SmartWikiIndex,
 ) -> Result<RefileSweepReport> {
@@ -4031,7 +4041,7 @@ async fn run_refile_sweep(
         });
     }
     report.bridge_candidates = cases.len();
-    for case in refile_cases(&views, now, policy) {
+    for case in refile_cases(&views, day, policy) {
         if !seeded.contains(case.fact.fact_id.as_str()) {
             cases.push(case);
         }
@@ -9289,6 +9299,121 @@ mod tests {
 
     // ---------- cross-wiki refile sweep ----------
 
+    /// **What the day wrote is judged first.**
+    ///
+    /// *Is this fact on the right page?* is a question about a placement
+    /// somebody just made. Asked in slug order — or in any order that ignores
+    /// when the fact landed — the night's budget goes to the part of the
+    /// corpus least likely to have moved, and the fact written this morning
+    /// waits for a night with room. Two equally misfiled facts and one seat:
+    /// the day's takes it.
+    #[tokio::test]
+    async fn the_refile_sweep_judges_what_the_day_wrote_first() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        write_wiki(&tree, "bob", "Bob", "wiki-user");
+        plant_fact_with_embedding(
+            &tree,
+            &pool,
+            "alice",
+            "Alice loves pasta",
+            "alice",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        plant_fact_with_embedding(
+            &tree,
+            &pool,
+            "bob",
+            "Bob plays the trumpet",
+            "bob",
+            vec![0.0, 1.0, 0.0, 0.0],
+        )
+        .await;
+        plant_fact_with_embedding(
+            &tree,
+            &pool,
+            "bob",
+            "Bob repairs brass instruments",
+            "bob",
+            vec![0.0, 0.0, 1.0, 0.0],
+        )
+        .await;
+        // Two facts filed in alice's wiki that both belong in bob's, on two
+        // separate axes so neither anchors the other to alice. Only one seat,
+        // so which of them is nominated is the whole assertion.
+        let older = plant_fact_with_embedding(
+            &tree,
+            &pool,
+            "alice",
+            "Bob bought a new trumpet",
+            "alice",
+            vec![0.0, 0.0, 1.0, 0.0],
+        )
+        .await;
+        let todays = plant_fact_with_embedding(
+            &tree,
+            &pool,
+            "alice",
+            "Bob plays in a brass band on Thursdays",
+            "alice",
+            vec![0.0, 1.0, 0.0, 0.0],
+        )
+        .await;
+        // `older` is the newer row by insertion order, so without a perimeter
+        // the newest-first tiebreak would take it — which is what makes this
+        // test about the perimeter and not about insertion order.
+        sqlx::query("UPDATE fact_index SET created_at = ? WHERE fact_id = ?")
+            .bind("2026-08-30T00:00:00Z")
+            .bind(older.as_str())
+            .execute(&pool)
+            .await
+            .expect("age the older fact");
+        sqlx::query("UPDATE fact_index SET created_at = ? WHERE fact_id = ?")
+            .bind("2026-08-20T00:00:00Z")
+            .bind(todays.as_str())
+            .execute(&pool)
+            .await
+            .expect("age today's fact");
+
+        let day = day::DayPerimeter {
+            since: Some(
+                chrono::DateTime::parse_from_rfc3339("2026-08-19T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+            facts_written: std::iter::once(todays.as_str().to_owned()).collect(),
+            ..day::DayPerimeter::default()
+        };
+
+        let resp = "{\"verdict\":\"stay\",\"reason\":\"home is fine\"}";
+        let llm = FakeLlmBackend::new("confirmer", resp);
+        let index = load_smart_wiki_index(&tree).expect("index");
+        let policy = RemPolicy {
+            refile_sweep_cap: 1,
+            ..RemPolicy::default()
+        };
+        let report = run_refile_sweep(&pool, &tree, &llm, "cycle-day", &day, &policy, &index)
+            .await
+            .expect("sweep");
+
+        assert_eq!(report.candidates_examined, 1, "one seat: {report:?}");
+        let shown = format!(
+            "{}\n{}",
+            llm.last_system_prompt().unwrap_or_default(),
+            llm.last_prompt().expect("the confirmer was asked")
+        );
+        assert!(
+            shown.contains("brass band"),
+            "the day's fact took the seat: {shown}"
+        );
+        assert!(
+            !shown.contains("bought a new trumpet"),
+            "and the older one waits its turn: {shown}"
+        );
+        drop(dir);
+    }
+
     /// A clearly misfiled fact in wiki A embeds toward wiki B; the cosine
     /// pre-filter nominates it, the confirmer says "move", and the fact
     /// lands in B act-first with a born-applied receipt + notice.
@@ -9341,7 +9466,7 @@ mod tests {
             &tree,
             &llm,
             "cycle-test",
-            Utc::now(),
+            &day::DayPerimeter::default(),
             &RemPolicy::default(),
             &index,
         )
@@ -9433,7 +9558,7 @@ mod tests {
             &tree,
             &llm,
             "cycle-bridge",
-            Utc::now(),
+            &day::DayPerimeter::default(),
             &RemPolicy::default(),
             &index,
         )
@@ -9511,7 +9636,7 @@ mod tests {
             &tree,
             &llm,
             "cycle-test",
-            Utc::now(),
+            &day::DayPerimeter::default(),
             &RemPolicy::default(),
             &index,
         )
@@ -9595,7 +9720,7 @@ mod tests {
             &tree,
             &llm,
             "cycle-test",
-            Utc::now(),
+            &day::DayPerimeter::default(),
             &RemPolicy::default(),
             &index,
         )
