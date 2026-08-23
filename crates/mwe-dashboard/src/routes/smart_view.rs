@@ -145,9 +145,9 @@ async fn list_smart_wikis(
             "Read-only listing of every smart-family wiki the engine "
             "has indexed. Smart wikis are authoritatively managed by "
             "smart consumers via " code { "wiki_admin_*" }
-            "; REM skips the legacy write-jobs on these and only runs the "
+            "; REM skips the write-jobs on these and only runs the "
             "read-side sub-jobs (recall pre-indexing, Briefing dispatcher, "
-            "Backlink reciprocity, lease expirer)."
+            "lease expirer)."
         }
 
         @if rows.is_empty() {
@@ -252,8 +252,8 @@ async fn view_briefing(
         }
 
         p.muted {
-            "This is the inbox channel — REM's Briefing dispatcher + "
-            "Backlink reciprocity detector, openclaw forwards, shared-with "
+            "This is the inbox channel — REM's Briefing dispatcher, "
+            "openclaw forwards and shared-with "
             "team notifications all land here. The smart consumer reads "
             "it at session start and archives items into " code { "_briefing.archive.md" }
             " on action."

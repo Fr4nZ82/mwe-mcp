@@ -449,7 +449,7 @@ pub struct PushResponse {
 /// One link per authored page (`_meta.md` and deletes are not authorship),
 /// with the trailing `.md` stripped and `\` normalised to `/` so the link
 /// reads naturally in Obsidian and parses with
-/// [`crate::recall::extract_wikilink_wiki_ids`].
+/// [`crate::recall::extract_wikilinks`].
 fn authored_refs_for(wiki_id: &WikiId, pages: &[PushPage]) -> Vec<String> {
     pages
         .iter()
@@ -2988,7 +2988,7 @@ mod tests {
         let raw = std::fs::read_to_string(&abs).expect("read meta");
         // Insert `shared_with` right after the `title:` line — always
         // present, and the canonical order the serializer emits places
-        // `shared_with` shortly after it (the `acl_default` line is retired).
+        // `shared_with` shortly after it.
         let mut out = String::with_capacity(raw.len() + 128);
         for line in raw.lines() {
             out.push_str(line);

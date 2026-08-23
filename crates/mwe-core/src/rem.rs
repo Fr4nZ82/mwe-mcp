@@ -227,8 +227,7 @@ pub struct RemPolicy {
     /// candidate when `last_recall_at` (or `created_at` when null) is
     /// older than this duration. Default 365 days.
     pub archive_inactivity: chrono::Duration,
-    /// Max notifications emitted by each new smart-wiki sub-job
-    /// (Briefing dispatcher + Backlink reciprocity detector) per wiki
+    /// Max notifications the Briefing dispatcher emits per wiki
     /// per cycle. Per the memory model
     /// the per-wiki cap is 10 — the global 50/h cap in
     /// [`crate::briefing`] backstops at the inbox level. Default 10.
@@ -241,7 +240,7 @@ pub struct RemPolicy {
     /// above this threshold triggers a recall-hot notify suggesting the
     /// smart consumer promote it. Default 20.
     pub briefing_recall_hot_threshold: i64,
-    /// Briefing dispatcher + Backlink reciprocity detector: same
+    /// Briefing dispatcher: the same
     /// `(wiki_id, source_ref)` is not re-emitted if a row already exists
     /// in `wiki_briefing_items` within this window. Default 7 days.
     pub briefing_dedup_window: chrono::Duration,
@@ -390,10 +389,6 @@ pub struct RemCycleReport {
     /// wikis for stale drafts + recall-hot facts and posts items to the
     /// wiki owner's `_briefing.md` via [`crate::briefing::notify_as_rem`].
     pub briefing_dispatcher: BriefingDispatcherReport,
-    /// Backlink reciprocity detector sub-job report — flags
-    /// `[[wiki:<smart-wiki>#...]]` links from standard wikis that
-    /// lack a reciprocal back-link inside the smart wiki.
-    pub backlink_reciprocity: BacklinkReciprocityReport,
     /// Lease expirer sub-job report — prunes stale rows
     /// from `wiki_admin_leases`. Two passes: active-but-expired beyond
     /// grace get `released_at` stamped (treated as crashed without
@@ -656,29 +651,6 @@ pub struct BriefingProcessorReport {
     pub errors: Vec<String>,
 }
 
-/// Sub-report for the Backlink reciprocity detector.
-///
-/// Walks every wiki *outside* the smart family, scans active fact
-/// bodies for `[[wiki:<id>...]]` references whose target is a smart wiki
-/// of the same owner, and emits a notify on the smart wiki when the
-/// reciprocal link is missing.
-#[derive(Debug, Clone, Default)]
-pub struct BacklinkReciprocityReport {
-    /// Smart wiki ids in the universe of targets.
-    pub smart_wikis_known: usize,
-    /// Standard-wiki source facts whose body was scanned.
-    pub source_facts_scanned: usize,
-    /// `[[wiki:...]]` wikilinks pointing at a smart-wiki target.
-    pub incoming_links: usize,
-    /// Notifications appended (paired with the source wiki id for audit).
-    pub notifications_emitted: Vec<(String, String)>,
-    /// Candidate findings absorbed by `(wiki_id, source_ref)`
-    /// idempotency.
-    pub deduplicated: usize,
-    /// Per-finding soft errors.
-    pub errors: Vec<String>,
-}
-
 /// Sub-report for the auto-apply sweep.
 ///
 /// Walks every pending proposal past `timeout_at` and calls
@@ -817,8 +789,8 @@ pub enum RemError {
     /// Archive-proposal emission failure (archive detector path).
     #[error("rem archive: {0}")]
     Archive(#[from] ArchiveError),
-    /// Briefing inbox failure surfaced by the Briefing dispatcher
-    /// or Backlink reciprocity detector when the notify pipeline raises
+    /// Briefing inbox failure surfaced by the Briefing dispatcher when
+    /// the notify pipeline raises
     /// an infrastructure-level error (sql / io). Per-finding soft errors
     /// (rate-limited inbox, invalid input on a synthesised row) are
     /// collected in the sub-job report rather than bubbling here.
@@ -1003,8 +975,6 @@ pub async fn run_cycle(
         run_archive_detector(pool, tree, &cycle_id, now, policy, &smart_wiki_index).await?;
     let briefing_dispatcher =
         run_briefing_dispatcher(pool, tree, &cycle_id, now, policy, &smart_wiki_index).await?;
-    let backlink_reciprocity =
-        run_backlink_reciprocity(pool, tree, &cycle_id, policy, &smart_wiki_index).await?;
     let lease_expirer = run_lease_expirer(pool, now, policy).await?;
     let briefing_processor = run_briefing_processor_non_smart(
         pool,
@@ -1049,8 +1019,6 @@ pub async fn run_cycle(
         archive_proposals = archive_detector.proposals_emitted.len(),
         briefing_wikis = briefing_dispatcher.wikis_examined,
         briefing_notifies = briefing_dispatcher.notifications_emitted.len(),
-        backlink_incoming = backlink_reciprocity.incoming_links,
-        backlink_notifies = backlink_reciprocity.notifications_emitted.len(),
         leases_marked_released = lease_expirer.stale_active_marked_released,
         leases_aged_deleted = lease_expirer.aged_released_rows_deleted,
         briefing_processor_examined = briefing_processor.items_examined,
@@ -1083,7 +1051,6 @@ pub async fn run_cycle(
         date_normalizer,
         archive_detector,
         briefing_dispatcher,
-        backlink_reciprocity,
         lease_expirer,
         briefing_processor,
         husk_gc,
@@ -1239,14 +1206,7 @@ async fn run_rail_writer(
             ))
         })
         .collect();
-    let mut candidates = crate::candidates::CandidatePool::load(pool, &by_source_path).await;
-    for (path, slug) in &by_source_path {
-        if let Ok(Some(row)) = crate::page_card::get(pool, path).await
-            && let Some(v) = row.embedding
-        {
-            candidates.set_embedding(slug, v);
-        }
-    }
+    let candidates = crate::candidates::CandidatePool::load(pool, &by_source_path).await;
 
     for slug in nominees {
         match judge_one_rail(pool, tree, llm, cycle_id, &plan, &candidates, slug).await {
@@ -6411,7 +6371,7 @@ async fn run_archive_detector(
 // ---------- Lease expirer sub-job ----------
 
 /// Thin wrapper around [`crate::wiki_admin_leases::expire_stale`].
-/// Runs once per REM cycle, after the briefing/backlink emitters.
+/// Runs once per REM cycle, after the briefing emitter.
 /// Two passes (see the module docstring of
 /// `wiki_admin_leases` for the contract):
 ///
@@ -6493,12 +6453,10 @@ async fn run_briefing_processor_non_smart(
     .await?;
 
     // Partition the candidate rows by their wiki's smart flag
-    // (`smart_wiki_index`, the per-cycle `_meta.md` snapshot). A
-    // non-smart wiki is a standard wiki now that the `wiki_type` registry
-    // is retired, so its comments get **action-taking**: they are
-    // interpreted into fact ops, batched per wiki (read together,
-    // applied together). When the `ingest` slot is unconfigured the
-    // action path is unavailable, so they fall back to mark-passive.
+    // (`smart_wiki_index`, the per-cycle `_meta.md` snapshot). A non-smart
+    // wiki is a standard wiki, and its comments get **action-taking**: they
+    // are interpreted into fact ops, batched per wiki (read together,
+    // applied together).
     let mut standard_by_wiki: BTreeMap<String, Vec<i64>> = BTreeMap::new();
     let mut mark_passive: Vec<i64> = Vec::new();
     for (bi_id, wiki_id) in candidates {
@@ -6829,188 +6787,6 @@ async fn emit_dispatcher_notify(
         source_kind: BriefingSourceKind::Rem,
         source_ref,
         kind: Some(briefing::BriefingKind::Observation.as_str().to_owned()),
-        target_cite: None,
-        ts: None,
-    };
-    match briefing::notify_as_rem(pool, tree, req).await {
-        Ok(_) => {
-            wal::complete_rem_op(pool, op_id).await?;
-            Ok(())
-        },
-        Err(e) => {
-            wal::fail_rem_op(pool, op_id, &format!("{e}")).await?;
-            Err(e.into())
-        },
-    }
-}
-
-// ---------- Backlink reciprocity detector sub-job ----------
-
-/// For every non-smart wiki, scan its active facts for
-/// `[[<wiki_id>...]]` references whose target is a smart-family
-/// wiki and post one `_briefing.md` item per missing reciprocal link.
-///
-/// "Reciprocal" is defined narrowly for MVP: at least one active fact
-/// in the smart wiki must mention the source wiki id with
-/// `[[<source_id>...]]`. If none do, the inverse is missing and the
-/// smart consumer is invited (via briefing) to add it the next session.
-///
-/// Per-wiki cap = [`RemPolicy::briefing_notify_cap`]; idempotency window
-/// = [`RemPolicy::briefing_dedup_window`].
-#[allow(
-    clippy::too_many_lines,
-    reason = "linear gather → scan → check pipeline; splitting would scatter the data dependencies that make the flow readable"
-)]
-async fn run_backlink_reciprocity(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    cycle_id: &str,
-    policy: &RemPolicy,
-    smart_wiki_index: &SmartWikiIndex,
-) -> Result<BacklinkReciprocityReport> {
-    let mut report = BacklinkReciprocityReport::default();
-
-    // Build smart wiki set + cache active-fact bodies for reverse
-    // lookup. Loading bodies once per cycle keeps the inner loop O(N).
-    let mut smart_wiki_ids: HashSet<String> = HashSet::new();
-    let mut smart_wiki_bodies: HashMap<String, Vec<String>> = HashMap::new();
-    let mut smart_wiki_id_lookup: HashMap<String, WikiId> = HashMap::new();
-    for d in tree.walk()? {
-        if !is_smart_wiki(smart_wiki_index, d.meta.wiki_id.as_str()) {
-            continue;
-        }
-        let id_str = d.meta.wiki_id.as_str().to_owned();
-        smart_wiki_ids.insert(id_str.clone());
-        smart_wiki_id_lookup.insert(id_str.clone(), d.meta.wiki_id.clone());
-        // A smart wiki's content is its indexed sections, not fact rows.
-        let secs = sections::find_wiki_sections(pool, d.meta.wiki_id.as_str()).await?;
-        smart_wiki_bodies.insert(id_str, secs.into_iter().map(|s| s.text).collect());
-    }
-    report.smart_wikis_known = smart_wiki_ids.len();
-    if smart_wiki_ids.is_empty() {
-        return Ok(report);
-    }
-
-    // Per-(target smart wiki) emission counter to enforce the per-wiki
-    // cap regardless of how many sources reference it.
-    let mut per_target: HashMap<String, usize> = HashMap::new();
-
-    for source in tree.walk()? {
-        if is_smart_wiki(smart_wiki_index, source.meta.wiki_id.as_str()) {
-            continue;
-        }
-        let source_id = source.meta.wiki_id.as_str().to_owned();
-        let source_facts =
-            fact_index::find_active_in_wiki(pool, source.meta.wiki_id.as_str()).await?;
-        for fact in &source_facts {
-            report.source_facts_scanned += 1;
-            let mut already_flagged: HashSet<String> = HashSet::new();
-            for target_id in recall::extract_wikilink_wiki_ids(&fact.text) {
-                if !smart_wiki_ids.contains(&target_id) {
-                    continue;
-                }
-                if already_flagged.contains(&target_id) {
-                    continue;
-                }
-                already_flagged.insert(target_id.clone());
-                report.incoming_links += 1;
-
-                // Check reciprocity inside the smart-wiki bodies.
-                let reciprocated = smart_wiki_bodies.get(&target_id).is_some_and(|bodies| {
-                    bodies.iter().any(|body| {
-                        recall::extract_wikilink_wiki_ids(body)
-                            .iter()
-                            .any(|id| id == &source_id)
-                    })
-                });
-                if reciprocated {
-                    continue;
-                }
-
-                let counter = per_target.entry(target_id.clone()).or_insert(0);
-                if *counter >= policy.briefing_notify_cap {
-                    continue;
-                }
-                let source_ref = format!("rem:backlink_reciprocity:{source_id}");
-                let Some(target_wiki) = smart_wiki_id_lookup.get(&target_id) else {
-                    continue;
-                };
-                let dedup_skip = briefing_recently_emitted(
-                    pool,
-                    target_wiki,
-                    &source_ref,
-                    policy.briefing_dedup_window,
-                )
-                .await?;
-                if dedup_skip {
-                    report.deduplicated += 1;
-                    continue;
-                }
-                let topic = format!("Missing back-link from `{source_id}`");
-                let body = format!(
-                    "Wiki `{source_id}` references this smart wiki via `[[{target_id}…]]` \
-                     (see fact `{fact_id}` on page `{path}`) but no active fact in this \
-                     smart wiki mentions `[[{source_id}…]]`. Add a reciprocal link the next \
-                     time you edit the relevant page so the navigation stays bidirectional.",
-                    fact_id = fact.fact_id.as_str(),
-                    path = fact.source_path,
-                );
-                match emit_backlink_notify(
-                    pool,
-                    tree,
-                    cycle_id,
-                    target_wiki,
-                    topic.clone(),
-                    body,
-                    source_ref,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        *counter += 1;
-                        report
-                            .notifications_emitted
-                            .push((target_id.clone(), source_id.clone()));
-                    },
-                    Err(e) => report.errors.push(format!(
-                        "backlink_reciprocity {source_id} -> {target_id}: {e}"
-                    )),
-                }
-            }
-        }
-    }
-
-    Ok(report)
-}
-
-/// Shared emit path for backlink-reciprocity findings.
-async fn emit_backlink_notify(
-    pool: &SqlitePool,
-    tree: &WikiTree,
-    cycle_id: &str,
-    wiki_id: &WikiId,
-    topic: String,
-    body: String,
-    source_ref: String,
-) -> Result<()> {
-    let op_id = wal::begin_rem_op(
-        pool,
-        cycle_id,
-        "backlink_reciprocity_emit",
-        Some(wiki_id.as_str()),
-        None,
-    )
-    .await?;
-    // Semantic routing: backlink reciprocity is a *recommended
-    // action* (add the inverse link), not a passive observation. The
-    // smart consumer is supposed to decide whether to act on it.
-    let req = NotifyRequest {
-        wiki_id: wiki_id.clone(),
-        topic,
-        body,
-        source_kind: BriefingSourceKind::Rem,
-        source_ref,
-        kind: Some(briefing::BriefingKind::Reasoning.as_str().to_owned()),
         target_cite: None,
         ts: None,
     };
@@ -9732,90 +9508,6 @@ mod tests {
             .unwrap();
         assert_eq!(report.briefing_dispatcher.wikis_examined, 0);
         assert!(report.briefing_dispatcher.notifications_emitted.is_empty());
-        drop(dir);
-    }
-
-    #[tokio::test]
-    async fn backlink_reciprocity_emits_when_smart_wiki_lacks_inverse() {
-        let (dir, mut tree, pool) = setup_workdir().await;
-        // Standard wiki "alice" + smart wiki "alice-lnprint" (same owner).
-        write_wiki(&tree, "alice", "Alice", "wiki-user");
-        write_smart_wiki(&tree, "alice-lnprint", "lnprint companion", "alice");
-        tree = WikiTree::open(dir.path()).unwrap();
-        // alice references the smart wiki ⇒ reciprocity expected.
-        plant_fact(
-            &tree,
-            &pool,
-            "alice",
-            "Saw the docs at [[alice-lnprint]] today.",
-            "alice",
-        )
-        .await;
-        // The smart wiki has no fact mentioning [[alice]] ⇒ inverse missing.
-
-        let policy = RemPolicy::default();
-        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
-            .await
-            .expect("cycle");
-
-        assert_eq!(report.backlink_reciprocity.smart_wikis_known, 1);
-        assert!(report.backlink_reciprocity.incoming_links >= 1);
-        assert_eq!(
-            report.backlink_reciprocity.notifications_emitted.len(),
-            1,
-            "expected exactly one missing-backlink notify, got {:?}",
-            report.backlink_reciprocity
-        );
-        let (target, source) = &report.backlink_reciprocity.notifications_emitted[0];
-        assert_eq!(target, "alice-lnprint");
-        assert_eq!(source, "alice");
-
-        // Backlink reciprocity is routed to `reasoning` —
-        // REM is recommending a concrete action (add the inverse link),
-        // not just observing a gap.
-        let (source_ref, kind): (String, Option<String>) = sqlx::query_as(
-            "SELECT source_ref, kind FROM wiki_briefing_items WHERE wiki_id = 'alice-lnprint'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(source_ref, "rem:backlink_reciprocity:alice");
-        assert_eq!(kind.as_deref(), Some("reasoning"));
-        drop(dir);
-    }
-
-    #[tokio::test]
-    async fn backlink_reciprocity_skips_when_smart_wiki_has_reciprocal() {
-        let (dir, mut tree, pool) = setup_workdir().await;
-        write_wiki(&tree, "alice", "Alice", "wiki-user");
-        write_smart_wiki(&tree, "alice-lnprint", "lnprint companion", "alice");
-        tree = WikiTree::open(dir.path()).unwrap();
-        plant_fact(
-            &tree,
-            &pool,
-            "alice",
-            "Reference to [[alice-lnprint]].",
-            "alice",
-        )
-        .await;
-        plant_section(
-            &pool,
-            "alice-lnprint",
-            "Back-reference to [[alice]] on the owner's own wiki.",
-        )
-        .await;
-
-        let policy = RemPolicy::default();
-        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
-        let report = run_cycle(&pool, &tree, fake_embedder(), &test_llms(&rev_llm), &policy)
-            .await
-            .expect("cycle");
-        assert!(
-            report.backlink_reciprocity.notifications_emitted.is_empty(),
-            "reciprocal back-link present ⇒ no notify, got {:?}",
-            report.backlink_reciprocity
-        );
         drop(dir);
     }
 

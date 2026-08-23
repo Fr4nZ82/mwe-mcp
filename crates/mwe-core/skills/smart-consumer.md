@@ -44,8 +44,8 @@ smart_does_not_notify_own_wiki`), because writing your own inbox is a
 write, not a message. mwe-mcp's REM cycle skips all
 write-jobs on companion-wikis (no auto-promote, no auto-archive, no
 page compilation), runs read-jobs (recall pre-indexing, dedup source), and
-adds two notify-only sub-jobs (Briefing dispatcher + Backlink
-reciprocity) that drop items into `_briefing.md`.
+adds one notify-only sub-job (the Briefing dispatcher) that drops
+items into `_briefing.md`.
 
 ## The conversation also feeds personal memory (the superset)
 
@@ -127,9 +127,8 @@ wiki_ingest_message(
 
 Personal memory then records a **terse digest that links** to the
 project page ("reworked the MFA flow → `[[<wiki_id>/modules/auth]]`")
-instead of duplicating the detail. The link is a real navigable door:
-recall-as-navigation follows it, and REM's backlink-reciprocity
-detector keeps the inverse honest. Carry the refs only when the turn
+instead of duplicating the detail. The link is a real navigable door
+that recall-as-navigation follows. Carry the refs only when the turn
 genuinely produced a personal-memory note worth linking — an op you
 dropped needs none.
 
@@ -518,10 +517,9 @@ whether the user's question has anything to do with it.
 `_briefing.md` is a single markdown file at the root of every
 companion-wiki. It is the **inbox** through which the rest of the
 mwe-mcp ecosystem talks to the smart consumer: REM's Briefing
-dispatcher drops stale-draft observations there, the Backlink
-reciprocity detector drops missing-inverse-link alerts there, openclaw
-forwards user observations from chat there, and shared-with team
-members notify there too.
+dispatcher drops stale-draft and recall-hot observations there,
+openclaw forwards user observations from chat there, and shared-with
+team members notify there too.
 
 ### Read at session start
 
@@ -533,9 +531,9 @@ unread items to the user **before** discussing any other topic:
 
 > *"3 new briefing notes since the last session:*
 >
-> *1. (REM, yesterday 23:14) `modules/auth.md` links to*
->    *`runbooks/mfa-onboarding.md`, but that runbook does not link back.*
->    *Shall I propagate the backlink?*
+> *1. (REM, yesterday 23:14) a section on `modules/auth.md` has carried*
+>    *`status: draft` since 2026-05-08. Promote it, supersede it, or*
+>    *archive it?*
 >
 > *2. (openclaw, 2026-05-24 18:02) Frodo via Telegram: "note this down:*
 >    *document the recovery codes in the MFA flow."*
@@ -582,7 +580,7 @@ warrants it:
 | `kind` | Meaning | Typical sources |
 |---|---|---|
 | `observation` | A factual delta the user or a peer noticed | openclaw forwards; team notifies via `shared_with` |
-| `reasoning` | An inference REM made (backlink missing, dedup candidate, stale section) | Briefing dispatcher, Backlink reciprocity, dedup-source |
+| `reasoning` | An inference REM made (stale draft, recall-hot section, dedup candidate) | Briefing dispatcher, dedup-source |
 | `external` | A reference outside the wiki that the user wants tied in | Citations from chat, links from the dashboard |
 
 ## Citation IDs
@@ -596,9 +594,9 @@ Obsidian autolink. Example:
 ```
 wiki_admin_notify(
     wiki_id = state.wiki_id,
-    topic = "backlink missing",
-    body = "auth.md links runbooks/mfa-onboarding but no inverse.",
-    source = {"kind": "rem", "ref": "backlink_reciprocity"},
+    topic = "Stale draft on `modules/auth.md`",
+    body = "The MFA-flow section has carried status: draft since 2026-05-08.",
+    source = {"kind": "rem", "ref": "briefing_dispatcher"},
     target_cite = "wiki://" + state.wiki_id + "/modules/auth.md#mfa-flow",
 )
 ```

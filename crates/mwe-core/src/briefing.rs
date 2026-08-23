@@ -2,9 +2,9 @@
 //! Smart-wiki briefing inbox (`wiki_admin_notify` core).
 //!
 //! `_briefing.md` is a markdown file at the root of every
-//! smart-wiki. REM (Briefing dispatcher + Backlink reciprocity
-//! detector sub-jobs), other consumers (openclaw, hermes,
-//! etc. via this tool), and the dashboard append items to it; the
+//! smart-wiki. REM (the Briefing dispatcher sub-job), other consumers
+//! (openclaw, hermes, etc. via this tool), and the dashboard append
+//! items to it; the
 //! smart consumer reads them at `smart_bootstrap` time and rotates
 //! the file to `_briefing.archive.md` after triage. See
 //! [`crate::wiki_admin`] for the lifecycle.
@@ -158,8 +158,7 @@ pub enum BriefingSourceKind {
     /// The end user, typically forwarded by a standard consumer that
     /// transcribed a Telegram / voice / email message.
     User,
-    /// REM nightly cycle (Briefing dispatcher / Backlink reciprocity
-    /// detector sub-jobs).
+    /// REM nightly cycle (the Briefing dispatcher sub-job).
     Rem,
     /// Another consumer of the same user (smart or standard) that
     /// observed something worth flagging.
@@ -702,8 +701,7 @@ fn map_admin_error(err: crate::wiki_admin::AdminError) -> BriefingError {
     }
 }
 
-/// REM-internal entry point used by the Briefing dispatcher and
-/// Backlink reciprocity detector sub-jobs.
+/// REM-internal entry point used by the Briefing dispatcher sub-job.
 ///
 /// Same validation, smart-family gate, rate limit, DB row, and
 /// `_briefing.md` append as [`notify`] — but **bypasses the caller ACL
@@ -900,8 +898,8 @@ struct KindCountsRow {
 /// Resolve the target wiki handle and enforce the smart-wiki-only gate.
 ///
 /// Used by the REM-internal path ([`notify_as_rem`]): REM only writes
-/// to smart-wikis (per the Briefing dispatcher + Backlink
-/// reciprocity sub-jobs), so the simple smart-wiki-only check stays.
+/// to smart-wikis (per the Briefing dispatcher sub-job), so the simple
+/// smart-wiki-only check stays.
 ///
 /// The public MCP path goes through [`gate_notify_target_matrix`]
 /// instead, which carries the consumer-class × wiki-family matrix.
@@ -1126,8 +1124,8 @@ fn initial_briefing_doc(wiki_id: &WikiId) -> String {
          \n\
          # Session briefing for `{wiki}`\n\
          \n\
-         REM (Briefing dispatcher + Backlink reciprocity detector), other\n\
-         consumers, and the dashboard append items below. The smart\n\
+         REM (Briefing dispatcher), other consumers, and the dashboard\n\
+         append items below. The smart\n\
          consumer reads them at `smart_bootstrap` and rotates this file\n\
          to `_briefing.archive.md` after triage.\n",
         wiki = wiki_id.as_str(),
@@ -1602,7 +1600,7 @@ mod tests {
             topic: "hi".into(),
             body: "x".into(),
             source_kind: BriefingSourceKind::User, // will be overridden to Rem
-            source_ref: "rem:backlink_reciprocity:wiki:source".into(),
+            source_ref: "rem:briefing:wiki:source".into(),
             kind: None,
             target_cite: None,
             ts: None,

@@ -2347,23 +2347,6 @@ pub fn extract_wikilinks(body: &str) -> Vec<WikiLink> {
     out
 }
 
-/// Parse `[[wiki_id]]` / `[[wiki_id/page]]` / `[[wiki_id|display]]`
-/// out of `body`, wiki-granular: the page suffix and the `|display`
-/// alias are stripped; only the wiki id is returned.
-///
-/// Thin projection of [`extract_wikilinks`], for the one caller that asks a
-/// wiki-level question: the backlink reciprocity detector in [`crate::rem`],
-/// which looks for a standard wiki linking into a smart one without a link
-/// coming back. Which page inside the smart wiki carries the link does not
-/// change the answer, so the page half is dropped.
-#[must_use]
-pub fn extract_wikilink_wiki_ids(body: &str) -> Vec<String> {
-    extract_wikilinks(body)
-        .into_iter()
-        .map(|l| l.wiki_id)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5386,28 +5369,6 @@ mod tests {
     }
 
     // ---------- the link grammar ----------
-
-    #[test]
-    fn extract_wikilink_strips_page_suffix_and_alias() {
-        assert_eq!(
-            extract_wikilink_wiki_ids("see [[alice]] for more"),
-            vec!["alice".to_owned()],
-        );
-        assert_eq!(
-            extract_wikilink_wiki_ids("nested [[alice/lavoro]] reference"),
-            vec!["alice".to_owned()],
-        );
-        assert_eq!(
-            extract_wikilink_wiki_ids("aliased [[alice|Alice the Great]]"),
-            vec!["alice".to_owned()],
-        );
-        assert_eq!(
-            extract_wikilink_wiki_ids("two [[alice]] then [[bob/intro|B]]"),
-            vec!["alice".to_owned(), "bob".to_owned()],
-        );
-        assert!(extract_wikilink_wiki_ids("no links here").is_empty());
-        assert!(extract_wikilink_wiki_ids("[[ ]] only whitespace").is_empty());
-    }
 
     #[test]
     fn extract_wikilinks_returns_page_hops_and_strips_aliases() {

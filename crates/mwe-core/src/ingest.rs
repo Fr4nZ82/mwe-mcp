@@ -249,7 +249,7 @@ pub struct IngestMetadata {
     pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Project-wiki pages this turn authored, as plain `[[wiki_id/page]]`
     /// wikilinks (the form [`crate::capture::wiki_link`] emits and
-    /// [`crate::recall::extract_wikilink_wiki_ids`] parses). A **smart**
+    /// [`crate::recall::extract_wikilinks`] parses). A **smart**
     /// consumer that just wrote detail to its project wiki via
     /// `wiki_admin_push` carries the breadcrumbs that call returned
     /// (`PushResponse::authored_refs`) into this turn's ingest, so
@@ -6216,8 +6216,8 @@ pub async fn wiki_ingest_message(
     //
     // Everything here is therefore the standard-wiki path: its captures route
     // into the captures buffer (`crate::capture_buffer`) for the compiler
-    // instead of the published `.md` — the standard family collapsed to "not
-    // smart" when the `wiki_type` registry was retired.
+    // instead of the published `.md`. "Standard" is exactly "not smart":
+    // the per-wiki flag is the whole test.
     let available: Vec<AvailableWiki> = available_wikis(tree, usize::MAX)?;
     tracing::debug!(available = available.len(), "ingest: enumerated wikis");
 
@@ -14191,7 +14191,8 @@ mod tests {
         );
         assert!(
             !dir.path().join("wikis/alice/_captures.md").exists(),
-            "a capture writes no file — least of all the retired journal"
+            "a capture writes no file: it lands in the buffer table and the \
+             compiler puts it on a page"
         );
 
         drop(dir);
