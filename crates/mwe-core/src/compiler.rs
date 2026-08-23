@@ -13,8 +13,11 @@
 //!   rendered deterministically as one bullet record wrapped in its ACL marker,
 //!   bypassing Il Cronista.
 //! - a page with **no facts** → [`compile_empty_leaf`], deterministic: its
-//!   card and nothing else. No page lists other pages, so an empty one has
-//!   nothing to narrate and never reaches a model.
+//!   card, plus the rails the plan requires of it. No page lists other pages,
+//!   so an empty one has nothing to narrate and never reaches a model — but
+//!   the links it is required to carry are still written, because the next
+//!   build reads a page's links off its prose and a page that dropped them
+//!   would lose them for good.
 //! - everything else → [`compile_leaf_page`] (Il Cronista, **strong** model):
 //!   the page's own facts woven into prose, each claim wrapped in a
 //!   bare `{{f=<fact_id>}}…{{/}}` runtime ACL marker (the full
@@ -609,7 +612,7 @@ async fn compile_page(
     // (the dogfood re-run compiled Tolkien lore onto a zero-fact
     // foundation index). Render the deterministic minimal page instead.
     if page.primary_facts.is_empty() {
-        return compile_empty_leaf(tree, page, now);
+        return compile_empty_leaf(tree, page, &recommended_link_targets(plan, &page.slug), now);
     }
     let wiki_tone = tone_cache
         .entry(page.wiki_id.clone())
@@ -649,14 +652,37 @@ async fn cached_language_directive(
 /// page whose facts have not arrived yet (or have all moved away; empty
 /// CONCEPT leaves are garbage-collected by the planner and never get
 /// here). No LLM: with nothing to narrate, anything a model writes is
-/// invention. The body is just the page description; the
-/// next compile with real facts replaces it wholesale.
-fn compile_empty_leaf(tree: &WikiTree, page: &PagePlan, now: &str) -> Result<PageOutcome> {
-    let body = if page.description.trim().is_empty() {
+/// invention. The next compile with real facts replaces the body wholesale.
+///
+/// **`rails` is written too, and that is not decoration.** A page's links are
+/// read back off its own prose at every build ([`crate::planner`]'s harvest),
+/// so a render that drops them loses them: the next plan finds none, the graph
+/// forgets the page, and a rail the REM decided is asked for again and dropped
+/// again, every night. A person's identity card is the page this happens to —
+/// it exists from the moment they are enrolled and carries no facts until the
+/// first one lands.
+///
+/// They are written as a bare list, which the Cronista's own rule calls the
+/// weak form of a link — and it is the only honest form here. That rule earns
+/// a link its place from the sentence around it, and this page has no
+/// sentences. A weak link kept beats a good one lost.
+fn compile_empty_leaf(
+    tree: &WikiTree,
+    page: &PagePlan,
+    rails: &[String],
+    now: &str,
+) -> Result<PageOutcome> {
+    let mut body = if page.description.trim().is_empty() {
         String::new()
     } else {
         format!("_{}_", page.description.trim())
     };
+    if !rails.is_empty() {
+        if !body.is_empty() {
+            body.push_str("\n\n");
+        }
+        body.push_str(&rails.join(" · "));
+    }
     let handle = tree.locate(&parse_wiki_id(&page.wiki_id))?;
     let page_path = std::path::Path::new(&page.page_path);
     let existing = handle.read_page(page_path).unwrap_or_default();
@@ -3303,12 +3329,92 @@ mod tests {
             "the description is the whole body: {page}"
         );
         assert!(!page.contains("{{f="), "no markers without facts: {page}");
+        assert!(
+            !page.contains("[["),
+            "and no rails were required of it: {page}"
+        );
 
         // Idempotent: the same compile re-run is a no-op.
         let report2 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
             .await
             .expect("compile 2");
         assert_eq!(report2.unchanged, 1, "second render matches byte-for-byte");
+        drop(dir);
+    }
+
+    /// **A page with no facts still writes the links it is required to
+    /// carry.**
+    ///
+    /// A page's links are read back off its own prose at every build, so a
+    /// render that drops them loses them: the next plan finds none, the graph
+    /// forgets the page, and a rail the REM decided is asked for again and
+    /// dropped again, every night. A person's identity card is exactly the
+    /// page this happens to — it exists from the moment they are enrolled and
+    /// carries no facts until the first one lands.
+    #[tokio::test]
+    async fn a_fact_less_page_still_writes_the_rails_the_plan_requires() {
+        let (dir, tree, pool) = setup().await;
+        let mut pages = BTreeMap::new();
+        for (slug, path, facts) in [
+            ("alice", "@profile.md", Vec::new()),
+            ("cucina", "cucina.md", vec![ffp(0x41, "alice cooks")]),
+        ] {
+            pages.insert(
+                slug.to_owned(),
+                PagePlan {
+                    slug: slug.to_owned(),
+                    title: slug.to_owned(),
+                    description: format!("{slug} desc"),
+                    style: None,
+                    primary_facts: facts,
+                    outgoing_links: Vec::new(),
+                    wiki_id: "alice".to_owned(),
+                    page_path: path.to_owned(),
+                },
+            );
+        }
+        let mut link_graph = BTreeMap::new();
+        link_graph.insert("alice".to_owned(), vec!["cucina".to_owned()]);
+        let plan = CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph,
+            compilation_order: vec!["alice".to_owned()],
+            generated_at: "t".to_owned(),
+            fact_count: 0,
+            dirty_pages: vec!["alice".to_owned()],
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
+        };
+        let cronista =
+            FakeLlmBackend::new("fake", "{\"mergedBody\":\"NOPE\",\"description\":\"d\"}");
+        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-08-23T00:00:00Z")
+            .await
+            .expect("compile");
+
+        let page =
+            std::fs::read_to_string(dir.path().join("wikis/alice/@profile.md")).expect("written");
+        assert!(
+            !page.contains("NOPE"),
+            "still no model on this path: {page}"
+        );
+        assert!(page.contains("_alice desc_"), "{page}");
+        assert!(
+            page.contains("[[alice/cucina]]"),
+            "the rail is on the page, so the next build can read it back: {page}"
+        );
+        // And it reads back as the same edge, through the same two functions
+        // the plan's harvest uses — which is the whole point of writing it.
+        let read_back: Vec<String> = crate::recall::extract_wikilinks(&page)
+            .into_iter()
+            .filter_map(|l| {
+                l.page
+                    .map(|pg| crate::planner::plan_slug_for_page(&l.wiki_id, &pg))
+            })
+            .collect();
+        assert_eq!(read_back, vec!["cucina".to_owned()], "{page}");
         drop(dir);
     }
 
