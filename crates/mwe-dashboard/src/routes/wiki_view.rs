@@ -1288,8 +1288,8 @@ pub fn wikilink_index(
         .unwrap_or_default()
 }
 
-/// Resolve one wikilink target against the tree, per the link grammar of
-/// recall-pipeline.md:
+/// Resolve one wikilink target against the tree, per the link grammar
+/// ([`mwe_core::recall::WikiLink`]):
 /// `wiki_id` → that wiki's view route; `wiki_id/page-slug` → that page's
 /// view route when the page file exists (the slug never carries `.md`;
 /// nested slugs keep their `/`).

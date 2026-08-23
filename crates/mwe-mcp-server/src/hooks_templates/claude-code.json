@@ -2,7 +2,6 @@
   "consumer": "claude-code",
   "consumer_label": "Claude Code (Anthropic)",
   "milestone": "OAuth smart consumer — a strongly-recommended, token-less, cross-platform SessionStart recall+capture hook (operator-installed)",
-  "spec_reference": "wiki/design-notes/web-agent-oauth.md + wiki/development/agents-bridges.md",
   "status": "ready",
   "target_file": "~/.claude/settings.json (global, matches --scope user) or <project>/.claude/settings.json (per-project override).",
   "installation": "The OPERATOR (human) merges `snippet.hooks` into their settings.json `hooks` key — an agent cannot do it: merging an externally-sourced hook into settings.json is self-modification with external content, which Claude Code's safety classifier blocks. No script file, no token, no placeholders.",

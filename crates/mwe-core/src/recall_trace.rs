@@ -207,8 +207,8 @@ pub struct TraceEntryPoint {
     /// The page this seed opens. `Option` only because the field is
     /// `#[serde(default)]` and an old journal row may not carry one —
     /// **`None` is not a landing**: a live [`EntryPoint`] always names a
-    /// page, and a seed that names only a wiki opens nothing (there is no
-    /// wiki-root page to fall back to, and has not been since 2026-08-15).
+    /// page, and a seed that names only a wiki opens nothing — recall opens
+    /// pages, and a wiki has no page of its own to fall back to.
     ///
     /// [`EntryPoint`]: crate::recall_nav::EntryPoint
     pub page: Option<String>,

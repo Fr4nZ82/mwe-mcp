@@ -409,9 +409,9 @@ async fn index(
     // operator view does not silently lag the agent's knowledge. Both calls
     // pull the FULL row (every column), ACL-filtered, honouring the same
     // filters incl. `sort` / `include_inactive`.
-    let fresh = recall::parking_pageed_full_for(&state.pool, &core_filters, &sender_ctx, reveal)
+    let fresh = recall::wiki_buffered_full_for(&state.pool, &core_filters, &sender_ctx, reveal)
         .await
-        .map_err(|e| DashboardError::Internal(format!("parking_pageed_full_for: {e}")))?;
+        .map_err(|e| DashboardError::Internal(format!("wiki_buffered_full_for: {e}")))?;
     let promoted = recall::wiki_facts_full_for(&state.pool, &core_filters, &sender_ctx, reveal)
         .await
         .map_err(|e| DashboardError::Internal(format!("wiki_facts_full_for: {e}")))?;

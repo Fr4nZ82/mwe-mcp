@@ -7325,8 +7325,7 @@ pub async fn wiki_ingest_message(
     // The same page in the funnel's own `(wiki, page)` terms, so the walk
     // treats it as already visited (roadmap 69b). The wiki id *is* the sender
     // id — `who_is_speaking_section` locates the wiki by parsing it — and the
-    // page is always `IDENTITY_PAGE`, which is also what the funnel resolves a
-    // page-less wiki-root candidate to, so this one key closes both shapes.
+    // page is always `IDENTITY_PAGE`, so this one key closes both shapes.
     let mut served_identity: Vec<(String, PathBuf)> = identity_path
         .map(|_| (sender_ctx.sender_id.clone(), PathBuf::from(IDENTITY_PAGE)))
         .into_iter()
@@ -7776,9 +7775,9 @@ mod tests {
         // An 'alice' identity wiki: a top-level `wiki-user` root
         // (`parent_wiki_id: null`) — the way `create_identity_wiki` lands
         // real identity wikis — so the scope-principal derivation resolves
-        // it to `user:alice`. (No `wiki-root` sentinel: production identity
-        // wikis are top-level, not parented under a non-identity root, and a
-        // non-identity root cannot derive a scope principal.)
+        // it to `user:alice`. Parenting it under a non-identity wiki would
+        // make the fixture unlike production AND unable to derive a scope
+        // principal at all.
         write_wiki(&wikis, "alice", "Alice", "wiki-user", None);
         let tree = WikiTree::open(dir.path()).expect("open tree");
         // ENROLLED, which is what gives her wiki an identity card. Since
@@ -7848,8 +7847,8 @@ mod tests {
         std::fs::create_dir_all(&wikis).unwrap();
         // Identity wikis are top-level roots (`parent_wiki_id: null`), the way
         // `create_identity_wiki` lands them, so the scope-principal derivation
-        // resolves `alice` → `user:alice` and `samvisebot` → `user:samvisebot`.
-        // (No `wiki-root` sentinel — see `setup_workdir`.)
+        // resolves `alice` → `user:alice` and `samvisebot` → `user:samvisebot`
+        // — see `setup_workdir`.
         write_wiki(&wikis, "alice", "Alice", "wiki-user", None);
         write_wiki(&wikis, "samvisebot", "Samvise Bot", "wiki-user", None);
         let tree = WikiTree::open(dir.path()).expect("open tree");
@@ -10989,7 +10988,7 @@ mod tests {
         // the fact lands in `fact_index` immediately. Every
         // non-smart wiki is a standard wiki, so a plain capture would
         // buffer for the dream instead (covered by
-        // `ingest_standard_parking_pages_instead_of_writing_md`).
+        // `ingest_standard_wiki_buffers_instead_of_writing_md`).
         let json = "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\"subject_id\":\"user:alice\",\"body\":\"alice prefers coffee black\",\"fact_type\":\"preference\",\"topics\":[\"coffee\"],\"requested_container\":true,\"suggested_seed\":\"Noted.\"}";
         let llm = FakeLlmBackend::new("fake", json);
         let policy = IngestPolicy::default();
@@ -14167,7 +14166,7 @@ mod tests {
     /// buffer (the `capture_buffer` row), NOT in `fact_index` or the
     /// published `.md`. The hourly round is what places it and writes the page.
     #[tokio::test]
-    async fn ingest_standard_parking_pages_instead_of_writing_md() {
+    async fn ingest_standard_wiki_buffers_instead_of_writing_md() {
         let (dir, tree, pool) = setup_workdir().await;
 
         let llm = FakeLlmBackend::new(
@@ -14463,7 +14462,7 @@ mod tests {
     /// path even into a standard wiki — it lands in `fact_index` + the page
     /// marker immediately, NOT in the buffer (a shopping list cannot wait for
     /// the dream). Inverse of
-    /// `ingest_standard_parking_pages_instead_of_writing_md`.
+    /// `ingest_standard_wiki_buffers_instead_of_writing_md`.
     ///
     /// Removing it was proposed on 2026-08-05 and rejected: the fresh slot
     /// makes a buffered claim *recallable*, which is enough for a fact and not

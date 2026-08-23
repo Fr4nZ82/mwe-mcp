@@ -411,17 +411,16 @@ async fn note_page_failure(pool: &SqlitePool, tree: &WikiTree, page: &PagePlan, 
 /// page FILES the plan no longer references.
 ///
 /// The planner drops an emptied page from the plan and the registry but
-/// never touched its `.md` — a live-write page whose fact the Conciliatore
-/// re-routed, or a leaf whose facts all moved away, survived as a zombie
-/// file with stale marker copies that the recall navigator kept reading
-/// (the dogfood re-run's duplicated registry twin). This sweep walks each
-/// plan-covered wiki (smart wikis never enter a plan) and removes a
-/// concept-page file only when ALL of:
+/// never touches its `.md`. Without this sweep — a live-write page whose fact
+/// the Conciliatore re-routed, or a leaf whose facts all moved away — the file
+/// survives with stale marker copies, and the recall navigator keeps reading
+/// them. This sweep walks each plan-covered wiki (smart wikis never enter a
+/// plan) and removes a concept-page file only when ALL of:
 ///
 /// - its path is not in the plan's page set for that wiki,
-/// - it is not a reserved page (`@rules.md`, any `_`-prefixed file). The card
-///   and the buffer need no exemption: they are plan nodes, so they are
-///   always in the plan's page set for their wiki,
+/// - it is not a reserved page (`@rules.md`, any `_`-prefixed file). The
+///   identity card needs no exemption: it is a plan node, so it is always in
+///   the plan's page set for its wiki,
 /// - **no** non-tombstoned `fact_index` row points at it
 ///   ([`fact_index::count_rows_at_source_path`]) — the DB-first guard: a
 ///   pending render or a superseded row's audit marker keeps the file.
@@ -822,10 +821,10 @@ async fn compile_leaf_page(
 /// does with it is its own business — nothing here promises a turn ever sees
 /// it.
 ///
-/// It keys on the page being the wiki's **identity card**, not on a file
-/// name: the name it used to key on stopped existing when the card moved off
-/// the wiki root (2026-08-03), and the branch could then never fire again —
-/// the abstract would have gone stale for ever with nothing to say so.
+/// It keys on the page being the wiki's **identity card**, never on a file
+/// name. A name can move; what the page IS cannot, and a branch keyed on a
+/// name that moved stops firing silently — the abstract would go stale for
+/// ever with nothing to say so.
 ///
 /// Best-effort: a `_meta` hiccup must not fail a page that already wrote.
 fn sync_foundation_summary(page: &PagePlan, abs_dir: &std::path::Path, description: &str) {
@@ -1704,7 +1703,7 @@ fn primary_facts_text(
     // by this 1-based number. We deliberately DO NOT show subject / allow / sender /
     // fact_id: the ACL is load-bearing and is rendered by code (see
     // [`expand_fact_tags`]), never copied by the LLM — so the model cannot drop
-    // an `allow=` or miscount the braces of a marker it no longer writes.
+    // an `allow=` or miscount the braces of a marker it does not write.
     //
     // A fact that carries a validity window (`valid_from`/`valid_to`)
     // gets a compact `(validity: …)` hint appended to its line. This is a one-way
@@ -1823,9 +1822,8 @@ fn is_future(from: &str, now: &str) -> bool {
     }
 }
 
-/// The canonical wikilink for one planned page, per the link grammar
-/// (recall-pipeline.md §Link grammar) — `[[wiki_id/page-slug]]`, always a
-/// page.
+/// The canonical wikilink for one planned page — `[[wiki_id/page-slug]]`,
+/// always a page (the grammar is on [`crate::recall::WikiLink`]).
 ///
 /// The slug is the page **file's** stem, never the plan slug alone (which
 /// would read as a hop to a wiki that does not exist). Every link the
@@ -1977,9 +1975,9 @@ impl PageIndex {
     ///
     /// The fallback arm is not the rare one: it is taken by every page created
     /// in the run being compiled, and by every page after an embedder failure
-    /// — so the pages most in need of good links were the ones taking it. It
-    /// used to `take(40)` straight off the plan's `BTreeMap`, i.e.
-    /// alphabetically, which re-introduced inside this function the exact
+    /// — so the pages most in need of good links are the ones taking it, and
+    /// it must not fall back to the plan's `BTreeMap` order, which is
+    /// alphabetical and would re-introduce inside this function the exact
     /// ordering the function exists to abolish. Fact mass is the signal that
     /// survives with no vector at all: a page carrying fifty facts is a
     /// likelier destination than an empty one, and it is *importance*, which
@@ -2213,7 +2211,6 @@ fn resolve_tone(tree: &WikiTree, wiki_id: &str) -> String {
     match handle.meta().wiki_type.as_str() {
         "wiki-user" => IDENTITY_TONE,
         "wiki-group" => "shared",
-        "wiki-root" => "telegraphic",
         _ => "narrative",
     }
     .to_owned()
@@ -2939,10 +2936,9 @@ mod tests {
             "canonical claim text preserved"
         );
         // No wiki abstract: this page is `cucina.md`, an ordinary page, and
-        // only a wiki's OWN page carries its abstract. The fixture used to
-        // declare itself a foundation node while sitting on `cucina.md` — the
-        // kind of disagreement that stopped being possible when a page became
-        // its file name (2026-08-19). The abstract has its own test below.
+        // only a wiki's OWN page carries its abstract. What a page is IS its
+        // file name, so the two cannot disagree. The abstract has its own
+        // test below.
         let meta = std::fs::read_to_string(dir.path().join("wikis/alice/_meta.md")).unwrap();
         assert!(
             !meta.contains("summary: d"),
@@ -3493,9 +3489,9 @@ mod tests {
     }
 
     /// **A style is one of three, and nothing else can be one** (founder,
-    /// 2026-08-19). The coercion this test used to check is gone with the free
-    /// text: a value that is not one of the three never becomes a style at all,
-    /// and a page with no style compiles as prose.
+    /// 2026-08-19). A value that is not one of the three never becomes a style
+    /// at all — it is refused, never coerced — and a page with no style
+    /// compiles as prose.
     #[test]
     fn a_style_is_one_of_three_or_nothing() {
         use crate::wiki::PageStyle;
@@ -3919,7 +3915,7 @@ mod tests {
 
     #[test]
     fn primary_facts_text_withholds_acl_from_the_cronista() {
-        // Under the <fN> contract the Cronista no longer writes markers, so the
+        // Under the <fN> contract the Cronista does not write markers, so the
         // ACL (subject / allow / sender / fact_id) is deliberately NOT shown to it —
         // the code renders the marker (expand_fact_tags). Withholding it is what
         // removes the brace/attribute miscount failure mode of LLM-written markers.
@@ -4302,9 +4298,9 @@ mod tests {
     use crate::llm::{CompletionResponse, CompletionUsage, FinishReason, LlmError};
 
     /// A Cronista whose backend refuses the request outright, counting
-    /// attempts. Models the live failure: with the API answering "credit
-    /// balance too low" (a 400 ⇒ [`LlmError::Invalid`]) every page used to
-    /// buy the same refusal twice.
+    /// attempts. Models the live failure — the API answering "credit balance
+    /// too low" (a 400 ⇒ [`LlmError::Invalid`]) — where a retry buys the same
+    /// refusal a second time and the count is what proves it does not.
     struct RefusingCronista {
         error: fn(String) -> LlmError,
         calls: std::sync::atomic::AtomicUsize,

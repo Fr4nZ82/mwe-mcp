@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! REM Briefing-processor (sub-job 10).
+//! REM Briefing-processor.
 //!
 //! The REM is the conceptual maintainer of non-smart wikis
 //! (the identity wikis and every emerged sub-wiki). On
@@ -19,7 +19,7 @@
 //! ```
 //!
 //! The same function is invoked **(a)** in batch by [`super::run_cycle`]
-//! (sub-job 10) over every pending non-smart row past the grace
+//! over every pending non-smart row past the grace
 //! period and **(b)** synchronously by the dashboard endpoint
 //! `POST /dashboard/wiki/:id/briefing-items/:bi_id/process` when the
 //! operator clicks the "Submit" button on a non-smart wiki view

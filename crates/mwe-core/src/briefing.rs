@@ -938,7 +938,7 @@ enum NotifyOutcome {
     FullCompanion,
     /// `smart consumer × standard wiki`: append a row to [`wiki_briefing_items`]
     /// only. `_briefing.md` is **not** written — standard wikis don't
-    /// own one, and the REM Briefing-processor sub-job 10
+    /// own one, and the REM Briefing-processor sub-job
     /// drains the row in the next cycle.
     NarrativeDbOnly,
 }
@@ -965,7 +965,7 @@ fn gate_notify_target_matrix(
                 wiki_type: wiki_type_label,
             });
         },
-        // smart consumer × standard wiki: append to the DB queue; REM sub-job 10
+        // smart consumer × standard wiki: append to the DB queue; the REM briefing processor
         // drains it at the next cycle.
         (crate::jwt::ConsumerClass::Smart, false) => NotifyOutcome::NarrativeDbOnly,
         // standard consumer × smart wiki: classic openclaw-style relay onto the
@@ -988,7 +988,7 @@ fn gate_notify_target_matrix(
 /// same `50/wiki/h` cap (per [`tool-reference.md §H.3`]).
 ///
 /// `write_briefing_file = false` is the `smart consumer × standard wiki`
-/// path (no `_briefing.md` exists for standard wikis; REM sub-job 10
+/// path (no `_briefing.md` exists for standard wikis; the REM briefing processor
 /// drains the row). `write_briefing_file = true` is the historical
 /// `standard consumer × smart wiki` shape (and the REM-internal smart-wiki path).
 #[allow(
@@ -1399,7 +1399,7 @@ mod tests {
     #[tokio::test]
     async fn notify_smart_on_standard_appends_db_only_no_briefing_file() {
         // Matrix cell `smart consumer × standard wiki`: append a row to
-        // `wiki_briefing_items` so REM sub-job 10 can drain it; do
+        // `wiki_briefing_items` so the REM briefing processor can drain it; do
         // **not** create `_briefing.md` (it does not belong on a
         // standard wiki).
         let dir = tempdir().unwrap();

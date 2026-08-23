@@ -9,8 +9,8 @@
 //! ## Sub-jobs
 //!
 //! **[`run_cycle`] is the SSOT for the sub-job roster and their fixed
-//! order — read its body**; the per-sub-job contract is documented in
-//! rem-cycle.md. The shape
+//! order — read its body**; each sub-job's own contract is on its own
+//! `run_*` function. The shape
 //! of the cycle: the two proposal sweeps settle overdue
 //! `structure_proposals` first; the consolidation and hygiene sweeps
 //! (dedup, promote, merge, completion, contradiction, refile,
@@ -141,7 +141,8 @@ pub struct RemPolicy {
     /// is higher (founder, 2026-08-04). A **`lista`** page has no floor at
     /// all: it is *consulted*, not read, and its value is being complete in
     /// one place — splitting it by size breaks the only thing it is for, and
-    /// neither half is an answer any more. See [`mass_floor_for_style`].
+    /// leaves two halves, neither of which answers the question. See
+    /// [`mass_floor_for_style`].
     pub auto_promote_min_page_facts_technical: usize,
     /// Minimum **group size**, in pages, for a new sub-wiki to be born
     /// out of the *page-group → wiki* regrouping pass: the LLM must find
@@ -248,11 +249,11 @@ pub struct RemPolicy {
     /// the table for past leases, so the window doubles as the UI
     /// visibility budget. Default 7 days.
     pub lease_expirer_retention: chrono::Duration,
-    /// Briefing-processor (sub-job 10): master switch. `false`
+    /// Briefing-processor: master switch. `false`
     /// disables the sub-job for this cycle without forcing the
     /// operator to clear other policy fields. Default `true`.
     pub briefing_processor_enabled: bool,
-    /// Briefing-processor (sub-job 10): a row whose `ts` is
+    /// Briefing-processor: a row whose `ts` is
     /// within this grace period of `now` is left alone — the operator
     /// might still be editing the comment in the dashboard. The
     /// synchronous Submit endpoint on the dashboard bypasses the
@@ -384,7 +385,7 @@ pub struct RemCycleReport {
     /// grace get `released_at` stamped (treated as crashed without
     /// release), released rows beyond retention get deleted.
     pub lease_expirer: crate::wiki_admin_leases::ExpirerReport,
-    /// Briefing-processor sub-job report (sub-job 10) —
+    /// Briefing-processor sub-job report —
     /// drains pending `wiki_briefing_items` rows on non-smart
     /// wikis past the grace period.
     pub briefing_processor: BriefingProcessorReport,
@@ -595,7 +596,7 @@ pub struct BriefingDispatcherReport {
     pub errors: Vec<String>,
 }
 
-/// Sub-report for the Briefing-processor non-smart (sub-job 10).
+/// Sub-report for the Briefing-processor non-smart.
 ///
 /// Drains `wiki_briefing_items` rows whose `wiki_id` is a
 /// **non-smart** wiki (smart consumers maintain their own
@@ -839,15 +840,15 @@ pub type Result<T> = std::result::Result<T, RemError>;
 /// normalizer, the briefing processor's comment-apply path — the
 /// revisor's semantic nomination channel instead reads the vectors
 /// already stored on the rows), and a [`RemLlms`] bag carrying the
-/// per-sub-job model handles so the operator can wire each function to
-/// a different profile (`cronista` → workhorse, `revisor` → small,
-/// `auto_promote` → strong; per the ingest pipeline).
+/// per-sub-job model handles ([`RemLlms`] names the slot each field is
+/// wired to).
 ///
-/// Order of sub-jobs is fixed:
-/// **auto-apply → revisor → auto-promote → hub-writer**.
-/// The auto-apply/auto-finalize sweeps land overdue proposals first,
-/// revisor + auto-promote emit fresh proposals, and hub-writer
-/// summarises last so its prompt sees a stable snapshot.
+/// **The order of the sixteen sub-jobs is the order they are called in
+/// below, and that call sequence is the only authority on it.** It is
+/// load-bearing at two points: the auto-apply sweep settles overdue
+/// proposals before any write-job touches the same rows, and provenance
+/// hygiene runs immediately before the date normalizer so the normalizer
+/// reads pointer-clean text.
 ///
 /// # Errors
 ///
@@ -1401,12 +1402,12 @@ async fn run_revisor_jaccard(
                     break;
                 }
                 report.pairs_examined += 1;
-                // A single bad response must not cost the whole night. The
-                // dedup revisor used to propagate the first LLM error, and
-                // `dream::run_full` aborts the cycle on it — so one flaky
-                // candidate ("gemini response has no `text` part", live
-                // 2026-07-29) skipped the promote, the reorg and every page
-                // compile queued behind it, and the retry was a day away.
+                // A single bad response must not cost the whole night.
+                // `dream::run_full` aborts the cycle on an error out of here,
+                // so propagating one flaky candidate's reply ("gemini response
+                // has no `text` part") would skip the promote, the reorg and
+                // every page compile queued behind it — and the retry is a day
+                // away.
                 // Skip the pair (it stays nominable next cycle, unrecorded)
                 // and keep going, exactly as the completion / contradiction
                 // confirmers already do. A real backend outage still aborts:
@@ -1915,12 +1916,11 @@ async fn run_auto_promote(
             *page_mass.entry(f.source_path.as_str()).or_default() += 1;
         }
         // Page-group → wiki regrouping. Runs *before* the paragraph
-        // loop, but the two no longer compete for the same signal: this
-        // pass moves whole pages between wikis on the strength of how
-        // many of them are one subject, while the loop below splits a
-        // page that has grown too heavy. A page this pass relocated is
-        // skipped below — the `facts` snapshot predates the move and
-        // still points at the page's old home.
+        // loop, and the two read different signals: this pass moves whole
+        // pages between wikis on the strength of how many of them are one
+        // subject, while the loop below splits a page that has grown too
+        // heavy. A page this pass relocated is skipped below — the `facts`
+        // snapshot predates the move and still points at the page's old home.
         let regrouped = run_page_grouping_for_wiki(
             pool,
             tree,
@@ -1947,17 +1947,13 @@ async fn run_auto_promote(
         // (founder, 2026-08-04). See [`over_mass_floor`].
         let mut pages: Vec<&str> = page_mass
             .iter()
-            // A channel page is never split, and this is the gate that was
-            // missing (founder, 2026-08-18). The other five sweeps honour
-            // `is_channel_page` each in its own way — dedup never pairs
+            // A channel page is never split (founder, 2026-08-18). Every
+            // structural sweep fences it in its own way — dedup never pairs
             // across it, the completion sweep never takes it as evidence,
-            // refile never nominates it as the fact to move — but the split
-            // looked only at style and mass. A project diary over the floor
-            // therefore reached the model that decides which facts leave the
-            // page, and a confirmed split would have carried them onto a page
-            // of its own: its reader keys on the path, so those lines would
-            // have gone quietly unread. Same shape as the `@projects.md` hole
-            // of 2026-08-11 — a name defended on one side of the fence only.
+            // refile never nominates it as the fact to move — because a
+            // channel's reader keys on the PATH: facts carried onto a page of
+            // their own keep their words and stop being delivered, with no
+            // error anywhere.
             .filter(|&(&path, _)| !wiki::is_channel_page(path))
             // The identity card is never split, whatever its mass (founder,
             // 2026-08-22). Recall serves it WHOLE into every turn: a split
@@ -1983,13 +1979,11 @@ async fn run_auto_promote(
                 .filter(|f| f.source_path == source_path)
                 .collect();
             // The promote handler joins `source_page` onto the wiki's
-            // abs_dir, so it must be wiki-relative (`index.md`), NOT the
-            // fact's workdir-relative `source_path`
-            // (`wikis/<id>/index.md`) — passing the latter doubled the
-            // prefix and made every REM paragraph_to_file apply miss on
-            // disk. Compute it up front: it gates a cheap malformed-path
-            // skip AND scopes the dedup below to receipts promoted FROM
-            // this page.
+            // abs_dir, so it must be wiki-relative (`cucina.md`), NOT the
+            // fact's workdir-relative `source_path` (`wikis/<id>/cucina.md`):
+            // the latter doubles the prefix and every apply misses on disk.
+            // Compute it up front: it gates a cheap malformed-path skip AND
+            // scopes the dedup below to receipts promoted FROM this page.
             let Some(source_page_rel) = wiki_relative_page(d, source_path) else {
                 report.errors.push(format!(
                     "auto_promote: {source_path} is not under wiki {}",
@@ -2482,8 +2476,8 @@ const GROUPING_SNIPPET_CHARS: usize = 110;
 /// The trigger is therefore **evidence on disk**, never a bet: a wiki
 /// is born holding every page of its subject, and can never be born
 /// with one page. A page that has merely accumulated mass is the
-/// *paragraph → page* pass's business, and that pass now runs
-/// unopposed — the two rungs no longer compete for the same signal.
+/// *paragraph → page* pass's business: the two rungs read different
+/// signals and never contend for the same page.
 ///
 /// Returns the workdir-relative `source_path`s the pass moved, so the
 /// paragraph pass below can skip them: its `facts` snapshot predates
@@ -2514,9 +2508,18 @@ async fn run_page_grouping_for_wiki(
         return Ok(moved);
     }
 
-    // Candidate pages: every page carrying mass.
+    // Candidate pages: every page carrying mass, except the ones whose NAME
+    // the engine decides. A grouping moves a page into a sub-wiki, so it
+    // moves the page's path — and a reserved page is found by its path: the
+    // rules reader opens `@rules.md` at the wiki root, the signpost reader
+    // keys on the path, recall serves the identity card from the wiki it
+    // belongs to. Carried one level down, each of them keeps its content and
+    // silently stops being delivered, with no error anywhere. Same two fences
+    // the split honours, for the same reason.
     let mut candidates: Vec<(String, &str, usize)> = page_mass
         .iter()
+        .filter(|&(&source_path, _)| !wiki::is_channel_page(source_path))
+        .filter(|&(&source_path, _)| !wiki::is_identity_card_page(source_path))
         .filter_map(|(&source_path, &mass)| {
             let rel = wiki_relative_page(d, source_path)?;
             Some((rel, source_path, mass))
@@ -2997,9 +3000,10 @@ fn merge_candidates(
     // spends its budget on pairs that actually reach a judgement.
     //
     // The prose pairs lead, ranked by how much text they share — that is a
-    // measured overlap, where kinship is only a name resembling a name. Both
-    // used to arrive in the plan's `BTreeMap` order, i.e. by slug, and the
-    // budget was then cut off the front of an alphabetical list.
+    // measured overlap, where kinship is only a name resembling a name. The
+    // sort is load-bearing: the plan's `BTreeMap` hands them over by slug, and
+    // a budget cut off the front of an alphabetical list judges pairs for
+    // their initial.
     let mut prose: Vec<&(String, String, f32)> = duplicate_prose.iter().collect();
     prose.sort_by(|a, b| b.2.total_cmp(&a.2));
     for (a, b, score) in prose {
@@ -3029,12 +3033,11 @@ fn merge_candidates(
 /// re-judged.
 ///
 /// **Matched as whole JSON values, with the wiki, in one orientation or the
-/// other.** The predicate used to be two unanchored `LIKE '%<page>%'` over
-/// the whole context blob with no wiki at all, so any page name that is a
-/// substring of another silently inherited its verdict — once
-/// `lista_spesa.md` + `dispensa.md` had been judged anywhere on the machine,
-/// `spesa.md` + `dispensa.md` counted as judged, in every wiki, forever.
-/// A veto is meant to be an operator's decision about two specific pages;
+/// other** — never an unanchored `LIKE '%<page>%'` over the context blob. A
+/// substring match would let any page name that contains another inherit its
+/// verdict: once `lista_spesa.md` + `dispensa.md` had been judged anywhere on
+/// the machine, `spesa.md` + `dispensa.md` would count as judged, in every
+/// wiki, forever. A veto is an operator's decision about two specific pages;
 /// spreading it by substring makes it a decision about names nobody chose.
 async fn merge_already_judged(
     pool: &SqlitePool,
@@ -3122,8 +3125,7 @@ fn merge_prompt(
     )?)
 }
 
-/// Page-merge sub-job — the **cure front** of semantic page consolidation
-/// (rem-cycle.md §Page-merge sub-job).
+/// Page-merge sub-job — the **cure front** of semantic page consolidation.
 ///
 /// Structural signals (the reviewer's `duplicate_prose` over the compiled
 /// pages, page-name kinship in the persisted plan) **nominate**
@@ -3183,12 +3185,12 @@ async fn run_page_merge(
     let agent_family = agent_families(&scopes);
     let family = family_roots(&scopes);
     // The budget counts pairs that reach a JUDGEMENT, not pairs that reach
-    // the loop. It used to be applied inside `merge_candidates`, before the
-    // already-judged and settled filters ran, so a handful of pairs the
-    // operator had already vetoed filled it, were skipped without a call, and
-    // every mergeable pair behind them went unjudged on that night and every
-    // night after — while the report said `candidates_examined: 0` and raised
-    // no error.
+    // the loop, and it is spent HERE rather than inside `merge_candidates` —
+    // that is before the already-judged and settled filters run, so a handful
+    // of pairs the operator has already vetoed would fill it, be skipped
+    // without a call, and leave every mergeable pair behind them unjudged that
+    // night and every night after, with the report saying
+    // `candidates_examined: 0` and raising no error.
     let mut budget = policy.page_merge_cap;
     for (slug_a, slug_b, signal) in merge_candidates(&plan, &duplicate_prose, &family) {
         if budget == 0 {
@@ -5077,9 +5079,9 @@ async fn finish_unrepaired(
 /// `trim_end`ed) ends with a parenthetical wikilink `([[target]])`
 /// preceded by whitespace → `(head, target)`.
 ///
-/// The match pins the exact shape the document path's file phase used to
-/// emit — ` ([[wiki/page]])` appended to a non-empty claim — and nothing
-/// else: the target must be a plain `wiki/page` pointer (a `/`, no
+/// The match pins one exact shape — ` ([[wiki/page]])` appended to a
+/// non-empty claim — and nothing else: the target must be a plain
+/// `wiki/page` pointer (a `/`, no
 /// brackets, no parens, no whitespace), the parenthetical must be
 /// whitespace-separated from the claim, and the claim before it must be
 /// non-empty. Anything looser (prose inside the parenthetical, a glued
@@ -5132,14 +5134,12 @@ fn split_trailing_provenance_refs(text: &str) -> Option<(String, Vec<String>)> {
 /// The provenance-hygiene sweep — trailing source pointers move off the
 /// claim text into `authored_refs`.
 ///
-/// Mechanical repair of a known defect pattern, not a semantic gate: the
-/// document path's file phase used to append the dossier backlink to the
-/// claim body (` ([[wiki/page]])`), flooding the document page with
-/// inbound links, feeding link noise to embeddings and dedup, and
-/// freezing prose the Cronista cannot restyle. The go-forward writer is
-/// fixed (provenance rides `authored_refs` —
-/// document ingest); this
-/// sweep converges the pre-existing corpus. Per flagged fact: move the
+/// Mechanical repair of one defect shape in the stored rows, not a semantic
+/// gate. A claim whose body ends in the dossier backlink (` ([[wiki/page]])`)
+/// floods the document page with inbound links, feeds link noise to embeddings
+/// and dedup, and freezes prose the Cronista cannot restyle. Provenance rides
+/// `authored_refs`, so nothing writes that shape; this sweep converges the
+/// rows that carry it. Per flagged fact: move the
 /// pointer into `authored_refs` (dedup'd), strip the suffix, re-embed the
 /// cleaned text, and write text + embedding + refs in **one atomic
 /// statement** ([`fact_index::update_region_and_authored_refs`], offsets
@@ -5558,7 +5558,7 @@ async fn run_date_normalizer(
         {
             Ok(r) => r,
             Err(e) => {
-                // One wiki's transport failure no longer sinks the whole
+                // One wiki's transport failure must not sink the whole
                 // cycle's normalisation — the others still drain.
                 report.errors.push(format!("normalizer LLM ({wiki}): {e}"));
                 continue;
@@ -5778,7 +5778,7 @@ async fn run_lease_expirer(
     Ok(report)
 }
 
-// ---------- Briefing-processor non-smart (sub-job 10) ----------
+// ---------- Briefing-processor non-smart ----------
 
 /// Drain pending `wiki_briefing_items` rows whose `wiki_id` is a
 /// non-smart wiki and whose `ts` is older than the configured
@@ -5786,9 +5786,8 @@ async fn run_lease_expirer(
 ///
 /// On smart wikis the inbox is drained by the smart consumer at
 /// `smart_bootstrap` via `mark_processed` on the next `wiki_admin_push`.
-/// Narrative families (every non-smart wiki: `wiki-user`,
-/// `wiki-root`, `wiki-group`, and emerged sub-wikis) have no smart
-/// consumer, so REM
+/// Narrative families (every non-smart wiki: `wiki-user`, `wiki-group`, and
+/// emerged sub-wikis) have no smart consumer, so REM
 /// fills the gap by calling the **same** core function
 /// ([`briefing_processor::process_briefing_item`]) the dashboard
 /// "Submit" endpoint uses synchronously — one branch, two callers, no
@@ -7371,10 +7370,10 @@ mod tests {
                 .any(|(a, b)| *a == "viaggi_vuota" || *b == "viaggi_vuota"),
             "factless pages are not candidates: {pairs:?}"
         );
-        // No cap here any more: the whole list comes back and the caller
-        // spends its budget on the pairs that reach a judgement, so a handful
-        // of already-vetoed pairs can no longer consume the night's spend
-        // without a single call being made.
+        // No cap here: the whole list comes back and the caller spends its
+        // budget on the pairs that reach a judgement, so a handful of
+        // already-vetoed pairs cannot consume the night's spend without a
+        // single call being made.
         let all = merge_candidates(&plan, &[], &family);
         let mass = |slug: &str| plan.pages[slug].primary_facts.len();
         let heaviest_pair_mass = mass(&all[0].0) + mass(&all[0].1);
@@ -7521,9 +7520,9 @@ mod tests {
             mass_floor_for_style(None, &p),
             Some(p.auto_promote_min_page_facts)
         );
-        // There is no fourth style to pass here any more: `PageStyle` has three
-        // values and nothing else parses into one (2026-08-19). `None` above
-        // covers what "something else" used to mean.
+        // There is no fourth style to pass here: `PageStyle` has three values
+        // and nothing else parses into one (2026-08-19), so `None` above is
+        // the whole of "something else".
         assert!(
             p.auto_promote_min_page_facts_technical > p.auto_promote_min_page_facts,
             "scanning tolerates more mass than following a thread"
@@ -7828,11 +7827,10 @@ mod tests {
 
     /// A channel page is never split by mass, whatever its size.
     ///
-    /// The five other sweeps fenced `is_channel_page` each in its own way; the
-    /// split looked at style and mass alone until 2026-08-18. A diary over the
-    /// floor reached the model that names the facts to move out, and a
-    /// confirmed split would have taken them onto a page of their own — where
-    /// the channel, which keys on the path, would never look again.
+    /// The floor is style and mass, and neither can see what a page is FOR. A
+    /// diary over the floor would otherwise reach the model that names the
+    /// facts to move out, and a confirmed split would take them onto a page of
+    /// their own — where the channel, which keys on the path, never looks.
     #[tokio::test]
     async fn auto_promote_never_splits_a_channel_page() {
         let (dir, mut tree, pool) = setup_workdir().await;
@@ -8033,8 +8031,7 @@ mod tests {
         assert_eq!(report.auto_promote.grouping_groups_applied, 1);
         assert_eq!(report.auto_promote.applied.len(), 1);
 
-        // The wiki is born holding all three pages under their own
-        // names — never a single page, and never one fat index.
+        // The wiki is born holding all three pages under their own names.
         let new_dir = tree.wikis_dir().join("alice").join("giardino");
         assert!(new_dir.join("_meta.md").exists(), "sub-wiki must exist");
         for page in ["orto.md", "potatura.md", "compost.md"] {
@@ -8044,9 +8041,16 @@ mod tests {
                 "{page} must be gone from the parent",
             );
         }
-        // Nothing else is seeded.
-        assert!(
-            !new_dir.join("index.md").exists(),
+        // And nothing else: an emerged wiki carries the pages it was founded
+        // on plus its own `_meta.md`, and coins no page of its own.
+        let mut born: Vec<String> = std::fs::read_dir(&new_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        born.sort();
+        assert_eq!(
+            born,
+            vec!["_meta.md", "compost.md", "orto.md", "potatura.md"],
             "an emerged wiki carries its pages and nothing else"
         );
 
@@ -8190,8 +8194,72 @@ mod tests {
         drop(dir);
     }
 
+    /// A page whose NAME the engine decides is never offered to the grouping
+    /// model, so it can never be carried into a sub-wiki. Each of them is
+    /// found by its path — the rules page is opened at the wiki root, the
+    /// signposts and the diary are read by path, the identity card is served
+    /// from the wiki it belongs to — so a move one level down would leave the
+    /// content intact and the delivery silently dead.
     #[tokio::test]
-    async fn page_grouping_never_carries_the_index_page() {
+    async fn page_grouping_never_offers_a_page_the_engine_names() {
+        const RESERVED: [&str; 4] = [
+            crate::wiki::RULES_FILENAME,
+            crate::wiki::PROJECTS_FILENAME,
+            crate::wiki::PROJECT_DIARY_FILENAME,
+            crate::wiki::PROFILE_FILENAME,
+        ];
+        let (dir, mut tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        tree = WikiTree::open(dir.path()).unwrap();
+        for page in ["orto.md", "potatura.md", "compost.md"] {
+            plant_on_page(&tree, &pool, "alice", page, 2, "alice").await;
+        }
+        for reserved in RESERVED {
+            plant_on_page(&tree, &pool, "alice", reserved, 2, "alice").await;
+        }
+
+        // Every reserved page carries facts, so nothing upstream of the
+        // fence keeps it out of the mass map.
+        let alice_dir = tree.wikis_dir().join("alice");
+        for reserved in RESERVED {
+            assert!(alice_dir.join(reserved).exists(), "{reserved} was planted");
+        }
+
+        let rev_llm = FakeLlmBackend::new("rev", "{\"same\": false}");
+        // The model asks for a reserved page by name. It is not in the
+        // inventory it was shown, so the group names a page this wiki does
+        // not offer and is refused whole — which is what the fence buys: the
+        // grouping cannot move a page it was never allowed to see.
+        let promote_llm = FakeLlmBackend::new(
+            "rp",
+            "{\"groups\":[{\"action\":\"create\",\"slug\":\"giardino\",\"title\":\"Giardino\",\
+             \"style\":\"prosa\",\"description\":\"Everything about the garden\",\
+             \"pages\":[\"orto.md\",\"potatura.md\",\"@rules.md\"]}]}",
+        );
+        let llms = grouping_llms(&rev_llm, &promote_llm);
+        let report = run_cycle(&pool, &tree, fake_embedder(), &llms, &grouping_policy())
+            .await
+            .unwrap();
+        assert_eq!(
+            report.auto_promote.grouping_groups_applied, 0,
+            "the group named a page the wiki does not offer",
+        );
+
+        for reserved in RESERVED {
+            assert!(
+                alice_dir.join(reserved).exists(),
+                "{reserved} must still be at its wiki's root",
+            );
+            assert!(
+                !alice_dir.join("giardino").join(reserved).exists(),
+                "{reserved} must not have been carried into the sub-wiki",
+            );
+        }
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn page_grouping_rejects_a_group_naming_a_page_the_wiki_lacks() {
         let (dir, mut tree, pool) = setup_workdir().await;
         write_wiki(&tree, "alice", "Alice", "wiki-user");
         tree = WikiTree::open(dir.path()).unwrap();
@@ -8680,7 +8748,7 @@ mod tests {
         drop(dir);
     }
 
-    // ---------- Briefing-processor non-smart (sub-job 10) ----------
+    // ---------- Briefing-processor non-smart ----------
 
     /// INSERT a row directly into `wiki_briefing_items` mirroring what
     /// the dashboard comment route writes. `ts_offset` shifts the
@@ -8748,7 +8816,7 @@ mod tests {
                 .unwrap();
         assert!(
             processed.is_some(),
-            "processed_at must be stamped after sub-job 10 ran, got {processed:?}"
+            "processed_at must be stamped after the briefing processor ran, got {processed:?}"
         );
         drop(dir);
     }
@@ -9820,10 +9888,10 @@ mod tests {
     ///
     /// Both the seed and its satellite carry a **future** `valid_to`, which is
     /// what `ingest.md` tells the classifier to give a dated commitment. Two
-    /// things had to change for this to work: the candidate pool no longer
-    /// requires an open horizon (it required `valid_to IS NULL`, which made it
-    /// disjoint from the due-soon slot's `valid_to IS NOT NULL` — the sweep
-    /// could never see the facts that keep firing), and the closure anchors on
+    /// things make this reachable: the candidate pool does not require an open
+    /// horizon (requiring `valid_to IS NULL` would make it disjoint from the
+    /// due-soon slot's `valid_to IS NOT NULL`, so the sweep would never see the
+    /// facts that keep firing), and the closure anchors on
     /// the seed's `superseded_at` rather than its surviving future horizon
     /// (`mark_superseded` COALESCEs, so a dated seed keeps its own date, and
     /// stamping the satellite with it would file the satellite straight back
@@ -10532,10 +10600,9 @@ mod tests {
 
     // ---------- provenance-hygiene sweep ----------
 
-    /// The detector anchors on the exact trailing defect shape the
-    /// document worker used to emit — and nothing else: mid-prose links,
-    /// prose-bearing parentheticals, glued suffixes, and slash-less
-    /// targets are content and never match.
+    /// The detector anchors on one exact trailing shape and nothing else:
+    /// mid-prose links, prose-bearing parentheticals, glued suffixes, and
+    /// slash-less targets are content and never match.
     #[test]
     fn trailing_provenance_detector_matches_defect_shape_only() {
         // The defect: trailing ` ([[wiki/page]])`, whitespace-separated.
@@ -11297,8 +11364,7 @@ mod tests {
 
     // ---------- husk-page GC ----------
 
-    /// Supersede `fact_id`, so its region is a marker and no longer
-    /// content.
+    /// Supersede `fact_id`, so its region is a marker rather than content.
     async fn supersede(pool: &SqlitePool, fact_id: &FactId) {
         let succ = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5dff").unwrap();
         fact_index::mark_superseded(pool, fact_id, &succ)

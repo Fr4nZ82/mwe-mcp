@@ -274,8 +274,8 @@ pub async fn materialise(
             // Not an error and not a loss: a claim nobody could place keeps
             // its buffer row and is offered to the next pass, and to the
             // nightly one that reads a whole wiki at once. The counter is
-            // what separates *never looked at* from *looked at and declined*
-            // — the difference the buffer used to carry by existing.
+            // what separates *never looked at* from *looked at and declined*,
+            // which the row alone cannot say.
             if let Err(e) =
                 capture_buffer::mark_placement_attempted(pool, &cap.capture_id, now).await
             {
@@ -765,8 +765,8 @@ mod tests {
         assert_eq!(row.text, "Alice loves pasta.");
         // Born with a REAL page: the plan placed it before the row existed. No
         // model was involved — the deterministic placement had no page named
-        // for this claim, so the identity fallback gave it the wiki's parking
-        // page, which is a page like any other.
+        // for this claim, so the identity fallback put it on the subject's
+        // own card.
         assert_eq!(
             row.source_path,
             format!("wikis/alice/{}", crate::wiki::PROFILE_FILENAME)
@@ -899,11 +899,11 @@ mod tests {
         );
     }
 
-    /// The parking spot is the SUBJECT's wiki, never the one the classifier
-    /// happened to name: the buffer names none, and the subject is the one
-    /// thing about a fact that never moves.
+    /// A promoted fact lands in the SUBJECT's wiki, never the one the
+    /// classifier happened to name: the buffer names none, and the subject is
+    /// the one thing about a fact that never moves.
     #[tokio::test]
-    async fn promotion_parks_the_fact_in_the_subjects_own_wiki() {
+    async fn promotion_lands_the_fact_in_the_subjects_own_wiki() {
         let (_dir, tree, pool) = setup().await;
         let mut req = cap_req("Bob ha una barca.");
         req.subject = "user:bob".parse::<Principal>().unwrap();

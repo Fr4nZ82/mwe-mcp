@@ -199,11 +199,9 @@ pub fn review(
         // `wiki-user` and the page is its card), so topic pages, group wikis
         // and buffers never qualify.
         //
-        // ⚠️ This keyed on `cucina.md` until 2026-08-04, from before the 63 §8
-        // split moved the card to `@profile.md`. No plan node may claim
-        // `cucina.md` any more — the planner refuses to mint one and the seal
-        // logs an error if one appears — so the check had gone permanently
-        // empty and this guard silently stopped reporting anything.
+        // ⚠️ It must key on the card's real file name. A guard keyed on a
+        // name no plan node can claim matches nothing and reports nothing, and
+        // an empty guard looks exactly like a clean corpus.
         let is_identity_card = page.page_path == crate::wiki::PROFILE_FILENAME
             && identity.user_wikis.contains(&page.wiki_id);
         for f in &page.primary_facts {
@@ -316,8 +314,6 @@ fn check_page_shape(slug: &str, page: &PagePlan, report: &mut ReviewReport) {
     if !page.is_identity_card() && page.primary_facts.is_empty() {
         report.empty_leaves.push(slug.to_owned());
     }
-    // There is no "a page has children" check any more: pages have no parent
-    // since 2026-08-22, so a page that contains pages is not representable.
     // Oversized nomination: mass alone re-opens nothing today, so a
     // clean grown page could never split (see the const's doc).
     if page.primary_facts.len() >= OVERSIZED_PAGE_THRESHOLD {

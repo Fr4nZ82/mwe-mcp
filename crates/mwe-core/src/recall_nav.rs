@@ -155,10 +155,10 @@ struct WikiSeedInfo {
 /// (empty today). The call is deterministic and read-only — safe to run on
 /// every turn, with no side effect on recall counters.
 ///
-/// **There is no subject channel any more.** It existed to seed a
-/// principal's identity wiki, and a wiki is not a door: whose turn it is, and
-/// whom it is about, reach the block by being *served* — deterministically,
-/// as a card — not by the navigator being pointed at a person.
+/// **A principal is never a seed.** Whose turn it is, and whom it is about,
+/// reach the block by being *served* — deterministically, as a card — not by
+/// the navigator being pointed at a person, because a person is a wiki and a
+/// wiki is not a door.
 ///
 /// The result is deduplicated on `(wiki, page)` and sorted by weight
 /// descending (ties: origin rank, then `wiki_id`, then page), so a funnel can
@@ -208,9 +208,8 @@ pub async fn gather_entry_points(
 
     // RAG seeds: content-driven. The hits are already `can_read`-filtered
     // upstream, so a hit is by definition readable — no further visibility
-    // gate. What a hit cannot do any more is fall back to a wiki-level door:
-    // there is none, so a hit that names no readable page seeds nothing (see
-    // the per-hit filter below).
+    // gate. There is no wiki-level door to fall back on, so a hit that names
+    // no readable page seeds nothing (see the per-hit filter below).
     for hit in rag_hits {
         let Some(info) = infos
             .iter()
@@ -1508,16 +1507,13 @@ fn take_budget(text: String, budget: usize) -> (String, bool) {
     (text[..cut].to_owned(), true)
 }
 
-/// Destinations reachable via `[[wikilinks]]` from freshly collected prose,
-/// following the link grammar
-/// (recall-pipeline.md §Link grammar).
+/// Destinations reachable via `[[wikilinks]]` from freshly collected prose.
+///
 /// A `[[wiki_id/page-slug]]` page hop offers that **page** directly (its
-/// testata card, reader-relative), so the navigator opens it in one hop. A
-/// bare `[[wiki_id]]` offers that wiki's **foundation page** — never its map,
-/// which is written for filing and refused by every route of the read path —
-/// and nothing at all when the wiki has neither reserved page (see
-/// [`foundation_slug`]). A `|display` alias never reaches this point
-/// ([`extract_wikilinks`] strips it).
+/// testata description, reader-relative), so the navigator opens it in one
+/// hop. A bare `[[wiki_id]]` offers nothing: recall opens pages, not wikis.
+/// A `|display` alias never reaches this point ([`extract_wikilinks`] strips
+/// it).
 ///
 /// **Legacy fallback** (emit canonical, resolve legacy — the marker
 /// grammar's stance): a bare target that names no wiki is retried as a
@@ -1573,14 +1569,9 @@ fn linked_wiki_candidates(
         // `[[wiki]]` names a wiki, and **recall opens pages, not wikis**
         // (founder, restated 2026-08-19: *«il navigatore non deve essere
         // indirizzato verso una wiki, solo verso altre pagine»*). So the bare
-        // form leads nowhere and is dropped here.
-        //
-        // It used to resolve to the wiki's foundation page, justified by a
-        // count of how many bare links the corpus held — a corpus that has
-        // since been deleted, so the justification cannot be checked and the
-        // rule outranks it anyway. The Cronista's prompt has forbidden writing
-        // one for longer than this branch existed: *«NEVER write a link that
-        // names a wiki alone»*.
+        // form leads nowhere and is dropped here — the same stance the
+        // Cronista's prompt takes when it writes one: *«NEVER write a link
+        // that names a wiki alone»*.
         let page_slug = link.page.clone();
         if let Some(slug) = page_slug {
             let rel = PathBuf::from(format!("{slug}.md"));
@@ -2960,9 +2951,8 @@ mod tests {
     /// essere indirizzato verso una wiki, solo verso altre pagine»*. A bare
     /// `[[bob]]` rail names a wiki, so it names no destination and is **not
     /// offered at all**. A page hop (`[[bob/hobbies]]`) is the only door.
-    ///
-    /// It used to resolve to the wiki's foundation page. That was the read
-    /// side treating a wiki as a place, which is the thing the rule forbids.
+    /// Resolving it to any page of that wiki would be the read side treating a
+    /// wiki as a place, which is the thing the rule forbids.
     #[tokio::test]
     async fn a_bare_wiki_rail_is_not_a_door() {
         let (_dir, tree) = open_tree();

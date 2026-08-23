@@ -306,10 +306,10 @@ fn names_of(user: &EnrolledUserLite) -> Vec<String> {
 /// engine has it before it reads the turn.
 ///
 /// The order is not cosmetic. This list is **cut** where the identity cards
-/// are served ([`IngestPolicy::max_mentioned_cards`], 2), and it used to come
-/// off a `BTreeSet`, so a turn naming three people served the two whose ids
-/// sort first — *«cosa preparo per Carol e Bob?»* would drop whoever
-/// loses the alphabet, on every turn, forever. Mention order says which
+/// are served ([`IngestPolicy::max_mentioned_cards`], 2), so an alphabetical
+/// order — a `BTreeSet`, say — would serve a turn naming three people the two
+/// whose ids sort first: *«cosa preparo per Carol e Bob?»* drops whoever loses
+/// the alphabet, on every turn, forever. Mention order says which
 /// person the question is built around, and where a list is cut the order IS
 /// the selection (founder, 2026-08-09).
 #[must_use]
@@ -914,8 +914,8 @@ impl SearchHit {
 ///
 /// This is the whole point of moving the ACL off the rows: read access to
 /// a smart wiki is one decision about one wiki, not one decision per
-/// indexed section. The effective set is the same `owner ∪ shared_with`
-/// the per-row check used to evaluate, so visibility is unchanged.
+/// indexed section. The effective set is `owner ∪ shared_with`, exactly what
+/// a per-row check would compute — one decision, same visibility.
 async fn readable_smart_wikis(
     pool: &SqlitePool,
     sender: &SenderContext,
@@ -1879,7 +1879,7 @@ pub async fn wiki_facts_full_for(
 /// # Errors
 ///
 /// As [`capture_buffer::find_recent_buffered`].
-pub async fn parking_pageed_full_for(
+pub async fn wiki_buffered_full_for(
     pool: &SqlitePool,
     filters: &fact_index::FactFilters,
     sender: &SenderContext,
@@ -1898,7 +1898,7 @@ pub async fn parking_pageed_full_for(
         sender_id = sender.sender_id,
         reveal,
         returned = visible.len(),
-        "recall: parking_pageed_full_for done"
+        "recall: wiki_buffered_full_for done"
     );
     Ok(visible)
 }
@@ -2050,8 +2050,8 @@ pub async fn recall_fresh_captures<S: std::hash::BuildHasher + Sync>(
         // The staged vector, computed once when the claim was buffered over
         // this same marker-stripped text. The fallback embeds a row that has
         // none — journal-recovered, or staged while the embedder was down —
-        // which is what this slot used to do for every candidate on every
-        // turn.
+        // and it is a fallback precisely because embedding every candidate on
+        // every turn is the cost this staging exists to avoid.
         let emb = match cap.embedding.clone() {
             Some(v) => v,
             None => {
@@ -2228,100 +2228,25 @@ pub async fn facts_on_pages(
     Ok(hits)
 }
 
-// ---------- Multi-hop link resolution ----------
+// ---------- The link grammar, and the walk's depth cap ----------
 
-/// Hard cap on the number of hops [`wiki_multi_hop_facts`] will follow.
+/// Hard cap on how many hops the recall navigator may take in one turn.
 ///
-/// Matches the memory model
-/// — prevents pathological wiki graphs from sending the recall pipeline
-/// into a long-running scan.
+/// The operator's depth dial ([`crate::recall_nav::NavigatorPolicy::max_hops`])
+/// is clamped to it, so a mis-set knob cannot send one turn walking the
+/// memory for as long as it has links to follow.
 pub const MULTI_HOP_HARD_LIMIT: usize = 10;
-
-/// Walk the wiki link graph and accumulate every active fact reachable
-/// in at most `max_hops` hops.
-///
-/// Each hop is one wiki: hop 0 is the starting wiki itself, hop 1 are
-/// the wikis it links to via `[[…]]`, and so on. `max_hops` is clamped
-/// to [`MULTI_HOP_HARD_LIMIT`].
-///
-/// Discovery is breadth-first and visits each wiki at most once. The
-/// resulting `RecallHit`s are ACL-filtered against `sender`, score
-/// always 1.0 (the hop graph is structural, not similarity-driven).
-///
-/// Returns the visited wiki ids alongside the accumulated hits so the
-/// caller can display the navigation breadcrumb.
-///
-/// # Errors
-///
-/// As [`fact_index::find_active_in_wiki`].
-pub async fn wiki_multi_hop_facts(
-    pool: &SqlitePool,
-    start_wiki_id: &str,
-    max_hops: usize,
-    sender: &SenderContext,
-) -> RecallResult<MultiHopOutcome> {
-    let cap = max_hops.min(MULTI_HOP_HARD_LIMIT);
-    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut frontier: Vec<String> = vec![start_wiki_id.to_owned()];
-    let mut visit_order: Vec<String> = Vec::new();
-    let mut hits: Vec<RecallHit> = Vec::new();
-    let mut hops = 0usize;
-    while !frontier.is_empty() && hops <= cap {
-        let mut next: Vec<String> = Vec::new();
-        for wiki_id in &frontier {
-            if !visited.insert(wiki_id.clone()) {
-                continue;
-            }
-            visit_order.push(wiki_id.clone());
-            let rows = fact_index::find_active_in_wiki(pool, wiki_id).await?;
-            for row in rows {
-                // Harvest outgoing wikilinks from the fact body first
-                // so the next frontier can grow even when the row is
-                // ACL-redacted for `sender`.
-                for target in extract_wikilink_wiki_ids(&row.text) {
-                    if !visited.contains(&target) {
-                        next.push(target);
-                    }
-                }
-                if row_visible_to(&row, sender) {
-                    hits.push(RecallHit::from_row(row, 1.0));
-                }
-            }
-        }
-        frontier = next;
-        hops += 1;
-    }
-    tracing::info!(
-        sender_id = sender.sender_id,
-        start_wiki_id,
-        visited = visit_order.len(),
-        hits = hits.len(),
-        max_hops = cap,
-        "recall: wiki_multi_hop_facts done"
-    );
-    Ok(MultiHopOutcome {
-        hits,
-        visited: visit_order,
-    })
-}
-
-/// Outcome of [`wiki_multi_hop_facts`].
-#[derive(Debug, Clone)]
-pub struct MultiHopOutcome {
-    /// Accumulated ACL-filtered facts.
-    pub hits: Vec<RecallHit>,
-    /// Wiki ids visited, in breadth-first order.
-    pub visited: Vec<String>,
-}
 
 /// One parsed wikilink target, per the canonical link grammar.
 ///
-/// The grammar
-/// (recall-pipeline.md §Link grammar):
-/// `[[wiki_id]]` is a wiki hop, `[[wiki_id/page-slug]]` a page hop
-/// (the slug may itself contain `/` for a nested page), and an
-/// optional `|display` alias is presentation only — it is stripped
-/// before resolution.
+/// `[[wiki_id]]` names a wiki, `[[wiki_id/page-slug]]` a page (the slug may
+/// itself contain `/` for a nested page), and an optional `|display` alias is
+/// presentation only — it is stripped before resolution.
+///
+/// Only the second form is a link the engine mints or teaches: a link names a
+/// **page**, and a wiki is not one, so `[[wiki_id]]` resolves nowhere. The
+/// parser still returns it, because it has to read what a model wrote in order
+/// for the callers to reject it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WikiLink {
     /// Target wiki id (the first `/`-segment of the link body).
@@ -2388,11 +2313,11 @@ pub fn extract_wikilinks(body: &str) -> Vec<WikiLink> {
 /// out of `body`, wiki-granular: the page suffix and the `|display`
 /// alias are stripped; only the wiki id is returned.
 ///
-/// Thin projection of [`extract_wikilinks`]. Used by
-/// [`wiki_multi_hop_facts`] (the hop graph is wiki-level) and by
-/// `rem::run_recall` for back-pressure ranking; re-used by the Backlink
-/// reciprocity detector in [`crate::rem`] to identify standard-wiki →
-/// smart-wiki wikilinks that lack a reciprocal back-link.
+/// Thin projection of [`extract_wikilinks`], for the one caller that asks a
+/// wiki-level question: the backlink reciprocity detector in [`crate::rem`],
+/// which looks for a standard wiki linking into a smart one without a link
+/// coming back. Which page inside the smart wiki carries the link does not
+/// change the answer, so the page half is dropped.
 #[must_use]
 pub fn extract_wikilink_wiki_ids(body: &str) -> Vec<String> {
     extract_wikilinks(body)
@@ -2917,10 +2842,10 @@ mod tests {
         );
     }
 
-    // ---------- parking_pageed_full_for (dashboard fresh slot) ----------
+    // ---------- wiki_buffered_full_for (dashboard fresh slot) ----------
 
     #[tokio::test]
-    async fn parking_pageed_full_for_lists_unpromoted_acl_scoped_and_filtered() {
+    async fn wiki_buffered_full_for_lists_unpromoted_acl_scoped_and_filtered() {
         use crate::capture::CaptureRequest;
         use crate::capture_buffer::buffer_capture;
         use crate::types::WikiId;
@@ -2999,10 +2924,9 @@ mod tests {
 
         // No filter: alice sees both her buffered captures; bob's is
         // ACL-filtered out — no embedder involved.
-        let all =
-            parking_pageed_full_for(&pool, &fact_index::FactFilters::default(), &alice, false)
-                .await
-                .expect("buffered list");
+        let all = wiki_buffered_full_for(&pool, &fact_index::FactFilters::default(), &alice, false)
+            .await
+            .expect("buffered list");
         assert_eq!(all.len(), 2, "alice sees only her two buffered captures");
         assert!(
             all.iter().all(|c| c.subject == alice_subject),
@@ -3010,7 +2934,7 @@ mod tests {
         );
 
         // The `fact_type` filter applies in-process, just like the promoted path.
-        let plans = parking_pageed_full_for(
+        let plans = wiki_buffered_full_for(
             &pool,
             &fact_index::FactFilters {
                 fact_type: Some("plan".to_owned()),
@@ -5260,7 +5184,7 @@ mod tests {
         assert_eq!(hits.len(), 1);
     }
 
-    // ---------- multi-hop link resolution ----------
+    // ---------- the link grammar ----------
 
     #[test]
     fn extract_wikilink_strips_page_suffix_and_alias() {
@@ -5335,103 +5259,6 @@ mod tests {
         );
         assert!(extract_wikilinks("no links").is_empty());
         assert!(extract_wikilinks("[[ ]] whitespace only").is_empty());
-    }
-
-    #[tokio::test]
-    async fn multi_hop_walks_link_graph_until_hard_limit() {
-        let pool = make_pool().await;
-        let mut rows = Vec::new();
-        // alice → bob → carol
-        insert_row(
-            &mut rows,
-            "018f1234-5678-7abc-9def-0000000a0001",
-            "alice",
-            "user:alice",
-            "alice fact references [[bob]]",
-            vec![0.1; 4],
-        );
-        insert_row(
-            &mut rows,
-            "018f1234-5678-7abc-9def-0000000b0001",
-            "bob",
-            "user:alice",
-            "bob fact references [[carol]]",
-            vec![0.1; 4],
-        );
-        insert_row(
-            &mut rows,
-            "018f1234-5678-7abc-9def-0000000c0001",
-            "carol",
-            "user:alice",
-            "carol fact is terminal",
-            vec![0.1; 4],
-        );
-        populate(&pool, rows).await;
-
-        let out = wiki_multi_hop_facts(&pool, "alice", 10, &SenderContext::user("alice"))
-            .await
-            .unwrap();
-        assert_eq!(out.visited, vec!["alice", "bob", "carol"]);
-        assert_eq!(out.hits.len(), 3);
-    }
-
-    #[tokio::test]
-    async fn multi_hop_respects_zero_hop_limit() {
-        let pool = make_pool().await;
-        let mut rows = Vec::new();
-        insert_row(
-            &mut rows,
-            "018f1234-5678-7abc-9def-0000000a0011",
-            "alice",
-            "user:alice",
-            "alice fact references [[bob]]",
-            vec![0.1; 4],
-        );
-        insert_row(
-            &mut rows,
-            "018f1234-5678-7abc-9def-0000000b0011",
-            "bob",
-            "user:alice",
-            "bob fact",
-            vec![0.1; 4],
-        );
-        populate(&pool, rows).await;
-        let out = wiki_multi_hop_facts(&pool, "alice", 0, &SenderContext::user("alice"))
-            .await
-            .unwrap();
-        assert_eq!(out.visited, vec!["alice"]);
-        assert_eq!(out.hits.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn multi_hop_acl_filters_intermediate_facts() {
-        let pool = make_pool().await;
-        let mut rows = Vec::new();
-        insert_row(
-            &mut rows,
-            "018f1234-5678-7abc-9def-0000000a0021",
-            "alice",
-            "user:alice",
-            "alice fact mentions [[bob]]",
-            vec![0.1; 4],
-        );
-        insert_row(
-            &mut rows,
-            "018f1234-5678-7abc-9def-0000000b0021",
-            "bob",
-            "user:bob",
-            "private bob fact",
-            vec![0.1; 4],
-        );
-        populate(&pool, rows).await;
-        // alice walks the graph: bob's fact is not visible, but the
-        // wiki was still visited so the breadcrumb is honest.
-        let out = wiki_multi_hop_facts(&pool, "alice", 10, &SenderContext::user("alice"))
-            .await
-            .unwrap();
-        assert_eq!(out.visited, vec!["alice", "bob"]);
-        assert_eq!(out.hits.len(), 1);
-        assert_eq!(out.hits[0].wiki_id, "alice");
     }
 
     // -- recall_due_soon (the due-soon slot) --

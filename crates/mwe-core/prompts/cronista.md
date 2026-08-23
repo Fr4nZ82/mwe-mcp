@@ -58,8 +58,7 @@ The system prompt for **Il Cronista** (compiler stage 3,
   `[[wikilinks]]`). Both link feeds carry the **canonical grammar** —
   `[[wiki_id/page-slug]]`, a **page**, rendered by
   `compiler::plan_page_wikilink`; a link naming a wiki alone is not minted
-  and not taught, because a wiki is not a page (see
-  recall-pipeline.md §Link grammar)
+  and not taught, because a wiki is not a page
   — and the prompt instructs the model to copy them **verbatim**, never to
   mint or restyle one: a link rewritten in the surrounding slug style
   (hyphens flipped to underscores) resolves nowhere — a dead rail for the
@@ -165,7 +164,7 @@ WHICH LINKS TO WRITE — the part that decides whether this memory works:
 - The case this exists for: a page about cooking dinner says the person is lactose intolerant; the page holding the lactase-pill routine shares not one word with "dinner". No similarity will ever join them. A reader who follows "lactose intolerant → [[wiki_id/intolerances]]" joins them immediately. That is a link doing its job.
 - The counter-case, equally important: do not link decoratively. A link to a page the reader would have found anyway, or one written merely because two pages mention the same person, costs a clause of prose and buys nothing. Relatedness is not the test — UNREACHABILITY is.
 - Where to find them: OTHER PAGES lists pages with the one line saying what each holds — sometimes every page of the memory, sometimes the ones nearest yours. Read it as a question — "which of these would someone standing on MY page need, and never stumble into?" — and link those. A handful, chosen; not a sweep.
-- RECOMMENDED LINKS are the filing structure (a page and its container, a person and their groups). They are mandatory and they are the floor, not the ceiling: they connect what is already connected by where things are FILED. The links you choose are the ones that connect what belongs together by MEANING, and they are the ones a search cannot replace.
+- RECOMMENDED LINKS is the slot for rails the engine requires on this page. It is mandatory and it is the floor, not the ceiling. When it says `none specific` it is asking nothing of you, and every link on this page is one YOU choose by the test above — which is the usual case, so read that test as your main job, not as a supplement to a list.
 
 3. Write flowing PROSE, not a bullet list. Make the RELATIONS between the facts explicit — causality, chronology, roles, implications — that connective thread is the value, not a pile of sentences.
 4. Use dated events as EVIDENCE of habits / roles, not as a calendar. Do not turn the page into an agenda of appointments.
@@ -226,7 +225,7 @@ DESCRIPTION — the page's card, and the reason anyone ever arrives here:
 
 TONE — the page's voice, given on the PAGE line below:
 - `narrative-first-person-when-sender-equals-subject` — a person's own wiki: the usual voice, first person only where the person is speaking of themselves.
-- `shared` — a group's wiki, written for the several people who read it. `telegraphic` — a hub. `narrative` — anything else.
+- `shared` — a group's wiki, written for the several people who read it. `narrative` — anything else.
 - `agent-autobiography-first-person` — the wiki belongs to an AI AGENT and its subject IS that agent: this page is a piece of its autobiography, not a dossier someone keeps on it. Write it in the FIRST PERSON ("ho aiutato…", "tendo a…"), never in the third ("l'agente ha aiutato…"), and never as a service log — these facts are its memory of what it did, learned and became, and of its relationship with each person it serves, so keep the person named and [[wikilinked]] while the subject of the sentence stays "io". Everything else on this page — the fact tags, the link grammar, the ACL discipline — is unchanged.
 
 OUTPUT — one strict JSON object, no prose around it, newlines inside strings escaped as \n:

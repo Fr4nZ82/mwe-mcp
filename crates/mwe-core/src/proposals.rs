@@ -34,7 +34,8 @@
 //! and records a **born-applied** receipt via [`emit_applied_proposal`]
 //! (status `applied` at insert). The receipt is a record of what the
 //! engine did on its own, not an offer to undo it. The pending lifecycle
-//! above remains for the questionnaire kinds (`dedup_merge` today).
+//! above is for the kinds that really are a question: `dedup_merge` and
+//! `fact_forget`.
 //!
 //! ## MCP exposure
 //!
@@ -68,8 +69,6 @@ pub mod kind {
     /// A non-sender subject's request to forget one fact, put to the fact's
     /// audience as a propose-first vote ([`crate::votes`]).
     ///
-    /// Part of the write-authority model
-    /// (identity and ACL).
     /// The proposal opens `pending` (the fact stays active); a NO-majority
     /// within the window rejects it, and silence (or an all-voted quorum with no
     /// NO-majority) applies it — tombstoning the fact.
@@ -82,15 +81,12 @@ pub mod kind {
     /// wait for an answer, but the operator must be able to *see* what the
     /// machine invented.
     ///
-    /// It exists because the promise was already written and never kept: the
-    /// planner's own module doc said *"emergent-page creation flows through
-    /// `structure_proposals`, it is never a silent write"* while the only
-    /// kinds that existed were about **wikis**. Twelve container pages were
-    /// created over three weeks with nothing anywhere for the founder to read
-    /// (2026-08-04).
+    /// Without it a page the engine invented is a silent write: the memory
+    /// gains a subject nobody named, and there is no line anywhere for the
+    /// owner to read (founder, 2026-08-04).
     pub const PAGE_CREATE: &str = "page_create";
 
-    /// Every canonical kind — the questionnaire kinds.
+    /// Every canonical kind.
     pub const ALL: &[&str] = &[WIKI_PROMOTE, DEDUP_MERGE, FACT_FORGET, PAGE_CREATE];
 
     /// `true` when `s` matches one of the canonical kinds.

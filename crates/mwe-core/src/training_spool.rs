@@ -56,8 +56,7 @@
 //!
 //! The spool holds raw prompts — which embed recalled memory content —
 //! so the directory stays on the server, owner-readable, and the
-//! toggle defaults to **off**. See `docs/` (internal LLM functions)
-//! for the operational guidance.
+//! toggle defaults to **off**.
 
 use std::fs::OpenOptions;
 use std::io::Write;

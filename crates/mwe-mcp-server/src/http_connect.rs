@@ -144,10 +144,6 @@ mod tests {
                 "{name}: must declare milestone"
             );
             assert!(
-                parsed.get("spec_reference").is_some(),
-                "{name}: must reference the planning spec"
-            );
-            assert!(
                 parsed.get("note").is_some()
                     || parsed.get("policy").is_some()
                     || parsed.get("installation").is_some(),

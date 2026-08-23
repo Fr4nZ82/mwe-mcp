@@ -213,8 +213,8 @@ pub struct BufferedCapture {
     pub salience: Option<String>,
     /// How many placement passes have read this claim and given it no page.
     ///
-    /// `0` = never offered to one. There is no buffer any more (founder,
-    /// 2026-08-22), so a claim nobody could place simply keeps waiting — and
+    /// `0` = never offered to one. A claim nobody could place has nowhere to
+    /// go — no page means it simply keeps waiting (founder, 2026-08-22) — and
     /// without this counter *never looked at* and *looked at and declined*
     /// would be the same row. Observational: nothing gates on it. It is what
     /// lets the nightly strong pass, and an operator reading the buffer, tell
@@ -603,12 +603,12 @@ pub async fn mark_promoted(pool: &SqlitePool, capture_id: &FactId, now: &str) ->
 
 /// Record that a placement pass read this claim and gave it no page.
 ///
-/// The claim stays `buffered` — that is the whole point. There is no parking
-/// page to put it on any more (founder, 2026-08-22: *«i fatti senza
-/// destinazione si accumuleranno nella tabella buffer … se il giro orario non
-/// trova la collocazione lo lascia lì, marcandolo come "già provato a
-/// collocare"»*), so an unplaced claim waits for the next pass, and the
-/// nightly one reads the whole wiki at once with the strong model.
+/// The claim stays `buffered` — that is the whole point. A claim nobody placed
+/// is on no page at all (founder, 2026-08-22: *«i fatti senza destinazione si
+/// accumuleranno nella tabella buffer … se il giro orario non trova la
+/// collocazione lo lascia lì, marcandolo come "già provato a collocare"»*), so
+/// it waits for the next pass, and the nightly one reads the whole wiki at
+/// once with the strong model.
 ///
 /// Observational, and deliberately not a gate: nothing refuses a claim for
 /// having been declined often. What the counter buys is the difference between
@@ -1178,8 +1178,8 @@ mod tests {
     }
 
     /// A capture lands in the table, and **writes no file**: the published
-    /// `.md` is the compiler's output and there is no side journal any more
-    /// (2026-08-18).
+    /// `.md` is the compiler's output, and it is the only file a claim ever
+    /// reaches (2026-08-18).
     #[tokio::test]
     async fn buffer_capture_writes_the_row_and_no_file() {
         let (dir, pool) = setup().await;

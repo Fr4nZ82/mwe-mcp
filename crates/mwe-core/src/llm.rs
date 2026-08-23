@@ -1464,8 +1464,8 @@ impl AnthropicCredential {
 impl AnthropicBackend {
     /// Floor on `max_tokens` applied when the caller does not pin one
     /// explicitly. Picked so a short structured response (intent JSON,
-    /// dedup yes/no) fits comfortably; long-form generation (REM hub
-    /// rewrites, cronista) caps higher upstream.
+    /// dedup yes/no) fits comfortably; long-form generation (the Cronista
+    /// writing a page) caps higher upstream.
     pub const DEFAULT_MAX_TOKENS: u32 = 1024;
 
     /// Build a backend pointing at the canonical Anthropic endpoint.

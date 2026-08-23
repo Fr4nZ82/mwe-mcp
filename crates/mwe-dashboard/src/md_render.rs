@@ -36,8 +36,7 @@
 //! 4. **Canonical wikilinks click through (page surfaces only).** With a
 //!    [`PageRenderContext`], `[[wiki_id]]` / `[[wiki_id/page-slug]]` /
 //!    `[[target|display]]` become in-dashboard `<a>` navigation per the
-//!    link grammar of
-//!    recall-pipeline.md:
+//!    link grammar (`mwe_core::recall::WikiLink`):
 //!    the context's resolver maps the target (alias already stripped) to
 //!    an href, an unresolved target stays literal text (never a broken
 //!    link), the label is emitted as a text event so pulldown escapes it

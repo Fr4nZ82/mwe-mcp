@@ -268,7 +268,7 @@ pub fn validate(file: &EnrollmentFile) -> Result<ValidationReport, EnrollmentErr
 /// (see [`crate::types::Principal`]). It is a normal `enrollment_groups`
 /// row so the admin can edit its `scope`, but it is special-cased
 /// throughout: never hand-membered or deleted, excluded from
-/// [`list_groups`] (it seeds no wiki), and always surfaced by
+/// [`list_groups`], and always surfaced by
 /// [`groups_with_scope_for`] regardless of membership.
 pub const GLOBAL_GROUP_ID: &str = "global";
 
@@ -493,8 +493,9 @@ pub struct EnrolledGroupLite {
 
 /// Enumerate every enrolled group (id + scope), ordered by id.
 ///
-/// The planner's Fonditore reads this to seed each group wiki's parking
-/// page. Sibling of [`list_users`] on the foundation side.
+/// Read by the planner's Fonditore, which needs the group slugs to keep a
+/// person's identity card off a slug a group already holds, and by the recall
+/// navigator. Sibling of [`list_users`] on the foundation side.
 ///
 /// # Errors
 ///
@@ -819,8 +820,8 @@ pub async fn reject_if_agent(pool: &SqlitePool, user_id: &str) -> Result<(), Str
 ///
 /// A **product** limit, not a scalability one: it is enforced by refusing the
 /// 25th enrolment rather than by cutting a list at render time. The prompt
-/// caps that used to stand in for it (`IngestPolicy::max_users_in_prompt` and
-/// friends) truncate alphabetically, so the person the cut hides is whoever
+/// caps (`IngestPolicy::max_users_in_prompt` and friends) cannot stand in for
+/// it: they truncate alphabetically, so the person the cut hides is whoever
 /// sorts late, and their facts are then filed under the sender.
 pub const MAX_ENROLLED_USERS: usize = 24;
 
@@ -1536,10 +1537,10 @@ mod tests {
 
     #[tokio::test]
     async fn remove_user_dismantles_bound_consumer() {
-        // The exact shape that used to reject a naked user DELETE on the
-        // `consumers.system_user_id` FK (dashboard 500, 2026-07-11): an
-        // enrolled identity bound as the system user of a registered
-        // consumer, with a delegation grant and a live OAuth refresh row.
+        // The shape a naked user DELETE cannot handle — the
+        // `consumers.system_user_id` FK rejects it: an enrolled identity bound
+        // as the system user of a registered consumer, with a delegation grant
+        // and a live OAuth refresh row.
         let (_workdir, pool) = crate::test_db::TestWorkdir::with_db().await;
         sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('voicebox', 0)")
             .execute(&pool)

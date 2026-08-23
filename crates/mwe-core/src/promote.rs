@@ -21,8 +21,8 @@
 //! - **page merge**: move **every** active fact of one concept page (the
 //!   husk) onto a near-synonym survivor page of the same wiki, delete the
 //!   husk file, and re-home the move in the persisted compilation plan —
-//!   the cure front of semantic page consolidation
-//!   (rem-cycle.md §Page-merge sub-job).
+//!   the cure front of semantic page consolidation (the sub-job that
+//!   nominates a pair is `rem::run_page_merge`).
 //!   Selected via `answers.variant = "page_merge"`. The receipt records
 //!   the husk from the shell stored in the spec.
 //!
@@ -1542,7 +1542,7 @@ async fn relocate_page(
 ///
 /// A wiki's one-line description is **written**, by the compiler, when its
 /// foundation card page compiles — that card is what
-/// [`sync_foundation_summary`](../../../crates/mwe-core/src/compiler.rs) copies
+/// `compiler::sync_foundation_summary` copies
 /// into `_meta`. So a card that still promises a subject which has moved to
 /// another wiki spreads its staleness into one more place. A page leaving does not touch the card,
 /// so nothing would have re-derived it: parking the slug on the plan's
