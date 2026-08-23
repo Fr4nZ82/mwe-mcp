@@ -116,6 +116,10 @@ pub struct WikiDeleteReport {
     /// Number of `page_card` rows dropped across the subtree — the standard
     /// wiki's twin of `sections_dropped`, and a projection in the same sense.
     pub page_cards_dropped: u64,
+    /// Number of `link_key` rows dropped across the subtree. Same class as
+    /// the cards: derived from the pages, and nothing else ever walks a wiki
+    /// that is gone.
+    pub link_keys_dropped: u64,
     /// Where the directory subtree now lives under `<workdir>/trash/`.
     pub trash_dir: PathBuf,
 }
@@ -156,6 +160,9 @@ pub enum WikiDeleteError {
     /// Dropping the subtree's page cards failed.
     #[error("page cards: {0}")]
     PageCards(#[from] crate::page_card::PageCardError),
+    /// Dropping the subtree's clause keys failed.
+    #[error("link keys: {0}")]
+    LinkKeys(#[from] crate::link_key::LinkKeyError),
     /// Moving the directory into the trash failed.
     #[error("moving {path} to trash: {source}")]
     Move {
@@ -265,6 +272,7 @@ pub async fn delete_wiki_subtree(
     let mut facts_unplaced = 0u64;
     let mut sections_dropped = 0u64;
     let mut page_cards_dropped = 0u64;
+    let mut link_keys_dropped = 0u64;
     let now = chrono::Utc::now().to_rfc3339();
     for d in &subtree {
         let wiki_id = d.meta.wiki_id.as_str();
@@ -311,10 +319,12 @@ pub async fn delete_wiki_subtree(
         // serving the wiki the moment it is deleted.
         sections_dropped += sections::drop_wiki_sections(pool, wiki_id).await?;
         sections::remove_smart_wiki(pool, wiki_id).await?;
-        // The standard wiki's twin of the same rule: its page cards are a
-        // projection too, and the card sweep only walks wikis still on disk,
-        // so nothing else would ever collect them.
+        // The standard wiki's twin of the same rule: its page cards and the
+        // clause keys read off its prose are projections too, and the sweeps
+        // that refresh them only walk wikis still on disk, so nothing else
+        // would ever collect them.
         page_cards_dropped += crate::page_card::drop_wiki(pool, wiki_id).await?;
+        link_keys_dropped += crate::link_key::drop_wiki(pool, wiki_id).await?;
     }
 
     let trash_root = tree.workdir().join("trash");
@@ -337,6 +347,7 @@ pub async fn delete_wiki_subtree(
         facts_unplaced,
         sections_dropped,
         page_cards_dropped,
+        link_keys_dropped,
         trash_dir,
     })
 }

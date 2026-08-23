@@ -331,9 +331,7 @@ pub async fn reindex_file(
             // The card describes a page that no longer exists. Unlike a fact
             // row it has no tombstone to leave: it is derived from the file,
             // so it goes with it.
-            if let Err(e) = crate::page_card::drop_page(pool, &source_path).await {
-                tracing::warn!(source_path = %source_path, error = %e, "reindex_file: page card not dropped");
-            }
+            drop_page_caches(pool, &source_path).await;
             report.orphaned = dropped;
             if dropped > 0 {
                 tracing::info!(
@@ -1250,6 +1248,13 @@ async fn refresh_page_cards(
                     "reindex_full: page cards of a now-smart wiki not dropped"
                 );
             }
+            if let Err(e) = crate::link_key::drop_wiki(pool, d.meta.wiki_id.as_str()).await {
+                tracing::warn!(
+                    wiki_id = %d.meta.wiki_id,
+                    error = %e,
+                    "reindex_full: link keys of a now-smart wiki not dropped"
+                );
+            }
             continue;
         }
         let Ok(pages) = enumerate_pages(&d.abs_dir) else {
@@ -1280,10 +1285,8 @@ async fn refresh_page_cards(
         match crate::page_card::list_for_wiki(pool, d.meta.wiki_id.as_str()).await {
             Ok(rows) => {
                 for row in rows {
-                    if !seen.contains(&row.source_path)
-                        && let Err(e) = crate::page_card::drop_page(pool, &row.source_path).await
-                    {
-                        tracing::warn!(source_path = %row.source_path, error = %e, "reindex_full: stale page card not dropped");
+                    if !seen.contains(&row.source_path) {
+                        drop_page_caches(pool, &row.source_path).await;
                     }
                 }
             },
@@ -1364,7 +1367,83 @@ async fn refresh_one_card(
             }
         }
     }
+    refresh_link_keys(pool, embedder, source_path, wiki_id, raw).await;
     written
+}
+
+/// Drop everything derived from one page's bytes.
+///
+/// Both tables are caches of the file: unlike a fact row they have no
+/// tombstone to leave, so when the page goes they go. Soft — a stale cache
+/// row costs a wrong offer, never a wrong answer, and the next sweep clears
+/// it.
+async fn drop_page_caches(pool: &SqlitePool, source_path: &str) {
+    if let Err(e) = crate::page_card::drop_page(pool, source_path).await {
+        tracing::warn!(source_path, error = %e, "reindex: page card not dropped");
+    }
+    if let Err(e) = crate::link_key::drop_page(pool, source_path).await {
+        tracing::warn!(source_path, error = %e, "reindex: link keys not dropped");
+    }
+}
+
+/// Re-read the clause around every `[[wikilink]]` on one page into `link_key`.
+///
+/// Runs beside the card refresh because it needs the same three things: the
+/// page's bytes, an embedder, and the moment the file changed. The parse is
+/// its own — the clauses have to be located in the same coordinate space as
+/// the fact regions, and only the parser knows where those are.
+///
+/// **Re-embeds only when the clauses actually moved**, compared text by text.
+/// A coarser test — the file stamp, the card — would re-embed every link of
+/// every page whose testata shifted, which on a compile night is most of them.
+///
+/// Soft throughout, like the card: a page with no keys is a page whose facts
+/// are found by their own words, which is what happens without this table at
+/// all.
+async fn refresh_link_keys(
+    pool: &SqlitePool,
+    embedder: &dyn Embedder,
+    source_path: &str,
+    wiki_id: &str,
+    raw: &str,
+) {
+    let clauses = crate::link_key::clauses_of(raw);
+    let stored = crate::link_key::texts_for_page(pool, source_path)
+        .await
+        .unwrap_or_default();
+    let fresh: Vec<&str> = clauses.iter().map(|c| c.text.as_str()).collect();
+    if stored.len() == fresh.len() && stored.iter().zip(&fresh).all(|(a, b)| a == b) {
+        return;
+    }
+    if clauses.is_empty() {
+        if let Err(e) = crate::link_key::drop_page(pool, source_path).await {
+            tracing::warn!(source_path, error = %e, "reindex: link keys not dropped");
+        }
+        return;
+    }
+    let regions = crate::link_key::fact_regions(&crate::parser::parse(raw));
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut keys = Vec::with_capacity(clauses.len());
+    for clause in clauses {
+        let covers = crate::link_key::covered_facts(&regions, clause.at);
+        if covers.is_empty() {
+            continue;
+        }
+        let embedding = match embedder.embed(&clause.text).await {
+            Ok(v) => Some(v),
+            // Soft: an un-embedded key simply does not score, which is a
+            // smaller offer and never a wrong one.
+            Err(e) => {
+                tracing::warn!(source_path, error = %e, "reindex: clause not embedded");
+                None
+            },
+        };
+        keys.push((clause, covers, embedding));
+    }
+    match crate::link_key::replace_for_page(pool, source_path, wiki_id, &keys, &now).await {
+        Ok(n) => tracing::debug!(source_path, keys = n, "reindex: link keys refreshed"),
+        Err(e) => tracing::warn!(source_path, error = %e, "reindex: link keys not refreshed"),
+    }
 }
 
 fn offerable_page(source_path: &str) -> bool {
@@ -1991,6 +2070,83 @@ mod tests {
             source_ref: None,
         };
         fact_index::insert(pool, &new).await.expect("seed fact");
+    }
+
+    /// The clause around a `[[wikilink]]` enters the table on the same sweep
+    /// as the card, and covers only the facts beside it.
+    ///
+    /// The reindex path is where it belongs for the same reason the card is:
+    /// it is the one path every page change flows through, so nothing has to
+    /// write through from every site that can rewrite a page. And it is the
+    /// only place that has the page's bytes, an embedder, and the fact
+    /// regions in one hand — and the regions are what "beside" is measured
+    /// against.
+    #[tokio::test]
+    async fn reindex_stores_the_clause_around_a_link_and_covers_only_its_neighbours() {
+        let dir = tempdir().unwrap();
+        let wiki_dir = dir.path().join("wikis/alice");
+        write_wiki_meta(&wiki_dir, "alice");
+        let tree = WikiTree::open(dir.path()).expect("open tree");
+        let pool = make_pool().await;
+        let embedder = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
+
+        let near = FactId::parse("018f1234-5678-7abc-9def-00000000ee01").unwrap();
+        let far = FactId::parse("018f1234-5678-7abc-9def-00000000ee02").unwrap();
+        let head = "---\ntitle: \"Cucina\"\ndescription: \"d\"\n---\n\n";
+        let a = format!("{{{{f={near} subject=user:alice}}}}Alice cucina la sera.{{{{/}}}}");
+        let b = format!("{{{{f={far} subject=user:alice}}}}Alice corre il martedi.{{{{/}}}}");
+        // The clause sits between the two regions, so it is beside both, and
+        // the third region is far enough away not to be.
+        let body = format!(
+            "{head}{a}\n\nLe abitudini e le ricette che ne derivano sono raccolte in \
+             [[alice/ricette]].\n\n{b}\n"
+        );
+        write_page(&wiki_dir, "cucina.md", &body);
+        seed_fact(
+            &pool,
+            &near,
+            "wikis/alice/cucina.md",
+            "Alice cucina la sera.",
+            None,
+        )
+        .await;
+        seed_fact(
+            &pool,
+            &far,
+            "wikis/alice/cucina.md",
+            "Alice corre il martedi.",
+            None,
+        )
+        .await;
+        reindex_file(&pool, &tree, embedder.clone(), &wiki_dir.join("cucina.md"))
+            .await
+            .expect("reindex");
+
+        let keys = crate::link_key::all_embedded(&pool).await.expect("read");
+        assert_eq!(keys.len(), 1, "one link, one key: {keys:?}");
+        assert_eq!(keys[0].target, "alice/ricette");
+        assert!(
+            keys[0].covers.contains(&near.as_str().to_owned())
+                && keys[0].covers.contains(&far.as_str().to_owned()),
+            "a clause between two regions is beside both: {keys:?}"
+        );
+        assert!(
+            keys[0].embedding.is_some(),
+            "and it was embedded where an embedder was already in hand"
+        );
+
+        // The page goes; the keys are derived from its prose, so they go too.
+        std::fs::remove_file(wiki_dir.join("cucina.md")).unwrap();
+        reindex_file(&pool, &tree, embedder, &wiki_dir.join("cucina.md"))
+            .await
+            .expect("reindex removal");
+        assert!(
+            crate::link_key::all_embedded(&pool)
+                .await
+                .expect("read")
+                .is_empty(),
+            "a key outliving its page would score for a fact nobody can open"
+        );
     }
 
     /// The reindex sweep is where a page's card enters the table, and where

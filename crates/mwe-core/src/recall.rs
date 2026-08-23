@@ -31,7 +31,7 @@
 //! vector-index integration (`sqlite-vec`) is deferred work — until
 //! profiling shows we need it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use sqlx::SqlitePool;
@@ -754,8 +754,29 @@ async fn search_inner(
         .filter(|u| !u.is_agent)
         .collect();
     let subjects = turn_subjects(query, &sender.sender_id, &roster);
+    // The second key: the clause each `[[wikilink]]` was written inside,
+    // standing in for the facts beside it. A question phrased in none of a
+    // fact's own words can reach it through the sentence that says why its
+    // page points somewhere ([`crate::link_key`]). Never an error — without
+    // the keys a fact is found by its own words, which is the behaviour this
+    // path had before they existed.
+    let link_scores = match crate::link_key::all_embedded(pool).await {
+        Ok(keys) => crate::link_key::best_scores(&keys, &q_emb),
+        Err(e) => {
+            tracing::warn!(error = %e, "recall: link keys unread — own words only");
+            HashMap::new()
+        },
+    };
     let candidates = fact_index::find_by_filters(pool, &filters).await?;
-    let scored = score_and_filter(&q_emb, candidates, sender, top_k, &subjects, &roster);
+    let scored = score_and_filter(
+        &q_emb,
+        candidates,
+        sender,
+        top_k,
+        &subjects,
+        &roster,
+        &link_scores,
+    );
     if bump {
         bump_recall_hits_from(pool, &scored).await?;
     }
@@ -769,6 +790,19 @@ async fn search_inner(
     Ok(scored)
 }
 
+/// Score, filter and cut the candidate facts.
+///
+/// `link_scores` is the second key ([`crate::link_key`]), and it enters the
+/// score as a **max**, never as a bonus added on top: a fact is worth the
+/// better of what its own words earn and what the clause beside it earns.
+/// The additive form was measured to cost 5 points of precision for the same
+/// reach. The multipliers below then apply to whichever won, because
+/// validity and subject coverage are properties of the fact and do not care
+/// how it was found.
+///
+/// **A key can never widen what a reader sees**: the visibility filter runs
+/// first, so a key only ever moves a fact the sender was already allowed to
+/// read.
 fn score_and_filter(
     query_embedding: &[f32],
     candidates: Vec<FactIndexRow>,
@@ -776,6 +810,7 @@ fn score_and_filter(
     top_k: usize,
     subjects: &[String],
     roster: &[EnrolledUserLite],
+    link_scores: &HashMap<String, f32>,
 ) -> Vec<RecallHit> {
     // The down-rank anchors on the engine wall-clock. (A backlog replay
     // re-living turns via `occurred_at` ranks against the present —
@@ -786,7 +821,10 @@ fn score_and_filter(
         .into_iter()
         .filter(|row| row_visible_to(row, sender))
         .map(|row| {
-            let mut s = cosine_similarity(query_embedding, &row.embedding);
+            let own = cosine_similarity(query_embedding, &row.embedding);
+            let mut s = link_scores
+                .get(row.fact_id.as_str())
+                .map_or(own, |k| own.max(*k));
             // Validity as a ranking SIGNAL, never a filter: a closed
             // window down-ranks the hit but can still surface.
             if window_closed_at(row.valid_to.as_deref(), &now) {
@@ -2967,6 +3005,7 @@ mod tests {
             2,
             &[],
             &[],
+            &HashMap::new(),
         );
         assert_eq!(hits.len(), 2);
         // First must be the perfect match, then row2.
@@ -3105,6 +3144,7 @@ mod tests {
             2,
             &[],
             &roster(),
+            &HashMap::new(),
         );
         assert_eq!(
             base[0].fact_id, single.fact_id,
@@ -3118,6 +3158,7 @@ mod tests {
             2,
             &subjects,
             &roster(),
+            &HashMap::new(),
         );
         assert_eq!(
             with[0].fact_id, both.fact_id,
@@ -3153,6 +3194,7 @@ mod tests {
             10,
             &subjects,
             &roster(),
+            &HashMap::new(),
         );
         assert_eq!(out.len(), 2, "both still served: {out:?}");
     }
@@ -3182,6 +3224,7 @@ mod tests {
             10,
             &[],
             &[],
+            &HashMap::new(),
         );
         assert_eq!(hits.len(), 1, "private row must drop out");
         assert_eq!(hits[0].fact_id, row_public.fact_id);
@@ -3190,7 +3233,15 @@ mod tests {
     #[test]
     fn score_and_filter_empty_input_returns_empty() {
         let q = vec![1.0_f32, 0.0];
-        let out = score_and_filter(&q, Vec::new(), &SenderContext::anonymous(), 5, &[], &[]);
+        let out = score_and_filter(
+            &q,
+            Vec::new(),
+            &SenderContext::anonymous(),
+            5,
+            &[],
+            &[],
+            &HashMap::new(),
+        );
         assert!(out.is_empty());
     }
 
@@ -3252,6 +3303,157 @@ mod tests {
             salience: None,
             source_ref: None,
         });
+    }
+
+    /// **A fact is reachable through the sentence beside it**, not only
+    /// through its own words.
+    ///
+    /// The case the second key exists for: a question that shares not one word
+    /// with the fact, but shares its subject with the clause the page's link
+    /// was written inside. Without the key the fact is last; with it, first.
+    /// The lab measured exactly this shape — a coeliac diagnosis moving from
+    /// rank 83 to rank 7 on a cooking question saying neither "coeliac" nor
+    /// "gluten".
+    #[tokio::test]
+    async fn a_clause_key_reaches_a_fact_the_question_shares_no_words_with() {
+        let pool = make_pool().await;
+        let mut rows = Vec::new();
+        // `pasta` sits on the query's own axis; `celiachia` is orthogonal to
+        // it and would never be found by the words of the question.
+        insert_row(
+            &mut rows,
+            "018f1234-5678-7abc-9def-00000000aa01",
+            "alice",
+            "user:alice",
+            "alice cooks pasta on sundays",
+            vec![1.0, 0.0],
+        );
+        insert_row(
+            &mut rows,
+            "018f1234-5678-7abc-9def-00000000bb01",
+            "alice",
+            "user:alice",
+            "alice was diagnosed coeliac in 2019",
+            vec![0.0, 1.0],
+        );
+        populate(&pool, rows).await;
+
+        let query = vec![1.0_f32, 0.0];
+        let embedder: Arc<dyn Embedder> = Arc::new(
+            crate::embedder::FakeEmbedder::with_fixed_embedding("fake", query.clone()),
+        );
+        let sender = SenderContext::user("alice");
+
+        let ranked = |hits: &[RecallHit]| -> Vec<String> {
+            hits.iter().map(|h| h.fact_id.as_str().to_owned()).collect()
+        };
+        let before = wiki_search_unrecorded(
+            &pool,
+            Arc::clone(&embedder),
+            "what can she cook",
+            2,
+            fact_index::FactFilters::default(),
+            &sender,
+        )
+        .await
+        .expect("search");
+        assert_eq!(
+            ranked(&before)[0],
+            "018f1234-5678-7abc-9def-00000000aa01",
+            "on its own words the coeliac fact is behind: {before:?}"
+        );
+
+        // The page's prose links the diet page, and the clause it sits in is
+        // about cooking — which is what the question is about too.
+        crate::link_key::replace_for_page(
+            &pool,
+            "wikis/alice/intro.md",
+            "alice",
+            &[(
+                crate::link_key::Clause {
+                    target: "alice/cucina".to_owned(),
+                    text: "le abitudini e le ricette che ne derivano sono raccolte altrove"
+                        .to_owned(),
+                    at: 0,
+                },
+                vec!["018f1234-5678-7abc-9def-00000000bb01".to_owned()],
+                Some(query.clone()),
+            )],
+            "t",
+        )
+        .await
+        .expect("keys");
+
+        let after = wiki_search_unrecorded(
+            &pool,
+            embedder,
+            "what can she cook",
+            2,
+            fact_index::FactFilters::default(),
+            &sender,
+        )
+        .await
+        .expect("search");
+        assert_eq!(
+            ranked(&after)[0],
+            "018f1234-5678-7abc-9def-00000000bb01",
+            "the clause beside it carries it to the front: {after:?}"
+        );
+        assert_eq!(after.len(), 2, "and nothing is dropped: {after:?}");
+    }
+
+    /// A key never widens what a reader may see: the visibility filter runs
+    /// before scoring, so a key on somebody else's fact moves nothing.
+    #[tokio::test]
+    async fn a_clause_key_cannot_surface_a_fact_the_reader_may_not_read() {
+        let pool = make_pool().await;
+        let mut rows = Vec::new();
+        insert_row(
+            &mut rows,
+            "018f1234-5678-7abc-9def-00000000cc01",
+            "bob",
+            "user:bob",
+            "bob keeps a private diary",
+            vec![0.0, 1.0],
+        );
+        populate(&pool, rows).await;
+
+        let query = vec![1.0_f32, 0.0];
+        crate::link_key::replace_for_page(
+            &pool,
+            "wikis/bob/intro.md",
+            "bob",
+            &[(
+                crate::link_key::Clause {
+                    target: "bob/qualcosa".to_owned(),
+                    text: "una frase che somiglia moltissimo alla domanda".to_owned(),
+                    at: 0,
+                },
+                vec!["018f1234-5678-7abc-9def-00000000cc01".to_owned()],
+                Some(query.clone()),
+            )],
+            "t",
+        )
+        .await
+        .expect("keys");
+
+        let embedder: Arc<dyn Embedder> = Arc::new(
+            crate::embedder::FakeEmbedder::with_fixed_embedding("fake", query),
+        );
+        let hits = wiki_search_unrecorded(
+            &pool,
+            embedder,
+            "anything",
+            5,
+            fact_index::FactFilters::default(),
+            &SenderContext::user("alice"),
+        )
+        .await
+        .expect("search");
+        assert!(
+            hits.is_empty(),
+            "a perfect key on a fact alice may not read shows her nothing: {hits:?}"
+        );
     }
 
     async fn populate(pool: &SqlitePool, rows: Vec<NewFact>) {

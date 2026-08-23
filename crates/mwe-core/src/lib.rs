@@ -43,6 +43,7 @@ pub mod faults;
 pub mod housekeeping;
 pub mod ingest;
 pub mod jwt;
+pub mod link_key;
 pub mod lint;
 pub mod llm;
 #[cfg(feature = "local-embedder")]

@@ -489,7 +489,8 @@ fn map_wiki_delete_err(e: wiki_delete::WikiDeleteError) -> DashboardError {
         | E::Enrollment(_)
         | E::Plan(_)
         | E::Sections(_)
-        | E::PageCards(_) => DashboardError::Internal(e.to_string()),
+        | E::PageCards(_)
+        | E::LinkKeys(_) => DashboardError::Internal(e.to_string()),
     }
 }
 
