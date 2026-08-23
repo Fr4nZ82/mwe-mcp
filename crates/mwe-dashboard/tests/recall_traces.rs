@@ -462,11 +462,11 @@ async fn journal_hides_another_users_trace_until_admin_reveal() {
 /// and an admin-only page would have withheld it from every ordinary user
 /// (and from every demo visitor, whose session is never admin).
 ///
-/// The other half is what the admin gate used to do for free and now must
-/// be done by the route: bob may open his own by id, and **not** carol's
-/// by guessing the id next to it. The refusal is `404`, not `403` — trace
-/// ids are a dense autoincrement, so `403` would confirm that carol's
-/// recall exists there.
+/// The other half is what a role gate would have done for free and the route
+/// has to do instead: bob may open his own by id, and **not** carol's by
+/// guessing the id next to it. The refusal is `404`, not `403` — trace ids are
+/// a dense autoincrement, so `403` would confirm that carol's recall exists
+/// there.
 #[tokio::test]
 async fn a_regular_user_reads_their_own_traces_and_cannot_reach_anybody_elses() {
     let (app, pool, _dir) = make_app().await;

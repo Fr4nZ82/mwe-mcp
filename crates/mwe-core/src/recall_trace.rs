@@ -21,10 +21,10 @@
 //! journal write must never fail or mask the recall itself, so callers
 //! log-and-ignore the error.
 //!
-//! **Why a window and not a handful of rows.** This journal used to keep the
-//! newest ten rows deployment-wide — on production's ~30 turns a day, that
-//! discarded better than 99 % of it within the hour. What it discards is the
-//! only labelled record the engine ever produces of *how recall behaved*: the
+//! **Why a window and not a handful of rows.** Keeping the newest ten rows
+//! deployment-wide — on production's ~30 turns a day — discards better than
+//! 99 % of this within the hour. What that throws away is the only labelled
+//! record the engine ever produces of *how recall behaved*: the
 //! candidates offered per hop, the navigator's own one-line reason for each
 //! choice, and what it then opened. That is the evidence base the rewiring
 //! pass needs — a page repeatedly offered and declined has a card that
@@ -118,11 +118,7 @@ pub struct RecallTrace {
     ///
     /// `rag_only` means the funnel started from the flat recall hits and
     /// nothing else — no navigator slot configured, or an extraction that
-    /// returned neither topic nor subject. It was called `principal_rag_only`
-    /// until 2026-08-14, after the `Principal` seed family it named was
-    /// deleted on 2026-08-03: an operator's own diagnostic surface reported a
-    /// mechanism that no longer existed, and those rows are what a later
-    /// tuning pass reads as evidence.
+    /// returned neither topic nor subject.
     pub seed_mode: String,
     /// Topic seeds that fed the entry-point gather.
     pub topics: Vec<String>,

@@ -7,13 +7,13 @@
 //! etc. via this tool), and the dashboard append items to it; the
 //! smart consumer reads them at `smart_bootstrap` time and rotates
 //! the file to `_briefing.archive.md` after triage. See
-//! [`modello-memoria.md §9`] for the lifecycle.
+//! [`crate::wiki_admin`] for the lifecycle.
 //!
 //! ## Authorisation
 //!
 //! Open to **any token with read access to the target wiki** — not
 //! restricted to `consumer_class=smart`. Rationale (per
-//! [`protocollo.md §H.3`]): an openclaw standard consumer must be
+//! see the cap below): an openclaw standard consumer must be
 //! able to notify when the user, talking on Telegram, leaves an
 //! observation that the smart consumer should pick up next session.
 //!
@@ -50,8 +50,8 @@ use crate::wiki::{WikiError, WikiHandle, WikiTree, atomic_write};
 /// Filename used for the briefing inbox at the wiki root.
 pub const BRIEFING_FILENAME: &str = "_briefing.md";
 
-/// Rate-limit cap per `tool-reference.md §H.3` (50 notify per wiki
-/// per hour). Exposed as a const so the dashboard rate-card can
+/// Rate-limit cap: 50 notify per wiki per hour.
+/// Exposed as a const so the dashboard rate-card can
 /// surface the same number without re-encoding it.
 pub const NOTIFY_RATE_PER_HOUR: i64 = 50;
 
@@ -64,12 +64,11 @@ pub enum BriefingError {
     NotFound(WikiId),
     /// Target wiki's `wiki_type` is not in the smart family.
     /// Maps to `400 wiki_type_not_briefing_capable` — `_briefing.md`
-    /// only exists for smart-wikis (see
-    /// [`tool-reference.md §H.3`]).
+    /// only exists for smart-wikis.
     ///
-    /// Preserved for the REM-internal path (`notify_as_rem`). The
-    /// public MCP `wiki_admin_notify` surface uses the
-    /// matrix-aware variants below instead.
+    /// This is the REM-internal path's refusal (`notify_as_rem`). The
+    /// public MCP `wiki_admin_notify` surface uses the matrix-aware
+    /// variants below instead.
     #[error(
         "wiki_type {wiki_type:?} is not in the smart family (only smart-wikis have a _briefing.md)"
     )]
@@ -198,8 +197,7 @@ pub struct NotifyCaller {
     pub consumer_class: crate::jwt::ConsumerClass,
 }
 
-/// Inputs of one [`notify`] call. Mirrors `wiki_admin_notify` (see
-/// `tool-reference.md §H.3`).
+/// Inputs of one [`notify`] call. Mirrors `wiki_admin_notify`.
 #[derive(Debug, Clone)]
 pub struct NotifyRequest {
     /// Target smart-wiki.
@@ -906,8 +904,7 @@ struct KindCountsRow {
 /// reciprocity sub-jobs), so the simple smart-wiki-only check stays.
 ///
 /// The public MCP path goes through [`gate_notify_target_matrix`]
-/// instead — see [`tool-reference.md §H.3`] for the consumer-class ×
-/// wiki-family matrix.
+/// instead, which carries the consumer-class × wiki-family matrix.
 fn locate_smart_wiki_target(
     tree: &WikiTree,
     wiki_id: &WikiId,
@@ -985,7 +982,7 @@ fn gate_notify_target_matrix(
 /// and (when `write_briefing_file` is `true`) append the rendered
 /// section to `_briefing.md`. The shared core for [`notify`] and
 /// [`notify_as_rem`] — both surfaces share the same DB shape and the
-/// same `50/wiki/h` cap (per [`tool-reference.md §H.3`]).
+/// same [`NOTIFY_RATE_PER_HOUR`] cap.
 ///
 /// `write_briefing_file = false` is the `smart consumer × standard wiki`
 /// path (no `_briefing.md` exists for standard wikis; the REM briefing processor
@@ -1119,7 +1116,7 @@ fn briefing_file_path(handle: &WikiHandle) -> PathBuf {
 
 /// Build the document body written when `_briefing.md` does not
 /// exist yet. The frontmatter shape mirrors the spec sketch in
-/// [`modello-memoria.md §9`].
+/// [`crate::wiki_admin`].
 fn initial_briefing_doc(wiki_id: &WikiId) -> String {
     let now = chrono::Utc::now().to_rfc3339();
     format!(

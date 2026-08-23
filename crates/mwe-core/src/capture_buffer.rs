@@ -36,15 +36,12 @@
 //! workdir snapshot's job ([`crate::backup`]), which takes the DB image and
 //! the file tree together because neither reconstructs the other.
 //!
-//! Until 2026-08-18 each capture was also appended to a per-wiki on-disk
-//! journal, declared the durable SSOT with this table as its rebuildable
-//! cache — a rule inherited from the file-authoritative era. It
-//! was deleted (founder, 2026-08-18) because it had stopped being any of
-//! that: every capture read and rewrote the whole file, nothing ever pruned
-//! it, its per-entry `status=` stayed `buffered` for ever so the "truth" was
-//! stale for every capture the light dream had processed, and the five-minute
-//! safety-net reindex re-parsed every wiki's entire history to insert rows
-//! that already existed.
+//! **There is no on-disk capture journal, and nothing may coin one.** A file
+//! every capture reads and rewrites whole, that nothing prunes, and whose
+//! per-entry `status=` never moves off `buffered`, is a second description of
+//! this table that goes stale on the first light dream — and a safety-net
+//! reindex then re-parses a wiki's entire history to insert rows that already
+//! exist.
 //!
 //! ## Id stability
 //!

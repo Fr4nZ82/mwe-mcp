@@ -156,8 +156,8 @@ pub(crate) async fn apply_dedup_merge(
     // genuinely be lost are its **live references**: `authored_refs` points at
     // the project pages that hold the fact's detail, the "link, don't
     // duplicate" tube. Once the loser's bytes leave the page and the survivor
-    // speaks for both, nothing reaches those pages any more unless the
-    // survivor carries the pointers too.
+    // speaks for both, nothing reaches those pages unless the survivor carries
+    // the pointers too.
     //
     // Union, order-preserving, winner's first: the survivor's own references
     // stay where its prose expects them. No write when there is nothing new.

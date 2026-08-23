@@ -963,8 +963,8 @@ mod tests {
 
     #[test]
     fn compose_frames_health_public_even_when_it_is_the_only_field() {
-        // Health alone still gets the public prefix (it used to be emitted as an
-        // un-prefixed trailer when no identity clause was present).
+        // Health alone still gets the public prefix — never an un-prefixed
+        // trailer just because no identity clause is present.
         let form = ProfileSubmission {
             health_safety: "intollerante al lattosio".into(),
             ..ProfileSubmission::default()

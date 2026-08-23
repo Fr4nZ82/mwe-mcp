@@ -251,12 +251,10 @@ pub async fn recent_misses(pool: &SqlitePool, limit: usize) -> sqlx::Result<Vec<
 /// works on *co-opening*, so a single-page turn carries no pair and fetching
 /// it would only make the scan bigger.
 ///
-/// This is the register that was already there. The route journal
-/// (`recall_traces`) records the candidates a hop was *offered* and is what
-/// the offered-and-declined detector needs; it was capped at ten rows
-/// deployment-wide until 2026-08-03, which is why REM's evidence looked
-/// absent. `recall_log` was never capped — it holds a month of real turns —
-/// and *which pages a turn opened together* is all a missing rail needs.
+/// The route journal (`recall_traces`) records the candidates a hop was
+/// *offered*, which is what the offered-and-declined detector needs. This
+/// register is the other half: `recall_log` holds a month of real turns, and
+/// *which pages a turn opened together* is all a missing rail needs.
 ///
 /// # Errors
 ///

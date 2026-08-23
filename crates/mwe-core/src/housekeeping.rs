@@ -246,8 +246,8 @@ mod tests {
         .unwrap();
     }
 
-    /// Insert a stale (already revoked) refresh row directly — the public
-    /// API can no longer accumulate these, its inline prune removes them.
+    /// Insert a stale (already revoked) refresh row directly: the public API
+    /// cannot accumulate one, because its inline prune removes them.
     async fn insert_stale_refresh(pool: &SqlitePool, consumer: &str, wiki: &str, hash: &str) {
         sqlx::query(
             "INSERT INTO webagentoauth_refresh
@@ -406,8 +406,8 @@ mod tests {
     async fn disconnected_consumer_keeps_one_binding_row() {
         let (pool, tree, _dir) = fixture().await;
         // Wiki exists, but the connection is fully disconnected: stale
-        // rows only, none active (seeded directly — the API's inline
-        // prune no longer lets them accumulate).
+        // rows only, none active — seeded directly, because the API's inline
+        // prune does not let them accumulate.
         seed_wiki(&tree, "franz-idle");
         seed_consumer(&pool, "idle", None).await;
         for hash in ["h1", "h2", "h3", "h4"] {

@@ -186,7 +186,7 @@ async fn standard_bot_id_rejects_unwiki_safe_id() {
     create_user(&app, &cookie, "frodo").await;
 
     // Underscore is rejected by the enrollment id grammar itself (every
-    // enrollable id is a valid wiki id — identity-and-acl.md §1.6), so the
+    // enrollable id is a valid wiki id), so the
     // bot path bounces it at the first guard, before the wiki-id parse
     // fallback ever runs.
     let html = issue(

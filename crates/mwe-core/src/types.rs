@@ -7,16 +7,15 @@
 //!
 //! ## `fact_id` format
 //!
-//! R.1.3 (decisions.md, round 2026-05-17) picks **`UUIDv7` lowercase with
-//! dashes** for `fact_index.fact_id`. The marker grammar in `schemi.md §3.1`
-//! still shows the older `f-YYYY-MM-DD-NNN` form in EBNF and in all examples
-//! at §3.3; that text is stale relative to R.1.3 and will be refreshed in a
-//! later planning round. The code in this crate follows R.1.3.
+//! `fact_index.fact_id` is a **`UUIDv7`, lowercase with dashes** —
+//! [`FactId::parse`] is the one gate, and it is strict about every
+//! position (see its doc).
 //!
 //! ## `catalog_id` format
 //!
-//! `catalog_id` keeps the `c-YYYY-MM-DD-<kind>-NNN.<ext>` shape of
-//! `schemi.md §3.1`, no decision supersedes it.
+//! `catalog_id` is a different shape on purpose:
+//! `c-YYYY-MM-DD-<kind>-NNN.<ext>`. It names a file in the catalogue, not a
+//! fact, and [`CatalogId::parse`] is its gate.
 
 use std::fmt;
 use std::str::FromStr;
@@ -166,16 +165,20 @@ impl fmt::Display for Principal {
 /// per-fragment governance, and it is the reason the two axes are named
 /// apart.
 ///
-/// `subject == None` means "inherit `acl_default` from the enclosing
-/// `_meta.md`". The parser builds [`Acl`] from the marker's `subject=` and
-/// `allow=` attributes (`owner=` is the permanent legacy alias of
-/// `subject=`, read but never written); with neither present the parser
-/// leaves it `None`, and `render` later resolves it against `acl_default`.
+/// `subject == None` is a region nobody is named as the subject of. The
+/// parser builds [`Acl`] from the marker's `subject=` and `allow=`
+/// attributes (`owner=` is the permanent legacy alias of `subject=`, read
+/// but never written); with neither present it leaves the subject `None`,
+/// and nothing downstream fills it in. Such a region is reachable only
+/// through the other two axes — its `allow` audience and its own `sender`
+/// ([`crate::acl::can_read`]) — so one carrying neither is readable by
+/// nobody. That is deliberate: a fact's ACL is the fact's, and a wiki's
+/// scope principal never rescues a region that names no subject.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Acl {
     /// The fact's **subject** — the single principal the region is *about*
     /// (not its author `sender`, not its audience `allow`). `None` ⇒
-    /// inherit `acl_default`.
+    /// nobody is named — see the type's doc.
     pub subject: Option<Principal>,
     /// Additional principals extended by `allow=…` — the *audience* axis,
     /// who may read it beyond subject + sender (possibly empty).
@@ -184,7 +187,7 @@ pub struct Acl {
 
 // ---------- FactId ----------
 
-/// A `fact_id` in canonical [`UUIDv7`] lowercase-with-dash form (R.1.3).
+/// A `fact_id` in canonical [`UUIDv7`] lowercase-with-dash form.
 ///
 /// Example: `018f1234-5678-7abc-9def-0123456789ab`.
 ///
@@ -510,8 +513,7 @@ impl fmt::Display for WikiId {
 ///   *about*, not its author or audience; see [`Acl`]). `owner=` is the
 ///   permanent legacy alias of this key: read, never written.
 /// - `allow=<principal>(,<principal>)*` → `acl.allow`
-/// - `sender=<principal>` → `sender` (cross-user attribution, see
-///   `modello-memoria.md §4`)
+/// - `sender=<principal>` → `sender` (cross-user attribution)
 /// - `f=<UUIDv7>` → `fact_id`
 ///
 /// All four are optional. `subject == None` means the region inherits
@@ -628,9 +630,9 @@ mod tests {
     }
 
     #[test]
-    fn fact_id_rejects_legacy_date_nnn_format() {
-        // Documents the supersede: schemi.md §3.1 EBNF form no longer
-        // validates after R.1.3.
+    fn fact_id_rejects_a_date_and_counter() {
+        // A date-and-counter string is a plausible id and is not one: the
+        // parser takes `UUIDv7` and nothing else.
         assert!(FactId::parse("f-2026-05-11-001").is_err());
     }
 

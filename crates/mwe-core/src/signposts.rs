@@ -38,15 +38,14 @@
 //! A **description** is a *property* of the project — it changes when the
 //! project changes, not when something happens. So it is authored once in
 //! the project's own `_meta.md`, mirrored into `smart_wikis.description`,
-//! and written here by [`project_descriptions`] on every sweep. Nobody
-//! calls anything. It used to be written by the smart consumer through
-//! [`write`], and the counting is why that stopped: across the whole
-//! recorded window, four projects on this deployment ever had a row
-//! written, and the largest undescribed corpus was 1 477 sections with
-//! none. Nothing was lost to concurrency — **nobody ever wrote anything**.
-//! A nudge fired on every push and was ignored, because a nudge is advice,
-//! and an act nobody performs leaves no trace to notice. A property does:
-//! an undescribed project is an empty column.
+//! and written here by [`project_descriptions`] on every sweep. Nobody calls
+//! anything, and the counting is why: asked to write its own description
+//! through [`write`], the smart consumer did it for four projects across the
+//! whole recorded window, and the largest undescribed corpus was 1 477
+//! sections with none. Nothing was lost to concurrency — **nobody wrote
+//! anything**. A nudge fires on every push and is ignored, because a nudge is
+//! advice, and an act nobody performs leaves no trace to notice. A property
+//! does: an undescribed project is an empty column.
 //!
 //! An **activity line** is an *event*, so it stays a write — there is
 //! nothing to derive it from. [`write`] remains its path.

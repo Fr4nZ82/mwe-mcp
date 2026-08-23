@@ -86,8 +86,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // 2. The entry fan: which pages those hits make reachable. (No identity
-    // seeds any more — 69b deleted the family; no `owners` argument either.)
+    // 2. The entry fan: which pages those hits make reachable. A principal is
+    // never a seed — whose turn it is reaches the block by being served, not
+    // by the walk being pointed at them.
     let fan = recall_nav::gather_entry_points(&pool, &tree, &ctx, &[], &hits, &[]).await?;
     println!(
         "\n-- 2. ENTRY FAN — the addresses the walk starts from ({} )",

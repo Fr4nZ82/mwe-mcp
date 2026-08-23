@@ -292,7 +292,7 @@ async fn unauthenticated_home_redirects_to_login() {
 
 /// Helper: drive the setup wizard to create the canonical admin and
 /// skip the first-login profile wizard so subsequent login flows
-/// redirect straight to `/dashboard/home` as the legacy tests assume.
+/// redirect straight to `/dashboard/home`.
 async fn create_admin(app: &axum::Router) {
     let response = send(
         app,

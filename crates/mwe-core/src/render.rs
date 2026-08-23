@@ -52,8 +52,8 @@
 //! left **unreadable** (visible only via a matching `allow`) rather than
 //! inheriting a wiki-wide audience it was never granted. This subject-of-last-
 //! resort does **not** apply to prose or to standalone embeds (those always
-//! pass through). `meta_acl_default` is kept on the call signatures for
-//! stability but no longer consulted.
+//! pass through). **The wiki's scope principal is not an input here at all**:
+//! it would be a wiki-wide audience, and a region's audience is the region's.
 //!
 //! ## Lists vs continuous text
 //!
@@ -246,12 +246,11 @@ fn segment_fact_id(attrs: &RegionAttrs, db_acl: &FactAclMap) -> Option<FactId> {
 /// docs). Pass an empty map to render from inline attributes only —
 /// e.g. for text that never went through capture.
 ///
-/// `meta_acl_default` is retained for signature stability but is no longer
-/// consulted: a region with no inline `subject=` and not covered by `db_acl`
-/// now falls back to its own captured `sender` (and is left unreadable when it
-/// has neither) — never the wiki's scope principal. It still does **not**
-/// filter prose or standalone embeds — those always pass through (see module
-/// docs).
+/// A region with no inline `subject=` and not covered by `db_acl` falls back to
+/// its own captured `sender`, and is left unreadable when it has neither —
+/// never to the wiki's scope principal, which is why that principal is not a
+/// parameter. It does **not** filter prose or standalone embeds — those always
+/// pass through (see module docs).
 ///
 /// `sender_groups` is the list of group ids the sender belongs to (used
 /// by `acl::can_read` for group-membership checks).
@@ -259,12 +258,10 @@ fn segment_fact_id(attrs: &RegionAttrs, db_acl: &FactAclMap) -> Option<FactId> {
 pub fn render_for_sender(
     text: &str,
     db_acl: &FactAclMap,
-    meta_acl_default: &Principal,
     sender_id: &str,
     sender_groups: &[String],
 ) -> RenderOutput {
-    render_for_sender_segments(text, db_acl, meta_acl_default, sender_id, sender_groups)
-        .into_output()
+    render_for_sender_segments(text, db_acl, sender_id, sender_groups).into_output()
 }
 
 /// Segment-emitting sibling of [`render_for_sender`].
@@ -279,7 +276,6 @@ pub fn render_for_sender(
 pub fn render_for_sender_segments(
     text: &str,
     db_acl: &FactAclMap,
-    meta_acl_default: &Principal,
     sender_id: &str,
     sender_groups: &[String],
 ) -> SegmentedRenderOutput {
@@ -305,8 +301,7 @@ pub fn render_for_sender_segments(
             },
             ParseEvent::Region { attrs, body, .. } => {
                 n_regions += 1;
-                let (resolved, sender_of_region) =
-                    resolve_region_acl(attrs, db_acl, meta_acl_default);
+                let (resolved, sender_of_region) = resolve_region_acl(attrs, db_acl);
                 // Cross-user attribution: pass the full principal — it
                 // may be User (Galadriel wrote about Gollum), Group
                 // (family microphone), or Global (public capture
@@ -332,11 +327,11 @@ pub fn render_for_sender_segments(
         }
     }
 
-    // The boolean used to be exposed via
-    // `RenderOutput.fully_redacted`. It is now an internal detection
-    // that decides whether to collapse the output to the single
-    // callout — the caller observes the collapse through the text itself
-    // (count-privacy is preserved either way).
+    // An internal detection, deliberately not a field on `RenderOutput`: it
+    // decides whether to collapse the output to the single callout, and the
+    // caller observes the collapse through the text itself. Count-privacy is
+    // preserved either way, and one fewer boolean is one fewer thing a caller
+    // can branch on.
     let collapse_to_callout = n_regions > 0 && visible_regions == 0 && !has_meaningful_prose;
     if collapse_to_callout {
         out.segments = vec![RenderSegment {
@@ -372,12 +367,10 @@ pub fn render_for_sender_segments(
 pub fn render_admin_reveal(
     text: &str,
     db_acl: &FactAclMap,
-    meta_acl_default: &Principal,
     sender_id: &str,
     sender_groups: &[String],
 ) -> RenderOutput {
-    render_admin_reveal_segments(text, db_acl, meta_acl_default, sender_id, sender_groups)
-        .into_output()
+    render_admin_reveal_segments(text, db_acl, sender_id, sender_groups).into_output()
 }
 
 /// Segment-emitting sibling of [`render_admin_reveal`].
@@ -393,7 +386,6 @@ pub fn render_admin_reveal(
 pub fn render_admin_reveal_segments(
     text: &str,
     db_acl: &FactAclMap,
-    meta_acl_default: &Principal,
     sender_id: &str,
     sender_groups: &[String],
 ) -> SegmentedRenderOutput {
@@ -411,8 +403,7 @@ pub fn render_admin_reveal_segments(
                 end,
                 ..
             } => {
-                let (resolved, sender_of_region) =
-                    resolve_region_acl(attrs, db_acl, meta_acl_default);
+                let (resolved, sender_of_region) = resolve_region_acl(attrs, db_acl);
                 let fact_id = segment_fact_id(attrs, db_acl);
                 if can_read(&resolved, sender_id, sender_groups, sender_of_region) {
                     // The sender could read this region anyway — show it
@@ -476,12 +467,9 @@ fn is_inline_region(text: &str, start: usize, end: usize) -> bool {
 /// region has neither an inline subject nor a sender, `subject` stays `None` and
 /// the region is left unreadable (invisible to everyone but a matching `allow`)
 /// rather than inheriting a wiki-wide audience it was never granted.
-/// `meta_acl_default` is accepted for signature stability but no longer
-/// consulted here.
 fn resolve_region_acl<'a>(
     attrs: &'a RegionAttrs,
     db_acl: &'a FactAclMap,
-    _meta_acl_default: &Principal,
 ) -> (Acl, Option<&'a Principal>) {
     attrs
         .fact_id
@@ -567,13 +555,7 @@ l'edit composition\" parla di questa cosa.\n{{{{/}}}}\n"
     #[test]
     fn alice_sees_everything_in_her_own_file() {
         let input = modello_memoria_5_input();
-        let out = render_for_sender(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "alice",
-            &[],
-        );
+        let out = render_for_sender(&input, &no_db(), "alice", &[]);
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
         assert_eq!(out.blocks_redacted, 0);
         assert!(out.text.contains("Endpoint del Widget Pro"));
@@ -584,13 +566,7 @@ l'edit composition\" parla di questa cosa.\n{{{{/}}}}\n"
     #[test]
     fn bob_in_team_sees_global_and_team_with_callout_for_alice_region() {
         let input = modello_memoria_5_input();
-        let out = render_for_sender(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "bob",
-            &groups(&["team"]),
-        );
+        let out = render_for_sender(&input, &no_db(), "bob", &groups(&["team"]));
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
         // Region with owner=user:alice is redacted → 1 block redacted.
         assert_eq!(out.blocks_redacted, 1);
@@ -609,13 +585,7 @@ l'edit composition\" parla di questa cosa.\n{{{{/}}}}\n"
     #[test]
     fn carol_outsider_sees_scaffolding_and_global_with_two_callouts() {
         let input = modello_memoria_5_input();
-        let out = render_for_sender(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "carol",
-            &groups(&["sales"]),
-        );
+        let out = render_for_sender(&input, &no_db(), "carol", &groups(&["sales"]));
         assert_ne!(
             out.text, FULLY_PRIVATE_CALLOUT,
             "scaffolding prose keeps it from total"
@@ -649,13 +619,7 @@ l'edit composition\" parla di questa cosa.\n{{{{/}}}}\n"
             "Alice pesa {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} \
 al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
         );
-        let out = render_for_sender(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "bob",
-            &[],
-        );
+        let out = render_for_sender(&input, &no_db(), "bob", &[]);
         assert!(out.text.contains("Alice pesa"));
         assert!(out.text.contains("al 10 maggio, ha"));
         assert!(out.text.contains("tagliato i capelli"));
@@ -673,13 +637,12 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
         // Region has a fact_id and a `sender=user:alice` but NO explicit
         // `subject=`. The subject-of-last-resort is the region's own sender (its
         // captured provenance), NOT the wiki principal — so alice reads it as
-        // its subject, bob does not. `meta_acl_default` (here a contrasting
-        // `global`) is no longer consulted. Surrounding prose always passes.
+        // its subject, bob does not. Surrounding prose always passes.
         let input = format!(
             "before {{{{sender=user:alice f={SAMPLE_UUID_V7}}}}}private body{{{{/}}}} after"
         );
         // Alice (the sender) sees the body.
-        let out = render_for_sender(&input, &no_db(), &Principal::global(), "alice", &[]);
+        let out = render_for_sender(&input, &no_db(), "alice", &[]);
         assert!(out.text.contains("private body"));
         assert!(out.text.contains("before "));
         assert!(out.text.contains(" after"));
@@ -687,7 +650,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
         // Bob does not see the body, but he still sees the surrounding prose —
         // and the callout in the body's place.
-        let out = render_for_sender(&input, &no_db(), &Principal::global(), "bob", &[]);
+        let out = render_for_sender(&input, &no_db(), "bob", &[]);
         assert!(!out.text.contains("private body"));
         assert!(out.text.contains("before "));
         assert!(out.text.contains(" after"));
@@ -702,17 +665,11 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
     #[test]
     fn region_without_subject_or_sender_is_unreadable_not_wiki_default() {
         // A region with neither an inline `subject=` nor a `sender` is left
-        // UNREADABLE — it is never rescued by the wiki's scope principal. Even
-        // the wiki principal passed as `meta_acl_default` (here `user:alice`)
-        // cannot read it: a fact's ACL is the fact's, not the category's.
+        // UNREADABLE — it is never rescued by the wiki's scope principal, and
+        // alice here is that principal: a fact's ACL is the fact's, not the
+        // category's.
         let input = format!("before {{{{f={SAMPLE_UUID_V7}}}}}orphan body{{{{/}}}} after");
-        let out = render_for_sender(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "alice",
-            &[],
-        );
+        let out = render_for_sender(&input, &no_db(), "alice", &[]);
         assert!(
             !out.text.contains("orphan body"),
             "no subject, no sender ⇒ invisible"
@@ -725,10 +682,10 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
 
     #[test]
     fn a_wikis_own_principal_does_not_read_a_fact_about_someone_else() {
-        // The two axes this codebase long spelled with the same word are
-        // independent, and this is the case that proves it: `meta_acl_default`
-        // is the WIKI's principal — its proprietor, the authority for
-        // wiki-level acts — while the region attribute is the FACT's subject.
+        // The two axes this codebase spells with the same word are
+        // independent, and this is the case that proves it: a wiki's scope
+        // principal is its proprietor, the authority for wiki-level acts,
+        // while the region attribute is the FACT's subject.
         // A fact about bob filed inside alice's wiki stays bob's, and alice
         // opening her own wiki does not thereby read it.
         //
@@ -739,9 +696,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
         // exercised through the whole render path and not only in the parser.
         let input =
             format!("before {{{{owner=user:bob f={SAMPLE_UUID_V7}}}}}bob's weight{{{{/}}}} after");
-        let wiki_principal = Principal::User("alice".into());
-
-        let for_alice = render_for_sender(&input, &no_db(), &wiki_principal, "alice", &[]);
+        let for_alice = render_for_sender(&input, &no_db(), "alice", &[]);
         assert!(
             !for_alice.text.contains("bob's weight"),
             "the wiki's proprietor is not a reader of every fact filed in it"
@@ -749,7 +704,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
         assert_eq!(for_alice.blocks_redacted, 1);
 
         // …and the fact is not lost, only withheld: its own subject reads it.
-        let for_bob = render_for_sender(&input, &no_db(), &wiki_principal, "bob", &[]);
+        let for_bob = render_for_sender(&input, &no_db(), "bob", &[]);
         assert!(for_bob.text.contains("bob's weight"));
         assert_eq!(for_bob.blocks_redacted, 0);
     }
@@ -766,33 +721,19 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
             "{{{{subject=user:gollum sender=group:famiglia f={SAMPLE_UUID_V7}}}}}\
 Sméagol stamattina ha brontolato a colazione.{{{{/}}}}"
         );
-        let acl_default = Principal::global();
-
         // Galadriel ∈ famiglia → reads via sender shortcut.
-        let out = render_for_sender(
-            &input,
-            &no_db(),
-            &acl_default,
-            "galadriel",
-            &groups(&["famiglia"]),
-        );
+        let out = render_for_sender(&input, &no_db(), "galadriel", &groups(&["famiglia"]));
         assert!(out.text.contains("Sméagol stamattina"));
         assert_eq!(out.blocks_redacted, 0);
 
         // Frodo ∈ famiglia → also reads.
-        let out = render_for_sender(
-            &input,
-            &no_db(),
-            &acl_default,
-            "frodo",
-            &groups(&["famiglia"]),
-        );
+        let out = render_for_sender(&input, &no_db(), "frodo", &groups(&["famiglia"]));
         assert!(out.text.contains("Sméagol stamattina"));
 
         // Bilbo ∈ amici only → does NOT read (still hits the inline
         // `[redacted]` marker but the file collapses to total-redaction
         // because there is no prose to anchor the output).
-        let out = render_for_sender(&input, &no_db(), &acl_default, "bilbo", &groups(&["amici"]));
+        let out = render_for_sender(&input, &no_db(), "bilbo", &groups(&["amici"]));
         assert!(!out.text.contains("Sméagol stamattina"));
         assert_eq!(out.blocks_redacted, 1);
         // The total-redaction signal is observable as the
@@ -808,14 +749,7 @@ Sméagol stamattina ha brontolato a colazione.{{{{/}}}}"
             "{{{{subject=user:gollum sender=user:galadriel allow=group:famiglia f={SAMPLE_UUID_V7}}}}}\
 Sméagol oggi era stanco.{{{{/}}}}"
         );
-        let acl_default = Principal::global();
-        let out = render_for_sender(
-            &input,
-            &no_db(),
-            &acl_default,
-            "galadriel",
-            &groups(&["amici"]),
-        );
+        let out = render_for_sender(&input, &no_db(), "galadriel", &groups(&["amici"]));
         assert!(out.text.contains("Sméagol oggi era stanco"));
         assert_eq!(out.blocks_redacted, 0);
     }
@@ -832,13 +766,7 @@ Sméagol oggi era stanco.{{{{/}}}}"
             "{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 1{{{{/}}}}\n\n\
 {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 2{{{{/}}}}\n"
         );
-        let out = render_for_sender(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "bob",
-            &[],
-        );
+        let out = render_for_sender(&input, &no_db(), "bob", &[]);
         assert_eq!(out.text, FULLY_PRIVATE_CALLOUT);
         assert_eq!(out.text, "> [!redacted] This entire page is private.\n");
         // blocks_redacted still reflects how many regions were
@@ -856,13 +784,7 @@ Sméagol oggi era stanco.{{{{/}}}}"
             "# Heading\n\n{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 1{{{{/}}}}\n\n\
 {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 2{{{{/}}}}\n"
         );
-        let out = render_for_sender(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "bob",
-            &[],
-        );
+        let out = render_for_sender(&input, &no_db(), "bob", &[]);
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
         assert!(out.text.contains("# Heading"));
         assert!(out.text.contains("[redacted]"));
@@ -873,7 +795,7 @@ Sméagol oggi era stanco.{{{{/}}}}"
 
     #[test]
     fn empty_input_is_empty_output_not_fully_redacted() {
-        let out = render_for_sender("", &no_db(), &Principal::global(), "anyone", &[]);
+        let out = render_for_sender("", &no_db(), "anyone", &[]);
         assert_eq!(out.text, "");
         assert_eq!(out.blocks_redacted, 0);
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
@@ -882,7 +804,7 @@ Sméagol oggi era stanco.{{{{/}}}}"
     #[test]
     fn pure_visible_prose_passes_through_byte_for_byte() {
         let input = "just some prose without any markers.\nSecond line.\n";
-        let out = render_for_sender(input, &no_db(), &Principal::global(), "anyone", &[]);
+        let out = render_for_sender(input, &no_db(), "anyone", &[]);
         assert_eq!(out.text, input);
         assert_eq!(out.blocks_redacted, 0);
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
@@ -897,12 +819,8 @@ Sméagol oggi era stanco.{{{{/}}}}"
         // byte. To hide an embed it must be wrapped in a region whose
         // ACL excludes the sender.
         let input = "see this: {{embed=c-2026-05-10-foto-001.jpg}}";
-        for (acl_default, sender) in [
-            (Principal::global(), "anyone"),
-            (Principal::User("alice".into()), "bob"),
-            (Principal::Group("team".into()), "carol"),
-        ] {
-            let out = render_for_sender(input, &no_db(), &acl_default, sender, &[]);
+        for sender in ["anyone", "bob", "carol"] {
+            let out = render_for_sender(input, &no_db(), sender, &[]);
             assert!(
                 out.text.contains("{{embed=c-2026-05-10-foto-001.jpg}}"),
                 "embed missing for sender={sender}: {:?}",
@@ -921,7 +839,7 @@ Sméagol oggi era stanco.{{{{/}}}}"
             "prose before {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}\
 caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         );
-        let out = render_for_sender(&input, &no_db(), &Principal::global(), "bob", &[]);
+        let out = render_for_sender(&input, &no_db(), "bob", &[]);
         assert!(!out.text.contains("c-2026-05-10-foto-001.jpg"));
         assert!(!out.text.contains("caption"));
         assert!(out.text.contains("[redacted]"));
@@ -940,7 +858,7 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         let input =
             format!("anchor {{{{subject=global f={SAMPLE_UUID_V7}}}}}the body{{{{/}}}} prose");
         let map = db_acl("user:alice", &[], None);
-        let out = render_for_sender(&input, &map, &Principal::global(), "bob", &[]);
+        let out = render_for_sender(&input, &map, "bob", &[]);
         assert!(!out.text.contains("the body"));
         assert!(out.text.contains("[redacted]"));
         assert_eq!(out.blocks_redacted, 1);
@@ -951,35 +869,28 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         let input =
             format!("anchor {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}the body{{{{/}}}} prose");
         let map = db_acl("global", &[], None);
-        let out = render_for_sender(&input, &map, &Principal::User("alice".into()), "bob", &[]);
+        let out = render_for_sender(&input, &map, "bob", &[]);
         assert!(out.text.contains("the body"));
         assert_eq!(out.blocks_redacted, 0);
     }
 
     #[test]
-    fn bare_marker_resolves_from_db_not_acl_default() {
-        // Forward-compat with the bare runtime marker (`{{f=uuid}}`,
-        // no inline attributes): the DB record gates it even when the
-        // page default would have let everyone in.
+    fn bare_marker_resolves_from_the_db_record() {
+        // Forward-compat with the bare runtime marker (`{{f=uuid}}`, no
+        // inline attributes): the DB record is what gates it.
         let input = format!("anchor {{{{f={SAMPLE_UUID_V7}}}}}private body{{{{/}}}} prose");
         let map = db_acl("user:alice", &["group:team"], None);
 
-        let out = render_for_sender(&input, &map, &Principal::global(), "alice", &[]);
+        let out = render_for_sender(&input, &map, "alice", &[]);
         assert!(out.text.contains("private body"));
 
-        let out = render_for_sender(
-            &input,
-            &map,
-            &Principal::global(),
-            "bob",
-            &groups(&["team"]),
-        );
+        let out = render_for_sender(&input, &map, "bob", &groups(&["team"]));
         assert!(out.text.contains("private body"), "allow= from the DB");
 
-        let out = render_for_sender(&input, &map, &Principal::global(), "carol", &[]);
+        let out = render_for_sender(&input, &map, "carol", &[]);
         assert!(
             !out.text.contains("private body"),
-            "acl_default=global must NOT rescue a DB-gated region"
+            "a reader outside the DB record's audience is refused"
         );
         assert_eq!(out.blocks_redacted, 1);
     }
@@ -990,22 +901,10 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         // family microphone's capture stays readable to the family.
         let input = format!("anchor {{{{f={SAMPLE_UUID_V7}}}}}Sméagol brontola{{{{/}}}} prose");
         let map = db_acl("user:gollum", &[], Some("group:famiglia"));
-        let out = render_for_sender(
-            &input,
-            &map,
-            &Principal::global(),
-            "galadriel",
-            &groups(&["famiglia"]),
-        );
+        let out = render_for_sender(&input, &map, "galadriel", &groups(&["famiglia"]));
         assert!(out.text.contains("Sméagol brontola"));
 
-        let out = render_for_sender(
-            &input,
-            &map,
-            &Principal::global(),
-            "bilbo",
-            &groups(&["amici"]),
-        );
+        let out = render_for_sender(&input, &map, "bilbo", &groups(&["amici"]));
         assert!(!out.text.contains("Sméagol brontola"));
     }
 
@@ -1018,12 +917,12 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         let input =
             format!("anchor {{{{subject=user:alice f={other_key}}}}}inline body{{{{/}}}} prose");
         let map = db_acl("global", &[], None); // keyed on SAMPLE_UUID_V7, not other_key
-        let out = render_for_sender(&input, &map, &Principal::global(), "bob", &[]);
+        let out = render_for_sender(&input, &map, "bob", &[]);
         assert!(
             !out.text.contains("inline body"),
             "an inline subject must still gate an unindexed region"
         );
-        let out = render_for_sender(&input, &map, &Principal::global(), "alice", &[]);
+        let out = render_for_sender(&input, &map, "alice", &[]);
         assert!(out.text.contains("inline body"));
     }
 
@@ -1038,39 +937,21 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
     #[test]
     fn snapshot_alice_full() {
         let input = modello_memoria_5_input();
-        let out = render_for_sender(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "alice",
-            &[],
-        );
+        let out = render_for_sender(&input, &no_db(), "alice", &[]);
         insta::assert_snapshot!(out.text);
     }
 
     #[test]
     fn snapshot_bob_team_member() {
         let input = modello_memoria_5_input();
-        let out = render_for_sender(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "bob",
-            &groups(&["team"]),
-        );
+        let out = render_for_sender(&input, &no_db(), "bob", &groups(&["team"]));
         insta::assert_snapshot!(out.text);
     }
 
     #[test]
     fn snapshot_carol_outsider() {
         let input = modello_memoria_5_input();
-        let out = render_for_sender(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "carol",
-            &groups(&["sales"]),
-        );
+        let out = render_for_sender(&input, &no_db(), "carol", &groups(&["sales"]));
         insta::assert_snapshot!(out.text);
     }
 
@@ -1082,13 +963,7 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         // the operator reveal shows all three, highlighting the two she
         // could not read.
         let input = modello_memoria_5_input();
-        let out = render_admin_reveal(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "carol",
-            &groups(&["sales"]),
-        );
+        let out = render_admin_reveal(&input, &no_db(), "carol", &groups(&["sales"]));
         assert!(out.text.contains("Endpoint del Widget Pro"));
         assert!(out.text.contains("[codice + design decision storico]"));
         assert!(out.text.contains("parla di questa cosa"));
@@ -1103,13 +978,7 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
         // Alice owns everything — the operator viewing as Alice sees no
         // highlights because nothing was hidden from her.
         let input = modello_memoria_5_input();
-        let out = render_admin_reveal(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "alice",
-            &[],
-        );
+        let out = render_admin_reveal(&input, &no_db(), "alice", &[]);
         assert_eq!(out.blocks_revealed, 0);
         assert!(!out.text.contains(ACL_REVEAL_BLOCK_OPEN));
         assert!(!out.text.contains(ACL_REVEAL_INLINE_OPEN));
@@ -1124,13 +993,7 @@ caption {{{{embed=c-2026-05-10-foto-001.jpg}}}}{{{{/}}}} prose after"
             "Alice pesa {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} \
 al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{/}}}} ieri."
         );
-        let out = render_admin_reveal(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "bob",
-            &[],
-        );
+        let out = render_admin_reveal(&input, &no_db(), "bob", &[]);
         assert!(out.text.contains(&format!(
             "{ACL_REVEAL_INLINE_OPEN}72 kg{ACL_REVEAL_INLINE_CLOSE}"
         )));
@@ -1147,13 +1010,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
         let input = format!(
             "# Heading\n\n{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}\n## Secret\nbody\n{{{{/}}}}\n"
         );
-        let out = render_admin_reveal(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "bob",
-            &[],
-        );
+        let out = render_admin_reveal(&input, &no_db(), "bob", &[]);
         assert!(
             out.text
                 .contains(&format!("\n\n{ACL_REVEAL_BLOCK_OPEN}\n\n"))
@@ -1176,13 +1033,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
             "{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 1{{{{/}}}}\n\n\
 {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body 2{{{{/}}}}\n"
         );
-        let out = render_admin_reveal(
-            &input,
-            &no_db(),
-            &Principal::User("alice".into()),
-            "bob",
-            &[],
-        );
+        let out = render_admin_reveal(&input, &no_db(), "bob", &[]);
         assert_ne!(out.text, FULLY_PRIVATE_CALLOUT);
         assert!(out.text.contains("body 1"));
         assert!(out.text.contains("body 2"));
@@ -1197,7 +1048,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
             "Alice pesa {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} al 10 maggio."
         );
         let map = db_acl("user:alice", &[], None);
-        let seg = render_for_sender_segments(&input, &map, &Principal::global(), "alice", &[]);
+        let seg = render_for_sender_segments(&input, &map, "alice", &[]);
         let fid = FactId::parse(SAMPLE_UUID_V7).unwrap();
         assert_eq!(
             seg.segments,
@@ -1217,7 +1068,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
             ]
         );
         // The joined text is byte-identical to the plain render.
-        let plain = render_for_sender(&input, &map, &Principal::global(), "alice", &[]);
+        let plain = render_for_sender(&input, &map, "alice", &[]);
         assert_eq!(seg.text(), plain.text);
         assert_eq!(seg.blocks_redacted, plain.blocks_redacted);
     }
@@ -1228,7 +1079,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
             "Alice pesa {{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}72 kg{{{{/}}}} al 10 maggio."
         );
         let map = db_acl("user:alice", &[], None);
-        let seg = render_for_sender_segments(&input, &map, &Principal::global(), "bob", &[]);
+        let seg = render_for_sender_segments(&input, &map, "bob", &[]);
         // Prose + placeholder + prose merge into one fact-less slice: no
         // segment carries a fact id, so no click-through can be offered
         // on a region the viewer cannot read.
@@ -1240,7 +1091,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
             }]
         );
         assert_eq!(seg.blocks_redacted, 1);
-        let plain = render_for_sender(&input, &map, &Principal::global(), "bob", &[]);
+        let plain = render_for_sender(&input, &map, "bob", &[]);
         assert_eq!(seg.text(), plain.text);
     }
 
@@ -1251,7 +1102,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
         // to and the segment stays fact-less.
         let input =
             format!("anchor {{{{subject=global f={SAMPLE_UUID_V7}}}}}public body{{{{/}}}} prose");
-        let seg = render_for_sender_segments(&input, &no_db(), &Principal::global(), "carol", &[]);
+        let seg = render_for_sender_segments(&input, &no_db(), "carol", &[]);
         assert_eq!(seg.text(), "anchor public body prose");
         assert!(
             seg.segments.iter().all(|s| s.fact_id.is_none()),
@@ -1264,7 +1115,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
     fn segments_total_redaction_collapses_to_one_factless_callout() {
         let input = format!("{{{{subject=user:alice f={SAMPLE_UUID_V7}}}}}body{{{{/}}}}\n");
         let map = db_acl("user:alice", &[], None);
-        let seg = render_for_sender_segments(&input, &map, &Principal::global(), "bob", &[]);
+        let seg = render_for_sender_segments(&input, &map, "bob", &[]);
         assert_eq!(
             seg.segments,
             vec![RenderSegment {
@@ -1272,7 +1123,7 @@ al 10 maggio, ha {{{{subject=global f={SAMPLE_UUID_V7}}}}}tagliato i capelli{{{{
                 fact_id: None,
             }]
         );
-        let plain = render_for_sender(&input, &map, &Principal::global(), "bob", &[]);
+        let plain = render_for_sender(&input, &map, "bob", &[]);
         assert_eq!(seg.text(), plain.text);
     }
 
@@ -1298,7 +1149,7 @@ al 10 maggio, ha {{{{f={public_key}}}}}tagliato i capelli{{{{/}}}} ieri."
                 sender: None,
             },
         );
-        let seg = render_admin_reveal_segments(&input, &map, &Principal::global(), "bob", &[]);
+        let seg = render_admin_reveal_segments(&input, &map, "bob", &[]);
         let private_fid = FactId::parse(private_key).unwrap();
         let public_fid = FactId::parse(public_key).unwrap();
         let revealed = seg
@@ -1317,7 +1168,7 @@ al 10 maggio, ha {{{{f={public_key}}}}}tagliato i capelli{{{{/}}}} ieri."
             .find(|s| s.fact_id.as_ref() == Some(&public_fid))
             .expect("readable region segment");
         assert_eq!(readable.text, "tagliato i capelli");
-        let plain = render_admin_reveal(&input, &map, &Principal::global(), "bob", &[]);
+        let plain = render_admin_reveal(&input, &map, "bob", &[]);
         assert_eq!(seg.text(), plain.text);
         assert_eq!(seg.blocks_revealed, plain.blocks_revealed);
         assert_eq!(seg.blocks_revealed, 1);
@@ -1331,7 +1182,7 @@ al 10 maggio, ha {{{{f={public_key}}}}}tagliato i capelli{{{{/}}}} ieri."
         // (`sender=user:alice`, no subject) are both redacted: the subject-of-last-
         // resort is the region's sender, not a wiki-wide `global` default, so a
         // sender-owned region is not globally readable.
-        let out = render_for_sender(&input, &no_db(), &Principal::global(), "dave", &[]);
+        let out = render_for_sender(&input, &no_db(), "dave", &[]);
         insta::assert_snapshot!(out.text);
     }
 }

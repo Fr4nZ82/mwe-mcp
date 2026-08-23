@@ -80,9 +80,8 @@ impl ServerHandler for McpHandler {
         // follows its dispatcher; a bridge-less web client (claude.ai, trimmed `Web`
         // catalog without `skill_fetch`) uses the uploaded `web-smart-consumer` skill.
         info.instructions = Some(
-            "mwe-mcp memory server — tools are organised into families A–L (see \
-             tool-reference.md for wire shapes). Load the skill that matches how you \
-             connected: a local CLI agent (e.g. Claude Code over OAuth on a loopback \
+            "mwe-mcp memory server — tools are organised into families A–L. \
+             Load the skill that matches how you connected: a local CLI agent (e.g. Claude Code over OAuth on a loopback \
              callback) should `skill_fetch` the `core` skill and follow its dispatcher \
              — it routes to `smart-consumer`/`smart-codebase` inside a project, or \
              `core-globalmemory` for transversal recall; a bridge-less web client \
@@ -248,9 +247,9 @@ pub async fn dispatch(
         "wiki_ingest_message" => tools::call_wiki_ingest_message(state, identity, args).await,
         "events_poll" => tools::call_events_poll(state, identity, args).await,
         "events_ack" => tools::call_events_ack(state, identity, args).await,
-        // The whole `structure_proposal_*` family was removed from the
-        // MCP surface — structural changes apply directly in REM, silently,
-        // and the dashboard is the operator surface: it calls
+        // There is no `structure_proposal_*` family on the MCP surface:
+        // structural changes apply directly in REM, silently, and the
+        // dashboard is the operator surface — it calls
         // `mwe-core::proposals` directly.
         "wiki_read" => tools::call_wiki_read(state, identity, args).await,
         "wiki_search" => tools::call_wiki_search(state, identity, args).await,

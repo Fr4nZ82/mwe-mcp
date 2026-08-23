@@ -570,12 +570,12 @@ pub async fn wiki_capture_with_source(
     // The card — the testata's one-line `description:`, what belongs on this
     // page — is a property of the PAGE and lives on the page (founder,
     // 2026-08-18: *«se il motore ha bisogno di sapere "cosa ci va dentro" sta
-    // richiedendo i dati di una pagina, non di un fatto»*). It used to ride
-    // every fact of the page as a `fact_index` column, repeated per fact and
+    // richiedendo i dati di una pagina, non di un fatto»*). As a `fact_index`
+    // column it would ride every fact of the page, repeated per fact and
     // needing maintenance whenever REM edited the page or moved the fact.
-    // From here it is written once, where the reader and the compile both
-    // look: the file's testata, mirrored into `page_card` by the reindex
-    // sweep, adopted into the plan by `planner::heal_page_cards`.
+    // Here it is written once, where the reader and the compile both look:
+    // the file's testata, mirrored into `page_card` by the reindex sweep,
+    // adopted into the plan by `planner::heal_page_cards`.
     seed_page_card(&abs_page, req.page_description.as_deref(), req.style);
     let (new_contents, region_start, region_end) = append_region(&abs_page, &marker)?;
 
@@ -718,8 +718,8 @@ pub async fn wiki_supersede(
         } => {
             fact_index::mark_superseded(pool, old_fact_id, &outcome.fact_id).await?;
             // Disk half of the supersede: strip the old region from its page
-            // so the raw text recall-by-navigation reads no longer carries
-            // the retired (and often contradictory) fact. Best-effort — the
+            // so the raw text recall-by-navigation reads does not carry the
+            // retired (and often contradictory) fact. Best-effort — the
             // DB tombstone already excludes it from recall and
             // `page_acl_map_active` redacts any residue, so a strip failure
             // must not fail the supersede. This is the one path that also
@@ -1421,8 +1421,8 @@ mod tests {
     /// esistere … se due utenti hanno detto la stessa cosa ma con acl
     /// diversa»*): merging two rows that are not readable by the same people
     /// hands somebody something they were never told, and it cannot be undone.
-    /// Until 2026-08-18 the check compared the **subject alone**, so these two
-    /// collapsed into whichever landed first.
+    /// A check on the subject alone would collapse these two into whichever
+    /// landed first.
     #[tokio::test]
     async fn the_same_claim_with_a_wider_audience_stays_a_second_fact() {
         let dir = tempdir().unwrap();

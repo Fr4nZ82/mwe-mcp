@@ -1201,9 +1201,9 @@ mod tests {
     }
 
     /// Promotion parity with the direct path: a NEAR-duplicate above the
-    /// jaccard threshold folds into the existing fact — the buffered path
-    /// no longer needs the REM night for a paraphrase a live write would
-    /// have skipped on the spot.
+    /// jaccard threshold folds into the existing fact, so the buffered path
+    /// does not wait for the REM night to handle a paraphrase a live write
+    /// would have skipped on the spot.
     #[tokio::test]
     async fn near_duplicate_above_threshold_folds_at_promotion() {
         let (_dir, tree, pool) = setup().await;

@@ -1042,11 +1042,11 @@ impl LlmIngestPlan {
         // `extractions`; this keeps older plans working).
         //
         // **The `body` is the trigger, and only the body.** A stray
-        // `target_wiki_id` used to arm this arm on its own — and the unit it
-        // synthesised has no body, which `validate_capture_plan` then resolves
-        // to `request.text` under `allow_message_fallback`. So a gesture turn
+        // `target_wiki_id` must not arm this arm on its own: the unit it would
+        // synthesise has no body, and `validate_capture_plan` then resolves
+        // that to `request.text` under `allow_message_fallback`. A gesture turn
         // whose `extractions` are empty BY DESIGN — *«forget what I told you
-        // about the greenhouse»* — filed one fact whose body was that
+        // about the greenhouse»* — would file one fact whose body is that
         // sentence, purely because the cheap model also echoed a key the
         // prompt forbids. A destination with nothing to put at it is not a
         // capture.
@@ -1135,8 +1135,8 @@ enum CapturePlanError {
     /// leak. The subject axis is the subject (see
     /// [`crate::types::Principal`]); a public fact carries its subject in
     /// `subject` and `global` only in `allow`, so two users' public facts
-    /// no longer collapse to the same subject. Demote-to-skip like the
-    /// other supersede guards.
+    /// never collapse to the same subject. Demote-to-skip like the other
+    /// supersede guards.
     #[error(
         "supersede_target `{id}` is owned by {target_subject}, not the new fact's subject {new_subject}"
     )]
@@ -1206,13 +1206,13 @@ fn subject_is_the_wikis_own_principal(subject: &Principal, wiki_id: &str) -> boo
 
 /// Resolve the wiki a capture is filed into, in four descending preferences.
 ///
-/// The classifier is no longer shown the wiki tree — it cannot choose from a
-/// list it cannot see, and the list cost a full per-turn prompt block for one
-/// decision out of the twenty-odd it makes. So the destination is derived
-/// from things the turn already decided:
+/// The classifier is not shown the wiki tree — it cannot choose from a list it
+/// cannot see, and the list would cost a full per-turn prompt block for one
+/// decision out of the twenty-odd it makes. So the destination is derived from
+/// things the turn already decided:
 ///
-/// 1. **An explicit `target_wiki_id`**, when something still emits one. The
-///    bundled prompt no longer does; an operator override on
+/// 1. **An explicit `target_wiki_id`**, when something emits one. The bundled
+///    prompt does not; an operator override on
 ///    `<workdir>/prompts/ingest.md` may, and honouring it costs one lookup
 ///    and keeps those deployments working. Still gated on `available`, so an
 ///    invented or smart-managed id does not slip through.
@@ -1260,11 +1260,11 @@ fn derive_target_wiki(
         // A file name is not an address. The inventory spans every wiki the
         // sender may read, so `spesa.md` can name Alice's shopping list AND
         // the family's — and matching on the name alone handed the turn
-        // whichever one the inventory happened to list first. The SUBJECT the
-        // classifier already resolved is the tiebreak that was sitting right
-        // here unused: *«aggiungi il detersivo alla lista della spesa di
-        // famiglia»* arrives with `subject_id: group:famiglia` and used to be
-        // filed in `alice` because `a` sorts before `f`.
+        // whichever one the inventory happens to list first. The SUBJECT the
+        // classifier already resolved is the tiebreak: *«aggiungi il detersivo
+        // alla lista della spesa di famiglia»* arrives with
+        // `subject_id: group:famiglia`, and without it the fact goes to
+        // `alice` because `a` sorts before `f`.
         && let Some(hit) = list_pages
             .iter()
             .find(|l| l.page == name && l.wiki_id == home)
@@ -2061,9 +2061,9 @@ struct TopicClosureDecision {
 
 /// What the reconciliation stage decided about facts that already existed.
 ///
-/// Deliberately the SAME per-verb types the classifier used to emit, so the
-/// three `apply_plan_*` functions — and their guards and receipts — are
-/// reused rather than reimplemented. All three empty is the
+/// Deliberately the SAME per-verb types the whole apply side is written
+/// against, so the three `apply_plan_*` functions — and their guards and
+/// receipts — are reused rather than reimplemented. All three empty is the
 /// common, correct answer.
 #[derive(Debug, Default, serde::Deserialize)]
 struct ReconcileDecision {
@@ -2191,10 +2191,10 @@ async fn inherit_audience(pool: &SqlitePool, successor: &FactId, allow: &[Princi
 /// The reconciler can tell that a claim was restated; it must never be relied
 /// on to restate who may read it, because a re-statement that quietly drops
 /// the allow list re-privatises a shared fact and nothing anywhere says so.
-/// The classifier used to do this inheritance *before* writing the new fact,
-/// which was free; deciding the supersede after the write makes it a second
-/// write, and that is the price of asking the question where it can be
-/// answered honestly.
+/// Deciding the supersede after the new fact is written makes this a second
+/// write, where inheriting before the write would have been free. That is the
+/// price of asking the question where it can be answered honestly: the
+/// classifier does not see enough to answer it.
 ///
 /// **The allow list, and nothing else.** The successor keeps its own subject and
 /// its own sender: a supersede does not move the subject either. Alice
@@ -2272,10 +2272,10 @@ async fn apply_reconciled_supersedes(
 /// Retire the superseded fact, wherever it lives.
 ///
 /// The fact store is the normal case. `0` rows there means one of two things,
-/// and the second one used to be silently mistaken for the first: the target
-/// is already closed, **or** it was never promoted and is still a buffered
+/// and reading it as the first would be silent and wrong: the target is
+/// already closed, **or** it was never promoted and is still a buffered
 /// capture — `mark_superseded`'s `WHERE fact_id = ?` matches no buffer row, so
-/// the applier reported *«already closed»* for a retirement that had not
+/// the applier would report *«already closed»* for a retirement that had not
 /// happened. On the same-day flow (a claim captured this morning, corrected
 /// this afternoon, before the light dream ran) that is every supersede.
 ///
@@ -3797,13 +3797,12 @@ fn build_prompt(
     // **Rendered whole.** The prompt calls this the sender's policy «in full»,
     // under the standing rule that a slot may act against a set it is shown
     // COMPLETE and never against a sample — and this is the block that carries
-    // governance. It used to be cut at `max_sender_rules_chars`, mid-word,
-    // with no warning logged: a user whose `@rules.md` had grown past 1 500
-    // characters, and whose last line was *«i fatti sulla mia salute restano
-    // privati»*, had that rule silently dropped while the prompt told the
-    // model it had seen everything. A rules file is written by a person and is
-    // short; the number stays as the point where an unusual one is worth
-    // saying out loud.
+    // governance. Cutting it at `max_sender_rules_chars` would drop a rule
+    // mid-word with nothing logged: a user whose `@rules.md` runs past 1 500
+    // characters, and whose last line is *«i fatti sulla mia salute restano
+    // privati»*, would lose that rule while the prompt tells the model it has
+    // seen everything. A rules file is written by a person and is short; the
+    // number stays as the point where an unusual one is worth saying out loud.
     out.push_str("\nsender_rules:\n");
     match sender_rules.map(str::trim).filter(|s| !s.is_empty()) {
         Some(rules) => {
@@ -4501,9 +4500,9 @@ async fn capture_behaviour_rule(
 /// lifts it onto the identity pages it consolidates. A RELATIONSHIP fact goes
 /// to a per-served-user page `esperienze_<user>.md`, so the agent's history
 /// with each user grows in its own space instead of piling into one
-/// heterogeneous catch-all (`esperienze_agente.md`, the Finding-C monolith the
-/// classifier used to invent). A relationship fact with no served user carries
-/// no page either.
+/// heterogeneous catch-all — one `esperienze_agente.md` holding everything the
+/// agent ever did for anybody, which is a page nobody can find a thing in. A
+/// relationship fact with no served user carries no page either.
 ///
 /// Recall is page-agnostic (`recall_agent_self` buckets by the served-user
 /// topic tag, not the page), so this write-time routing is invisible to reads.
@@ -5009,7 +5008,7 @@ struct SpeakerCard {
 ///    (69b).
 ///
 /// Falls back to the wiki's one-line `_meta.summary` when there is no readable
-/// card — the pre-69a behaviour, which is still better than saying nothing.
+/// card — one line is still better than saying nothing.
 /// `None` when the sender has no identity wiki, or it yields neither.
 async fn who_is_speaking_section(
     pool: &SqlitePool,
@@ -5212,24 +5211,12 @@ async fn identity_card(
             return None;
         },
     };
-    let default = match tree.resolve_scope_principal(handle.meta()) {
-        Ok(p) => p,
-        Err(err) => {
-            tracing::warn!(
-                sender = %sender.sender_id,
-                error = %err,
-                "ingest: identity-page scope principal unresolvable, card not served"
-            );
-            return None;
-        },
-    };
     // The testata is card metadata, not prose — and its `topics:` list alone
     // runs to a hundred words, so dropping it is most of the injected size.
     let body = crate::wiki::MarkdownDoc::parse(&raw).map_or(raw, |doc| doc.body);
     let projected = crate::render::render_for_sender_segments(
         &body,
         &db_acl,
-        &default,
         &sender.sender_id,
         &sender.sender_groups,
     );
@@ -6219,8 +6206,8 @@ pub async fn wiki_ingest_message(
     }
 
     // Step 2 — enumerate the wikis a capture may be filed into. **Internal
-    // only**: this list is no longer rendered into the prompt, so it is
-    // uncapped — the cap existed solely to bound a prompt block that is gone.
+    // only**: this list never reaches the prompt, so it is uncapped — a cap
+    // here would bound nothing a model reads.
     // A wiki whose per-wiki smart flag (read from `_meta.md`) is `true` is
     // managed authoritatively by the user's smart consumer via `wiki_admin_*`
     // and is not writable through this orchestrator, so `available_wikis`
@@ -6247,11 +6234,6 @@ pub async fn wiki_ingest_message(
     // ORDER the store returns — most recently touched first — so the 33rd
     // list `build_prompt` drops is the one nobody has written to in longest,
     // not the one whose wiki id sorts late.
-    //
-    // ⚠️ This comment used to claim the cap moved here "with the turn's text
-    // in hand". That ranking was built and backed out the same day — the
-    // founder's own correction, *«è un cerotto su un guasto che sta a
-    // monte»* — and the sentence outlived it by five days.
     let list_pages = match fact_index::list_pages_readable_by(
         pool,
         &crate::acl::reader_principals(&sender_ctx.sender_id, &sender_ctx.sender_groups),
@@ -6687,12 +6669,13 @@ pub async fn wiki_ingest_message(
                 // The sentinel has TWO spellings in the wild. `self` is the one
                 // Part 9 prescribes; a model that knows its own principal
                 // writes it out instead (`user:<agent>`) — the identical claim,
-                // "this fact is about me". Only the literal used to match, so
-                // the spelled-out form fell through to the normal path and the
-                // diary entry landed in whatever wiki the model had named: 40
-                // agent-owned facts sitting in their users' wikis on the live
-                // deployment (2026-07-28). Both spellings route here now. No
-                // false positives: on a user turn `agent_sender` is `None`, so
+                // "this fact is about me". Matching only the literal lets the
+                // spelled-out form fall through to the normal path, and the
+                // agent's diary entry then lands in whatever wiki the model
+                // named: forty agent-owned facts sat in their users' wikis on
+                // the live deployment before both spellings routed here
+                // (2026-07-28). No false positives: on a user turn
+                // `agent_sender` is `None`, so
                 // a user's fact ABOUT the agent is untouched, and on an
                 // assistant turn subject==the-speaking-agent IS the self case.
                 let self_subject = unit.subject_id.is_some_and(|raw| {
@@ -7254,27 +7237,24 @@ pub async fn wiki_ingest_message(
                 // A capture turn ALWAYS flows on to the reading, whether or
                 // not an extraction filed.
                 //
-                // It used to return here, demoted to a skip, and that was
-                // sound while "filed nothing" meant "nothing happened": a
-                // forget gesture carried its own closures, and a closure
-                // counted as activity. Since reconciliation left this slot
-                // (prompt v2.59) a gesture files NOTHING — "forget what I
-                // told you about the greenhouse" is a capture with an empty
-                // `extractions` array — so returning here would (a) answer
-                // the user out of an empty context and (b) skip the navigator,
-                // which is where the recall-side reconciliation stage reads
-                // from. The one case the old shape existed for is exactly the
-                // case it now breaks.
+                // Returning here — demoting the turn to a skip because
+                // nothing filed — is the shape to avoid. Since reconciliation
+                // left this slot (prompt v2.59) a gesture files NOTHING:
+                // "forget what I told you about the greenhouse" is a capture
+                // with an empty `extractions` array. Demoting it would (a)
+                // answer the user out of an empty context and (b) skip the
+                // navigator, which is where the recall-side reconciliation
+                // stage reads from — so the one case a demotion would exist
+                // for is exactly the case it breaks.
                 //
                 // `agent_wide_denied` rides the same path: nothing filed, but
                 // the turn must still carry the one-shot decline notice. So
                 // does `list_page_refused`, for the same reason.
                 //
                 // Nothing is lost by continuing: unclaimed media is filed by
-                // the deterministic pass below (the same call the demotion
-                // used to make), and a turn whose reading also comes back
-                // empty still gets the canned seed — see the fallback right
-                // after the recall block.
+                // the deterministic pass below, and a turn whose reading also
+                // comes back empty still gets the canned seed — see the
+                // fallback right after the recall block.
                 include_flat = true;
                 nothing_filed = !captured_any && !agent_wide_denied && list_page_refused.is_none();
             }
@@ -7381,9 +7361,9 @@ pub async fn wiki_ingest_message(
 
     // Step 5a-bis — THE RECONCILIATION STAGE. The last point in the turn where
     // the engine has actually read the memory, and therefore the only place a
-    // judgement about an ALREADY-STORED fact can be made honestly: the
-    // classifier that used to make it was shown a top-K similarity sample, and
-    // a judgement that needs the store and gets a sample fails silently, by
+    // judgement about an ALREADY-STORED fact can be made honestly. The
+    // classifier cannot: it is shown a top-K similarity sample, and a
+    // judgement that needs the store and gets a sample fails silently, by
     // omission, and compounds. See
     // §"The reconciliation stage".
     //
@@ -7892,10 +7872,9 @@ mod tests {
     /// Drain the capture buffer the way the light dream does, so a test can go
     /// on asserting about `fact_index`.
     ///
-    /// Ingest buffers **every** standard capture now (founder, 2026-08-05 — the
-    /// live-write exception for requested containers is gone), so a fact
-    /// reaches `fact_index` at the next light cycle rather than during the
-    /// turn. A test that is about WHAT ends up filed — the subject, the validity
+    /// Ingest buffers **every** standard capture (founder, 2026-08-05) —
+    /// there is no live-write exception — so a fact reaches `fact_index` at
+    /// the next light cycle rather than during the turn. A test that is about WHAT ends up filed — the subject, the validity
     /// window, the provenance, the inherited audience — still wants to read
     /// the fact, and reading it through the promotion is better than reaching
     /// into the buffer and re-deriving by hand what promotion would have
@@ -8695,12 +8674,12 @@ mod tests {
 
     /// A destination with nothing to put at it is not a capture.
     ///
-    /// The legacy single-fact arm used to fire on `body` OR `target_wiki_id`,
-    /// and the unit it synthesised carries no body — which
-    /// `validate_capture_plan` then resolves to the whole message under
-    /// `allow_message_fallback`. So a gesture turn whose `extractions` are
-    /// empty by design (*«forget what I told you about the greenhouse»*) filed
-    /// one fact whose body was that sentence, purely because the cheap model
+    /// The legacy single-fact arm fires on `body` and nothing else. Firing on
+    /// `target_wiki_id` too would synthesise a unit with no body, which
+    /// `validate_capture_plan` resolves to the whole message under
+    /// `allow_message_fallback`: a gesture turn whose `extractions` are empty
+    /// by design (*«forget what I told you about the greenhouse»*) would file
+    /// one fact whose body is that sentence, purely because the cheap model
     /// also echoed a key the prompt forbids it to emit.
     #[test]
     fn a_stray_target_wiki_id_alone_captures_nothing() {
@@ -8721,13 +8700,13 @@ mod tests {
 
     /// A `target_wiki_id` that names nothing on disk is IGNORED, not fatal.
     ///
-    /// The historical failure (Qwen reusing the ACL keyword `"global"` as a
-    /// wiki id) used to crash inside `wiki_capture` → `tree.locate`, and was
-    /// then made a hard rejection that dropped the extraction. Since the
-    /// classifier stopped being shown wikis at all, an id it emits anyway is
-    /// just noise from an operator-overridden prompt: `derive_target_wiki`
-    /// declines it and falls through to the sender's own wiki, so the fact
-    /// survives instead of being thrown away over a field nobody asked for.
+    /// The shape that produces one: a model reusing the ACL keyword `"global"`
+    /// as a wiki id. The classifier is not shown wikis at all, so an id it
+    /// emits anyway is noise from an operator-overridden prompt — neither a
+    /// crash inside `wiki_capture` → `tree.locate` nor a hard rejection that
+    /// drops the extraction. `derive_target_wiki` declines it and falls through
+    /// to the sender's own wiki, so the fact survives instead of being thrown
+    /// away over a field nobody asked for.
     #[test]
     fn validate_capture_plan_ignores_a_hallucinated_target_wiki() {
         let plan = LlmIngestPlan {
@@ -13307,9 +13286,9 @@ mod tests {
     ///
     /// The same-day flow: a claim captured this morning, corrected this
     /// afternoon, before the light dream promoted anything.
-    /// `fact_index::mark_superseded` matches no buffer row, so this used to
-    /// touch nothing and log *«already closed»* — a retirement an operator
-    /// would read as done.
+    /// `fact_index::mark_superseded` matches no buffer row, so without the
+    /// buffered half this touches nothing and logs *«already closed»* — a
+    /// retirement an operator would read as done.
     #[tokio::test]
     async fn a_supersede_retires_a_target_that_is_still_buffered() {
         let (dir, _, pool) = setup_workdir().await;
@@ -13368,10 +13347,10 @@ mod tests {
     ///
     /// The gate asks `acl::sender_is_subject`, not `subject == sender`: a principal
     /// comparison can never match `Group("famiglia")` against `User("alice")`,
-    /// so the plain equality this used to do refused every group-owned fact,
-    /// from everybody, always — the family calendar could be read and never
-    /// corrected. Its two siblings (`apply_plan_validity_edits`,
-    /// `apply_plan_acl_changes`) already asked the right question.
+    /// so a plain equality here refuses every group-owned fact, from
+    /// everybody, always — the family calendar readable and never correctable.
+    /// Its two siblings (`apply_plan_validity_edits`, `apply_plan_acl_changes`)
+    /// ask the right question too.
     #[tokio::test]
     async fn a_member_may_supersede_a_fact_owned_by_their_group() {
         let (dir, tree, pool) = setup_workdir().await;
@@ -14851,12 +14830,12 @@ mod tests {
 
     /// The sentinel's OTHER spelling. A model that knows its own principal
     /// writes `subject_id: "user:<agent>"` where Part 9 asks for `self` — the
-    /// identical claim, "this fact is about me". Only the literal used to
-    /// match, so the spelled-out form fell through to the normal path and the
-    /// agent's diary entry landed in whichever wiki `target_wiki_id` named (40
-    /// such facts on the live deployment, 2026-07-28). Both spellings must be
-    /// the same route: agent's wiki, owned by the agent, tagged with the served
-    /// user, user's wiki untouched.
+    /// identical claim, "this fact is about me". Matching only the literal
+    /// lets the spelled-out form fall through to the normal path, and the
+    /// agent's diary entry lands in whichever wiki `target_wiki_id` names —
+    /// forty such facts on the live deployment (2026-07-28). Both spellings
+    /// must be the same route: agent's wiki, owned by the agent, tagged with
+    /// the served user, user's wiki untouched.
     #[tokio::test]
     async fn ingest_assistant_turn_subject_spelled_as_the_agent_files_into_the_agent_wiki() {
         let (dir, tree, pool) = setup_agent_workdir().await;
@@ -15676,8 +15655,8 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         // A capture whose `subject_id` is not a principal at all: the plan
         // cannot be validated, so the turn demotes to skip with the fallback
-        // seed. (A missing `target_wiki_id` no longer qualifies — it is the
-        // normal shape now, and the wiki is derived from the subject.)
+        // seed. (A missing `target_wiki_id` does not qualify: that is the
+        // normal shape, and the wiki is derived from the subject.)
         let llm = FakeLlmBackend::new(
             "fake",
             "{\"intent\":\"capture\",\"body\":\"orphan fact\",\"subject_id\":\"not a principal\"}",

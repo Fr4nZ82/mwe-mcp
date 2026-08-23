@@ -47,8 +47,8 @@ use super::state::{IdentityProfile, McpState};
 
 /// Canonical name of the act-as header.
 ///
-/// Spelled `X-MWE-Act-As` in `manifesto.md §3.8` and
-/// `AGENT_INSTRUCTIONS.md §3.1`. HTTP header names are
+/// Spelled `X-MWE-Act-As` in `AGENT_INSTRUCTIONS.md §3.1`. HTTP
+/// header names are
 /// case-insensitive; we keep the lowercase form here because that is
 /// what `axum::http::HeaderName::from_static` requires.
 pub const ACT_AS_HEADER: HeaderName = HeaderName::from_static("x-mwe-act-as");
@@ -92,8 +92,8 @@ pub async fn jwt_auth_middleware(
 
     let mut profile = IdentityProfile::from_claims(claims);
 
-    // Agent wiring (diagonal identity model — the un-deferred `is_agent` marker,
-    // identity-and-acl.md §1.5). A STANDARD token's `sender_id` here, BEFORE the
+    // Agent wiring (diagonal identity model — the `is_agent` marker).
+    // A STANDARD token's `sender_id` here, BEFORE the
     // act-as rewrite below, is the bot's own credential-less system-user.
     // Establish its consumer ↔ system-user binding + `is_agent` marker straight
     // from the token, so behaviour-rule + agent-authored-memory routing resolve

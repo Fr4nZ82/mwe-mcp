@@ -4000,17 +4000,16 @@ mod tests {
         );
     }
 
-    /// The regression this fix exists for: a section that merely **mentions**
-    /// a query token must not evict a better-scoring personal fact.
+    /// The invariant this guards: a section that merely **mentions** a query
+    /// token must not evict a better-scoring personal fact.
     ///
-    /// Before the fix, `search_all` re-applied the *ranking* half of the
-    /// lexical signal (`search_lexical`, OR over every term) to the merged
-    /// list. A fact's handle is a `fact_id` and can never key into a list of
-    /// `source_path#ord`, so only sections could collect that bonus — and
+    /// `search_all` must never re-apply the *ranking* half of the lexical
+    /// signal (`search_lexical`, OR over every term) to the merged list. A
+    /// fact's handle is a `fact_id` and can never key into a list of
+    /// `source_path#ord`, so only sections would collect that bonus — and
     /// `1/(60 + lexical_rank)` is larger than the whole span of `1/(60 +
     /// vector_rank)` across a list of `2·top_k`. Any section sharing any
-    /// token therefore outranked every fact, whatever the cosines were. On
-    /// the production corpus that inverted 11 of 14 probe queries.
+    /// token would then outrank every fact, whatever the cosines were.
     #[tokio::test]
     async fn a_section_that_merely_mentions_a_term_does_not_evict_a_better_fact() {
         let pool = make_pool().await;
@@ -4659,7 +4658,7 @@ mod tests {
         let sender = SenderContext::user("alice");
 
         // The fact corpus alone — this is what the ingest turn recalls, so
-        // documentation can no longer crowd out personal memory there.
+        // documentation cannot crowd out personal memory there.
         let facts = wiki_search(
             &pool,
             embedder_fixed(vec![1.0, 0.0, 0.0, 0.0]),

@@ -822,9 +822,9 @@ pub struct SmartRegistryReport {
 /// **queryable cache** of it, which is why the projection re-runs on the
 /// safety-net tick rather than being written once. What it buys is that
 /// recall can ask the DB "which wikis are smart, and who may read them?"
-/// instead of resolving every hit's wiki through a tree walk — that
-/// impossibility is why the smart filter used to be applied *after*
-/// top-K, silently shrinking the caller's result set.
+/// instead of resolving every hit's wiki through a tree walk. Without it the
+/// smart filter can only run *after* top-K, which silently shrinks the
+/// caller's result set.
 ///
 /// Idempotent: an unchanged wiki re-writes the same values.
 ///
@@ -883,8 +883,8 @@ pub async fn project_smart_wiki_registry(
     for row in sections::list_smart_wikis(pool).await? {
         if !live.contains(&row.wiki_id) {
             // The content leaves with the registry row. A wiki that fell out
-            // of the registry is either gone or no longer smart, and the
-            // per-page sweep cannot reach it either way — it only walks the
+            // of the registry is either gone or not smart, and the per-page
+            // sweep cannot reach it either way — it only walks the
             // wikis `discovered` still reports as smart. Without this leg the
             // sections sit in the table forever, unreachable by every reader.
             let dropped = sections::drop_wiki_sections(pool, &row.wiki_id).await?;
@@ -916,10 +916,11 @@ pub struct SmartBackfillReport {
 /// One-time boot pass: move legacy smart-wiki content rows out of
 /// `fact_index` and into `wiki_sections`.
 ///
-/// Smart-wiki sections used to live in `fact_index` alongside standard
-/// facts (see [`crate::sections`] for why they no longer do). This moves
-/// them, **copying the stored embeddings verbatim** — no re-embedding, so
-/// the migration costs one pass over the rows and nothing else.
+/// A store written before the split holds smart-wiki sections in `fact_index`
+/// alongside standard facts (see [`crate::sections`] for why they belong
+/// apart). This moves them, **copying the stored embeddings verbatim** — no
+/// re-embedding, so the migration costs one pass over the rows and nothing
+/// else.
 ///
 /// Legacy rows carry no ordinal (they were keyed by a minted id), so the
 /// position is reconstructed by sorting each page's rows by `fact_id` —
@@ -1131,10 +1132,9 @@ pub async fn reindex_full(
     // retired.
     let discovered = tree.walk()?;
     for d in &discovered {
-        // No capture buffer rebuild here any more. This loop used to re-read
-        // every wiki's captures journal on every pass — every five minutes,
-        // the whole history — to re-insert rows that already existed. That file
-        // is gone (2026-08-18) and `capture_buffer` is the source of truth.
+        // Nothing rebuilds the capture buffer here: `capture_buffer` is the
+        // source of truth for a waiting claim, and there is no journal file to
+        // re-read (2026-08-18).
         //
         // Standard wikis: skip the content sweep (compiler output — see above).
         if !d.meta.smart {
@@ -1661,12 +1661,11 @@ fn is_markdown_page(p: &Path) -> bool {
 /// Reserved by the engine, and never indexable content: **any file whose
 /// name starts with `_`** ([`crate::wiki::names_engine_file`]).
 ///
-/// One rule instead of a list (founder, 2026-08-18). It used to name three
-/// files — `_meta.md`, the retired captures journal, and the smart consumer's
-/// `_briefing.md` + its archive — which meant every newly-reserved name had to
-/// be remembered here, and a forgotten one would have its bytes turned into
-/// recallable facts. Centralised so the watcher fast path and the periodic
-/// full sweep can never disagree.
+/// One rule instead of a list (founder, 2026-08-18). A list — `_meta.md`, the
+/// smart consumer's `_briefing.md`, its archive — means every newly reserved
+/// name has to be remembered here, and a forgotten one has its bytes turned
+/// into recallable facts. Centralised so the watcher fast path and the
+/// periodic full sweep can never disagree.
 fn is_reserved_page(p: &Path) -> bool {
     crate::wiki::names_engine_file(p)
 }
@@ -1794,9 +1793,8 @@ fn smart_page_in_sync(existing: &[sections::SectionRow], desired: &[String]) -> 
 /// segmenter), each embedded, and the page's sections are replaced.
 ///
 /// **No ACL is written here.** Read access to a section is the *wiki's*,
-/// held once in the `smart_wikis` registry — which is why a sharing edit
-/// no longer has to rewrite one row per section
-/// ([`crate::sections`]).
+/// held once in the `smart_wikis` registry — which is what lets a sharing edit
+/// rewrite one row instead of one per section ([`crate::sections`]).
 ///
 /// Idempotent: an unchanged page mutates zero rows; an edit reuses the
 /// stored vector of any section whose text is unchanged, re-embedding
@@ -1984,9 +1982,9 @@ mod tests {
 
     /// Mint a `UUIDv7` fact id for the standard-wiki fixtures below.
     ///
-    /// Production no longer mints ids for smart-wiki content — sections
-    /// are keyed by `(source_path, section_ord)` — so this lives with the
-    /// tests that still seed `fact_index` rows by hand.
+    /// Production mints no ids for smart-wiki content — sections are keyed by
+    /// `(source_path, section_ord)` — so this lives with the tests that seed
+    /// `fact_index` rows by hand.
     fn fresh_fact_id() -> FactId {
         let raw = uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::ContextV7::new()));
         FactId::parse(&raw.to_string()).expect("Uuid::new_v7 is a valid fact id")
@@ -2796,10 +2794,10 @@ mod tests {
         // (1) a heading, a blank line, one unbroken paragraph; (2) a
         // heading whose body starts on the NEXT LINE — a changelog entry,
         // a table, a dense list — which makes heading and body a single
-        // paragraph. Shape (2) used to bypass the cap entirely: the
-        // heading branch pushed its trailing lines into the buffer
-        // without splitting them, which is how a 6 994-char section got
-        // indexed.
+        // paragraph. Shape (2) is the one that bypasses the cap if the
+        // heading branch pushes its trailing lines into the buffer without
+        // splitting them — which is how a 6 994-char section reached the
+        // index.
         let body = format!(
             "# Log\n\n{}\n\n## Changelog\n{}\n",
             "parola ".repeat(1_500),
@@ -2882,9 +2880,9 @@ mod tests {
         // A page whose stored sections outnumber what is on disk (a
         // shrunk page whose reindex was interrupted, or a pre-migration
         // leftover) converges on the next pass: the tail positions are
-        // dropped. Duplicate *rows* are no longer expressible at all —
-        // `(source_path, section_ord)` is the primary key — so the race
-        // this used to guard against cannot recur.
+        // dropped. Duplicate *rows* are not expressible at all —
+        // `(source_path, section_ord)` is the primary key — so the race is
+        // closed by the schema rather than by this pass.
         let dir = tempdir().unwrap();
         let wiki_dir = dir.path().join("wikis/alice");
         write_smart_wiki_meta(&wiki_dir, "alice");

@@ -119,9 +119,7 @@ pub enum EventKind {
     /// [`Self::FactMintedForYou`] on purpose (`recipient_id`, a `facts`
     /// array carrying the body, `dashboard_path`, plus `due_at` /
     /// `fires_at`), so a consumer that delivers one delivers the other
-    /// with the same parsing. The kind name was reserved in the
-    /// `wiki_events.kind` schema comment from the table's first
-    /// migration and sat unemitted until 2026-07-30.
+    /// with the same parsing.
     ReminderDue,
 }
 

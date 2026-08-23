@@ -15,10 +15,9 @@
 //!
 //! 1. The dashboard handler assembles an [`EnrollmentFile`] from form
 //!    input (or from an uploaded YAML in the admin import path).
-//! 2. [`validate`] applies the rules of `schemi.md §4.4` (still
-//!    authoritative for id regex, duplicates, group↔user collision,
-//!    dangling members, filesystem-safe slugs) and returns either a
-//!    bag of soft warnings or a hard [`EnrollmentError`].
+//! 2. [`validate`] applies the rules — id regex, duplicates, group↔user
+//!    collision, dangling members, filesystem-safe slugs — and returns
+//!    either a bag of soft warnings or a hard [`EnrollmentError`].
 //! 3. [`mirror_to_db`] atomically replaces both tables in a single
 //!    [`sqlx::Transaction`] so read-only consumers (REM, ACL) never
 //!    see a half-applied state.
@@ -30,8 +29,8 @@ use thiserror::Error;
 use crate::types::Principal;
 
 /// Bundle of users + groups handed to [`validate`] / [`mirror_to_db`].
-/// Layout mirrors `schemi.md §4.1` so the same shape can be reused
-/// for the future admin "import existing enrollment.yaml" action.
+/// Layout mirrors the on-disk `enrollment.yaml`, so the admin import
+/// path reuses the same shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnrollmentFile {
     /// Schema version. Day-1 only `1` is supported.
@@ -177,9 +176,8 @@ pub struct ValidationReport {
     pub warnings: Vec<String>,
 }
 
-/// Validate an [`EnrollmentFile`] against the rules of
-/// `schemi.md §4.4`. Returns the warning bag on success; the first
-/// hard rule violation surfaces as an [`EnrollmentError`].
+/// Validate an [`EnrollmentFile`]. Returns the warning bag on success;
+/// the first hard rule violation surfaces as an [`EnrollmentError`].
 pub fn validate(file: &EnrollmentFile) -> Result<ValidationReport, EnrollmentError> {
     if file.version != 1 {
         return Err(EnrollmentError::UnsupportedVersion(file.version));

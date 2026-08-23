@@ -278,10 +278,11 @@ pub enum LlmFunction {
 impl LlmFunction {
     /// Every slot, in display order — **the** roster.
     ///
-    /// Three hand-written copies of this list used to exist (the env
-    /// overrides, the boot health check, the dashboard editor). A fourth,
-    /// in a test, is how `operator_chat` came to be missing from the canned
-    /// profiles without anything going red.
+    /// **One list, and every reader of it is derived from here** — the env
+    /// overrides, the boot health check, the dashboard editor. Hand-written
+    /// copies are how a slot goes missing from the canned profiles without
+    /// anything going red: `operator_chat` did, through a fourth copy that
+    /// lived in a test.
     pub const ALL: [Self; 6] = [
         Self::Ingest,
         Self::OperatorChat,
@@ -2737,11 +2738,10 @@ mod tests {
 
     /// A canned profile leaves **no slot empty**.
     ///
-    /// It used to leave one: `operator_chat` was `None` on all three,
-    /// correct only while the chat borrowed the retired `hub_writer`. When
-    /// that fallback went (2026-08-19, the operational chat gets its own
-    /// model) the hole became "pick a profile in the wizard, and the chat
-    /// panel is dead until you wire a model by hand".
+    /// A hole here reads as "pick a profile in the wizard, and the panel that
+    /// needs the empty slot is dead until you wire a model by hand". The
+    /// operational chat has no fallback to borrow from, so `operator_chat` is
+    /// the one this test exists for.
     #[test]
     fn every_canned_profile_fills_every_slot() {
         for profile in [LlmProfile::AllLocal, LlmProfile::Hybrid, LlmProfile::AllApi] {

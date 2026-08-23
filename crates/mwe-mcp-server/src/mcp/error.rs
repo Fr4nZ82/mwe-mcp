@@ -16,7 +16,6 @@ use rmcp::model::ErrorCode;
 use serde_json::json;
 
 /// One of the canonical wire error classes the dispatcher emits.
-/// Order matches the table in `tool-reference.md §0.errors`.
 #[derive(Debug, Clone, Copy)]
 pub enum ToolErrorClass {
     /// `400 invalid_input` — malformed or missing parameter.
@@ -102,12 +101,10 @@ pub enum ToolErrorClass {
     /// the class names the *instance*, not the caller: no token, role or
     /// consumer class lifts it.
     InstanceReadOnly,
-    /// `400 wiki_type_requires_parent` — the requested `wiki_type`
-    /// declares `requires_parent: true` and the create
-    /// call did not pass a `parent_wiki_id`. Day-one user is
-    /// `wiki-cron`, which inherits its ACL scope from the parent; the
-    /// gate is generic so any future child-only type can opt in via
-    /// the template field.
+    /// `400 wiki_type_requires_parent` — a child-only `wiki_type` was
+    /// asked for with no `parent_wiki_id`. The smart family is what the
+    /// gate is for: a top-level smart wiki would lose the ACL inheritance
+    /// it relies on.
     WikiTypeRequiresParent,
 }
 

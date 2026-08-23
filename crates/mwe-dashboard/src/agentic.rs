@@ -1122,8 +1122,7 @@ async fn dispatch_proposal_apply(
             detail: e.to_string(),
         }
     })?;
-    // No proposal kind needs an LLM at apply time today (the only one
-    // that did — `wiki_type_forge` — has been removed).
+    // No proposal kind needs an LLM at apply time.
     match proposals::apply_proposal(
         ctx.pool,
         ctx.tree,
@@ -1864,8 +1863,7 @@ async fn dispatch_wiki_move_fact(
 struct WikiDeletePageArgs {
     wiki_id: String,
     page: String,
-    /// Admin-only (the governed delete-page path —
-    /// agentic-chat.md):
+    /// Admin-only (the governed delete-page path):
     /// tombstone **every** fact, including ones the
     /// admin did not author, with no evacuation. Refused for a non-admin.
     #[serde(default)]
@@ -1891,8 +1889,8 @@ struct WikiDeletePageReport {
 }
 
 /// Delete a page: tombstone the operator's own facts, evacuate foreign-authored
-/// ones to their senders' wikis (the governed delete-page path —
-/// agentic-chat.md). Two-level authority — the
+/// ones to their senders' wikis (the governed delete-page path).
+/// Two-level authority — the
 /// operator must be an admin (structure is the operator's to change); the per-fact
 /// sender axis governs each fact inside. Smart wikis are refused.
 async fn dispatch_wiki_delete_page(
@@ -2331,8 +2329,7 @@ mod tests {
     /// Every wired tool must be TAUGHT, by name, in the bundled system
     /// prompt. The prompt is the only safety surface — there is no code
     /// confirmation gate — so a wired-but-undocumented write tool would
-    /// reach the model with no guardrail (see
-    /// agentic-chat.md). This
+    /// reach the model with no guardrail. This
     /// guards against a new tool landing in the registry without a matching
     /// flow block in the prompt.
     #[test]

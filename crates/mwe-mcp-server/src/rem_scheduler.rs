@@ -500,9 +500,9 @@ async fn fire_light(
 ) {
     let started = dream_journal::now_rfc3339();
     // Promotion + (when a `cronista` is wired) the incremental compile of the
-    // pages the promotion dirtied — one composition, shared via
-    // `dream::run_light` (formerly inline here). Cost-guarded inside
-    // `run_light`: the compile is skipped entirely when nothing was promoted.
+    // pages the promotion dirtied — one composition, `dream::run_light`, shared
+    // with every other caller. Cost-guarded inside it: the compile is skipped
+    // entirely when nothing was promoted.
     match run_light_once(pool, tree, Arc::clone(embedder), llms, policy).await {
         Ok(outcome) => {
             // A scheduled light tick that scanned nothing is a no-op the loop

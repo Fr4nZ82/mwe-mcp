@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! JWT issue / verify / revoke per `jwt-and-session-model.md`.
+//! JWT issue / verify / revoke.
 //!
 //! ## Design recap
 //!
@@ -55,7 +55,7 @@ pub const DEFAULT_EXPOSED_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 30)
 /// In-memory blacklist refresh window: revocation propagates within 60s.
 pub const BLACKLIST_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Class of consumer holding the token ([`tool-reference.md`]).
+/// Class of consumer holding the token.
 ///
 /// - `Smart`: consumer with its own LLM subscription (Claude Code,
 ///   Cowork, any MCP-compatible agent). Authorized for the
@@ -665,9 +665,8 @@ mod tests {
 
     #[test]
     fn smart_consumer_class_serialises_lowercase() {
-        // Smart class on the wire must be the JSON string "smart"
-        // (lowercase) so spec readers and external auditors see the
-        // exact form documented in protocollo.md §2.
+        // Smart class on the wire must be the JSON string "smart",
+        // lowercase: it is a wire-stable value external auditors read.
         let mut claims =
             TokenClaims::new("user:alice", "cc-laptop", "default", DEFAULT_INTERNAL_TTL);
         claims.consumer_class = ConsumerClass::Smart;

@@ -590,11 +590,12 @@ const PENDING_VOTES_DASHBOARD_PATH: &str = "/dashboard/proposals";
 /// The governance block appended to an ingest response, suppressed on guest
 /// turns: a guest owes no vote and has no dashboard to open.
 ///
-/// There used to be a second one, `pending_attention`, counting changes the
-/// engine had made and was waiting to be blessed. It went with the whole
-/// supervise-the-memory apparatus (founder, 2026-08-22: *«la memoria deve
-/// funzionare in automatico»*) — the memory does its work and does not ask
-/// the user to sign it off.
+/// **One block, and only one.** There is no second one counting changes the
+/// engine made and is waiting to have blessed: the memory does its work and
+/// does not ask the user to sign it off (founder, 2026-08-22: *«la memoria
+/// deve funzionare in automatico»*). What a vote block asks for is a decision
+/// only a person can make — whether somebody else's fact about them is
+/// forgotten.
 async fn governance_blocks(
     state: &McpState,
     identity: &IdentityProfile,
@@ -765,10 +766,10 @@ async fn require_consumer_registered(state: &McpState, consumer_id: &str) -> Res
     }
 }
 
-// The whole `structure_proposal_*` family (the `_apply` write and the
-// `_list` read) has been removed from the MCP surface. Structural changes
-// apply directly in REM, silently, and the dashboard is the operator
-// surface (it calls `mwe-core::proposals` directly).
+// There is no `structure_proposal_*` family on the MCP surface — no
+// `_apply` write, no `_list` read. Structural changes apply directly in
+// REM, silently, and the dashboard is the operator surface (it calls
+// `mwe-core::proposals` directly).
 
 // ============================================================
 // D — wiki_read / wiki_search
@@ -897,7 +898,7 @@ pub(super) async fn call_wiki_read(
     // legitimately needs (title, wiki_type, owner) are returned separately in
     // the JSON below. A page without a testata is body-only already.
     let body = mwe_core::wiki::MarkdownDoc::parse(&raw).map_or(raw, |doc| doc.body);
-    let effective_acl_default = state
+    let owner = state
         .tree
         .resolve_scope_principal(meta)
         .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
@@ -912,19 +913,14 @@ pub(super) async fn call_wiki_read(
         mwe_core::fact_index::page_acl_map_active(&state.pool, &source_path.to_string_lossy())
             .await
             .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
-    let rendered = mwe_core::render::render_for_sender(
-        &body,
-        &db_acl,
-        &effective_acl_default,
-        &identity.sender_id,
-        &sender_groups,
-    );
+    let rendered =
+        mwe_core::render::render_for_sender(&body, &db_acl, &identity.sender_id, &sender_groups);
     Ok(json!({
         "wiki_id": meta.wiki_id.as_str(),
         "page": page_rel,
         "title": meta.title,
         "wiki_type": meta.wiki_type,
-        "owner": effective_acl_default.to_string(),
+        "owner": owner.to_string(),
         "content_rendered_for_sender": rendered.text,
         // There is no `fully_redacted` boolean. A caller that
         // needs to distinguish "page is entirely private" from "page
@@ -933,12 +929,11 @@ pub(super) async fn call_wiki_read(
         // `> [!redacted] This entire page is private.` when the collapse
         // fires. The detection lives inside `render_for_sender`.
         "redacted_count": rendered.blocks_redacted,
-        // No `children`, no `parent_wiki_id`. The response used to ship the
-        // wiki tree straight out of `_meta.md` on every read, so a reader who
-        // legitimately reached one page also learned that this wiki has
-        // `alice-lavoro`, `alice-salute`, `alice-terapia` beside it — names
-        // that say plenty on their own, about content that reader may not be
-        // able to open at all.
+        // No `children`, no `parent_wiki_id`. Shipping the wiki tree out of
+        // `_meta.md` on a page read tells a reader who legitimately reached
+        // one page that this wiki also has `alice-lavoro`, `alice-salute`,
+        // `alice-terapia` beside it — names that say plenty on their own,
+        // about content that reader may not be able to open at all.
         //
         // And the fix is NOT to filter that list: there is no permission on a
         // wiki to filter it by. Read access is judged per FACT
@@ -975,10 +970,10 @@ struct WikiSearchScope {
     /// **section** index (smart-wiki documentation), `None` searches
     /// both and merges the ranking.
     ///
-    /// This selects the corpus **before** ranking, so the caller always
-    /// gets up to `top_k` hits. It used to be a post-filter over a
-    /// mixed top-K, which silently shrank the result set — often to
-    /// nothing — whenever the discarded family dominated the ranking.
+    /// This selects the corpus **before** ranking, so the caller always gets
+    /// up to `top_k` hits. As a post-filter over a mixed top-K it would
+    /// silently shrink the result set — often to nothing — whenever the
+    /// discarded family dominated the ranking.
     #[serde(default)]
     smart: Option<bool>,
     /// The dated-query selector (ISO-8601): keep only facts whose
@@ -1030,11 +1025,11 @@ pub(super) async fn call_wiki_search(
         ..Default::default()
     };
     let top_k = args.top_k.unwrap_or(20);
-    // Corpus selection happens HERE, before ranking — `scope.smart` picks
-    // a table, it is no longer a post-filter over a mixed top-K. That is
-    // what makes the caller's `top_k` honoured: asking for 20 non-smart
-    // hits used to return whatever survived after the smart hits were
-    // discarded, which on a documentation-heavy store was near zero.
+    // Corpus selection happens HERE, before ranking: `scope.smart` picks a
+    // table rather than filtering a mixed top-K afterwards. That is what makes
+    // the caller's `top_k` honoured — filtering afterwards, a request for 20
+    // non-smart hits returns whatever survives once the smart ones are
+    // discarded, which on a documentation-heavy store is near zero.
     let embedder = Arc::clone(&state.embedder);
     let hits: Vec<recall::SearchHit> = match args.scope.as_ref().and_then(|s| s.smart) {
         Some(false) => {
@@ -2391,9 +2386,8 @@ pub(super) async fn call_wiki_admin_push(
     };
     let caller = admin_caller(identity);
     // MCP `wiki_admin_push` is the smart-consumer surface — the
-    // `actor_kind` is fixed here so the gates documented in
-    // `tool-reference.md §H` (smart token + smart-family) keep
-    // firing exactly as before.
+    // `actor_kind` is fixed here so the smart-token and smart-family
+    // gates keep firing.
     let resp = mwe_core::wiki_admin::push(
         &state.pool,
         &state.tree,

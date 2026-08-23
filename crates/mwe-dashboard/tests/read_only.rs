@@ -252,11 +252,10 @@ async fn identity_still_works_on_a_frozen_instance() {
 /// Property 3: a frozen instance shows the **whole** product and lets
 /// none of it fire.
 ///
-/// This one inverted. The consoles used to be left unmounted, so that a
-/// page of dead controls could not invite a stranger to try; the cost
-/// was that the instance we show to strangers hid the half of the
-/// product that answers "what is this thing". A memory server is an
-/// operator's tool as much as a reader's.
+/// Leaving the consoles unmounted keeps a page of dead controls from inviting
+/// a stranger to try them — and hides, from the very instance we show to
+/// strangers, the half of the product that answers "what is this thing". A
+/// memory server is an operator's tool as much as a reader's.
 ///
 /// So the pages are mounted and linked, the guard refuses them by path,
 /// and `read-only.js` renders their controls inert. The order still

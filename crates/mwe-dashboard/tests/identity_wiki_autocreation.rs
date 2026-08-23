@@ -64,14 +64,13 @@ async fn admin_creating_user_materialises_identity_wiki_on_disk() {
     );
     let raw = std::fs::read_to_string(&bob_meta).unwrap();
     assert!(raw.contains("wiki_id: bob"), "{raw}");
-    // `wiki-user` root → scope principal derives to `user:bob` (no
-    // `acl_default` declared any more).
+    // `wiki-user` root → the scope principal derives to `user:bob`, so the
+    // frontmatter declares no `acl_default` at all.
     assert!(raw.contains("wiki_type: wiki-user"), "{raw}");
     assert!(!raw.contains("acl_default"), "{raw}");
     // Title is always the user_id (there is no separate label channel).
     assert!(raw.contains("title: bob"), "{raw}");
     // A standard wiki is seeded with its rules page and nothing else.
-    // since the nightly index writer was deleted (2026-08-15).
     assert!(tree.wikis_dir().join("bob").join("@rules.md").exists());
     assert!(
         !tree.wikis_dir().join("bob").join("index.md").exists(),
@@ -102,10 +101,10 @@ async fn admin_creating_group_materialises_group_identity_wiki() {
     );
     let raw = std::fs::read_to_string(tree.wikis_dir().join("famiglia").join("_meta.md")).unwrap();
     assert!(raw.contains("wiki_id: famiglia"), "{raw}");
-    // `wiki-group` root → scope principal derives to `group:famiglia` (no
-    // `acl_default` declared any more).
+    // `wiki-group` root → the scope principal derives to `group:famiglia`, so
+    // the frontmatter declares no `acl_default` at all.
     assert!(raw.contains("wiki_type: wiki-group"), "{raw}");
     assert!(!raw.contains("acl_default"), "{raw}");
-    // Title is always the group_id (description is gone; scope is the only prose).
+    // Title is always the group_id; the scope is the only prose a group carries.
     assert!(raw.contains("title: famiglia"), "{raw}");
 }

@@ -398,10 +398,10 @@ async fn admin_can_change_user_email_and_login_follows() {
 }
 
 /// A consumer agent's identity is enrolled like anyone else, so it shows up in
-/// this listing — but it is a bot, and the row used to read `user` with the
-/// status "no credentials, no invitation", which is equally true of a human
-/// who has not accepted their invite yet. The operator could not tell them
-/// apart; now the role column names it and the status says why it has no login.
+/// this listing — but it is a bot. Rendered as `user` with the status "no
+/// credentials, no invitation" it is indistinguishable from a human who has
+/// not accepted their invite yet, so the role column names it and the status
+/// says why it has no login.
 #[tokio::test]
 async fn user_list_tells_a_consumer_agent_from_a_person() {
     let (app, pool, _tree, _dir) = common::make_app_with_memory().await;

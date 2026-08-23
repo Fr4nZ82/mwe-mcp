@@ -645,9 +645,9 @@ async fn wiki_read_serves_arbitrary_page_with_per_page_acl() {
 
 /// Regression: `wiki_read` must NOT leak the page frontmatter (testata).
 /// The testata's `description` / `keywords.topics` are card metadata derived
-/// from the page's facts; they carry no ACL markers, so before the fix
-/// `render_for_sender` passed them through verbatim and a reader who could
-/// not see a private region still read its topic words in the frontmatter.
+/// from the page's facts; they carry no ACL markers, so a render that passed
+/// them through verbatim would show a reader who cannot open a private region
+/// its topic words in the frontmatter.
 #[tokio::test]
 async fn wiki_read_strips_frontmatter_so_card_topics_never_leak() {
     let (state, identity, dir) = fixture(false, None).await;

@@ -9,7 +9,7 @@
   "tools_referenced": {
     "smart_bootstrap": {
       "status": "shipped",
-      "note": "The model calls it itself at session start (nudged by this hook + the skill). Surfaces the smart consumer's owned wikis — its operational wiki (marked is_self: true) + any project wikis — and pending briefing items. Inside a project the model passes the derived project_id and the response carries first_connect: whether this project already has a wiki, and when it has none, the one line pointing at the smart-onboarding skill. That is why the hook no longer describes onboarding itself — the server volunteers the trigger, so the procedure does not have to be read by every session for a thing that happens once per project. Smart-only. See wiki/protocol/tool-reference.md."
+      "note": "The model calls it itself at session start (nudged by this hook + the skill). Surfaces the smart consumer's owned wikis — its operational wiki (marked is_self: true) + any project wikis — and pending briefing items. Inside a project the model passes the derived project_id and the response carries first_connect: whether this project already has a wiki, and when it has none, the one line pointing at the smart-onboarding skill. That is why the hook does not describe onboarding itself: the server volunteers the trigger, so the procedure does not have to be read by every session for a thing that happens once per project. Smart-only."
     },
     "recall_core_global": {
       "status": "shipped",

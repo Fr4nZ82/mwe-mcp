@@ -9,8 +9,7 @@
 //!
 //! ## Authorisation invariants
 //!
-//! Every entry point enforces three gates documented in
-//! [`protocollo.md §2 + §H`] and [`modello-memoria.md §9`]:
+//! Every entry point enforces three gates:
 //!
 //! 1. `token.consumer_class == Smart` — `wiki_admin_*` is the
 //!    smart-consumer surface. Standard consumers get
@@ -31,10 +30,9 @@
 //! `expected_op_log_head` optimistic-concurrency check **is enforced**
 //! on `upsert` (a push carrying it is rejected with
 //! [`AdminError::ConflictingOpLogHead`] when a newer write op landed in
-//! the gap — see [`push_upsert`]); the `since_op_log_id` delta-pull
-//! described in [`tool-reference.md §H`] is still deferred (full pull
-//! works; the optimisation matters once wikis grow past hundreds of
-//! pages).
+//! the gap — see [`push_upsert`]); the `since_op_log_id` delta-pull is
+//! deferred (full pull works; the optimisation matters once wikis grow
+//! past hundreds of pages).
 //!
 //! ## What is intentionally NOT here (MVP scope)
 //!
@@ -45,8 +43,8 @@
 //!   matters once wikis grow past hundreds of pages).
 //! - `folder_structure.recommended` deviation warnings (the spec lists
 //!   them as `warnings[]` on the response — the folder-shape validator
-//!   is still unwritten). The field itself is **no longer empty**: it
-//!   carries the per-page density warnings of [`shape_warnings`].
+//!   is still unwritten). The field itself is **not empty**: it carries the
+//!   per-page density warnings of [`shape_warnings`].
 //! - `fact_index` re-indexing — the watcher pipeline catches the
 //!   file changes asynchronously. For test setups without a watcher,
 //!   the consumer can drive a manual reindex; we don't block writes
@@ -114,11 +112,11 @@ impl ActorKind {
 /// Errors surfaced by the public [`push`] / [`pull`] entry points.
 ///
 /// Mapped 1-to-1 onto the `ToolErrorClass` variants at the MCP
-/// boundary so the wire codes match `tool-reference.md §H` verbatim.
+/// boundary so the wire codes are stable.
 #[derive(Debug, Error)]
 pub enum AdminError {
     /// Caller's JWT does not carry `consumer_class=smart`.
-    #[error("requires consumer_class=smart (see protocollo.md §2)")]
+    #[error("requires consumer_class=smart")]
     RequiresSmart,
     /// Target wiki's owner is not the caller's user.
     #[error("wiki {wiki_id} is owned by user:{owner}, but token belongs to user:{caller_owner}")]
@@ -166,11 +164,9 @@ pub enum AdminError {
     /// ACL-inheritance it relies
     /// on. Wire form: `400 wiki_type_requires_parent`.
     ///
-    /// The message names the value to pass. A first-connect agent hit
-    /// this live and could not act on it: the old text said what was
-    /// wrong and not what to do, and the answer — "your own root wiki,
-    /// which is your `sender_id`" — is something the server knows and
-    /// the caller has to guess.
+    /// The message names the value to pass, because the answer — "your own
+    /// root wiki, which is your `sender_id`" — is something the server
+    /// knows and the caller would otherwise have to guess.
     #[error(
         "a smart wiki must be created under your own root wiki: pass parent_wiki_id={expected_parent:?} \
          (wiki_type {wiki_type:?} cannot be created as top-level)"
@@ -412,7 +408,7 @@ pub struct PushOpsApplied {
 }
 
 /// Return value of [`push`]. Maps 1-to-1 to the wire shape of
-/// `wiki_admin_push` documented in `tool-reference.md §H.1`.
+/// `wiki_admin_push`.
 #[derive(Debug, Clone)]
 pub struct PushResponse {
     /// The wiki the push landed in. Useful on `Create` where the
@@ -528,9 +524,9 @@ pub struct AdminCaller {
 
 /// Reserve the `agent` `wiki_type` for the caller's **own** operational wiki.
 ///
-/// The label is free-form by design — it is a tone hint, not a registry — and
-/// nothing downstream trusts it any more (agent-ness is the engine-written
-/// `is_agent` marker). What it still does is *name* a wiki to the humans
+/// The label is free-form by design — a tone hint, not a registry — and
+/// nothing downstream trusts it: agent-ness is the engine-written `is_agent`
+/// marker. What it does do is *name* a wiki to the humans
 /// reading the dashboard, so a consumer labelling somebody else's wiki "agent"
 /// is a lie the UI would repeat. A consumer may claim it on exactly one wiki:
 /// the one the engine forged for it at consent, whose slug is its own
@@ -573,7 +569,7 @@ fn guard_agent_label(
 ///
 /// # Errors
 ///
-/// One of [`AdminError`] mapped to the wire codes in `tool-reference.md §H`.
+/// One of [`AdminError`], mapped to its wire code by the MCP boundary.
 pub async fn push(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -686,9 +682,8 @@ async fn push_create(
         });
     }
 
-    // Child-only gate, now per-kind: only the smart family
-    // inherits a parent's ACL scope and must be created beneath one — the
-    // `requires_parent` template flag is gone with the registry describe.
+    // Child-only gate, per kind: only the smart family inherits a parent's
+    // ACL scope and must be created beneath one.
     // Surfaced ahead of the generic "create requires parent_wiki_id" so the
     // caller sees the wire-stable `WikiTypeRequiresParent`.
     if is_smart_family && req.parent_wiki_id.is_none() {
@@ -755,8 +750,8 @@ async fn push_create(
         no_archive: false,
         // Stamp the per-wiki smart flag into `_meta.md` from the
         // explicit `smart` request flag. This is the authoritative marker
-        // the smart/standard family gates read now they no longer query
-        // `wiki_types_registry` nor sniff the `wiki_type` id. A dashboard
+        // the smart/standard family gates read: they query no
+        // `wiki_types_registry` and sniff no `wiki_type` id. A dashboard
         // power-user create lands `false` (the default); a smart-consumer
         // smart-wiki create passes `smart: true`.
         smart: is_smart_family,
@@ -1077,7 +1072,7 @@ fn shape_warnings(pages: &[PushPage], smart: bool) -> Vec<String> {
 ///
 /// # Errors
 ///
-/// One of [`AdminError`] mapped to the wire codes in `tool-reference.md §H.2`.
+/// One of [`AdminError`], mapped to its wire code by the MCP boundary.
 pub async fn pull(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -1172,9 +1167,7 @@ pub async fn pull(
 
 /// Errors raised by [`op_revert`].
 ///
-/// Mapped onto the dashboard wire codes documented in
-/// [`tool-reference.md revert extension`] and
-/// [`protocollo.md §10.2`]:
+/// Mapped onto the dashboard wire codes:
 ///
 /// | Variant            | Status | Wire code                       |
 /// |--------------------|--------|---------------------------------|
@@ -1490,9 +1483,8 @@ pub async fn op_revert(
 }
 
 /// `op_kind` values that semantically wrote to the wiki and therefore
-/// have something to roll back. Mirror of the spec ([`protocollo.md
-/// §10.2`]): `push_create` / `push_upsert` / `push_snapshot_replace`
-/// are writes; `pull` / `notify` are not.
+/// have something to roll back: `push_create` / `push_upsert` /
+/// `push_snapshot_replace` are writes; `pull` / `notify` are not.
 ///
 fn is_write_op_kind(op_kind: &str) -> bool {
     op_kind.starts_with("push_")
@@ -3016,8 +3008,8 @@ mod tests {
     /// Re-home a wiki onto a **group** owner so the resolver derives a
     /// `group:<id>` scope principal — the case the dashboard 500-ed on.
     ///
-    /// Ownership is no longer declared in `_meta.md`; it is derived from the
-    /// root identity wiki's type. So we (1) create the `group_id` group
+    /// Ownership is not declared in `_meta.md`; it is derived from the root
+    /// identity wiki's type. So we (1) create the `group_id` group
     /// identity wiki (a `wiki-group` root) and (2) rewrite this wiki's
     /// `parent_wiki_id` to point at it. `resolve_scope_principal` resolves
     /// the parent by id (not physical nesting), walks up to the `wiki-group`
@@ -3044,12 +3036,12 @@ mod tests {
     }
 
     /// The read leak, pinned. A smart wiki holds **no rows in `fact_index`**,
-    /// so the derived-visibility question every read path used to ask
-    /// (`wiki_visible_to`) fell into its empty-wiki branch — *"nothing to hide
-    /// → visible"* — and answered **yes to everybody**: every project and
-    /// agent wiki was readable by any enrolled user, over MCP and in the
-    /// dashboard, whatever `_meta.md` said. `wiki_readable_by` must route a
-    /// smart wiki to its own gate and leave a stranger out.
+    /// so a derived-visibility question (`wiki_visible_to`) falls into its
+    /// empty-wiki branch — *"nothing to hide → visible"* — and answers **yes to
+    /// everybody**: every project and agent wiki readable by any enrolled user,
+    /// over MCP and in the dashboard, whatever `_meta.md` says.
+    /// `wiki_readable_by` must route a smart wiki to its own gate and leave a
+    /// stranger out.
     #[tokio::test]
     async fn a_smart_wiki_is_not_readable_by_a_stranger() {
         let (_dir, tree, pool) = seeded_tree().await;

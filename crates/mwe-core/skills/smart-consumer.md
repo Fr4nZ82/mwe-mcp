@@ -470,13 +470,11 @@ Omit `activity` for a push that carried no real work — a typo fix, a
 reformat. Silence is a legitimate answer; a diary of nothing is worse
 than a short diary.
 
-> **Why it changed.** Both halves used to be a separate
-> `wiki_admin_signpost` call, prompted by a hint on every push. Counted
-> across the whole recorded window, four projects on the maintainer's own
-> deployment ever got a description written — the largest undescribed
-> wiki had 1 477 pages of documentation and no way for its owner's agent
-> to know it existed. Nothing was lost to conflicts; the call simply was
-> not made. So the description became a property, and the diary became a
+> **Why it is shaped this way.** A description that needs a
+> `wiki_admin_signpost` call of its own does not get written: nothing
+> blocks it, the call simply is not made, and a wiki with a thousand pages
+> of documentation ends up with no way for its owner's agent to know it
+> exists. So the description is a property of the wiki, and the diary is a
 > field on a call you are already sending.
 
 ### Tone — this is where it goes wrong

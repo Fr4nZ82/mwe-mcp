@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Page-level operations on a standard memory wiki.
 //!
-//! Today this is the **governed delete-page** primitive
-//! (agentic-chat.md §`WikiDeletePage`): a
+//! Today this is the **governed delete-page** primitive: a
 //! page deletion is partitioned by the per-fragment **sender** axis so one
 //! user can never destroy another's contribution —
 //!
@@ -20,8 +19,7 @@
 //! Deleting a page is **admin authority** (structure is recall shape, not
 //! access — the verb layer gates it); the per-fragment sender axis still
 //! governs how each fact on the page is disposed. Smart wikis carry no per-fragment sender and are out of scope here
-//! (their single proprietor decides — see
-//! smart-wikis.md); this primitive is for
+//! (their single proprietor decides); this primitive is for
 //! **standard** wikis.
 
 use sqlx::SqlitePool;

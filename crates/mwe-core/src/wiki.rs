@@ -91,9 +91,9 @@ pub const PROFILE_FILENAME: &str = "@profile.md";
 /// **The only classification a page has** (founder, 2026-06-05), and since
 /// 2026-08-19 a closed type rather than free text: *«gli stili di pagina sono
 /// prosa, prosa tecnica, lista. Basta. Quella proprietà deve poter avere
-/// soltanto questi tre valori, non altro.»* It used to be an `Option<String>`
-/// carried through a dozen structs and checked in one place, so a producer that
-/// wrote `narrativo` was nobody's error until a reader silently treated it as
+/// soltanto questi tre valori, non altro.»* As free text — an `Option<String>`
+/// carried through a dozen structs and checked in one place — a producer that
+/// writes `narrativo` is nobody's error until a reader silently treats it as
 /// prose.
 ///
 /// Not a taxonomy of the page's SUBJECT and not where it lives — those are the
@@ -298,11 +298,9 @@ pub fn is_reserved_page_stem(stem: &str) -> bool {
 /// True when `page` — a **model-coined** page name — names a reserved page.
 ///
 /// The path-shaped twin of [`is_reserved_page_stem`], and the guard the
-/// sentence *«a capture aimed at one is not filed there»* refers to. That
-/// sentence has been in the ingest prompt for weeks and, until 2026-08-10,
-/// nothing enforced it: `is_reserved_page_stem` had two callers and both sat
-/// on paths where the name had already been discarded for other reasons, so
-/// the promise was made to the model and kept by nobody.
+/// sentence *«a capture aimed at one is not filed there»* refers to. The
+/// ingest prompt makes that promise to the model, and this is what keeps
+/// it — a promise nothing enforces is a promise kept by nobody.
 ///
 /// **Every place a model names a page calls this**, and there are four: the
 /// live capture path (`ingest::validate_capture_plan`), the document
@@ -423,8 +421,8 @@ pub fn is_channel_page(source_path: &str) -> bool {
 /// anything the engine adds later.
 /// Everything the engine keeps for its own bookkeeping is named that way, and
 /// nothing a wiki holds *as content* ever is — so this predicate replaces
-/// every list of names that used to be maintained by hand (page enumeration,
-/// the reindex sweep, the export, the read tool).
+/// every list of names that would otherwise be maintained by hand in four
+/// places (page enumeration, the reindex sweep, the export, the read tool).
 ///
 /// Founder's ruling, 2026-08-16, on how a smart wiki is read: *«non ci
 /// interessa come sono fatte e nessun file dev'essere vietato o trattato in
@@ -602,8 +600,8 @@ pub struct WikiMeta {
     /// (never an ACL gate). A group wiki inherits the group's `scope`
     /// prose; an emerged sub-wiki gets prose the LLM writes at creation.
     /// `None` for the many wikis that carry no description yet. The wiki's
-    /// owning **principal** (whose category it is) is no longer declared
-    /// here — it is **derived from topology** via
+    /// owning **principal** (whose category it is) is not declared here — it
+    /// is **derived from topology** via
     /// [`WikiTree::resolve_scope_principal`].
     pub scope: Option<String>,
     /// Optional sharing roster for smart-wikis.
@@ -1269,9 +1267,9 @@ impl WikiTree {
     /// Resolve the **scope principal** of a wiki — the principal whose
     /// category this wiki is — from topology.
     ///
-    /// A wiki is a *category*, not an owner: its principal is no longer
-    /// declared in `_meta.md` but **derived** by following `parent_wiki_id`
-    /// up to the root wiki (`parent_wiki_id == None`). The root is an
+    /// A wiki is a *category*, not an owner: its principal is never declared
+    /// in `_meta.md`, it is **derived** by following `parent_wiki_id` up to
+    /// the root wiki (`parent_wiki_id == None`). The root is an
     /// identity wiki, so its `wiki_type` and id give the principal:
     /// [`IDENTITY_WIKI_TYPE`] (`wiki-user`) → `Principal::User(root_id)`,
     /// [`GROUP_IDENTITY_WIKI_TYPE`] (`wiki-group`) → `Principal::Group(root_id)`.
@@ -1801,7 +1799,7 @@ pub fn resolve_page_case_insensitive(abs_dir: &Path, rel: &Path) -> Option<PathB
 
 // ---------- `_internal.*` thin wrappers ----------
 //
-// These mirror the `_internal.wiki_*` API names from `tool-reference.md`. They
+// These carry the `_internal.wiki_*` API names. They
 // are thin adapters over [`WikiHandle`] / [`WikiTree`] so the MCP server can
 // expose them by name without reaching into the tree machinery.
 
@@ -2062,8 +2060,8 @@ pub fn create_identity_wiki(
         source,
     })?;
     // The scope principal is derived from this wiki's identity `wiki_type`
-    // + id (it is a root: `parent_wiki_id == None`), so nothing about the
-    // owner is stamped into the frontmatter any more.
+    // + id (it is a root: `parent_wiki_id == None`), so the frontmatter
+    // carries nothing about the owner.
     let now_iso = chrono::Utc::now().to_rfc3339();
     let meta = WikiMeta {
         wiki_id: id.clone(),
@@ -2170,8 +2168,7 @@ pub fn ensure_is_agent_marker_in(wiki_dir: &Path) -> Result<bool> {
 
 /// Materialise a wiki directory on disk from a fully-built [`WikiMeta`].
 ///
-/// A generic filesystem primitive (the `wiki_type` registry/template machinery
-/// it once served has been removed): the caller hands over a finished
+/// A generic filesystem primitive: the caller hands over a finished
 /// `WikiMeta` and this writes the four steps every creation site shares:
 ///
 /// 1. **Dir resolution** — under the parent's directory when

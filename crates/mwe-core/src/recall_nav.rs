@@ -274,13 +274,12 @@ fn build_seed_infos(tree: &WikiTree) -> Result<Vec<WikiSeedInfo>> {
 /// the reader can read nothing on carries an empty card and matches no needle —
 /// visibility falls out of the match itself, with no extra gate.
 ///
-/// **There is no wiki-level step.** Until 2026-08-04 this matched the wiki's
-/// topic union first and descended into its pages only on a hit. That gate
-/// could never actually hide a page — the wiki union is built by unioning the
-/// same per-fact topics, so any page match implies its wiki matches — but it
-/// shaped the code as though the reader navigated containers, and the reader
-/// does not know containers exist (founder's ruling; see [`navigate`]). Now it
-/// walks pages.
+/// **There is no wiki-level step.** Matching the wiki's topic union first and
+/// descending only on a hit could never actually hide a page — the union is
+/// built from the same per-fact topics, so any page match implies its wiki
+/// matches — and it would shape the code as though the reader navigated
+/// containers. The reader does not know containers exist (founder's ruling;
+/// see [`navigate`]). This walks pages.
 fn gather_card_seeds(
     infos: &[WikiSeedInfo],
     reader_card: &meta_annotate::ReaderCard,
@@ -885,7 +884,6 @@ pub async fn navigate(
         // into the funnel — the fan or a `[[wikilink]]` — instead of two
         // filters that have to agree.
         visited: served.pages.iter().cloned().collect(),
-        acl_defaults: BTreeMap::new(),
         remaining: policy.char_budget,
     };
 
@@ -951,7 +949,7 @@ pub async fn navigate(
                 &mut outcome,
                 &reader_card,
             )
-            .await?
+            .await
             {
                 // `open_target` reaches this arm only after pushing exactly
                 // one fragment — every other path returns `None` — so the
@@ -1158,11 +1156,9 @@ fn parse_query_seeds(raw: &str) -> Option<QuerySeedsJson> {
 }
 
 /// Mutable funnel bookkeeping threaded through the hops: pages already
-/// opened (resolved paths), the per-wiki resolved `acl_default` cache, and
-/// the character budget still spendable.
+/// opened (resolved paths) and the character budget still spendable.
 struct FunnelState {
     visited: BTreeSet<(String, PathBuf)>,
-    acl_defaults: BTreeMap<String, Principal>,
     remaining: usize,
 }
 
@@ -1171,12 +1167,8 @@ struct FunnelState {
 /// fragment. Returns `Some(discoveries)` (the new candidates the opened page
 /// exposes) when a page was actually opened, `None` when the pick was
 /// discarded (hallucinated target, vanished wiki, already visited,
-/// unreadable page, ACL map unloadable).
-///
-/// # Errors
-///
-/// Only `acl_default` resolution surfaces — a broken `_meta` chain is a
-/// deployment problem, not turn-level noise.
+/// unreadable page, ACL map unloadable). Every one of those is turn-level
+/// noise a single pick is discarded for, so nothing here is an error.
 #[allow(clippy::too_many_arguments, reason = "one funnel-step's full context")]
 async fn open_target(
     pool: &SqlitePool,
@@ -1188,7 +1180,7 @@ async fn open_target(
     state: &mut FunnelState,
     outcome: &mut NavigationOutcome,
     reader_card: &meta_annotate::ReaderCard,
-) -> Result<Option<Vec<Candidate>>> {
+) -> Option<Vec<Candidate>> {
     // Anti-hallucination vetting: the target must match an offered candidate
     // verbatim — the navigator picks doors, it does not mint them.
     // A request that names no page names a wiki, and a wiki is not a door
@@ -1204,11 +1196,9 @@ async fn open_target(
             page = ?target.page,
             "recall_nav: navigator chose a non-candidate, discarded"
         );
-        return Ok(None);
+        return None;
     };
-    let Some(d) = by_id.get(cand.wiki_id.as_str()) else {
-        return Ok(None);
-    };
+    let d = by_id.get(cand.wiki_id.as_str())?;
     let page = cand.page.clone();
     // The reserved `@rules.md` policy page is not navigable (roadmap 41e):
     // standing directives reach the consumer through the dedicated `rules`
@@ -1221,20 +1211,11 @@ async fn open_target(
             page = %page.display(),
             "recall_nav: rules page is channel-only, not navigable — discarded"
         );
-        return Ok(None);
+        return None;
     }
     if !state.visited.insert((cand.wiki_id.clone(), page.clone())) {
-        return Ok(None);
+        return None;
     }
-    let default = match state.acl_defaults.entry(cand.wiki_id.clone()) {
-        Entry::Occupied(e) => e.get().clone(),
-        Entry::Vacant(slot) => slot
-            .insert(
-                tree.resolve_scope_principal(&d.meta)
-                    .with_context(|| format!("resolve scope principal of {}", cand.wiki_id))?,
-            )
-            .clone(),
-    };
     // Authoritative per-fact ACL for the page, keyed by fact id
     // (redaction-policy: DB first, inline attributes as fallback). A
     // page whose map cannot load is skipped, not rendered on weaker
@@ -1252,12 +1233,10 @@ async fn open_target(
                 error = %err,
                 "recall_nav: page ACL map unloadable, page skipped"
             );
-            return Ok(None);
+            return None;
         },
     };
-    let Some(projected) = open_projected(d, &page, &db_acl, &default, sender) else {
-        return Ok(None);
-    };
+    let projected = open_projected(d, &page, &db_acl, sender)?;
     let (text, cut) = take_budget(projected, state.remaining);
     state.remaining -= text.len();
     outcome.truncated |= cut;
@@ -1269,7 +1248,7 @@ async fn open_target(
         text,
         truncated: cut,
     });
-    Ok(Some(discoveries))
+    Some(discoveries)
 }
 
 /// Turn the entry-point fan into the hop-0 candidate pool, each entry
@@ -1463,7 +1442,6 @@ fn open_projected(
     d: &DiscoveredWiki,
     page: &Path,
     db_acl: &FactAclMap,
-    acl_default: &Principal,
     sender: &SenderContext,
 ) -> Option<String> {
     let raw = match std::fs::read_to_string(d.abs_dir.join(page)) {
@@ -1480,16 +1458,7 @@ fn open_projected(
     };
     // The testata is card metadata, not prose — drop it when present.
     let body = MarkdownDoc::parse(&raw).map_or_else(|| raw.clone(), |doc| doc.body);
-    Some(
-        render_for_sender(
-            &body,
-            db_acl,
-            acl_default,
-            &sender.sender_id,
-            &sender.sender_groups,
-        )
-        .text,
-    )
+    Some(render_for_sender(&body, db_acl, &sender.sender_id, &sender.sender_groups).text)
 }
 
 /// Truncate `text` to `budget` characters (on a char boundary). Returns the
@@ -1681,12 +1650,11 @@ fn reader_page_keywords(
 /// ([`page_card::PageCardRow::matches_file`]), so the usual case costs a
 /// `stat`. Anything else — no row, a stale stamp, a DB that will not answer —
 /// falls back to opening the page, which is never wrong; the table is a
-/// cache and an empty one degrades to exactly the previous behaviour.
+/// cache, and an empty one costs an open per page, never a wrong answer.
 ///
 /// The description is read from the **owner-tier** testata but shown only
 /// where the reader is inside the wiki's default visibility
-/// (`summary_visible`) — the same gate as before, moved, not relaxed. A page
-/// whose card cannot be read (vanished, unparseable) is marked read with no
+/// (`summary_visible`). A page whose card cannot be read (vanished, unparseable) is marked read with no
 /// summary: a missing card is a candidate with no abstract, never an error.
 async fn fill_summaries(
     db: &SqlitePool,
@@ -1972,10 +1940,9 @@ mod tests {
 
     /// **One door per page, and the freed slot goes to another page.**
     ///
-    /// The old shape is the negative half and it is what this denies: the fan
-    /// was handed the block's `recall_top_k` hits, so ten facts sitting on
-    /// three pages opened three doors and the remaining seven slots were
-    /// simply lost. Founder, 2026-08-21: *«se 2 o più fatti scelti dal rag
+    /// Handing the fan the block's `recall_top_k` hits would open one door
+    /// per *hit*: ten facts sitting on three pages would open three doors
+    /// and lose the remaining seven slots. Founder, 2026-08-21: *«se 2 o più fatti scelti dal rag
     /// puntano alla stessa pagina, si tiene il primo e basta … così diamo
     /// spazio ad altre "porte" su altre pagine»*.
     #[test]

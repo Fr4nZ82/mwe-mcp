@@ -480,8 +480,8 @@ pub const SECTION_TARGET_CHARS: usize = 1_200;
 pub const SECTION_MAX_CHARS: usize = 2_000;
 
 impl DocumentPolicy {
-    /// Chunking policy for the **smart-wiki section index**, as distinct
-    /// from the document-ingest defaults it used to borrow.
+    /// Chunking policy for the **smart-wiki section index**, deliberately its
+    /// own rather than the document-ingest defaults.
     ///
     /// The two jobs want opposite things from a chunk. Ingest segments are
     /// read *whole, in isolation* by an extractor, so wide context helps

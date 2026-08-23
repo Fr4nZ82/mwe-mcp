@@ -29,7 +29,7 @@
 //!
 //! [`file_stamp`] is `(mtime_ms, size)`. The display path compares it against
 //! the file it is about to describe and falls back to reading when they
-//! disagree — a `stat` where there used to be a read plus a YAML parse. It is
+//! disagree — a `stat` in place of a read plus a YAML parse. It is
 //! deliberately not a hash: hashing means reading, which is the cost being
 //! avoided. What it cannot catch is an edit that changes neither size nor
 //! mtime millisecond; the cost of that is one stale line for the seconds

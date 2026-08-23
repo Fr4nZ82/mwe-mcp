@@ -192,8 +192,9 @@ async fn save_writes_yaml_and_backs_up_previous_config() {
 
 #[tokio::test]
 async fn save_anthropic_derives_api_key_env_from_provider() {
-    // The per-role `api_key_env` column is gone: an Anthropic role in the
-    // default (key) mode derives ANTHROPIC_API_KEY on save — no rejection.
+    // `api_key_env` is derived from the provider, never configured per
+    // role: an Anthropic role in the default (key) mode derives
+    // ANTHROPIC_API_KEY on save — no rejection.
     let (app, _pool, workdir, _dir) = make_app().await;
     let cookie = login_as_admin(&app).await;
     let form_body = "operator_chat__backend=anthropic&operator_chat__model=claude-opus-4-8\

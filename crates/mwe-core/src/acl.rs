@@ -34,9 +34,8 @@ use crate::types::{Acl, FactId, Principal};
 /// Authoritative ACL of one region, as stored in the engine DB
 /// (`fact_index.subject_id` / `allow_ids` / `sender_id`).
 ///
-/// Unlike the inline-marker [`Acl`], the subject is never optional here —
-/// every `fact_index` row carries an explicit subject, so a DB-resolved
-/// region never inherits `acl_default`.
+/// Unlike the inline-marker [`Acl`], the subject is never optional here:
+/// every `fact_index` row carries an explicit subject.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegionAcl {
     /// The fact's **subject** — who/what it is *about* (always explicit in
@@ -68,12 +67,11 @@ pub type FactAclMap = HashMap<FactId, RegionAcl>;
 /// readable by every member of `famiglia` even if `famiglia` is not in
 /// `region_acl.allow`.
 ///
-/// `region_acl.subject` may be `None` — that means "no explicit subject in the
-/// marker, region inherits `acl_default` from `_meta.md`". In that case the
-/// caller (typically [`crate::render::render_for_sender`]) is responsible
-/// for substituting the inherited subject *before* calling this function;
-/// passing an `Acl { subject: None, allow: [] }` here will deny everyone
-/// except a matching `sender_of_region`.
+/// `region_acl.subject` may be `None` — the marker named no subject, and
+/// nothing substitutes one: a fact's ACL is the fact's, and a wiki's scope
+/// principal never stands in for a missing subject. So an
+/// `Acl { subject: None, allow: [] }` denies everyone except a matching
+/// `sender_of_region`.
 #[must_use]
 pub fn can_read(
     region_acl: &Acl,
@@ -439,13 +437,12 @@ mod tests {
         assert!(can_read(&acl, "carol", &[], None));
     }
 
-    // ---------- subject=None (region inherits acl_default) ----------
+    // ---------- subject=None (a region naming nobody) ----------
 
     #[test]
     fn empty_acl_denies_unless_sender_attribution_matches() {
-        // subject=None and no allow → caller should have resolved
-        // acl_default beforehand. If they didn't, the only escape is the
-        // sender_of_region rule.
+        // subject=None and no allow: nothing fills the subject in, so the
+        // only escape is the sender_of_region rule.
         let empty = Acl::default();
         let alice = Principal::User("alice".into());
         let bob = Principal::User("bob".into());

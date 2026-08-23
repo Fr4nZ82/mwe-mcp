@@ -929,8 +929,8 @@ fn remaining_minutes(expires_at: u64) -> u64 {
 /// side), a free-text model combobox (datalist suggestions from the
 /// catalog), a JS-filled metadata strip + auth warning, and an Advanced
 /// `<details>` for the temperature / max-tokens / reasoning / base-URL
-/// knobs. The `api_key_env` is no longer an operator-edited column — it is
-/// derived from the chosen provider on save ([`derive_api_key_env`]).
+/// knobs. The `api_key_env` is not an operator-edited column: it is derived
+/// from the chosen provider on save ([`derive_api_key_env`]).
 fn role_row(guide: &RoleGuide, cfg: Option<&LlmFunctionConfig>) -> Markup {
     let key = guide.slot.yaml_key();
     let backend = cfg.map_or("", |c| c.backend.as_str());
@@ -1137,10 +1137,10 @@ fn parse_form_into_llm_config(
                 "role `{key}`: a model is required when the provider is set"
             )));
         }
-        // Derive the API-key env-var from the chosen provider (the old
-        // per-role column is gone): the well-known key per cloud backend,
-        // the Claude Code login sentinel for Anthropic in login mode, or
-        // none for the local backend.
+        // Derive the API-key env-var from the chosen provider: the
+        // well-known key per cloud backend, the Claude Code login
+        // sentinel for Anthropic in login mode, or none for the local
+        // backend.
         let api_key_env = derive_api_key_env(&backend, anthropic_login);
         let base_url = optional_field(form, key, "base_url");
         let reasoning_effort = optional_field(form, key, "reasoning_effort");
@@ -1533,8 +1533,8 @@ mod tests {
         }
     }
 
-    /// Anthropic in the default (key) mode derives `ANTHROPIC_API_KEY` —
-    /// the operator no longer picks the env-var per role.
+    /// Anthropic in the default (key) mode derives `ANTHROPIC_API_KEY` — the
+    /// operator does not pick the env-var per role.
     #[test]
     fn parse_form_derives_anthropic_api_key_in_key_mode() {
         let mut form: HashMap<String, String> = HashMap::new();
@@ -1605,7 +1605,7 @@ mod tests {
     }
 
     /// A gemini role round-trips through the parser, with `api_key_env`
-    /// derived (the form no longer carries it).
+    /// derived — the form does not carry it.
     #[test]
     fn parse_form_round_trips_gemini_slot() {
         let mut form: HashMap<String, String> = HashMap::new();

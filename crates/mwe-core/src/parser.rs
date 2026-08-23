@@ -42,8 +42,9 @@ use crate::types::{CatalogId, CatalogIdParseError, FactId, Principal, RegionAttr
 /// One thing the parser produced from the input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseEvent {
-    /// Free prose outside of any marker. Inherits `acl_default` for ACL
-    /// purposes at render time.
+    /// Free prose outside of any marker. It carries no ACL and is never
+    /// gated: the render passes it through to every reader, because it is
+    /// the scaffolding the surrounding regions are read against.
     Prose {
         /// Byte offset of the first prose char in the input.
         start: usize,

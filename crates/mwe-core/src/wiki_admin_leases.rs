@@ -74,7 +74,7 @@ pub const EXPIRER_RELEASED_RETENTION_SECS: i64 = 7 * 24 * 3_600;
 #[derive(Debug, Error)]
 pub enum AcquireError {
     /// Caller's JWT does not carry `consumer_class=smart`.
-    #[error("requires consumer_class=smart (see protocollo.md §2)")]
+    #[error("requires consumer_class=smart")]
     RequiresSmart,
     /// Requested TTL is outside `[1, MAX_TTL_SECS]`.
     #[error("ttl_sec {requested} out of range [1, {cap}]")]
@@ -107,7 +107,7 @@ pub enum AcquireError {
 #[derive(Debug, Error)]
 pub enum ReleaseError {
     /// Caller's JWT does not carry `consumer_class=smart`.
-    #[error("requires consumer_class=smart (see protocollo.md §2)")]
+    #[error("requires consumer_class=smart")]
     RequiresSmart,
     /// `lease_id` was not found, was already released, or belongs to
     /// a different `(sender_id, consumer_id)` pair.

@@ -121,10 +121,10 @@ pub struct FactIndexRow {
     /// (memory model).
     /// Additive + inert until the writer populates it.
     pub valid_from: Option<String>,
-    /// End of the validity interval (ISO 8601). `None` = OPEN ("true now, no
-    /// horizon" — the old "knowledge" regime); a set value is what "state"
-    /// used to mean. At recall this is a soft-down-rank SIGNAL once
-    /// `now >= valid_to`, never a hard filter.
+    /// End of the validity interval (ISO 8601). `None` = OPEN — true now, with
+    /// no horizon; a set value is a claim that holds for a while and then stops.
+    /// At recall it is a soft-down-rank SIGNAL once `now >= valid_to`, never a
+    /// hard filter.
     pub valid_to: Option<String>,
     /// Why `valid_to` was closed. `None` while the fact is alive; stamped on
     /// closure from the [`decay`] vocabulary (enforced at the producer, like
@@ -2338,9 +2338,9 @@ type ListPageAccumulator = std::collections::BTreeMap<(String, String), (Option<
 /// Every `lista`-style page the reader may add to — promoted and still
 /// pending alike, deduplicated, **most recently touched first**.
 ///
-/// The order is the selection, because this list is cut. It used to come off
-/// a `BTreeMap<(wiki_id, page)>`, so the cut fell alphabetically and a
-/// sender whose readable wikis sort late lost their lists first — the exact
+/// The order is the selection, because this list is cut. Off a
+/// `BTreeMap<(wiki_id, page)>` the cut would fall alphabetically and a sender
+/// whose readable wikis sort late would lose their lists first — the exact
 /// shape the founder ruled out on 2026-08-09, and the costliest place to have
 /// it: a list the classifier cannot see is a list the turn mints a second copy
 /// of, live, in front of the user.
@@ -2356,9 +2356,8 @@ type ListPageAccumulator = std::collections::BTreeMap<(String, String), (Option<
 /// `lista` item is written live — the page and the row together, in the turn
 /// that said it (founder, 2026-08-18: *«il classificatore si occupa delle
 /// liste, sia di crearle che di aggiungere/togliere/modificare elementi»*).
-/// Until then this query also unioned `capture_buffer`, to catch a list
-/// created minutes ago that the hourly promotion had not reached yet; that
-/// state cannot happen any more, and the buffer names no page to find one by.
+/// So there is no waiting list to union in from `capture_buffer`: that state
+/// cannot arise, and a buffered claim names no page to find one by.
 ///
 /// `principals` is [`crate::acl::reader_principals`] for the sender; an
 /// empty slice returns nothing rather than everything, because unlike a
@@ -2997,10 +2996,10 @@ mod tests {
     /// The inventory comes back newest-touched first, so the cut drops the
     /// list nobody has written to in longest.
     ///
-    /// It used to come straight off a `BTreeMap<(wiki_id, page)>`, so the cut
-    /// fell alphabetically: a sender whose readable wikis sort late lost their
-    /// lists first, on every turn — and a list the classifier cannot see is a
-    /// list the turn mints a second copy of, live, in front of the user.
+    /// Straight off a `BTreeMap<(wiki_id, page)>` the cut falls alphabetically:
+    /// a sender whose readable wikis sort late loses their lists first, on every
+    /// turn — and a list the classifier cannot see is a list the turn mints a
+    /// second copy of, live, in front of the user.
     #[tokio::test]
     async fn list_inventory_ranks_by_recency_so_the_cut_drops_the_stalest() {
         let pool = make_pool().await;

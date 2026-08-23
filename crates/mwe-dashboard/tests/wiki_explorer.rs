@@ -213,13 +213,12 @@ async fn wiki_list_renders_admin_identity_wiki_post_setup() {
     // loaded with defer so the body is in place before hydration runs.
     assert!(html.contains("id=\"chat-panel\""), "{html}");
     assert!(html.contains("/dashboard/static/chat.js"), "{html}");
-    // Top nav exposes the memory entries. The Chat tab was removed
-    // because the right-side panel makes a dedicated nav entry
-    // redundant (the panel is rendered on every authenticated page).
+    // Top nav exposes the memory entries. There is no Chat tab: the
+    // right-side panel is on every authenticated page, which makes a
+    // dedicated nav entry redundant.
     assert!(html.contains("href=\"/dashboard/wiki\""), "{html}");
-    // The Proposals tab was removed: the
-    // form surface is retired and proposals are operated from the chat
-    // (rendered on every authenticated page), so no nav entry for either.
+    // There is no Proposals tab either: proposals are operated from the
+    // chat, which every authenticated page carries.
     assert!(
         !html.contains("href=\"/dashboard/proposals\""),
         "Proposals tab must not appear in the top nav: {html}"
@@ -1323,7 +1322,7 @@ async fn home_page_lists_memory_section() {
 // state rather than flash HTML.
 
 /// Assert a response is the 303 redirect to the chat surface that the
-/// retired-form action routes return on both success and classified error.
+/// action routes return on both success and classified error.
 fn assert_redirects_to_chat(response: &axum::http::Response<Body>) {
     assert_eq!(
         response.status(),
@@ -1339,10 +1338,9 @@ fn assert_redirects_to_chat(response: &axum::http::Response<Body>) {
 
 #[tokio::test]
 async fn proposals_apply_unknown_id_still_redirects_to_chat() {
-    // The action route does not surface a page on error any more — a
-    // failed apply (unknown id) is logged and the operator is handed
-    // back to the chat just like a success, where they can inspect state
-    // with the read tools.
+    // The action route surfaces no page on error: a failed apply (unknown id)
+    // is logged and the operator is handed back to the chat just like a
+    // success, where they can inspect state with the read tools.
     let (app, _pool, _tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
 
@@ -1363,9 +1361,9 @@ async fn proposals_apply_unknown_id_still_redirects_to_chat() {
 #[tokio::test]
 async fn proposals_apply_failure_still_redirects_and_leaves_row_pending() {
     // Applying an unshipped-kind proposal fails at the chassis
-    // (`KindNotYetImplemented`). The action route no longer renders that
-    // error as a flash; it logs it and 303-redirects, leaving the row
-    // `pending` so the operator can retry conversationally.
+    // (`KindNotYetImplemented`). The action route renders no error page: it
+    // logs it and 303-redirects, leaving the row `pending` so the operator can
+    // retry conversationally.
     let (app, pool, _tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_pending_unshipped_proposal(&pool, "p-forge").await;
@@ -2595,7 +2593,7 @@ async fn facts_edit_form_pre_populates_from_fact_index_row() {
         html.contains("explicit") && html.contains("agentic chat"),
         "user notice about explicit confirmation via chat: {html}"
     );
-    // ACL / validity must NOT be advertised as chat-bridge fields anymore.
+    // ACL / validity must NOT be advertised as chat-bridge fields.
     assert!(
         !html.contains("name=\"acl\"") && !html.contains("name=\"acl_allow\""),
         "the old chat-bridge ACL fields must be gone: {html}"
@@ -2667,12 +2665,12 @@ async fn facts_edit_submit_composes_message_and_primes_chat_panel() {
     );
 }
 
-/// The legacy `GET /dashboard/facts/:fact_id/open-in-chat`
-/// route (vestigial pre-bridge) is dropped. The dashboard router
-/// has no handler for it; axum's default behaviour for an unknown
-/// nested path is `404 Not Found`.
+/// There is no `GET /dashboard/facts/:fact_id/open-in-chat`: a fact is
+/// opened for editing, never handed to the chat by a route of its own.
+/// The dashboard router has no handler for it, and axum answers an
+/// unknown nested path with `404 Not Found`.
 #[tokio::test]
-async fn facts_legacy_open_in_chat_route_is_gone() {
+async fn facts_have_no_open_in_chat_route() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
     let cookie = login_as_admin(&app).await;
     seed_alice_wiki(&tree);
@@ -2690,13 +2688,12 @@ async fn facts_legacy_open_in_chat_route_is_gone() {
     assert_eq!(
         response.status(),
         StatusCode::NOT_FOUND,
-        "legacy open-in-chat path must not be served anymore",
+        "a fact has no open-in-chat route",
     );
 }
 
-/// The per-row "Modifica" deep-link on
-/// `/dashboard/facts` points at the new edit form, not at the
-/// (removed) legacy primer page.
+/// The per-row "Modifica" deep-link on `/dashboard/facts` points at the
+/// edit form, and at no per-fact `open-in-chat` path.
 #[tokio::test]
 async fn facts_index_deep_link_points_at_edit_form() {
     let (app, pool, tree, _dir) = make_app_with_memory().await;
@@ -2718,16 +2715,15 @@ async fn facts_index_deep_link_points_at_edit_form() {
     assert!(html.contains(">edit</a>"), "{html}");
     assert!(
         html.contains(&format!("/dashboard/facts/{fact}/edit")),
-        "row deep-link must target the new /edit form: {html}"
+        "row deep-link must target the /edit form: {html}"
     );
-    // The *per-fact* legacy primer page is gone; assert on that exact
-    // path rather than the bare `/open-in-chat` substring (the
-    // single-proposal born-applied receipt still uses
-    // `/dashboard/proposals/:id/open-in-chat`, so a substring match would
-    // be ambiguous).
+    // Assert on the exact per-fact path rather than the bare
+    // `/open-in-chat` substring: the single-proposal born-applied receipt
+    // uses `/dashboard/proposals/:id/open-in-chat`, so a substring match
+    // would be ambiguous.
     assert!(
         !html.contains(&format!("/dashboard/facts/{fact}/open-in-chat")),
-        "no row should still link at the removed per-fact open-in-chat page: {html}"
+        "no row may link at a per-fact open-in-chat path: {html}"
     );
 }
 

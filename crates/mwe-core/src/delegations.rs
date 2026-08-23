@@ -10,7 +10,7 @@
 //! decide, for each call, whether the consumer has been delegated to
 //! impersonate that user; the answer lives in the
 //! [`consumer_delegations`](../../migrations/0014_consumer_delegations.sql)
-//! table (`schemi.md §1.11`).
+//! table.
 //!
 //! Querying the table on every tool call is wasteful — delegation
 //! edits are infrequent (admin clicks "Save" on the dashboard) while
@@ -30,12 +30,12 @@
 //! The cache is **deliberately not persisted in the JWT**. A token
 //! refresh does not snapshot the delegation; the new token
 //! reads the current state of `consumer_delegations` exactly like the
-//! old one (`manifesto.md §3.8`).
+//! old one.
 //!
 //! ## Why not foreign keys
 //!
-//! `consumer_delegations.allowed_sender_ids` is a JSON array (see
-//! `schemi.md §1.11`), so referential integrity is enforced
+//! `consumer_delegations.allowed_sender_ids` is a JSON array, so
+//! referential integrity is enforced
 //! applicatively at write time by the dashboard form and at lookup
 //! time here — an `allowed_sender_id` that points at a deleted user
 //! simply never matches an effective sender, which is the right

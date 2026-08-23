@@ -88,8 +88,8 @@ pub enum ProcessOutcome {
     WikiNotFound {
         /// The `bi_id` whose wiki could not be located.
         bi_id: i64,
-        /// The `wiki_id` string from the row (verbatim, may not be a
-        /// valid [`WikiId`] anymore).
+        /// The `wiki_id` string from the row, verbatim — a stored row can
+        /// name something that is not a valid [`WikiId`].
         wiki_id: String,
     },
 }

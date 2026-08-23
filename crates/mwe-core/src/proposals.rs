@@ -1460,11 +1460,10 @@ mod tests {
         assert!(kind::is_canonical("fact_forget"));
         assert!(kind::is_canonical("page_create"));
         assert!(kind::is_canonical("rail_add"));
-        // `wiki_type_forge` was removed with the `wiki_type` registry
-        // teardown — it must no longer be canonical.
+        // Plausible names that are not kinds: the list above is the whole
+        // list, and a canonical check that quietly accepted one of these
+        // would let a proposal through with nothing to apply it.
         assert!(!kind::is_canonical("wiki_type_forge"));
-        // `structured_emerge` was removed with the structured-routing machine
-        // — it must no longer be canonical.
         assert!(!kind::is_canonical("structured_emerge"));
         assert!(!kind::is_canonical("promote_stage3"));
         assert!(!kind::is_canonical(""));

@@ -5,9 +5,8 @@
 //! `schemars` because:
 //! - `Tool::input_schema` is `Arc<JsonObject>`; we already serialise
 //!   inputs through `serde_json::Value` in the dispatcher.
-//! - The schemas closely follow the wire shape documented in
-//!   tool-reference.md;
-//!   a literal block keeps the schema next to the spec text.
+//! - A literal block keeps each schema beside the handler that reads
+//!   it, so the wire shape and the parsing never drift apart.
 //! - Tests assert the schema is non-empty + lists the right tool name
 //!   — they would still pass under a macro-derived schema, so the
 //!   hand-rolled version costs nothing in coverage.
@@ -37,15 +36,14 @@ fn destructive(t: Tool) -> Tool {
     t.with_annotations(ToolAnnotations::new().destructive(true))
 }
 
-/// The tool surface, in the order documented in
-/// tool-reference.md.
+/// The tool surface, in wire order.
 ///
 /// Families A through K:
 /// - A — `wiki_ingest_message`
 /// - B — `events_poll`, `events_ack` (structural-change notices ride
-///   here as `structure_applied` events; the whole `structure_proposal_*`
-///   family was removed — the dashboard is the operator surface and calls
-///   `mwe-core::proposals` directly without going through MCP)
+///   here as `structure_applied` events; there is no `structure_proposal_*`
+///   family — the dashboard is the operator surface and calls
+///   `mwe-core::proposals` directly, without going through MCP)
 /// - D — `wiki_read`, `wiki_search`, `wiki_navigate`
 /// - E — `tool_log_search`, `wiki_lint`
 /// - F — `consumer_register`, `wiki_ingest_external`

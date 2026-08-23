@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Corpus consistency checks.
 //!
-//! Backing for the `wiki_lint` MCP tool
-//! (tool-reference.md).
+//! Backing for the `wiki_lint` MCP tool.
 //!
 //! ## Scope
 //!
-//! The MCP `wiki_lint` tool advertises **7 checks** (mcp-tools.md).
+//! The MCP `wiki_lint` tool advertises **7 checks** ([`Check`]).
 //! Four ship today:
 //!
 //! - [`Check::MarkerMalformed`] — re-runs [`crate::parser::parse`] on
@@ -56,8 +55,7 @@ pub enum LintError {
 /// Result alias.
 pub type Result<T> = std::result::Result<T, LintError>;
 
-/// The 8 advertised checks. Order matches
-/// mcp-tools.md.
+/// The seven advertised checks, in wire order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Check {

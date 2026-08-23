@@ -115,10 +115,9 @@ each truncated to `policy.max_recent_message_chars`, default `280`),
 and the top recall hits with their `fact_id` + `wiki_id` + score +
 truncated text. The recall `fact_id` **is** injected (see
 `build_prompt` + `build_prompt_emits_fact_id_for_recall_hits`). The ids
-are no longer there for the model to ACT on — reconciliation moved off
-this slot — but they keep the block self-consistent for the coherence
-reads it still performs (do not re-file what you recalled; stay coherent
-in time; do not rewrite a relationship).
+are not there for the model to ACT on: they keep the block
+self-consistent for the coherence reads it performs (do not re-file what
+you recalled; stay coherent in time; do not rewrite a relationship).
 
 **Editing note**: the worked examples inside the prompt body are
 bullet lists, never fenced code blocks, on purpose — the loader

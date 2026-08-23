@@ -71,10 +71,10 @@ homed in its own facts' wiki (`resolve_page_wiki`), so `{locale}` is the right
 answer for every title it writes; a page it merely *chooses* was titled by
 whoever coined it.
 
-`{taken_slugs}` keeps one of its two jobs. It is no longer "the pages you may
-not use" — those are described above and choosing one is legitimate — but a
-plan is keyed by slug across the whole memory, so **coining** a name another
-wiki owns would file these facts onto that page by accident. Choosing a page
+`{taken_slugs}` is not "the pages you may not use" — those are described
+above, and choosing one is legitimate. It is a **collision list**: a plan is
+keyed by slug across the whole memory, so **coining** a name another wiki owns
+would file these facts onto that page by accident. Choosing a page
 is a judgement; colliding with its name is not. The list is **never
 truncated**; a collision guard with a gap answers "free" for a taken name.
 

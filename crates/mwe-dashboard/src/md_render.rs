@@ -875,9 +875,9 @@ e un documento {{embed=c-2026-06-12-doc-001.pdf}}.\n",
 
     #[test]
     fn wikilink_alias_cannot_inject_html() {
-        // Raw HTML inside an alias hits the raw-HTML filter first: the
-        // tag events are dropped, the split text run no longer forms a
-        // wikilink, and no anchor (let alone a script) reaches the output.
+        // Raw HTML inside an alias hits the raw-HTML filter first: the tag
+        // events are dropped, the split text run does not form a wikilink,
+        // and no anchor (let alone a script) reaches the output.
         let html = render_linkified("x [[alice|<script>alert(1)</script>]] y\n");
         assert!(!html.contains("<script>"), "{html}");
         assert!(!html.contains("<a "), "{html}");

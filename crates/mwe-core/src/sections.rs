@@ -177,8 +177,8 @@ const SECTION_COLUMNS: &str = r#"source_path, section_ord, wiki_id, heading_path
 
 /// Replace a page's sections with `sections`, atomically.
 ///
-/// Upserts by position and then drops any tail position the new content
-/// no longer reaches, all in **one transaction**. Doing it atomically is
+/// Upserts by position and then drops any tail position the new content does
+/// not reach, all in **one transaction**. Doing it atomically is
 /// what makes concurrent reindexers of the same page (the push-enqueued
 /// index, the filesystem watcher, the safety-net sweep) converge to one
 /// clean set: `SQLite` serializes writers, so a second pass observes the
@@ -853,9 +853,8 @@ fn decode_smart_wiki(raw: RawSmartWikiRow) -> Result<SmartWikiRow> {
 /// Project one smart wiki's `_meta.md` into the registry.
 ///
 /// Idempotent: re-projecting an unchanged wiki rewrites the same values.
-/// This is the **only** write path for wiki-level smart-wiki ACL — a
-/// sharing edit touches this one row, where it used to rewrite one row
-/// per indexed section.
+/// This is the **only** write path for wiki-level smart-wiki ACL — a sharing
+/// edit touches this one row instead of one row per indexed section.
 ///
 /// # Errors
 ///

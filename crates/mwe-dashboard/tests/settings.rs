@@ -179,7 +179,7 @@ async fn email_editor_is_embedded_in_settings_for_admin() {
     assert!(html.contains("smtp.example.com"), "{html}");
     assert!(html.contains("Update password"), "{html}");
 
-    // The old dedicated page is gone.
+    // Email settings live on this page; `/admin/email` is not a route.
     let response = send(
         &app,
         Request::builder()

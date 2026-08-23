@@ -230,11 +230,10 @@ fn shell(
                 // browser tab size without rasterisation. Embedded via
                 // rust-embed alongside the rest of the dashboard assets.
                 link rel="icon" type="image/svg+xml" href="/dashboard/static/mwe-mark.svg";
-                // Phase 3: the legacy `app.css` is gone; every rule
-                // it owned was ported into `tailwind/app.css` under
-                // `@layer components` with the colour references
-                // rerouted through the design tokens. Page bodies
-                // keep their original class names (`.flash`, `.kpi`,
+                // Every dashboard rule lives in `tailwind/app.css`
+                // under `@layer components`, with its colour
+                // references routed through the design tokens. Page
+                // bodies carry plain class names (`.flash`, `.kpi`,
                 // `.config-table`, …) and pick up the phosphor
                 // palette automatically.
                 link rel="stylesheet" href="/dashboard/static/tailwind.css";
@@ -318,9 +317,9 @@ fn header(read_only: bool, demo_identities: &[String], user: Option<&SessionUser
                 class="brand flex items-center gap-3 no-underline shrink-0 whitespace-nowrap" {
                 img src="/dashboard/static/mwe-mark.svg" alt="" class="h-9 w-9 shrink-0";
                 // Two-line vertical lockup: wordmark on top,
-                // "dashboard" tagline underneath. Reads as one
-                // logo block at every viewport — no separate
-                // tagline span floating in the topbar anymore.
+                // "dashboard" tagline underneath. One logo block at every
+                // viewport, rather than a tagline span floating loose in
+                // the topbar.
                 span class="flex flex-col leading-tight" {
                     span class="wordmark text-base md:text-lg" {
                         "mwe" span.dim { "-mcp" }
@@ -341,7 +340,7 @@ fn header(read_only: bool, demo_identities: &[String], user: Option<&SessionUser
                     (nav_link("/dashboard/home", "Home"))
                     // Single "Wikis" entry; the Standard / Smart split is a
                     // tab bar on the page itself (`wiki_view::wiki_family_tabs`),
-                    // so a smart wiki no longer shows up under two nav links.
+                    // so no wiki appears under two nav links.
                     (nav_link("/dashboard/wiki", "Wikis"))
                     (nav_link("/dashboard/skills", "Skills"))
                     (nav_link("/dashboard/facts", "Facts"))

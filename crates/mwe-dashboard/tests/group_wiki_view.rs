@@ -74,7 +74,7 @@ async fn group_owned_wiki_page_view_renders_instead_of_500() {
     );
 
     // The leaf-page view (`view_page`, not the wiki overview) is the handler
-    // that runs the affordance read-access checks. Before the fix this 500-ed.
+    // that runs the affordance read-access checks.
     // Any real page of the wiki exercises it; a new wiki is seeded with its
     // `@rules.md`.
     let view = send(

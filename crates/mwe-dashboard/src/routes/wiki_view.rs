@@ -720,20 +720,13 @@ async fn view(
         .await
         .map_err(|e| DashboardError::Internal(format!("count_active_in_wiki: {e}")))?;
     // No wiki is assumed to have an `index.md`. A standard wiki has none at
-    // all since the nightly index writer was deleted (2026-08-15); a smart
+    // all, and nothing may coin one; a smart
     // wiki has whatever pages its consumer pushed, which may or may not
     // include one — it is documentation, not a shape the engine imposes. So
     // this previews the page when it is there and renders nothing when it is
     // not, exactly as it would for any other page name.
-    let rendered_index_body = rendered_index_for(
-        &state,
-        &memory.tree,
-        &meta,
-        &wiki_id,
-        &user.sender_id,
-        reveal,
-    )
-    .await?;
+    let rendered_index_body =
+        rendered_index_for(&state, &memory.tree, &wiki_id, &user.sender_id, reveal).await?;
     let link_index = wikilink_index(&memory.tree);
 
     // The owning principal is derived from topology (the root identity
@@ -932,11 +925,9 @@ struct PageComment {
 /// collects everything else (anchor missing from the body, anchor
 /// absent in the cite, or path mismatch).
 ///
-/// Earlier keying was per-line-number to match the line-by-line
-/// `<pre>` walker. With the markdown preview rendered by
-/// [`md_render`], the body is no longer walked line-by-line; the
-/// renderer fires a per-heading callback with the slug, so keying by
-/// slug is the natural fit. Same orphaned policy.
+/// Keyed by heading slug, not by line number: [`md_render`] renders the
+/// markdown preview and fires a per-heading callback with the slug, so nothing
+/// walks the body line by line for a number to key on.
 #[derive(Debug, Default)]
 struct CommentLayout {
     inline_by_anchor: HashMap<String, Vec<PageComment>>,
@@ -973,8 +964,6 @@ async fn view_page(
     let chrome = layout::Chrome::of(&state);
     let memory = require_memory(&state)?;
     let wiki_id = WikiId::parse(&id).map_err(|e| DashboardError::BadRequest(format!("{e}")))?;
-    let meta = wiki_get_meta(&memory.tree, &wiki_id).map_err(map_wiki_err)?;
-
     let rel = std::path::PathBuf::from(&page_path);
     if !mwe_core::wiki::is_safe_page_path(&rel) {
         return Err(DashboardError::BadRequest(format!(
@@ -997,7 +986,6 @@ async fn view_page(
     let rendered = project_page(
         &state,
         &memory.tree,
-        &meta,
         &wiki_id,
         &rel,
         &raw_body,
@@ -1150,7 +1138,6 @@ async fn page_acl_map_for(
 async fn rendered_index_for(
     state: &DashboardState,
     tree: &mwe_core::wiki::WikiTree,
-    meta: &mwe_core::wiki::WikiMeta,
     wiki_id: &WikiId,
     sender_id: &str,
     reveal: bool,
@@ -1161,14 +1148,14 @@ async fn rendered_index_for(
         Err(mwe_core::wiki::WikiError::PageNotFound { .. }) => return Ok(None),
         Err(e) => return Err(map_wiki_err(e)),
     };
-    let rendered = project_page(state, tree, meta, wiki_id, index, &raw, sender_id, reveal).await?;
+    let rendered = project_page(state, tree, wiki_id, index, &raw, sender_id, reveal).await?;
     Ok(Some(rendered))
 }
 
 /// Declassify one page body for the signed-in operator — exactly the
-/// way `wiki_read` does for a consumer: the wiki's `acl_default`, the
-/// operator's group memberships, and the page's DB-authoritative
-/// **active** ACL map (retired regions redact fail-closed), then
+/// way `wiki_read` does for a consumer: the operator's group
+/// memberships and the page's DB-authoritative **active** ACL map
+/// (retired regions redact fail-closed), then
 /// [`render::render_for_sender`]. Under the admin reveal the map switches
 /// to the full variant and the render to [`render::render_admin_reveal`],
 /// so retired residue stays visible to the supervision lens.
@@ -1176,23 +1163,18 @@ async fn rendered_index_for(
 /// Like `wiki_read` (and the recall navigator), the **testata is stripped
 /// before rendering**: the frontmatter card (`keywords`/`description`) is
 /// owner-tier metadata, not prose, so leaving it in would leak the themes of a
-/// wiki the operator is not the default reader of (the
-/// ACL card boundary,
-/// dashboard half). The structured fields the viewer needs
+/// wiki the operator is not the default reader of (the ACL card
+/// boundary, dashboard half). The structured fields the viewer needs
 /// (`title`/`type`/`acl_default`) are shown separately from `meta`.
 async fn project_page(
     state: &DashboardState,
     tree: &mwe_core::wiki::WikiTree,
-    meta: &mwe_core::wiki::WikiMeta,
     wiki_id: &WikiId,
     page: &Path,
     raw: &str,
     sender_id: &str,
     reveal: bool,
 ) -> Result<render::SegmentedRenderOutput> {
-    let effective_acl_default = tree
-        .resolve_scope_principal(meta)
-        .map_err(|e| DashboardError::Internal(format!("resolve_scope_principal: {e}")))?;
     let sender_groups = enrollment::groups_for(&state.pool, sender_id)
         .await
         .map_err(|e| DashboardError::Internal(format!("enrollment::groups_for: {e}")))?;
@@ -1208,21 +1190,9 @@ async fn project_page(
     // DB-known region carries its fact id so the HTML render can drop the
     // region → fact-record anchor after it.
     let rendered = if reveal {
-        render::render_admin_reveal_segments(
-            &body,
-            &db_acl,
-            &effective_acl_default,
-            sender_id,
-            &sender_groups,
-        )
+        render::render_admin_reveal_segments(&body, &db_acl, sender_id, &sender_groups)
     } else {
-        render::render_for_sender_segments(
-            &body,
-            &db_acl,
-            &effective_acl_default,
-            sender_id,
-            &sender_groups,
-        )
+        render::render_for_sender_segments(&body, &db_acl, sender_id, &sender_groups)
     };
     Ok(rendered)
 }
@@ -1717,9 +1687,10 @@ fn render_view_page_body(
     }
 }
 
-/// The "blessed channels" footer: how to change the page without the
-/// (removed) raw editor. The inline-comments link is offered only when
-/// the viewer can actually comment, so it is never a dead link.
+/// The "blessed channels" footer: the ways a page is changed. There is no
+/// raw editor, so this list is the whole surface. The inline-comments link
+/// is offered only when the viewer can actually comment, so it is never a
+/// dead link.
 ///
 /// On a frozen deployment there are no channels at all — the footer would
 /// otherwise be a list of three links to things that refuse — so it says

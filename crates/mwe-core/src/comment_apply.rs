@@ -1370,9 +1370,10 @@ mod tests {
 
     #[tokio::test]
     async fn add_defaults_subject_to_commenter_and_stamps_them_as_sender() {
-        // The page mixes subjects: facts[0] is `global` — the over-grant trap a
-        // previous design would copy. With no LLM `subject_id`, the new fact now
-        // defaults to the COMMENTER (its author, `author_sender_id=alice`) and
+        // The page mixes subjects: facts[0] is `global` — the over-grant trap
+        // that copying a neighbouring fact's subject would spring. With no LLM
+        // `subject_id`, the new fact defaults to the COMMENTER (its author,
+        // `author_sender_id=alice`) and
         // is SENT by them — never the arbitrary global facts[0], never the wiki
         // default for a fact whose author is known.
         let (dir, tree, pool) = setup().await;

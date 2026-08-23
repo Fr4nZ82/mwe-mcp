@@ -78,9 +78,9 @@ The system prompt for **Il Cronista** (compiler stage 3,
   `description` is the page's **card** — the single line `reader_page_card`
   serves the recall navigator, which never sees the page text and decides from
   the card alone whether to open it. A page is reachable **only** by a fact
-  hit, a match on this line, or an inbound `[[wikilink]]` — the directory
-  listing of neighbouring pages was retired by design, so nothing offers a page
-  merely for sitting in the same folder. That is why the body's DESCRIPTION
+  hit, a match on this line, or an inbound `[[wikilink]]` — there is no
+  directory listing of neighbouring pages, so nothing offers a page merely for
+  sitting in the same folder. That is why the body's DESCRIPTION
   block is written as a findability brief rather than a summarising one, and
   why an authored `[[wikilink]]` is load-bearing rather than decorative.
   `style` is the

@@ -29,8 +29,8 @@
 //! Both gated on `consumer_class=smart` — these tools have no business
 //! on a standard/conversational token.
 //!
-//! See `tool-reference.md`
-//! for the wire shape + error mapping.
+//! The wire shape and error mapping live at the MCP boundary
+//! (`mwe_mcp_server::mcp`).
 
 use std::collections::HashMap;
 use std::sync::Arc;

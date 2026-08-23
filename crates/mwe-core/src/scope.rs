@@ -191,9 +191,7 @@ fn plan_move(
 
     // A wiki's owning principal is **derived** from its path to the root
     // identity wiki, never declared — so a re-parent (including a
-    // promote-to-root) never rewrites a principal. The old "refuse
-    // promote-to-root while `acl_default = inherit`" guard is gone with the
-    // `Inherit` variant.
+    // promote-to-root) never rewrites a principal.
 
     let new_abs_dir = if let Some(new_parent) = new_parent_id {
         if new_parent == source_id {

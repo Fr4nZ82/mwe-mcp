@@ -1,14 +1,14 @@
 //! Which pages a model is shown, once the memory has more of them than fit
 //! one list.
 //!
-//! Two stages ask the same question and used to answer it the same wrong way.
-//! The Cartografo decides where a fact goes; the Cronista decides which pages
-//! this page should link to. Past their ceilings both were handed **the pages
-//! nearest theirs**, ranked by card similarity — and for the second question
-//! that is precisely the wrong list, because a link is worth writing exactly
-//! when a search would not have found the destination anyway. Serving the
-//! forty nearest pages to a model told to link the unreachable ones is
-//! offering it the answers its own rule tells it to reject.
+//! Two stages ask the same question. The Cartografo decides where a fact goes;
+//! the Cronista decides which pages this page should link to. Past their
+//! ceilings the obvious answer is **the pages nearest theirs**, ranked by card
+//! similarity — and for the second question that is precisely the wrong list,
+//! because a link is worth writing exactly when a search would not have found
+//! the destination anyway. Serving the nearest pages to a model told to link
+//! the unreachable ones is offering it the answers its own rule tells it to
+//! reject.
 //!
 //! ## The measurement
 //!

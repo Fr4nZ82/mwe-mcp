@@ -484,7 +484,7 @@ async fn main() -> Result<()> {
 ///    so the operator never has to `source` it manually.
 ///
 /// Identity (users, groups, the first admin) is **not** seeded here:
-/// the dashboard owns the identity lifecycle (see identity-and-acl.md),
+/// the dashboard owns the identity lifecycle,
 /// and the first-run setup wizard at `/dashboard/setup` creates the
 /// first admin on the next `serve`.
 async fn cmd_init(workdir: &Path, llm_profile: &str, force_config: bool) -> Result<()> {
@@ -2826,10 +2826,10 @@ fn load_secret_from_env() -> Result<TokenSecret> {
 }
 
 /// Resolve the JWT signing secret for `serve`, self-bootstrapping it on
-/// first boot (roadmap group 19).
+/// first boot.
 ///
-/// `serve` no longer requires a prior `mwe-mcp init`: on an empty workdir
-/// it generates a fresh `MWE_TOKEN_SECRET`, persists it to
+/// `serve` needs no prior `mwe-mcp init`: on an empty workdir it
+/// generates a fresh `MWE_TOKEN_SECRET`, persists it to
 /// `<workdir>/mwe-mcp.env` (mode `0o600` on unix), and uses it — so the
 /// daemon comes up self-sufficient and the admin only completes identity
 /// and LLM config from the dashboard wizard. Subsequent boots find the

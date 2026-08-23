@@ -109,12 +109,10 @@ async fn list_smart_wikis(
         .walk()
         .map_err(|e| DashboardError::Internal(format!("walk wikis: {e}")))?;
 
-    // Smart family = the per-wiki `_meta.md` smart flag
-    // (replaces the `wiki_types_registry` lookup).
+    // Smart family = the per-wiki `_meta.md` smart flag.
     // The list is a read surface like any other: a smart wiki appears only to
     // someone who may read it (its owner, a member of the owning group, or a
-    // `shared_with` entry). Until 2026-07-30 it listed every smart wiki to
-    // every signed-in user — and the page behind it opened for them too.
+    // `shared_with` entry).
     let reveal_all = crate::reveal::active(&state, &user, &jar);
     let mut rows = Vec::new();
     for d in discovered {
@@ -713,10 +711,10 @@ async fn submit_sharing(
     // the recall read-window before this request returns; the periodic
     // safety-net sweep (~5 min) is too slow for an access revocation.
     //
-    // This is now a **single-row** write. Read access belongs to the wiki,
-    // not to its sections, so there is nothing to re-stamp per section —
-    // where a roster change used to rewrite one row per indexed section
-    // (over a thousand on a large project wiki), it now touches one.
+    // A **single-row** write. Read access belongs to the wiki, not to its
+    // sections, so there is nothing to re-stamp per section: a roster change
+    // touches one row instead of one per indexed section, which on a large
+    // project wiki is over a thousand.
     mwe_core::sections::upsert_smart_wiki(
         &state.pool,
         &mwe_core::sections::SmartWikiRow {

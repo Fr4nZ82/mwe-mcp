@@ -12281,10 +12281,10 @@ mod tests {
         }
     }
 
-    /// One bad response must cost one pair, not the night. Before the fix
-    /// the revisor propagated the first LLM error and `dream::run_full`
-    /// aborted the whole cycle on it — the promote, the reorg and every
-    /// queued page compile died with it, retry a day away.
+    /// One bad response must cost one pair, not the night. A revisor that
+    /// propagated the first LLM error would abort `dream::run_full` on it,
+    /// taking the promote, the reorg and every queued page compile with it,
+    /// retry a day away.
     #[tokio::test]
     async fn revisor_skips_a_pair_the_backend_fumbled_and_keeps_going() {
         let (dir, mut tree, pool) = setup_workdir().await;

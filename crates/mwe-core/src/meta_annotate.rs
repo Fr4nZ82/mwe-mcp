@@ -30,9 +30,9 @@
 //!
 //! The two `_meta` annotations are **write-side**: nothing on the read side is
 //! shown a wiki, a wiki card or a list of them, so neither orients a hop. They
-//! serve the filer, and the `summary` additionally has no reader left at all
-//! since the catalog was deleted — it is kept because the write side may yet
-//! want it, not because a turn sees it.
+//! serve the filer, and the `summary` additionally has no reader at all — it
+//! is kept because the write side may yet want it, not because a turn sees
+//! it.
 //!
 //! The recall-navigation principle is to push intelligence to compile-time
 //! (offline, strong model, not latency-critical) so the recall-time navigator
@@ -103,8 +103,7 @@ pub async fn sync_wiki_keywords(pool: &SqlitePool, tree: &WikiTree) -> Result<us
 /// readability, so it never disqualifies a default-owned fact. Anything else
 /// (a cross-user region, a group-owned region on a user wiki, …) is
 /// special-cased content whose topic words must not surface on a card that is
-/// readable at wiki level. See the boundary write-up in
-/// `identity-and-acl.md`.
+/// readable at wiki level.
 fn fact_at_default_visibility(subject: &Principal, default: &Principal) -> bool {
     subject.is_global() || subject == default
 }
@@ -1166,9 +1165,9 @@ mod tests {
         let (_dir, tree) = open_tree();
         forge(&tree, "alice");
         let pool = make_pool().await;
-        // A page whose testata carries topics no fact backs any more (e.g.
-        // after a REM split relocated its facts) sheds the stale entry; the
-        // operator-authored sibling keyword survives.
+        // A page whose testata carries topics no fact backs (a REM split
+        // relocated them) sheds the stale entry; the operator-authored sibling
+        // keyword survives.
         write_page(
             &tree,
             "alice",

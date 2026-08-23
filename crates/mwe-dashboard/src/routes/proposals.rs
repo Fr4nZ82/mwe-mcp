@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Proposal action routes — the bridge endpoints behind the chat.
 //!
-//! The proposals **questionnaire / tray form surface is retired**:
-//! proposals are now reviewed and applied by talking to the dashboard
-//! chat (`/dashboard/chat`), which drives the same `mwe_core::proposals`
-//! chassis through its agentic tools (`structure_proposal_*`). What
-//! survives here are the **action route** and the **open-in-chat
-//! bridge**, kept mounted as endpoints the chat / consumer links target:
+//! **There is no questionnaire or tray form.** Proposals are reviewed and
+//! applied by talking to the dashboard chat (`/dashboard/chat`), which
+//! drives the `mwe_core::proposals` chassis through its agentic tools
+//! (`structure_proposal_*`). This module mounts the two endpoints the chat
+//! and consumer links target:
 //!
 //! - POST `/dashboard/proposals/:id/apply` — apply a pending proposal
 //!   (with form answers, for any deep-link that still posts them).
@@ -16,12 +15,10 @@
 //!   read-what-happened primer for an already-applied structured-wiki
 //!   emergence).
 //!
-//! The POST route no longer renders a page: the form that called it is
-//! gone, so it performs its chassis action and **303-redirects to
-//! `/dashboard/chat`** (the single operational surface) on both success
-//! and classified error — the chat is where the operator continues. Its
-//! auth / `memory` wiring is unchanged; only the response shape moved
-//! from HTML to a redirect.
+//! The POST route renders no page. There is no form calling it, so it performs
+//! its chassis action and **303-redirects to `/dashboard/chat`** (the single
+//! operational surface) on both success and classified error — the chat is
+//! where the operator continues.
 
 use axum::Form;
 use axum::Router;
@@ -106,12 +103,11 @@ pub struct ApplyForm {
     pub target_page: Option<String>,
 }
 
-/// `POST /dashboard/proposals/:id/apply` — apply a pending proposal,
-/// then hand the operator back to the chat (the form that used to render
-/// the outcome is retired). Errors are not surfaced as a page either:
-/// the route classifies them only insofar as it logs them, then
-/// 303-redirects to the chat where the operator can inspect state with
-/// the read tools and retry conversationally.
+/// `POST /dashboard/proposals/:id/apply` — apply a pending proposal, then hand
+/// the operator back to the chat. Nothing renders the outcome as a page, and
+/// nothing surfaces an error as one either: the route logs what it classifies,
+/// then 303-redirects to the chat where the operator can inspect state with the
+/// read tools and retry conversationally.
 async fn apply(
     State(state): State<DashboardState>,
     user: SessionUser,

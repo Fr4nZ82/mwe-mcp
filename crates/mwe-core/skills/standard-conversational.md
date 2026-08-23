@@ -303,8 +303,9 @@ opaque id back when calling `wiki_read`.
   says nothing: the memory keeps itself, and there is nothing for the
   user to confirm.
 - ❌ **Trying to call any `structure_proposal_*` tool over MCP.**
-  The whole family was removed from the MCP surface. The dashboard is the only surface for those
-  actions. Surface a `dashboard_link` URL instead.
+  There is no `structure_proposal_*` family on the MCP surface. The dashboard
+  is the only surface for those actions. Surface a `dashboard_link` URL
+  instead.
 - ❌ **Calling `_internal.*` tools directly.** They return `403
   not_exposed`. Use `wiki_ingest_message` for everything
   conversational.

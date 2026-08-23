@@ -45,10 +45,7 @@
 //!   wiki and a wiki is never born holding one page. **Emergent-page
 //!   creation leaves a receipt** in `structure_proposals`
 //!   ([`crate::proposals::kind::PAGE_CREATE`], born-applied —
-//!   see [`record_minted_pages`]). Until 2026-08-04 this paragraph asserted
-//!   the same thing while no page-level kind existed at all: the only kinds
-//!   were about wikis, and twelve container pages were minted over three weeks
-//!   with nothing anywhere for the operator to read.
+//!   see [`record_minted_pages`]).
 //! - Every [`FactForPage`] carries its **stable `fact_id`** so the Cronista can
 //!   emit `{{… f=<id>}}` markers and recall/supersede survive a recompile (a
 //!   defect the TS original had — it lost fact identity at render time).
@@ -673,9 +670,9 @@ pub fn build_compilation_plan(
         generated_at: now.to_owned(),
     };
 
-    // Pre-pass (Option C — forest model, no root wiki): the source wiki each page
-    // slug's facts live in. A concept page is homed where its facts are; the
-    // retired `root` wiki is gone (see `resolve_page_wiki`).
+    // Pre-pass (forest model, no root wiki): the source wiki each page slug's
+    // facts live in. A concept page is homed where its facts are, and there is
+    // no `root` wiki to home it in instead (see `resolve_page_wiki`).
     let fact_map: BTreeMap<&str, &FactForPage> =
         facts.iter().map(|f| (f.fact_id.as_str(), f)).collect();
     let mut slug_source_wiki: BTreeMap<String, String> = BTreeMap::new();
@@ -1816,9 +1813,8 @@ impl CartografoSignals {
 /// per fact on `subject ∪ allow ∪ sender`, never on the container — so the only
 /// question is whether the prose it lands in hangs together. That makes the
 /// page list the whole mechanism: a page the model is not shown is a page a
-/// fact can never reach, and until 2026-08-14 the list was its own wiki's
-/// pages plus the bare *names* of everyone else's, so a fact could never be
-/// re-homed once it landed.
+/// fact can never reach. A list of its own wiki's pages plus the bare *names*
+/// of everyone else's would mean a fact can never be re-homed once it landed.
 #[derive(Debug, Default, Clone)]
 pub enum ForeignPages {
     /// Every page of the forest, described. The default, and the right answer
@@ -2119,8 +2115,8 @@ fn vet_accepted(mut np: NewPage, _foundation: &BTreeMap<String, PagePlan>) -> Op
 ///
 /// A redirect says *«this proposed page is really that existing one»*, and the
 /// plan builder obeys it twice — assignments are rewritten to the target
-/// before the build, and step 4 rewrites the slug again. Nothing checked the
-/// target until 2026-08-10.
+/// before the build, and step 4 rewrites the slug again. So the target is
+/// vetted here, before either obedience.
 ///
 /// - **The target must exist**, as a registry page or as one accepted this
 ///   run. When it does not, step 4's fallback mints a blank page under the
@@ -3185,8 +3181,7 @@ pub async fn build_wiki_plan(
     };
     // Vet the Conciliatore's output before either half of it reaches the plan:
     // its accepted pages are materialised AND persisted into the registry, and
-    // its redirects rewrite assignments here and again in the plan builder. Both
-    // ran unchecked until 2026-08-10.
+    // its redirects rewrite assignments here and again in the plan builder.
     let accepted = std::mem::take(&mut conciliation.accepted_new);
     conciliation.accepted_new = accepted
         .into_iter()

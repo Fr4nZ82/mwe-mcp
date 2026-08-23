@@ -908,7 +908,7 @@ fn enforce_sender_or_admin(user: &SessionUser, row: &FactIndexRow) -> Result<()>
 
 /// Enforce the **standard-wikis-only** gate: refuse with a clear message
 /// when the fact's wiki is smart. Smart wikis carry no per-fragment ACL /
-/// validity — those are wiki-level (see smart-wikis.md). A wiki that can no
+/// validity — those are wiki-level. A wiki that can no
 /// longer be located is a `404` (the row points at a vanished wiki).
 fn enforce_standard_wiki(state: &DashboardState, wiki_id: &str) -> Result<()> {
     let memory = state.memory.as_ref().ok_or_else(|| {

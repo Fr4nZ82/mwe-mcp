@@ -2187,9 +2187,7 @@ fn render_page_file(
     let _ = writeln!(fm, "title: \"{title}\"");
     let _ = writeln!(fm, "created: {created}");
     let _ = writeln!(fm, "updated: {date}");
-    // No `page_type:` line. It was written here and **read by nothing** — and
-    // the field it mirrored is gone too (2026-08-19): what kind of page this is
-    // is its file name.
+    // No `page_type:` line: what kind of page this is is its file name.
     let _ = writeln!(fm, "style: {style}");
     let desc = description.replace(['"', '\n'], " ");
     let desc = desc.trim();
@@ -2205,9 +2203,8 @@ fn render_page_file(
 /// The style a page is written in when nobody proposed one.
 ///
 /// Prose: a compiled standard page is prose by default, and the tag is a recall
-/// read-hint, never a hard gate. The coercion this replaced is gone with the
-/// free-text column — since 2026-08-19 a style is one of three by type
-/// ([`crate::wiki::PageStyle`]), so there is nothing left to coerce.
+/// read-hint, never a hard gate. A style is one of three, fixed by type
+/// ([`crate::wiki::PageStyle`]), so there is nothing to coerce.
 pub(crate) fn style_or_default(style: Option<crate::wiki::PageStyle>) -> crate::wiki::PageStyle {
     style.unwrap_or(crate::wiki::PageStyle::Prosa)
 }

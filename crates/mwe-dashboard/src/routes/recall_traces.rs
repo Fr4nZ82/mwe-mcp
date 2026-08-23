@@ -18,18 +18,16 @@
 //! under the reveal switch ([`crate::reveal`]) — which is itself
 //! admin-only, so a non-admin can never widen past themself.
 //!
-//! This surface used to sit behind the admin role, and while the journal
-//! listed *everybody's* recalls that was the only gate available. Once a
-//! trace is scoped to its own sender the role stops being the right
-//! question: a user opening their own trace is not reading system
-//! telemetry, they are seeing how the memory arrived at the answer it
-//! gave **them**, over their own pages, inside their own permissions.
-//! That is transparency, and withholding it from the person the recall
-//! ran for is backwards — the 3D replay of the route is the clearest
-//! explanation of the product anyone gets.
+//! **The admin role is deliberately not the gate here.** It would be the only
+//! one available if the journal listed *everybody's* recalls; scoped to its own
+//! sender, a trace stops being system telemetry — a user opening their own is
+//! seeing how the memory arrived at the answer it gave **them**, over their own
+//! pages, inside their own permissions. That is transparency, and withholding
+//! it from the person the recall ran for is backwards: the 3D replay of the
+//! route is the clearest explanation of the product anyone gets.
 //!
-//! The consequence to keep in mind when editing: with the admin gate
-//! gone, **the route itself is what stops one user reading another's
+//! The consequence to keep in mind when editing: with no role gate,
+//! **the route itself is what stops one user reading another's
 //! trace**. There is no outer check to fall back on. `load_readable` is
 //! that check, and it answers [`DashboardError::NotFound`] rather than
 //! `Forbidden` — trace ids are a dense autoincrement, so `403` would
@@ -82,9 +80,9 @@ const INDEX_PAGE_LIMIT: i64 = 50;
 /// Own traces always; anyone else's only under the reveal switch (which is
 /// itself admin-only, so `reveal` can never be true for a non-admin).
 ///
-/// This is the **only** thing standing between two users' traces — there
-/// is no admin gate above it any more. Every handler in this module goes
-/// through it, the two by-id ones via [`load_readable`].
+/// This is the **only** thing standing between two users' traces — no role
+/// gate sits above it. Every handler in this module goes through it, the two
+/// by-id ones via [`load_readable`].
 fn readable(row: &TraceRow, user: &SessionUser, reveal: bool) -> bool {
     reveal || row.sender_id == user.sender_id
 }
