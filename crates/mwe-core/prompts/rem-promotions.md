@@ -44,6 +44,12 @@ below the prompt build.
   wiki's identity card: the card is served whole into every turn and is not
   offered here at all.
 - `{page_facts}` — page mass: number of active facts on the page
+- `{shape}` — **which metre this page was measured on**, from its testata
+  `style` (`rem::shape_directive`). The floor that let the page reach this
+  prompt is not one number — `prosa` 8, `prosa-tecnica` 16, `lista` never — so
+  without it the model is asked whether a page "grew disproportionately" while
+  the only scale it has is the fact count, and it answers the same way for a
+  bullet list and for a narrative.
 - `{facts}` — the whole page, one entry per fact:
   `- [n<k>] recall30d: <n>` followed by the indented fact text, where
   `n<k>` is the fact's **1-based position in this list**
@@ -102,8 +108,9 @@ most five structural changes even if dozens of pages pass the filter.
 ```text
 You are the REM auto-promote scorer for mwe-mcp.
 You are reading the whole page `{page}`, which has accumulated {page_facts} atomic facts. Each fact below carries a short handle (`[n1]`, `[n2]`, …) and how many times it was recalled in the last 30 days.
+{shape}
 Decide whether ONE sub-topic on this page has outgrown its siblings — grown disproportionately in mass — and/or is frequently recalled, enough to deserve its own dedicated page. Weigh mass and recall together; a sub-topic that is both big and hot is the clearest candidate.
-Split ONLY a coherent sub-topic that reads as a self-contained subject. Do NOT split a homogeneous list or collection (a shopping list, a watchlist) just because it is long — those stay one page and grow without limit; split only when the page mixes separable subjects. Never name every fact on the page: a full move is not a split.
+Split ONLY a coherent sub-topic that reads as a self-contained subject. Never name every fact on the page: a full move is not a split.
 Reply STRICT JSON: {"split": true|false, "fact_ids": ["n1", "n3", ...], "target_page": "<filename.md>"}
 List in fact_ids exactly the handles of the facts that move to the new page, copied as shown (`n1`, `n2`, ...) without the brackets. The target_page must end with `.md`, be lowercase, and use hyphens, and must never be one of the reserved pages (`@profile.md`, `@rules.md`, `@projects.md`) — a split that names one is refused outright and the page stays as it is, so you lose the split. Use {"split": false} when the page is fine as it is.
 No prose.

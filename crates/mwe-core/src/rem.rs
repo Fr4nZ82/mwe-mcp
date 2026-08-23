@@ -906,6 +906,7 @@ pub async fn run_cycle(
         tree,
         llms.auto_promote,
         &cycle_id,
+        &day,
         policy,
         &smart_wiki_index,
     )
@@ -915,6 +916,7 @@ pub async fn run_cycle(
         tree,
         llms.revisor,
         &cycle_id,
+        &day,
         policy,
         &smart_wiki_index,
     )
@@ -1852,10 +1854,56 @@ fn over_mass_floor(
     mass: usize,
     policy: &RemPolicy,
 ) -> bool {
-    let style = wiki_relative_page(d, path)
+    mass_floor_for_style(page_style_of(d, path), policy).is_some_and(|floor| mass >= floor)
+}
+
+/// The writing style declared on a page's testata, or `None` when the page
+/// cannot be read at all.
+///
+/// One reader for the floor and for the sentence the model is shown, so the
+/// metre the engine measures by and the metre it names cannot drift apart.
+fn page_style_of(d: &crate::wiki::DiscoveredWiki, path: &str) -> Option<crate::wiki::PageStyle> {
+    wiki_relative_page(d, path)
         .and_then(|rel| crate::meta_annotate::read_page_card(&d.abs_dir.join(rel)).ok())
-        .and_then(|card| card.style);
-    mass_floor_for_style(style, policy).is_some_and(|floor| mass >= floor)
+        .and_then(|card| card.style)
+}
+
+/// The sentence that tells the split model **which metre it is being measured
+/// on**, from the page's own writing style.
+///
+/// The floor is not one number: a `prosa` page is a thread and loses it early,
+/// a `prosa-tecnica` page is scanned by points and tolerates more, and a
+/// `lista` is a set that is never split for size. Without this the model is
+/// asked whether a page has "grown disproportionately" while the only scale it
+/// has is the fact count — so it guesses at a rule the engine already knows,
+/// and guesses the same way for a bullet list and a narrative.
+fn shape_directive(style: Option<crate::wiki::PageStyle>, policy: &RemPolicy) -> String {
+    use crate::wiki::PageStyle;
+    match style {
+        Some(PageStyle::Lista) => "This page is written as a `lista` — a set, \
+             consulted rather than read through. **A list is never split for \
+             size**: its whole value is being complete in one place, and two \
+             halves are not two answers. Reply `{\"split\": false}` unless the \
+             page genuinely mixes separable subjects."
+            .to_owned(),
+        Some(PageStyle::ProsaTecnica) => format!(
+            "This page is written as `prosa-tecnica` — short points, SCANNED \
+             rather than read through. Scanning tolerates mass, so the engine \
+             only looks at a page of this kind from {floor} facts up, and you \
+             are reading it because it passed that. Mass alone is therefore not \
+             the question: the question is whether one subject in here reads as \
+             separate from the others.",
+            floor = policy.auto_promote_min_page_facts_technical
+        ),
+        Some(PageStyle::Prosa) | None => format!(
+            "This page is written as `prosa` — a narrative thread tying its \
+             facts together. Past a point there is no thread left, only \
+             paragraphs side by side, so the engine looks at a page of this \
+             kind from {floor} facts up and you are reading it because it \
+             passed that. Two pages with two threads beat one page with none.",
+            floor = policy.auto_promote_min_page_facts
+        ),
+    }
 }
 
 const fn mass_floor_for_style(
@@ -1891,6 +1939,7 @@ async fn run_auto_promote(
     tree: &WikiTree,
     llm: Option<&dyn LlmBackend>,
     cycle_id: &str,
+    day: &day::DayPerimeter,
     policy: &RemPolicy,
     smart_wiki_index: &SmartWikiIndex,
 ) -> Result<AutoPromoteReport> {
@@ -1975,7 +2024,23 @@ async fn run_auto_promote(
             .map(|(&p, _)| p)
             .filter(|p| !regrouped.contains(*p))
             .collect();
-        pages.sort_unstable();
+        // What the day added to first, then the heaviest, then the slug for
+        // determinism. Sorting by slug alone hands the cap an alphabetical
+        // list, and where a list is cut the order IS the selection: a page
+        // that grew today would then wait for a night with room, behind pages
+        // nothing has touched in months.
+        let touched: HashSet<&str> = facts
+            .iter()
+            .filter(|f| day.touched_fact(f.fact_id.as_str()))
+            .map(|f| f.source_path.as_str())
+            .collect();
+        pages.sort_by(|a, b| {
+            touched
+                .contains(b)
+                .cmp(&touched.contains(a))
+                .then_with(|| page_mass.get(b).cmp(&page_mass.get(a)))
+                .then_with(|| a.cmp(b))
+        });
         for source_path in pages {
             if report.applied.len() >= policy.auto_promote_cap {
                 break;
@@ -2019,7 +2084,11 @@ async fn run_auto_promote(
             // re-buy the verdict — this pass runs on the strong model and
             // ships the whole page in the prompt, so a byte-identical
             // re-ask is the most expensive no-op in the cycle.
-            let memo_prompt = paragraph_split_memo_prompt(tree, &source_page_rel, &page_facts)?;
+            // The metre this page was measured on, and the one the model is
+            // about to be told about: read once, used for both.
+            let style = page_style_of(d, source_path);
+            let memo_prompt =
+                paragraph_split_memo_prompt(tree, &source_page_rel, &page_facts, style, policy)?;
             let memo_key = rem_verdicts::key(llm.model_id(), &memo_prompt);
             if rem_verdicts::is_settled(pool, rem_verdicts::kind::PAGE_SPLIT, &memo_key).await? {
                 continue;
@@ -2027,7 +2096,8 @@ async fn run_auto_promote(
             report.candidates_examined += 1;
 
             let mass = page_facts.len();
-            let prompt = paragraph_split_prompt(tree, &source_page_rel, &page_facts)?;
+            let prompt =
+                paragraph_split_prompt(tree, &source_page_rel, &page_facts, style, policy)?;
             let resp = llm
                 .complete(
                     CompletionRequest::new(prompt)
@@ -2289,6 +2359,8 @@ fn paragraph_split_prompt_inner(
     tree: &WikiTree,
     page: &str,
     page_facts: &[&FactIndexRow],
+    style: Option<crate::wiki::PageStyle>,
+    policy: &RemPolicy,
     canonical: bool,
 ) -> Result<String> {
     use std::fmt::Write as _;
@@ -2314,6 +2386,7 @@ fn paragraph_split_prompt_inner(
         &[
             ("page", page),
             ("page_facts", mass_s.as_str()),
+            ("shape", shape_directive(style, policy).as_str()),
             ("facts", facts_block.as_str()),
         ],
     )
@@ -2325,8 +2398,10 @@ fn paragraph_split_prompt(
     tree: &WikiTree,
     page: &str,
     page_facts: &[&FactIndexRow],
+    style: Option<crate::wiki::PageStyle>,
+    policy: &RemPolicy,
 ) -> Result<String> {
-    paragraph_split_prompt_inner(tree, page, page_facts, false)
+    paragraph_split_prompt_inner(tree, page, page_facts, style, policy, false)
 }
 
 /// The canonical rendering hashed into the memo key: same template, same
@@ -2336,8 +2411,10 @@ fn paragraph_split_memo_prompt(
     tree: &WikiTree,
     page: &str,
     page_facts: &[&FactIndexRow],
+    style: Option<crate::wiki::PageStyle>,
+    policy: &RemPolicy,
 ) -> Result<String> {
-    paragraph_split_prompt_inner(tree, page, page_facts, true)
+    paragraph_split_prompt_inner(tree, page, page_facts, style, policy, true)
 }
 
 /// Resolve one entry of the split verdict's `fact_ids` list against the
@@ -2978,6 +3055,7 @@ fn merge_candidates(
     plan: &CompilationPlan,
     duplicate_prose: &[(String, String, f32)],
     family: &BTreeMap<String, String>,
+    day: &day::DayPerimeter,
 ) -> Vec<(String, String, String)> {
     fn eligible<'p>(plan: &'p CompilationPlan, slug: &str) -> Option<&'p PagePlan> {
         plan.pages
@@ -3031,6 +3109,20 @@ fn merge_candidates(
             }
         }
     }
+    // A pair the day touched leads, whatever put it on the list. The caller
+    // spends a fixed budget of judgements: two pages that both stopped moving
+    // months ago will still be there tomorrow, and a page opened this morning
+    // for a single claim is the one that most needs somewhere better to be.
+    // A stable sort, so the signal ranking above survives inside each band.
+    let touched = |slug: &str| {
+        day.touched_page(slug)
+            || plan.pages.get(slug).is_some_and(|p| {
+                p.primary_facts
+                    .iter()
+                    .any(|f| day.touched_fact(f.fact_id.as_str()))
+            })
+    };
+    out.sort_by_key(|(a, b, _)| std::cmp::Reverse(touched(a) || touched(b)));
     out
 }
 
@@ -3156,6 +3248,7 @@ async fn run_page_merge(
     tree: &WikiTree,
     llm: &dyn LlmBackend,
     cycle_id: &str,
+    day: &day::DayPerimeter,
     policy: &RemPolicy,
     smart_wiki_index: &SmartWikiIndex,
 ) -> Result<PageMergeReport> {
@@ -3198,7 +3291,7 @@ async fn run_page_merge(
     // night and every night after, with the report saying
     // `candidates_examined: 0` and raising no error.
     let mut budget = policy.page_merge_cap;
-    for (slug_a, slug_b, signal) in merge_candidates(&plan, &duplicate_prose, &family) {
+    for (slug_a, slug_b, signal) in merge_candidates(&plan, &duplicate_prose, &family, day) {
         if budget == 0 {
             break;
         }
@@ -3774,8 +3867,9 @@ struct RefileWikiView<'a> {
 struct RefileCase<'a> {
     fact: &'a FactIndexRow,
     home: &'a RefileWikiView<'a>,
-    /// Foreign wiki ids the fact embeds closer to than home, best first.
-    foreign: Vec<&'a RefileWikiView<'a>>,
+    /// The foreign wikis this fact may be offered, best first, each carrying
+    /// the reason it is there ([`ranked_foreign`]).
+    foreign: Vec<ForeignOffer<'a>>,
 }
 
 /// The LLM's verdict for one refile candidate (shared by the refile
@@ -3826,6 +3920,7 @@ fn best_cosine_to_wiki(fact: &FactIndexRow, view: &RefileWikiView<'_>) -> f32 {
 fn refile_cases<'a>(
     views: &'a [RefileWikiView<'a>],
     day: &day::DayPerimeter,
+    turn_of: &HashMap<String, String>,
     policy: &RemPolicy,
 ) -> Vec<RefileCase<'a>> {
     let mut cases: Vec<(bool, &str, RefileCase<'a>)> = Vec::new();
@@ -3844,7 +3939,7 @@ fn refile_cases<'a>(
             if wiki::is_channel_page(&fact.source_path) {
                 continue;
             }
-            let foreign = ranked_foreign(views, home, fact, true);
+            let foreign = ranked_foreign(views, home, fact, turn_of, true);
             if foreign.is_empty() {
                 continue;
             }
@@ -3866,26 +3961,145 @@ fn refile_cases<'a>(
     cases.into_iter().map(|(_, _, c)| c).collect()
 }
 
-/// The foreign wikis ranked by best cosine to `fact`, best first. With
-/// `margin` the cosine pre-filter applies (a foreign wiki must beat home
-/// by [`REFILE_COSINE_MARGIN`] — the self-nomination valve); without it
-/// every foreign wiki ranks (the reviewer-fed bridge already nominated
-/// the fact, so the pre-filter has nothing left to decide).
+/// Why a foreign wiki is in front of the refile judge.
+///
+/// The same idea as [`crate::candidates::CandidateSource`], one level up: a
+/// list built on similarity alone offers only wikis that already sound like
+/// the fact, and a fact about Bob sitting in Alice's wiki does not have to
+/// sound like Bob's other facts to belong with them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForeignReason {
+    /// It is this fact's subject's or sender's own wiki.
+    People,
+    /// It holds a fact extracted from the same conversational turn.
+    Turn,
+    /// Its facts sit closest to this one.
+    Near,
+}
+
+impl ForeignReason {
+    const fn tag(self) -> &'static str {
+        match self {
+            Self::People => "same-people",
+            Self::Turn => "same-turn",
+            Self::Near => "near",
+        }
+    }
+}
+
+/// A foreign wiki as the judge sees it: the wiki, and why it is being offered.
+struct ForeignOffer<'a> {
+    view: &'a RefileWikiView<'a>,
+    reason: ForeignReason,
+}
+
+/// Whether `view` **is** the identity wiki of `fact`'s subject or sender.
+///
+/// The sharp form of the question, and deliberately not "does this wiki hold
+/// any fact about them": a wiki holds facts about many people — a behaviour
+/// rule about Bob lives in the agent's wiki by design — so the loose form
+/// admits nearly every wiki and says nothing. An identity wiki's id **is** its
+/// principal's ([`crate::wiki::IDENTITY_WIKI_TYPE`]), so this is an equality,
+/// and what it answers is the case this sweep exists for: a fact about Bob
+/// filed somewhere that is not Bob's.
+fn wiki_is_the_subjects_own(view: &RefileWikiView<'_>, fact: &FactIndexRow) -> bool {
+    let wiki = view.d.meta.wiki_id.as_str();
+    let names = |p: &crate::types::Principal| match p {
+        crate::types::Principal::User(id) | crate::types::Principal::Group(id) => id == wiki,
+    };
+    names(&fact.subject_id) || fact.sender_id.as_ref().is_some_and(names)
+}
+
+/// Whether `view` holds a fact from one of `turns`.
+fn wiki_shares_turns(
+    view: &RefileWikiView<'_>,
+    turns: &HashSet<String>,
+    turn_of: &HashMap<String, String>,
+) -> bool {
+    view.facts.iter().any(|f| {
+        turn_of
+            .get(f.fact_id.as_str())
+            .is_some_and(|t| turns.contains(t))
+    })
+}
+
+/// The foreign wikis this fact may be offered, best first, each carrying the
+/// reason it is there.
+///
+/// Ranked by best cosine, and **admitted by three different questions**. With
+/// `margin` the cosine pre-filter applies to the `near` question only (a
+/// foreign wiki must beat home by [`REFILE_COSINE_MARGIN`] — the
+/// self-nomination valve); the other two admit a wiki whatever the vectors
+/// say, because they answer something the vectors do not:
+///
+/// - **same people** — the wiki **is** this fact's subject's or sender's own
+///   ([`wiki_is_the_subjects_own`]). A fact about Bob filed in Alice's wiki is
+///   the whole case this sweep exists for, and it does not have to *sound*
+///   like Bob's other facts to belong with them;
+/// - **same turn** — the wiki holds a fact from the same conversation. Two
+///   facts of one turn sit at 0.256 textual similarity, so similarity will
+///   never put them together.
+///
+/// Without `margin` every foreign wiki ranks: the reviewer-fed bridge already
+/// nominated the fact, so the pre-filter has nothing left to decide.
 fn ranked_foreign<'a>(
     views: &'a [RefileWikiView<'a>],
     home: &RefileWikiView<'a>,
     fact: &FactIndexRow,
+    turn_of: &HashMap<String, String>,
     margin: bool,
-) -> Vec<&'a RefileWikiView<'a>> {
+) -> Vec<ForeignOffer<'a>> {
     let home_best = best_cosine_to_wiki(fact, home);
-    let mut foreign: Vec<(f32, &RefileWikiView<'a>)> = views
+    let turns: HashSet<String> = turn_of
+        .get(fact.fact_id.as_str())
+        .cloned()
+        .into_iter()
+        .collect();
+
+    let mut foreign: Vec<(f32, ForeignOffer<'a>)> = views
         .iter()
         .filter(|v| v.d.meta.wiki_id != home.d.meta.wiki_id)
-        .map(|v| (best_cosine_to_wiki(fact, v), v))
-        .filter(|(score, _)| !margin || *score >= home_best + REFILE_COSINE_MARGIN)
+        .filter_map(|v| {
+            let score = best_cosine_to_wiki(fact, v);
+            // Order matters only for the label: a wiki that answers two of
+            // the questions is offered once, named by the sharpest.
+            let reason = if wiki_is_the_subjects_own(v, fact) {
+                ForeignReason::People
+            } else if wiki_shares_turns(v, &turns, turn_of) {
+                ForeignReason::Turn
+            } else if !margin || score >= home_best + REFILE_COSINE_MARGIN {
+                ForeignReason::Near
+            } else {
+                return None;
+            };
+            Some((score, ForeignOffer { view: v, reason }))
+        })
         .collect();
     foreign.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    foreign.into_iter().map(|(_, v)| v).collect()
+    foreign.into_iter().map(|(_, o)| o).collect()
+}
+
+/// `fact_id → origin_message_hash`, for every live fact that came through the
+/// capture buffer with a turn recorded on it.
+///
+/// One query for the sweep, joined in memory afterwards. Never an error: a map
+/// that could not be read is empty, and the `same-turn` question then admits
+/// nobody — which is the behaviour the sweep had before it could ask.
+async fn turns_by_fact(pool: &SqlitePool) -> HashMap<String, String> {
+    match sqlx::query_as::<_, (String, String)>(
+        "SELECT c.capture_id, c.origin_message_hash
+           FROM capture_buffer c
+          WHERE c.origin_message_hash IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows.into_iter().collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, "refile: turns unread — the sweep asks two questions instead of three");
+            HashMap::new()
+        },
+    }
 }
 
 /// One short presentation line for a wiki in the prompt
@@ -3944,16 +4158,26 @@ fn refile_wiki_pages(view: &RefileWikiView<'_>) -> std::collections::BTreeSet<St
         .collect()
 }
 
-/// One candidate wiki as the judge sees it: the wiki line plus the pages it
-/// already has, which are the only landing places it may name.
-fn refile_candidate_block(view: &RefileWikiView<'_>) -> String {
-    let pages = refile_wiki_pages(view);
+/// One candidate wiki as the judge sees it: **why it is here**, the wiki line,
+/// and the pages it already has, which are the only landing places it may name.
+///
+/// The reason is on the line because the three questions that admit a wiki
+/// mean different things. `near` says its facts sound like this one, which is
+/// weak evidence on its own. `same-people` says it holds facts about this
+/// fact's subject — and a fact filed away from its own subject is the case
+/// this sweep exists for.
+fn refile_candidate_block(offer: &ForeignOffer<'_>) -> String {
+    let pages = refile_wiki_pages(offer.view);
     let pages = if pages.is_empty() {
         "(none yet — this wiki cannot take a fact until it has a page)".to_owned()
     } else {
         pages.into_iter().collect::<Vec<_>>().join(", ")
     };
-    format!("{}\n    pages: {pages}", refile_wiki_line(view))
+    format!(
+        "[{}] {}\n    pages: {pages}",
+        offer.reason.tag(),
+        refile_wiki_line(offer.view)
+    )
 }
 
 /// The cross-wiki refile sweep — the LLM-decided refile of a single
@@ -3998,6 +4222,8 @@ async fn run_refile_sweep(
     if views.len() < 2 {
         return Ok(report); // nothing to refile between
     }
+    // Which turn each fact came out of — the question similarity cannot ask.
+    let turn_of = turns_by_fact(pool).await;
 
     // The reviewer→refile bridge: last night's `cross_subject_bloat`
     // nominations, drained from the plan (one judge pass each — the
@@ -4029,7 +4255,7 @@ async fn run_refile_sweep(
         if wiki::is_channel_page(&fact.source_path) {
             continue;
         }
-        let foreign = ranked_foreign(&views, home, fact, false);
+        let foreign = ranked_foreign(&views, home, fact, &turn_of, false);
         if foreign.is_empty() {
             continue;
         }
@@ -4041,7 +4267,7 @@ async fn run_refile_sweep(
         });
     }
     report.bridge_candidates = cases.len();
-    for case in refile_cases(&views, day, policy) {
+    for case in refile_cases(&views, day, &turn_of, policy) {
         if !seeded.contains(case.fact.fact_id.as_str()) {
             cases.push(case);
         }
@@ -4084,7 +4310,7 @@ async fn judge_refile_case(
     let candidates_text = case
         .foreign
         .iter()
-        .map(|v| refile_candidate_block(v))
+        .map(|o| refile_candidate_block(o))
         .collect::<Vec<_>>()
         .join("\n");
     let prompt = prompts::render(
@@ -4152,6 +4378,7 @@ async fn judge_refile_case(
     let Some(dest_view) = case
         .foreign
         .iter()
+        .map(|o| o.view)
         .find(|v| v.d.meta.wiki_id.as_str() == dest_wiki_id)
     else {
         tracing::warn!(
@@ -7166,6 +7393,7 @@ mod tests {
             &tree,
             &merge_llm,
             "cycle-t",
+            &day::DayPerimeter::default(),
             &RemPolicy::default(),
             &index,
         )
@@ -7255,6 +7483,7 @@ mod tests {
             &tree,
             &merge_llm,
             "cycle-t",
+            &day::DayPerimeter::default(),
             &RemPolicy::default(),
             &index,
         )
@@ -7352,7 +7581,7 @@ mod tests {
         .into_iter()
         .map(|(a, b)| (a.to_owned(), b.to_owned()))
         .collect();
-        let got = merge_candidates(&plan, &[], &family);
+        let got = merge_candidates(&plan, &[], &family, &day::DayPerimeter::default());
         let pairs: Vec<(&str, &str)> = got
             .iter()
             .map(|(a, b, _)| (a.as_str(), b.as_str()))
@@ -7382,7 +7611,7 @@ mod tests {
         // budget on the pairs that reach a judgement, so a handful of
         // already-vetoed pairs cannot consume the night's spend without a
         // single call being made.
-        let all = merge_candidates(&plan, &[], &family);
+        let all = merge_candidates(&plan, &[], &family, &day::DayPerimeter::default());
         let mass = |slug: &str| plan.pages[slug].primary_facts.len();
         let heaviest_pair_mass = mass(&all[0].0) + mass(&all[0].1);
         assert!(
@@ -7424,7 +7653,7 @@ mod tests {
         let family: BTreeMap<String, String> =
             std::iter::once(("alice".to_owned(), "alice".to_owned())).collect();
 
-        let pairs = merge_candidates(&plan, &[], &family);
+        let pairs = merge_candidates(&plan, &[], &family, &day::DayPerimeter::default());
         assert!(
             pairs
                 .iter()
@@ -7871,6 +8100,106 @@ mod tests {
             "second cycle must not re-split: {r2:?}",
         );
         drop(dir);
+    }
+
+    /// **A pair the day touched leads**, whatever put it on the list.
+    ///
+    /// The caller spends a fixed budget of judgements. Two pages that both
+    /// stopped moving months ago will still be there tomorrow; a page opened
+    /// this morning for a single claim is the one that most needs somewhere
+    /// better to be, and the closing pass opens exactly those.
+    #[test]
+    fn a_merge_pair_the_day_touched_is_judged_first() {
+        let mut pages = std::collections::BTreeMap::new();
+        // The heavier pair — which the mass ranking puts first — is old.
+        pages.insert("viaggi".to_owned(), kin_leaf("viaggi", "alice", 9));
+        pages.insert(
+            "viaggi_parigi".to_owned(),
+            kin_leaf("viaggi_parigi", "alice", 9),
+        );
+        // The thin pair is what the day opened.
+        pages.insert("nuoto".to_owned(), kin_leaf("nuoto", "alice", 1));
+        pages.insert(
+            "nuoto_martedi".to_owned(),
+            kin_leaf("nuoto_martedi", "alice", 1),
+        );
+        let plan = CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph: BTreeMap::new(),
+            compilation_order: Vec::new(),
+            generated_at: "t".to_owned(),
+            fact_count: 0,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+        };
+        let family: BTreeMap<String, String> =
+            std::iter::once(("alice".to_owned(), "alice".to_owned())).collect();
+
+        let quiet = merge_candidates(&plan, &[], &family, &day::DayPerimeter::default());
+        assert_eq!(
+            (quiet[0].0.as_str(), quiet[0].1.as_str()),
+            ("viaggi", "viaggi_parigi"),
+            "with no perimeter the heaviest pair leads: {quiet:?}"
+        );
+
+        let day = day::DayPerimeter {
+            since: Some(Utc::now()),
+            pages_born: std::iter::once("nuoto_martedi".to_owned()).collect(),
+            ..day::DayPerimeter::default()
+        };
+        let today = merge_candidates(&plan, &[], &family, &day);
+        assert_eq!(
+            (today[0].0.as_str(), today[0].1.as_str()),
+            ("nuoto", "nuoto_martedi"),
+            "the pair the day opened leads instead: {today:?}"
+        );
+        assert_eq!(
+            today.len(),
+            quiet.len(),
+            "and nothing is dropped — the perimeter orders, it never filters"
+        );
+    }
+
+    /// **The model is told which metre it is measured on.**
+    ///
+    /// The floor that let a page reach the split prompt is not one number —
+    /// a `prosa` page loses its thread early, a `prosa-tecnica` page is
+    /// scanned and tolerates more, a `lista` is a set and is never split for
+    /// size. Without the sentence the model is asked whether a page "grew
+    /// disproportionately" while the only scale it has is the fact count, so
+    /// it answers the same way for a bullet list and for a narrative.
+    #[test]
+    fn the_split_model_is_told_the_floor_its_page_was_measured_on() {
+        use crate::wiki::PageStyle;
+        let p = RemPolicy::default();
+
+        let prosa = shape_directive(Some(PageStyle::Prosa), &p);
+        assert!(prosa.contains("narrative thread"), "{prosa}");
+        assert!(
+            prosa.contains(&p.auto_promote_min_page_facts.to_string()),
+            "it names the floor it passed: {prosa}"
+        );
+
+        let tecnica = shape_directive(Some(PageStyle::ProsaTecnica), &p);
+        assert!(
+            tecnica.contains(&p.auto_promote_min_page_facts_technical.to_string()),
+            "and it is a different floor: {tecnica}"
+        );
+        assert_ne!(prosa, tecnica);
+
+        let lista = shape_directive(Some(PageStyle::Lista), &p);
+        assert!(lista.contains("never split for"), "{lista}");
+        assert!(
+            !lista.contains(&p.auto_promote_min_page_facts.to_string()),
+            "a list has no floor to name: {lista}"
+        );
+
+        // An unreadable testata falls to the prose floor, the same way
+        // `mass_floor_for_style` does — one metre, named once.
+        assert_eq!(shape_directive(None, &p), prosa);
     }
 
     /// A channel page is never split by mass, whatever its size.
@@ -9298,6 +9627,74 @@ mod tests {
     }
 
     // ---------- cross-wiki refile sweep ----------
+
+    /// **A fact filed away from its own subject is offered its subject's
+    /// wiki, whatever the vectors say.**
+    ///
+    /// This is the case the sweep exists for, and a similarity ranking is the
+    /// one thing that cannot find it: a fact about Bob does not have to
+    /// *sound* like Bob's other facts. Here it sounds like nothing in Bob's
+    /// wiki at all — the cosine margin refuses it outright — and it is offered
+    /// anyway, tagged with the reason.
+    #[tokio::test]
+    async fn a_fact_is_offered_its_own_subjects_wiki_even_when_nothing_there_sounds_like_it() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        write_wiki(&tree, "bob", "Bob", "wiki-user");
+        // Alice's wiki and the misfiled fact sit on ONE axis; Bob's wiki sits
+        // on another. By cosine, the fact is exactly where it belongs.
+        plant_fact_with_embedding(
+            &tree,
+            &pool,
+            "alice",
+            "Alice loves pasta",
+            "alice",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+        // Two of Bob's own, so his wiki has an internal similarity of its own
+        // and nothing there is nominated to leave.
+        for body in ["Bob plays the trumpet", "Bob rehearses on Thursdays"] {
+            plant_fact_with_embedding(&tree, &pool, "bob", body, "bob", vec![0.0, 1.0, 0.0, 0.0])
+                .await;
+        }
+        let misfiled = plant_fact_with_embedding(
+            &tree,
+            &pool,
+            "alice",
+            "Bob is allergic to penicillin",
+            "bob",
+            vec![1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+
+        let llm = FakeLlmBackend::new("confirmer", "{\"verdict\":\"stay\",\"reason\":\"x\"}");
+        let index = load_smart_wiki_index(&tree).expect("index");
+        let report = run_refile_sweep(
+            &pool,
+            &tree,
+            &llm,
+            "cycle-subject",
+            &day::DayPerimeter::default(),
+            &RemPolicy::default(),
+            &index,
+        )
+        .await
+        .expect("sweep");
+
+        assert_eq!(
+            report.candidates_examined, 1,
+            "the misfiled fact is nominated: {report:?}"
+        );
+        let shown = llm.last_prompt().expect("the confirmer was asked");
+        assert!(shown.contains("penicillin"), "{shown}");
+        assert!(
+            shown.contains("[same-people] bob"),
+            "bob's wiki is offered, and the line says why: {shown}"
+        );
+        let _ = misfiled;
+        drop(dir);
+    }
 
     /// **What the day wrote is judged first.**
     ///
