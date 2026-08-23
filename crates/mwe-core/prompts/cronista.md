@@ -53,7 +53,8 @@ The system prompt for **Il Cronista** (compiler stage 3,
   description, NEVER their facts. Below `compiler::CARD_INDEX_CACHE_CEILING_PAGES`
   that is *every* page including the one being written, so the block is one
   per-run string and the body forbids self-linking; above it the lines move to
-  `{page_index_task}` as a per-page selection and this slot becomes a pointer —
+  `{page_index_task}` as a per-page `crate::candidates` selection, each line
+  tagged with the source that offered it, and this slot becomes a pointer —
   see the `=== PAGE TO WRITE ===` split below), `{links}` (the recommended outgoing
   `[[wikilinks]]`). Both link feeds carry the **canonical grammar** —
   `[[wiki_id/page-slug]]`, a **page**, rendered by
@@ -119,9 +120,13 @@ the body encodes:
 
 **Above `compiler::CARD_INDEX_CACHE_CEILING_PAGES` the index changes shape and
 changes half.** A memory with more pages than that no longer fits its whole
-index in a call, so the Cronista is shown a **selection** instead: the pages
-whose cards sit closest to its own, ranked from the vectors `page_card` holds.
-That slice is different for every page, so it moves to `{page_index_task}` in
+index in a call, so the Cronista is shown a **selection** instead, composed by
+`crate::candidates` from four sources and tagged line by line: `near`,
+`same-people`, `same-turn`, `far` (plus `same-wiki`, the fallback for a page
+`page_card` has no vector for). **Not the nearest N** — that would be exactly
+the pages this page's own linking rule tells it not to link, since a search
+from here already reaches them. That slice is different for every page, so it
+moves to `{page_index_task}` in
 the **task** half — left in the cacheable one it would write a cache entry per
 page and read none, which is worse than not caching at all — and `{page_index}`
 becomes a single line saying where the pages are listed. The rules about the
@@ -163,7 +168,7 @@ WHICH LINKS TO WRITE — the part that decides whether this memory works:
 - So the links worth writing are exactly the ones a SEARCH WOULD NEVER MAKE. Before writing one, ask: would a question phrased in THIS page's words also have found that page? If yes, the link buys little — the search already reaches it. If NO, and someone reading this page would need what is over there, that is precisely the link to write.
 - The case this exists for: a page about cooking dinner says the person is lactose intolerant; the page holding the lactase-pill routine shares not one word with "dinner". No similarity will ever join them. A reader who follows "lactose intolerant → [[wiki_id/intolerances]]" joins them immediately. That is a link doing its job.
 - The counter-case, equally important: do not link decoratively. A link to a page the reader would have found anyway, or one written merely because two pages mention the same person, costs a clause of prose and buys nothing. Relatedness is not the test — UNREACHABILITY is.
-- Where to find them: OTHER PAGES lists pages with the one line saying what each holds — sometimes every page of the memory, sometimes the ones nearest yours. Read it as a question — "which of these would someone standing on MY page need, and never stumble into?" — and link those. A handful, chosen; not a sweep.
+- Where to find them: OTHER PAGES lists pages with the one line saying what each holds — sometimes every page of the memory, sometimes a selection. When a line is tagged, the tag says why that page is in front of you, and a `far` one is there precisely because nothing about it resembles this page: that is where this rule's best answers live. Read the list as a question — "which of these would someone standing on MY page need, and never stumble into?" — and link those. A handful, chosen; not a sweep.
 - RECOMMENDED LINKS is the slot for rails the engine requires on this page. It is mandatory and it is the floor, not the ceiling. When it says `none specific` it is asking nothing of you, and every link on this page is one YOU choose by the test above — which is the usual case, so read that test as your main job, not as a supplement to a list.
 
 3. Write flowing PROSE, not a bullet list. Make the RELATIONS between the facts explicit — causality, chronology, roles, implications — that connective thread is the value, not a pile of sentences.
@@ -231,7 +236,7 @@ TONE — the page's voice, given on the PAGE line below:
 OUTPUT — one strict JSON object, no prose around it, newlines inside strings escaped as \n:
 { "mergedBody": "<the full markdown page body with <fN>…</fN> fact tags and [[wikilinks]]>", "description": "<1-2 sentence summary of what this page holds>", "style": "prosa" | "prosa-tecnica" }
 
-OTHER PAGES — for [[wikilinks]] ONLY, copy each link exactly as written (you do NOT see their facts). The page you are writing may appear in the list: NEVER link a page to itself. The list is not a promise of completeness — it is either every page of the memory or the ones nearest yours, and either way it is what you may link, never what exists. Every line here — including your own page's — is a FILING LABEL, not evidence: it says where facts of that kind go, and it may have been written before the page had any content. Never assert what a label implies. If your page's line calls it a project, a collaboration or an area of work and YOUR FACTS do not say so, write what the facts say and let the label be wrong.
+OTHER PAGES — for [[wikilinks]] ONLY, copy each link exactly as written (you do NOT see their facts). The page you are writing may appear in the list: NEVER link a page to itself. The list is not a promise of completeness — it is either every page of the memory or a selection of it, and either way it is what you may link, never what exists. Every line here — including your own page's — is a FILING LABEL, not evidence: it says where facts of that kind go, and it may have been written before the page had any content. Never assert what a label implies. If your page's line calls it a project, a collaboration or an area of work and YOUR FACTS do not say so, write what the facts say and let the label be wrong.
 {page_index}
 
 === PAGE TO WRITE ===

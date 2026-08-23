@@ -89,10 +89,10 @@ const CARTOGRAFO_BATCH: usize = 15;
 /// ceiling exists only because the list cannot grow forever.
 ///
 /// Below it the list is **identical for every batch of the run** — one wiki's
-/// batches no longer see a different list from another's — so it rides the
-/// prompt's cached prefix and completeness is also the cheap answer. Above it
-/// a whole-forest list stops fitting a call at all, and the only remaining
-/// shape is a ranked slice. Twin of
+/// batches all see the same list — so it rides the prompt's cached prefix and
+/// completeness is also the cheap answer. Above it a whole-forest list stops
+/// fitting a call at all, and what a batch is shown becomes a selection
+/// ([`crate::candidates`]). Twin of
 /// [`crate::compiler::CARD_INDEX_CACHE_CEILING_PAGES`], which answers the same
 /// question for the writing stage.
 const FOREST_PAGE_CEILING: usize = 400;
@@ -101,9 +101,10 @@ const FOREST_PAGE_CEILING: usize = 400;
 ///
 /// The batch's **own** wiki is never cut — that is where most of its facts
 /// belong and where every page it coins is born. What is cut is the rest of
-/// the forest, and it is cut by **nearness, never alphabetically**: where a
-/// list is cut the order IS the selection (founder, 2026-08-09).
-const FOREIGN_SELECTION_PAGES: usize = 40;
+/// the forest, and [`crate::candidates`] decides what survives the cut: never
+/// alphabetically, and never by nearness alone, because a page that resembles
+/// nothing this wiki holds is exactly the one a search would never find.
+const FOREIGN_SELECTION_PAGES: usize = crate::candidates::SELECTION_PAGES;
 
 /// Errors raised by the planner.
 #[derive(Debug, Error)]
@@ -1714,14 +1715,14 @@ pub enum ForeignPages {
     /// while the memory fits one list.
     #[default]
     Whole,
-    /// Past [`FOREST_PAGE_CEILING`]: wiki id → the foreign concept-page slugs
-    /// that wiki's batches are offered, **nearest first**.
+    /// Past [`FOREST_PAGE_CEILING`]: wiki id → the foreign concept pages that
+    /// wiki's batches are offered, each carrying the source that chose it.
     ///
     /// A wiki absent from the map, or present with an empty list, is offered
     /// no foreign concept page at all — its own pages and the forest's
     /// identity cards remain, and the names of the rest still ride the
     /// collision list. Smaller, never wrong.
-    Selected(BTreeMap<String, Vec<String>>),
+    Selected(BTreeMap<String, Vec<crate::candidates::Candidate>>),
 }
 
 impl ForeignPages {
@@ -1729,39 +1730,55 @@ impl ForeignPages {
     fn offers(&self, wiki: &str, slug: &str) -> bool {
         match self {
             Self::Whole => true,
-            Self::Selected(by_wiki) => by_wiki
-                .get(wiki)
-                .is_some_and(|picked| picked.iter().any(|s| s == slug)),
+            Self::Selected(_) => self.picked(wiki, slug).is_some(),
         }
     }
 
     /// The rank of a foreign page for `wiki` — its position in the selection,
-    /// so the rendering can keep *nearest first* instead of re-sorting by
-    /// slug, which would hand the model an alphabetical list again.
+    /// so the rendering keeps the order the selection chose instead of
+    /// re-sorting by slug, which would hand the model an alphabetical list
+    /// again.
     fn rank(&self, wiki: &str, slug: &str) -> usize {
         match self {
             Self::Whole => 0,
             Self::Selected(by_wiki) => by_wiki
                 .get(wiki)
-                .and_then(|picked| picked.iter().position(|s| s == slug))
+                .and_then(|picked| picked.iter().position(|c| c.key == slug))
                 .unwrap_or(usize::MAX),
+        }
+    }
+
+    /// Why `slug` is offered to `wiki` — the tag its line carries, so the
+    /// model can tell an offer made *because* the page does not resemble it
+    /// from one made because it does.
+    fn source(&self, wiki: &str, slug: &str) -> Option<crate::candidates::CandidateSource> {
+        self.picked(wiki, slug).map(|c| c.source)
+    }
+
+    fn picked(&self, wiki: &str, slug: &str) -> Option<&crate::candidates::Candidate> {
+        match self {
+            Self::Whole => None,
+            Self::Selected(by_wiki) => by_wiki.get(wiki)?.iter().find(|c| c.key == slug),
         }
     }
 }
 
 /// Decide what each wiki's batches are shown of the rest of the forest.
 ///
-/// Whole below [`FOREST_PAGE_CEILING`]; above it, one ranked slice per wiki
-/// that has facts in this run.
+/// Whole below [`FOREST_PAGE_CEILING`]; above it, one selection per wiki that
+/// has facts in this run, composed by [`crate::candidates`].
 ///
-/// **Ranked by nearness between page cards**, which is the only signal
-/// available here: the planner has no embedder and deliberately does not grow
-/// one (same rule as the compiler). Cards are embedded by the reindex
-/// pipeline, so a page whose card never embedded does not rank — it makes the
-/// offer smaller, never wrong. A foreign page scores its **best** similarity
-/// against any of the asking wiki's own cards rather than against their
-/// average: a user's wiki spans several unrelated subjects, and a centroid
-/// over them is a point about none of them.
+/// The asking side is **the wiki's own pages, all of them** — its concept
+/// pages and its identity card — so what the selection knows about the asker
+/// is everything that wiki holds. What comes back is only ever a foreign
+/// concept page: a wiki's own pages are never cut, and every identity card of
+/// the forest is offered whole at any size (the product limits cap them), so
+/// both are excluded here rather than competing for the seats.
+///
+/// Card vectors are embedded by the reindex pipeline — the planner has no
+/// embedder and deliberately does not grow one (same rule as the compiler) —
+/// so a page whose card never embedded cannot be ranked by nearness. It can
+/// still arrive on the two sources that read no vector at all.
 pub async fn foreign_page_offers(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -1772,57 +1789,74 @@ pub async fn foreign_page_offers(
     if foundation.len() + registry.entries.len() <= FOREST_PAGE_CEILING {
         return ForeignPages::Whole;
     }
-    // slug → (wiki, card vector), for the concept pages only: identity cards
-    // are offered whole at any size (the product limits cap them).
-    let mut vectors: BTreeMap<String, (String, Vec<f32>)> = BTreeMap::new();
+    // Every page of the forest, so the asking side sees all of its own; the
+    // exclusions below decide what may come back.
+    let mut by_source_path: BTreeMap<String, String> = BTreeMap::new();
+    let mut wiki_of: BTreeMap<String, String> = BTreeMap::new();
     for e in registry.entries.values() {
-        let Some(path) = registry_source_path(tree, e) else {
-            continue;
-        };
-        if let Ok(Some(row)) = crate::page_card::get(pool, &path).await
-            && let Some(v) = row.embedding
-        {
-            vectors.insert(e.slug.clone(), (e.wiki_id.clone(), v));
+        if let Some(path) = registry_source_path(tree, e) {
+            by_source_path.insert(path, e.slug.clone());
+            wiki_of.insert(e.slug.clone(), e.wiki_id.clone());
         }
     }
-    let mut by_wiki: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let foundation_slugs: BTreeSet<String> = foundation.keys().cloned().collect();
+    for (slug, p) in foundation {
+        if let Some(path) = plan_page_source_path(tree, p) {
+            by_source_path.insert(path, slug.clone());
+            wiki_of.insert(slug.clone(), p.wiki_id.clone());
+        }
+    }
+
+    let mut candidates = crate::candidates::CandidatePool::load(pool, &by_source_path).await;
+    let mut embedded = 0usize;
+    for (path, slug) in &by_source_path {
+        if let Ok(Some(row)) = crate::page_card::get(pool, path).await
+            && let Some(v) = row.embedding
+        {
+            candidates.set_embedding(slug, v);
+            embedded += 1;
+        }
+    }
+
+    let mut by_wiki: BTreeMap<String, Vec<crate::candidates::Candidate>> = BTreeMap::new();
     for wiki in wikis {
-        let mine: Vec<&Vec<f32>> = vectors
-            .values()
-            .filter(|(w, _)| w == wiki)
-            .map(|(_, v)| v)
-            .collect();
-        let mut scored: Vec<(f32, &str)> = vectors
+        let mine: Vec<&str> = wiki_of
             .iter()
-            .filter(|(_, (w, _))| w != wiki)
-            .filter_map(|(slug, (_, v))| {
-                let best = mine
-                    .iter()
-                    .map(|m| crate::recall::cosine_similarity(m, v))
-                    .fold(f32::NEG_INFINITY, f32::max);
-                best.is_finite().then_some((best, slug.as_str()))
-            })
+            .filter(|(_, w)| *w == wiki)
+            .map(|(slug, _)| slug.as_str())
             .collect();
-        // Descending by nearness; the registry's own order breaks ties, so the
-        // result is deterministic for a given corpus.
-        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let ask = candidates.ask_for(mine.iter().copied());
+        // Out of the running: this wiki's own pages (never cut) and every
+        // identity card (offered whole at any size).
+        let exclude: BTreeSet<String> = mine
+            .iter()
+            .map(|s| (*s).to_owned())
+            .chain(foundation_slugs.iter().cloned())
+            .collect();
         by_wiki.insert(
             wiki.clone(),
-            scored
-                .into_iter()
-                .take(FOREIGN_SELECTION_PAGES)
-                .map(|(_, slug)| slug.to_owned())
-                .collect(),
+            candidates.pick(&ask, &exclude, FOREIGN_SELECTION_PAGES, &[]),
         );
     }
     tracing::info!(
         pages = foundation.len() + registry.entries.len(),
         ceiling = FOREST_PAGE_CEILING,
-        embedded = vectors.len(),
+        embedded,
         wikis = by_wiki.len(),
-        "planner: forest page list over its ceiling — offering the nearest foreign pages per wiki"
+        "planner: forest page list over its ceiling — composing foreign candidates per wiki"
     );
     ForeignPages::Selected(by_wiki)
+}
+
+/// The `page_card` key of a planned page — its workdir-relative source path.
+fn plan_page_source_path(tree: &WikiTree, p: &PagePlan) -> Option<String> {
+    let handle = tree
+        .locate(&crate::types::WikiId::parse(&p.wiki_id).ok()?)
+        .ok()?;
+    Some(crate::wiki::workdir_relative_source_path(
+        tree.workdir(),
+        &handle.abs_dir().join(&p.page_path),
+    ))
 }
 
 /// The `page_card` key of a registry page — its workdir-relative source path.
@@ -3271,7 +3305,10 @@ fn describe_foundation(
 /// fits one list, the nearest [`FOREIGN_SELECTION_PAGES`] once it does not.
 ///
 /// Each foreign line carries `wiki: <id>`, because choosing a page is choosing
-/// a place, and a slug alone does not say which.
+/// a place, and a slug alone does not say which — and, once the forest is past
+/// its ceiling, `via: <source>`, because a page offered *because it resembles
+/// nothing here* is a different offer from one made because it resembles
+/// everything, and only the model can act on the difference.
 fn describe_concepts(
     registry: &ConceptRegistry,
     wiki: &str,
@@ -3283,10 +3320,14 @@ fn describe_concepts(
     // foundation nodes and never live here — so the kind is a constant.
     let line = |slug: &str, title: &str, description: &str, home: Option<&str>| {
         // The `wiki:` field appears only on a page of another wiki: on the
-        // batch's own pages it would be the same id on every line.
+        // batch's own pages it would be the same id on every line. Same for
+        // `via:`, which only a selected page has.
+        let via = foreign
+            .source(wiki, slug)
+            .map_or_else(String::new, |s| format!("via: {} | ", s.tag()));
         let home = home.map_or_else(String::new, |h| format!("wiki: {h} | "));
         format!(
-            "- [concept_leaf] {slug} — {title} | {home}{description} | facts: {}",
+            "- [concept_leaf] {slug} — {title} | {home}{via}{description} | facts: {}",
             mass_of(mass, slug),
         )
     };
@@ -3296,9 +3337,10 @@ fn describe_concepts(
         .filter(|e| e.wiki_id == wiki)
         .map(|e| line(&e.slug, &e.title, &e.description, None))
         .collect();
-    // Nearest first, and no re-sort by slug afterwards: where a list is cut
-    // the order IS the selection, and rendering it alphabetically would hand
-    // back the ordering the selection exists to replace.
+    // In the order the selection picked, and no re-sort by slug afterwards:
+    // where a list is cut the order IS the selection, and rendering it
+    // alphabetically would hand back the ordering the selection exists to
+    // replace.
     let mut foreign_entries: Vec<&ConceptRegistryEntry> = registry
         .entries
         .values()
@@ -3450,7 +3492,8 @@ fn describe_existing(
         .values()
         .filter(|e| e.wiki_id != wiki && foreign.offers(wiki, &e.slug))
         .collect();
-    // Nearest first where the list is cut — never re-sorted by slug.
+    // In the order the selection picked, never re-sorted by slug: where a
+    // list is cut, the order IS the selection.
     foreign_entries.sort_by_key(|e| foreign.rank(wiki, &e.slug));
     lines.extend(foreign_entries.into_iter().map(render));
     if lines.is_empty() {
@@ -5254,15 +5297,194 @@ mod tests {
         );
     }
 
+    /// A forest over [`FOREST_PAGE_CEILING`], laid out so the two pages that
+    /// only their own source can reach sit at the far end of the ranking.
+    ///
+    /// `bob` owns the first three pages; every other page is `alice`'s, and
+    /// their cards fan away from `bob`'s axis one step at a time. Returns the
+    /// slugs of the far page that shares a principal with `bob` and the far
+    /// page that shares a turn with him.
+    async fn over_ceiling_corpus(
+        dir: &std::path::Path,
+        pool: &SqlitePool,
+        registry: &mut ConceptRegistry,
+    ) -> (String, String) {
+        let wikis = dir.join("wikis");
+        for w in ["alice", "bob"] {
+            std::fs::create_dir_all(wikis.join(w)).unwrap();
+            std::fs::write(
+                wikis.join(w).join("_meta.md"),
+                format!(
+                    "---\nwiki_id: {w}\nwiki_type: wiki-user\nslug: {w}\ntitle: {w}\nacl_default: 'user:{w}'\n---\n"
+                ),
+            )
+            .unwrap();
+        }
+        let card = async |slug: &str, wiki: &str, v: Vec<f32>| {
+            let source_path = format!("wikis/{wiki}/{slug}.md");
+            crate::page_card::upsert(
+                pool,
+                &crate::page_card::NewPageCard {
+                    source_path: source_path.clone(),
+                    wiki_id: wiki.to_owned(),
+                    description: Some(format!("{slug} desc")),
+                    keywords: Vec::new(),
+                    style: None,
+                    file_mtime_ms: None,
+                    file_size: None,
+                },
+            )
+            .await
+            .expect("card");
+            crate::page_card::set_embedding(pool, &source_path, &v)
+                .await
+                .expect("vector");
+        };
+        for i in 0..=FOREST_PAGE_CEILING {
+            let wiki = if i < 3 { "bob" } else { "alice" };
+            let slug = format!("p{i:04}");
+            registry
+                .entries
+                .insert(slug.clone(), concept_entry(&slug, wiki));
+            #[expect(clippy::cast_precision_loss, reason = "bounded loop counter")]
+            let t = i as f32 / (FOREST_PAGE_CEILING + 1) as f32;
+            card(&slug, wiki, vec![1.0 - t, t]).await;
+        }
+
+        let plant = async |tail: u8, path: &str, subject: &str| -> FactId {
+            let fid =
+                FactId::parse(&format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{tail:02x}")).unwrap();
+            fact_index::insert(
+                pool,
+                &crate::fact_index::NewFact {
+                    authored_refs: Vec::new(),
+                    fact_id: fid.clone(),
+                    wiki_id: "alice".to_owned(),
+                    source_path: path.to_owned(),
+                    region_start: None,
+                    region_end: None,
+                    text: "x".to_owned(),
+                    embedding: vec![0.1, 0.2],
+                    subject_id: subject.parse::<Principal>().unwrap(),
+                    allow_ids: Vec::new(),
+                    sender_id: None,
+                    fact_type: None,
+                    topics: Vec::new(),
+                    valid_from: None,
+                    valid_to: None,
+                    target_page: None,
+                    style: None,
+                    salience: None,
+                    source_ref: None,
+                },
+            )
+            .await
+            .expect("fact");
+            fid
+        };
+        let far_person = format!("p{FOREST_PAGE_CEILING:04}");
+        let far_turn = format!("p{:04}", FOREST_PAGE_CEILING - 1);
+        // `carol` is on one of bob's pages and on the far page, and nowhere
+        // else — so she discriminates instead of being everybody's principal.
+        plant(0x01, "wikis/bob/p0000.md", "user:carol").await;
+        plant(0x02, &format!("wikis/alice/{far_person}.md"), "user:carol").await;
+        // And one turn produced a fact on one of bob's pages and one on the
+        // other far page.
+        let a = plant(0x03, "wikis/bob/p0001.md", "user:zoe").await;
+        let b = plant(0x04, &format!("wikis/alice/{far_turn}.md"), "user:yan").await;
+        for id in [&a, &b] {
+            sqlx::query(
+                "INSERT INTO capture_buffer
+                   (capture_id, body, subject_id, status, captured_at, origin_message_hash)
+                 VALUES (?, 'x', 'user:bob', 'promoted', 't', 'turn-1')",
+            )
+            .bind(id.as_str())
+            .execute(pool)
+            .await
+            .expect("buffer row");
+        }
+        (far_person, far_turn)
+    }
+
+    /// Past the ceiling the foreign offer is composed, not ranked — and every
+    /// source that has something to give is in it.
+    ///
+    /// The two pages this asserts on resemble `bob` in **nothing**: a
+    /// nearest-N cut would put them at the bottom of four hundred and they
+    /// would never be offered, so a fact of `bob`'s that belongs on either
+    /// could never find its way there. That is the whole change.
+    #[tokio::test]
+    async fn past_the_ceiling_the_foreign_offer_comes_from_all_four_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        let mut registry = ConceptRegistry::empty("t");
+        let (far_person, far_turn) = over_ceiling_corpus(dir.path(), &pool, &mut registry).await;
+        let tree = WikiTree::open(dir.path()).expect("tree");
+
+        let foundation: BTreeMap<String, PagePlan> =
+            std::iter::once(("bob".to_owned(), person("bob"))).collect();
+        let asking: BTreeSet<String> = std::iter::once("bob".to_owned()).collect();
+        let offers = foreign_page_offers(&pool, &tree, &foundation, &registry, &asking).await;
+        let ForeignPages::Selected(by_wiki) = &offers else {
+            panic!("over the ceiling the offer must be a selection");
+        };
+        let picked = by_wiki.get("bob").expect("bob asked");
+
+        let by_source: BTreeMap<&str, Vec<&str>> =
+            picked.iter().fold(BTreeMap::new(), |mut acc, c| {
+                acc.entry(c.source.tag()).or_default().push(&c.key);
+                acc
+            });
+        assert!(
+            by_source
+                .get("same-people")
+                .is_some_and(|v| v.contains(&far_person.as_str())),
+            "the page about the same person is offered although nothing about it is near: {by_source:?}"
+        );
+        assert!(
+            by_source
+                .get("same-turn")
+                .is_some_and(|v| v.contains(&far_turn.as_str())),
+            "and so is the page from the same conversation: {by_source:?}"
+        );
+        assert!(by_source.contains_key("near"), "{by_source:?}");
+        assert!(by_source.contains_key("far"), "{by_source:?}");
+        assert!(
+            picked
+                .iter()
+                .all(|c| !["p0000", "p0001", "p0002"].contains(&c.key.as_str())),
+            "bob's own pages are never cut, so they never take a foreign seat: {picked:?}"
+        );
+        assert!(
+            picked.iter().all(|c| c.key != "bob"),
+            "an identity card is offered whole and never competes here: {picked:?}"
+        );
+        assert_eq!(
+            picked.len(),
+            FOREIGN_SELECTION_PAGES,
+            "the budget is filled"
+        );
+
+        // Same corpus, same list: a selection a second run disagrees with
+        // would recompile every page it moved.
+        let again = foreign_page_offers(&pool, &tree, &foundation, &registry, &asking).await;
+        let ForeignPages::Selected(again) = &again else {
+            panic!("still a selection");
+        };
+        assert_eq!(again.get("bob"), Some(picked));
+        drop(dir);
+    }
+
     /// Past the ceiling the forest is cut, and the two halves stay exhaustive:
-    /// what the selection carries is described **nearest first**, what it
-    /// drops falls back onto the collision list rather than vanishing.
+    /// what the selection carries is described in the order it was picked and
+    /// says why, what it drops falls back onto the collision list rather than
+    /// vanishing.
     ///
     /// A page nobody shows and nobody names is a name a later batch can coin,
     /// which is the accident `{taken_slugs}` exists to prevent — so the cut
     /// may make the offer smaller, never the guard.
     #[test]
-    fn past_the_ceiling_the_offer_is_cut_by_nearness_and_the_rest_stays_a_taken_name() {
+    fn past_the_ceiling_the_offer_is_cut_and_the_rest_stays_a_taken_name() {
         let foundation = BTreeMap::new();
         let mut registry = ConceptRegistry::empty("t");
         for (slug, wiki) in [
@@ -5275,10 +5497,20 @@ mod tests {
                 .entries
                 .insert(slug.to_owned(), concept_entry(slug, wiki));
         }
-        // The selection picked two of alice's three, in this order.
+        // The selection picked two of alice's three, in this order, and each
+        // for its own reason.
         let foreign = ForeignPages::Selected(BTreeMap::from([(
             "bob".to_owned(),
-            vec!["karate".to_owned(), "orto".to_owned()],
+            vec![
+                crate::candidates::Candidate {
+                    key: "karate".to_owned(),
+                    source: crate::candidates::CandidateSource::Near,
+                },
+                crate::candidates::Candidate {
+                    key: "orto".to_owned(),
+                    source: crate::candidates::CandidateSource::Far,
+                },
+            ],
         )]));
 
         let shown = describe_concepts(&registry, "bob", &[], &BTreeMap::new(), &foreign);
@@ -5291,6 +5523,14 @@ mod tests {
             offered,
             vec!["cucina_bob", "karate", "orto"],
             "own wiki first, then the selection in the order it was picked — not by slug: {shown}"
+        );
+        assert!(
+            shown.contains("orto — Orto | wiki: alice | via: far |"),
+            "a foreign line says which source offered it: {shown}"
+        );
+        assert!(
+            !shown.contains("cucina_bob — Cucina_bob | via:"),
+            "the batch's own pages are not a selection, so they carry no source: {shown}"
         );
         assert_eq!(
             describe_taken_slugs(&foundation, &registry, "bob", &foreign),

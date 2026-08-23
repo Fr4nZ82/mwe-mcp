@@ -23,7 +23,8 @@ an operator override at `<workdir>/prompts/cartografo.md` wins.
   then **every other wiki's identity card**),
   `{concept_pages}` (the forest's emergent concept pages, the batch's own wiki
   first and never cut, from the registry + every page proposed earlier this
-  run — the dedup context and the destination list in one),
+  run — the dedup context and the destination list in one; past the ceiling a
+  foreign line also carries `via: <source>`, see below),
   `{taken_slugs}` (bare page names of the pages **not** shown above — the
   collision guard, and nothing else now that the pages themselves are
   offered), `{facts}` (the batch's facts:
@@ -69,9 +70,12 @@ is a judgement; colliding with its name is not. The list is **never
 truncated**; a collision guard with a gap answers "free" for a taken name.
 
 Above `FOREST_PAGE_CEILING` pages the described list stops fitting one call:
-the batch's own wiki stays whole and the rest of the forest is cut to the
-`FOREIGN_SELECTION_PAGES` nearest by card similarity, **nearest first**.
-Everything cut falls back into `{taken_slugs}`, so nothing ever becomes
+the batch's own wiki stays whole and the rest of the forest is cut to a
+`crate::candidates` selection — `near`, `same-people`, `same-turn` and `far`,
+in the order they were picked, each foreign line saying which source offered
+it. **Not the nearest N**: a page this wiki resembles in nothing is exactly the
+one it would never otherwise reach, and it is the only source that can offer
+it. Everything cut falls back into `{taken_slugs}`, so nothing ever becomes
 invisible as a name.
 
 ```text
@@ -132,6 +136,7 @@ EXISTING FOUNDATION PAGES — this wiki's, then the identity cards of the other 
 {foundation_pages}
 
 EXISTING CONCEPT PAGES, this wiki's first, then the rest of the memory's (marked `wiki:`). Reuse these — do NOT recreate:
+A foreign line may carry `via: <source>`, saying why it is in front of you when the memory is too large to list whole: `near` = its description resembles this wiki's pages; `same-people` = it holds facts about, or told by, the same people; `same-turn` = it holds facts said in the same conversations; `far` = it resembles this wiki in NOTHING. A `far` page is not a mistake and not filler — it is there so a fact that belongs somewhere unlike everything here can still find its home. Judge every line on the fact in front of you, never on its source.
 {concept_pages}
 
 NAMES ALREADY TAKEN by pages NOT listed above (do not coin one of these; they are names, not destinations):

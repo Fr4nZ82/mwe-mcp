@@ -15,6 +15,7 @@ pub mod archive;
 pub mod audit;
 pub mod backup;
 pub mod briefing;
+pub mod candidates;
 pub mod capture;
 pub mod capture_buffer;
 pub mod comment_apply;

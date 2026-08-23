@@ -1880,17 +1880,24 @@ fn successor_wikilink(
 /// it rides the cached prefix: the first call pays it, the rest pay roughly a
 /// tenth. A per-page selection is different per call, so it is paid in full,
 /// every time. A selection of `S` lines therefore beats a cached index of `B`
-/// lines only while `S < B/10` — which is why the ceiling is ten times
-/// [`CARD_INDEX_SELECTION_PAGES`], and why the switch is a ceiling at all
-/// rather than a replacement.
+/// lines only while `S < B/10` — which is what makes the switch a ceiling
+/// rather than a replacement, and which
+/// [`CARD_INDEX_SELECTION_PAGES`] clears with room to spare.
+///
+/// ⚠️ **The tenth is one supplier's discount written as if it were
+/// universal**, and it has never been checked against the backends actually
+/// configured. If the real discount is a quarter, this belongs at 160, not
+/// 400. Verify it before hanging another decision on it.
 ///
 /// Below it nothing changes; the whole index is both cheaper and complete.
-/// Above it the whole index stops fitting a call at all, and a ranked slice
-/// is the only remaining shape.
+/// Above it the whole index stops fitting a call at all, and what the Cronista
+/// is shown becomes a selection ([`crate::candidates`]).
 pub const CARD_INDEX_CACHE_CEILING_PAGES: usize = 400;
 
-/// How many cards a selection carries once the ceiling is passed.
-pub const CARD_INDEX_SELECTION_PAGES: usize = 40;
+/// How many cards a selection carries once the ceiling is passed —
+/// [`crate::candidates::SELECTION_PAGES`], because what the selection *is* is
+/// that module's business and only the ceiling is this one's.
+pub const CARD_INDEX_SELECTION_PAGES: usize = crate::candidates::SELECTION_PAGES;
 
 /// What the Cronista is shown of the rest of the memory.
 ///
@@ -1899,46 +1906,49 @@ pub const CARD_INDEX_SELECTION_PAGES: usize = 40;
 /// - [`Self::Whole`] — every page, one string built once, identical for every
 ///   call, living in the **cacheable** half of the prompt.
 /// - [`Self::Selected`] — above [`CARD_INDEX_CACHE_CEILING_PAGES`], a slice
-///   ranked by how close each page's card is to the card of the page being
-///   written. It is different per call, so it moves to the **task** half:
-///   left in the system half it would write one cache entry per page and read
-///   none, which is strictly worse than not caching at all.
+///   composed by [`crate::candidates`]. It is different per call, so it moves
+///   to the **task** half: left in the system half it would write one cache
+///   entry per page and read none, which is strictly worse than not caching at
+///   all.
 enum PageIndex {
     Whole(String),
-    /// Plan slug → that page's stored card vector. A page with no vector (new
-    /// this run, no description, an embedder that failed) is simply absent
-    /// and falls back to its own wiki's pages.
-    Selected(BTreeMap<String, Vec<f32>>),
+    /// Every page of the plan, with the traits a selection keys on.
+    Selected(crate::candidates::CandidatePool),
 }
 
-/// Build the index for one run: whole below the ceiling, ranked above it.
+/// Build the index for one run: whole below the ceiling, a candidate pool
+/// above it.
 ///
-/// The vectors come from `page_card`, which the reindex pipeline fills — the
-/// compiler has no embedder and deliberately does not grow one. A card that
-/// was never embedded simply does not rank, which makes the offer smaller,
-/// never wrong.
+/// The card vectors come from `page_card`, which the reindex pipeline fills —
+/// the compiler has no embedder and deliberately does not grow one. A card
+/// that was never embedded simply does not rank, which makes the offer
+/// smaller, never wrong.
 async fn build_page_index(pool: &SqlitePool, tree: &WikiTree, plan: &CompilationPlan) -> PageIndex {
     if plan.pages.len() <= CARD_INDEX_CACHE_CEILING_PAGES {
         return PageIndex::Whole(page_index_block(plan));
     }
-    let mut vectors: BTreeMap<String, Vec<f32>> = BTreeMap::new();
-    for (slug, p) in &plan.pages {
-        let Some(source_path) = plan_page_source_path(tree, p) else {
-            continue;
-        };
-        if let Ok(Some(row)) = crate::page_card::get(pool, &source_path).await
+    let by_source_path: BTreeMap<String, String> = plan
+        .pages
+        .iter()
+        .filter_map(|(slug, p)| Some((plan_page_source_path(tree, p)?, slug.clone())))
+        .collect();
+    let mut candidates = crate::candidates::CandidatePool::load(pool, &by_source_path).await;
+    let mut embedded = 0usize;
+    for (source_path, slug) in &by_source_path {
+        if let Ok(Some(row)) = crate::page_card::get(pool, source_path).await
             && let Some(v) = row.embedding
         {
-            vectors.insert(slug.clone(), v);
+            candidates.set_embedding(slug, v);
+            embedded += 1;
         }
     }
     tracing::info!(
         pages = plan.pages.len(),
         ceiling = CARD_INDEX_CACHE_CEILING_PAGES,
-        embedded = vectors.len(),
-        "compiler: page index over its cache ceiling — ranking cards per page"
+        embedded,
+        "compiler: page index over its cache ceiling — composing candidates per page"
     );
-    PageIndex::Selected(vectors)
+    PageIndex::Selected(candidates)
 }
 
 /// The workdir-relative path of a planned page — the `page_card` key.
@@ -1957,76 +1967,69 @@ impl PageIndex {
     fn render_for(&self, plan: &CompilationPlan, page: &PagePlan) -> (String, String) {
         match self {
             Self::Whole(all) => (all.clone(), String::new()),
-            Self::Selected(vectors) => (
-                "(listed with your page below — the pages nearest yours, not every page \
-                 of the memory)"
+            Self::Selected(candidates) => (
+                "(listed with your page below — a selection, not every page of the memory)"
                     .to_owned(),
                 format!(
-                    "OTHER PAGES you may [[wikilink]] (same rules as above):\n{}",
-                    Self::selection_lines(plan, page, vectors)
+                    "OTHER PAGES you may [[wikilink]] (same rules as above). \
+                     Each line says WHY it is here: `near` = its card resembles \
+                     yours; `same-people` = it holds facts about, or told by, the \
+                     same people as yours; `same-turn` = it holds facts said in \
+                     the same conversation as yours; `same-wiki` = it simply \
+                     lives beside yours; `far` = it resembles yours in NOTHING, \
+                     and those are the ones a search from this page would never \
+                     reach:\n{}",
+                    Self::selection_lines(plan, page, candidates)
                 ),
             ),
         }
     }
 
-    /// The ranked slice, or — when the page being written has no card vector
-    /// of its own — its own wiki's **biggest** pages, which is where its links
-    /// most often go and needs no arithmetic at all.
+    /// The selection for one page, each line carrying the source that chose
+    /// it.
     ///
-    /// The fallback arm is not the rare one: it is taken by every page created
-    /// in the run being compiled, and by every page after an embedder failure
-    /// — so the pages most in need of good links are the ones taking it, and
-    /// it must not fall back to the plan's `BTreeMap` order, which is
-    /// alphabetical and would re-introduce inside this function the exact
-    /// ordering the function exists to abolish. Fact mass is the signal that
-    /// survives with no vector at all: a page carrying fifty facts is a
-    /// likelier destination than an empty one, and it is *importance*, which
-    /// is the axis the founder allowed where similarity is unavailable
-    /// (2026-08-09).
-    fn selection_lines<'p>(
-        plan: &'p CompilationPlan,
+    /// The fallback ordering handed to [`crate::candidates::CandidatePool::pick`]
+    /// is this page's **own wiki, biggest first**. It is consulted only for a
+    /// page with no card vector, and that is not the rare case: every page
+    /// created in the run being compiled is one, and so is every page after an
+    /// embedder failure. It must not be the plan's `BTreeMap` order, which is
+    /// alphabetical and would re-introduce here the exact ordering this whole
+    /// mechanism exists to abolish. Fact mass is the signal that survives with
+    /// no vector at all: a page carrying fifty facts is a likelier destination
+    /// than an empty one, and it is *importance*, the axis the founder allowed
+    /// where similarity is unavailable (2026-08-09).
+    fn selection_lines(
+        plan: &CompilationPlan,
         page: &PagePlan,
-        vectors: &BTreeMap<String, Vec<f32>>,
+        candidates: &crate::candidates::CandidatePool,
     ) -> String {
-        // Rendered in the order they were picked — nearest first. Sorting the
-        // slice by slug afterwards would hand the model an alphabetical list
-        // again, which is the ordering the whole card exists to get rid of;
-        // and where a list is cut, the order IS the selection.
-        let picked: Vec<&'p PagePlan> = vectors.get(&page.slug).map_or_else(
-            || {
-                let mut mine: Vec<&'p PagePlan> = plan
-                    .pages
-                    .values()
-                    .filter(|p| p.wiki_id == page.wiki_id && p.slug != page.slug)
-                    .collect();
-                // Biggest first; the plan's own order breaks ties, so the same
-                // plan always yields the same slice.
-                mine.sort_by_key(|p| std::cmp::Reverse(p.primary_facts.len()));
-                mine.into_iter().take(CARD_INDEX_SELECTION_PAGES).collect()
-            },
-            |mine| {
-                let mut scored: Vec<(f32, &PagePlan)> = plan
-                    .pages
-                    .iter()
-                    .filter(|(slug, _)| *slug != &page.slug)
-                    .filter_map(|(slug, p)| {
-                        let v = vectors.get(slug)?;
-                        Some((crate::recall::cosine_similarity(mine, v), p))
-                    })
-                    .collect();
-                // Descending by similarity; the plan's own order breaks ties,
-                // so the same plan always yields the same slice.
-                scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-                scored
-                    .into_iter()
-                    .take(CARD_INDEX_SELECTION_PAGES)
-                    .map(|(_, p)| p)
-                    .collect()
-            },
-        );
-        let lines: Vec<String> = picked
-            .iter()
-            .map(|p| format!("- {}: {}", plan_page_wikilink(p), p.description))
+        let mut home: Vec<&PagePlan> = plan
+            .pages
+            .values()
+            .filter(|p| p.wiki_id == page.wiki_id && p.slug != page.slug)
+            .collect();
+        home.sort_by_key(|p| std::cmp::Reverse(p.primary_facts.len()));
+        let home: Vec<String> = home.into_iter().map(|p| p.slug.clone()).collect();
+
+        let ask = candidates.ask_for([page.slug.as_str()]);
+        let exclude: std::collections::BTreeSet<String> =
+            std::iter::once(page.slug.clone()).collect();
+        // Rendered in the order they were picked. Sorting the slice by slug
+        // afterwards would hand the model an alphabetical list again, which is
+        // the ordering this exists to get rid of; and where a list is cut, the
+        // order IS the selection.
+        let lines: Vec<String> = candidates
+            .pick(&ask, &exclude, CARD_INDEX_SELECTION_PAGES, &home)
+            .into_iter()
+            .filter_map(|c| {
+                let p = plan.pages.get(&c.key)?;
+                Some(format!(
+                    "- [{}] {}: {}",
+                    c.source.tag(),
+                    plan_page_wikilink(p),
+                    p.description
+                ))
+            })
             .collect();
         if lines.is_empty() {
             "(no other pages)".to_owned()
@@ -4124,21 +4127,40 @@ mod tests {
         );
     }
 
+    /// A candidate pool over [`selection_plan`], keyed the way the real
+    /// [`build_page_index`] keys one.
+    async fn selection_pool(
+        pool: &SqlitePool,
+        plan: &CompilationPlan,
+    ) -> crate::candidates::CandidatePool {
+        let by_source_path: BTreeMap<String, String> = plan
+            .pages
+            .values()
+            .map(|p| {
+                (
+                    format!("wikis/{}/{}", p.wiki_id, p.page_path),
+                    p.slug.clone(),
+                )
+            })
+            .collect();
+        crate::candidates::CandidatePool::load(pool, &by_source_path).await
+    }
+
     /// Above the ceiling the lines move to the task half — leaving them in the
     /// cacheable one would write a cache entry per page and read none — and
-    /// they arrive **nearest first**, because where a list is cut the order is
-    /// the selection.
-    #[test]
-    fn the_card_selection_moves_to_the_task_half_nearest_first() {
+    /// each one says why it is offered.
+    #[tokio::test]
+    async fn the_card_selection_moves_to_the_task_half_and_says_why() {
+        let (dir, _tree, pool) = setup().await;
         let plan = selection_plan();
-        let mut vectors = BTreeMap::new();
-        vectors.insert("cucina".to_owned(), vec![1.0, 0.0, 0.0]);
+        let mut candidates = selection_pool(&pool, &plan).await;
+        candidates.set_embedding("cucina", vec![1.0, 0.0, 0.0]);
         // `orto` points nearly the same way as `cucina`; `auto` is orthogonal;
         // `garage` points away.
-        vectors.insert("orto".to_owned(), vec![0.9, 0.1, 0.0]);
-        vectors.insert("auto".to_owned(), vec![0.0, 1.0, 0.0]);
-        vectors.insert("garage".to_owned(), vec![-1.0, 0.0, 0.0]);
-        let index = PageIndex::Selected(vectors);
+        candidates.set_embedding("orto", vec![0.9, 0.1, 0.0]);
+        candidates.set_embedding("auto", vec![0.0, 1.0, 0.0]);
+        candidates.set_embedding("garage", vec![-1.0, 0.0, 0.0]);
+        let index = PageIndex::Selected(candidates);
         let page = plan.pages.get("cucina").expect("page");
         let (cached, task) = index.render_for(&plan, page);
 
@@ -4151,28 +4173,148 @@ mod tests {
             .find("[[alice/auto]]")
             .expect("orthogonal page offered");
         let garage = task.find("[[bob/garage]]").expect("far page offered");
-        assert!(orto < auto && auto < garage, "ranked nearest first: {task}");
+        assert!(
+            orto < auto && auto < garage,
+            "the near source lists what it picked nearest first: {task}"
+        );
+        assert!(
+            task.contains("- [near] [[alice/orto]]"),
+            "every line names the source that chose it: {task}"
+        );
         assert!(
             !task.contains("[[alice/cucina]]"),
             "a page is never offered itself"
         );
+        drop(dir);
+    }
+
+    /// The two sources that need no vector at all — and they are the reason
+    /// the selection is not a similarity ranking: neither page here resembles
+    /// `cucina`, and without them neither could ever be linked from it.
+    #[tokio::test]
+    async fn a_page_is_offered_for_its_people_and_its_turn_not_only_its_words() {
+        let (dir, _tree, pool) = setup().await;
+        // A memory big enough that nearness alone fills its quota: the two
+        // pages below must arrive on their OWN source or not at all.
+        let mut plan = selection_plan();
+        for i in 0..14 {
+            let slug = format!("vicina{i:02}");
+            plan.pages.insert(
+                slug.clone(),
+                PagePlan {
+                    title: slug.clone(),
+                    description: format!("{slug} desc"),
+                    style: None,
+                    primary_facts: Vec::new(),
+                    outgoing_links: Vec::new(),
+                    incoming_links: Vec::new(),
+                    wiki_id: "alice".to_owned(),
+                    page_path: format!("{slug}.md"),
+                    slug,
+                },
+            );
+        }
+        // `cucina` and `auto` were said by the same person; `cucina` and
+        // `garage` were said in the same turn. `orto` shares neither and is
+        // the nearest page by card.
+        plant_fact_at(
+            &pool,
+            &ffp(0x51, "x").fact_id,
+            "user:bob",
+            "bob cooks",
+            "wikis/alice/cucina.md",
+            None,
+            None,
+        )
+        .await;
+        plant_fact_at(
+            &pool,
+            &ffp(0x52, "x").fact_id,
+            "user:bob",
+            "bob drives",
+            "wikis/alice/auto.md",
+            None,
+            None,
+        )
+        .await;
+        plant_fact_at(
+            &pool,
+            &ffp(0x53, "x").fact_id,
+            "user:carol",
+            "carol parks",
+            "wikis/bob/garage.md",
+            None,
+            None,
+        )
+        .await;
+        plant_fact_at(
+            &pool,
+            &ffp(0x54, "x").fact_id,
+            "user:dave",
+            "dave digs",
+            "wikis/alice/orto.md",
+            None,
+            None,
+        )
+        .await;
+        // One turn produced `cucina`'s fact and `garage`'s.
+        for id in [&ffp(0x51, "x").fact_id, &ffp(0x53, "x").fact_id] {
+            sqlx::query(
+                "INSERT INTO capture_buffer
+                   (capture_id, body, subject_id, status, captured_at, origin_message_hash)
+                 VALUES (?, 'x', 'user:alice', 'promoted', '2026-08-23T00:00:00Z', 'turn-1')",
+            )
+            .bind(id.as_str())
+            .execute(&pool)
+            .await
+            .expect("buffer row");
+        }
+
+        let mut candidates = selection_pool(&pool, &plan).await;
+        candidates.set_embedding("cucina", vec![1.0, 0.0, 0.0]);
+        candidates.set_embedding("orto", vec![0.99, 0.01, 0.0]);
+        // The two that must arrive on their own source point away from
+        // `cucina`, so nearness will never reach them.
+        candidates.set_embedding("auto", vec![0.0, 1.0, 0.0]);
+        candidates.set_embedding("garage", vec![-1.0, 0.0, 0.0]);
+        for i in 0_u8..14 {
+            let t = f32::from(i) / 100.0;
+            candidates.set_embedding(&format!("vicina{i:02}"), vec![1.0 - t, t, 0.0]);
+        }
+        let page = plan.pages.get("cucina").expect("page");
+        let (_, task) = PageIndex::Selected(candidates).render_for(&plan, page);
+
+        assert!(
+            task.contains("- [same-people] [[alice/auto]]"),
+            "the page about the same person is offered as such: {task}"
+        );
+        assert!(
+            task.contains("- [same-turn] [[bob/garage]]"),
+            "the page from the same conversation is offered as such: {task}"
+        );
+        drop(dir);
     }
 
     /// A page the table has no vector for — new this run, no description, an
-    /// embedder that failed — falls back to its own wiki's pages, which is
+    /// embedder that failed — is topped up from its own wiki's pages, which is
     /// where its links most often go and costs no arithmetic.
-    #[test]
-    fn a_page_with_no_card_vector_falls_back_to_its_own_wiki() {
+    #[tokio::test]
+    async fn a_page_with_no_card_vector_falls_back_to_its_own_wiki() {
+        let (dir, _tree, pool) = setup().await;
         let plan = selection_plan();
-        let index = PageIndex::Selected(BTreeMap::new());
+        let index = PageIndex::Selected(selection_pool(&pool, &plan).await);
         let page = plan.pages.get("cucina").expect("page");
         let (_, task) = index.render_for(&plan, page);
-        assert!(task.contains("[[alice/orto]]"), "same wiki is offered");
+        assert!(
+            task.contains("- [same-wiki] [[alice/orto]]"),
+            "same wiki is offered, and says so: {task}"
+        );
         assert!(task.contains("[[alice/auto]]"));
         assert!(
             !task.contains("[[bob/garage]]"),
             "another wiki's page is not the fallback neighbourhood"
         );
+        drop(dir);
     }
 
     #[test]
