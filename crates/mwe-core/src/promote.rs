@@ -3469,7 +3469,6 @@ Un'altra pagina: [[bruno/orto]].
                     style: None,
                     primary_facts: vec![FactForPage::from_row(&row)],
                     outgoing_links: Vec::new(),
-                    incoming_links: Vec::new(),
                     wiki_id: "alice".to_owned(),
                     page_path: page.to_owned(),
                 },

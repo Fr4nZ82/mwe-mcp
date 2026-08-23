@@ -288,12 +288,15 @@ pub struct PagePlan {
     /// The facts whose single home is this page.
     #[serde(default)]
     pub primary_facts: Vec<FactForPage>,
-    /// Outgoing wikilink slugs.
+    /// The plan slugs this page links to.
+    ///
+    /// Taken from the page's own prose at every build and made symmetric
+    /// ([`build_compilation_plan`] step 9), so it is both what the page says
+    /// and what the compiler will require of it next time. Part of
+    /// [`page_fingerprint`]: a page whose neighbourhood changed is a page
+    /// whose prose has to be written again.
     #[serde(default)]
     pub outgoing_links: Vec<String>,
-    /// Incoming wikilink slugs.
-    #[serde(default)]
-    pub incoming_links: Vec<String>,
     /// The standard wiki this page lives in (its tree home).
     pub wiki_id: String,
     /// The `.md` path within `wiki_id`. A foundation node uses its type's
@@ -609,7 +612,6 @@ pub async fn build_foundation_pages(pool: &SqlitePool) -> Result<BTreeMap<String
                 style: None,
                 primary_facts: Vec::new(),
                 outgoing_links: Vec::new(),
-                incoming_links: Vec::new(),
                 wiki_id: u.user_id.clone(),
                 page_path: crate::wiki::PROFILE_FILENAME.to_owned(),
                 slug,
@@ -632,9 +634,10 @@ pub async fn build_foundation_pages(pool: &SqlitePool) -> Result<BTreeMap<String
 ///
 /// Materialises foundation + registry + accepted-new pages, applies assignments
 /// (with redirects) under the one-fact-one-page rule, deterministically homes
-/// orphan facts, collects the concept pages left with no facts, builds the
-/// symmetric link graph, and puts a wiki's own pages first. Returns the plan
-/// and the updated registry.
+/// orphan facts, collects the concept pages left with no facts, takes each
+/// page's links from `prose_links` ([`harvest_prose_links`]) and makes the
+/// graph symmetric, and puts a wiki's own pages first. Returns the plan and
+/// the updated registry.
 #[must_use]
 #[allow(clippy::too_many_lines)] // the Architetto reads top-to-bottom; splitting hides the flow
 pub fn build_compilation_plan(
@@ -643,6 +646,7 @@ pub fn build_compilation_plan(
     blueprint: &Blueprint,
     conciliation: &ConciliatorResult,
     registry: &ConceptRegistry,
+    prose_links: &BTreeMap<(String, String), Vec<String>>,
     now: &str,
 ) -> (CompilationPlan, ConceptRegistry) {
     let mut pages: BTreeMap<String, PagePlan> = BTreeMap::new();
@@ -707,7 +711,6 @@ pub fn build_compilation_plan(
     for (slug, p) in foundation {
         let mut np = p.clone();
         np.primary_facts.clear();
-        np.incoming_links.clear();
         pages.insert(slug.clone(), np);
     }
 
@@ -788,7 +791,6 @@ pub fn build_compilation_plan(
                     style: None,
                     primary_facts: Vec::new(),
                     outgoing_links: Vec::new(),
-                    incoming_links: Vec::new(),
                     wiki_id: wiki_id.clone(),
                     page_path: format!("{slug}.md"),
                     slug: slug.clone(),
@@ -889,19 +891,26 @@ pub fn build_compilation_plan(
         updated_registry.entries.remove(&slug);
     }
 
-    // 9. directed link graph, then symmetric.
+    // 9. Each page's links come from its own prose, then the graph is made
+    // symmetric.
     //
-    // One source: [`PagePlan::outgoing_links`], which is meant to carry the
-    // `[[wikilinks]]` the page's own text names. A page is reached because one
-    // of its facts ranked, its description matched, or another page's prose
-    // links it — there is no fourth way in, and nothing points down at it from
-    // above.
+    // One source, and it is what somebody wrote: the `[[wikilinks]]` on the
+    // page's own file, harvested by [`harvest_prose_links`] — by the Cronista
+    // on the last rewrite, or by the owner editing the page by hand. A page is
+    // reached because one of its facts ranked, its description matched, or
+    // another page's prose links it. There is no fourth way in, and nothing
+    // points down at it from above.
     //
-    // ⚠️ **Nothing fills that field today**, so this graph is empty on every
-    // build, and everything downstream of it — the Cronista's recommended
-    // rails, `compiler::missing_rails`, the `outgoing` half of
-    // [`page_fingerprint`], the reviewer's asymmetric-link check — is running
-    // on an empty set rather than on no links.
+    // Recording them is what makes a link **survive**: at the next rewrite the
+    // compiler hands them back as this page's mandatory rails, so a Cronista
+    // that would otherwise have dropped a link it has no reason to re-invent
+    // has to weave it in again.
+    for page in pages.values_mut() {
+        page.outgoing_links = prose_links
+            .get(&(page.wiki_id.clone(), page.page_path.clone()))
+            .cloned()
+            .unwrap_or_default();
+    }
     let mut link_graph: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (slug, page) in &pages {
         let entry = link_graph.entry(slug.clone()).or_default();
@@ -911,7 +920,9 @@ pub fn build_compilation_plan(
             }
         }
     }
-    // make symmetric.
+    // Make symmetric. A rail is a road, not a sign: a reader who walked from
+    // A to B can walk back, and the reciprocal edge becomes a mandatory rail
+    // on B at its next rewrite, so the road gets written on both pages.
     let edges: Vec<(String, String)> = link_graph
         .iter()
         .flat_map(|(s, ts)| ts.iter().map(move |t| (s.clone(), t.clone())))
@@ -928,7 +939,6 @@ pub fn build_compilation_plan(
     // sync onto pages.
     for (slug, page) in &mut pages {
         page.outgoing_links = link_graph.get(slug).cloned().unwrap_or_default();
-        page.incoming_links = page.outgoing_links.clone(); // symmetric ⇒ equal
     }
 
     // 10. compilation order: a wiki's own pages first, then slug for stability.
@@ -968,7 +978,6 @@ fn registry_to_page(e: &ConceptRegistryEntry) -> PagePlan {
         style: e.style,
         primary_facts: Vec::new(),
         outgoing_links: Vec::new(),
-        incoming_links: Vec::new(),
         wiki_id: e.wiki_id.clone(),
         page_path,
     }
@@ -984,7 +993,6 @@ fn new_page_to_plan(np: &NewPage, slug: &str, wiki_id: &str) -> PagePlan {
         style: crate::wiki::PageStyle::parse_lenient(np.style.as_deref()),
         primary_facts: Vec::new(),
         outgoing_links: Vec::new(),
-        incoming_links: Vec::new(),
         wiki_id: wiki_id.to_owned(),
         page_path,
     }
@@ -1371,7 +1379,6 @@ pub fn rehome_facts_in_persisted_plan(
                     style: seed.style,
                     primary_facts: Vec::new(),
                     outgoing_links: Vec::new(),
-                    incoming_links: Vec::new(),
                     wiki_id: seed.wiki_id.clone(),
                     page_path: seed
                         .page_path
@@ -1439,7 +1446,6 @@ pub fn rehome_facts_in_persisted_plan(
             }
             for page in plan.pages.values_mut() {
                 page.outgoing_links.retain(|s| s != &husk);
-                page.incoming_links.retain(|s| s != &husk);
             }
         }
         registry.entries.remove(&husk);
@@ -1870,6 +1876,66 @@ pub async fn foreign_page_offers(
         "planner: forest page list over its ceiling — composing foreign candidates per wiki"
     );
     ForeignPages::Selected(by_wiki)
+}
+
+/// The `[[wikilinks]]` every page's prose currently carries, keyed by
+/// `(wiki_id, page_path)` and already resolved to plan slugs.
+///
+/// **Read from the files, not from what the last compile emitted.** Two
+/// reasons, and the second is the one that settles it:
+///
+/// - a rewrite is the only thing that changes a page's links, so the file is
+///   always at least as fresh as any record the engine could keep;
+/// - the owner edits these pages by hand, in Obsidian. A link they wrote
+///   themselves is a link the memory has, and reading the file is what makes
+///   it one the engine defends on the next rewrite instead of quietly dropping.
+///
+/// Only **page** hops count. A bare `[[wiki_id]]` names a wiki, and recall
+/// opens pages, so it leads nowhere and is not an edge
+/// ([`crate::recall::WikiLink`]). A hop naming a page the plan does not hold
+/// is dropped later, by the graph step, which is where the plan's page set is
+/// known.
+///
+/// Costs one read per page per plan build, which is the same order as the
+/// reviewer's own pass at the tail of every compile.
+fn harvest_prose_links(tree: &WikiTree) -> BTreeMap<(String, String), Vec<String>> {
+    let mut out: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    let Ok(wikis) = tree.walk() else {
+        tracing::warn!("planner: prose links unread — the plan keeps the links it had");
+        return out;
+    };
+    for d in wikis {
+        let wiki_id = d.meta.wiki_id.as_str().to_owned();
+        let Ok(pages) = crate::wiki::list_wiki_pages(&d.abs_dir) else {
+            continue;
+        };
+        for page in pages {
+            let Ok(body) = std::fs::read_to_string(&page.abs_path) else {
+                continue;
+            };
+            let mut links: Vec<String> = Vec::new();
+            for link in crate::recall::extract_wikilinks(&body) {
+                let Some(target) = link.page else {
+                    continue;
+                };
+                let slug = plan_slug_for_page(&link.wiki_id, &target);
+                if !links.contains(&slug) {
+                    links.push(slug);
+                }
+            }
+            if links.is_empty() {
+                continue;
+            }
+            out.insert(
+                (
+                    wiki_id.clone(),
+                    page.rel_path.to_string_lossy().into_owned(),
+                ),
+                links,
+            );
+        }
+    }
+    out
 }
 
 /// The `page_card` key of a planned page — its workdir-relative source path.
@@ -3058,12 +3124,16 @@ pub async fn build_wiki_plan(
         }
     }
 
+    // The links the pages themselves carry, read off disk: written by the
+    // Cronista on their last rewrite, or by the owner editing them by hand.
+    let prose_links = harvest_prose_links(tree);
     let (mut plan, mut updated_registry) = build_compilation_plan(
         &facts,
         &foundation,
         &blueprint,
         &conciliation,
         &registry,
+        &prose_links,
         now,
     );
     // A page's card is whatever the writer wrote on it, not the guess the
@@ -3759,7 +3829,6 @@ mod tests {
             style: None,
             primary_facts: Vec::new(),
             outgoing_links: Vec::new(),
-            incoming_links: Vec::new(),
             wiki_id: slug.to_owned(),
             page_path: crate::wiki::PROFILE_FILENAME.to_owned(),
         }
@@ -4148,6 +4217,7 @@ mod tests {
             &blueprint,
             &ConciliatorResult::default(),
             &ConceptRegistry::empty("t"),
+            &BTreeMap::new(),
             "2026-06-08T00:00:00Z",
         );
 
@@ -4182,6 +4252,7 @@ mod tests {
             &blueprint,
             &ConciliatorResult::default(),
             &ConceptRegistry::empty("t"),
+            &BTreeMap::new(),
             "2026-05-31T00:00:00Z",
         );
         // Only the ASSIGNED fact lands. The other reached the fallback and is
@@ -4242,6 +4313,7 @@ mod tests {
             &blueprint,
             &ConciliatorResult::default(),
             &registry,
+            &BTreeMap::new(),
             "2026-07-04T00:00:00Z",
         );
         assert_eq!(
@@ -4297,6 +4369,7 @@ mod tests {
             &Blueprint::default(),
             &ConciliatorResult::default(),
             &registry,
+            &BTreeMap::new(),
             "t",
         );
         // Both go, and the registry loses them too — a page nobody filed a
@@ -4599,6 +4672,128 @@ mod tests {
             "and it is still on no page — waiting is a stable state"
         );
         drop(dir);
+    }
+
+    /// **The engine stops forgetting the links it wrote.**
+    ///
+    /// A `[[wikilink]]` on a page is the only route to that page a search
+    /// cannot replace, and a rewrite that is not told about it drops it: the
+    /// Cronista is handed the recommended rails and nothing else. So the plan
+    /// carries what the pages themselves say, and the next rewrite is
+    /// *required* to keep it.
+    #[tokio::test]
+    async fn the_plan_takes_its_links_from_what_the_pages_say() {
+        use crate::fact_index::NewFact;
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        let wikis = dir.path().join("wikis");
+        for w in ["alice", "bob"] {
+            std::fs::create_dir_all(wikis.join(w)).unwrap();
+            std::fs::write(
+                wikis.join(w).join("_meta.md"),
+                format!(
+                    "---\nwiki_id: {w}\nwiki_type: wiki-user\nslug: {w}\ntitle: {w}\nacl_default: 'user:{w}'\n---\n"
+                ),
+            )
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO enrollment_users (user_id, aliases, is_admin) VALUES (?,'[]',0)",
+            )
+            .bind(w)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        // `cucina` names three things: a real page of another wiki, a wiki
+        // with no page (which leads nowhere), and a page nobody has.
+        std::fs::write(
+            wikis.join("alice/cucina.md"),
+            "Alice cooks. See [[bob/garage]], and [[bob]], and [[alice/inesistente]].\n",
+        )
+        .unwrap();
+        std::fs::write(wikis.join("bob/garage.md"), "Bob's garage.\n").unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+
+        // One fact on each page, named by the turn that captured it, so the
+        // deterministic placement settles both without a model and neither
+        // page is collected as empty.
+        for (i, (wiki, page)) in [("alice", "cucina.md"), ("bob", "garage.md")]
+            .into_iter()
+            .enumerate()
+        {
+            fact_index::insert(
+                &pool,
+                &NewFact {
+                    authored_refs: Vec::new(),
+                    fact_id: FactId::parse(&format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d9{i}"))
+                        .unwrap(),
+                    wiki_id: wiki.to_owned(),
+                    source_path: format!("wikis/{wiki}/{page}"),
+                    region_start: None,
+                    region_end: None,
+                    text: format!("fact {i}"),
+                    embedding: vec![0.1, 0.2],
+                    subject_id: format!("user:{wiki}").parse::<Principal>().unwrap(),
+                    allow_ids: Vec::new(),
+                    sender_id: None,
+                    fact_type: None,
+                    topics: Vec::new(),
+                    valid_from: None,
+                    valid_to: None,
+                    target_page: Some(page.to_owned()),
+                    style: None,
+                    salience: None,
+                    source_ref: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let plan = build_wiki_plan(
+            &pool,
+            &tree,
+            NewFactPlacement::Ingest,
+            None,
+            "2026-08-23T00:00:00Z",
+            &[],
+        )
+        .await
+        .expect("plan");
+
+        assert_eq!(
+            plan.pages["cucina"].outgoing_links,
+            vec!["garage".to_owned()],
+            "the page hop is an edge; the bare wiki and the page nobody has are not: {:?}",
+            plan.pages["cucina"].outgoing_links
+        );
+        assert_eq!(
+            plan.pages["garage"].outgoing_links,
+            vec!["cucina".to_owned()],
+            "and the edge is reciprocal, so a reader who walked here can walk back"
+        );
+        assert_eq!(
+            plan.link_graph["cucina"],
+            vec!["garage".to_owned()],
+            "which is the graph the compiler recommends rails from"
+        );
+        drop(dir);
+    }
+
+    /// A page whose neighbourhood changed is a page whose prose has to be
+    /// written again — that is what puts the link back when a rewrite drops
+    /// it, and what carries a new one onto the page at the other end.
+    #[test]
+    fn a_changed_neighbourhood_makes_a_page_dirty() {
+        let mut before = person("alice");
+        before.outgoing_links = vec!["cucina".to_owned()];
+        let mut after = before.clone();
+        after.outgoing_links = vec!["cucina".to_owned(), "orto".to_owned()];
+        assert_ne!(
+            page_fingerprint(&before),
+            page_fingerprint(&after),
+            "gaining a neighbour changes the fingerprint"
+        );
     }
 
     /// A behaviour-rule fact lives on the reserved policy page `@rules.md`
@@ -5915,6 +6110,7 @@ mod tests {
             &Blueprint::default(),
             &ConciliatorResult::default(),
             &registry,
+            &BTreeMap::new(),
             "t2",
         );
         assert!(
@@ -6061,6 +6257,7 @@ mod tests {
             &blueprint,
             &ConciliatorResult::default(),
             &ConceptRegistry::empty("t"),
+            &BTreeMap::new(),
             "t2",
         );
         assert!(
@@ -6109,6 +6306,7 @@ mod tests {
             &blueprint,
             &ConciliatorResult::default(),
             &registry,
+            &BTreeMap::new(),
             "t2",
         );
         assert!(
