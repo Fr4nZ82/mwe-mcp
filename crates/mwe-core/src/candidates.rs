@@ -170,25 +170,56 @@ pub struct CandidatePool {
     entries: BTreeMap<String, PageTraits>,
     /// Principals over [`PRINCIPAL_UBIQUITY`] of the pool — see that constant.
     ubiquitous: BTreeSet<String>,
+    /// How many pages arrived with a card vector — see [`Self::embedded`].
+    embedded: usize,
 }
 
 impl CandidatePool {
-    /// Read the people and turn traits of every page in `key_by_source_path`.
+    /// Read every page in `key_by_source_path`: its people, its turns, and its
+    /// card vector.
     ///
-    /// One query for the whole run, not one per page: the caller asks about
-    /// every page it may offer, and the per-page work is set intersection in
-    /// memory afterwards.
+    /// **Two queries for the whole run, not two per page.** The caller asks
+    /// about every page it may offer at once, and the per-page work is set
+    /// intersection and cosine in memory afterwards.
+    ///
+    /// The vector is **read** here, never made: a card is embedded by the
+    /// reindex pipeline, which is the one place that has both the page's bytes
+    /// and an embedder. A page whose card was never embedded simply does not
+    /// rank by nearness, which is a smaller offer and never a wrong one.
     ///
     /// Failure is **not** an error. A pool that could not read its traits
-    /// still ranks by nearness, which is what the callers did before this
-    /// existed — so a database hiccup costs the two extra sources and nothing
-    /// else.
+    /// still ranks by nearness, and one that could not read its vectors still
+    /// has the two sources that read none — so a database hiccup costs reach,
+    /// never correctness.
     #[must_use]
     pub async fn load(pool: &SqlitePool, key_by_source_path: &BTreeMap<String, String>) -> Self {
         let mut entries: BTreeMap<String, PageTraits> = key_by_source_path
             .values()
             .map(|k| (k.clone(), PageTraits::default()))
             .collect();
+
+        // The card vectors, in one read. A row for a page this pool does not
+        // serve is simply not ours.
+        let mut embedded = 0usize;
+        match crate::page_card::list_all(pool).await {
+            Ok(rows) => {
+                for row in rows {
+                    let Some(key) = key_by_source_path.get(&row.source_path) else {
+                        continue;
+                    };
+                    let Some(t) = entries.get_mut(key) else {
+                        continue;
+                    };
+                    if let Some(v) = row.embedding {
+                        t.embedding = Some(v);
+                        embedded += 1;
+                    }
+                }
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "candidates: card vectors unread — no nearness");
+            },
+        }
 
         // LEFT JOIN: a fact written live (a list item, a container the user
         // asked for this turn) never passed through the buffer, so it has no
@@ -208,6 +239,7 @@ impl CandidatePool {
                 return Self {
                     entries,
                     ubiquitous: BTreeSet::new(),
+                    embedded,
                 };
             },
         };
@@ -252,13 +284,30 @@ impl CandidatePool {
         Self {
             entries,
             ubiquitous,
+            embedded,
         }
     }
 
-    /// Attach a page's card vector. Called once per page with a stored vector.
+    /// How many of this pool's pages arrived carrying a card vector.
+    ///
+    /// The rest cannot be ranked by nearness at all, so a small number against
+    /// a large pool says the selection is running on the two sources that read
+    /// no vector, plus the caller's own ordering.
+    #[must_use]
+    pub const fn embedded(&self) -> usize {
+        self.embedded
+    }
+
+    /// Put a vector on one page directly, for a test that needs the cosine to
+    /// come out somewhere known. [`Self::load`] is how a real pool gets them.
     pub fn set_embedding(&mut self, key: &str, embedding: Vec<f32>) {
-        if let Some(t) = self.entries.get_mut(key) {
-            t.embedding = Some(embedding);
+        let Some(t) = self.entries.get_mut(key) else {
+            return;
+        };
+        let was_empty = t.embedding.is_none();
+        t.embedding = Some(embedding);
+        if was_empty {
+            self.embedded += 1;
         }
     }
 
@@ -498,6 +547,7 @@ mod tests {
         CandidatePool {
             entries,
             ubiquitous,
+            embedded: 0,
         }
     }
 

@@ -688,8 +688,8 @@ pub fn build_compilation_plan(
             .entry(slug)
             .or_insert_with(|| fact.source_wiki_id.clone());
     }
-    // Migration: re-home (or drop) any carried-over registry entry still pinned to
-    // the retired root wiki, so a pre-C plan does not resurrect it.
+    // No page lives in the root wiki, so a carried-over registry entry
+    // pinned there is re-homed where its facts are, or dropped.
     updated_registry.entries.retain(|slug, e| {
         if e.wiki_id != crate::types::WikiId::ROOT {
             return true;
@@ -1919,16 +1919,7 @@ pub async fn foreign_page_offers(
         }
     }
 
-    let mut candidates = crate::candidates::CandidatePool::load(pool, &by_source_path).await;
-    let mut embedded = 0usize;
-    for (path, slug) in &by_source_path {
-        if let Ok(Some(row)) = crate::page_card::get(pool, path).await
-            && let Some(v) = row.embedding
-        {
-            candidates.set_embedding(slug, v);
-            embedded += 1;
-        }
-    }
+    let candidates = crate::candidates::CandidatePool::load(pool, &by_source_path).await;
 
     let mut by_wiki: BTreeMap<String, Vec<crate::candidates::Candidate>> = BTreeMap::new();
     for wiki in wikis {
@@ -1953,7 +1944,7 @@ pub async fn foreign_page_offers(
     tracing::info!(
         pages = foundation.len() + registry.entries.len(),
         ceiling = FOREST_PAGE_CEILING,
-        embedded,
+        embedded = candidates.embedded(),
         wikis = by_wiki.len(),
         "planner: forest page list over its ceiling — composing foreign candidates per wiki"
     );

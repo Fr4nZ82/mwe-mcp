@@ -1958,20 +1958,11 @@ async fn build_page_index(pool: &SqlitePool, tree: &WikiTree, plan: &Compilation
         .iter()
         .filter_map(|(slug, p)| Some((plan_page_source_path(tree, p)?, slug.clone())))
         .collect();
-    let mut candidates = crate::candidates::CandidatePool::load(pool, &by_source_path).await;
-    let mut embedded = 0usize;
-    for (source_path, slug) in &by_source_path {
-        if let Ok(Some(row)) = crate::page_card::get(pool, source_path).await
-            && let Some(v) = row.embedding
-        {
-            candidates.set_embedding(slug, v);
-            embedded += 1;
-        }
-    }
+    let candidates = crate::candidates::CandidatePool::load(pool, &by_source_path).await;
     tracing::info!(
         pages = plan.pages.len(),
         ceiling = CARD_INDEX_CACHE_CEILING_PAGES,
-        embedded,
+        embedded = candidates.embedded(),
         "compiler: page index over its cache ceiling — composing candidates per page"
     );
     PageIndex::Selected(candidates)
