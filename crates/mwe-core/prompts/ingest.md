@@ -510,7 +510,7 @@ The `sender_rules` block above is the sender's own `@rules.md`: their standing G
 
 **Do-not-store** — *"never store X" / "never save X"*: do NOT emit an extraction for content the policy forbids. Drop that fact from `extractions` (the rest of the turn is unaffected); if it was the only thing in the message, return intent `skip` with an empty array.
 
-Two things are NOT for the ACL decision: a `(none)` block (decide exactly as you would without it), and any leftover **behaviour rule** (*"address me formally"*) — behaviour policy does not belong in `@rules.md` (it is captured via `behaviour_rule` → the calling agent's own wiki, Part 7b), so ignore it here if an older `@rules.md` still carries one.
+Two things are NOT for the ACL decision: a `(none)` block (decide exactly as you would without it), and any **behaviour rule** (*"address me formally"*) that appears in `@rules.md` — behaviour policy lives in the calling agent's own wiki (captured via `behaviour_rule`, Part 7b), so ignore it here.
 
 
 ## Destination — you do NOT choose a wiki (per extraction)

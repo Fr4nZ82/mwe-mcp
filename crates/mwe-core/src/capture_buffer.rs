@@ -1194,7 +1194,8 @@ mod tests {
         .await
         .expect("buffer");
 
-        // Nothing new on disk — not the retired journal, not anything else.
+        // Nothing new on disk at all: the buffer is a database table, and a
+        // buffered claim leaves no file beside the wiki's pages.
         let after: Vec<_> = std::fs::read_dir(dir.path().join("wikis/alice"))
             .expect("read wiki dir")
             .flatten()

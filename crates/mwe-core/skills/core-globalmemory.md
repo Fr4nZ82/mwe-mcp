@@ -98,7 +98,7 @@ the hook is disabled, fall back to the explicit shape:
 wiki_search({
   query: "<the user prompt, lightly cleaned of greetings>",
   scope: {
-    subject_ids: ["user:<your sender_id>"],  // pre-rename servers: `owner_ids`
+    subject_ids: ["user:<your sender_id>"],
     smart: false                             // keeps smart wikis out
   }
 })
@@ -109,8 +109,8 @@ an unprefixed id is rejected. The `recall_core_global` tool is exactly
 this fallback, server-side, with the gates pre-wired.
 
 If the recall returns hits, weave them into your reply with a citation
-(`wiki://<wiki_id>/<path>` — see companion-wikis.md §citation-ids
-for the format; standard wikis use the same scheme). If it returns
+(`wiki://<wiki_id>/<path>` — the `smart-consumer` skill's "Citation IDs"
+section has the format; standard wikis use the same scheme). If it returns
 nothing, answer from the prompt alone and move on — do not invent
 context that mwe-mcp did not return.
 

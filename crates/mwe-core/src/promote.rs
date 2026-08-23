@@ -929,11 +929,10 @@ async fn repoint_markers(pool: &SqlitePool, source_rel: &str, body: &str) {
 /// Follow moved pages across the whole corpus: every link that still names one
 /// of them at its old wiki is repointed at the new one.
 ///
-/// A page reached its neighbours by the links somebody wrote on them — since
-/// the directory listing was retired a page is reachable
-/// only by a fact hit, a match on its card, or an inbound link — so a move
-/// that leaves those links behind does not merely make them ugly, it strands
-/// the page's whole neighbourhood.
+/// A page reached its neighbours by the links somebody wrote on them, and a
+/// page is reachable by exactly three routes — a fact hit, a match on its
+/// card, or an inbound link — so a move that leaves those links behind does
+/// not merely make them ugly, it strands the page's whole neighbourhood.
 ///
 /// Rewrites inside a fact's marked region too. That is not a divergence: the
 /// bytes in a region are the prose the writing model produced, never a copy
@@ -1285,11 +1284,9 @@ async fn apply_page_merge(
     }
 
     // Every `[[husk]]` written elsewhere now points at a file that does not
-    // exist. This is the one wiki-crossing variant that never did this, while
-    // the module doc above promised that every one of them does — and since
-    // the directory listing was retired a page is reachable by exactly three
-    // routes (a fact hit, its own card, an authored link), so a dead rail is
-    // a third of a page's reachability gone. The rename half of
+    // exist. A page is reachable by exactly three routes (a fact hit, its own
+    // card, an authored link), so a dead rail is a third of a page's
+    // reachability gone. The rename half of
     // `MovedPageAddress` exists for this call: unlike a move, the husk's
     // address stops existing altogether.
     retarget_links_after_move(
@@ -3292,8 +3289,8 @@ Un'altra pagina: [[alice/potatura]].
 
     /// A merge renames the page as well as re-addressing it — the husk's
     /// address stops existing, so a link that still names it is a dead rail,
-    /// and since the directory listing was retired an authored link is one of
-    /// only three ways a page is reachable at all.
+    /// and an authored link is one of only three ways a page is reachable at
+    /// all.
     #[test]
     fn retarget_wikilinks_follows_a_page_that_was_merged_into_another() {
         let moves = vec![MovedPageAddress::renamed(

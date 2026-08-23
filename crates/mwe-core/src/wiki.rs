@@ -821,11 +821,11 @@ impl WikiMeta {
 
         let title: String = take_required(path, &mut raw, "title")?;
 
-        // `acl_default` is retired: the owning principal is now **derived**
-        // from topology ([`WikiTree::resolve_scope_principal`]), not
-        // declared. Read-and-ignore it so existing `_meta.md` files still
-        // parse; it is never emitted by `to_yaml`, so it drops on the next
-        // rewrite (the `companion`→`smart` legacy-alias spirit).
+        // A wiki's owning principal is **derived** from topology
+        // ([`WikiTree::resolve_scope_principal`]), never declared. An
+        // `acl_default:` key on disk is read and ignored so such a file still
+        // parses; `to_yaml` never emits one, so it drops on the next
+        // rewrite.
         let _ignored_acl_default: Option<serde_yaml::Value> = take(path, &mut raw, "acl_default")?;
 
         // The category's prose description (placement signal, never an ACL
@@ -859,9 +859,9 @@ impl WikiMeta {
 
         let promoted_from: Option<String> = take(path, &mut raw, "promoted_from")?;
         let no_archive: bool = take(path, &mut raw, "no_archive")?.unwrap_or(false);
-        // `smart:` is the canonical key; `companion:` is the legacy
-        // alias from before the family rename and stays a valid read
-        // forever (existing workdirs keep working; writes emit `smart`).
+        // `smart:` is the canonical key and the only one writes emit;
+        // `companion:` is a read alias and stays valid forever, so a workdir
+        // carrying it keeps working.
         let smart_key: Option<bool> = take(path, &mut raw, "smart")?;
         let companion_alias: Option<bool> = take(path, &mut raw, "companion")?;
         let smart: bool = smart_key.or(companion_alias).unwrap_or(false);
@@ -1510,8 +1510,8 @@ fn list_pages_inner(wiki_root: &Path, cur: &Path, out: &mut Vec<PageInfo>) -> Re
             };
             // One rule: a name starting with `_` belongs to the engine and is
             // not a page of the wiki (founder, 2026-08-18). Covers `_meta.md`,
-            // the smart consumer's `_briefing.md` + its archive, and any
-            // leftover of the retired captures journal.
+            // the smart consumer's `_briefing.md` + its archive, and anything
+            // else the engine puts beside a wiki's pages.
             if name.starts_with('_') {
                 continue;
             }
