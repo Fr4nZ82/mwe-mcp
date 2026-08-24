@@ -232,7 +232,7 @@ fn render(
         }
 
         p.flash.flash-info {
-            strong { "Changes go live on the next dream cycle." }
+            strong { "Changes go live on the next REM cycle." }
             " Saving rewrites " code { (CONFIG_FILENAME) } " atomically and "
             "hot-swaps the running policy — the interval scheduler reads it "
             "at each cycle start and the Dream console at each trigger, "
@@ -343,7 +343,7 @@ async fn save(
         &parsed,
         Some(Flash {
             kind: "success",
-            msg: "REM settings saved and hot-reloaded — the next dream cycle uses them.",
+            msg: "REM settings saved and hot-reloaded — the next REM cycle uses them.",
         }),
     );
     Ok(Html(body).into_response())

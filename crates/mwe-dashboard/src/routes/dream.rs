@@ -597,12 +597,12 @@ fn dream_forms() -> Markup {
             (dream_form(
                 "/dashboard/dream/light",
                 "Light",
-                "Promotes captures into facts and recompiles dirty pages. Frequent, cheap (promotion without an LLM; the Chronicler only touches the dirty ones)."
+                "Promotes captures into facts and recompiles dirty pages. Frequent, cheap (promotion without an LLM; the Cronista only touches the dirty ones)."
             ))
             (dream_form(
                 "/dashboard/dream/compile",
                 "Compile",
-                "Narrative recompilation only (Cartographer → Conciliator → Architect → Chronicler → Reviewer) on dirty pages. For isolating the compiler."
+                "Narrative recompilation only (Cartografo → Conciliatore → Architetto → Cronista → Revisore) on dirty pages. For isolating the compiler."
             ))
             (dream_form(
                 "/dashboard/dream/full",
