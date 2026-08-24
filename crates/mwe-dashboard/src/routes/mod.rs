@@ -85,12 +85,11 @@ pub fn build(state: DashboardState) -> Router {
         // not showing the product — it is showing half of it, and the
         // half that answers "what is this thing" least well.
         //
-        // They were once left unmounted when frozen, so that a page of
-        // dead controls could not invite a stranger to try. The freeze
-        // is the boundary that matters and it is enforced by path in
-        // [`crate::read_only`] whatever is mounted; what the visitor
-        // gets now is the real surface, inert. Keep this list in step
-        // with the admin block of the top nav (`ui::layout`).
+        // The freeze is the boundary that matters, and it is enforced by
+        // path in [`crate::read_only`] whatever is mounted, so a visitor
+        // gets the real surface, inert — not a page of dead controls
+        // inviting them to try. Keep this list in step with the admin
+        // block of the top nav (`ui::layout`).
         //
         // The consequence is about **content**, not routing: on a frozen
         // instance these pages are readable by anybody who walks through

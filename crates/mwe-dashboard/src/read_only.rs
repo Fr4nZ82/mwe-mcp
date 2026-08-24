@@ -28,11 +28,14 @@
 //! error on an instance a stranger is looking at is worse than no button,
 //! but hiding alone would be a curtain — the routes would still be there.
 //!
-//! The consoles that exist **only** to change things (users, tokens,
-//! prompts, the LLM / recall / REM / backup editors, the Dream console)
-//! are not merged into the router at all in this mode: a page whose every
-//! control is gone is not a page worth reaching, and a route that does
-//! not exist cannot be found by anybody.
+//! The operator's consoles — users, tokens, prompts, the LLM / recall /
+//! REM / backup editors, the Dream console — stay **mounted on every
+//! deployment, frozen or not**: a memory server is an operator's tool as
+//! much as a reader's, and an instance that hides them shows half the
+//! product. What a visitor gets is the real surface, inert. The
+//! consequence is about content rather than routing: on a frozen instance
+//! those pages are readable by whoever walks in, so putting one on the
+//! public internet means having looked at what they print.
 
 use axum::extract::{Request, State};
 use axum::http::{Method, StatusCode};
