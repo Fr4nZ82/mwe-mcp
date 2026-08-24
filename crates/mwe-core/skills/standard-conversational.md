@@ -188,7 +188,7 @@ smart wiki: smart wikis are filtered out of the classifier's
 `available_wikis` window, so the capture lands in Frodo's standard
 personal memory, not the project's smart wiki. To get the note in
 front of the project's smart consumer, openclaw calls
-`wiki_admin_notify(wiki_id=w_lnprint_xy, topic="recovery codes",
+`wiki_admin_notify(wiki_id=frodo-lnprint, topic="recovery codes",
 body=<...>, source={kind: "user", ref: "telegram"})` — the item
 lands in `_briefing.md` and Frodo's smart consumer (Claude Code on
 laptop) surfaces it at the next session.

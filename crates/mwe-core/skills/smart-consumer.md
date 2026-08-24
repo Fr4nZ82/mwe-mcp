@@ -652,10 +652,10 @@ When a fresh token arrives, the next `smart_bootstrap` does:
 
 ```json
 {
-    "wiki_id": "w_lnprint_xy",
-    "last_op_log_head": "ol_abc123",
+    "wiki_id": "frodo-lnprint",
+    "last_op_log_head": 184,
     "wiki_type": "wiki-companion",
-    "project_id": "ab12cd34ef56",
+    "project_id": "18a486b5c823a33f",
     "local_wiki_root": ".mwe/wiki/",
     "pending_pushes": [
         {"path": "modules/auth.md", "content_sha256": "...", "queued_at": "2026-05-25T08:14:00Z"}

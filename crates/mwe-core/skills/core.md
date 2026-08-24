@@ -190,18 +190,21 @@ conclude the skill is wrong.
 
 - **Internal token** (1 year TTL): local-device clients on the
   operator's own machine.
-- **Exposed token** (30 day TTL): public-internet clients. Refresh
-  proactively when `exp - now < 7 days` via `POST /mcp/token-refresh`.
-- **Session cookie** (10 min sliding): dashboard browser only, never
+- **Exposed token** (30 day TTL): public-internet clients. There is no
+  self-service refresh: a token is re-issued by the operator from the
+  dashboard's Tokens page (`/dashboard/tokens`). Watch your own `exp` and
+  ask for a new one **before** it lapses — once it has, every call fails
+  with `401 invalid_token` and there is nothing to retry.
+- **Session cookie** (60 min sliding): dashboard browser only, never
   over MCP.
 
 ### Auth failure semantics
 
 | Wire code | Caller behaviour |
 |---|---|
-| `401 invalid_token` | Signature mismatch / clock skew / unknown server. Hard configuration error — surface immediately, do not queue local writes. |
+| `401 missing_bearer` | No `Authorization: Bearer <jwt>` on the request. You are not wired up — surface it, do not retry. |
+| `401 invalid_token` | The JWT failed its signature, **expiry** or algorithm check — an expired token and a rotated server secret both arrive as this one code, so do not branch on a separate code for either. Hard configuration error: surface immediately, do not queue local writes. |
 | `401 token_revoked` | JTI blacklisted (operator revoked the token). **Smart consumers**: keep the local `.mwe/wiki/` cache intact, queue local edits, prompt the operator for a new token. See `smart-consumer` §"Graceful degradation". **Standard consumers**: stop and surface the failure. |
-| `401 expired` / `401 secret_rotated` | Same as `invalid_token` in caller behaviour: surface, do not retry. |
 | `403 requires_consumer_class_smart` | You called a `wiki_admin_*` tool without the `smart` claim. Don't retry. |
 | `403 wiki_owned_by_other_user` | You tried `wiki_admin_push/pull` on a wiki whose `owner_user` is not your `sender_id`. Note: read access can still be granted via `shared_with` (see `smart-consumer`). |
 | `423 wiki_locked_by_lease` | Cooperative lease held by another smart consumer of the same user. Wait + retry, or back off. |
