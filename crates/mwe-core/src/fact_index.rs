@@ -3057,6 +3057,85 @@ mod tests {
         }
     }
 
+    /// The roster answers with ONE principal per name, and it is the one the
+    /// corpus used most.
+    ///
+    /// That tie-break is the whole convergence property: a name the
+    /// classifier split between two answers before this column existed comes
+    /// back as the majority answer, so the next turn copies THAT and the gap
+    /// closes instead of alternating for ever. A name nobody may read is not
+    /// on the roster at all — it must not tell a sender that somebody they
+    /// cannot see exists.
+    #[tokio::test]
+    async fn the_entity_roster_gives_the_commonest_principal_and_hides_the_unreadable() {
+        let pool = make_pool().await;
+        let mut n = 0u8;
+        let mut add = |subject: &str, name: Option<&str>, dead: bool| {
+            n += 1;
+            let id = format!("018f1234-5678-7abc-9def-0123456789{n:02x}");
+            let mut f = sample_new_fact(&id, "franz", subject, "text");
+            f.subject_external = name.map(str::to_owned);
+            f.allow_ids = Vec::new();
+            f.sender_id = Some("user:franz".parse().unwrap());
+            (f, dead)
+        };
+        let rows = vec![
+            add("group:famiglia", Some("Bilbo"), false),
+            add("group:famiglia", Some("Bilbo"), false),
+            add("group:famiglia", Some("Bilbo"), false),
+            add("user:franz", Some("Bilbo"), false),
+            add("user:franz", Some("Bilbo"), false),
+            add("user:franz", Some("Lady"), false),
+            add("user:franz", Some("Lady"), false),
+            add("user:franz", Some("Lady"), true), // forgotten: not counted
+            add("user:franz", None, false),        // an ordinary fact: not a name
+        ];
+        for (f, dead) in rows {
+            insert_if_absent(&pool, &f).await.unwrap();
+            if dead {
+                mark_forgotten(&pool, &f.fact_id, "user_request")
+                    .await
+                    .unwrap();
+            }
+        }
+        // Carol's, which franz may not read.
+        let mut hers = sample_new_fact(
+            "018f1234-5678-7abc-9def-0123456789f0",
+            "carol",
+            "user:carol",
+            "text",
+        );
+        hers.subject_external = Some("Shadowfax".to_owned());
+        hers.allow_ids = Vec::new();
+        hers.sender_id = Some("user:carol".parse().unwrap());
+        insert_if_absent(&pool, &hers).await.unwrap();
+
+        let seen = known_entities(
+            &pool,
+            &["user:franz".to_owned(), "group:famiglia".to_owned()],
+            60,
+        )
+        .await
+        .expect("roster");
+
+        assert_eq!(seen.len(), 2, "one row per name: {seen:?}");
+        assert_eq!(seen[0].name, "Bilbo", "commonest first");
+        assert_eq!(
+            seen[0].subject_id, "group:famiglia",
+            "three beats two — the majority answer is the one to copy"
+        );
+        assert_eq!(
+            seen[0].facts, 5,
+            "the count is the name's, not the winner's"
+        );
+        assert_eq!(seen[1].name, "Lady");
+        assert_eq!(seen[1].facts, 2, "a forgotten fact is not counted");
+        assert!(
+            !seen.iter().any(|e| e.name == "Shadowfax"),
+            "a name the reader cannot reach must not appear: {seen:?}"
+        );
+    }
+
     // ---------- list-page inventory ----------
 
     /// The inventory answers the one question the classifier cannot answer
