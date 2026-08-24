@@ -1216,7 +1216,9 @@ async fn run_rail_writer(
                 if let Some(dropped) = outcome.replaced {
                     report.replaced.push((slug.to_owned(), dropped));
                 }
-                report.receipts.push(outcome.receipt);
+                if let Some(receipt) = outcome.receipt {
+                    report.receipts.push(receipt);
+                }
             },
             Ok(None) => report.judged += 1,
             Err(e) => report.errors.push(format!("rail {slug}: {e}")),
@@ -1299,7 +1301,10 @@ fn rail_prompt(
 struct RailOutcome {
     to: String,
     replaced: Option<String>,
-    receipt: String,
+    /// `None` when the rail was parked but its receipt could not be written —
+    /// the park stands, so the pass reports the rail and not a receipt id it
+    /// does not have.
+    receipt: Option<String>,
 }
 
 /// Ask the model for the one link worth writing from `slug`, and park it.
@@ -1406,10 +1411,22 @@ async fn judge_one_rail(
         context.clone(),
         serde_json::json!([]),
     );
-    let receipt = crate::proposals::emit_applied_proposal(pool, params, context, Some("rem"))
-        .await
-        .map(|e| e.proposal_id)
-        .unwrap_or_default();
+    // The rail is already parked, so a receipt failure is reported and
+    // survived, never raised: undoing the park to keep the paper trail tidy
+    // would throw away the decision the model was called to make.
+    let receipt =
+        match crate::proposals::emit_applied_proposal(pool, params, context, Some("rem")).await {
+            Ok(e) => Some(e.proposal_id),
+            Err(e) => {
+                tracing::warn!(
+                    slug,
+                    to,
+                    error = %e,
+                    "rem rails: the rail is parked, the receipt is not recorded"
+                );
+                None
+            },
+        };
     Ok(Some(RailOutcome {
         to: to.to_owned(),
         replaced,

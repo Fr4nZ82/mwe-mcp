@@ -445,6 +445,7 @@ async fn delete_apply(
         facts_unplaced = report.facts_unplaced,
         sections_dropped = report.sections_dropped,
         page_cards_dropped = report.page_cards_dropped,
+        link_keys_dropped = report.link_keys_dropped,
         trash = %report.trash_dir.display(),
         "dashboard: wiki subtree soft-deleted to trash"
     );
