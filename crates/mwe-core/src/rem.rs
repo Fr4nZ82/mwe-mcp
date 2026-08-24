@@ -859,9 +859,9 @@ pub async fn run_cycle(
     tracing::info!(cycle_id, "rem: cycle start");
 
     // Build the family index once per cycle: which wikis are
-    // smart wikis (per-wiki `_meta.md` flag). Drives the
-    // write-job exclusion for the legacy sub-jobs and the inclusion
-    // filter for the two new ones.
+    // smart wikis (per-wiki `_meta.md` flag). It decides which sub-jobs may
+    // write to a wiki: the ones that rewrite compiled prose skip a smart
+    // wiki, and the two that maintain a smart wiki run only there.
     let smart_wiki_index = load_smart_wiki_index(tree)?;
 
     // Expire aged confirmer memos before any sub-job reads them, so a

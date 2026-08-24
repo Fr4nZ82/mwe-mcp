@@ -367,17 +367,44 @@ async fn compile_with(
             reviewer::IdentityContext::default()
         },
     };
+    // The over-budget cards are the compiler's own finding, not the
+    // reviewer's — it measures a card at the moment it writes it, where the
+    // served length is still in hand. They travel the same bridge because
+    // they ask for the same thing: put this page's placements back in front
+    // of the Cartografo.
+    let over_budget: Vec<String> = report
+        .cards_over_budget
+        .iter()
+        .map(|(slug, _)| slug.clone())
+        .collect();
     match reviewer::review(tree, &plan, &identity) {
-        Ok(r) if !r.is_clean() => {
-            warn!(
-                findings = r.finding_count(),
-                cross_subject_bloat = r.cross_subject_bloat.len(),
-                "dream compile: reviewer found issues"
-            );
-            park_bridge_signals(pool, tree, &plan, &r).await;
+        Ok(r) if !r.is_clean() || !over_budget.is_empty() => {
+            if !r.is_clean() {
+                warn!(
+                    findings = r.finding_count(),
+                    cross_subject_bloat = r.cross_subject_bloat.len(),
+                    "dream compile: reviewer found issues"
+                );
+            }
+            park_bridge_signals(pool, tree, &plan, &r, &over_budget).await;
         },
         Ok(_) => {},
-        Err(e) => warn!(error = %e, "dream compile: reviewer failed"),
+        Err(e) => {
+            warn!(error = %e, "dream compile: reviewer failed");
+            // A card past its ceiling is cut on every turn until something
+            // moves material off it, so the re-open is parked even when the
+            // review that usually carries it could not run.
+            if !over_budget.is_empty() {
+                park_bridge_signals(
+                    pool,
+                    tree,
+                    &plan,
+                    &reviewer::ReviewReport::default(),
+                    &over_budget,
+                )
+                .await;
+            }
+        },
     }
     Ok(report)
 }
@@ -392,12 +419,13 @@ async fn compile_with(
 ///
 /// - each `cross_subject_bloat` fact → a **refile candidate** (the refile
 ///   judge still decides, and refuses what does not apply);
-/// - each `cross_subject_bloat` page, each `oversized` page, plus
-///   every page failing its compile repeatedly (the ledger's streak) → a
-///   **placement re-open**, so the Cartografo re-judges the carried
-///   placements with the mass + identity + container signals live
-///   (split-by-mass can finally fire on an old page; a fact-bearing
-///   container drains and is garbage-collected once empty). A parked
+/// - each `cross_subject_bloat` page, each `oversized` page, every identity
+///   card the compiler wrote past its ceiling, plus every page failing its
+///   compile repeatedly (the ledger's streak) → a **placement re-open**, so
+///   the Cartografo re-judges the carried placements with the mass +
+///   identity + container signals live (split-by-mass can finally fire on an
+///   old page; a fact-bearing container drains and is garbage-collected once
+///   empty; an over-budget card sheds what is not always-on core). A parked
 ///   re-open is consumed only by a build that runs the Cartografo — a
 ///   light build carries it (`planner::build_wiki_plan`).
 ///
@@ -407,6 +435,7 @@ async fn park_bridge_signals(
     tree: &WikiTree,
     plan: &planner::CompilationPlan,
     r: &reviewer::ReviewReport,
+    cards_over_budget: &[String],
 ) {
     let refile: Vec<String> = r
         .cross_subject_bloat
@@ -419,6 +448,14 @@ async fn park_bridge_signals(
         .map(|(slug, _, _)| slug.clone())
         .collect();
     reopen.extend(r.oversized_pages.iter().map(|(s, _)| s.clone()));
+    // An identity card past its ceiling. It is the one page a re-open cannot
+    // heal by splitting — a card is never split, because recall serves it
+    // whole — so what the re-open buys here is the other repair: the
+    // Cartografo re-judges every placement on it against the one criterion
+    // for what a card holds, and moves off what is not always-on core. The
+    // alternative is not "it stays whole": it is already being CUT when
+    // served, in an order nobody chose.
+    reopen.extend(cards_over_budget.iter().cloned());
     // Pages failing their compile twice in a row re-open too. Map the
     // ledger's source_path key back to a plan slug via the same helper
     // that wrote it.
@@ -694,6 +731,72 @@ fn closing_note(c: &CompileReport) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A card past its ceiling re-opens its own placement, even on a night
+    /// the reviewer finds nothing else wrong.
+    ///
+    /// A card grows past its ceiling on a wiki that is otherwise in good
+    /// order — that is the ordinary way it happens — so the bridge cannot key
+    /// on the review being dirty. What it keys on is the compiler's own
+    /// measurement, taken when the card was written, and the re-open is what
+    /// carries it to the Cartografo.
+    #[tokio::test]
+    async fn an_over_budget_card_reopens_its_placement_on_a_clean_night() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_or_init(dir.path()).await.expect("db");
+        std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+
+        let mut pages = std::collections::BTreeMap::new();
+        pages.insert(
+            "franz".to_owned(),
+            planner::PagePlan {
+                title: "Franz".to_owned(),
+                description: String::new(),
+                style: None,
+                primary_facts: Vec::new(),
+                outgoing_links: Vec::new(),
+                wiki_id: "franz".to_owned(),
+                page_path: crate::wiki::PROFILE_FILENAME.to_owned(),
+                slug: "franz".to_owned(),
+            },
+        );
+        let plan = planner::CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph: std::collections::BTreeMap::new(),
+            compilation_order: vec!["franz".to_owned()],
+            generated_at: "2026-08-25T00:00:00Z".to_owned(),
+            fact_count: 0,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
+        };
+        planner::save_plan(&tree, &plan).expect("save");
+
+        // A clean review, and one card the compiler measured over its ceiling.
+        park_bridge_signals(
+            &pool,
+            &tree,
+            &plan,
+            &reviewer::ReviewReport::default(),
+            &["franz".to_owned()],
+        )
+        .await;
+
+        let back = planner::load_previous_plan(&tree)
+            .expect("read")
+            .expect("plan");
+        assert_eq!(
+            back.reopen_pages,
+            vec!["franz".to_owned()],
+            "the card's placement must be put back in front of the Cartografo"
+        );
+        drop(dir);
+    }
+
     use super::*;
 
     use crate::db;

@@ -771,7 +771,13 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
     if !report.compile.cards_over_budget.is_empty() {
         println!(
             "  ⚠ identity cards past their ceiling (cut when served): {}",
-            report.compile.cards_over_budget.join(", ")
+            report
+                .compile
+                .cards_over_budget
+                .iter()
+                .map(|(slug, chars)| format!("{slug}: {chars} chars"))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
     if !report.compile.rails_appended.is_empty() {

@@ -157,11 +157,13 @@ pub struct CompileReport {
     pub degraded: Vec<String>,
     /// Per-page soft errors (`"<slug>: <error>"`).
     pub errors: Vec<String>,
-    /// Identity cards written past [`IDENTITY_CARD_CEILING_CHARS`]
-    /// (`"<slug>: <n> chars"`). Not an error — the page is on disk and the
-    /// facts are all on it. It says the card will be **cut when served**, so
-    /// the material that belongs elsewhere has not been moved off it yet.
-    pub cards_over_budget: Vec<String>,
+    /// `(slug, served chars)` — identity cards written past
+    /// [`IDENTITY_CARD_CEILING_CHARS`]. Not an error: the page is on disk and
+    /// every fact is on it. It says the card will be **cut when served**, and
+    /// it is the signal that re-opens the card's placement on the next cycle
+    /// (`dream::park_review_bridge`) so the material that is not always-on
+    /// core is moved off rather than silently cut.
+    pub cards_over_budget: Vec<(String, usize)>,
     /// Pages whose prose declined a recommended rail twice, so the compiler
     /// appended it (`"<slug>: [[a]], [[b]]"`). Not an error — the rail is on
     /// the page and the navigator can walk it. It says the Cronista would not
@@ -176,8 +178,7 @@ impl CompileReport {
     /// instead of it — and a page can carry both.
     fn record_notes(&mut self, slug: &str, notes: &PageNotes) {
         if let Some(chars) = notes.over_budget_chars {
-            self.cards_over_budget
-                .push(format!("{slug}: {chars} chars"));
+            self.cards_over_budget.push((slug.to_owned(), chars));
         }
         if !notes.rails_appended.is_empty() {
             self.rails_appended
@@ -865,8 +866,12 @@ fn sync_foundation_summary(page: &PagePlan, abs_dir: &std::path::Path, descripti
 /// An identity card past its ceiling: a **curation** failure, not a compile
 /// one. The page is written as-is with every fact on it; what it reports is
 /// that the read path will cut it when it serves it, and a cut drops whatever
-/// sorted last. Judged here, where the numbers are still in hand — the
-/// serve-time warning fires every turn thereafter and names no remedy.
+/// sorted last. Judged here, where the numbers are still in hand.
+///
+/// It is a nomination, not a verdict: the slug rides the review bridge
+/// (`dream::park_bridge_signals`) into the next cycle's placement re-open, and
+/// the Cartografo decides what leaves the card. Nothing is dropped either
+/// way — a fact that leaves gets a page of its own wiki.
 fn card_over_budget(page: &PagePlan, contents: &str) -> Option<usize> {
     if page_kind(page) != "identity_card" {
         return None;
