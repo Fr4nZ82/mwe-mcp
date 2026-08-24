@@ -474,6 +474,12 @@ fn parse_attrs(spec: &str, marker_offset: usize, warnings: &mut Vec<ParseWarning
                     detail: format!("sender={val:?}: {e}"),
                 }),
             },
+            "external" => {
+                let trimmed = val.trim();
+                if !trimmed.is_empty() {
+                    attrs.subject_external = Some(trimmed.to_owned());
+                }
+            },
             "f" => match FactId::parse(val) {
                 Ok(fid) => attrs.fact_id = Some(fid),
                 Err(e) => warnings.push(ParseWarning {

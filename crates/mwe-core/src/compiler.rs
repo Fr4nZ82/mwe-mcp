@@ -2507,6 +2507,7 @@ mod tests {
 
     fn ffp(id_seed: u8, text: &str) -> FactForPage {
         FactForPage {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(&format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{id_seed:02x}"))
                 .unwrap(),
@@ -2760,6 +2761,7 @@ mod tests {
         fact_index::insert(
             pool,
             &crate::fact_index::NewFact {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -2789,6 +2791,7 @@ mod tests {
         fact_index::insert(
             pool,
             &crate::fact_index::NewFact {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -2859,6 +2862,7 @@ mod tests {
                 description: "Alice".to_owned(),
                 style: None,
                 primary_facts: vec![FactForPage {
+                    subject_external: None,
                     authored_refs: Vec::new(),
                     fact_id: fid.clone(),
                     text: "Alice loves pasta".to_owned(),
@@ -2903,6 +2907,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &crate::fact_index::NewFact {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -2977,6 +2982,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &crate::fact_index::NewFact {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -3078,6 +3084,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &crate::fact_index::NewFact {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -3134,6 +3141,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &crate::fact_index::NewFact {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -3652,6 +3660,7 @@ mod tests {
                 style: None,
                 primary_facts: vec![
                     FactForPage {
+                        subject_external: None,
                         authored_refs: Vec::new(),
                         fact_id: fid1.clone(),
                         text: "Alice loves pasta".to_owned(),
@@ -3669,6 +3678,7 @@ mod tests {
                         salience: None,
                     },
                     FactForPage {
+                        subject_external: None,
                         authored_refs: Vec::new(),
                         fact_id: fid2.clone(),
                         text: "Matteo has homework on Monday".to_owned(),
@@ -4629,6 +4639,7 @@ mod tests {
         fact_index::insert(
             pool,
             &crate::fact_index::NewFact {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),

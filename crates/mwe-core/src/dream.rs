@@ -767,6 +767,7 @@ mod tests {
         capture_buffer::buffer_capture(
             pool,
             crate::capture::CaptureRequest {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 wiki_id: crate::types::WikiId::parse("alice").unwrap(),
                 page: None,

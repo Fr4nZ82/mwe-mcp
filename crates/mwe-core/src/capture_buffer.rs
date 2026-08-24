@@ -158,6 +158,11 @@ pub struct BufferedCapture {
     /// The fact's **subject** — who or what it is *about* (not its author
     /// `sender`, not its audience `allow`).
     pub subject: Principal,
+    /// The name of what the claim is about when that is not a principal.
+    /// Decided at capture and carried unchanged through the wait, so the
+    /// placement pass and the promoted fact see the same name.
+    /// See [`crate::fact_index::FactIndexRow::subject_external`].
+    pub subject_external: Option<String>,
     /// Extra principals granted read access via `allow=`.
     pub allow: Vec<Principal>,
     /// Cross-user attribution (who captured the fact). Always materialized
@@ -443,6 +448,9 @@ pub async fn buffer_capture_with_source(
         salience,
         // Group-17 provenance breadcrumbs threaded from the ingest turn.
         authored_refs,
+        // The NAME of what the claim is about, when that is not a principal:
+        // decided at capture and carried unchanged through the wait.
+        subject_external,
     } = req;
     validate_buffer_body(&body)?;
     // Mirror capture.rs: sender is always materialized (= subject when
@@ -455,6 +463,7 @@ pub async fn buffer_capture_with_source(
         capture_id: capture_id.clone(),
         body,
         subject,
+        subject_external,
         allow,
         sender,
         fact_type,
@@ -676,8 +685,8 @@ pub async fn rebuffer_fact(pool: &SqlitePool, fact_id: &FactId, now: &str) -> Re
             (capture_id, body, subject_id, allow_ids, sender_id, fact_type,
              topics, status, captured_at, source_kind, source_ref,
              valid_from, valid_to, decay_reason, style, salience,
-             authored_refs, embedding, embedding_dim)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'buffered', ?, 'rebuffer', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             authored_refs, embedding, embedding_dim, subject_external)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'buffered', ?, 'rebuffer', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(capture_id) DO UPDATE SET
              status = 'buffered', processed_at = NULL, resolved_fact_id = NULL",
     )
@@ -698,6 +707,7 @@ pub async fn rebuffer_fact(pool: &SqlitePool, fact_id: &FactId, now: &str) -> Re
     .bind(authored_refs_json)
     .bind(crate::fact_index::encode_embedding(&row.embedding))
     .bind(i64::try_from(row.embedding.len()).unwrap_or(i64::MAX))
+    .bind(row.subject_external.clone())
     .execute(&mut *tx)
     .await?;
     sqlx::query("DELETE FROM fact_index WHERE fact_id = ?")
@@ -976,7 +986,7 @@ const SELECT_COLS: &str = "SELECT capture_id, body, subject_id, allow_ids, \
      sender_id, fact_type, topics, supersede_hint, status, captured_at, processed_at, \
      resolved_fact_id, source_kind, source_ref, valid_from, valid_to, decay_reason, style, \
      salience, authored_refs, embedding, origin_message_hash, placement_attempts, \
-     last_attempt_at \
+     last_attempt_at, subject_external \
      FROM capture_buffer";
 
 #[derive(sqlx::FromRow)]
@@ -984,6 +994,8 @@ struct BufferRow {
     capture_id: String,
     body: String,
     subject_id: String,
+    #[sqlx(default)]
+    subject_external: Option<String>,
     allow_ids: String,
     sender_id: Option<String>,
     fact_type: Option<String>,
@@ -1021,6 +1033,7 @@ fn decode(r: BufferRow) -> Result<BufferedCapture> {
         .transpose()?;
     Ok(BufferedCapture {
         capture_id: FactId::parse(&r.capture_id)?,
+        subject_external: r.subject_external,
         body: r.body,
         subject: r.subject_id.parse::<Principal>()?,
         allow: principals_from_json(&r.allow_ids),
@@ -1072,8 +1085,8 @@ async fn insert_row(pool: &SqlitePool, cap: &BufferedCapture) -> Result<u64> {
              topics, supersede_hint, status, captured_at, processed_at, resolved_fact_id,
              source_kind, source_ref, valid_from, valid_to, decay_reason, style,
              salience, authored_refs, embedding, embedding_dim,
-             origin_message_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             origin_message_hash, subject_external)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(capture_id) DO NOTHING",
     )
     .bind(cap.capture_id.as_str())
@@ -1111,6 +1124,7 @@ async fn insert_row(pool: &SqlitePool, cap: &BufferedCapture) -> Result<u64> {
             .map(|v| i64::try_from(v.len()).unwrap_or(i64::MAX)),
     )
     .bind(cap.origin_message_hash.clone())
+    .bind(cap.subject_external.clone())
     .execute(pool)
     .await?;
     Ok(res.rows_affected())
@@ -1157,6 +1171,7 @@ mod tests {
     /// drops them, which is what `no_destination_reaches_the_row` checks.
     fn req(wiki: &str, body: &str, subject: &str) -> CaptureRequest {
         CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from("cucina.md")),

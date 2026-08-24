@@ -2987,6 +2987,7 @@ mod tests {
         body: &str,
     ) -> FactId {
         let req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from(page)),

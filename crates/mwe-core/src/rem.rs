@@ -6877,6 +6877,7 @@ mod tests {
         subject: &str,
     ) -> FactId {
         let req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from("preferenze.md")),
@@ -6911,6 +6912,7 @@ mod tests {
         sender: Option<Principal>,
     ) -> FactId {
         let req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from("preferenze.md")),
@@ -6998,6 +7000,7 @@ mod tests {
         embedding: Vec<f32>,
     ) -> FactId {
         let req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from(page)),
@@ -7486,6 +7489,7 @@ mod tests {
         subject: &str,
     ) -> FactId {
         let req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from(page)),
@@ -7719,6 +7723,7 @@ mod tests {
     fn kin_leaf(slug: &str, wiki: &str, n_facts: usize) -> PagePlan {
         let facts = (0..n_facts)
             .map(|i| crate::planner::FactForPage {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: FactId::parse(&format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{i:02x}"))
                     .unwrap(),
@@ -8840,6 +8845,7 @@ mod tests {
         let mut out = Vec::with_capacity(n);
         for t in TOPICS.iter().take(n) {
             let req = CaptureRequest {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse(wiki).unwrap(),
                 page: Some(PathBuf::from(page)),
@@ -9646,6 +9652,7 @@ mod tests {
         crate::fact_index::insert(
             &pool,
             &crate::fact_index::NewFact {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -9905,6 +9912,7 @@ mod tests {
                     pool,
                     fake_embedder(),
                     CaptureRequest {
+                        subject_external: None,
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("bot").unwrap(),
                         page: Some(PathBuf::from("@rules.md")),
@@ -10906,6 +10914,7 @@ mod tests {
                     pool,
                     fake_embedder(),
                     CaptureRequest {
+                        subject_external: None,
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: Some(PathBuf::from("preferenze.md")),
@@ -11027,6 +11036,7 @@ mod tests {
             &pool,
             fake_embedder(),
             CaptureRequest {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: Some(PathBuf::from("@rules.md")),
@@ -11265,6 +11275,7 @@ mod tests {
         topics: &[&str],
     ) -> FactId {
         let req = crate::capture::CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki).unwrap(),
             page: Some(PathBuf::from(page)),

@@ -421,6 +421,7 @@ mod tests {
 
     fn fact(id: &str, text: &str, embedding: Vec<f32>) -> fact_index::NewFact {
         fact_index::NewFact {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(id).unwrap(),
             wiki_id: "alice".to_owned(),

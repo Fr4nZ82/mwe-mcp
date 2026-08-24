@@ -256,6 +256,34 @@ pub fn sender_is_subject(subject: &Principal, sender_id: &str, sender_groups: &[
     }
 }
 
+/// Whether `sender` may RETRACT a fact from chat — close its validity, so the
+/// memory stops holding it as current.
+///
+/// Wider than [`sender_is_subject`] on purpose, and only here. Retracting is
+/// **withdrawing an assertion**, so the person who made it qualifies: they
+/// said it, and they are entitled to stop saying it. That the fact is about
+/// somebody else does not change whose statement it was.
+///
+/// Rewriting is the other half and stays with the subject: replacing a fact
+/// asserts something NEW about its subject, and that needs the subject's
+/// authority, not the author's. The ACL stays with the subject for the
+/// stronger reason that changing it discloses the subject's data.
+///
+/// The author test is exact — the fact's own `sender`, matched the way a
+/// subject is matched, so a group-attributed capture is retractable by that
+/// group's members. A fact with no recorded author falls back to the subject
+/// test alone.
+#[must_use]
+pub fn sender_may_retract(
+    subject: &Principal,
+    fact_sender: Option<&Principal>,
+    sender_id: &str,
+    sender_groups: &[String],
+) -> bool {
+    sender_is_subject(subject, sender_id, sender_groups)
+        || fact_sender.is_some_and(|s| sender_is_subject(s, sender_id, sender_groups))
+}
+
 /// Whether an ACL change WIDENS a fact's effective read-set: it introduces
 /// at least one principal that was not already in the old set.
 ///
@@ -600,6 +628,40 @@ mod tests {
             !is_public(&alice, &[Principal::Group("team".into())], Some(&alice)),
             "no global anywhere → not public"
         );
+    }
+
+    /// Retracting is withdrawing an assertion, so its author qualifies —
+    /// and only for that. Rewriting and the ACL stay with the subject, which
+    /// is why this test exists beside `sender_is_subject` rather than
+    /// replacing it: the two gates answer different questions on purpose.
+    #[test]
+    fn the_author_may_retract_what_they_said_about_somebody_else() {
+        let alice: Principal = "user:alice".parse().unwrap();
+        let bob: Principal = "user:bob".parse().unwrap();
+        let team: Principal = "group:team".parse().unwrap();
+
+        // Bob said something about Alice. He is not its subject...
+        assert!(!sender_is_subject(&alice, "bob", &[]));
+        // ...and he may still take it back.
+        assert!(sender_may_retract(&alice, Some(&bob), "bob", &[]));
+
+        // A stranger may do neither.
+        assert!(!sender_may_retract(&alice, Some(&bob), "carol", &[]));
+
+        // The subject keeps the authority it always had, author or not.
+        assert!(sender_may_retract(&alice, Some(&bob), "alice", &[]));
+
+        // A group-attributed capture is retractable by that group's members.
+        assert!(sender_may_retract(
+            &alice,
+            Some(&team),
+            "carol",
+            &["team".to_owned()]
+        ));
+
+        // A world fact nobody claims stays closable by no one from chat.
+        let world: Principal = "global".parse().unwrap();
+        assert!(!sender_may_retract(&world, None, "alice", &[]));
     }
 
     #[test]

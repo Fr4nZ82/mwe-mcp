@@ -78,6 +78,16 @@ pub struct FactIndexRow {
     /// fact's ACL, which is a consequence of the axis, not its definition.
     /// Persisted in the `subject_id` column. See [`crate::acl`].
     pub subject_id: Principal,
+    /// The **name of what this fact is about**, when that is not a principal:
+    /// a person who does not use the product, an animal, a place, a thing.
+    /// `None` for the ordinary fact, which is about its [`Self::subject_id`].
+    ///
+    /// It grants nothing and addresses nothing — [`Self::subject_id`] still
+    /// answers for the fact, still decides the wiki, still gates amendment.
+    /// This is what makes the fact findable by that name and groupable with
+    /// its siblings, and it is why the fact is refused on a person's identity
+    /// card: a named thing is not the person whose card it would land on.
+    pub subject_external: Option<String>,
     /// Additional principals the region's `allow=` extension grants
     /// read access to (possibly empty).
     pub allow_ids: Vec<Principal>,
@@ -237,6 +247,9 @@ pub struct NewFact {
     /// Provenance breadcrumbs for the turn. See
     /// [`FactIndexRow::authored_refs`]. Empty for a pure-standard capture.
     pub authored_refs: Vec<String>,
+    /// The name of what the fact is about when that is not a principal. See
+    /// [`FactIndexRow::subject_external`].
+    pub subject_external: Option<String>,
 }
 
 // ---------- Embedding (de)serialization ----------
@@ -417,8 +430,8 @@ where
             embedding, embedding_dim, subject_id, allow_ids, sender_id,
             fact_type, topics, created_at, updated_at,
             valid_from, valid_to, target_page, style,
-            salience, source_ref, authored_refs, recall_count_30d
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            salience, source_ref, authored_refs, subject_external, recall_count_30d
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         ON CONFLICT(fact_id) DO NOTHING"#
     } else {
         r#"INSERT INTO fact_index (
@@ -426,8 +439,8 @@ where
             embedding, embedding_dim, subject_id, allow_ids, sender_id,
             fact_type, topics, created_at, updated_at,
             valid_from, valid_to, target_page, style,
-            salience, source_ref, authored_refs, recall_count_30d
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)"#
+            salience, source_ref, authored_refs, subject_external, recall_count_30d
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)"#
     };
 
     let res = sqlx::query(sql)
@@ -453,6 +466,7 @@ where
         .bind(&fact.salience)
         .bind(&fact.source_ref)
         .bind(&authored_refs_json)
+        .bind(&fact.subject_external)
         .execute(executor)
         .await?;
     Ok(res.rows_affected())
@@ -1250,6 +1264,40 @@ pub async fn page_acl_map_active(pool: &SqlitePool, source_path: &str) -> Result
     page_acl_map_impl(pool, source_path, true).await
 }
 
+/// Fact key → the NAME the fact is about, for the regions of one page.
+///
+/// The sibling of [`page_acl_map`], kept apart from it on purpose: the ACL map
+/// carries the three axes that grant something, and an external subject grants
+/// nothing (see [`FactIndexRow::subject_external`]). Only the export needs
+/// both at once, and it asks for them separately rather than widening an ACL
+/// type with a field that is not an ACL.
+///
+/// Rows without a name are absent from the map, so an ordinary page yields an
+/// empty one.
+///
+/// # Errors
+///
+/// `sqlx::Error`.
+pub async fn page_external_names(
+    pool: &SqlitePool,
+    source_path: &str,
+) -> Result<std::collections::HashMap<FactId, String>> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT fact_id, subject_external FROM fact_index \
+          WHERE source_path = ? AND subject_external IS NOT NULL",
+    )
+    .bind(source_path)
+    .fetch_all(pool)
+    .await?;
+    let mut out = std::collections::HashMap::with_capacity(rows.len());
+    for (id, name) in rows {
+        let fid =
+            FactId::parse(&id).map_err(|e| sqlx::Error::Decode(format!("fact_id: {e}").into()))?;
+        out.insert(fid, name);
+    }
+    Ok(out)
+}
+
 async fn page_acl_map_impl(
     pool: &SqlitePool,
     source_path: &str,
@@ -1500,7 +1548,8 @@ pub async fn find_recently_contradicted(
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
-           target_page, style, salience, source_ref, authored_refs
+           target_page, style, salience, source_ref, authored_refs,
+           subject_external
       FROM fact_index
      WHERE wiki_id = ?
        AND deleted_at IS NULL
@@ -1548,7 +1597,8 @@ pub async fn find_due_between(
                   fact_type, topics, created_at, updated_at, superseded_at,
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
-                  target_page, style, salience, source_ref, authored_refs
+                  target_page, style, salience, source_ref, authored_refs,
+           subject_external
              FROM fact_index
             WHERE superseded_at IS NULL AND deleted_at IS NULL
               AND valid_to IS NOT NULL
@@ -1763,7 +1813,8 @@ pub async fn find_by_filters(
                   fact_type, topics, created_at, updated_at, superseded_at,
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
-                  target_page, style, salience, source_ref, authored_refs
+                  target_page, style, salience, source_ref, authored_refs,
+           subject_external
              FROM fact_index"#,
     );
 
@@ -1896,7 +1947,8 @@ pub async fn find_behaviour_rules(
                   fact_type, topics, created_at, updated_at, superseded_at,
                   superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
                   recall_count_30d, valid_from, valid_to, decay_reason,
-                  target_page, style, salience, source_ref, authored_refs
+                  target_page, style, salience, source_ref, authored_refs,
+           subject_external
              FROM fact_index
             WHERE wiki_id = ?
               AND subject_id = ?
@@ -2308,6 +2360,83 @@ fn readable_by_sql(table: &str, n: usize) -> String {
     )
 }
 
+/// One named thing the memory already holds facts about, with the principal
+/// those facts are filed under.
+///
+/// The roster the ingest classifier is shown beside `known_users`, and the
+/// reason `subject_external` exists at all: choosing who answers for a fact
+/// about a non-principal is a judgement, and a judgement made independently on
+/// every turn is not stable. Shown the answer already given, the classifier
+/// reuses it instead of deciding again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownEntity {
+    /// The name, in the spelling already stored — the classifier is asked to
+    /// copy it rather than re-spell it.
+    pub name: String,
+    /// The principal its facts are filed under, wire form. When the corpus
+    /// disagrees with itself the commonest answer wins, which is what makes a
+    /// past split converge instead of alternating for ever.
+    pub subject_id: String,
+    /// How many live facts carry this name. Ordering key, and the signal a
+    /// page (later a wiki) could be about this thing.
+    pub facts: i64,
+}
+
+/// The [`KnownEntity`] roster readable by `principals`, commonest first.
+///
+/// `principals` is the reader's own set (their id, their groups, `global`) —
+/// the same list [`FactFilters::readable_by`] takes. A name nobody may read is
+/// absent: the roster must not tell a sender that somebody they cannot see
+/// exists.
+///
+/// # Errors
+///
+/// `sqlx::Error`.
+pub async fn known_entities(
+    pool: &SqlitePool,
+    principals: &[String],
+    limit: i64,
+) -> Result<Vec<KnownEntity>> {
+    if principals.is_empty() || limit <= 0 {
+        return Ok(Vec::new());
+    }
+    // Per name: the commonest subject, and the live count. `GROUP BY` twice
+    // rather than a window function — the corpus is small and the plan is
+    // covered by `idx_fact_subject_external`.
+    let readable = readable_by_sql("fact_index", principals.len());
+    let sql = format!(
+        "SELECT name, subject_id, total FROM (
+           SELECT subject_external AS name, subject_id,
+                  COUNT(*) AS n,
+                  SUM(COUNT(*)) OVER (PARTITION BY subject_external) AS total
+             FROM fact_index
+            WHERE subject_external IS NOT NULL
+              AND deleted_at IS NULL AND superseded_at IS NULL
+              AND {readable}
+            GROUP BY subject_external, subject_id
+         )
+         GROUP BY name
+         HAVING n = MAX(n)
+         ORDER BY total DESC, name ASC
+         LIMIT ?"
+    );
+    let mut q = sqlx::query_as::<_, (String, String, i64)>(&sql);
+    for _ in 0..3 {
+        for p in principals {
+            q = q.bind(p);
+        }
+    }
+    let rows = q.bind(limit).fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(name, subject_id, facts)| KnownEntity {
+            name,
+            subject_id,
+            facts,
+        })
+        .collect())
+}
+
 // ---------- List-page inventory ----------
 
 /// One `lista`-style page a container capture may be added to.
@@ -2687,7 +2816,8 @@ const SELECT_ALL_COLUMNS_WHERE_ID: &str = r#"
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
-           target_page, style, salience, source_ref, authored_refs
+           target_page, style, salience, source_ref, authored_refs,
+           subject_external
       FROM fact_index
      WHERE fact_id = ?
 "#;
@@ -2698,7 +2828,8 @@ const SELECT_ACTIVE_BY_SUBJECT: &str = r#"
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
-           target_page, style, salience, source_ref, authored_refs
+           target_page, style, salience, source_ref, authored_refs,
+           subject_external
       FROM fact_index
      WHERE subject_id = ?
        AND superseded_at IS NULL
@@ -2712,7 +2843,8 @@ const SELECT_ACTIVE_IN_WIKI: &str = r#"
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
-           target_page, style, salience, source_ref, authored_refs
+           target_page, style, salience, source_ref, authored_refs,
+           subject_external
       FROM fact_index
      WHERE wiki_id = ?
        AND superseded_at IS NULL
@@ -2726,7 +2858,8 @@ const SELECT_ACTIVE_BY_SOURCE_PATH: &str = r#"
            fact_type, topics, created_at, updated_at, superseded_at,
            superseded_by, successor_fact_id, deleted_at, deleted_reason, last_recall_at,
            recall_count_30d, valid_from, valid_to, decay_reason,
-           target_page, style, salience, source_ref, authored_refs
+           target_page, style, salience, source_ref, authored_refs,
+           subject_external
       FROM fact_index
      WHERE source_path = ?
        AND superseded_at IS NULL
@@ -2767,6 +2900,7 @@ struct RawFactRow {
     salience: Option<String>,
     source_ref: Option<String>,
     authored_refs: Option<String>,
+    subject_external: Option<String>,
 }
 
 fn decode_row(raw: RawFactRow) -> Result<FactIndexRow> {
@@ -2846,6 +2980,7 @@ fn decode_row(raw: RawFactRow) -> Result<FactIndexRow> {
         style: crate::wiki::PageStyle::parse_lenient(raw.style.as_deref()),
         source_ref: raw.source_ref,
         authored_refs,
+        subject_external: raw.subject_external,
     })
 }
 
@@ -2897,6 +3032,7 @@ mod tests {
 
     fn sample_new_fact(fact_id_str: &str, wiki: &str, subject: &str, text: &str) -> NewFact {
         NewFact {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(fact_id_str).unwrap(),
             wiki_id: wiki.to_owned(),
@@ -3054,6 +3190,7 @@ mod tests {
         insert_if_absent(
             &pool,
             &NewFact {
+                subject_external: None,
                 fact_id: FactId::parse(SAMPLE_UUID_V7_1).unwrap(),
                 wiki_id: "famiglia".into(),
                 source_path: "wikis/famiglia/spesa.md".into(),

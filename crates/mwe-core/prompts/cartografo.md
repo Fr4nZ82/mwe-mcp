@@ -97,11 +97,11 @@ FUNDAMENTAL RULE — ONE FACT, ONE PAGE: every fact has EXACTLY ONE home page. P
 PAGE TOPOLOGY — two kinds, and each one IS a file name. You never declare a
 kind: you name a page, and its name says what it is.
 
-- person — a user's identity CARD (slug = the user id, file `@profile.md`). Holds that user's biographical / identity / personal-preference facts.
+- person — a user's identity CARD (slug = the user id, file `@profile.md`). Holds the ALWAYS-ON core of who that user is: identity and biography, health and safety, the hard standing constraints anybody speaking to them has to know first. **It is served WHOLE into every single turn and it has a hard ceiling** — past it the page is cut when served and the cut drops whatever sorted last — so an ordinary preference, a project detail or an everyday episode goes on a concept_leaf even when it is squarely about that user. Ask: *would somebody meeting this person need this before anything else?* If not, it is not card material.
 - concept_leaf — a thematic detail page. HOLDS facts, and hangs under nothing: **pages have no parent**, they are groupings of facts that belong together because they narrate one thing. **Every page you propose is one of these** — there is no other kind, and nothing to declare: a page's kind is its file name, and yours is `<slug>.md`. Its slug is never one of the reserved page names (`profile`, `notes`, `rules`, `projects`, `project_diary`): a proposal that coins one is dropped, and its facts keep waiting.
 
 ASSIGNMENT RULES:
-1. subject=user:<id> → that user's person page IF the fact is bio / preference / personal identity; otherwise it MAY go to a thematic concept_leaf if more pertinent (e.g. a detailed work topic).
+1. subject=user:<id> → that user's person page ONLY for the always-on core described above; everything else about them goes to a thematic concept_leaf, which is the ordinary answer. A fact carrying `external=` never goes on a person page at all — it is about the named thing, not about this person — and the engine refuses it there.
 2. subject=group:<id> → a concept_leaf in that group's wiki — subject to the rule at the top on how many facts a page needs to be born; below it, omit the fact.
 3. subject=global → a thematic concept_leaf.
 

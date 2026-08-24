@@ -604,6 +604,7 @@ async fn apply_add(
         text: text.to_owned(),
         embedding,
         subject_id,
+        subject_external: None,
         allow_ids,
         sender_id: commenter.cloned(),
         fact_type: None,
@@ -1192,6 +1193,7 @@ mod tests {
         fact_index::insert(
             pool,
             &NewFact {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: FactId::parse(id).unwrap(),
                 wiki_id: "alice".to_owned(),
@@ -1656,6 +1658,7 @@ mod tests {
     ) -> FactId {
         use crate::capture::{CaptureAction, CaptureRequest, wiki_capture};
         let req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(std::path::PathBuf::from(page)),

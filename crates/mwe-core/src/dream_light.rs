@@ -500,6 +500,7 @@ async fn screen_one(
         subject: cap.subject.clone(),
         allow: cap.allow.clone(),
         sender: cap.sender.clone(),
+        subject_external: cap.subject_external.clone(),
         source_wiki_id: home,
         valid_from: cap.valid_from.clone(),
         valid_to: cap.valid_to.clone(),
@@ -552,6 +553,7 @@ async fn write_placed(
         text: cap.body.clone(),
         embedding,
         subject_id: cap.subject.clone(),
+        subject_external: cap.subject_external.clone(),
         allow_ids: cap.allow.clone(),
         sender_id: cap.sender.clone(),
         fact_type: cap.fact_type.clone(),
@@ -714,6 +716,7 @@ mod tests {
     /// would make every test below assert on an empty corpus.
     fn cap_req(body: &str) -> CaptureRequest {
         CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),

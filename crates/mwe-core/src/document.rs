@@ -1295,6 +1295,30 @@ fn sender_groups_block(groups: &[(String, Option<String>)]) -> String {
 /// against — the enrolment gate that stops `subject_id` minting a `user:<id>`
 /// for a person who is not in the system. Mirrors `ingest::build_prompt`'s
 /// `known_users` section (id + aliases); an empty roster renders `(none)`.
+/// Render the `known_entities` roster the extractor reuses a name from.
+///
+/// The sibling of [`known_users_block`], and here for the same reason the
+/// ingest turn has one: choosing who answers for a fact about a non-principal
+/// is a judgement, and a document extracted segment by segment would make that
+/// judgement afresh on every segment. Shown what was decided, the extractor
+/// copies it — so a clinical report does not scatter one patient across two
+/// subjects between page 1 and page 4.
+fn known_entities_block(entities: &[crate::fact_index::KnownEntity]) -> String {
+    let mut out = String::from("known_entities:\n");
+    if entities.is_empty() {
+        out.push_str("  (none yet)\n");
+        return out;
+    }
+    for e in entities {
+        out.push_str("  - name: ");
+        out.push_str(&e.name);
+        out.push_str("\n    subject_id: ");
+        out.push_str(&e.subject_id);
+        out.push('\n');
+    }
+    out
+}
+
 fn known_users_block(users: &[crate::enrollment::EnrolledUserLite]) -> String {
     let mut out = String::from("known_users:\n");
     if users.is_empty() {
@@ -1467,6 +1491,13 @@ pub struct CandidateFact {
     #[serde(default)]
     #[serde(alias = "owner_id")]
     pub subject_id: Option<String>,
+    /// The NAME of what the fact is about when that is not a principal — a
+    /// person who does not use the product, an animal, a place, a thing. A
+    /// clinical report is the ordinary case: it is about its patient, and the
+    /// principal that answers for it is the household. See
+    /// [`crate::fact_index::FactIndexRow::subject_external`].
+    #[serde(default)]
+    pub subject_external: Option<String>,
     /// The fact's AUDIENCE — extra read principals beyond subject+sender,
     /// decided by the extractor from the group/wiki `scope` signals and the
     /// document's own cues. Empty (the default) keeps the fact to subject+sender.
@@ -1525,6 +1556,7 @@ async fn extract_segment(
     plan_disposition: Disposition,
     sender_groups: &[(String, Option<String>)],
     known_users: &[crate::enrollment::EnrolledUserLite],
+    known_entities: &[crate::fact_index::KnownEntity],
     segment: &Segment,
     position: (i64, i64),
     language_directive: &str,
@@ -1567,6 +1599,7 @@ async fn extract_segment(
     user.push('\n');
     user.push('\n');
     user.push_str(&known_users_block(known_users));
+    user.push_str(&known_entities_block(known_entities));
     user.push_str(&sender_groups_block(sender_groups));
     if let Some(h) = seg_heading {
         user.push_str("segment_heading: ");
@@ -1984,6 +2017,7 @@ async fn process_job(
                 )),
                 body,
                 subject: subject.clone(),
+                subject_external: None,
                 allow: allow.clone(),
                 sender: sender.clone(),
                 fact_type: Some("document".into()),
@@ -2043,6 +2077,22 @@ async fn process_job(
         let known_users = crate::enrollment::list_users(pool)
             .await
             .unwrap_or_default();
+        // Read once for the whole document: every segment must answer the same
+        // way about the same name, and a per-segment lookup would let the
+        // roster shift under the extractor mid-file.
+        let known_entities = crate::fact_index::known_entities(
+            pool,
+            &crate::acl::reader_principals(
+                job.sender_id.as_deref().unwrap_or(&job.subject_id),
+                &sender_groups
+                    .iter()
+                    .map(|(g, _)| g.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            crate::ingest::KNOWN_ENTITIES_CAP,
+        )
+        .await
+        .unwrap_or_default();
         loop {
             let pending: Option<(i64, Option<String>, String, Option<String>)> = sqlx::query_as(
                 "SELECT seq, heading, content, occurred_at FROM document_job_segments
@@ -2068,6 +2118,7 @@ async fn process_job(
                 disposition,
                 &sender_groups,
                 &known_users,
+                &known_entities,
                 &segment,
                 (seq + 1, total_segments),
                 &language_directive,
@@ -2268,6 +2319,7 @@ async fn process_job(
                     page,
                     body,
                     subject: fact_subject,
+                    subject_external: cand.subject_external.clone(),
                     allow: fact_allow,
                     sender: sender.clone(),
                     fact_type: cand.fact_type.clone(),
@@ -3159,6 +3211,7 @@ mod tests {
             r#"{"body":"Gimli prenota il viaggio in Norvegia.","fact_type":"preference","topics":["cucina"]}"#,
         ]);
         let first = CandidateFact {
+            subject_external: None,
             body: "Gimli prenota il viaggio entro venerdì.".into(),
             target_wiki_id: Some("alice".into()),
             target_page: Some("viaggio_norvegia.md".into()),

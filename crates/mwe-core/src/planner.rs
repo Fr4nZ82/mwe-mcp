@@ -170,6 +170,12 @@ pub struct FactForPage {
     /// Cross-user attribution (who said it); always set on write — equals
     /// `subject` for a self-authored fact. `None` only on legacy provenance.
     pub sender: Option<Principal>,
+    /// The NAME of what the fact is about, when that is not a principal.
+    /// `None` for the ordinary fact. A fact that carries one is **refused on
+    /// every identity card**: a card holds one subject and this fact is about
+    /// somebody — or something — else.
+    /// See [`crate::fact_index::FactIndexRow::subject_external`].
+    pub subject_external: Option<String>,
     /// The standard wiki the fact currently lives in (its `fact_index.wiki_id`).
     pub source_wiki_id: String,
     /// Validity window start (`fact_index.valid_from`, ISO-8601); `None` =
@@ -237,6 +243,7 @@ impl FactForPage {
             subject: row.subject_id.clone(),
             allow: row.allow_ids.clone(),
             sender: row.sender_id.clone(),
+            subject_external: row.subject_external.clone(),
             source_wiki_id: row.wiki_id.clone(),
             valid_from: row.valid_from.clone(),
             valid_to: row.valid_to.clone(),
@@ -822,6 +829,20 @@ pub fn build_compilation_plan(
                 });
         }
         if let Some(page) = pages.get_mut(&slug) {
+            // A card holds ONE subject, and a fact that names something else
+            // is about that thing — not about the person whose card this is.
+            // The Cartografo is told so in prose (`identity_pages=`); this is
+            // the same rule where nothing can talk its way past it. Refused,
+            // never re-homed: the claim keeps waiting and the next pass is
+            // offered the whole forest again.
+            if page.is_identity_card() && fact.subject_external.is_some() {
+                tracing::debug!(
+                    fact_id = fact.fact_id.as_str(),
+                    slug = %slug,
+                    "planner: identity card refused a fact about a named thing"
+                );
+                continue;
+            }
             page.primary_facts.push((*fact).clone());
             assigned.insert(fact.fact_id.as_str().to_owned());
         }
@@ -831,7 +852,9 @@ pub fn build_compilation_plan(
     //
     // A `salience: "high"` fact is always-on material the classifier
     // *reserved* — identity, health/safety, a hard standing constraint — so it
-    // has a home whatever anybody decided: the subject's identity card.
+    // has a home whatever anybody decided: the subject's identity card. Unless
+    // it names what it is about (`subject_external`): a card carries one
+    // subject, so that fact is refused here too and waits like any other.
     //
     // **Everything else that reaches here is simply not placed**, and that is
     // a state, not a problem (founder, 2026-08-22): the claim waits in the
@@ -1072,9 +1095,15 @@ fn resolve_page_wiki(slug: &str, slug_source_wiki: &BTreeMap<String, String>) ->
 /// so the fact stays unplaced and keeps waiting like any other.
 ///
 /// This is the last deterministic placement left. Everything that is not
-/// always-on material has no fallback at all since 2026-08-22 — there is no
-/// page that means "unsorted", so an unplaced claim simply waits.
+/// always-on material has no fallback at all — there is no page that means
+/// "unsorted", so an unplaced claim simply waits.
 fn identity_card_target(f: &FactForPage, pages: &BTreeMap<String, PagePlan>) -> Option<String> {
+    // A fact that names what it is about is not about the card's person, so
+    // the always-on route does not apply to it either — it waits like any
+    // other unplaced claim.
+    if f.subject_external.is_some() {
+        return None;
+    }
     let subject_slug = match &f.subject {
         // The builtin global group has no subject page of its own.
         p if p.is_global() => String::new(),
@@ -3765,6 +3794,7 @@ mod tests {
         // Deterministic UUIDv7-shaped ids for tests.
         let id = format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{id_seed:02x}");
         FactForPage {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(&id).unwrap(),
             text: text.to_owned(),
@@ -3781,6 +3811,52 @@ mod tests {
             style: None,
             salience: None,
         }
+    }
+
+    /// A card holds ONE subject, and both routes onto it agree about that.
+    ///
+    /// The Cartografo prompt has said so in prose for a long time
+    /// (`identity_pages=`), and prose is what a model may talk itself past: in
+    /// the corpus this rule was written from, one non-enrolled person's
+    /// clinical record ended up on somebody else's card. `subject_external`
+    /// makes the same rule mechanical — a fact that names what it is about is
+    /// not about the card's person — so this test pins both doors:
+    /// the assignment the model asks for, and the deterministic `high`
+    /// fallback that catches what nobody placed.
+    #[test]
+    fn an_identity_card_refuses_a_fact_about_a_named_thing() {
+        let mut pages = BTreeMap::new();
+        pages.insert(
+            "franz".to_owned(),
+            PagePlan {
+                title: "Franz".to_owned(),
+                description: String::new(),
+                style: None,
+                primary_facts: Vec::new(),
+                outgoing_links: Vec::new(),
+                wiki_id: "franz".to_owned(),
+                page_path: crate::wiki::PROFILE_FILENAME.to_owned(),
+                slug: "franz".to_owned(),
+            },
+        );
+
+        // Franz's own always-on fact still reaches his card.
+        let mut own = fact(1, "Franz was operated on his back.", "user:franz", "franz");
+        own.salience = Some("high".to_owned());
+        assert_eq!(
+            identity_card_target(&own, &pages).as_deref(),
+            Some("franz"),
+            "a fact about the card's own person is exactly what the card is for"
+        );
+
+        // The same fact, once it names somebody else, is about somebody else.
+        let mut foreign = own;
+        foreign.subject_external = Some("Bilbo Baggins".to_owned());
+        assert_eq!(
+            identity_card_target(&foreign, &pages),
+            None,
+            "a named thing is not the person whose card this is, whatever its salience"
+        );
     }
 
     /// The light cadence's two halves, and the order that makes it safe.
@@ -3975,6 +4051,7 @@ mod tests {
         fact_index::insert(
             pool,
             &crate::fact_index::NewFact {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -4531,6 +4608,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &NewFact {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -4656,6 +4734,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &NewFact {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -4961,6 +5040,7 @@ mod tests {
             fact_index::insert(
                 &pool,
                 &NewFact {
+                    subject_external: None,
                     authored_refs: Vec::new(),
                     fact_id: FactId::parse(&format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d9{i}"))
                         .unwrap(),
@@ -5062,6 +5142,7 @@ mod tests {
         .unwrap();
 
         let mk = |id_tail: &str, source_path: &str, fact_type: &str| NewFact {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(&format!("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{id_tail}"))
                 .unwrap(),
@@ -5662,6 +5743,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &NewFact {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 fact_id: fid.clone(),
                 wiki_id: "alice".to_owned(),
@@ -5907,6 +5989,7 @@ mod tests {
             fact_index::insert(
                 pool,
                 &crate::fact_index::NewFact {
+                    subject_external: None,
                     authored_refs: Vec::new(),
                     fact_id: fid.clone(),
                     wiki_id: "alice".to_owned(),

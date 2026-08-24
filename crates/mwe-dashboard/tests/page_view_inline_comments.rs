@@ -1294,6 +1294,7 @@ async fn page_view_redacts_a_retired_region_but_reveal_still_shows_it() {
     fact_index::insert(
         &pool,
         &NewFact {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: fact_id.clone(),
             wiki_id: "alice".to_owned(),

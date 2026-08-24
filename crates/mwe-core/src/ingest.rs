@@ -682,6 +682,10 @@ struct LlmIngestPlan {
     #[serde(default)]
     #[serde(alias = "owner_id")]
     subject_id: Option<String>,
+    /// The name of what the fact is about when that is not a principal. See
+    /// [`LlmExtraction::subject_external`].
+    #[serde(default)]
+    subject_external: Option<String>,
     #[serde(default)]
     allow_ids: Vec<String>,
     #[serde(default)]
@@ -882,6 +886,11 @@ struct LlmAclChange {
 struct LlmExtraction {
     #[serde(default)]
     target_wiki_id: Option<String>,
+    /// The name of what this fact is about when that is not a principal —
+    /// a person who does not use the product, an animal, a place, a thing.
+    /// Absent for the ordinary fact, which is about its `subject_id`.
+    #[serde(default)]
+    subject_external: Option<String>,
     #[serde(default)]
     target_page: Option<String>,
     #[serde(default)]
@@ -958,6 +967,11 @@ struct CaptureUnit<'a> {
     target_wiki_id: Option<&'a str>,
     target_page: Option<&'a str>,
     subject_id: Option<&'a str>,
+    /// Borrowed view of the external subject — the NAME of what the fact is
+    /// about when that is not a principal (see
+    /// [`crate::fact_index::FactIndexRow::subject_external`]). Independent of
+    /// `subject_id`, which keeps answering for the fact.
+    subject_external: Option<&'a str>,
     allow_ids: &'a [String],
     fact_type: Option<&'a str>,
     /// Borrowed view of the per-fact
@@ -1019,6 +1033,7 @@ impl LlmIngestPlan {
                     target_wiki_id: e.target_wiki_id.as_deref(),
                     target_page: e.target_page.as_deref(),
                     subject_id: e.subject_id.as_deref(),
+                    subject_external: e.subject_external.as_deref(),
                     allow_ids: &e.allow_ids,
                     fact_type: e.fact_type.as_deref(),
                     valid_from: e.valid_from.as_deref(),
@@ -1055,6 +1070,7 @@ impl LlmIngestPlan {
                 target_wiki_id: self.target_wiki_id.as_deref(),
                 target_page: self.target_page.as_deref(),
                 subject_id: self.subject_id.as_deref(),
+                subject_external: self.subject_external.as_deref(),
                 allow_ids: &self.allow_ids,
                 fact_type: self.fact_type.as_deref(),
                 valid_from: self.valid_from.as_deref(),
@@ -1543,6 +1559,7 @@ fn validate_capture_plan(
         page,
         body,
         subject,
+        subject_external: unit.subject_external.map(str::to_owned),
         allow,
         sender: Some(Principal::User(request.sender_id.clone())),
         fact_type: unit.fact_type.map(str::to_owned),
@@ -1887,6 +1904,7 @@ async fn file_unclaimed_attachments(
         let subject = Principal::User(request.sender_id.clone());
         let cap_req = CaptureRequest {
             wiki_id: wiki_id.clone(),
+            subject_external: None,
             // Nobody placed this: it waits in the queue like any other claim.
             page: None,
             body,
@@ -1976,15 +1994,15 @@ enum ClosurePlanError {
     /// `reason` is missing or outside the closed vocabulary.
     #[error("closure reason `{0}` is not one of completed|retracted|contradicted")]
     UnknownReason(String),
-    /// The closure target is OWNED by a different principal than the
-    /// sender. A closure edits a fact's validity, so — like an ACL change
-    /// or a validity edit — only a subject may close it (the owning user,
-    /// or a member of the owning group; never a world fact). Blocks the
-    /// cross-user closure leak: one user's ingest closing another's fact
-    /// (the bug where morgana's primer closed franz's "programmatore"
-    /// fact). See [`crate::acl::sender_is_subject`].
-    #[error("closure target `{id}` is owned by {subject}, not the sender")]
-    NotSubject { id: String, subject: String },
+    /// The sender is neither the target's subject nor the one who said it.
+    /// A closure withdraws an assertion, so it is open to the subject (the
+    /// named user, or a member of the named non-global group) and to
+    /// whoever made the assertion — and to nobody else, which is what keeps
+    /// one user's turn from closing a fact of another's. A world fact with
+    /// no recorded author is closable by no one from chat.
+    /// See [`crate::acl::sender_may_retract`].
+    #[error("closure target `{id}` is about {subject} and was said by somebody else")]
+    NotSubjectOrAuthor { id: String, subject: String },
 }
 
 /// Validate one requested closure against this turn's recall window.
@@ -2022,12 +2040,18 @@ fn validate_closure<'a>(
             },
         });
     };
-    // Subject gate: a closure edits the target's validity, so only a subject
-    // may close it (the owning user or a member of the owning group; a
-    // world fact, subject=global, is closable by no one from chat). Blocks
-    // the cross-user closure leak.
-    if !crate::acl::sender_is_subject(&hit.subject_id, sender_id, sender_groups) {
-        return Err(ClosurePlanError::NotSubject {
+    // Retraction gate: closing a fact's validity withdraws an assertion, so
+    // the subject may do it (the named user or a member of the named
+    // non-global group) and so may whoever MADE the assertion. A world fact
+    // (subject=global) with no recorded author stays closable by no one from
+    // chat.
+    if !crate::acl::sender_may_retract(
+        &hit.subject_id,
+        hit.sender_id.as_ref(),
+        sender_id,
+        sender_groups,
+    ) {
+        return Err(ClosurePlanError::NotSubjectOrAuthor {
             id: raw.to_owned(),
             subject: hit.subject_id.to_string(),
         });
@@ -2961,10 +2985,11 @@ enum ValidityEditPlanError {
     /// Neither `valid_from` nor `valid_to` was given — nothing to correct.
     #[error("validity_edit gave neither valid_from nor valid_to")]
     NoBounds,
-    /// The subject gate: only the fact's subject may edit its validity from
-    /// chat.
-    #[error("validity_edit sender is not the fact's subject")]
-    NotSubject,
+    /// The retraction gate: editing a fact's validity from chat is open to
+    /// its subject and to whoever said it. See
+    /// [`crate::acl::sender_may_retract`].
+    #[error("validity_edit sender is neither the fact's subject nor its author")]
+    NotSubjectOrAuthor,
     /// A provided bound did not parse as ISO-8601 / RFC3339.
     #[error("validity_edit date `{0}` is not ISO-8601")]
     BadDate(String),
@@ -2975,7 +3000,7 @@ enum ValidityEditPlanError {
 /// Returns the matched [`RecallHit`] plus the two normalized bounds (each
 /// `Some(value)` SETS that bound, `None` LEAVES it). Tolerant on which
 /// bound is given (at least one required), strict on the anti-hallucination
-/// rule, the subject gate, and date well-formedness.
+/// rule, the retraction gate, and date well-formedness.
 fn validate_validity_edit<'a>(
     edit: &LlmValidityEdit,
     recall_hits: &'a [RecallHit],
@@ -3004,10 +3029,16 @@ fn validate_validity_edit<'a>(
             },
         });
     };
-    // The subject gate: only a subject edits their fact's validity from chat —
-    // the owning user, or a member of the owning group.
-    if !crate::acl::sender_is_subject(&hit.subject_id, sender_id, sender_groups) {
-        return Err(ValidityEditPlanError::NotSubject);
+    // The retraction gate: closing a fact's validity withdraws an assertion,
+    // so its subject may do it and so may whoever made it. Rewriting and the
+    // ACL stay with the subject — see [`crate::acl::sender_may_retract`].
+    if !crate::acl::sender_may_retract(
+        &hit.subject_id,
+        hit.sender_id.as_ref(),
+        sender_id,
+        sender_groups,
+    ) {
+        return Err(ValidityEditPlanError::NotSubjectOrAuthor);
     }
     let valid_from = normalize_iso_bound(edit.valid_from.as_deref())?;
     let valid_to = normalize_iso_bound(edit.valid_to.as_deref())?;
@@ -3708,6 +3739,15 @@ fn warn_if_capped(kind: &str, total: usize, cap: usize) {
     }
 }
 
+/// How many named things the classifier is shown at once.
+///
+/// The block is a roster, not a corpus: it exists so a name already decided is
+/// copied rather than judged again, and a name the turn does not mention costs
+/// the model attention for nothing. Ordered commonest-first, so what falls off
+/// the end is what the memory barely knows — and a fact about it is a first
+/// decision anyway, which is the case the roster cannot help with.
+pub(crate) const KNOWN_ENTITIES_CAP: i64 = 60;
+
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // a sequential context-bundle builder; one block per section reads top-to-bottom, splitting hides the layout — and each per-sender input is one section, so the argument list IS the section list
 fn build_prompt(
     request: &IngestRequest,
@@ -3715,6 +3755,7 @@ fn build_prompt(
     list_pages: &[fact_index::ListPage],
     sender_groups: &[(String, Option<String>)],
     known_users: &[enrollment::EnrolledUserLite],
+    known_entities: &[fact_index::KnownEntity],
     sender_rules: Option<&str>,
     sender_timezone: Option<&str>,
     now: chrono::DateTime<chrono::Utc>,
@@ -3850,6 +3891,27 @@ fn build_prompt(
             if u.is_agent {
                 out.push_str("\n    is_agent: true");
             }
+            out.push('\n');
+        }
+    }
+
+    // known_entities: the named things this memory already holds facts about,
+    // each with the principal its facts are filed under. `known_users` is the
+    // roster of principals; this is the roster of everything else, and it is
+    // here for one reason: deciding who answers for a fact about a
+    // non-principal is a judgement, and a judgement re-made every turn drifts.
+    // Shown the answer already given, the classifier copies it.
+    out.push_str("\nknown_entities:\n");
+    if known_entities.is_empty() {
+        out.push_str("  (none yet)\n");
+    } else {
+        for e in known_entities {
+            out.push_str("  - name: ");
+            out.push_str(&e.name);
+            out.push_str("\n    subject_id: ");
+            out.push_str(&e.subject_id);
+            out.push_str("\n    facts: ");
+            out.push_str(&e.facts.to_string());
             out.push('\n');
         }
     }
@@ -4463,6 +4525,7 @@ async fn capture_behaviour_rule(
 
     let cap_req = CaptureRequest {
         wiki_id,
+        subject_external: None,
         page: Some(PathBuf::from(BEHAVIOUR_RULES_PAGE)),
         body: rule.to_owned(),
         subject,
@@ -4584,6 +4647,7 @@ async fn capture_agent_self_fact(
     let page = agent_self_fact_page(is_identity, &request.sender_id);
     let cap_req = CaptureRequest {
         wiki_id,
+        subject_external: None,
         page,
         body: body.to_owned(),
         // OWNED BY THE AGENT — this is its own self-knowledge, not about the
@@ -6327,12 +6391,26 @@ pub async fn wiki_ingest_message(
             "ingest: assistant-authored turn — captures attributed to the agent"
         );
     }
+    // The named things this memory already holds, so the classifier reuses the
+    // answer instead of re-deciding it. Best-effort: an unreadable roster
+    // leaves the block empty and the classifier judges as it did before.
+    let known_entities = fact_index::known_entities(
+        pool,
+        &crate::acl::reader_principals(&sender_ctx.sender_id, &sender_ctx.sender_groups),
+        KNOWN_ENTITIES_CAP,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "ingest: known entities not read — the block is empty");
+        Vec::new()
+    });
     let mut prompt = build_prompt(
         &request,
         &recall_hits,
         &list_pages,
         &sender_groups_scoped,
         &known_users,
+        &known_entities,
         sender_policy.as_deref(),
         sender_timezone.as_deref(),
         turn_now,
@@ -8253,6 +8331,7 @@ mod tests {
         let available = [sample_available("alice")];
         let no_ids: [String; 0] = [];
         let unit = |style: Option<&'static str>, requested: bool| CaptureUnit {
+            subject_external: None,
             target_wiki_id: None,
             target_page: Some("spesa.md"),
             subject_id: None,
@@ -8339,6 +8418,7 @@ mod tests {
         }];
         let no_ids: [String; 0] = [];
         let unit = |wiki: Option<&'static str>, page: Option<&'static str>| CaptureUnit {
+            subject_external: None,
             target_wiki_id: wiki,
             target_page: page,
             subject_id: None,
@@ -8450,6 +8530,7 @@ mod tests {
         // name was already gone. A list-shaped unit is the case that reaches
         // disk inside the turn, so it is the one that had to be closed.
         let plan = LlmIngestPlan {
+            subject_external: None,
             intent: "capture".into(),
             suggested_seed: None,
             target_wiki_id: Some("alice".into()),
@@ -8498,6 +8579,7 @@ mod tests {
     #[test]
     fn validate_capture_plan_derives_the_wiki_from_the_sender() {
         let plan = LlmIngestPlan {
+            subject_external: None,
             intent: "capture".into(),
             suggested_seed: None,
             target_wiki_id: None,
@@ -8542,6 +8624,7 @@ mod tests {
     #[test]
     fn validate_capture_plan_defaults_subject_to_sender() {
         let plan = LlmIngestPlan {
+            subject_external: None,
             intent: "capture".into(),
             suggested_seed: None,
             target_wiki_id: Some("alice".into()),
@@ -8594,6 +8677,7 @@ mod tests {
         // SenderRedundantInAllow lint would otherwise kill the turn)
         // while keeping the legitimate entries.
         let plan = LlmIngestPlan {
+            subject_external: None,
             intent: "capture".into(),
             suggested_seed: None,
             target_wiki_id: Some("alice".into()),
@@ -8634,6 +8718,7 @@ mod tests {
     #[test]
     fn validate_capture_plan_rejects_bad_principal() {
         let plan = LlmIngestPlan {
+            subject_external: None,
             intent: "capture".into(),
             suggested_seed: None,
             target_wiki_id: Some("alice".into()),
@@ -8709,6 +8794,7 @@ mod tests {
     #[test]
     fn validate_capture_plan_ignores_a_hallucinated_target_wiki() {
         let plan = LlmIngestPlan {
+            subject_external: None,
             intent: "capture".into(),
             suggested_seed: None,
             target_wiki_id: Some("global".into()),
@@ -8976,6 +9062,7 @@ mod tests {
 
     fn plan_with_supersede(target: Option<&str>) -> LlmIngestPlan {
         LlmIngestPlan {
+            subject_external: None,
             intent: "capture".into(),
             suggested_seed: None,
             target_wiki_id: Some("alice".into()),
@@ -9072,11 +9159,15 @@ mod tests {
         }
     }
 
-    /// Cross-user closure guard: a user must not CLOSE a fact owned by
-    /// another. This is the path that actually fired in the primer bug —
-    /// morgana's ingest closed franz's "programmatore" fact as completed.
+    /// Who may close a fact from chat: its subject, and whoever said it.
+    ///
+    /// A stranger is neither, and a turn of theirs must not reach into
+    /// somebody else's memory to mark a fact finished. The author IS one of
+    /// the two — closing withdraws an assertion, and withdrawing your own
+    /// assertion is not editing somebody else's record — which is the half
+    /// this test's second block pins.
     #[test]
-    fn validate_closure_rejects_cross_subject() {
+    fn validate_closure_admits_the_subject_and_the_author_only() {
         let id = "018f1234-5678-7abc-9def-0123456789ab";
         let closure = LlmClosure {
             target: Some(id.to_owned()),
@@ -9087,17 +9178,29 @@ mod tests {
         let err = validate_closure(&closure, &hits, "morgana", &[])
             .expect_err("cross-subject closure must fail");
         match err {
-            ClosurePlanError::NotSubject {
+            ClosurePlanError::NotSubjectOrAuthor {
                 id: got_id,
                 subject,
             } => {
                 assert_eq!(got_id, id);
                 assert_eq!(subject, "user:alice");
             },
-            other => panic!("expected NotSubject, got {other:?}"),
+            other => panic!("expected NotSubjectOrAuthor, got {other:?}"),
         }
         // The subject herself can close it.
         assert!(validate_closure(&closure, &hits, "alice", &[]).is_ok());
+
+        // And so can the person who said it, about somebody else: the same
+        // hit, now carrying carol as its author, is closable by carol.
+        let mut authored = sample_recall_hit(id);
+        authored.sender_id = Some(Principal::User("carol".into()));
+        let hits = vec![authored];
+        assert!(
+            validate_closure(&closure, &hits, "carol", &[]).is_ok(),
+            "the author may withdraw what they said, whoever it was about"
+        );
+        // A third party is still neither.
+        assert!(validate_closure(&closure, &hits, "morgana", &[]).is_err());
     }
 
     #[test]
@@ -9156,7 +9259,18 @@ mod tests {
         let now = chrono::DateTime::parse_from_rfc3339("2026-03-26T21:30:00Z")
             .expect("fixed now")
             .with_timezone(&chrono::Utc);
-        let prompt = build_prompt(&request, &[hit], &[], &[], &[], None, None, now, &policy);
+        let prompt = build_prompt(
+            &request,
+            &[hit],
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            now,
+            &policy,
+        );
         assert!(
             prompt.contains("validity: ENDED 2026-03-26 \u{2014} history, not the present"),
             "an expired recalled fact must be marked as history; prompt was:\n{prompt}"
@@ -9174,6 +9288,7 @@ mod tests {
         let prompt = build_prompt(
             &request,
             &[hit],
+            &[],
             &[],
             &[],
             &[],
@@ -9197,6 +9312,7 @@ mod tests {
         let prompt = build_prompt(
             &request,
             &hits,
+            &[],
             &[],
             &[],
             &[],
@@ -9228,6 +9344,7 @@ mod tests {
         let prompt = build_prompt(
             &request,
             &[hit],
+            &[],
             &[],
             &[],
             &[],
@@ -9270,6 +9387,7 @@ mod tests {
             &[],
             &groups,
             &[],
+            &[],
             None,
             None,
             now_fixture(),
@@ -9304,6 +9422,7 @@ mod tests {
         let policy = IngestPolicy::default();
         let prompt = build_prompt(
             &request,
+            &[],
             &[],
             &[],
             &[],
@@ -9343,6 +9462,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             None,
             None,
             now_fixture(),
@@ -9354,6 +9474,7 @@ mod tests {
         let rules = "# Rules\n\nkeep anything about my health private";
         let with = build_prompt(
             &request,
+            &[],
             &[],
             &[],
             &[],
@@ -9378,6 +9499,7 @@ mod tests {
         );
         let whole = build_prompt(
             &request,
+            &[],
             &[],
             &[],
             &[],
@@ -9418,6 +9540,7 @@ mod tests {
             &[],
             &[],
             &known,
+            &[],
             None,
             None,
             now_fixture(),
@@ -9457,6 +9580,7 @@ mod tests {
             &[],
             &[],
             &known,
+            &[],
             None,
             None,
             now_fixture(),
@@ -9487,6 +9611,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             None,
             None,
             now_fixture(),
@@ -9504,6 +9629,7 @@ mod tests {
         let policy = IngestPolicy::default();
         let prompt = build_prompt(
             &request,
+            &[],
             &[],
             &[],
             &[],
@@ -9540,6 +9666,7 @@ mod tests {
             &[],
             &[],
             &groups,
+            &[],
             &[],
             None,
             None,
@@ -9650,6 +9777,7 @@ mod tests {
             &list_pages,
             &[],
             &[],
+            &[],
             None,
             None,
             now_fixture(),
@@ -9686,6 +9814,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             None,
             None,
             now_fixture(),
@@ -9705,6 +9834,7 @@ mod tests {
         let policy = IngestPolicy::default();
         let prompt = build_prompt(
             &request,
+            &[],
             &[],
             &[],
             &[],
@@ -9731,6 +9861,7 @@ mod tests {
         };
         let prompt = build_prompt(
             &request,
+            &[],
             &[],
             &[],
             &[],
@@ -9768,6 +9899,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             None,
             Some("Australia/Sydney"),
             now_fixture(),
@@ -9795,6 +9927,7 @@ mod tests {
         let policy = IngestPolicy::default();
         let prompt = build_prompt(
             &request,
+            &[],
             &[],
             &[],
             &[],
@@ -9828,6 +9961,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             None,
             None,
             now_fixture(),
@@ -9851,6 +9985,7 @@ mod tests {
     async fn ingest_records_recall_miss_on_unsurfaced_dedup_hit() {
         let (dir, tree, pool) = setup_workdir().await;
         let existing = fact_index::NewFact {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000f101").unwrap(),
             wiki_id: "alice".to_owned(),
@@ -9921,6 +10056,7 @@ mod tests {
     async fn ingest_records_no_miss_when_recall_surfaced_the_fact() {
         let (dir, tree, pool) = setup_workdir().await;
         let existing = fact_index::NewFact {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000f102").unwrap(),
             wiki_id: "alice".to_owned(),
@@ -10168,6 +10304,7 @@ mod tests {
         subject: Principal,
     ) {
         let fact = fact_index::NewFact {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(fact_id).unwrap(),
             wiki_id: wiki_id.to_owned(),
@@ -11970,6 +12107,7 @@ mod tests {
         let (dir, tree, pool) = setup_agent_workdir().await;
         // Plant a behaviour-rule fact on the LEGACY page name.
         let cap_req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("samvisebot").unwrap(),
             page: Some(PathBuf::from("behaviour_rules.md")),
@@ -12039,6 +12177,7 @@ mod tests {
     /// channel fixtures directly.
     fn agent_fact_req(page: &str, body: &str, dedup_threshold: Option<f32>) -> CaptureRequest {
         CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("samvisebot").unwrap(),
             page: Some(PathBuf::from(page)),
@@ -12258,6 +12397,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         // Plant the row that we want the next turn to supersede.
         let cap_req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -12353,6 +12493,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         // Plant a fact SHARED with group:famiglia.
         let cap_req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -12425,6 +12566,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         // Plant the open watchlist item the next turn completes.
         let cap_req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -12523,6 +12665,7 @@ mod tests {
     async fn ingest_closure_with_malformed_valid_to_falls_back_to_turn_now() {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -12637,6 +12780,7 @@ mod tests {
     async fn ingest_closure_lands_on_a_buffered_capture() {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("lista_spesa.md")),
@@ -12700,6 +12844,7 @@ mod tests {
         let (dir, tree, pool) = setup_workdir().await;
         // One public capture (allow=global) and one private to alice.
         let public = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("bacheca.md")),
@@ -12892,6 +13037,7 @@ mod tests {
     async fn closure_topics_second_pass_closes_the_starved_target() {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -12972,6 +13118,7 @@ mod tests {
             &pool,
             fake_embedder(),
             CaptureRequest {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: Some(PathBuf::from("cucina.md")),
@@ -13051,6 +13198,7 @@ mod tests {
                     pool,
                     fake_embedder(),
                     CaptureRequest {
+                        subject_external: None,
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: Some(PathBuf::from("cucina.md")),
@@ -13146,6 +13294,7 @@ mod tests {
                     pool,
                     fake_embedder(),
                     CaptureRequest {
+                        subject_external: None,
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: Some(PathBuf::from("appunti.md")),
@@ -13221,6 +13370,7 @@ mod tests {
         capture_buffer::buffer_capture_staged(
             &pool,
             CaptureRequest {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: Some(PathBuf::from("appunti.md")),
@@ -13294,6 +13444,7 @@ mod tests {
         let buffered = capture_buffer::buffer_capture(
             &pool,
             CaptureRequest {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: Some(PathBuf::from("appunti.md")),
@@ -13368,6 +13519,7 @@ mod tests {
                     pool,
                     fake_embedder(),
                     CaptureRequest {
+                        subject_external: None,
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: Some(PathBuf::from("appunti.md")),
@@ -13457,6 +13609,7 @@ mod tests {
                     pool,
                     fake_embedder(),
                     CaptureRequest {
+                        subject_external: None,
                         authored_refs: Vec::new(),
                         wiki_id: WikiId::parse("alice").unwrap(),
                         page: Some(PathBuf::from("appunti.md")),
@@ -13555,6 +13708,7 @@ mod tests {
             &pool,
             fake_embedder(),
             CaptureRequest {
+                subject_external: None,
                 authored_refs: Vec::new(),
                 wiki_id: WikiId::parse("alice").unwrap(),
                 page: Some(PathBuf::from("cucina.md")),
@@ -13711,6 +13865,7 @@ mod tests {
     async fn closure_confirmer_cannot_close_outside_its_candidates() {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -13777,6 +13932,7 @@ mod tests {
     async fn ingest_validity_edit_corrects_dates_on_an_owned_fact() {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("dispensa.md")),
@@ -13853,6 +14009,7 @@ mod tests {
     async fn ingest_validity_edit_by_non_subject_is_skipped() {
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("public.md")),
@@ -13921,6 +14078,7 @@ mod tests {
     async fn ingest_acl_change_widens_and_audits() {
         let (_dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -13994,6 +14152,7 @@ mod tests {
         // shortcut). Regression guard: the apply path must not clear sender.
         let (dir, tree, pool) = setup_workdir().await;
         let cap_req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -14077,6 +14236,7 @@ mod tests {
         fact_index::insert(
             &pool,
             &fact_index::NewFact {
+                subject_external: None,
                 fact_id: fid.clone(),
                 wiki_id: "proj".into(),
                 source_path: "wikis/proj/note.md".into(),
@@ -14324,6 +14484,7 @@ mod tests {
                 &pool,
                 fake_embedder(),
                 CaptureRequest {
+                    subject_external: None,
                     wiki_id: WikiId::parse("alice").unwrap(),
                     page: Some(PathBuf::from(format!("lista_{i}.md"))),
                     body: format!("voce {i}"),
@@ -14519,6 +14680,7 @@ mod tests {
             capture_buffer::buffer_capture(
                 &pool,
                 crate::capture::CaptureRequest {
+                    subject_external: None,
                     authored_refs: Vec::new(),
                     wiki_id: crate::types::WikiId::parse("alice").unwrap(),
                     page: Some(PathBuf::from("spesa.md")),
@@ -14717,6 +14879,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             None,
             None,
             now_fixture(),
@@ -14733,6 +14896,7 @@ mod tests {
         };
         let asst_prompt = build_prompt(
             &asst_req,
+            &[],
             &[],
             &[],
             &[],
@@ -15120,6 +15284,7 @@ mod tests {
             pool,
             fake_embedder(),
             CaptureRequest {
+                subject_external: None,
                 wiki_id: WikiId::parse("samvisebot").unwrap(),
                 page: Some(PathBuf::from("preferenze.md")),
                 body: "L'agente parla italiano e inglese.".to_owned(),
@@ -15489,6 +15654,7 @@ mod tests {
         // Plant a row so recall has something to surface — but the
         // LLM's supersede_target will name a *different*, unseen id.
         let cap_req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -15564,6 +15730,7 @@ mod tests {
         // First, plant a captured fact directly so recall has something to find.
         let _wiki = WikiSlug::parse("alice").unwrap();
         let cap_req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("cucina.md")),
@@ -16269,6 +16436,7 @@ mod tests {
         // One active fact on the opened page makes the fragment header
         // carry the in-band freshness annotation (`· updated <date>`).
         let fact = fact_index::NewFact {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000f001").unwrap(),
             wiki_id: "alice".to_owned(),
@@ -16361,6 +16529,7 @@ mod tests {
         let due = (chrono::Utc::now() + chrono::Duration::hours(24))
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let fact = fact_index::NewFact {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000d001").unwrap(),
             wiki_id: "alice".to_owned(),
@@ -16444,6 +16613,7 @@ mod tests {
         let due = (chrono::Utc::now() + chrono::Duration::hours(24))
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let fact = fact_index::NewFact {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse("018f1234-5678-7abc-9def-00000000d002").unwrap(),
             wiki_id: "alice".to_owned(),

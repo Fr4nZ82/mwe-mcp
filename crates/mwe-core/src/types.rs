@@ -529,6 +529,12 @@ pub struct RegionAttrs {
     /// `fact_id` from `f=…`. `None` for regions used only as ACL wrappers
     /// (no fact promotion).
     pub fact_id: Option<FactId>,
+    /// `external=…` — the NAME of what the region is about, when that is not
+    /// a principal. Carried so an exported marker round-trips whole; the
+    /// authority is the `fact_index` column, exactly as it is for the three
+    /// axes above. See
+    /// [`crate::fact_index::FactIndexRow::subject_external`].
+    pub subject_external: Option<String>,
 }
 
 /// Reference `UUIDv7` used across crate tests (parser, acl, render).

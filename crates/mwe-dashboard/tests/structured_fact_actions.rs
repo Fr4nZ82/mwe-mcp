@@ -116,6 +116,7 @@ async fn capture_fact(
     use mwe_core::capture::{CaptureAction, CaptureRequest, wiki_capture};
     let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
     let req = CaptureRequest {
+        subject_external: None,
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse(wiki_id).unwrap(),
         page: Some(std::path::PathBuf::from(page)),
@@ -452,6 +453,7 @@ async fn capture_fact_owned(
     use mwe_core::capture::{CaptureAction, CaptureRequest, wiki_capture};
     let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
     let req = CaptureRequest {
+        subject_external: None,
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse(wiki_id).unwrap(),
         page: Some(std::path::PathBuf::from(page)),

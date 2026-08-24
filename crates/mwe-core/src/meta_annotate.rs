@@ -761,6 +761,7 @@ mod tests {
         topics: &[&str],
     ) {
         let fact = fact_index::NewFact {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(uuid).unwrap(),
             wiki_id: wiki.to_owned(),
@@ -798,6 +799,7 @@ mod tests {
         topics: &[&str],
     ) {
         let fact = fact_index::NewFact {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: FactId::parse(uuid).unwrap(),
             wiki_id: wiki.to_owned(),

@@ -78,6 +78,7 @@ fn seed_alice_wiki(tree: &WikiTree) {
 async fn capture_fact(pool: &SqlitePool, tree: &WikiTree, page: &str, body: &str) -> FactId {
     let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
     let req = CaptureRequest {
+        subject_external: None,
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse("alice").unwrap(),
         page: Some(PathBuf::from(page)),
@@ -2164,6 +2165,7 @@ async fn chat_agentic_changes_wiki_scope_under_new_parent_end_to_end() {
     // source_path is rebased after the scope change.
     let acme_fact = {
         let req = mwe_core::capture::CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice-acmecorp").unwrap(),
             page: Some(PathBuf::from("intro.md")),
@@ -2412,6 +2414,7 @@ async fn capture_fact_in(
 ) -> FactId {
     let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
     let req = CaptureRequest {
+        subject_external: None,
         authored_refs: Vec::new(),
         wiki_id: WikiId::parse(wiki_id).unwrap(),
         page: Some(PathBuf::from(page)),

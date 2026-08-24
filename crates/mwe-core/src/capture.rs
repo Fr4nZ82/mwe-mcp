@@ -172,6 +172,11 @@ pub struct CaptureRequest {
     /// The fact's **subject** — who or what it is *about* (not its author
     /// `sender`, not its audience `allow`).
     pub subject: Principal,
+    /// The name of what the claim is about when that is not a principal — a
+    /// person who does not use the product, an animal, a place, a thing.
+    /// `None` for the ordinary claim, which is about its [`Self::subject`].
+    /// See [`crate::fact_index::FactIndexRow::subject_external`].
+    pub subject_external: Option<String>,
     /// Additional principals granted read access via `allow=`.
     pub allow: Vec<Principal>,
     /// Cross-user attribution (who *captured* the fact, orthogonal to
@@ -596,6 +601,7 @@ pub async fn wiki_capture_with_source(
         text: req.body,
         embedding,
         subject_id: req.subject,
+        subject_external: req.subject_external.clone(),
         allow_ids: req.allow,
         sender_id: req.sender,
         fact_type: req.fact_type,
@@ -915,10 +921,14 @@ pub fn render_full_marker(
     subject: &Principal,
     allow: &[Principal],
     sender: Option<&Principal>,
+    subject_external: Option<&str>,
     body: &str,
 ) -> String {
-    let mut attrs = Vec::with_capacity(4);
+    let mut attrs = Vec::with_capacity(5);
     attrs.push(format!("subject={subject}"));
+    if let Some(name) = subject_external.map(str::trim).filter(|s| !s.is_empty()) {
+        attrs.push(format!("external={name}"));
+    }
     if !allow.is_empty() {
         let joined: Vec<String> = allow.iter().map(ToString::to_string).collect();
         attrs.push(format!("allow={}", joined.join(",")));
@@ -1048,6 +1058,7 @@ mod tests {
 
     fn sample_request(body: &str) -> CaptureRequest {
         CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("intro.md")),
@@ -1111,6 +1122,7 @@ mod tests {
 
     fn req_with(subject: &str, sender: Option<&str>, allow: Vec<&str>) -> CaptureRequest {
         CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse("alice").unwrap(),
             page: Some(PathBuf::from("spesa.md")),
@@ -1195,7 +1207,8 @@ mod tests {
         let allow: Vec<Principal> =
             vec!["group:family".parse().unwrap(), "user:bob".parse().unwrap()];
         let sender: Principal = "user:bob".parse().unwrap();
-        let rendered = render_full_marker(&fid, &subject, &allow, Some(&sender), "I love pasta");
+        let rendered =
+            render_full_marker(&fid, &subject, &allow, Some(&sender), None, "I love pasta");
         let expected = "{{subject=user:alice allow=group:family,user:bob sender=user:bob \
                         f=018f1234-5678-7abc-9def-0123456789ab}}I love pasta{{/}}";
         assert_eq!(rendered, expected);
@@ -1205,7 +1218,7 @@ mod tests {
     fn render_full_marker_omits_empty_allow_and_absent_sender() {
         let fid = FactId::parse("018f1234-5678-7abc-9def-0123456789ab").unwrap();
         let subject: Principal = "user:alice".parse().unwrap();
-        let rendered = render_full_marker(&fid, &subject, &[], None, "body");
+        let rendered = render_full_marker(&fid, &subject, &[], None, None, "body");
         let expected = "{{subject=user:alice f=018f1234-5678-7abc-9def-0123456789ab}}body{{/}}";
         assert_eq!(rendered, expected);
     }

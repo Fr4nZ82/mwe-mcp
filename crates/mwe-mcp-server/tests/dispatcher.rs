@@ -1700,6 +1700,7 @@ async fn insert_forget_fact(
     fact_index::insert(
         pool,
         &NewFact {
+            subject_external: None,
             authored_refs: Vec::new(),
             fact_id: fact_id.clone(),
             wiki_id: "famiglia".to_owned(),

@@ -181,7 +181,9 @@ pub async fn export_wiki_subtree(
             let raw = std::fs::read_to_string(&page.abs_path)?;
             let source_path = workdir_relative_source_path(tree.workdir(), &page.abs_path);
             let acl_map = fact_index::page_acl_map(pool, &source_path).await?;
-            let (rewritten, rewritten_n, unindexed_n) = rewrite_page_markers(&raw, &acl_map);
+            let names = fact_index::page_external_names(pool, &source_path).await?;
+            let (rewritten, rewritten_n, unindexed_n) =
+                rewrite_page_markers(&raw, &acl_map, &names);
             report.regions_rewritten += rewritten_n;
             report.regions_unindexed += unindexed_n;
             // Standalone embeds AND embeds inside region bodies — the
@@ -300,7 +302,11 @@ async fn append_referenced_media(
 /// leaving everything else (prose, embeds, unindexed regions, malformed
 /// fragments) byte-for-byte intact. Returns the rewritten page plus the
 /// (rewritten, unindexed) region counts.
-fn rewrite_page_markers(raw: &str, acl_map: &FactAclMap) -> (String, usize, usize) {
+fn rewrite_page_markers(
+    raw: &str,
+    acl_map: &FactAclMap,
+    names: &std::collections::HashMap<crate::types::FactId, String>,
+) -> (String, usize, usize) {
     let parsed = parse(raw);
     let mut out = String::with_capacity(raw.len() + raw.len() / 4);
     let mut last = 0;
@@ -330,6 +336,7 @@ fn rewrite_page_markers(raw: &str, acl_map: &FactAclMap) -> (String, usize, usiz
             &acl.subject,
             &acl.allow,
             acl.sender.as_ref(),
+            names.get(fact_id).map(String::as_str),
             &raw[*body_start..*body_end],
         ));
         last = *end;
@@ -403,6 +410,7 @@ mod tests {
     ) -> FactId {
         let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake-bge-m3", 8));
         let req = CaptureRequest {
+            subject_external: None,
             authored_refs: Vec::new(),
             wiki_id: WikiId::parse(wiki_id).unwrap(),
             page: Some(PathBuf::from(page)),
