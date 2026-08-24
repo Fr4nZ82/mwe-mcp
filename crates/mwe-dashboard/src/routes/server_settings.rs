@@ -13,7 +13,7 @@
 //!
 //! Apply semantics differ per section and each form says so: the
 //! ingest timezone **hot-swaps** into the shared recall handle (next
-//! ingest turn, both transports); dream cadence, logging, and the
+//! ingest turn, both transports); the dream cadence, logging, and the
 //! document pipeline are read once at boot, so their saves apply **at
 //! the next server restart** (the sibling of the Backup console's
 //! `initial_delay_secs`).
@@ -124,39 +124,41 @@ fn cadence_section(cfg: &RemScheduleConfig) -> Markup {
     let rows: &[(&str, &str, u64, u64, &str)] = &[
         (
             "interval_secs",
-            "Full cycle — interval (seconds)",
+            "Full REM — interval (seconds)",
             cfg.interval_secs,
             def.interval_secs,
-            "Distance between nightly full REM cycles (strong-LLM reorganisation).",
+            "Distance between nightly Full REM runs (strong-LLM reorganisation).",
         ),
         (
             "initial_delay_secs",
-            "Full cycle — initial delay (seconds)",
+            "Full REM — initial delay (seconds)",
             cfg.initial_delay_secs,
             def.initial_delay_secs,
-            "Warm-up before the first full cycle after startup.",
+            "Warm-up before the first Full REM after startup.",
         ),
         (
             "light_interval_secs",
-            "Light dream — interval (seconds)",
+            "Light — interval (seconds)",
             cfg.light_interval_secs,
             def.light_interval_secs,
-            "Distance between light-dream runs (captures→facts promotion).",
+            "Distance between Light runs: promotes captures into facts, then recompiles the pages that changed.",
         ),
         (
             "light_initial_delay_secs",
-            "Light dream — initial delay (seconds)",
+            "Light — initial delay (seconds)",
             cfg.light_initial_delay_secs,
             def.light_initial_delay_secs,
-            "Warm-up before the first light dream after startup.",
+            "Warm-up before the first Light run after startup.",
         ),
     ];
     html! {
         section.dream-cadence-settings {
             h2 { "Dream cadence" }
             p.muted {
-                "The " code { "rem.schedule:" } " section — when the dreams run. "
-                "The behaviour knobs (what a cycle may touch) are the "
+                "The " code { "rem.schedule:" } " section — when the two scheduled runs "
+                "fire. They are the same Light and Full REM the "
+                a href="/dashboard/dream" { "Dream console" }
+                " triggers by hand. The behaviour knobs (what a cycle may touch) are the "
                 a href="/dashboard/admin/rem-settings" { "REM settings" }
                 "; the sub-jobs' model tiers are the "
                 a href="/dashboard/admin/llm-config" { "LLM config" } "."
@@ -178,7 +180,7 @@ fn cadence_section(cfg: &RemScheduleConfig) -> Markup {
                             }
                             td.muted {
                                 "One switch for both schedulers: " code { "disabled" }
-                                " turns off the full cycle and the light dream."
+                                " turns off both Full REM and Light."
                             }
                         }
                         @for &(field, label, value, default, help) in rows {
@@ -192,7 +194,7 @@ fn cadence_section(cfg: &RemScheduleConfig) -> Markup {
                             }
                         }
                         tr {
-                            td { label for="light_backlog_threshold" { "Light dream — backlog trigger" } }
+                            td { label for="light_backlog_threshold" { "Light — backlog trigger" } }
                             td {
                                 input id="light_backlog_threshold" name="light_backlog_threshold"
                                     type="number" min="0"
@@ -200,7 +202,7 @@ fn cadence_section(cfg: &RemScheduleConfig) -> Markup {
                                     placeholder=(def.light_backlog_threshold);
                             }
                             td.muted {
-                                "Buffered captures that fire a light dream ahead of the timer. "
+                                "Buffered captures that fire a Light run ahead of the timer. "
                                 "0 disables the early trigger."
                             }
                         }
