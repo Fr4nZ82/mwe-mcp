@@ -1076,9 +1076,9 @@ fn describe_comments(comments: &[(i64, String, Option<String>)]) -> String {
 /// non-empty `author_sender_id` among the page's pending comments, taken as
 /// `user:<id>`. When the page mixes authors the last (most recent) one
 /// represents them — a minimal, faithful choice given an `add` op carries no
-/// back-reference to one comment. `None` only for legacy comments with no
-/// recorded author (pre-`author_sender_id` rows) — then `apply_add` falls back
-/// to the wiki's scope principal, never inventing a sender.
+/// back-reference to one comment. `None` when no comment on the page records
+/// an author — then `apply_add` falls back to the wiki's scope principal,
+/// never inventing a sender.
 fn representative_commenter(comments: &[(i64, String, Option<String>)]) -> Option<Principal> {
     comments
         .iter()
@@ -1107,7 +1107,7 @@ async fn describe_scope(
         Some(c) => {
             let _ = writeln!(out, "commenter: {c}");
         },
-        None => out.push_str("commenter: (unknown — legacy comment with no recorded author)\n"),
+        None => out.push_str("commenter: (unknown — the comment records no author)\n"),
     }
 
     let wiki_scope = tree

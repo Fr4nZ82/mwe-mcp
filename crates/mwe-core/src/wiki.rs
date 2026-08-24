@@ -1971,8 +1971,8 @@ Italian, whoever you are\") are also kept here, managed automatically.\n";
 /// load-bearing.
 ///
 /// Reads the wiki's current `@rules.md` and appends `- <rule>` after a blank
-/// line. When the file is missing (a legacy wiki that never got the
-/// scaffold), it starts from [`RULES_DEFAULT_BODY`] so the rule is never lost.
+/// line. When the file is missing it starts from [`RULES_DEFAULT_BODY`], so
+/// the rule is never lost.
 ///
 /// `rule` is trusted prose from the classifier (the rule restated as a standing
 /// policy sentence); a leading `- ` is stripped if the model already bulleted

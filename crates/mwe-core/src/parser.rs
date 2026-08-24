@@ -406,7 +406,7 @@ fn find_from(haystack: &str, needle: &str, from: usize) -> Option<usize> {
 fn parse_attrs(spec: &str, marker_offset: usize, warnings: &mut Vec<ParseWarning>) -> RegionAttrs {
     let mut attrs = RegionAttrs::default();
     // Whether the subject currently held came from the canonical `subject=`
-    // key rather than the legacy `owner=` alias — see the match arm below.
+    // key rather than the `owner=` alias — see the match arm below.
     let mut subject_from_canonical_key = false;
     for clause in spec.split_ascii_whitespace() {
         let Some((key, val)) = clause.split_once('=') else {

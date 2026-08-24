@@ -64,7 +64,7 @@ impl<'de> Deserialize<'de> for FactId {
 ///
 /// Wire format:
 /// - the global group ↔ `"global"` (bare, no prefix — back-compatible with
-///   legacy `owner=global` markers; `"group:global"` parses identically)
+///   `owner=global` markers; `"group:global"` parses identically)
 /// - `User(id)` ↔ `"user:<id>"`
 /// - `Group(id)` ↔ `"group:<id>"`
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -138,7 +138,7 @@ impl fmt::Display for Principal {
         match self {
             Self::User(id) => write!(f, "user:{id}"),
             // The builtin global group keeps its bare wire form for
-            // back-compat with legacy `owner=global` markers.
+            // back-compat with `owner=global` markers.
             Self::Group(id) if id == "global" => f.write_str("global"),
             Self::Group(id) => write!(f, "group:{id}"),
         }
@@ -167,7 +167,7 @@ impl fmt::Display for Principal {
 ///
 /// `subject == None` is a region nobody is named as the subject of. The
 /// parser builds [`Acl`] from the marker's `subject=` and `allow=`
-/// attributes (`owner=` is the permanent legacy alias of `subject=`, read
+/// attributes (`owner=` is a permanent alias of `subject=`, read
 /// but never written); with neither present it leaves the subject `None`,
 /// and nothing downstream fills it in. Such a region is reachable only
 /// through the other two axes — its `allow` audience and its own `sender`
@@ -267,8 +267,8 @@ const fn is_ascii_lower_hex(b: u8) -> bool {
 ///
 /// Example: `c-2026-05-10-photo-001.jpg`. `<kind>` is lowercase ASCII
 /// letters, `<ext>` is lowercase ASCII alnum, `NNN` is ≥1 ASCII digit.
-/// The parser deliberately accepts **any** `[a-z]+` kind — legacy ids and
-/// imported archives stay valid input forever; the canonical English
+/// The parser deliberately accepts **any** `[a-z]+` kind — ids minted under
+/// any vocabulary and imported archives stay valid input forever; the canonical English
 /// vocabulary (`photo` / `video` / `audio` / `doc`) is enforced at minting
 /// time by [`crate::media`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -510,8 +510,8 @@ impl fmt::Display for WikiId {
 ///
 /// Built by the parser from the four supported attributes:
 /// - `subject=<principal>` → `acl.subject` (the fact's *subject* — who it is
-///   *about*, not its author or audience; see [`Acl`]). `owner=` is the
-///   permanent legacy alias of this key: read, never written.
+///   *about*, not its author or audience; see [`Acl`]). `owner=` is a
+///   permanent alias of this key: read, never written.
 /// - `allow=<principal>(,<principal>)*` → `acl.allow`
 /// - `sender=<principal>` → `sender` (cross-user attribution)
 /// - `f=<UUIDv7>` → `fact_id`

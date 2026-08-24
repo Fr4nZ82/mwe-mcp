@@ -280,8 +280,8 @@ fn remove_child_from_parent_meta(parent_abs: &Path, child_id: &WikiId) -> Result
     let before = meta.children.len();
     meta.children.retain(|c| c.wiki_id != child_id.as_str());
     if meta.children.len() == before {
-        // Child wasn't listed — denormalised children may legitimately
-        // be missing on legacy wikis. No-op keeps the call idempotent.
+        // Child wasn't listed — the denormalised children index may
+        // legitimately be incomplete. No-op keeps the call idempotent.
         return Ok(());
     }
     let rendered = meta
