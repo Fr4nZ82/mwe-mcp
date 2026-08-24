@@ -208,7 +208,9 @@ Some working material lives on disk but is deliberately **not** in the repo
 - **`planning/`** — `roadmap.md`, `logs.md` and the per-area cards: future work
   and the dated decision log. A roadmap entry is a **suspicion, not a state**:
   open the code before proposing it as work. Every design decision gets one
-  dated line in `planning/logs.md`.
+  dated line in `planning/logs.md`, which holds **the current week only** and is
+  rotated every Monday into `planning/logs/<year>-W<week>.md` — the file says how,
+  and a closed week is never rewritten.
 - **`GLOSSARIO.md`** — the product's vocabulary, derived from the code, one
   entry per term with what it *is* and what it *is not*. When a thing has a name
   there, that is the name — repeated verbatim, never paraphrased.
