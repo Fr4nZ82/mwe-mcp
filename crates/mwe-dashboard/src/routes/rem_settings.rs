@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Admin-only editor for `<workdir>/mwe-mcp.config.yaml > rem.policy` —
-//! the operator REM-settings panel (the dream cycle's behaviour knobs).
+//! the operator REM-settings panel (the REM cycle's behaviour knobs — the
+//! nightly run reads them, a light dream never does).
 //!
 //! Two routes, both behind [`AdminUser`], mirroring the
 //! [recall-settings editor](super::recall_settings):

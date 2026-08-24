@@ -484,7 +484,7 @@ pub struct CompletionSweepReport {
 /// dest.
 #[derive(Debug, Clone, Default)]
 pub struct RefileSweepReport {
-    /// Reviewer-fed candidates seeded from the parked plan (the
+    /// Candidates the Revisore seeded on the parked plan (the
     /// `cross_subject_bloat` → refile bridge), before the cap.
     pub bridge_candidates: usize,
     /// Candidate facts the cosine pre-filter nominated.

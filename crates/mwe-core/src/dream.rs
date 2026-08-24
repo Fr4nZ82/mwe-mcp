@@ -13,7 +13,7 @@
 //! Three compositions, mirroring the three operator-facing dreams:
 //!
 //! - [`run_compile`] — the narrative compile only (Cartografo →
-//!   Conciliatore → Architetto → Cronista → Reviewer) over the dirty pages.
+//!   Conciliatore → Architetto → Cronista → Revisore) over the dirty pages.
 //! - [`run_light`] — the cheap, frequent dream: promote buffered captures into
 //!   `fact_index`, then compile the pages that went dirty.
 //! - [`run_full`] — the nightly / on-demand dream: a complete [`rem::run_cycle`]
