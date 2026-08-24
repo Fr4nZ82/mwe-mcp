@@ -710,9 +710,10 @@ async fn apply_fact_refile(
 // ---------- page merge variant ----------
 
 /// Plan slug of a wiki-relative page path (`viaggi.md` → `viaggi`, nested
-/// paths flatten like the ingest placement); a wiki's reserved pages map to
-/// their per-wiki foundation keys. One mapping, shared with the plan-re-home
-/// seed — see [`crate::planner::plan_slug_for_page`].
+/// paths flatten like the ingest placement); a wiki's **identity card** is the
+/// one page keyed per wiki instead, on the wiki's own slug. One mapping,
+/// shared with the plan-re-home seed — see
+/// [`crate::planner::plan_slug_for_page`].
 fn plan_slug_of_page(wiki_id: &str, page: &str) -> String {
     crate::planner::plan_slug_for_page(wiki_id, page)
 }
