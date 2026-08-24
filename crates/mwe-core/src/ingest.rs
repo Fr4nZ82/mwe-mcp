@@ -15816,8 +15816,8 @@ mod tests {
     }
 
     // Re-test of WikiMeta to ensure setup_workdir's serialized YAML
-    // round-trips correctly. The legacy `acl_default` line is read-and-
-    // ignored (the owning principal is derived from topology now).
+    // round-trips correctly. The legacy `acl_default` line is read and
+    // ignored: the owning principal is derived from the topology.
     #[test]
     fn setup_workdir_yaml_parses_back_to_wikimeta() {
         let raw = "---\nwiki_id: alice\nwiki_type: wiki-user\nslug: alice\ntitle: Alice\nacl_default: 'user:alice'\nparent_wiki_id: root\n---\n";

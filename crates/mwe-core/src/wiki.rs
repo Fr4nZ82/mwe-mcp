@@ -897,7 +897,7 @@ impl WikiMeta {
     /// `slug`, `title`, then optionals in spec order — `scope` first —
     /// then [`WikiMeta::extra`]) so a `parse` → `to_yaml` round-trip
     /// keeps diffs minimal for files that did not originally carry
-    /// unknown keys. The retired `acl_default` is never re-emitted.
+    /// unknown keys. An `acl_default:` read off disk is never re-emitted.
     ///
     /// # Errors
     ///
