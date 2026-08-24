@@ -537,7 +537,17 @@ fn render_install_ps1(consumer: &str) -> Option<String> {
     }
 
     s.push_str("\nWrite-Host \"\"\n");
-    s.push_str("Write-Host \"mwe-mcp hermes bridge: files installed (plugins, the mwe-events reverse-channel hook, the daily digest script).\"\n");
+    // Same four destinations the shell installer prints. The context-engine
+    // plugin is the one that does not land under HERMES_HOME, so a Windows
+    // operator who is not told where it went cannot check that it arrived.
+    s.push_str("Write-Host \"mwe-mcp hermes bridge: files installed.\"\n");
+    s.push_str("Write-Host \"  memory + media + watchdog -> $HermesHome\\plugins\\\"\n");
+    s.push_str("Write-Host \"  reverse-channel hook -> $HermesHome\\hooks\\mwe-events\\ (auto-discovered)\"\n");
+    s.push_str(
+        "Write-Host \"  daily digest script -> $HermesHome\\scripts\\mwe-daily-digest.py\"\n",
+    );
+    s.push_str("Write-Host \"  context engine -> $HermesSrc\\plugins\\context_engine\\\"\n");
+    s.push_str("Write-Host \"\"\n");
     s.push_str("Write-Host \"Four steps remain — they are yours (the installer never handles your token):\"\n");
     s.push_str("Write-Host \"  1. Issue a token from your mwe-mcp dashboard home and set MWE_TOKEN in hermes's .env.\"\n");
     s.push_str("Write-Host \"  2. Disable hermes's built-in memory (memory_enabled: false and user_profile_enabled: false).\"\n");
