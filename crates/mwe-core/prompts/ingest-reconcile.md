@@ -71,6 +71,7 @@ Rules that hold for all four:
 
 - This is a PRECISION instrument. Act only on a candidate whose text plainly matches what the message says. When nothing matches, return empty arrays — changing nothing is always safe, because a missed reconciliation is recoverable on a later turn while a wrong one has already forgotten or exposed the wrong thing.
 - Never act on a candidate because it is merely related, on the same page, or about the same person.
+- **Talking about a fact is not changing it.** A message that discusses a fact, advises on it, helps plan it, summarises it or says it again leaves it exactly as it was. Saying the same thing in other words — a second report of the same value, a more precise wording of the same claim — is a DUPLICATE, and the memory merges duplicates by itself: closing one deletes a live fact and, because a closure names no replacement, leaves the reader nowhere to go. "contradicted" needs the message to assert something the fact cannot be true alongside; "completed" needs it to say the thing was DONE, not that it was discussed.
 - `target` must be copied EXACTLY from a candidate's fact_id. Never invent or alter an id.
 - A candidate whose validity already shows a closed window needs no second closure — skip it. Read the line as written: `open, due <date>` is an **open** fact carrying a deadline, and it is the most likely thing a message closes ("I bought the milk"). Only `closed <date>` is already settled.
 - One candidate gets at most one verb. A supersede already retires the old fact, so never close it as well.
