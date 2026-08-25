@@ -18,13 +18,13 @@ The confirmation prompt for the REM **completion sweep** sub-job
   capped by `policy.completion_sweep_cap`).
 - **Model**: the `rem_dedup_semantic` / revisor slot (low binary-classifier
   tier, shared by every REM confirmer sweep) — REM-only.
-- **Placeholders**: `{evidence_text}`, `{evidence_date}` (the evidence
-  fact's capture instant), `{candidates}` (numbered open items:
-  `fact_id · created_at · text`), `{subject_note}` — empty for an ordinary
-  family; on an **agent's own** family (the scope root carries the
-  `is_agent` marker) it says that the corpus narrates the agent's service,
-  so helping with an item never completes it. Resolved per family by
-  `agent_families`, never per case.
+- **Placeholders**: `{evidence_text}`, `{evidence_date}` (the instant the
+  evidence began being true), `{candidates}` (numbered open items:
+  `fact_id · began · text`, dated the same way), `{subject_note}` — empty
+  for an ordinary family; on an **agent's own** family (the scope root
+  carries the `is_agent` marker) it says that the corpus narrates the
+  agent's service, so helping with an item never completes it. Resolved
+  per family by `agent_families`, never per case.
 - **Output**: one strict JSON object, parsed by the first-balanced-`{}`
   scanner. Empty `completions` = nothing closes.
 - **Runtime parameters**: temperature 0.1, max_tokens 400.
@@ -51,17 +51,17 @@ Rules:
 - DIFFICULTY IS NOT ABANDONMENT. "it will be hard to make it", "I might not manage", "we may have to postpone" leave the item OPEN — a doubt is not a decision. Postponing is not retracting either: an item moved to another date is still going to happen. Retract only on a statement that it is off.
 - An EPISODE does not complete. A candidate that is a record of something that ALREADY happened (a past event, an observation, a logged note) is not a consumable intention — only open intentions close (a shopping-list entry, a watchlist entry, a todo, a plan). If a candidate reads as history rather than a pending intention, leave it open.
 - A recurring item is completed for THIS cycle, not retired forever — closing it is still correct (it reopens when restated). Never refuse a completion because the item might recur.
-- `valid_to` = WHEN it happened, when the evidence says so (resolve relative phrases against the evidence's capture date, shown below); otherwise null — the engine then uses the evidence's own date.
+- `valid_to` = WHEN it happened, when the evidence says so (resolve relative phrases against the evidence's date, shown below); otherwise null — the engine then uses the evidence's own date.
 - `outcome` is `"completed"` or `"retracted"` — which of the two ways above this candidate closed. Omitting it means `"completed"`.
 - `valid_to` on a retraction is WHEN it was called off, not when it would have happened.
 - `target` must be a fact_id copied EXACTLY from the candidate list. Never invent one.
 - Closures here are act-first and final; when in doubt, leave the candidate open (empty list is a fine answer).
 {subject_note}
 
-EVIDENCE (captured {evidence_date}):
+EVIDENCE (dated {evidence_date}):
 {evidence_text}
 
-CANDIDATES (open items — fact_id · created_at · text):
+CANDIDATES (open items — fact_id · began · text):
 {candidates}
 
 Output ONE strict JSON object, nothing else:

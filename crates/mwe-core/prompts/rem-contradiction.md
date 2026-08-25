@@ -21,11 +21,11 @@ The confirmation prompt for the REM **contradiction sweep** sub-job
 - **Placeholders**: `{contradicted_text}` (the seed — the fact that just
   fell), `{successor_text}` (what replaced it, or `(none)` for a pure
   closure), `{candidates}` (numbered open items:
-  `fact_id · created_at · text`), `{subject_note}` — empty for an ordinary
-  family; on an **agent's own** family (the scope root carries the
-  `is_agent` marker) it fences the satellites to the same relationship
-  thread as the seed. Resolved per family by `agent_families`, never per
-  case.
+  `fact_id · began · text` — the instant each began being true),
+  `{subject_note}` — empty for an ordinary family; on an **agent's own**
+  family (the scope root carries the `is_agent` marker) it fences the
+  satellites to the same relationship thread as the seed. Resolved per
+  family by `agent_families`, never per case.
 - **Output**: one strict JSON object, parsed by the first-balanced-`{}`
   scanner. Empty `invalidated` = the cluster ends at the seed.
 - **Runtime parameters**: temperature 0.1, max_tokens 400.
@@ -53,7 +53,7 @@ CONTRADICTED FACT:
 REPLACED BY:
 {successor_text}
 
-CANDIDATES (open items — fact_id · created_at · text):
+CANDIDATES (open items — fact_id · began · text):
 {candidates}
 
 Output ONE strict JSON object, nothing else:

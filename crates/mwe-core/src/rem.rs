@@ -4277,6 +4277,28 @@ struct CompletionCase<'a> {
     candidates: Vec<&'a FactIndexRow>,
 }
 
+/// When a fact's sentence existed — the EARLIER of the two clocks the row
+/// carries, which is right in all four cases and neither one alone is.
+///
+/// `created_at` is the row's write instant: correct live, and wrong on a
+/// backlog replay, where it is the replay run's wall clock rather than the day
+/// the sentence was uttered. `valid_from` is the semantic clock ingest deduces
+/// against `occurred_at`: correct on a replay, and wrong when the classifier
+/// stamped a real FUTURE start («da luglio lavoro a Milano»), because the
+/// engine defines that field as the start of HOLDING, not as the moment of
+/// speaking — taking it outright dates a fact to a day that has not happened
+/// yet.
+///
+/// Everything that reasons about the order of the WORLD reads this: what
+/// happened before what, whether a plan is still ahead of the evidence that
+/// would close it, and which instant a closed window ends on.
+fn fact_began(row: &FactIndexRow) -> &str {
+    match row.valid_from.as_deref() {
+        Some(vf) if vf < row.created_at.as_str() => vf,
+        _ => row.created_at.as_str(),
+    }
+}
+
 /// Short single-line preview of a fact's claim for receipts and logs.
 fn fact_preview(text: &str) -> String {
     let one_line = text.replace('\n', " ");
@@ -4469,7 +4491,7 @@ async fn judge_completion_case(
                 "{}. {} · {} · {}",
                 i + 1,
                 c.fact_id.as_str(),
-                c.created_at,
+                fact_began(c),
                 fact_preview(&c.text)
             )
         })
@@ -4481,7 +4503,7 @@ async fn judge_completion_case(
         BUNDLED_REM_COMPLETION_MD,
         &[
             ("evidence_text", case.evidence.text.as_str()),
-            ("evidence_date", case.evidence.created_at.as_str()),
+            ("evidence_date", fact_began(case.evidence)),
             ("candidates", candidates_text.as_str()),
             (
                 "subject_note",
@@ -4543,6 +4565,7 @@ async fn judge_completion_case(
         None,
     )
     .await?;
+    let evidence_began = fact_began(case.evidence);
     let mut applied: Vec<promote::AppliedClosure> = Vec::new();
     for item in &decision.completions {
         // Anti-hallucination: only ids from the candidate list close.
@@ -4560,15 +4583,17 @@ async fn judge_completion_case(
         if applied.iter().any(|a| a.fact_id == target.fact_id) {
             continue;
         }
-        // The closing instant: the confirmer's resolved date, else the
-        // evidence's own capture instant — when we learned it happened, or
-        // that it no longer would.
+        // The closing instant: the confirmer's resolved date, else the instant
+        // the evidence itself began. The evidence IS what closed the item, so
+        // the item ends where its replacement starts; dating it by when the
+        // sweep read the evidence puts the closure in the reader's present
+        // instead of the fact's.
         let valid_to = item
             .valid_to
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map_or_else(|| case.evidence.created_at.clone(), str::to_owned);
+            .map_or_else(|| evidence_began.to_owned(), str::to_owned);
         // The evidence fact IS the successor: it states the outcome the
         // closed fact was waiting for, so the page can point at its home.
         let reason = item.decay_reason();
@@ -5497,7 +5522,7 @@ async fn judge_contradiction_case(
                 "{}. {} · {} · {}",
                 i + 1,
                 c.fact_id.as_str(),
-                c.created_at,
+                fact_began(c),
                 fact_preview(&c.text)
             )
         })
@@ -5566,25 +5591,28 @@ async fn judge_contradiction_case(
         None,
     )
     .await?;
-    // The invalidation instant: when the seed was CONTRADICTED — not when it
-    // was once due to end.
+    // The invalidation instant: when the seed STOPPED BEING TRUE — not when it
+    // was once due to end, and not when the engine noticed.
     //
-    // `fact_index::mark_superseded` writes `valid_to = COALESCE(valid_to, ?)`,
-    // so a seed that already carried its own future expiry KEEPS it. Anchoring
-    // a satellite to that horizon stamps the satellite with a future
-    // `valid_to`, and `find_due_between` matches on exactly that — which would
-    // push the just-cancelled satellite INTO the due-soon slot the closure
-    // exists to get it out of. `superseded_at` is the moment it fell; a
-    // horizon still ahead of us never is.
+    // A `valid_to` already BEHIND us is the answer:
+    // `fact_index::mark_superseded` closes it at the instant the replacement
+    // began, which is the instant the seed fell and therefore the instant its
+    // satellites fell with it. `superseded_at` dates the sweep that read it,
+    // which on a backlog replay is months away from anything that happened.
+    //
+    // A `valid_to` still AHEAD of us is a different thing and unusable here:
+    // `mark_superseded` writes `valid_to = COALESCE(valid_to, ?)`, so a seed
+    // that already carried its own future expiry KEEPS it. Anchoring a
+    // satellite to that horizon stamps the satellite with a future `valid_to`,
+    // and `find_due_between` matches on exactly that — which would push the
+    // just-cancelled satellite INTO the due-soon slot the closure exists to get
+    // it out of.
     let now = chrono::Utc::now();
     let seed_closed_at = seed
-        .superseded_at
+        .valid_to
         .clone()
-        .or_else(|| {
-            seed.valid_to.clone().filter(|t| {
-                chrono::DateTime::parse_from_rfc3339(t).is_ok_and(|ts| ts.to_utc() <= now)
-            })
-        })
+        .filter(|t| chrono::DateTime::parse_from_rfc3339(t).is_ok_and(|ts| ts.to_utc() <= now))
+        .or_else(|| seed.superseded_at.clone())
         .unwrap_or_else(|| now.to_rfc3339());
     let mut applied: Vec<promote::AppliedClosure> = Vec::new();
     for item in &decision.invalidated {
@@ -6506,13 +6534,10 @@ fn looks_deictic(text: &str) -> bool {
 /// handles new facts; this sub-job heals what slipped through and the
 /// pre-existing backlog: every active fact the deictic lexicon flags is
 /// sent — oldest first, capped — in ONE batched call to the revisor
-/// model (`llms.revisor`), which rewrites each relative phrase
-/// against **that fact's own capture instant**. The anchor fed to the model is `valid_from` (the
-/// stored projection of the turn's semantic clock — a replayed or
-/// backfilled fact carries the day it was *uttered* there) with
-/// `created_at` as the fallback for rows without a window; the row
-/// insertion instant alone would resolve a backfilled "oggi" against
-/// the wrong day. An applied rewrite re-embeds the text and updates
+/// model (`llms.revisor`), which rewrites each relative phrase against
+/// **the instant that fact's sentence existed** ([`fact_began`]) — a
+/// backfilled "oggi" belongs to the day it was uttered, not to the day its
+/// row was inserted. An applied rewrite re-embeds the text and updates
 /// the row in place (offsets kept); the render-content fingerprint then
 /// recompiles exactly the touched pages, so prose and `lista` records
 /// alike stop reading "oggi" days later.
@@ -6570,31 +6595,13 @@ async fn run_date_normalizer(
             .iter()
             .enumerate()
             .map(|(i, f)| {
-                // When "today" was said — the EARLIER of the two clocks the
-                // row carries, which is right in all four cases and neither
-                // one alone is.
-                //
-                // `created_at` is the row's write instant: correct live, and
-                // wrong on a replay, where it is the replay run's wall clock
-                // rather than the turn's. `valid_from` is the semantic clock
-                // ingest deduces against `occurred_at`: correct on a replay,
-                // and wrong when the classifier stamped a real FUTURE start
-                // («da luglio lavoro a Milano»), because the engine defines
-                // that field as the start of holding, not as the moment of
-                // speaking. Taking `valid_from` outright — which the code did
-                // while calling it "the capture instant" — resolved a
-                // future-dated fact's "today" against a day that had not
-                // happened yet. The earlier of the two is the moment the
-                // sentence existed in both worlds.
-                let anchor = match f.valid_from.as_deref() {
-                    Some(vf) if vf < f.created_at.as_str() => vf,
-                    _ => f.created_at.as_str(),
-                };
+                // When "today" was said, which is what a relative phrase
+                // resolves against.
                 format!(
                     "{}. {} · {} · {}",
                     i + 1,
                     f.fact_id.as_str(),
-                    anchor,
+                    fact_began(f),
                     f.text.replace('\n', " ")
                 )
             })
@@ -7319,6 +7326,41 @@ mod tests {
             dedup_threshold: Some(0.999),
             valid_from: None,
             valid_to: None,
+            style: None,
+            page_description: None,
+            salience: None,
+        };
+        capture::wiki_capture(tree, pool, fake_embedder(), req)
+            .await
+            .expect("plant")
+            .fact_id
+    }
+
+    /// [`plant_fact`] with the validity window spelled out — the closure
+    /// passes reason about WHEN a fact held, so their tests must set it.
+    async fn plant_fact_with_window(
+        tree: &WikiTree,
+        pool: &SqlitePool,
+        wiki: &str,
+        body: &str,
+        subject: &str,
+        valid_from: Option<String>,
+        valid_to: Option<String>,
+    ) -> FactId {
+        let req = CaptureRequest {
+            subject_external: None,
+            authored_refs: Vec::new(),
+            wiki_id: WikiId::parse(wiki).unwrap(),
+            page: Some(PathBuf::from("preferenze.md")),
+            body: body.to_owned(),
+            subject: Principal::User(subject.to_owned()),
+            allow: Vec::new(),
+            sender: None,
+            fact_type: None,
+            topics: Vec::new(),
+            dedup_threshold: Some(0.999),
+            valid_from,
+            valid_to,
             style: None,
             page_description: None,
             salience: None,
@@ -10576,6 +10618,65 @@ mod tests {
         drop(dir);
     }
 
+    /// The window closes at the instant the EVIDENCE began, not at the wall
+    /// clock of the cycle that read it.
+    ///
+    /// The evidence IS what closed the item, so the item ends where its
+    /// replacement starts. On a live turn the two instants are minutes apart
+    /// and the difference is invisible; on a backlog replay every fact is
+    /// captured tonight and none of them happened tonight, so `created_at`
+    /// dates a June errand to the August evening the engine caught up.
+    #[tokio::test]
+    async fn a_completion_closes_when_the_evidence_began_not_when_it_was_read() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let open_item = plant_fact(&tree, &pool, "alice", "Vuole vedere Jumanji", "alice").await;
+        let began = (Utc::now() - chrono::Duration::days(60)).to_rfc3339();
+        let evidence = plant_fact_with_window(
+            &tree,
+            &pool,
+            "alice",
+            "Hanno visto Jumanji ieri sera",
+            "alice",
+            Some(began.clone()),
+            None,
+        )
+        .await;
+        assert_ne!(open_item, evidence);
+
+        // `valid_to: null` — the confirmer resolved no date of its own, which
+        // is the arm where the engine supplies one.
+        let resp = format!(
+            "{{\"completions\":[{{\"target\":\"{}\",\"valid_to\":null}}]}}",
+            open_item.as_str()
+        );
+        let llm = FakeLlmBackend::new("confirmer", &resp);
+        let index = load_smart_wiki_index(&tree).expect("index");
+        let report = run_completion_sweep(
+            &pool,
+            &tree,
+            &llm,
+            "cycle-test",
+            Utc::now(),
+            &RemPolicy::default(),
+            &index,
+        )
+        .await
+        .expect("sweep");
+
+        assert_eq!(report.closed, vec![open_item.as_str().to_owned()]);
+        let row = fact_index::find_by_id(&pool, &open_item)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(
+            row.valid_to.as_deref(),
+            Some(began.as_str()),
+            "the item ends where the evidence that closed it began"
+        );
+        drop(dir);
+    }
+
     #[tokio::test]
     async fn completion_sweep_never_touches_rules_page_facts() {
         let (dir, tree, pool) = setup_workdir().await;
@@ -11572,48 +11673,26 @@ mod tests {
     /// things make this reachable: the candidate pool does not require an open
     /// horizon (requiring `valid_to IS NULL` would make it disjoint from the
     /// due-soon slot's `valid_to IS NOT NULL`, so the sweep would never see the
-    /// facts that keep firing), and the closure anchors on
-    /// the seed's `superseded_at` rather than its surviving future horizon
-    /// (`mark_superseded` COALESCEs, so a dated seed keeps its own date, and
-    /// stamping the satellite with it would file the satellite straight back
-    /// into the due-soon window).
+    /// facts that keep firing), and the closure refuses a horizon still ahead
+    /// of it (`mark_superseded` COALESCEs, so a dated seed keeps its own date,
+    /// and stamping the satellite with it would file the satellite straight
+    /// back into the due-soon window).
     #[tokio::test]
     async fn contradiction_sweep_closes_a_dated_satellite_before_its_own_date() {
         let (dir, tree, pool) = setup_workdir().await;
         write_wiki(&tree, "alice", "Alice", "wiki-user");
         let future = (Utc::now() + chrono::Duration::days(30)).to_rfc3339();
-        let dated = |body: &'static str| {
-            let tree = &tree;
-            let pool = &pool;
-            let future = future.clone();
-            async move {
-                capture::wiki_capture(
-                    tree,
-                    pool,
-                    fake_embedder(),
-                    CaptureRequest {
-                        subject_external: None,
-                        authored_refs: Vec::new(),
-                        wiki_id: WikiId::parse("alice").unwrap(),
-                        page: Some(PathBuf::from("preferenze.md")),
-                        body: body.to_owned(),
-                        subject: Principal::User("alice".to_owned()),
-                        allow: Vec::new(),
-                        sender: None,
-                        fact_type: None,
-                        topics: Vec::new(),
-                        dedup_threshold: Some(0.999),
-                        valid_from: None,
-                        valid_to: Some(future),
-                        style: None,
-                        page_description: None,
-                        salience: None,
-                    },
-                )
-                .await
-                .expect("plant")
-                .fact_id
-            }
+        let dated = async |body: &str| {
+            plant_fact_with_window(
+                &tree,
+                &pool,
+                "alice",
+                body,
+                "alice",
+                None,
+                Some(future.clone()),
+            )
+            .await
         };
         let departure = dated("Partenza per Parigi il 15 giugno").await;
         let satellite = dated("Itinerario giorno 1: Louvre").await;
@@ -11678,6 +11757,95 @@ mod tests {
                 .to_utc()
                 <= Utc::now(),
             "it fell when the trip was cancelled, which is in the past"
+        );
+        drop(dir);
+    }
+
+    /// A satellite falls when the SEED fell — the instant the seed's own
+    /// `valid_to` already carries — not when the sweep noticed it had.
+    ///
+    /// `superseded_at` dates the cycle that read the contradiction. It is the
+    /// same instant on a live turn and two months later on a backlog replay,
+    /// where it stamps a satellite with tonight's date and files a June
+    /// cancellation under August.
+    #[tokio::test]
+    async fn a_satellite_falls_when_the_seed_fell_not_when_the_sweep_noticed() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let fell = (Utc::now() - chrono::Duration::days(60)).to_rfc3339();
+        let departure = plant_fact_with_window(
+            &tree,
+            &pool,
+            "alice",
+            "Partenza per Parigi il 15 giugno",
+            "alice",
+            None,
+            Some(fell.clone()),
+        )
+        .await;
+        let satellite = plant_fact(
+            &tree,
+            &pool,
+            "alice",
+            "Itinerario giorno 1: Louvre",
+            "alice",
+        )
+        .await;
+        let cancellation = plant_fact(
+            &tree,
+            &pool,
+            "alice",
+            "Il viaggio a Parigi è annullato",
+            "alice",
+        )
+        .await;
+        fact_index::mark_superseded(&pool, &departure, &cancellation)
+            .await
+            .expect("supersede");
+        let seed = fact_index::find_by_id(&pool, &departure)
+            .await
+            .unwrap()
+            .expect("seed");
+        assert_eq!(
+            seed.valid_to.as_deref(),
+            Some(fell.as_str()),
+            "COALESCE, not overwrite: the seed keeps the instant it stopped \
+             being true"
+        );
+        assert_ne!(
+            seed.superseded_at.as_deref(),
+            Some(fell.as_str()),
+            "and the sweep read it two months later — the two clocks are \
+             visibly apart, which is what makes this test able to fail"
+        );
+
+        let resp = format!(
+            "{{\"invalidated\":[{{\"target\":\"{}\",\"valid_to\":null}}]}}",
+            satellite.as_str()
+        );
+        let llm = FakeLlmBackend::new("confirmer", &resp);
+        let index = load_smart_wiki_index(&tree).expect("index");
+        let report = run_contradiction_sweep(
+            &pool,
+            &tree,
+            &llm,
+            "cycle-test",
+            Utc::now(),
+            &RemPolicy::default(),
+            &index,
+        )
+        .await
+        .expect("sweep");
+
+        assert_eq!(report.closed, vec![satellite.as_str().to_owned()]);
+        let row = fact_index::find_by_id(&pool, &satellite)
+            .await
+            .unwrap()
+            .expect("row");
+        assert_eq!(
+            row.valid_to.as_deref(),
+            Some(fell.as_str()),
+            "the satellite fell with the seed, at the seed's own instant"
         );
         drop(dir);
     }
@@ -12222,11 +12390,9 @@ mod tests {
         drop(dir);
     }
 
-    /// The anchor shown to the model is the SEMANTIC capture instant:
-    /// `valid_from` (the stored projection of the turn's `occurred_at`
-    /// clock) when present, `created_at` only as fallback. A replayed or
-    /// backfilled fact must resolve "oggi" against the day it was
-    /// uttered, not the wall-clock day its row was inserted.
+    /// A BACKFILLED fact resolves "oggi" against the day it was uttered —
+    /// `valid_from`, the stored projection of the turn's `occurred_at` clock —
+    /// and not against the wall-clock day its row was inserted.
     #[tokio::test]
     async fn date_normalizer_anchors_on_valid_from_not_created_at() {
         let (dir, tree, pool) = setup_workdir().await;
@@ -12266,6 +12432,58 @@ mod tests {
         assert!(
             !prompt.contains(&row.created_at),
             "the wall-clock insertion instant is not the anchor: {prompt}"
+        );
+        drop(dir);
+    }
+
+    /// The other side of [`fact_began`], and the one the code got wrong: a
+    /// fact whose `valid_from` is a real FUTURE start («da luglio lavoro a
+    /// Milano», said in April) anchors on `created_at`.
+    ///
+    /// `valid_from` is the start of HOLDING, not the moment of speaking.
+    /// Reading it as the anchor resolves the sentence's "oggi" against a day
+    /// that has not happened yet — so the earlier of the two clocks wins, and
+    /// every pass that dates a fact is protected by this, not only the
+    /// normalizer.
+    #[tokio::test]
+    async fn date_normalizer_refuses_an_anchor_that_has_not_happened_yet() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let dated = plant_fact(&tree, &pool, "alice", "Oggi ha giocato 31 minuti", "alice").await;
+        let future = (Utc::now() + chrono::Duration::days(90)).to_rfc3339();
+        sqlx::query("UPDATE fact_index SET valid_from = ? WHERE fact_id = ?")
+            .bind(&future)
+            .bind(dated.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let llm = FakeLlmBackend::new("normalizer", "{\"rewrites\":[]}");
+        let index = load_smart_wiki_index(&tree).expect("index");
+        run_date_normalizer(
+            &pool,
+            &tree,
+            &llm,
+            &fake_embedder(),
+            "cycle-test",
+            &RemPolicy::default(),
+            &index,
+        )
+        .await
+        .expect("normalize");
+
+        let prompt = llm.last_prompt().expect("one batched call");
+        assert!(
+            !prompt.contains(future.as_str()),
+            "a day that has not happened cannot be what «oggi» meant: {prompt}"
+        );
+        let row = fact_index::find_by_id(&pool, &dated)
+            .await
+            .unwrap()
+            .expect("row");
+        assert!(
+            prompt.contains(row.created_at.as_str()),
+            "the write instant is the earlier of the two, so it is the anchor: {prompt}"
         );
         drop(dir);
     }
