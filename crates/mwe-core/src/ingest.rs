@@ -3808,10 +3808,23 @@ fn build_prompt(
     known_entities: &[fact_index::KnownEntity],
     sender_rules: Option<&str>,
     sender_timezone: Option<&str>,
+    language_directive: &str,
     now: chrono::DateTime<chrono::Utc>,
     policy: &IngestPolicy,
 ) -> String {
     let mut out = String::with_capacity(2_048);
+    // The language the fact bodies are written in, at the TOP of the turn.
+    //
+    // It is also the last line of the system prompt, where the prompt document
+    // declares it — but that document is ~110 000 characters and this slot is
+    // the small one, and a directive that far from the work is not acted on.
+    // Measured on one Italian turn repeated from a clean memory: written only
+    // in the system prompt, 0 of 4 facts came back in Italian; repeated at the
+    // top of the system prompt, 1 of 4; carried on the turn, 4 of 4. The rule
+    // is stated once and obeyed here (founder's call, 2026-08-25: put it where
+    // the person's own words are).
+    out.push_str(language_directive);
+    out.push_str("\n\n");
     out.push_str("sender_id: ");
     out.push_str(&request.sender_id);
     out.push_str("\ncontext_hint: ");
@@ -6462,6 +6475,7 @@ pub async fn wiki_ingest_message(
         &known_entities,
         sender_policy.as_deref(),
         sender_timezone.as_deref(),
+        &language_directive,
         turn_now,
         policy,
     );
@@ -9408,6 +9422,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now,
             &policy,
         );
@@ -9434,6 +9449,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -9458,6 +9474,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -9490,6 +9507,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -9530,6 +9548,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -9569,6 +9588,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -9605,6 +9625,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -9621,6 +9642,7 @@ mod tests {
             &[],
             Some(rules),
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -9646,6 +9668,7 @@ mod tests {
             &[],
             Some(&long),
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -9683,6 +9706,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -9723,6 +9747,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -9754,6 +9779,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -9776,6 +9802,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -9810,6 +9837,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &IngestPolicy::default(),
         );
@@ -9920,6 +9948,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -9957,6 +9986,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -9981,6 +10011,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -10008,6 +10039,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -10042,6 +10074,7 @@ mod tests {
             &[],
             None,
             Some("Australia/Sydney"),
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -10074,6 +10107,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -10104,6 +10138,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -15026,6 +15061,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
@@ -15047,6 +15083,7 @@ mod tests {
             &[],
             None,
             None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
             now_fixture(),
             &policy,
         );
