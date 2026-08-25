@@ -11616,7 +11616,7 @@ mod tests {
             "alice",
         )
         .await;
-        fact_index::mark_superseded(&pool, &departure, &cancellation)
+        fact_index::mark_superseded(&pool, &departure, &cancellation, chrono::Utc::now())
             .await
             .expect("supersede");
 
@@ -11702,7 +11702,7 @@ mod tests {
             "alice",
         )
         .await;
-        fact_index::mark_superseded(&pool, &departure, &cancellation)
+        fact_index::mark_superseded(&pool, &departure, &cancellation, chrono::Utc::now())
             .await
             .expect("supersede");
         // The seed kept its own future horizon — COALESCE, not overwrite.
@@ -11797,7 +11797,7 @@ mod tests {
             "alice",
         )
         .await;
-        fact_index::mark_superseded(&pool, &departure, &cancellation)
+        fact_index::mark_superseded(&pool, &departure, &cancellation, chrono::Utc::now())
             .await
             .expect("supersede");
         let seed = fact_index::find_by_id(&pool, &departure)
@@ -11901,7 +11901,7 @@ mod tests {
         .await
         .expect("plant rule")
         .fact_id;
-        fact_index::mark_superseded(&pool, &departure, &cancellation)
+        fact_index::mark_superseded(&pool, &departure, &cancellation, chrono::Utc::now())
             .await
             .expect("supersede");
 
@@ -11970,7 +11970,7 @@ mod tests {
             .execute(&pool)
             .await
             .expect("mark identity core");
-        fact_index::mark_superseded(&pool, &departure, &cancellation)
+        fact_index::mark_superseded(&pool, &departure, &cancellation, chrono::Utc::now())
             .await
             .expect("supersede");
 
@@ -12016,10 +12016,10 @@ mod tests {
         let v2 = plant_fact(&tree, &pool, "alice", "Parto per Parigi il 16", "alice").await;
         let v3 = plant_fact(&tree, &pool, "alice", "Parto per Parigi il 17", "alice").await;
         // v1 → v2 → v3: two in-place revisions; v3 is the live head.
-        fact_index::mark_superseded(&pool, &v1, &v2)
+        fact_index::mark_superseded(&pool, &v1, &v2, chrono::Utc::now())
             .await
             .expect("supersede v1");
-        fact_index::mark_superseded(&pool, &v2, &v3)
+        fact_index::mark_superseded(&pool, &v2, &v3, chrono::Utc::now())
             .await
             .expect("supersede v2");
 
@@ -12077,7 +12077,7 @@ mod tests {
             "alice",
         )
         .await;
-        fact_index::mark_superseded(&pool, &departure, &cancellation)
+        fact_index::mark_superseded(&pool, &departure, &cancellation, chrono::Utc::now())
             .await
             .expect("supersede");
 
@@ -13267,7 +13267,7 @@ mod tests {
     /// Supersede `fact_id`, so its region is a marker rather than content.
     async fn supersede(pool: &SqlitePool, fact_id: &FactId) {
         let succ = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5dff").unwrap();
-        fact_index::mark_superseded(pool, fact_id, &succ)
+        fact_index::mark_superseded(pool, fact_id, &succ, chrono::Utc::now())
             .await
             .expect("supersede");
     }
@@ -13360,7 +13360,7 @@ mod tests {
         let fresh =
             plant_fact_on_page(&tree, &pool, "alice", "fresca.md", "appena caduto", "alice").await;
         let succ = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5dfe").unwrap();
-        fact_index::mark_superseded(&pool, &fresh, &succ)
+        fact_index::mark_superseded(&pool, &fresh, &succ, chrono::Utc::now())
             .await
             .expect("supersede");
         // Plan-member page with no rows → never a candidate.

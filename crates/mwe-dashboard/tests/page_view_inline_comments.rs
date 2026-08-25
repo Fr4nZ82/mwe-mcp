@@ -1319,7 +1319,7 @@ async fn page_view_redacts_a_retired_region_but_reveal_still_shows_it() {
     .await
     .expect("seed fact");
     let successor = FactId::parse("018f1234-5678-7abc-9def-000000000043").unwrap();
-    fact_index::mark_superseded(&pool, &fact_id, &successor)
+    fact_index::mark_superseded(&pool, &fact_id, &successor, chrono::Utc::now())
         .await
         .expect("retire the fact");
 

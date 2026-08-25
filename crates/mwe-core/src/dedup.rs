@@ -142,7 +142,9 @@ pub(crate) async fn apply_dedup_merge(
         )));
     }
 
-    let touched = fact_index::mark_superseded(pool, &loser, &winner)
+    // A merge is the engine's own bookkeeping, not a claim that stopped being
+    // true at some moment in the world: the wall clock IS when it happened.
+    let touched = fact_index::mark_superseded(pool, &loser, &winner, chrono::Utc::now())
         .await
         .map_err(|e| ApplyError::HandlerIo(e.to_string()))?;
     if touched == 0 {
@@ -569,7 +571,7 @@ mod tests {
         let winner1 = capture_one(&tree, &pool, "Mid").await;
         let winner2 = capture_one(&tree, &pool, "New").await;
         // Pre-supersede loser by winner1.
-        fact_index::mark_superseded(&pool, &loser, &winner1)
+        fact_index::mark_superseded(&pool, &loser, &winner1, chrono::Utc::now())
             .await
             .unwrap();
         let ctx = json!({
@@ -594,7 +596,7 @@ mod tests {
         let winner = capture_one(&tree, &pool, "B").await;
         let _newer = capture_one(&tree, &pool, "C").await;
         // Mark winner as already superseded (so applying a merge into it is invalid).
-        fact_index::mark_superseded(&pool, &winner, &loser)
+        fact_index::mark_superseded(&pool, &winner, &loser, chrono::Utc::now())
             .await
             .unwrap();
         // Now flip the chain so the test request asks to merge into winner (which is superseded).

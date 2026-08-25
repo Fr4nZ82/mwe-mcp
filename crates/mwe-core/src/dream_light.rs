@@ -516,6 +516,14 @@ async fn screen_one(
 }
 
 /// Write one screened claim into `fact_index`, on the page the plan gave it.
+/// When the capture was filed — the turn's own instant, which is what a
+/// correction happened AT. The light dream runs later, sometimes much later on
+/// a backlog, and its clock is about the engine rather than the world.
+fn captured_instant(cap: &capture_buffer::BufferedCapture) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339(&cap.captured_at)
+        .map_or_else(|_| chrono::Utc::now(), |t| t.to_utc())
+}
+
 async fn write_placed(
     pool: &SqlitePool,
     tree: &WikiTree,
@@ -589,7 +597,9 @@ async fn write_placed(
         && let Some(row) = fact_index::find_by_id(pool, old).await?
         && row.superseded_at.is_none()
         && row.deleted_at.is_none()
-        && fact_index::mark_superseded(pool, old, &cap.capture_id).await? > 0
+        // The capture's own instant, not the dream's: the correction happened
+        // when it was said, and the light dream may be running hours later.
+        && fact_index::mark_superseded(pool, old, &cap.capture_id, captured_instant(cap)).await? > 0
     {
         report.superseded += 1;
         // Disk half of the supersede (same pattern as

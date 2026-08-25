@@ -2424,7 +2424,7 @@ mod tests {
         seed_fact(&pool, &b, "wikis/alice/p.md", "body b", Some(span(&open_b))).await;
 
         // Retire A first (real order), then strip its region from disk.
-        fact_index::mark_superseded(&pool, &a, &b)
+        fact_index::mark_superseded(&pool, &a, &b, chrono::Utc::now())
             .await
             .expect("supersede a");
         let stripped = strip_fact_region(&pool, &tree, embedder.clone(), &a)
@@ -2527,7 +2527,7 @@ mod tests {
         .await;
 
         let successor = FactId::parse("018f1234-5678-7abc-9def-00000000dddd").unwrap();
-        fact_index::mark_superseded(&pool, &a, &successor)
+        fact_index::mark_superseded(&pool, &a, &successor, chrono::Utc::now())
             .await
             .unwrap();
         fact_index::mark_forgotten(&pool, &b, "fact_forget_vote")

@@ -1527,6 +1527,8 @@ async fn dispatch_wiki_supersede(
         Arc::clone(&ctx.embedder),
         &old_fact_id,
         req,
+        // A human editing through the dashboard is correcting NOW.
+        chrono::Utc::now(),
     )
     .await
     .map_err(|e| AgenticToolError::InternalFailure {

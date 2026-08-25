@@ -909,7 +909,17 @@ async fn put(
     };
     if let Some(prev) = req.previous {
         let outcome =
-            capture::wiki_supersede(tree, pool, embedder, &prev.fact_id, capture_req).await?;
+            // A signpost is the engine's own pointer, maintained by the
+            // channel that owns it: the moment it is rewritten IS now.
+            capture::wiki_supersede(
+                tree,
+                pool,
+                embedder,
+                &prev.fact_id,
+                capture_req,
+                chrono::Utc::now(),
+            )
+            .await?;
         return Ok(SignpostOutcome::Updated(outcome.fact_id));
     }
     let outcome = capture::wiki_capture(tree, pool, embedder, capture_req).await?;

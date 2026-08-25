@@ -499,12 +499,22 @@ pub mod decay {
 ///
 /// The supersede is also the **contradiction closure** of the per-fact
 /// validity model: the same UPDATE closes the predecessor's window
-/// (`valid_to` = now, but only when still open — an earlier concrete end,
-/// e.g. a dated commitment, is never extended) and stamps
+/// closes the predecessor's window (only when still open — an earlier
+/// concrete end, e.g. a dated commitment, is never extended) and stamps
 /// `decay_reason` to [`decay::CONTRADICTED`] (only when no reason is
 /// already recorded). One chokepoint serves both the direct path
 /// (`wiki_supersede`) and the buffered path (the light dream applies the
 /// staged supersede hint through this same function).
+///
+/// **The window closes when the replacement began**, which is the successor's
+/// `valid_from`. `when_unstated` is for the successor that has none — and a
+/// great many have none, because a claim like a birth date has no instant it
+/// started being true. Then the honest answer is when the correction was MADE,
+/// which every caller knows and none of them is the wall clock: the ingest
+/// weld has the turn's own instant (a backlog replay re-lives it at utterance
+/// time), the light dream has the capture's. Passing it is not optional
+/// precisely because reaching for `now()` here is the mistake — it dates a
+/// June correction to the August evening the engine caught up.
 ///
 /// Returns the number of rows touched (0 when `old_fact_id` is unknown).
 ///
@@ -515,6 +525,7 @@ pub async fn mark_superseded(
     pool: &SqlitePool,
     old_fact_id: &FactId,
     new_fact_id: &FactId,
+    when_unstated: chrono::DateTime<chrono::Utc>,
 ) -> Result<u64> {
     // Two clocks, and they are not the same clock.
     //
@@ -537,7 +548,7 @@ pub async fn mark_superseded(
     let now = chrono::Utc::now().to_rfc3339();
     let closed_at = successor_valid_from(pool, new_fact_id)
         .await?
-        .unwrap_or_else(|| bound_from_instant(chrono::Utc::now()));
+        .unwrap_or_else(|| bound_from_instant(when_unstated));
     let res = sqlx::query(
         "UPDATE fact_index
             SET superseded_at = ?, superseded_by = ?, updated_at = ?,
@@ -3765,7 +3776,7 @@ mod tests {
         }
         let c_id = FactId::parse(SAMPLE_UUID_V7_3).unwrap();
         let replacement = FactId::parse(SAMPLE_UUID_V7_1).unwrap();
-        mark_superseded(&pool, &c_id, &replacement)
+        mark_superseded(&pool, &c_id, &replacement, chrono::Utc::now())
             .await
             .expect("supersede");
 
@@ -3946,7 +3957,7 @@ mod tests {
         // Superseding `b` bumps its own updated_at — exactly the value
         // that must NOT leak: the freshness pool is active facts only,
         // so the signal collapses to `a`'s timestamp.
-        mark_superseded(&pool, &b.fact_id, &a.fact_id)
+        mark_superseded(&pool, &b.fact_id, &a.fact_id, chrono::Utc::now())
             .await
             .expect("supersede");
         let after = latest_page_activity(&pool, "alice", "wikis/alice/intro.md")
@@ -3982,7 +3993,7 @@ mod tests {
         // Superseded rows stay in the map: whatever region text is still
         // on disk keeps its last-known gate instead of falling back to
         // the page default.
-        mark_superseded(&pool, &b.fact_id, &a.fact_id)
+        mark_superseded(&pool, &b.fact_id, &a.fact_id, chrono::Utc::now())
             .await
             .expect("supersede");
 
@@ -4022,7 +4033,7 @@ mod tests {
         insert(&pool, &a).await.expect("insert a");
         insert(&pool, &b).await.expect("insert b");
         insert(&pool, &c).await.expect("insert c");
-        mark_superseded(&pool, &b.fact_id, &a.fact_id)
+        mark_superseded(&pool, &b.fact_id, &a.fact_id, chrono::Utc::now())
             .await
             .expect("supersede b");
         mark_forgotten(&pool, &c.fact_id, "user_request")
@@ -4330,6 +4341,52 @@ mod tests {
         );
     }
 
+    /// A replacement that states no start of its own closes the predecessor at
+    /// the instant the CORRECTION was made, which the caller knows.
+    ///
+    /// Plenty of claims have no `valid_from` and should not: a birth date has
+    /// no moment it started being true. Reaching for the wall clock there
+    /// looks harmless on a live turn, where it is seconds from the truth, and
+    /// dates a June correction to whatever evening a backlog replay reaches
+    /// it — which is why the instant is a parameter and not a default.
+    #[tokio::test]
+    async fn a_supersede_with_no_stated_start_closes_when_the_correction_was_made() {
+        let pool = make_pool().await;
+        let old = sample_new_fact(SAMPLE_UUID_V7_1, "alice", "user:alice", "is about 75");
+        let new = sample_new_fact(SAMPLE_UUID_V7_2, "alice", "user:alice", "was born in 1950");
+        insert(&pool, &old).await.expect("insert old");
+        insert(&pool, &new).await.expect("insert new");
+        assert!(
+            find_by_id(&pool, &new.fact_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .valid_from
+                .is_none(),
+            "a birth date states no start — this is the ordinary case"
+        );
+
+        let uttered = chrono::DateTime::parse_from_rfc3339("2026-06-27T19:43:04Z")
+            .unwrap()
+            .to_utc();
+        mark_superseded(&pool, &old.fact_id, &new.fact_id, uttered)
+            .await
+            .expect("supersede");
+
+        let back = find_by_id(&pool, &old.fact_id).await.unwrap().unwrap();
+        assert_eq!(
+            back.valid_to.as_deref(),
+            Some("2026-06-27T19:43:04Z"),
+            "the window closes when the correction was made, in the column's \
+             own spelling"
+        );
+        assert!(
+            back.superseded_at.is_some_and(|t| t.starts_with("202")),
+            "while superseded_at stays the wall clock: it dates the engine, \
+             not the world"
+        );
+    }
+
     #[tokio::test]
     async fn mark_superseded_closes_the_predecessors_window_as_contradicted() {
         // The supersede chokepoint is also the contradiction closure: the
@@ -4350,7 +4407,7 @@ mod tests {
         );
         insert(&pool, &old).await.expect("insert old");
         insert(&pool, &new).await.expect("insert new");
-        mark_superseded(&pool, &old.fact_id, &new.fact_id)
+        mark_superseded(&pool, &old.fact_id, &new.fact_id, chrono::Utc::now())
             .await
             .expect("supersede");
         let back = find_by_id(&pool, &old.fact_id).await.unwrap().unwrap();
@@ -4383,7 +4440,7 @@ mod tests {
         insert(&pool, &old).await.expect("insert old");
         insert(&pool, &new).await.expect("insert new");
 
-        mark_superseded(&pool, &old.fact_id, &new.fact_id)
+        mark_superseded(&pool, &old.fact_id, &new.fact_id, chrono::Utc::now())
             .await
             .expect("supersede");
 
@@ -4416,7 +4473,7 @@ mod tests {
         stamp_decay_reason(&pool, &old.fact_id, decay::COMPLETED)
             .await
             .expect("stamp");
-        mark_superseded(&pool, &old.fact_id, &new.fact_id)
+        mark_superseded(&pool, &old.fact_id, &new.fact_id, chrono::Utc::now())
             .await
             .expect("supersede");
         let back = find_by_id(&pool, &old.fact_id).await.unwrap().unwrap();
@@ -4524,7 +4581,7 @@ mod tests {
         let new = sample_new_fact(SAMPLE_UUID_V7_2, "alice", "user:alice", "new text");
         insert(&pool, &old).await.unwrap();
         insert(&pool, &new).await.unwrap();
-        let touched = mark_superseded(&pool, &old.fact_id, &new.fact_id)
+        let touched = mark_superseded(&pool, &old.fact_id, &new.fact_id, chrono::Utc::now())
             .await
             .expect("supersede");
         assert_eq!(touched, 1);
@@ -4546,10 +4603,10 @@ mod tests {
         let new = sample_new_fact(SAMPLE_UUID_V7_2, "alice", "user:alice", "new");
         insert(&pool, &old).await.unwrap();
         insert(&pool, &new).await.unwrap();
-        mark_superseded(&pool, &old.fact_id, &new.fact_id)
+        mark_superseded(&pool, &old.fact_id, &new.fact_id, chrono::Utc::now())
             .await
             .unwrap();
-        let again = mark_superseded(&pool, &old.fact_id, &new.fact_id)
+        let again = mark_superseded(&pool, &old.fact_id, &new.fact_id, chrono::Utc::now())
             .await
             .expect("supersede twice");
         assert_eq!(again, 0, "second call must be a no-op");
@@ -4759,7 +4816,7 @@ mod tests {
         let f2 = sample_new_fact(SAMPLE_UUID_V7_2, "alice", "user:alice", "new");
         insert(&pool, &f1).await.unwrap();
         insert(&pool, &f2).await.unwrap();
-        mark_superseded(&pool, &f1.fact_id, &f2.fact_id)
+        mark_superseded(&pool, &f1.fact_id, &f2.fact_id, chrono::Utc::now())
             .await
             .unwrap();
         let touched = move_region(
@@ -4781,7 +4838,7 @@ mod tests {
         let f2 = sample_new_fact(SAMPLE_UUID_V7_2, "alice", "user:alice", "new");
         insert(&pool, &f1).await.unwrap();
         insert(&pool, &f2).await.unwrap();
-        mark_superseded(&pool, &f1.fact_id, &f2.fact_id)
+        mark_superseded(&pool, &f1.fact_id, &f2.fact_id, chrono::Utc::now())
             .await
             .unwrap();
 
@@ -4807,7 +4864,7 @@ mod tests {
         insert(&pool, &f3).await.unwrap();
         // f1 → f2 first; then we manually re-activate f1 and re-supersede
         // it by f3 to simulate "chain has moved on past our pair".
-        mark_superseded(&pool, &f1.fact_id, &f2.fact_id)
+        mark_superseded(&pool, &f1.fact_id, &f2.fact_id, chrono::Utc::now())
             .await
             .unwrap();
         sqlx::query(
@@ -4817,7 +4874,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        mark_superseded(&pool, &f1.fact_id, &f3.fact_id)
+        mark_superseded(&pool, &f1.fact_id, &f3.fact_id, chrono::Utc::now())
             .await
             .unwrap();
 
@@ -4878,7 +4935,7 @@ mod tests {
         let f2 = sample_new_fact(SAMPLE_UUID_V7_2, "alice", "user:alice", "new");
         insert(&pool, &f1).await.unwrap();
         insert(&pool, &f2).await.unwrap();
-        mark_superseded(&pool, &f1.fact_id, &f2.fact_id)
+        mark_superseded(&pool, &f1.fact_id, &f2.fact_id, chrono::Utc::now())
             .await
             .unwrap();
         mark_forgotten(&pool, &f1.fact_id, "user_request")

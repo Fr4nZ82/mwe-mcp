@@ -211,6 +211,23 @@ pub struct IngestRequest {
     pub attachments: Vec<IngestAttachment>,
 }
 
+impl IngestRequest {
+    /// The turn's SEMANTIC clock: one instant every time-anchored judgment of
+    /// this turn resolves against — the classifier's `current_time` anchor,
+    /// the validity windows, the due-soon horizon, and the instant a supersede
+    /// closes on when the replacement states no start of its own.
+    ///
+    /// `metadata.occurred_at` when the caller gave one, so a backlog replay
+    /// re-lives the turn at utterance time; the wall clock otherwise, which is
+    /// the same thing on a live turn. Operational timestamps
+    /// (`created_at`, `superseded_at`) are a different question and keep the
+    /// wall clock.
+    #[must_use]
+    pub fn turn_now(&self) -> chrono::DateTime<chrono::Utc> {
+        self.metadata.occurred_at.unwrap_or_else(chrono::Utc::now)
+    }
+}
+
 /// One media attachment riding an [`IngestRequest`].
 #[derive(Debug, Clone)]
 pub struct IngestAttachment {
@@ -2292,7 +2309,7 @@ async fn apply_reconciled_supersedes(
             );
             continue;
         }
-        if weld_supersede(pool, &target_id, &successor_id).await {
+        if weld_supersede(pool, &target_id, &successor_id, request.turn_now()).await {
             applied += 1;
             tracing::info!(
                 target = target_id.as_str(),
@@ -2330,8 +2347,13 @@ async fn apply_reconciled_supersedes(
 /// Returns whether a live row was actually retired. Soft on both stores, like
 /// [`inherit_audience`]: a failed write is logged and the supersede is skipped,
 /// never fatal to the turn.
-async fn weld_supersede(pool: &SqlitePool, target: &FactId, successor: &FactId) -> bool {
-    match fact_index::mark_superseded(pool, target, successor).await {
+async fn weld_supersede(
+    pool: &SqlitePool,
+    target: &FactId,
+    successor: &FactId,
+    turn_now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    match fact_index::mark_superseded(pool, target, successor, turn_now).await {
         Ok(n) if n > 0 => return true,
         Ok(_) => {},
         Err(err) => {
@@ -2345,7 +2367,7 @@ async fn weld_supersede(pool: &SqlitePool, target: &FactId, successor: &FactId) 
         .await
         .ok()
         .flatten()
-        .unwrap_or_else(|| fact_index::bound_from_instant(chrono::Utc::now()));
+        .unwrap_or_else(|| fact_index::bound_from_instant(turn_now));
     match capture_buffer::close_validity(pool, target, &closed_at, fact_index::decay::CONTRADICTED)
         .await
     {
@@ -4574,7 +4596,9 @@ async fn capture_behaviour_rule(
     // Supersede when the user revises a directive the classifier was shown;
     // else additive (deduped against this user's own rules by subject scope).
     let outcome = match supersede {
-        Some(old) => capture::wiki_supersede(tree, pool, embedder, old, cap_req).await?,
+        Some(old) => {
+            capture::wiki_supersede(tree, pool, embedder, old, cap_req, request.turn_now()).await?
+        },
         None => capture::wiki_capture(tree, pool, embedder, cap_req).await?,
     };
     Ok(Some(outcome.fact_id))
@@ -6082,10 +6106,7 @@ pub async fn wiki_ingest_message(
     // (the classifier's `current_time:` anchor, the due-soon window)
     // reads this single instant, so a backlog replay that sets
     // `metadata.occurred_at` re-lives the turn at utterance time.
-    let turn_now = request
-        .metadata
-        .occurred_at
-        .unwrap_or_else(chrono::Utc::now);
+    let turn_now = request.turn_now();
 
     // One scoped lookup feeds both the ACL `SenderContext` (bare ids)
     // and the prompt's `sender_groups` section (id + scope prose).
@@ -7134,6 +7155,7 @@ pub async fn wiki_ingest_message(
                                 Arc::clone(&embedder),
                                 old_fact_id,
                                 cap_req,
+                                turn_now,
                             )
                             .await
                             {
@@ -13589,7 +13611,7 @@ mod tests {
         let successor = FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d77").unwrap();
 
         assert!(
-            weld_supersede(&pool, &buffered, &successor).await,
+            weld_supersede(&pool, &buffered, &successor, chrono::Utc::now()).await,
             "the buffered target is retired, not reported as already closed"
         );
         let row = capture_buffer::find_all_buffered(&pool, 10)
@@ -13607,7 +13629,7 @@ mod tests {
             Some(fact_index::decay::CONTRADICTED)
         );
         assert!(
-            !weld_supersede(&pool, &successor, &successor).await,
+            !weld_supersede(&pool, &successor, &successor, chrono::Utc::now()).await,
             "and a target in neither store is honestly reported as nothing done"
         );
         drop(dir);

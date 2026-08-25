@@ -706,6 +706,7 @@ pub async fn wiki_supersede(
     embedder: Arc<dyn Embedder>,
     old_fact_id: &FactId,
     req: CaptureRequest,
+    when_unstated: chrono::DateTime<chrono::Utc>,
 ) -> Result<CaptureOutcome> {
     if fact_index::find_by_id(pool, old_fact_id).await?.is_none() {
         return Err(CaptureError::PreviousFactNotFound(old_fact_id.clone()));
@@ -722,7 +723,7 @@ pub async fn wiki_supersede(
             region_start,
             region_end,
         } => {
-            fact_index::mark_superseded(pool, old_fact_id, &outcome.fact_id).await?;
+            fact_index::mark_superseded(pool, old_fact_id, &outcome.fact_id, when_unstated).await?;
             // Disk half of the supersede: strip the old region from its page
             // so the raw text recall-by-navigation reads does not carry the
             // retired (and often contradictory) fact. Best-effort — the
@@ -1618,9 +1619,16 @@ mod tests {
             .await
             .unwrap();
         let new_req = sample_request("I weigh 70 kg");
-        let outcome = wiki_supersede(&tree, &pool, embedder(), &first.fact_id, new_req)
-            .await
-            .unwrap();
+        let outcome = wiki_supersede(
+            &tree,
+            &pool,
+            embedder(),
+            &first.fact_id,
+            new_req,
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
         match outcome.action {
             CaptureAction::Superseded {
                 previous_fact_id, ..
@@ -1649,9 +1657,16 @@ mod tests {
         seed_alice(&tree);
         let pool = make_pool().await;
         let phantom = FactId::parse("018f1234-5678-7abc-9def-0123456789ab").unwrap();
-        let err = wiki_supersede(&tree, &pool, embedder(), &phantom, sample_request("x"))
-            .await
-            .expect_err("must error");
+        let err = wiki_supersede(
+            &tree,
+            &pool,
+            embedder(),
+            &phantom,
+            sample_request("x"),
+            chrono::Utc::now(),
+        )
+        .await
+        .expect_err("must error");
         assert!(matches!(err, CaptureError::PreviousFactNotFound(_)));
     }
 
