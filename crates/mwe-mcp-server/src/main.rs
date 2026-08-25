@@ -762,6 +762,13 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
         report.cycle.archive_detector.proposals_emitted.len(),
     );
     println!(
+        "structure      : shown={} dropped={} named={} moved={}",
+        report.cycle.structure_review.pages_shown,
+        report.cycle.structure_review.pages_dropped,
+        report.cycle.structure_review.moves_named,
+        report.cycle.structure_review.applied.len(),
+    );
+    println!(
         "compile        : leaves={} lists={} unchanged={} errors={}",
         report.compile.leaves,
         report.compile.lists,
