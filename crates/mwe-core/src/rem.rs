@@ -894,7 +894,7 @@ pub type Result<T> = std::result::Result<T, RemError>;
 /// per-sub-job model handles ([`RemLlms`] names the slot each field is
 /// wired to).
 ///
-/// **The order of the sixteen sub-jobs is the order they are called in
+/// **The order of the seventeen sub-jobs is the order they are called in
 /// below, and that call sequence is the only authority on it.** It is
 /// load-bearing at two points: the auto-apply sweep settles overdue
 /// proposals before any write-job touches the same rows, and provenance
