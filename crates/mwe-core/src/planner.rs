@@ -843,6 +843,42 @@ pub fn build_compilation_plan(
                 );
                 continue;
             }
+            // A card says who somebody IS, permanently and now — their name,
+            // where they live, what they do, the state of their health. Two
+            // marks the classifier already puts on every claim decide that,
+            // and both are read here because the card is the one page served
+            // WHOLE on every single turn: what sits on it is the most
+            // expensive material in the memory.
+            //
+            //   - `salience: "high"` — the importance mark, reserved for the
+            //     always-on core.
+            //   - `fact_type` — the KIND. `bio` is stable biography, `state`
+            //     a current condition, `rule` a standing commitment: those
+            //     three are what "who somebody is" is made of. A `plan` is
+            //     something not done yet and an `episode` is, by the enum's
+            //     own words, "a discrete past event… a completed errand" —
+            //     neither is an identity, however important the day it
+            //     happened (founder, 2026-08-25).
+            //
+            // The deterministic fallback below already honoured the first;
+            // neither was enforced where the Cartografo names a page itself,
+            // so anything it addressed to `@profile.md` went on. Measured the
+            // same day: 14 of 31 card facts failed one mark or the other,
+            // among them a favour that was cancelled — and which the card
+            // then narrated in the past tense, as done.
+            //
+            // Refused, never re-homed, exactly like the rule above: the claim
+            // keeps waiting and the next pass is offered the whole forest.
+            if page.is_identity_card() && !fact_belongs_on_a_card(fact) {
+                tracing::debug!(
+                    fact_id = fact.fact_id.as_str(),
+                    slug = %slug,
+                    salience = fact.salience.as_deref().unwrap_or("(none)"),
+                    fact_type = fact.fact_type.as_deref().unwrap_or("(none)"),
+                    "planner: identity card refused a claim that is not an identity"
+                );
+                continue;
+            }
             page.primary_facts.push((*fact).clone());
             assigned.insert(fact.fact_id.as_str().to_owned());
         }
@@ -850,11 +886,11 @@ pub fn build_compilation_plan(
 
     // 5. The identity fallback (deterministic), and it is the only one left.
     //
-    // A `salience: "high"` fact is always-on material the classifier
-    // *reserved* — identity, health/safety, a hard standing constraint — so it
-    // has a home whatever anybody decided: the subject's identity card. Unless
-    // it names what it is about (`subject_external`): a card carries one
-    // subject, so that fact is refused here too and waits like any other.
+    // A claim the classifier reserved for the card — `salience: "high"` and a
+    // kind a card holds, per `fact_belongs_on_a_card` — has a home whatever
+    // anybody decided: the subject's identity card. Unless it names what it is
+    // about (`subject_external`): a card carries one subject, so that fact is
+    // refused here too and waits like any other.
     //
     // **Everything else that reaches here is simply not placed**, and that is
     // a state, not a problem (founder, 2026-08-22): the claim waits in the
@@ -866,7 +902,7 @@ pub fn build_compilation_plan(
         if assigned.contains(f.fact_id.as_str()) {
             continue;
         }
-        if f.salience.as_deref() != Some("high") {
+        if !fact_belongs_on_a_card(f) {
             continue;
         }
         if let Some(slug) = identity_card_target(f, &pages)
@@ -1097,6 +1133,34 @@ fn resolve_page_wiki(slug: &str, slug_source_wiki: &BTreeMap<String, String>) ->
 /// This is the last deterministic placement left. Everything that is not
 /// always-on material has no fallback at all — there is no page that means
 /// "unsorted", so an unplaced claim simply waits.
+/// Whether a claim is the kind of thing an identity card holds.
+///
+/// Both marks come from the classifier, decided once when the claim was read:
+/// `salience: "high"` says it is always-on core, and `fact_type` says what
+/// KIND of thing it is. A card says who somebody IS — permanently, and now.
+///
+/// The kinds it cannot hold are named, rather than the kinds it can, and that
+/// is deliberate: not every writer sets a `fact_type` (a re-derived fact, an
+/// act-first move), and a claim the classifier RESERVED must not be stranded
+/// for want of a mark nobody put on it. So an absent kind passes, and only a
+/// kind that is positively not an identity is refused:
+///
+///   - `plan` — has not happened yet,
+///   - `episode` — already happened, and by the enum's own words is "a
+///     discrete past event… a completed errand" (founder, 2026-08-25: a past
+///     event does not belong on a card, which says permanent and current
+///     things),
+///   - `preference` — a taste, however strongly held,
+///   - `other` — the fallback for material that fits nothing, which is never
+///     what somebody IS.
+fn fact_belongs_on_a_card(f: &FactForPage) -> bool {
+    f.salience.as_deref() == Some("high")
+        && !matches!(
+            f.fact_type.as_deref(),
+            Some("plan" | "episode" | "preference" | "other")
+        )
+}
+
 fn identity_card_target(f: &FactForPage, pages: &BTreeMap<String, PagePlan>) -> Option<String> {
     // A fact that names what it is about is not about the card's person, so
     // the always-on route does not apply to it either — it waits like any
@@ -3954,6 +4018,101 @@ mod tests {
         assert_eq!(bp.assignments[0].page_slug, "spesa");
     }
 
+    /// The card takes what the classifier reserved for it, and nothing else.
+    ///
+    /// The card is served WHOLE on every turn, so what sits on it is the most
+    /// expensive material in the memory. `salience: "high"` is the mark that
+    /// says a claim belongs there, decided once when the claim was read. The
+    /// deterministic fallback honours it; the Cartografo's own assignment did
+    /// not, so anything it named `@profile.md` went on — measured on a replay,
+    /// 11 of 31 card facts were `normal` or `low`, among them a cancelled
+    /// favour rendered on the card as an accomplished one.
+    #[test]
+    fn an_identity_card_takes_only_what_the_classifier_reserved() {
+        let mut foundation = BTreeMap::new();
+        foundation.insert("franz".to_owned(), person("franz"));
+
+        let mut core = fact(1, "Franz was operated on his back.", "user:franz", "franz");
+        core.salience = Some("high".to_owned());
+        let mut errand = fact(
+            2,
+            "On 24 June he helps a friend move a washing machine.",
+            "user:franz",
+            "franz",
+        );
+        errand.salience = Some("normal".to_owned());
+
+        let blueprint = Blueprint {
+            assignments: vec![
+                Assignment {
+                    fact_id: core.fact_id.as_str().to_owned(),
+                    page_slug: "franz".to_owned(),
+                },
+                Assignment {
+                    fact_id: errand.fact_id.as_str().to_owned(),
+                    page_slug: "franz".to_owned(),
+                },
+            ],
+            ..Blueprint::default()
+        };
+        let (plan, _) = build_compilation_plan(
+            &[core.clone(), errand.clone()],
+            &foundation,
+            &blueprint,
+            &ConciliatorResult::default(),
+            &ConceptRegistry::empty("t"),
+            &BTreeMap::new(),
+            &[],
+            "t",
+        );
+        let on_card: Vec<&str> = plan.pages["franz"]
+            .primary_facts
+            .iter()
+            .map(|f| f.fact_id.as_str())
+            .collect();
+        assert!(
+            on_card.contains(&core.fact_id.as_str()),
+            "what the classifier reserved still lands: {on_card:?}"
+        );
+        assert!(
+            !on_card.contains(&errand.fact_id.as_str()),
+            "an errand the classifier marked `normal` is refused, however the Cartografo named it: {on_card:?}"
+        );
+
+        // And the other mark on its own: a past event is not an identity,
+        // however important the day it happened.
+        let mut vaccination = fact(
+            3,
+            "She had the pertussis jab on 24 June.",
+            "user:franz",
+            "franz",
+        );
+        vaccination.salience = Some("high".to_owned());
+        vaccination.fact_type = Some("episode".to_owned());
+        let blueprint = Blueprint {
+            assignments: vec![Assignment {
+                fact_id: vaccination.fact_id.as_str().to_owned(),
+                page_slug: "franz".to_owned(),
+            }],
+            ..Blueprint::default()
+        };
+        let (plan, _) = build_compilation_plan(
+            &[vaccination],
+            &foundation,
+            &blueprint,
+            &ConciliatorResult::default(),
+            &ConceptRegistry::empty("t"),
+            &BTreeMap::new(),
+            &[],
+            "t",
+        );
+        assert!(
+            plan.pages["franz"].primary_facts.is_empty(),
+            "a `high` past event is still a past event: {:?}",
+            plan.pages["franz"].primary_facts
+        );
+    }
+
     fn person(slug: &str) -> PagePlan {
         PagePlan {
             slug: slug.to_owned(),
@@ -4370,15 +4529,31 @@ mod tests {
     fn architetto_homes_assigned_and_orphan_facts() {
         let mut foundation = BTreeMap::new();
         foundation.insert("alice".to_owned(), person("alice"));
+        // An ordinary page, deliberately: what this test measures is
+        // assignment against orphan, and a card answers to its own rule
+        // (`fact_belongs_on_a_card`) which would confound the reading.
+        foundation.insert(
+            "cucina".to_owned(),
+            PagePlan {
+                slug: "cucina".to_owned(),
+                title: "Cucina".to_owned(),
+                description: "What alice cooks".to_owned(),
+                style: None,
+                primary_facts: Vec::new(),
+                outgoing_links: Vec::new(),
+                wiki_id: "alice".to_owned(),
+                page_path: "cucina.md".to_owned(),
+            },
+        );
         let facts = vec![
             fact(1, "Alice loves pasta", "user:alice", "alice"),
             fact(2, "Alice runs daily", "user:alice", "alice"),
         ];
-        // Cartografo assigned fact 1 to alice; fact 2 left orphan.
+        // Cartografo assigned fact 1 to the page; fact 2 left orphan.
         let blueprint = Blueprint {
             assignments: vec![Assignment {
                 fact_id: facts[0].fact_id.as_str().to_owned(),
-                page_slug: "alice".to_owned(),
+                page_slug: "cucina".to_owned(),
             }],
             new_pages: Vec::new(),
         };
@@ -4394,8 +4569,8 @@ mod tests {
         );
         // Only the ASSIGNED fact lands. The other reached the fallback and is
         // normal-salience, so it is placed nowhere and keeps waiting.
-        let alice = &plan.pages["alice"];
-        assert_eq!(alice.primary_facts.len(), 1);
+        assert_eq!(plan.pages["cucina"].primary_facts.len(), 1);
+        assert!(plan.pages["alice"].primary_facts.is_empty());
         // `fact_count` is what the plan was HANDED, not what it placed — both
         // facts are still the corpus's, one of them just has no page yet.
         assert_eq!(plan.fact_count, 2);
@@ -4746,7 +4921,10 @@ mod tests {
                 subject_id: "user:alice".parse::<Principal>().unwrap(),
                 allow_ids: Vec::new(),
                 sender_id: None,
-                fact_type: Some("preference".to_owned()),
+                // `high` + a kind a card holds: these plans route through the
+                // identity fallback, and `high` on a `preference` is a
+                // combination the classifier is told never to emit.
+                fact_type: Some("state".to_owned()),
                 topics: Vec::new(),
                 valid_from: None,
                 valid_to: None,
@@ -5165,7 +5343,7 @@ mod tests {
             source_ref: None,
         };
         // A normal content fact (must be homed) ...
-        let content = mk("01", "wikis/alice/appunti_vari.md", "preference");
+        let content = mk("01", "wikis/alice/appunti_vari.md", "state");
         let content_id = content.fact_id.clone();
         fact_index::insert(&pool, &content).await.unwrap();
         // ... and a behaviour-rule fact on the reserved `@rules.md` (must be spared).

@@ -14552,10 +14552,12 @@ mod tests {
         let json = "{\"intent\":\"capture\",\"extractions\":[{\
             \"target_wiki_id\":\"alice\",\"target_page\":\"preferenze.md\",\
             \"subject_id\":\"user:alice\",\"body\":\"Alice beve il caffè amaro.\",\
-            \"fact_type\":\"preference\",\"salience\":\"high\"}]}";
-        // `salience: high` is what makes the claim placeable without a
-        // Cartografo: the identity card is the only deterministic home since
-        // 2026-08-22, and this test is about the staged vector, not placement.
+            \"fact_type\":\"state\",\"salience\":\"high\"}]}";
+        // `salience: high` and a kind a card can hold are what make the claim
+        // placeable without a Cartografo: the identity card is the only
+        // deterministic home since 2026-08-22, and it takes what the
+        // classifier reserved (`planner::fact_belongs_on_a_card`). This test
+        // is about the staged vector, not placement.
         let llm = FakeLlmBackend::new("fake", json);
         let message = "il caffè lo bevo amaro";
         wiki_ingest_message(

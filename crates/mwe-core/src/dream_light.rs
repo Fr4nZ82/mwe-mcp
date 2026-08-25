@@ -724,7 +724,11 @@ mod tests {
             subject: "user:alice".parse::<Principal>().unwrap(),
             allow: Vec::new(),
             sender: None,
-            fact_type: Some("preference".to_owned()),
+            // `high` + a kind a card holds: these drains route through the
+            // identity fallback, which takes what the classifier reserved
+            // (`planner::fact_belongs_on_a_card`). `high` on a `preference`
+            // is a combination the classifier is told never to emit.
+            fact_type: Some("state".to_owned()),
             topics: vec!["food".to_owned()],
             dedup_threshold: None,
             valid_from: None,
