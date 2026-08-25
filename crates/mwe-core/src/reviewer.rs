@@ -84,6 +84,10 @@ pub struct IdentityContext {
     pub user_wikis: BTreeSet<String>,
     /// User id → the groups the user belongs to (enrollment membership).
     pub memberships: BTreeMap<String, BTreeSet<String>>,
+    /// User id → every name that user answers to: the id itself plus the
+    /// aliases the operator declared. Read by the card check to tell a fact
+    /// about the card's person from a fact about somebody else.
+    pub aliases: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl IdentityContext {
@@ -95,12 +99,19 @@ impl IdentityContext {
     /// Tree walk or enrollment lookup failures.
     pub async fn load(pool: &SqlitePool, tree: &WikiTree) -> Result<Self> {
         let mut ctx = Self::default();
+        let roster = enrollment::list_users(pool).await?;
         for d in tree.walk()? {
             if d.meta.wiki_type == IDENTITY_WIKI_TYPE {
                 let user = d.meta.wiki_id.as_str().to_owned();
                 let groups = enrollment::groups_for(pool, &user).await?;
                 ctx.memberships
                     .insert(user.clone(), groups.into_iter().collect());
+                let mut names: BTreeSet<String> = BTreeSet::new();
+                names.insert(user.to_lowercase());
+                if let Some(row) = roster.iter().find(|r| r.user_id == user) {
+                    names.extend(row.aliases.iter().map(|a| a.to_lowercase()));
+                }
+                ctx.aliases.insert(user.clone(), names);
                 ctx.user_wikis.insert(user);
             }
         }
@@ -136,9 +147,14 @@ pub struct ReviewReport {
     /// `(slug, fact_id)` owned facts with no matching non-public marker on the
     /// compiled page.
     pub missing_acl_markers: Vec<(String, String)>,
-    /// `(slug, fact_id, subject)` foreign-subject facts the plan places on an
-    /// identity card (a `wiki-user`'s `@profile.md`) — the identity-page
-    /// discipline violated. Observability only, never a gate.
+    /// `(slug, fact_id, about)` facts the plan places on an identity card (a
+    /// `wiki-user`'s `@profile.md`) that are not about the card's person —
+    /// the identity-page discipline violated. `about` is whoever they ARE
+    /// about: the foreign subject, or the person the sentence names.
+    ///
+    /// The bridge parks each one as a refile plus a placement re-open, so the
+    /// Cartografo judges the card again with its one criterion. Never a silent
+    /// drop: the cost of a wrong reading here is one re-judgment.
     pub cross_subject_bloat: Vec<(String, String, String)>,
     /// `(slug, facts)` — fact-bearing pages at/over
     /// [`OVERSIZED_PAGE_THRESHOLD`]; parked as a placement re-open so
@@ -165,6 +181,62 @@ impl ReviewReport {
     }
 }
 
+/// Every name this memory holds for somebody who is not a principal, taken
+/// from the plan itself: the `subject_external` any fact declares.
+///
+/// Read from the plan rather than the database because the plan is what is
+/// being judged and it already carries them — no query, no ACL question, and
+/// the set is exactly the people this compilation knows by name.
+fn named_non_principals(plan: &CompilationPlan) -> BTreeSet<String> {
+    plan.pages
+        .values()
+        .flat_map(|p| p.primary_facts.iter())
+        .filter_map(|f| f.subject_external.as_deref())
+        .map(str::trim)
+        .filter(|n| n.chars().count() >= 3)
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// `haystack` names `needle` as a word, not as a fragment of a longer one.
+fn names(haystack: &str, needle: &str) -> bool {
+    let edge = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+    let mut from = 0;
+    while let Some(hit) = haystack[from..].find(needle) {
+        let at = from + hit;
+        let before = haystack[..at].chars().next_back();
+        let after = haystack[at + needle.len()..].chars().next();
+        if edge(before) && edge(after) {
+            return true;
+        }
+        from = at + needle.len();
+    }
+    false
+}
+
+/// A card fact that is about SOMEBODY ELSE, said without the mark that says so.
+///
+/// `subject_external` is the mark, and the placement fence refuses any fact
+/// that carries it — but a fact filed without it reaches a card looking like
+/// an ordinary claim about the card's person, and once there nothing revisits
+/// it. So the sentence is read: it names a person the memory knows by name and
+/// does not name the person whose card this is.
+///
+/// Naming BOTH is the one crossing a card is for — «coordinates her father's
+/// care» is the user's own fact and belongs there, which is why the second
+/// half of the test is not optional.
+fn about_someone_else(
+    text: &str,
+    others: &BTreeSet<String>,
+    own: &BTreeSet<String>,
+) -> Option<String> {
+    let lower = text.to_lowercase();
+    if own.iter().any(|n| names(&lower, n)) {
+        return None;
+    }
+    others.iter().find(|n| names(&lower, n)).cloned()
+}
+
 /// Review a compiled plan.
 ///
 /// `tree` is used to read the compiled page bodies for the prose-duplication
@@ -183,6 +255,7 @@ pub fn review(
     identity: &IdentityContext,
 ) -> Result<ReviewReport> {
     let mut report = ReviewReport::default();
+    let named_non_principals_here = named_non_principals(plan);
 
     // --- plan-level checks ---
     let mut homes: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -198,13 +271,26 @@ pub fn review(
         // an empty guard looks exactly like a clean corpus.
         let is_identity_card = page.page_path == crate::wiki::PROFILE_FILENAME
             && identity.user_wikis.contains(&page.wiki_id);
+        let own_names = identity.aliases.get(&page.wiki_id);
         for f in &page.primary_facts {
-            if is_identity_card && identity.is_foreign(&page.wiki_id, &f.subject) {
-                report.cross_subject_bloat.push((
-                    slug.clone(),
-                    f.fact_id.as_str().to_owned(),
-                    f.subject.to_string(),
-                ));
+            if is_identity_card {
+                // Two ways a fact turns out not to be about the card's person,
+                // and the subject line only catches the first.
+                let foreign = identity
+                    .is_foreign(&page.wiki_id, &f.subject)
+                    .then(|| f.subject.to_string())
+                    .or_else(|| {
+                        own_names.and_then(|own| {
+                            about_someone_else(&f.text, &named_non_principals_here, own)
+                        })
+                    });
+                if let Some(about) = foreign {
+                    report.cross_subject_bloat.push((
+                        slug.clone(),
+                        f.fact_id.as_str().to_owned(),
+                        about,
+                    ));
+                }
             }
             homes
                 .entry(f.fact_id.as_str().to_owned())
@@ -568,6 +654,66 @@ mod tests {
         );
         assert_eq!(r.cross_subject_bloat[0].2, "user:bruno");
         assert_eq!(r.cross_subject_bloat[1].2, "group:condominio");
+    }
+
+    /// A fact whose SUBJECT says the card's person but whose SENTENCE is about
+    /// somebody else — the shape that reaches a card and stays there.
+    ///
+    /// `subject_external` is the mark for "this is about a person the system
+    /// has no principal for", and the placement fence refuses anything that
+    /// carries it. A fact filed WITHOUT it looks ordinary at every door: the
+    /// fence sees no mark, the subject line says the card's own user, and no
+    /// nightly pass re-opens a card that is not too long. So an uncle's
+    /// potassium sits on his nephew's always-on card, in every conversation.
+    ///
+    /// Naming BOTH people is the crossing a card is FOR — the user's own fact
+    /// about their tie to somebody — and stays clean.
+    #[test]
+    fn flags_a_card_fact_whose_sentence_is_about_somebody_else() {
+        let mut identity = IdentityContext::default();
+        identity.user_wikis.insert("frodo".to_owned());
+        identity.aliases.insert(
+            "frodo".to_owned(),
+            ["frodo", "frodo baggins"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        );
+
+        let mut uncle = ffp(1, "user:frodo");
+        uncle.text = "Bilbo Baggins has a critically high potassium level.".to_owned();
+        let mut tie = ffp(2, "user:frodo");
+        tie.text = "Frodo coordinates the care of his uncle Bilbo Baggins.".to_owned();
+        let mut own = ffp(3, "user:frodo");
+        own.text = "Back surgery: cannot lift weights.".to_owned();
+
+        // Somewhere in the same plan, a fact that DOES carry the mark: it is
+        // what tells the memory this name belongs to a person of its own.
+        let mut marked = ffp(4, "user:frodo");
+        marked.text = "Bilbo Baggins is in hospital.".to_owned();
+        marked.subject_external = Some("Bilbo Baggins".to_owned());
+        let elsewhere = leaf("frodo/bilbo_health", vec![marked]);
+
+        let mut card = leaf("frodo", vec![uncle, tie, own]);
+        card.wiki_id = "frodo".to_owned();
+        card.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
+        let plan = plan_with(vec![card, elsewhere], BTreeMap::new());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+
+        let r = review(&tree, &plan, &identity).unwrap();
+        let flagged: Vec<(String, String)> = r
+            .cross_subject_bloat
+            .iter()
+            .map(|(_, id, about)| (id.clone(), about.clone()))
+            .collect();
+        assert_eq!(
+            flagged,
+            vec![(fid(1).as_str().to_owned(), "bilbo baggins".to_owned())],
+            "the uncle's condition is about the uncle; the tie and the \
+             user's own limitation are about the user"
+        );
     }
 
     /// The same foreign-subject fact on a TOPIC page (a concept leaf) of the
