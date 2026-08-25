@@ -2109,7 +2109,7 @@ async fn process_job(
         // Read once for the whole document: every segment must answer the same
         // way about the same name, and a per-segment lookup would let the
         // roster shift under the extractor mid-file.
-        let known_entities = crate::fact_index::known_entities(
+        let mut known_entities = crate::fact_index::known_entities(
             pool,
             &crate::acl::reader_principals(
                 job.uploader(),
@@ -2164,6 +2164,16 @@ async fn process_job(
                             }
                         }
                     }
+                    // A person this document introduces joins the roster the
+                    // NEXT segment is shown. The roster read above holds only
+                    // what the memory already had, so on the file that first
+                    // names somebody every segment meets them as a stranger
+                    // and answers for itself: eleven segments produced three
+                    // spellings of one name and no agreement on who answers
+                    // for them. The roster is the mechanism for "every
+                    // segment answers the same way about the same name"; it
+                    // just could not see inside the document it was reading.
+                    carry_forward_entities(&mut known_entities, &facts);
                     let n = i64::try_from(facts.len()).unwrap_or(0);
                     let json = serde_json::to_string(&facts)
                         .map_err(|e| DocumentError::Invalid(format!("facts_json: {e}")))?;
@@ -2495,6 +2505,37 @@ async fn process_job(
         "document: job done"
     );
     Ok(())
+}
+
+/// Fold the people a segment just named into the roster the next one sees.
+///
+/// First spelling wins, and it carries the principal that segment answered
+/// for them: the roster's own contract is "copy this name character for
+/// character and use that same subject", so an entry that changed under the
+/// extractor mid-file would be no roster at all.
+fn carry_forward_entities(
+    roster: &mut Vec<crate::fact_index::KnownEntity>,
+    facts: &[CandidateFact],
+) {
+    for f in facts {
+        let Some(name) = f.subject_external.as_deref().map(str::trim) else {
+            continue;
+        };
+        // An entry needs both halves to be worth showing: the spelling AND
+        // the principal to reuse. A fact that named the person but not who
+        // answers for them settles nothing.
+        let Some(subject_id) = f.subject_id.clone() else {
+            continue;
+        };
+        if name.is_empty() || roster.iter().any(|e| e.name == name) {
+            continue;
+        }
+        roster.push(crate::fact_index::KnownEntity {
+            name: name.to_owned(),
+            subject_id,
+            facts: 1,
+        });
+    }
 }
 
 /// One worker tick: pick the oldest runnable job and drive it. Returns
@@ -2879,6 +2920,55 @@ mod tests {
             clusters,
             vec![vec![0], vec![1], vec![2]],
             "same content, three audiences, three facts"
+        );
+    }
+
+    /// A document's own people reach the segments that come after them.
+    ///
+    /// The roster is read once, before the first segment, and holds what the
+    /// memory ALREADY had. On the file that first names somebody it is empty
+    /// of them, so without this every segment meets that person as a stranger
+    /// and answers for itself — three spellings of one name inside one file,
+    /// and no agreement on who answers for them.
+    #[test]
+    fn a_document_carries_its_own_people_between_segments() {
+        let cand = |json: &str| serde_json::from_str::<CandidateFact>(json).expect("candidate");
+        let mut roster = vec![crate::fact_index::KnownEntity {
+            name: "Lady".to_owned(),
+            subject_id: "group:famiglia".to_owned(),
+            facts: 4,
+        }];
+
+        carry_forward_entities(
+            &mut roster,
+            &[
+                cand(
+                    r#"{"body":"a","subject_external":"Bilbo Baggins","subject_id":"group:famiglia"}"#,
+                ),
+                // Named, but nobody said who answers — nothing to reuse.
+                cand(r#"{"body":"b","subject_external":"Gollum"}"#),
+                // About the uploader: no name, no entry.
+                cand(r#"{"body":"c","subject_id":"user:frodo"}"#),
+            ],
+        );
+        assert_eq!(
+            roster.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            vec!["Lady", "Bilbo Baggins"]
+        );
+
+        // A later segment spelling the same person differently does not get a
+        // second entry — the roster's contract is one spelling per person, and
+        // an entry that moved under the extractor would settle nothing.
+        carry_forward_entities(
+            &mut roster,
+            &[cand(
+                r#"{"body":"d","subject_external":"Bilbo","subject_id":"user:frodo"}"#,
+            )],
+        );
+        assert_eq!(roster.len(), 3, "a different spelling IS a different name");
+        assert_eq!(
+            roster[1].subject_id, "group:famiglia",
+            "the first answer for a name is the one carried"
         );
     }
 

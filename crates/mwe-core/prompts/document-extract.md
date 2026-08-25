@@ -75,7 +75,7 @@ RULES:
 - An empty array is a valid answer.
 
 Reply with ONE JSON object only:
-{"facts": [{"body": "...", "target_wiki_id": "...", "target_page": "...", "subject_id": "user:<sender>", "subject_external": null, "allow_ids": [], "fact_type": "...", "topics": ["..."], "valid_from": null, "valid_to": null, "salience": "normal"}]}
+{"facts": [{"body": "...", "target_wiki_id": "...", "target_page": "...", "subject_id": "user:<id>" | "group:<id>" | "global", "subject_external": "<name>" | null, "allow_ids": ["group:<id>", ...], "fact_type": "...", "topics": ["..."], "valid_from": "<ISO-8601 Z>" | null, "valid_to": "<ISO-8601 Z>" | null, "salience": "high" | "normal" | "low"}]}
 
 LANGUAGE: {locale}
 ```
