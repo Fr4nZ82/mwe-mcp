@@ -1242,7 +1242,7 @@ pub struct RemPolicyConfig {
     /// `prosa` page.
     #[serde(default)]
     pub auto_promote_min_page_facts: Option<usize>,
-    /// Override `auto_promote_min_page_facts_technical` (default 16) — the
+    /// Override `auto_promote_min_page_facts_technical` (default 32) — the
     /// same floor for a `prosa-tecnica` page. A `lista` page has no floor at
     /// all and is never split by mass.
     #[serde(default)]

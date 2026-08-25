@@ -139,7 +139,9 @@ pub struct RemPolicy {
     /// brief descriptions, scanned by points rather than read as a thread.
     ///
     /// Scanning tolerates more mass than following a narrative, so the floor
-    /// is higher (founder, 2026-08-04). A **`lista`** page has no floor at
+    /// is four times the narrative one (founder, 2026-08-25: a technical page
+    /// is a reference, and a reference that keeps halving itself stops being
+    /// one). A **`lista`** page has no floor at
     /// all: it is *consulted*, not read, and its value is being complete in
     /// one place — splitting it by size breaks the only thing it is for, and
     /// leaves two halves, neither of which answers the question. See
@@ -315,7 +317,7 @@ impl Default for RemPolicy {
             revisor_examined_cap: 120,
             auto_promote_cap: 5,
             auto_promote_min_page_facts: 8,
-            auto_promote_min_page_facts_technical: 16,
+            auto_promote_min_page_facts_technical: 32,
             auto_promote_group_min_pages: 9,
             page_merge_cap: 3,
             structure_review_cap: 3,
@@ -767,6 +769,21 @@ pub struct AutoPromoteReport {
     /// `auto_promote_cap`). Each was announced with a `structure_applied`
     /// notice.
     pub applied: Vec<String>,
+    /// Plan slugs of the pages a per-page split coined **this cycle**.
+    ///
+    /// A split page is, by construction, the same subject as the page it came
+    /// out of — that is what splitting one means. The page-merge sub-job runs
+    /// straight after this one and nominates pairs on **page-name kinship**,
+    /// which the split target shares with its own source by design, so
+    /// without this set the confirmer is handed the pair, answers "same
+    /// concept" (it is), and puts back what was just taken apart. Measured
+    /// 2026-08-25: a 27-fact clinical page split at 08:12:24 and was merged
+    /// back at 08:12:26.
+    ///
+    /// The fence is **this cycle only**. A later night that finds the page
+    /// genuinely duplicative is making a real judgement on evidence that has
+    /// had time to accumulate, and it stays free to merge.
+    pub split_targets: std::collections::BTreeSet<String>,
     /// Reason the sub-job was a no-op for the whole cycle. `None`
     /// when the sub-job ran. `Some("no rem_promotions LLM wired")`
     /// when the operator disabled it by leaving the slot unconfigured.
@@ -969,6 +986,7 @@ pub async fn run_cycle(
         &day,
         policy,
         &smart_wiki_index,
+        &auto_promote.split_targets,
     )
     .await?;
     // The forest review runs AFTER the passes that reshape a wiki's own
@@ -2681,6 +2699,7 @@ async fn run_auto_promote(
                 Ok(receipt) => {
                     wal::complete_rem_op(pool, op_id).await?;
                     report.applied.push(receipt.proposal_id.clone());
+                    report.split_targets.insert(target_slug.clone());
                     // Plan-sync seam: re-home the moved facts in the persisted
                     // compilation plan so the next build's carry-over does not
                     // fight the move, and the target page gets woven by the
@@ -3538,6 +3557,7 @@ fn merge_candidates(
     duplicate_prose: &[(String, String, f32)],
     family: &BTreeMap<String, String>,
     day: &day::DayPerimeter,
+    split_targets: &std::collections::BTreeSet<String>,
 ) -> Vec<(String, String, String)> {
     fn eligible<'p>(plan: &'p CompilationPlan, slug: &str) -> Option<&'p PagePlan> {
         plan.pages
@@ -3552,6 +3572,12 @@ fn merge_candidates(
     let mut out: Vec<(String, String, String)> = Vec::new();
     let mut consider = |a: &str, b: &str, signal: String| {
         let (x, y) = if a <= b { (a, b) } else { (b, a) };
+        // A page this cycle's split just coined is the same subject as the
+        // page it came out of — the confirmer would be right to say so, and
+        // wrong to act on it. See `AutoPromoteReport::split_targets`.
+        if split_targets.contains(x) || split_targets.contains(y) {
+            return;
+        }
         let (Some(pa), Some(pb)) = (eligible(plan, x), eligible(plan, y)) else {
             return;
         };
@@ -4008,6 +4034,7 @@ async fn apply_structure_moves(
 /// is never re-judged.
 #[allow(
     clippy::too_many_lines,
+    clippy::too_many_arguments,
     reason = "linear per-pair pipeline (nominate → confirm → execute); splitting hides the order, as in run_auto_promote"
 )]
 async fn run_page_merge(
@@ -4018,6 +4045,7 @@ async fn run_page_merge(
     day: &day::DayPerimeter,
     policy: &RemPolicy,
     smart_wiki_index: &SmartWikiIndex,
+    split_targets: &std::collections::BTreeSet<String>,
 ) -> Result<PageMergeReport> {
     let mut report = PageMergeReport::default();
     if policy.page_merge_cap == 0 {
@@ -4058,7 +4086,9 @@ async fn run_page_merge(
     // night and every night after, with the report saying
     // `candidates_examined: 0` and raising no error.
     let mut budget = policy.page_merge_cap;
-    for (slug_a, slug_b, signal) in merge_candidates(&plan, &duplicate_prose, &family, day) {
+    for (slug_a, slug_b, signal) in
+        merge_candidates(&plan, &duplicate_prose, &family, day, split_targets)
+    {
         if budget == 0 {
             break;
         }
@@ -8015,6 +8045,7 @@ mod tests {
             &day::DayPerimeter::default(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("merge sub-job");
@@ -8105,6 +8136,7 @@ mod tests {
             &day::DayPerimeter::default(),
             &RemPolicy::default(),
             &index,
+            &BTreeSet::new(),
         )
         .await
         .expect("merge sub-job");
@@ -8151,6 +8183,58 @@ mod tests {
             wiki_id: wiki.to_owned(),
             page_path: format!("{slug}.md"),
         }
+    }
+
+    #[test]
+    fn a_page_this_cycle_split_off_is_not_a_merge_candidate() {
+        // The splitter takes a sub-topic out of a heavy page and names the new
+        // page after it, so the pair it leaves behind is kin by construction —
+        // the strongest signal the merger has. Left alone, the merger confirms
+        // "same concept" (it is) and puts back what was just taken apart, two
+        // seconds later. Worse, the split receipt survives, so once the facts
+        // are home the anti-double-promotion veto reads the page as already
+        // promoted and never offers it again.
+        let leaf = kin_leaf;
+        let mut pages = std::collections::BTreeMap::new();
+        pages.insert("dossier".to_owned(), leaf("dossier", "alice", 3));
+        pages.insert(
+            "dossier_esami".to_owned(),
+            leaf("dossier_esami", "alice", 2),
+        );
+        let plan = CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph: std::collections::BTreeMap::new(),
+            compilation_order: Vec::new(),
+            generated_at: "t".to_owned(),
+            fact_count: 0,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
+        };
+        let family: BTreeMap<String, String> = [("alice".to_owned(), "alice".to_owned())].into();
+        let day = day::DayPerimeter::default();
+
+        let open = merge_candidates(&plan, &[], &family, &day, &BTreeSet::new());
+        assert!(
+            open.iter()
+                .any(|(a, b, _)| a == "dossier" && b == "dossier_esami"),
+            "without the fence the kin pair nominates: {open:?}"
+        );
+
+        let fenced = merge_candidates(
+            &plan,
+            &[],
+            &family,
+            &day,
+            &BTreeSet::from(["dossier_esami".to_owned()]),
+        );
+        assert!(
+            fenced.is_empty(),
+            "a page this cycle split off is not offered back to the merger: {fenced:?}"
+        );
     }
 
     #[test]
@@ -8202,7 +8286,13 @@ mod tests {
         .into_iter()
         .map(|(a, b)| (a.to_owned(), b.to_owned()))
         .collect();
-        let got = merge_candidates(&plan, &[], &family, &day::DayPerimeter::default());
+        let got = merge_candidates(
+            &plan,
+            &[],
+            &family,
+            &day::DayPerimeter::default(),
+            &BTreeSet::new(),
+        );
         let pairs: Vec<(&str, &str)> = got
             .iter()
             .map(|(a, b, _)| (a.as_str(), b.as_str()))
@@ -8232,7 +8322,13 @@ mod tests {
         // budget on the pairs that reach a judgement, so a handful of
         // already-vetoed pairs cannot consume the night's spend without a
         // single call being made.
-        let all = merge_candidates(&plan, &[], &family, &day::DayPerimeter::default());
+        let all = merge_candidates(
+            &plan,
+            &[],
+            &family,
+            &day::DayPerimeter::default(),
+            &BTreeSet::new(),
+        );
         let mass = |slug: &str| plan.pages[slug].primary_facts.len();
         let heaviest_pair_mass = mass(&all[0].0) + mass(&all[0].1);
         assert!(
@@ -8275,7 +8371,13 @@ mod tests {
         let family: BTreeMap<String, String> =
             std::iter::once(("alice".to_owned(), "alice".to_owned())).collect();
 
-        let pairs = merge_candidates(&plan, &[], &family, &day::DayPerimeter::default());
+        let pairs = merge_candidates(
+            &plan,
+            &[],
+            &family,
+            &day::DayPerimeter::default(),
+            &BTreeSet::new(),
+        );
         assert!(
             pairs
                 .iter()
@@ -9061,7 +9163,13 @@ mod tests {
         let family: BTreeMap<String, String> =
             std::iter::once(("alice".to_owned(), "alice".to_owned())).collect();
 
-        let quiet = merge_candidates(&plan, &[], &family, &day::DayPerimeter::default());
+        let quiet = merge_candidates(
+            &plan,
+            &[],
+            &family,
+            &day::DayPerimeter::default(),
+            &BTreeSet::new(),
+        );
         assert_eq!(
             (quiet[0].0.as_str(), quiet[0].1.as_str()),
             ("viaggi", "viaggi_parigi"),
@@ -9073,7 +9181,7 @@ mod tests {
             pages_born: std::iter::once("nuoto_martedi".to_owned()).collect(),
             ..day::DayPerimeter::default()
         };
-        let today = merge_candidates(&plan, &[], &family, &day);
+        let today = merge_candidates(&plan, &[], &family, &day, &BTreeSet::new());
         assert_eq!(
             (today[0].0.as_str(), today[0].1.as_str()),
             ("nuoto", "nuoto_martedi"),
