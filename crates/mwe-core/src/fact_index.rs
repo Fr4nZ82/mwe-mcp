@@ -516,7 +516,28 @@ pub async fn mark_superseded(
     old_fact_id: &FactId,
     new_fact_id: &FactId,
 ) -> Result<u64> {
+    // Two clocks, and they are not the same clock.
+    //
+    // `superseded_at` and `updated_at` are OPERATIONAL — when the engine did
+    // this — so they read the wall clock and always will.
+    //
+    // `valid_to` is SEMANTIC: when the claim stopped being true. That is when
+    // its replacement started being true, which the successor already carries
+    // as `valid_from`, resolved against the turn's own instant (a backlog
+    // replay sets that with `metadata.occurred_at`). Reading the wall clock
+    // for it stamped every superseded fact with the moment the engine noticed
+    // — measured 2026-08-25 on a replay of a week in June, 39 facts closed
+    // "valid until today", and the pages then narrated a thing three days old
+    // as long over.
+    //
+    // The successor may still be buffered (the light dream applies a staged
+    // hint before promotion), so both stores are asked. No `valid_from`
+    // anywhere — an undated successor — leaves the wall clock, which is the
+    // best available answer and the live case.
     let now = chrono::Utc::now().to_rfc3339();
+    let closed_at = successor_valid_from(pool, new_fact_id)
+        .await?
+        .unwrap_or_else(|| now.clone());
     let res = sqlx::query(
         "UPDATE fact_index
             SET superseded_at = ?, superseded_by = ?, updated_at = ?,
@@ -527,12 +548,38 @@ pub async fn mark_superseded(
     .bind(&now)
     .bind(new_fact_id.as_str())
     .bind(&now)
-    .bind(&now)
+    .bind(&closed_at)
     .bind(decay::CONTRADICTED)
     .bind(old_fact_id.as_str())
     .execute(pool)
     .await?;
     Ok(res.rows_affected())
+}
+
+/// When the successor of a supersede started being true, from whichever store
+/// holds it: the fact index first, then the capture buffer for a successor the
+/// light dream has staged but not promoted yet.
+pub(crate) async fn successor_valid_from(
+    pool: &SqlitePool,
+    successor: &FactId,
+) -> Result<Option<String>> {
+    if let Some(v) = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT valid_from FROM fact_index WHERE fact_id = ?",
+    )
+    .bind(successor.as_str())
+    .fetch_optional(pool)
+    .await?
+    {
+        return Ok(v);
+    }
+    sqlx::query_scalar::<_, Option<String>>(
+        "SELECT valid_from FROM capture_buffer WHERE capture_id = ?",
+    )
+    .bind(successor.as_str())
+    .fetch_optional(pool)
+    .await
+    .map(Option::flatten)
+    .map_err(Into::into)
 }
 
 /// Snapshot of a fact's validity fields the moment a closure overwrote
@@ -4161,6 +4208,50 @@ mod tests {
         let back = find_by_id(&pool, &old.fact_id).await.unwrap().unwrap();
         assert!(back.valid_to.is_some(), "open window closed at supersede");
         assert_eq!(back.decay_reason.as_deref(), Some(decay::CONTRADICTED));
+    }
+
+    #[tokio::test]
+    async fn a_superseded_window_closes_when_its_successor_began_not_when_the_engine_noticed() {
+        // `superseded_at` is operational — the wall clock, always. `valid_to`
+        // is semantic: the claim stopped being true when the claim replacing
+        // it started, which the successor carries as `valid_from`, resolved
+        // against the turn's own instant. Reading the wall clock for it dated
+        // a June closure "today" on a backlog replay, and the page then
+        // narrated a three-day-old change as long over.
+        let pool = make_pool().await;
+        let old = sample_new_fact(
+            SAMPLE_UUID_V7_1,
+            "alice",
+            "user:alice",
+            "drives an old Panda",
+        );
+        let mut new = sample_new_fact(
+            SAMPLE_UUID_V7_2,
+            "alice",
+            "user:alice",
+            "drives a white Tesla",
+        );
+        new.valid_from = Some("2026-06-23T20:38:00Z".to_owned());
+        insert(&pool, &old).await.expect("insert old");
+        insert(&pool, &new).await.expect("insert new");
+
+        mark_superseded(&pool, &old.fact_id, &new.fact_id)
+            .await
+            .expect("supersede");
+
+        let back = find_by_id(&pool, &old.fact_id).await.unwrap().unwrap();
+        assert_eq!(
+            back.valid_to.as_deref(),
+            Some("2026-06-23T20:38:00Z"),
+            "the window closes where the successor opens"
+        );
+        assert!(
+            back.superseded_at
+                .as_deref()
+                .is_some_and(|t| t > "2026-06-23T20:38:00Z"),
+            "the operational stamp stays on the wall clock: {:?}",
+            back.superseded_at
+        );
     }
 
     #[tokio::test]

@@ -51,12 +51,17 @@ You decide nothing about the message itself — what it means, who owns it, who 
 Four verbs, and each one has to be plainly stated by the message:
 
 1. `closures` — the fact is SPENT, ABANDONED or NO LONGER TRUE. `reason` is exactly one of:
-   - "completed" — a consumable intention was carried out ("I bought the milk", "watched it last night")
-   - "retracted" — the user takes it back or gives it up ("forget what I told you about the greenhouse")
+   - "completed" — a consumable intention was CARRIED OUT ("I bought the milk", "watched it last night")
+   - "retracted" — the user takes it back, calls it off, or gives it up ("forget what I told you about the greenhouse")
    - "contradicted" — the message states something that makes it false, without replacing it
+
+   **`completed` and `retracted` look identical from outside and mean opposite things.** Both end an intention, and a message that ends one rarely says which: it says the plan is over. The only thing that separates them is whether THE THING HAPPENED. It did → "completed". It did not — cancelled, called off, refused, dropped, prevented, someone was told it is not happening → "retracted". Reaching an end is not the same as being carried out, and a message that reports doing something ABOUT a plan (telling somebody, apologising, rescheduling away) is not a message that reports doing the plan.
+
+   Writing "completed" for a thing that never happened puts a false event in the memory, which is worse than leaving the fact open: the memory then says the user did something they did not do. When the message ends an intention and does not say the thing was carried out, the reason is "retracted".
+
    `valid_to`: when the message says WHEN it stopped holding, resolve it against current_time = {current_time}; otherwise null (= this turn's instant).
 
-2. `supersedes` — the fact is REPLACED by something this turn wrote. Use this, not "contradicted", whenever the message restates the same claim with a new value: "the appointment moved to the 20th", "Bob works at Initech now", "we changed the wifi password". `target` is the OLD fact, from the candidates; `successor` is one of the FACTS THIS TURN WROTE, listed below — never invent one, never name a candidate. If nothing this turn wrote is the replacement, it is a closure, not a supersede. A supersede carries the audience over by itself: do NOT also emit an acl_change for it.
+2. `supersedes` — the fact is REPLACED by something this turn wrote. Use this, not "contradicted", whenever the message restates the same claim with a new value: "the appointment moved to the 20th", "Bob works at Initech now", "we changed the wifi password". `target` is the OLD fact, from the candidates; `successor` is one of the FACTS THIS TURN WROTE, listed below — never invent one, never name a candidate. **They are always two different facts.** A claim filed moments ago can appear in both lists, and naming it for both roles says a thing replaced itself, which is not a statement about anything: if the only fact you would name is the one this turn just wrote, there is no supersede here. If nothing this turn wrote is the replacement, it is a closure, not a supersede. A supersede carries the audience over by itself: do NOT also emit an acl_change for it.
 
 3. `validity_edits` — the fact stays true, its DATES were wrong. A correction, not a completion: "the milk expires on the 20th, not the 25th", "the appointment was always at 6, not 5". Set `valid_from` and/or `valid_to`; leave a field null to keep it. If the fact itself changed, that is a closure, not a date correction.
 

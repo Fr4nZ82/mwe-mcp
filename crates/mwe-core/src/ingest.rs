@@ -2157,6 +2157,22 @@ fn vet_supersede<'a>(
         );
         return None;
     };
+    // Nothing replaces itself. A claim filed moments ago is BOTH a fact this
+    // turn wrote and a fact recall can surface, so the two lists the judge
+    // picks from overlap and it can name one id for both roles. What comes
+    // back then is incoherent — and acted on it is destructive: the weld finds
+    // the target still buffered, closes its window, and the supersede link
+    // that would explain the closure is never written, leaving a fact that
+    // nothing contradicted marked `contradicted`. Measured 2026-08-25 on a
+    // replay of one week: 48 of 61 supersedes named the same fact twice, among
+    // them a permanent physical limit closed the day it was recorded.
+    if target_id == successor_id {
+        tracing::warn!(
+            target = target_raw,
+            "ingest: reconcile supersede names one fact as both the replaced and the replacement — refused"
+        );
+        return None;
+    }
     let Some(prev) = candidates.iter().find(|h| h.fact_id == target_id) else {
         tracing::warn!(
             target = target_raw,
@@ -2322,8 +2338,15 @@ async fn weld_supersede(pool: &SqlitePool, target: &FactId, successor: &FactId) 
             return false;
         },
     }
-    let now = chrono::Utc::now().to_rfc3339();
-    match capture_buffer::close_validity(pool, target, &now, fact_index::decay::CONTRADICTED).await
+    // The same two clocks as `fact_index::mark_superseded`: the window closes
+    // when its replacement started, not when the engine noticed.
+    let closed_at = fact_index::successor_valid_from(pool, successor)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    match capture_buffer::close_validity(pool, target, &closed_at, fact_index::decay::CONTRADICTED)
+        .await
     {
         Ok(Some(_)) => {
             tracing::info!(
@@ -9058,6 +9081,55 @@ mod tests {
             score: 0.91,
             fresh: false,
         }
+    }
+
+    /// Nothing replaces itself, and the judge is allowed to think it does.
+    ///
+    /// A claim filed moments ago is BOTH a fact this turn wrote and a fact
+    /// recall can surface, so the two lists the judge picks from overlap and
+    /// it can name one id for both roles. Acted on, the weld finds the target
+    /// still buffered, closes its window, and writes no supersede link —
+    /// leaving a fact that nothing contradicted marked `contradicted`, dated
+    /// the moment the engine noticed. Measured 2026-08-25 on a replay of one
+    /// week: 48 of 61 supersedes named the same fact twice, among them a
+    /// permanent physical limit closed the day it was recorded.
+    #[test]
+    fn a_fact_never_supersedes_itself() {
+        let id = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d77";
+        let hit = sample_recall_hit(id);
+        let same = LlmSupersede {
+            target: Some(id.to_owned()),
+            successor: Some(id.to_owned()),
+        };
+        assert!(
+            vet_supersede(
+                &same,
+                std::slice::from_ref(&hit),
+                &[(FactId::parse(id).unwrap(), String::new())],
+                "alice",
+                &[],
+            )
+            .is_none(),
+            "one fact named for both roles is refused"
+        );
+
+        // Two different facts still supersede normally.
+        let other = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d78";
+        let pair = LlmSupersede {
+            target: Some(id.to_owned()),
+            successor: Some(other.to_owned()),
+        };
+        assert!(
+            vet_supersede(
+                &pair,
+                std::slice::from_ref(&hit),
+                &[(FactId::parse(other).unwrap(), String::new())],
+                "alice",
+                &[],
+            )
+            .is_some(),
+            "a genuine replacement is untouched"
+        );
     }
 
     fn plan_with_supersede(target: Option<&str>) -> LlmIngestPlan {

@@ -38,7 +38,8 @@ You are the closure confirmer inside mwe-mcp, an MCP server that holds a persist
 Decide which candidates this message actually closes. Rules:
 
 - A closure is a PRECISION instrument: close ONLY a candidate whose text plainly matches what the message covers. When no candidate matches, return an empty list — closing nothing is always safe (a missed closure is recoverable later; a wrong closure forgets the wrong thing). Never close a candidate merely because it is vaguely related or on the same page.
-- `reason` is exactly one of: "completed" (a consumable intention was spent — bought, watched, done), "retracted" (the user takes it back or abandons it), "contradicted" (invalidated by what the message states without being directly replaced).
+- `reason` is exactly one of: "completed" (a consumable intention was CARRIED OUT — bought, watched, done), "retracted" (the user takes it back, calls it off, or abandons it), "contradicted" (invalidated by what the message states without being directly replaced).
+- **"completed" and "retracted" look the same from outside and mean opposite things.** Both end an intention; only whether THE THING HAPPENED separates them. It did → "completed". It did not — cancelled, called off, refused, dropped, somebody was told it is not happening → "retracted". A message that reports doing something ABOUT a plan is not a message that reports doing the plan, and "completed" on a thing that never happened puts a false event in the memory.
 - `valid_to`: when the message says WHEN it stopped holding, resolve it against current_time = {current_time}; otherwise null (= this turn's instant).
 - `target` must be copied EXACTLY from a candidate's fact_id — never invent or alter an id.
 - A candidate whose validity already shows a closed window needs no second closure — skip it.
