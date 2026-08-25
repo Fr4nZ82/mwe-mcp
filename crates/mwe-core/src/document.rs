@@ -2045,7 +2045,12 @@ async fn process_job(
                 subject_external: None,
                 allow: allow.clone(),
                 sender: sender.clone(),
-                fact_type: Some("document".into()),
+                // The anchor is a pointer to a document this memory holds, not
+                // a claim about the world, so it takes the closed enum's own
+                // fallback. What identifies it as the anchor is
+                // `document_jobs.anchor_fact_id` and the page it sits on —
+                // never this column, which nothing reads.
+                fact_type: Some("other".into()),
                 // Seed the document page's testata from the classify plan.
                 topics: std::mem::take(&mut anchor_topics),
                 dedup_threshold: None,
@@ -3068,7 +3073,7 @@ mod tests {
             // extract (one segment — short document). The extractor decides the
             // fact's subject (`subject_id`) and audience (`allow_ids`) under the
             // ingest rules — here a fact ABOUT Gimli, shared with the team.
-            r#"{"facts":[{"body":"Gimli prenota il viaggio in Norvegia entro venerdì 19 giugno 2026.","target_wiki_id":"alice","target_page":"viaggio_norvegia.md","subject_id":"user:gimli","allow_ids":["group:team"],"fact_type":"commitment","topics":["viaggio"]}]}"#,
+            r#"{"facts":[{"body":"Gimli prenota il viaggio in Norvegia entro venerdì 19 giugno 2026.","target_wiki_id":"alice","target_page":"viaggio_norvegia.md","subject_id":"user:gimli","allow_ids":["group:team"],"fact_type":"plan","topics":["viaggio"]}]}"#,
         ]);
 
         let outcome = enqueue(
@@ -3207,7 +3212,7 @@ mod tests {
         // `legolas` is never enrolled: the extractor coined him.
         let llm = ScriptedLlm::new(&[
             r#"{"disposition":"dossier","format":"prose","title":"Meeting X","page_slug":"meeting_x.md","target_wiki_id":"alice","summary":"Riunione sul viaggio.","page_description":"dossier del meeting","style":"prosa","topics":["meeting"]}"#,
-            r#"{"facts":[{"body":"Legolas prenota il viaggio entro venerdì.","target_wiki_id":"alice","target_page":"viaggio.md","subject_id":"user:legolas","allow_ids":[],"fact_type":"commitment","topics":["viaggio"]}]}"#,
+            r#"{"facts":[{"body":"Legolas prenota il viaggio entro venerdì.","target_wiki_id":"alice","target_page":"viaggio.md","subject_id":"user:legolas","allow_ids":[],"fact_type":"plan","topics":["viaggio"]}]}"#,
         ]);
         enqueue(
             &pool,
@@ -3265,7 +3270,7 @@ mod tests {
             .unwrap();
         let llm = ScriptedLlm::new(&[
             r#"{"disposition":"dossier","format":"prose","title":"Meeting X","page_slug":"meeting_x.md","target_wiki_id":"alice","summary":"Riunione sul viaggio.","page_description":"dossier del meeting","style":"prosa","topics":["meeting"]}"#,
-            r#"{"facts":[{"body":"Gimli prenota il viaggio entro venerdì.","target_wiki_id":"alice","target_page":"viaggio.md","subject_id":"user:gimli","allow_ids":[],"fact_type":"commitment","topics":["viaggio"]}]}"#,
+            r#"{"facts":[{"body":"Gimli prenota il viaggio entro venerdì.","target_wiki_id":"alice","target_page":"viaggio.md","subject_id":"user:gimli","allow_ids":[],"fact_type":"plan","topics":["viaggio"]}]}"#,
         ]);
         enqueue(
             &pool,
@@ -3331,7 +3336,7 @@ mod tests {
             target_page: Some("viaggio_norvegia.md".into()),
             subject_id: Some("user:gimli".into()),
             allow_ids: vec!["group:team".into()],
-            fact_type: Some("commitment".into()),
+            fact_type: Some("plan".into()),
             page_description: Some("il viaggio in Norvegia".into()),
             topics: vec!["viaggio".into()],
             valid_from: Some("2026-06-12T00:00:00Z".into()),
@@ -3375,7 +3380,7 @@ mod tests {
         assert_eq!(m.allow_ids, vec!["group:team".to_owned()]);
         // Taxonomy: the first member's wins over the hallucinated
         // "preference"/"cucina" pair the scripted reply smuggled in.
-        assert_eq!(m.fact_type.as_deref(), Some("commitment"));
+        assert_eq!(m.fact_type.as_deref(), Some("plan"));
         assert_eq!(m.topics, vec!["viaggio".to_owned()]);
     }
 
