@@ -4591,9 +4591,8 @@ async fn judge_completion_case(
         let valid_to = item
             .valid_to
             .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map_or_else(|| evidence_began.to_owned(), str::to_owned);
+            .and_then(|b| fact_index::canonical_bound(b, fact_index::DayEdge::End))
+            .unwrap_or_else(|| evidence_began.to_owned());
         // The evidence fact IS the successor: it states the outcome the
         // closed fact was waiting for, so the page can point at its home.
         let reason = item.decay_reason();
@@ -5613,7 +5612,7 @@ async fn judge_contradiction_case(
         .clone()
         .filter(|t| chrono::DateTime::parse_from_rfc3339(t).is_ok_and(|ts| ts.to_utc() <= now))
         .or_else(|| seed.superseded_at.clone())
-        .unwrap_or_else(|| now.to_rfc3339());
+        .unwrap_or_else(|| fact_index::bound_from_instant(now));
     let mut applied: Vec<promote::AppliedClosure> = Vec::new();
     for item in &decision.invalidated {
         let Some(target) = candidates
@@ -5632,9 +5631,8 @@ async fn judge_contradiction_case(
         let valid_to = item
             .valid_to
             .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map_or_else(|| seed_closed_at.clone(), str::to_owned);
+            .and_then(|b| fact_index::canonical_bound(b, fact_index::DayEdge::End))
+            .unwrap_or_else(|| seed_closed_at.clone());
         // A satellite falls with the seed, so it inherits the seed's
         // superseding fact as its successor (None when the seed was closed
         // without one — the pointer stays empty rather than guessing).

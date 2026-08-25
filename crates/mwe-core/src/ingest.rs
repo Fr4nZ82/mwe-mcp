@@ -1566,12 +1566,13 @@ fn validate_capture_plan(
         topics: unit.topics.to_vec(),
         dedup_threshold: Some(policy.dedup_threshold),
         // Thread the per-fact validity interval the classifier deduced
-        // through to the capture row, normalised: `fact_index` compares
-        // these columns lexicographically (due-soon ranges, expiry), so
-        // only RFC3339 instants may land there — a malformed bound
-        // degrades to open (see [`normalize_capture_bound`]).
-        valid_from: normalize_capture_bound(unit.valid_from, "valid_from"),
-        valid_to: normalize_capture_bound(unit.valid_to, "valid_to"),
+        // through to the capture row, canonicalised: `fact_index` compares
+        // these columns lexicographically (due-soon ranges, expiry), so one
+        // fixed-width spelling has to land there. A bound naming a DAY becomes
+        // that day's edge; one naming no date at all degrades to open (see
+        // [`normalize_capture_bound`]).
+        valid_from: normalize_capture_bound(unit.valid_from, fact_index::DayEdge::Start),
+        valid_to: normalize_capture_bound(unit.valid_to, fact_index::DayEdge::End),
         // `style` is a property of the FACT — is this list-shaped material or
         // prose — and survives whoever ends up choosing the page; the compiler
         // takes a page's style from the majority of the facts on it.
@@ -2344,7 +2345,7 @@ async fn weld_supersede(pool: &SqlitePool, target: &FactId, successor: &FactId) 
         .await
         .ok()
         .flatten()
-        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        .unwrap_or_else(|| fact_index::bound_from_instant(chrono::Utc::now()));
     match capture_buffer::close_validity(pool, target, &closed_at, fact_index::decay::CONTRADICTED)
         .await
     {
@@ -2779,10 +2780,11 @@ async fn apply_plan_closures(
         // a MALFORMED one both fall back to this turn's instant. Passing a
         // non-ISO string straight to `close_validity` would poison the stored
         // `valid_to` column with garbage, so a bad date is treated as absent.
-        let valid_to = match normalize_iso_bound(closure.valid_to.as_deref()) {
-            Ok(Some(iso)) => iso,
-            Ok(None) | Err(_) => turn_now.to_rfc3339(),
-        };
+        let valid_to =
+            match normalize_iso_bound(closure.valid_to.as_deref(), fact_index::DayEdge::End) {
+                Ok(Some(iso)) => iso,
+                Ok(None) | Err(_) => fact_index::bound_from_instant(turn_now),
+            };
         // The fact row first; a miss falls through to the still-buffered
         // capture (the same-day flow). Both misses = the target vanished
         // between recall and now — skip, never fail the turn. No successor
@@ -3063,8 +3065,8 @@ fn validate_validity_edit<'a>(
     ) {
         return Err(ValidityEditPlanError::NotSubjectOrAuthor);
     }
-    let valid_from = normalize_iso_bound(edit.valid_from.as_deref())?;
-    let valid_to = normalize_iso_bound(edit.valid_to.as_deref())?;
+    let valid_from = normalize_iso_bound(edit.valid_from.as_deref(), fact_index::DayEdge::Start)?;
+    let valid_to = normalize_iso_bound(edit.valid_to.as_deref(), fact_index::DayEdge::End)?;
     if valid_from.is_none() && valid_to.is_none() {
         return Err(ValidityEditPlanError::NoBounds);
     }
@@ -3075,14 +3077,14 @@ fn validate_validity_edit<'a>(
 /// parse as an RFC3339 UTC instant.
 fn normalize_iso_bound(
     raw: Option<&str>,
+    edge: fact_index::DayEdge,
 ) -> std::result::Result<Option<String>, ValidityEditPlanError> {
     let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
-    if chrono::DateTime::parse_from_rfc3339(s).is_err() {
-        return Err(ValidityEditPlanError::BadDate(s.to_owned()));
-    }
-    Ok(Some(s.to_owned()))
+    fact_index::canonical_bound(s, edge)
+        .map(Some)
+        .ok_or_else(|| ValidityEditPlanError::BadDate(s.to_owned()))
 }
 
 /// Normalize an LLM-proposed validity bound for a NEW capture row through
@@ -3091,14 +3093,17 @@ fn normalize_iso_bound(
 /// unresolved relative phrase stored verbatim ("domani sera") sorts after
 /// every date and never expires. For a capture the correct degraded value
 /// is an OPEN bound — not the turn's own instant, which would fabricate a
-/// start/expiry the user never stated — so a malformed value is dropped
-/// with a warn instead of killing the fact.
-fn normalize_capture_bound(raw: Option<&str>, field: &'static str) -> Option<String> {
-    normalize_iso_bound(raw).unwrap_or_else(|_| {
+/// start/expiry the user never stated — so a value that names no date is
+/// dropped with a warn instead of killing the fact.
+fn normalize_capture_bound(raw: Option<&str>, edge: fact_index::DayEdge) -> Option<String> {
+    normalize_iso_bound(raw, edge).unwrap_or_else(|_| {
         tracing::warn!(
-            field,
+            field = match edge {
+                fact_index::DayEdge::Start => "valid_from",
+                fact_index::DayEdge::End => "valid_to",
+            },
             value = raw.unwrap_or_default(),
-            "ingest: capture validity bound is not an RFC3339 instant — stored as open"
+            "ingest: capture validity bound names no date — stored as open"
         );
         None
     })
@@ -4684,8 +4689,8 @@ async fn capture_agent_self_fact(
         // Same normalisation as `validate_capture_plan`: a malformed
         // LLM bound degrades to open, never lands verbatim in
         // `fact_index`'s lexicographically-compared columns.
-        valid_from: normalize_capture_bound(unit.valid_from, "valid_from"),
-        valid_to: normalize_capture_bound(unit.valid_to, "valid_to"),
+        valid_from: normalize_capture_bound(unit.valid_from, fact_index::DayEdge::Start),
+        valid_to: normalize_capture_bound(unit.valid_to, fact_index::DayEdge::End),
         style: crate::wiki::PageStyle::parse_lenient(unit.style),
         page_description: unit.page_description.map(str::to_owned).or_else(|| {
             Some("The agent's own memory: who it is and its history with each user.".to_owned())
@@ -8888,6 +8893,47 @@ mod tests {
         assert_eq!(cap.valid_from, None);
     }
 
+    /// A bound that names a DAY is kept, and reaches the column as that day.
+    ///
+    /// It is the shape a writer produces whenever the source named a day
+    /// rather than a moment — "the milk expires on the 4th" — which is most
+    /// dated sentences, live or replayed. Refusing it threw away what the user
+    /// actually said and left the fact with no horizon at all, so the due-soon
+    /// scan had nothing to find and the fact never expired.
+    #[test]
+    fn validate_capture_plan_keeps_a_bound_that_names_a_day() {
+        let request = req("il latte scade il 4 luglio", "alice");
+        let policy = IngestPolicy::default();
+        let available = vec![sample_available("alice")];
+
+        let dated = parse_plan(
+            "{\"intent\":\"capture\",\"target_wiki_id\":\"alice\",\
+             \"body\":\"the milk expires\",\
+             \"valid_from\":\"2026-07-01\",\"valid_to\":\"2026-07-04\"}",
+        )
+        .expect("plan parses");
+        let cap = validate_capture_plan(
+            &first_unit(&dated),
+            &request,
+            &policy,
+            &available,
+            &[],
+            true,
+        )
+        .expect("validated");
+        assert_eq!(
+            cap.valid_from.as_deref(),
+            Some("2026-07-01T00:00:00Z"),
+            "a window that opens on a day opens when the day does"
+        );
+        assert_eq!(
+            cap.valid_to.as_deref(),
+            Some("2026-07-04T23:59:59Z"),
+            "and one that closes on a day keeps the whole day it names — \
+             closing at midnight would cut off the 4th"
+        );
+    }
+
     #[test]
     fn validate_capture_plan_passes_rfc3339_bounds_and_keeps_absent_open() {
         let request = req("il latte scade domani sera", "alice");
@@ -12790,14 +12836,16 @@ mod tests {
         .expect("ingest");
         assert_eq!(resp.intent, IntentKind::Capture);
 
-        // The window closed at the turn's instant, NOT the garbage string.
+        // The window closed at the turn's instant, NOT the garbage string —
+        // and in the one spelling the column is compared in, since the
+        // due-soon scan reads `valid_to` as a string.
         let row = fact_index::find_by_id(&pool, &planted.fact_id)
             .await
             .expect("find")
             .expect("row");
         assert_eq!(
             row.valid_to.as_deref(),
-            Some(occurred.to_rfc3339().as_str()),
+            Some(fact_index::bound_from_instant(occurred).as_str()),
             "a malformed valid_to must fall back to turn_now, never store verbatim"
         );
         assert_eq!(

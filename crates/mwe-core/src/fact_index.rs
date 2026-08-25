@@ -537,7 +537,7 @@ pub async fn mark_superseded(
     let now = chrono::Utc::now().to_rfc3339();
     let closed_at = successor_valid_from(pool, new_fact_id)
         .await?
-        .unwrap_or_else(|| now.clone());
+        .unwrap_or_else(|| bound_from_instant(chrono::Utc::now()));
     let res = sqlx::query(
         "UPDATE fact_index
             SET superseded_at = ?, superseded_by = ?, updated_at = ?,
@@ -554,6 +554,65 @@ pub async fn mark_superseded(
     .execute(pool)
     .await?;
     Ok(res.rows_affected())
+}
+
+/// Which edge of a day a bare date names — see [`canonical_bound`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DayEdge {
+    /// A window OPENS on this day: the instant the day begins.
+    Start,
+    /// A window CLOSES on this day: the instant the day ends.
+    End,
+}
+
+/// A proposed validity bound as one canonical UTC instant, or `None` when the
+/// value names no date at all.
+///
+/// Two shapes arrive and both are honest ISO-8601: the full instant, and the
+/// bare `YYYY-MM-DD` a writer produces when the source named a DAY rather than
+/// a moment — most sentences that carry a date do. Only the first parses as
+/// RFC-3339, so a bare date read back through `DateTime::parse_from_rfc3339`
+/// is indistinguishable from garbage, and every reader of these columns has
+/// its own fallback for garbage: the due-soon reminder never fires, an expired
+/// fact never down-ranks at recall, a closure lands on the wall clock instead
+/// of on the day the source named. Canonicalising at the door means the column
+/// holds ONE shape and no reader needs a second opinion about it.
+///
+/// The instant is normalised to ONE fixed-width UTC spelling for the same
+/// reason: `valid_to` is compared **lexicographically** in SQL — the due-soon
+/// scan is `valid_to >= ? AND valid_to <= ?` over strings, and its endpoints
+/// are built with [`bound_from_instant`]. Two spellings of the same moment
+/// sort against each other as text and not as time (`+00:00` before `Z`), so
+/// a fact due exactly at the edge of the window falls outside it.
+///
+/// **A day has two edges and they are not interchangeable.** A window that
+/// opens on the 27th opens when the 27th does; one that closes on the 27th
+/// closes when the 27th does, and ending it at midnight would cut off the very
+/// day the source named.
+pub(crate) fn canonical_bound(raw: &str, edge: DayEdge) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Ok(instant) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(bound_from_instant(instant.to_utc()));
+    }
+    let day = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+    let time = match edge {
+        DayEdge::Start => chrono::NaiveTime::MIN,
+        DayEdge::End => chrono::NaiveTime::from_hms_opt(23, 59, 59)?,
+    };
+    Some(bound_from_instant(day.and_time(time).and_utc()))
+}
+
+/// An instant written as a validity bound: seconds precision, UTC, `Z`.
+///
+/// The one spelling [`canonical_bound`] produces and the one the due-soon scan
+/// builds its endpoints in, so every writer of `valid_from` / `valid_to` has
+/// to agree with it — fixed width is what makes a lexicographic column sort as
+/// time.
+pub(crate) fn bound_from_instant(t: chrono::DateTime<chrono::Utc>) -> String {
+    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 /// When the successor of a supersede started being true, from whichever store
@@ -3033,6 +3092,55 @@ fn decode_row(raw: RawFactRow) -> Result<FactIndexRow> {
 
 #[cfg(test)]
 mod tests {
+    use super::{DayEdge, canonical_bound};
+
+    /// A bare `YYYY-MM-DD` is the shape a writer produces whenever the source
+    /// named a DAY, which is most sentences that carry a date. It has to reach
+    /// the column as an instant, because every reader of the column parses
+    /// RFC-3339 and treats anything else as garbage — and each has its own
+    /// fallback for garbage.
+    #[test]
+    fn a_bound_that_names_a_day_becomes_that_day() {
+        assert_eq!(
+            canonical_bound("2026-06-27", DayEdge::Start).as_deref(),
+            Some("2026-06-27T00:00:00Z"),
+            "a window that opens on the 27th opens when the 27th does"
+        );
+        assert_eq!(
+            canonical_bound("2026-06-27", DayEdge::End).as_deref(),
+            Some("2026-06-27T23:59:59Z"),
+            "and one that closes on the 27th keeps the whole day it names"
+        );
+    }
+
+    /// `valid_to` is compared lexicographically by the due-soon range scan, so
+    /// two spellings of one moment sort as text and not as time. One spelling,
+    /// fixed width, is what makes the column sortable at all.
+    #[test]
+    fn every_instant_reaches_the_column_in_one_spelling() {
+        for written in [
+            "2026-06-27T02:00:00+02:00",
+            "2026-06-27T00:00:00Z",
+            "2026-06-27T00:00:00.123456Z",
+        ] {
+            assert_eq!(
+                canonical_bound(written, DayEdge::End).as_deref(),
+                Some("2026-06-27T00:00:00Z"),
+                "{written} names the same moment as the others"
+            );
+        }
+    }
+
+    /// An unresolved relative phrase names no date, and saying so is what lets
+    /// the caller leave the window open instead of storing a string that sorts
+    /// after every real date and never expires.
+    #[test]
+    fn a_phrase_that_names_no_date_is_refused() {
+        assert!(canonical_bound("domani sera", DayEdge::End).is_none());
+        assert!(canonical_bound("", DayEdge::Start).is_none());
+        assert!(canonical_bound("2026-13-45", DayEdge::Start).is_none());
+    }
+
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
 
@@ -4180,6 +4288,46 @@ mod tests {
         assert_eq!(changed.sender_id, None, "sender cleared when None passed");
         // The snapshot the receipt records is the ACL as it was.
         assert_eq!(prev.prev_allow_ids, vec!["group:family".parse().unwrap()]);
+    }
+
+    /// The chain end to end: a horizon that named a DAY is found by the
+    /// due-soon scan.
+    ///
+    /// That scan is `valid_to >= ? AND valid_to <= ?` over STRINGS, and its
+    /// endpoints are full instants. A bare `2026-07-04` sorts below every one
+    /// of them, so the one class of fact the slot exists for — a dated
+    /// commitment — was the one class it could never match. Canonicalising at
+    /// the door is what closes that gap; nothing in the scan itself changed.
+    #[tokio::test]
+    async fn a_horizon_that_names_a_day_is_found_by_the_due_soon_scan() {
+        let pool = make_pool().await;
+        let mut dated = sample_new_fact(
+            SAMPLE_UUID_V7_1,
+            "alice",
+            "user:alice",
+            "the dentist appointment",
+        );
+        dated.valid_to = canonical_bound("2026-07-04", DayEdge::End);
+        insert(&pool, &dated).await.expect("insert");
+
+        let found = find_due_between(&pool, "2026-07-04T00:00:00Z", "2026-07-05T00:00:00Z", 0)
+            .await
+            .expect("scan");
+        assert_eq!(
+            found.len(),
+            1,
+            "a commitment due on the 4th is due inside the 4th"
+        );
+        assert_eq!(found[0].valid_to.as_deref(), Some("2026-07-04T23:59:59Z"));
+
+        let verbatim = find_due_between(&pool, "2026-07-04", "2026-07-05", 0)
+            .await
+            .expect("scan");
+        assert_eq!(
+            verbatim.len(),
+            1,
+            "and the endpoints sort against it as time, not as text"
+        );
     }
 
     #[tokio::test]

@@ -2354,8 +2354,17 @@ async fn process_job(
                     fact_type: cand.fact_type.clone(),
                     topics: cand.topics.clone(),
                     dedup_threshold: None,
-                    valid_from: cand.valid_from.clone(),
-                    valid_to: cand.valid_to.clone(),
+                    // Through the same door the message path uses: a bound
+                    // naming a DAY becomes that day's edge, an offset becomes
+                    // UTC, and a phrase naming no date at all leaves the
+                    // window open rather than storing something no reader of
+                    // the column can compare.
+                    valid_from: cand.valid_from.as_deref().and_then(|b| {
+                        crate::fact_index::canonical_bound(b, crate::fact_index::DayEdge::Start)
+                    }),
+                    valid_to: cand.valid_to.as_deref().and_then(|b| {
+                        crate::fact_index::canonical_bound(b, crate::fact_index::DayEdge::End)
+                    }),
                     style: crate::wiki::PageStyle::parse_lenient(cand.style.as_deref()),
                     page_description: None,
                     salience: cand.salience.clone(),
