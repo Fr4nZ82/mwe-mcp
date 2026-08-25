@@ -228,6 +228,10 @@ const WORKDIR_PROMPTS_SUBDIR: &str = "prompts";
 /// loader module stays unaware of which prompts live where.
 pub const BUNDLED: &[(&str, &str)] = &[
     ("ingest", crate::ingest::BUNDLED_INGEST_PROMPT_MD),
+    (
+        "ingest-assistant-turn",
+        crate::ingest::BUNDLED_INGEST_ASSISTANT_TURN_MD,
+    ),
     ("ingest-closures", crate::ingest::BUNDLED_INGEST_CLOSURES_MD),
     (
         "ingest-reconcile",
@@ -297,6 +301,13 @@ pub enum PromptOutput {
     /// A short `reason` / `note` string that never leaves the audit
     /// trail counts as internal.
     Internal,
+    /// The document is a **part** of another prompt — appended to that
+    /// prompt's turn, never sent on its own. It shapes prose exactly as
+    /// [`Self::Prose`] does, and it **must not** carry `{locale}` all the
+    /// same: the whole it rides already opens with the directive, and a
+    /// second copy in the same request is the operator paying twice for one
+    /// instruction. Its frontmatter names the whole in `part_of`.
+    PartOfAnother,
 }
 
 /// Every prompt in [`BUNDLED`], classified by [`PromptOutput`].
@@ -316,6 +327,7 @@ pub enum PromptOutput {
 pub const PROSE_REGISTRY: &[(&str, PromptOutput)] = &[
     // --- writes memory a person reads ---
     ("ingest", PromptOutput::Prose),
+    ("ingest-assistant-turn", PromptOutput::PartOfAnother),
     ("cronista", PromptOutput::Prose),
     ("cartografo", PromptOutput::Prose),
     ("conciliatore", PromptOutput::Prose),
@@ -461,6 +473,32 @@ pub fn render(
 /// moved past what the workdir was seeded with.
 const VERSION_KEY: &str = "default_version_at_bootstrap:";
 
+/// Frontmatter key naming the prompt a document is a **part** of.
+///
+/// A part is appended to that prompt's turn instead of being a slot of its
+/// own, and it is never sent alone. The key exists so the operator's list of
+/// prompts can say so: a document that reaches the model only sometimes reads
+/// as a broken prompt otherwise.
+const PART_OF_KEY: &str = "part_of:";
+
+/// Frontmatter key describing WHEN a part is appended, in the operator's own
+/// terms. Companion of [`PART_OF_KEY`]: which whole, and on which turns.
+const APPENDED_WHEN_KEY: &str = "appended_when:";
+
+/// The whole a part belongs to, and when it is appended — read from the
+/// document's frontmatter, which never reaches the model.
+///
+/// `None` for an ordinary prompt, which is every prompt that is a slot of its
+/// own. Scans line-by-line like [`parse_default_version_at_bootstrap`], and
+/// for the same reason.
+#[must_use]
+pub fn parse_part_of(md: &str) -> Option<(String, String)> {
+    let whole = frontmatter_value(md, PART_OF_KEY)?;
+    let when =
+        frontmatter_value(md, APPENDED_WHEN_KEY).unwrap_or_else(|| "on some turns".to_owned());
+    Some((whole, when))
+}
+
 /// Extract `default_version_at_bootstrap: vN.M` from a markdown
 /// document's YAML frontmatter, if present.
 ///
@@ -482,18 +520,22 @@ const VERSION_KEY: &str = "default_version_at_bootstrap:";
 /// (defensive against bundled prompts that opt out of versioning).
 #[must_use]
 pub fn parse_default_version_at_bootstrap(md: &str) -> Option<String> {
+    frontmatter_value(md, VERSION_KEY)
+}
+
+/// One frontmatter scalar by key, unquoted and trimmed.
+///
+/// Scans line-by-line rather than parsing full YAML so the loader stays
+/// decoupled from `serde_yaml`: the bundled prompts use these fields as plain
+/// scalars, and one pair of `'` or `"` is stripped if present.
+fn frontmatter_value(md: &str, key: &str) -> Option<String> {
     let rest = md.strip_prefix("---\n")?;
     let end = rest.find("\n---")?;
-    let frontmatter = &rest[..end];
-    for raw in frontmatter.lines() {
-        let line = raw.trim_start();
-        let Some(value) = line.strip_prefix(VERSION_KEY) else {
+    for raw in rest[..end].lines() {
+        let Some(value) = raw.trim_start().strip_prefix(key) else {
             continue;
         };
         let trimmed = value.trim();
-        // YAML scalar with optional single / double quoting — strip
-        // exactly one pair if present, then trim again so something
-        // like `default_version_at_bootstrap: "v1.2"` returns `v1.2`.
         let unquoted = if trimmed.len() >= 2
             && let Some(stripped) = trimmed
                 .strip_prefix('"')
@@ -507,11 +549,8 @@ pub fn parse_default_version_at_bootstrap(md: &str) -> Option<String> {
         } else {
             trimmed
         };
-        let value = unquoted.trim();
-        if value.is_empty() {
-            return None;
-        }
-        return Some(value.to_owned());
+        let out = unquoted.trim();
+        return (!out.is_empty()).then(|| out.to_owned());
     }
     None
 }
@@ -675,18 +714,20 @@ mod tests {
     }
 
     /// And the negation, which is what makes the classification a
-    /// decision rather than a label: an `Internal` slot must NOT carry
-    /// the placeholder. Copy-pasting a prose prompt into a new
-    /// judgement slot would otherwise ship a directive nobody renders
-    /// — `substitute` would leave the literal `{locale}` in the
-    /// prompt the model reads.
+    /// decision rather than a label: a slot that is NOT prose must not carry
+    /// the placeholder. Copy-pasting a prose prompt into a new judgement slot
+    /// would otherwise ship a directive nobody renders — `substitute` would
+    /// leave the literal `{locale}` in the prompt the model reads. A **part**
+    /// is held to the same rule for the opposite reason: the whole it rides
+    /// already carries the directive, so a second copy is one instruction
+    /// billed twice.
     #[test]
     fn internal_prompts_do_not_carry_the_locale_placeholder() {
         for (name, md) in BUNDLED {
             let Some((_, kind)) = PROSE_REGISTRY.iter().find(|(n, _)| n == name) else {
                 continue;
             };
-            if *kind != PromptOutput::Internal {
+            if *kind == PromptOutput::Prose {
                 continue;
             }
             let body = extract_fenced_text(md, name, "<bundled>").expect("bundled parses");

@@ -195,6 +195,10 @@ struct PromptRow {
     name: &'static str,
     status: PromptStatus,
     drift: Option<Drift>,
+    /// `(whole, when)` when this document is a **part** appended to another
+    /// prompt's turn rather than a slot of its own — read from its
+    /// frontmatter, which never reaches the model.
+    part_of: Option<(String, String)>,
 }
 
 /// Iterate over every bundled prompt this deployment ships — the
@@ -303,6 +307,10 @@ async fn list(State(state): State<DashboardState>, admin: AdminUser) -> Result<H
             name,
             status,
             drift,
+            // A part is appended to another prompt's turn instead of being a
+            // slot of its own. Saying so is the difference between a list of
+            // prompts and a list that includes documents nobody sends alone.
+            part_of: mwe_core::prompts::parse_part_of(body),
         });
     }
     rows.sort_by_key(|r| r.name);
@@ -356,7 +364,15 @@ fn render_list(
             tbody {
                 @for r in rows {
                     tr {
-                        td { code { (r.name) } }
+                        td {
+                            code { (r.name) }
+                            @if let Some((whole, when)) = &r.part_of {
+                                br;
+                                small.muted {
+                                    "part of " code { (whole) } " — appended when " (when)
+                                }
+                            }
+                        }
                         td {
                             span class=(format!("badge {}", r.status.badge_class())) {
                                 (r.status.badge_label())
@@ -644,6 +660,7 @@ async fn reset(
             name: n,
             status: status_for(&p, body)?,
             drift: drift_for(&p, body)?,
+            part_of: mwe_core::prompts::parse_part_of(body),
         });
     }
     rows.sort_by_key(|r| r.name);

@@ -3657,6 +3657,21 @@ pub(crate) fn parse_first_json<T: serde::de::DeserializeOwned>(raw: &str) -> Opt
 /// `mwe-mcp init` materialises it under the workdir.
 pub const BUNDLED_INGEST_PROMPT_MD: &str = include_str!("../prompts/ingest.md");
 
+/// The `ingest` classifier's own-turn rules (`ingest-assistant-turn.md`).
+///
+/// A **part** of that prompt: it carries what applies when the agent feeds
+/// back its own prior reply, and it is appended to the turn context only when
+/// the turn is one.
+///
+/// Not a section of `ingest.md` because a normal turn has no use for it: nine
+/// thousand characters, on one turn in five, in front of the smallest model in
+/// the fleet. Not appended to the SYSTEM half either — that half is
+/// byte-identical call to call, which is the whole reason the prompt cache
+/// serves two thirds of this slot's tokens, and a conditional block there
+/// would split one warm prefix into two cold ones.
+pub const BUNDLED_INGEST_ASSISTANT_TURN_MD: &str =
+    include_str!("../prompts/ingest-assistant-turn.md");
+
 /// Bundled default for the closure-confirmer prompt.
 ///
 /// The topic-focused second recall pass of a closure-bearing turn —
@@ -3809,6 +3824,7 @@ fn build_prompt(
     sender_rules: Option<&str>,
     sender_timezone: Option<&str>,
     language_directive: &str,
+    own_turn_rules: Option<&str>,
     now: chrono::DateTime<chrono::Utc>,
     policy: &IngestPolicy,
 ) -> String {
@@ -3825,6 +3841,13 @@ fn build_prompt(
     // the person's own words are).
     out.push_str(language_directive);
     out.push_str("\n\n");
+    // The agent's own-turn rules, when this is one. They open the turn for the
+    // same reason the language does: they govern everything below and they are
+    // what this turn is about.
+    if let Some(rules) = own_turn_rules {
+        out.push_str(rules);
+        out.push_str("\n\n");
+    }
     out.push_str("sender_id: ");
     out.push_str(&request.sender_id);
     out.push_str("\ncontext_hint: ");
@@ -3832,18 +3855,15 @@ fn build_prompt(
     out.push('\n');
     // author: who wrote `text` this turn. The default `user` path stays silent
     // — the whole prompt already assumes a user message, and emitting nothing
-    // keeps that 99% path byte-identical. When the consumer agent feeds back its
-    // OWN prior reply for extraction the line flips to `assistant`
-    // and arms Part 9, so the model reads `text` as its own words and keeps only
-    // the durable sediment it synthesised.
+    // keeps that 99% path byte-identical. When the consumer agent feeds back
+    // its OWN prior reply the line flips to `assistant`, and the rules for
+    // that case are already above: `own_turn_rules` opened this turn, so the
+    // line states the fact and points at nothing.
     if request.author == MessageRole::Assistant {
         out.push_str(
             "author: assistant\n\
-             # THIS TURN'S `text` IS YOUR OWN PRIOR REPLY, not a user message. \
-             Apply Part 9 (the agent-turn discriminator): keep only the durable \
-             sediment you synthesised (an episode/decision, advice tied to the \
-             user), default hard to skip, and never re-capture what \
-             `recalled_memory` already holds.\n",
+             # THIS TURN'S `text` IS YOUR OWN PRIOR REPLY, not a user message — \
+             the rules that opened this turn govern it.\n",
         );
     }
     // Reference-time zone, most specific wins: the sender's own zone
@@ -6400,6 +6420,22 @@ pub async fn wiki_ingest_message(
         .await
         .map_err(|e| IngestError::Recall(RecallError::Db(e)))?;
     let language_directive = locale::render_language_directive(resolved_locale.as_deref());
+    // The own-turn rules are a PART of this prompt, loaded only for the turn
+    // that uses them. A load failure is not fatal: the turn is classified
+    // without them, which is the same as the ordinary path.
+    let own_turn_rules = match request.author {
+        MessageRole::Assistant => prompts::render(
+            "ingest-assistant-turn",
+            tree.workdir(),
+            BUNDLED_INGEST_ASSISTANT_TURN_MD,
+            &[],
+        )
+        .inspect_err(|e| {
+            tracing::warn!(error = %e, "ingest: own-turn rules unread — classifying without them");
+        })
+        .ok(),
+        MessageRole::User => None,
+    };
     let system_prompt = prompts::render(
         "ingest",
         tree.workdir(),
@@ -6476,6 +6512,7 @@ pub async fn wiki_ingest_message(
         sender_policy.as_deref(),
         sender_timezone.as_deref(),
         &language_directive,
+        own_turn_rules.as_deref(),
         turn_now,
         policy,
     );
@@ -9423,6 +9460,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now,
             &policy,
         );
@@ -9450,6 +9488,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -9475,6 +9514,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -9508,6 +9548,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -9549,6 +9590,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -9589,6 +9631,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -9626,6 +9669,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -9643,6 +9687,7 @@ mod tests {
             Some(rules),
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -9669,6 +9714,7 @@ mod tests {
             Some(&long),
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -9707,6 +9753,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -9748,6 +9795,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -9780,6 +9828,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -9803,6 +9852,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -9838,6 +9888,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &IngestPolicy::default(),
         );
@@ -9949,6 +10000,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -9987,6 +10039,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -10012,6 +10065,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -10040,6 +10094,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -10075,6 +10130,7 @@ mod tests {
             None,
             Some("Australia/Sydney"),
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -10108,6 +10164,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -10139,6 +10196,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -15062,6 +15120,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -15084,6 +15143,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
+            None,
             now_fixture(),
             &policy,
         );
@@ -15091,21 +15151,44 @@ mod tests {
             asst_prompt.contains("author: assistant"),
             "an assistant turn injects the author line"
         );
-        // The pointer has to name a section the BUNDLED PROMPT ACTUALLY HAS.
-        // Asserting the literal alone is what let the renumbering of v2.59
-        // survive: the injection still said "Part 12", the prompt stopped at
-        // Part 9, and this test stayed green comparing a stale string with
-        // itself. So read the number back out of the injection and look for
-        // that heading in the prompt.
-        let pointer = asst_prompt
-            .split("Apply ")
-            .nth(1)
-            .and_then(|t| t.split(" (").next())
-            .expect("the assistant turn injects an `Apply Part N` pointer");
+        // The rules themselves have to BE there, and only on this turn. They
+        // used to live in the trunk with the turn pointing at them by section
+        // number, and the pointer went stale on a renumbering while a test
+        // comparing the literal with itself stayed green. There is no pointer
+        // to go stale now: what the turn says about itself is either in the
+        // turn or nowhere.
+        let regole = prompts::render(
+            "ingest-assistant-turn",
+            std::path::Path::new("/nonexistent"),
+            BUNDLED_INGEST_ASSISTANT_TURN_MD,
+            &[],
+        )
+        .expect("the part parses");
+        let con_regole = build_prompt(
+            &asst_req,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &crate::locale::render_memory_language_directive(Some("it-IT")),
+            Some(&regole),
+            now_fixture(),
+            &policy,
+        );
         assert!(
-            BUNDLED_INGEST_PROMPT_MD.contains(&format!("## {pointer} — `author: assistant`")),
-            "the injected pointer names `{pointer}`, which is not the \
-             agent-turn discriminator's heading in the bundled prompt"
+            con_regole.contains("durable sediment"),
+            "the own-turn rules ride the turn that uses them"
+        );
+        assert!(
+            !asst_prompt.contains("durable sediment"),
+            "and nothing of them is left in the turn that does not"
+        );
+        assert!(
+            !BUNDLED_INGEST_PROMPT_MD.contains("durable sediment"),
+            "nor in the trunk every ordinary turn carries"
         );
     }
 
