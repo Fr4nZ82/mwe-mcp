@@ -70,6 +70,8 @@ pub mod kind {
     pub const CONTRADICTION: &str = "contradiction";
     /// Cross-wiki refile verdict (`rem-refile`).
     pub const REFILE: &str = "refile";
+    /// Structural review of the whole forest (`rem-structure`).
+    pub const STRUCTURE: &str = "structure";
     /// Rail writer's one-link-or-none verdict (`rem-rails`).
     pub const RAIL: &str = "rail";
 }

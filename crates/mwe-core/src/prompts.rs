@@ -247,6 +247,7 @@ pub const BUNDLED: &[(&str, &str)] = &[
     ),
     ("rem-dates", crate::rem::BUNDLED_REM_DATES_MD),
     ("rem-merge", crate::rem::BUNDLED_REM_MERGE_MD),
+    ("rem-structure", crate::rem::BUNDLED_REM_STRUCTURE_MD),
     (
         "rem-page-grouping",
         crate::rem::BUNDLED_REM_PAGE_GROUPING_MD,
@@ -336,6 +337,7 @@ pub const PROSE_REGISTRY: &[(&str, PromptOutput)] = &[
     ("rem-refile", PromptOutput::Internal),
     ("rem-recall-repair", PromptOutput::Internal),
     ("rem-merge", PromptOutput::Internal),
+    ("rem-structure", PromptOutput::Internal),
 ];
 
 /// The placeholder a [`PromptOutput::Prose`] prompt must carry.

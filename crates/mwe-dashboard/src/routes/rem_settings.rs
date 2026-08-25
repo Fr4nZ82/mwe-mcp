@@ -112,6 +112,16 @@ fn knobs() -> Vec<Knob> {
                 .to_owned(),
         },
         Knob {
+            field: "structure_review_cap",
+            label: "Structural review — page moves per cycle",
+            default: def.structure_review_cap.to_string(),
+            help: "Pages the structural review may move to a DIFFERENT wiki per cycle. It is \
+                   the only pass that looks at the whole memory at once, and the only one \
+                   that can move a page out of the wiki it was born in. Small on purpose: a \
+                   move rewrites paths and retargets links. 0 disables the sub-job."
+                .to_owned(),
+        },
+        Knob {
             field: "completion_sweep_cap",
             label: "Completion sweep — evidence facts per cycle",
             default: def.completion_sweep_cap.to_string(),
@@ -191,6 +201,7 @@ fn override_value(cfg: &RemPolicyConfig, field: &str) -> String {
         "auto_promote_group_min_pages" => s(cfg.auto_promote_group_min_pages),
         "auto_promote_cap" => s(cfg.auto_promote_cap),
         "page_merge_cap" => s(cfg.page_merge_cap),
+        "structure_review_cap" => s(cfg.structure_review_cap),
         "completion_sweep_cap" => s(cfg.completion_sweep_cap),
         "contradiction_sweep_cap" => s(cfg.contradiction_sweep_cap),
         "date_normalize_cap" => s(cfg.date_normalize_cap),
@@ -384,6 +395,7 @@ fn parse_form(form: &HashMap<String, String>) -> Result<RemPolicyConfig> {
         auto_promote_group_min_pages: parse_usize(form, "auto_promote_group_min_pages")?,
         auto_promote_cap: parse_usize(form, "auto_promote_cap")?,
         page_merge_cap: parse_usize(form, "page_merge_cap")?,
+        structure_review_cap: parse_usize(form, "structure_review_cap")?,
         completion_sweep_cap: parse_usize(form, "completion_sweep_cap")?,
         contradiction_sweep_cap: parse_usize(form, "contradiction_sweep_cap")?,
         date_normalize_cap: parse_usize(form, "date_normalize_cap")?,

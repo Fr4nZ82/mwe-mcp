@@ -171,6 +171,15 @@ pub struct RemPolicy {
     /// structural signals only nominate, the LLM decides. `0` disables
     /// the sub-job.
     pub page_merge_cap: usize,
+    /// Maximum number of page moves the structural review applies per cycle.
+    ///
+    /// A **resource** cap on a costly, visible act, not a semantic gate: the
+    /// judge is shown the whole forest and refuses freely, and this only
+    /// bounds how much of one night's opinion is executed at once. Small on
+    /// purpose — a page move rewrites paths and retargets links, and a night
+    /// that moved twenty of them would be hard for anybody to read back.
+    /// `0` disables the sub-job.
+    pub structure_review_cap: usize,
     /// Maximum number of evidence facts the completion sweep sends to
     /// the LLM per cycle (the REM safety net behind the ingest closure
     /// verb — see the REM cycle).
@@ -309,6 +318,7 @@ impl Default for RemPolicy {
             auto_promote_min_page_facts_technical: 16,
             auto_promote_group_min_pages: 9,
             page_merge_cap: 3,
+            structure_review_cap: 3,
             completion_sweep_cap: 8,
             refile_sweep_cap: 5,
             // One page per night is the shape this pass wants, not a sweep:
@@ -360,6 +370,9 @@ pub struct RemCycleReport {
     /// Page-merge sub-job report — LLM-confirmed consolidation of
     /// near-synonym concept pages (act-first, with a receipt).
     pub page_merge: PageMergeReport,
+    /// What the structural review moved — the one pass that looks at the
+    /// whole forest, and the only one that can move a page between wikis.
+    pub structure_review: StructureReviewReport,
     /// Completion sweep report — the REM safety net of the closure verb
     /// (closes open items whose completion ingest could not see).
     pub completion_sweep: CompletionSweepReport,
@@ -449,6 +462,58 @@ pub struct PageMergeReport {
     pub skipped_unsettled: usize,
     /// Soft errors.
     pub errors: Vec<String>,
+}
+
+/// Sub-report for the structural review.
+#[derive(Debug, Default, Clone)]
+pub struct StructureReviewReport {
+    /// Pages the inventory showed the judge.
+    pub pages_shown: usize,
+    /// Pages the cap left out — said out loud, never silently dropped, and
+    /// told to the judge too so it knows its view is partial.
+    pub pages_dropped: usize,
+    /// Moves the judge named.
+    pub moves_named: usize,
+    /// Born-applied receipt ids of executed moves.
+    pub applied: Vec<String>,
+    /// Soft errors.
+    pub errors: Vec<String>,
+}
+
+/// One page as the structural review is shown it.
+struct ForestPage {
+    /// `wiki_id/page-file`, the address the judge names back.
+    address: String,
+    /// The wiki it currently sits in.
+    wiki_id: String,
+    /// The page file within that wiki.
+    page: String,
+    /// Its card — the one line saying what belongs on it.
+    card: String,
+    /// How many facts live on it.
+    facts: usize,
+    /// `subject → count`, biggest first: who the page's facts are ABOUT.
+    /// This is the evidence the judge weighs; the page's name is not.
+    subjects: Vec<(String, usize)>,
+    /// Whether the dominant subject differs from the wiki's own principal.
+    /// A **nomination** signal only — it decides the order of the inventory
+    /// under a cap, never whether a page is misplaced.
+    off_principal: bool,
+}
+
+/// The judge's answer.
+#[derive(Debug, serde::Deserialize)]
+struct StructureDecision {
+    #[serde(default)]
+    moves: Vec<StructureMove>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct StructureMove {
+    page: String,
+    to_wiki: String,
+    #[serde(default)]
+    reason: String,
 }
 
 /// Sub-report for the completion sweep.
@@ -906,6 +971,19 @@ pub async fn run_cycle(
         &smart_wiki_index,
     )
     .await?;
+    // The forest review runs AFTER the passes that reshape a wiki's own
+    // subtree and BEFORE the ones that move single facts: it should judge the
+    // structure the night has already tidied, and a fact that is about to
+    // follow its page should not be refiled on its own first.
+    let structure_review = match llms.auto_promote {
+        Some(strong) => run_structure_review(pool, tree, strong, policy)
+            .await
+            .unwrap_or_else(|e| StructureReviewReport {
+                errors: vec![format!("structure: {e}")],
+                ..StructureReviewReport::default()
+            }),
+        None => StructureReviewReport::default(),
+    };
     let completion_sweep = run_completion_sweep(
         pool,
         tree,
@@ -1042,6 +1120,7 @@ pub async fn run_cycle(
         revisor,
         auto_promote,
         page_merge,
+        structure_review,
         completion_sweep,
         refile_sweep,
         contradiction_sweep,
@@ -3415,6 +3494,10 @@ fn parse_page_groups(raw: &str) -> Option<Vec<PageGroup>> {
 /// Bundled default for the page-merge confirmation prompt.
 pub const BUNDLED_REM_MERGE_MD: &str = include_str!("../prompts/rem-merge.md");
 
+/// Bundled default for the structural review prompt; workdir override:
+/// `<workdir>/prompts/rem-structure.md`.
+pub const BUNDLED_REM_STRUCTURE_MD: &str = include_str!("../prompts/rem-structure.md");
+
 /// Verdict shape of the merge confirmer.
 #[derive(Debug, serde::Deserialize)]
 struct MergeDecision {
@@ -3620,6 +3703,291 @@ fn merge_prompt(
             ),
         ],
     )?)
+}
+
+/// How many pages the structural review may be shown at once.
+///
+/// The judge is asked to weigh a whole forest, and a forest that does not fit
+/// in one answer is not one it can weigh. Above this the inventory keeps the
+/// pages whose facts are mostly about somebody other than their wiki's own
+/// principal — the cheap signal for the mistake being looked for — and says
+/// how many it left out, in the report AND in the prompt: a judge that thinks
+/// it saw everything draws conclusions it has not earned.
+const STRUCTURE_INVENTORY_PAGES: usize = 120;
+
+/// Build the forest as the structural review sees it.
+///
+/// One line per page: where it sits, what its card says it holds, how many
+/// facts it carries, and — the part that matters — the principals those facts
+/// are actually ABOUT. A page's name and its wiki are what the engine decided;
+/// the subjects are what the page IS.
+fn forest_inventory(tree: &WikiTree, plan: &crate::planner::CompilationPlan) -> Vec<ForestPage> {
+    let principals: BTreeMap<String, String> = tree
+        .walk()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|d| !d.meta.smart)
+        .filter_map(|d| {
+            let p = tree.resolve_scope_principal(&d.meta).ok()?;
+            Some((d.meta.wiki_id.as_str().to_owned(), p.to_string()))
+        })
+        .collect();
+    let mut out = Vec::new();
+    for page in plan.pages.values() {
+        // A card is its wiki's by construction and a reserved page is found by
+        // its path; neither is ever in the wrong wiki.
+        if page.is_identity_card()
+            || crate::wiki::names_reserved_page(std::path::Path::new(&page.page_path))
+        {
+            continue;
+        }
+        if page.primary_facts.is_empty() {
+            continue;
+        }
+        let Some(own) = principals.get(&page.wiki_id) else {
+            continue; // smart, or vanished between the plan and the walk
+        };
+        let mut tally: BTreeMap<String, usize> = BTreeMap::new();
+        for f in &page.primary_facts {
+            *tally.entry(f.subject.to_string()).or_default() += 1;
+        }
+        let mut subjects: Vec<(String, usize)> = tally.into_iter().collect();
+        subjects.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let off_principal = subjects.first().is_some_and(|(s, _)| s != own);
+        out.push(ForestPage {
+            address: format!("{}/{}", page.wiki_id, page.page_path),
+            wiki_id: page.wiki_id.clone(),
+            page: page.page_path.clone(),
+            card: page.description.clone(),
+            facts: page.primary_facts.len(),
+            subjects,
+            off_principal,
+        });
+    }
+    // Under the cap the off-principal pages go first: they are where the
+    // mistake lives, and what falls off the end is what nothing suggests is
+    // wrong. Stable within each half so the inventory does not reshuffle
+    // between cycles for no reason.
+    out.sort_by(|a, b| {
+        b.off_principal
+            .cmp(&a.off_principal)
+            .then_with(|| a.address.cmp(&b.address))
+    });
+    out
+}
+
+/// Render the inventory the judge reads.
+fn render_forest(tree: &WikiTree, pages: &[ForestPage]) -> String {
+    use std::fmt::Write as _;
+    let mut by_wiki: BTreeMap<&str, Vec<&ForestPage>> = BTreeMap::new();
+    for p in pages {
+        by_wiki.entry(p.wiki_id.as_str()).or_default().push(p);
+    }
+    let principals: BTreeMap<String, String> = tree
+        .walk()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|d| !d.meta.smart)
+        .filter_map(|d| {
+            let p = tree.resolve_scope_principal(&d.meta).ok()?;
+            Some((d.meta.wiki_id.as_str().to_owned(), p.to_string()))
+        })
+        .collect();
+    let mut out = String::new();
+    for (wiki, ps) in by_wiki {
+        let whose = principals
+            .get(wiki)
+            .map_or_else(|| "?".to_owned(), Clone::clone);
+        let _ = writeln!(out, "\nwiki {wiki} — belongs to {whose}");
+        for p in ps {
+            let subjects = p
+                .subjects
+                .iter()
+                .map(|(s, n)| format!("{s} ({n})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let card = if p.card.trim().is_empty() {
+                "(no card)"
+            } else {
+                p.card.trim()
+            };
+            let _ = writeln!(
+                out,
+                "  {}/{} · {} facts · subjects: {}\n      {}",
+                p.wiki_id, p.page, p.facts, subjects, card
+            );
+        }
+    }
+    out
+}
+
+/// The structural review — the only pass that looks at the whole forest.
+///
+/// Every other sub-job is scoped to one wiki, one page or one fact, and each
+/// repairs what it can see from there. None of them can see the mistake this
+/// one looks for: a page in the **wrong wiki**. That mistake is made once, in
+/// a second, when the page is born — a new page joins the wiki of whichever of
+/// its facts the classifier listed first — and until now nothing could undo it
+/// at the grain it was made. The refile sweep moves facts, one judgment each,
+/// which asks the same question forty times for a forty-fact page and gets
+/// forty independent answers.
+///
+/// Structural signals **nominate** (the inventory's order under the cap: pages
+/// whose facts are mostly about somebody other than their wiki's principal);
+/// the strong model **decides**, and it is shown the forest rather than a
+/// short-list so it can refuse. Confirmed moves land act-first via
+/// [`promote::apply_pages_rehome_direct`] with a revertible receipt carrying
+/// the judge's own sentence — somebody has to be able to read why.
+async fn run_structure_review(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    llm: &dyn LlmBackend,
+    policy: &RemPolicy,
+) -> Result<StructureReviewReport> {
+    let mut report = StructureReviewReport::default();
+    if policy.structure_review_cap == 0 {
+        return Ok(report);
+    }
+    let plan = match crate::planner::load_previous_plan(tree) {
+        Ok(Some(p)) => p,
+        Ok(None) => return Ok(report),
+        Err(e) => {
+            report
+                .errors
+                .push(format!("structure: plan load failed: {e}"));
+            return Ok(report);
+        },
+    };
+    let all = forest_inventory(tree, &plan);
+    if all.len() < 2 {
+        return Ok(report); // one page cannot be in the wrong wiki
+    }
+    let shown = all.len().min(STRUCTURE_INVENTORY_PAGES);
+    report.pages_shown = shown;
+    report.pages_dropped = all.len() - shown;
+    let dropped_note = if report.pages_dropped > 0 {
+        format!(
+            "NOTE: you are shown {shown} pages of {}. The {} left out are the ones nothing \
+             suggests are misplaced. Do not conclude anything about the memory as a whole.\n",
+            all.len(),
+            report.pages_dropped
+        )
+    } else {
+        String::new()
+    };
+    let prompt = prompts::render(
+        "rem-structure",
+        tree.workdir(),
+        BUNDLED_REM_STRUCTURE_MD,
+        &[
+            ("forest", render_forest(tree, &all[..shown]).as_str()),
+            ("dropped", dropped_note.as_str()),
+        ],
+    )?;
+    let memo_key = rem_verdicts::key(llm.model_id(), &prompt);
+    if rem_verdicts::is_settled(pool, rem_verdicts::kind::STRUCTURE, &memo_key).await? {
+        return Ok(report);
+    }
+    let resp = match llm
+        .complete(
+            CompletionRequest::new(prompt)
+                .with_temperature(0.1)
+                .with_max_tokens(900),
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "rem structure: judge unavailable — skipped");
+            return Ok(report);
+        },
+    };
+    let Some(raw) = first_json_object(&resp.text) else {
+        tracing::warn!("rem structure: unparseable judge answer — skipped");
+        return Ok(report);
+    };
+    let decision: StructureDecision = match serde_json::from_value(raw) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(error = %e, "rem structure: bad judge JSON shape — skipped");
+            return Ok(report);
+        },
+    };
+    report.moves_named = decision.moves.len();
+    if decision.moves.is_empty() {
+        // The house pattern: a clean "nothing to move" is a memo, so the same
+        // forest is not re-judged tomorrow night. An unparseable answer above
+        // is NOT — that is a failure, and a failure must be retried.
+        rem_verdicts::record_negative(pool, rem_verdicts::kind::STRUCTURE, &memo_key, "forest")
+            .await?;
+        return Ok(report);
+    }
+    apply_structure_moves(
+        pool,
+        tree,
+        &all[..shown],
+        &decision.moves,
+        policy.structure_review_cap,
+        &mut report,
+    )
+    .await;
+    Ok(report)
+}
+
+/// Execute the moves the judge named, up to the cap.
+///
+/// Anti-hallucination, exactly like every other act-first sub-job: only an
+/// address the judge was SHOWN can move, so an invented page is an error on
+/// the report rather than a guess acted on. A move naming the page's own wiki
+/// is not an error at all — it is the judge saying nothing — and it stays
+/// silent.
+async fn apply_structure_moves(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    shown: &[ForestPage],
+    moves: &[StructureMove],
+    cap: usize,
+    report: &mut StructureReviewReport,
+) {
+    let by_address: BTreeMap<&str, &ForestPage> =
+        shown.iter().map(|p| (p.address.as_str(), p)).collect();
+    for mv in moves.iter().take(cap) {
+        let Some(page) = by_address.get(mv.page.trim()) else {
+            report.errors.push(format!(
+                "structure: judge named a page not on the list: {}",
+                mv.page
+            ));
+            continue;
+        };
+        let to = mv.to_wiki.trim();
+        if to == page.wiki_id {
+            continue;
+        }
+        match promote::apply_pages_rehome_direct(
+            pool,
+            tree,
+            &page.wiki_id,
+            to,
+            std::slice::from_ref(&page.page),
+            mv.reason.trim(),
+            None,
+        )
+        .await
+        {
+            Ok(applied) => {
+                tracing::info!(
+                    page = %mv.page,
+                    to_wiki = to,
+                    reason = mv.reason.trim(),
+                    "rem structure: page re-homed"
+                );
+                report.applied.push(applied.proposal_id);
+            },
+            Err(e) => report
+                .errors
+                .push(format!("structure: {} → {to}: {e}", mv.page)),
+        }
+    }
 }
 
 /// Page-merge sub-job — the **cure front** of semantic page consolidation.
@@ -9851,6 +10219,117 @@ mod tests {
             processed.is_none(),
             "row must stay pending when sub-job is disabled"
         );
+        drop(dir);
+    }
+
+    // ---------- structural review ----------
+
+    /// What the judge is shown, and in what order.
+    ///
+    /// Two claims, and the second is the one that makes the cap safe. The
+    /// inventory reports **who each page's facts are about** — not the page's
+    /// name and not the wiki it happens to sit in, because those are exactly
+    /// what may be wrong. And when the forest does not fit, what it keeps is
+    /// the pages whose facts point away from their own wiki: the cheap signal
+    /// for the mistake, so what falls off the end is what nothing suggests is
+    /// worth looking at.
+    #[test]
+    fn the_forest_inventory_reports_subjects_and_puts_the_odd_pages_first() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        write_wiki(&tree, "franz", "Franz", "wiki-user");
+
+        let page = |slug: &str, subjects: &[&str]| {
+            let facts: Vec<crate::planner::FactForPage> = subjects
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    let id = format!(
+                        "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d{:02x}",
+                        i + slug.len() * 16
+                    );
+                    let mut f = crate::planner::FactForPage {
+                        subject_external: None,
+                        authored_refs: Vec::new(),
+                        fact_id: FactId::parse(&id).unwrap(),
+                        text: "t".to_owned(),
+                        fact_type: None,
+                        subject: s.parse().unwrap(),
+                        allow: Vec::new(),
+                        sender: None,
+                        source_wiki_id: "franz".to_owned(),
+                        valid_from: None,
+                        valid_to: None,
+                        decay_reason: None,
+                        successor_fact_id: None,
+                        target_page: None,
+                        style: None,
+                        salience: None,
+                    };
+                    f.text = format!("fact {i}");
+                    f
+                })
+                .collect();
+            crate::planner::PagePlan {
+                title: slug.to_owned(),
+                description: format!("what {slug} holds"),
+                style: None,
+                primary_facts: facts,
+                outgoing_links: Vec::new(),
+                wiki_id: "franz".to_owned(),
+                page_path: format!("{slug}.md"),
+                slug: slug.to_owned(),
+            }
+        };
+
+        let mut pages = BTreeMap::new();
+        // Franz's own page: its facts are about him, like its wiki.
+        pages.insert("his".to_owned(), page("his", &["user:franz", "user:franz"]));
+        // A page in Franz's wiki whose facts are mostly the household's.
+        pages.insert(
+            "theirs".to_owned(),
+            page(
+                "theirs",
+                &["group:famiglia", "group:famiglia", "user:franz"],
+            ),
+        );
+        // His identity card, which is his wiki's by construction.
+        let mut card = page("franz", &["user:franz"]);
+        card.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
+        pages.insert("franz".to_owned(), card);
+
+        let plan = crate::planner::CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph: BTreeMap::new(),
+            compilation_order: Vec::new(),
+            generated_at: "2026-08-25T00:00:00Z".to_owned(),
+            fact_count: 0,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
+        };
+
+        let inv = forest_inventory(&tree, &plan);
+        let seen: Vec<&str> = inv.iter().map(|p| p.address.as_str()).collect();
+        assert_eq!(
+            seen,
+            vec!["franz/theirs.md", "franz/his.md"],
+            "the card is never a candidate, and the odd page sorts first: {seen:?}"
+        );
+        assert_eq!(
+            inv[0].subjects,
+            vec![
+                ("group:famiglia".to_owned(), 2),
+                ("user:franz".to_owned(), 1)
+            ],
+            "the judge weighs who the facts are ABOUT, biggest first"
+        );
+        assert!(inv[0].off_principal, "its facts point away from its wiki");
+        assert!(!inv[1].off_principal, "his own page points at him");
         drop(dir);
     }
 

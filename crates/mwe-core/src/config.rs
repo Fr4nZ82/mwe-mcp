@@ -1260,6 +1260,13 @@ pub struct RemPolicyConfig {
     /// page-merge sub-job may spend per cycle; `0` disables the sub-job.
     #[serde(default)]
     pub page_merge_cap: Option<usize>,
+    /// Override `structure_review_cap` (default 3) — page moves the
+    /// structural review applies per cycle. It is the only pass that moves a
+    /// page between wikis, and a move rewrites paths and retargets links, so
+    /// the cap is small on purpose: a night that moved twenty pages would be
+    /// hard for anybody to read back. `0` disables the sub-job.
+    #[serde(default)]
+    pub structure_review_cap: Option<usize>,
     /// Override `completion_sweep_cap` (default 8) — evidence facts the
     /// completion sweep may send to the LLM per cycle; `0` disables.
     #[serde(default)]
@@ -1318,6 +1325,9 @@ impl RemConfig {
         }
         if let Some(c) = self.policy.auto_promote_cap {
             p.auto_promote_cap = c;
+        }
+        if let Some(c) = self.policy.structure_review_cap {
+            p.structure_review_cap = c;
         }
         if let Some(c) = self.policy.page_merge_cap {
             p.page_merge_cap = c;

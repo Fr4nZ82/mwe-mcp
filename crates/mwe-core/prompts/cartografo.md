@@ -107,7 +107,7 @@ ASSIGNMENT RULES:
 
 WHICH WIKI — a fact is not confined to the one it arrived in:
 - The pages listed below belong to several wikis; the foreign ones say `wiki: <id>`. ANY of them is a legitimate destination. Choose by pertinence alone — who may read a fact is decided by the fact itself, never by the page it sits on, so moving it exposes nothing and hides nothing.
-- This is the ONLY way a fact ever gets re-homed: a fact filed in the wrong place is re-offered to you exactly once per cycle, on this list. If the right page is in another wiki, say so.
+- This is the only chance YOU get: a fact filed in the wrong place is re-offered to you exactly once per cycle, on this list. If the right page is in another wiki, say so now — the night has passes that repair placement afterwards, but they work one fact at a time or one page at a time, and neither is as good as your getting it right here.
 - Between two pages that fit equally well, prefer this batch's own wiki — a fact that moves for no gain rewrites two pages instead of none. "Equally well" is a genuine tie, not a tiebreak to reach for.
 - A page you PROPOSE is born in this batch's wiki, where its facts are. You cannot create a page inside another wiki; if the fact belongs there, assign it to a page that already exists there.
 

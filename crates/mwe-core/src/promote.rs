@@ -149,6 +149,11 @@ struct FactRefileSpec {
 const VARIANT_PARAGRAPH_TO_FILE: &str = "paragraph_to_file";
 const VARIANT_PAGES_TO_SUBWIKI: &str = "pages_to_subwiki";
 const VARIANT_PAGES_MOVE_WIKI: &str = "pages_move_wiki";
+/// Pages leaving their wiki for an unrelated one. The sibling of
+/// [`VARIANT_PAGES_MOVE_WIKI`] and deliberately a different verb: regrouping
+/// tidies a wiki's own subtree, this one contradicts the wiki a page was born
+/// in. Same gesture underneath; the two fences are named at [`MoveKind`].
+const VARIANT_PAGES_REHOME: &str = "pages_rehome";
 const VARIANT_PAGE_MERGE: &str = "page_merge";
 const VARIANT_FACT_REFILE: &str = "fact_refile";
 const VARIANT_VALIDITY_CLOSE: &str = "validity_close";
@@ -187,6 +192,7 @@ pub(crate) async fn apply_wiki_promote(
         VARIANT_PARAGRAPH_TO_FILE => apply_paragraph_to_file(pool, tree, context, answers).await,
         VARIANT_PAGES_TO_SUBWIKI => apply_pages_to_subwiki(pool, tree, context, answers).await,
         VARIANT_PAGES_MOVE_WIKI => apply_pages_move_wiki(pool, tree, context, answers).await,
+        VARIANT_PAGES_REHOME => apply_pages_rehome(pool, tree, context, answers).await,
         VARIANT_PAGE_MERGE => apply_page_merge(pool, tree, context, answers).await,
         // Closures are applied by the ingest orchestrator before the
         // receipt exists (born-applied); a pending row of this variant
@@ -1761,11 +1767,49 @@ fn subwiki_meta_extra(context: &Value) -> serde_yaml::Mapping {
 /// as nine do. The target must be an existing **child** of the source
 /// wiki: regrouping rearranges a wiki's own subtree, it never files
 /// content into somebody else's.
+/// Which of the two page moves is being applied — and the whole of the
+/// difference between them.
+///
+/// The gesture is identical: the files move, the rows re-home, the links
+/// retarget, both wikis' cards are parked for a recompile. What differs is the
+/// destination each one may name, and that is a claim about MEANING rather
+/// than mechanics — which is why it is an enum and not a boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MoveKind {
+    /// Regrouping: the destination must be a **child** of the source. A wiki
+    /// rearranges its own subtree and never files content into somebody
+    /// else's.
+    IntoOwnSubtree,
+    /// Re-homing: the destination is any other standard wiki. The page was
+    /// born in the wrong place — a new page joins the wiki of whichever of
+    /// its facts was listed first — and this is the only gesture that can say
+    /// so about the page as a whole rather than one fact at a time.
+    IntoAnotherWiki,
+}
+
 async fn apply_pages_move_wiki(
     pool: &SqlitePool,
     tree: &WikiTree,
     context: &Value,
     _answers: &Value,
+) -> Result<Value, ApplyError> {
+    move_pages(pool, tree, context, MoveKind::IntoOwnSubtree).await
+}
+
+async fn apply_pages_rehome(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    context: &Value,
+    _answers: &Value,
+) -> Result<Value, ApplyError> {
+    move_pages(pool, tree, context, MoveKind::IntoAnotherWiki).await
+}
+
+async fn move_pages(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    context: &Value,
+    kind: MoveKind,
 ) -> Result<Value, ApplyError> {
     let ctx: GroupContext = serde_json::from_value(context.clone())
         .map_err(|e| ApplyError::InvalidPayload(format!("context: {e}")))?;
@@ -1788,11 +1832,28 @@ async fn apply_pages_move_wiki(
     let target_handle = tree
         .locate(&target_wiki_id)
         .map_err(|e| ApplyError::HandlerData(format!("target wiki not found: {e}")))?;
-    if target_handle.meta().parent_wiki_id.as_ref() != Some(&source_wiki_id) {
-        return Err(ApplyError::InvalidPayload(format!(
-            "{target_wiki_id} is not a child of {source_wiki_id} — a group move only rearranges a \
-             wiki's own subtree",
-        )));
+    match kind {
+        MoveKind::IntoOwnSubtree => {
+            if target_handle.meta().parent_wiki_id.as_ref() != Some(&source_wiki_id) {
+                return Err(ApplyError::InvalidPayload(format!(
+                    "{target_wiki_id} is not a child of {source_wiki_id} — a group move only \
+                     rearranges a wiki's own subtree",
+                )));
+            }
+        },
+        MoveKind::IntoAnotherWiki => {
+            if target_wiki_id == source_wiki_id {
+                return Err(ApplyError::InvalidPayload(format!(
+                    "{target_wiki_id} is the page's own wiki — a re-home names a different one",
+                )));
+            }
+            if target_handle.meta().smart {
+                return Err(ApplyError::InvalidPayload(format!(
+                    "{target_wiki_id} is a smart wiki — its pages are its consumer's, written \
+                     verbatim, and the compiler does not own them",
+                )));
+            }
+        },
     }
 
     let collected = collect_group_pages(pool, tree, source_handle.abs_dir(), &ctx.pages).await?;
@@ -1837,11 +1898,15 @@ async fn apply_pages_move_wiki(
         source_wiki_id = source_wiki_id.as_str(),
         target_wiki_id = target_wiki_id.as_str(),
         pages = spec_pages.len(),
-        "promote: pages_move_wiki applied",
+        kind = ?kind,
+        "promote: page move applied",
     );
 
     Ok(json!(PagesMoveWikiSpec {
-        variant: VARIANT_PAGES_MOVE_WIKI.to_owned(),
+        variant: match kind {
+            MoveKind::IntoOwnSubtree => VARIANT_PAGES_MOVE_WIKI.to_owned(),
+            MoveKind::IntoAnotherWiki => VARIANT_PAGES_REHOME.to_owned(),
+        },
         source_wiki_id: ctx.source_wiki_id,
         target_wiki_id: target_wiki_id.as_str().to_owned(),
         pages: spec_pages,
@@ -2872,6 +2937,72 @@ pub async fn apply_pages_to_subwiki_direct(
     })
 }
 
+/// Act-first entry point for the structural review: one wiki's pages move to
+/// **another wiki**, because that is where they belong.
+///
+/// The sibling of [`apply_pages_move_wiki_direct`], and the only gesture in
+/// the engine that can contradict a page's birth wiki wholesale. Everything
+/// else that repairs placement works one fact at a time — which is the wrong
+/// grain for the mistake being repaired: a page lands in the wrong wiki as a
+/// single decision (a new page joins the wiki of whichever of its facts was
+/// listed first), so undoing it fact by fact asks the same question forty
+/// times and gets forty independent answers.
+///
+/// `reason` is the judge's own sentence, kept on the receipt: this move is
+/// revertible and somebody reading the receipt has to be able to tell whether
+/// it was right.
+///
+/// # Errors
+///
+/// Apply failures surface as [`DirectPromoteError::Apply`]; receipt
+/// insertion as [`DirectPromoteError::Proposals`].
+pub async fn apply_pages_rehome_direct(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    source_wiki_id: &str,
+    target_wiki_id: &str,
+    pages: &[String],
+    reason: &str,
+    recipient: Option<String>,
+) -> Result<DirectApplied, DirectPromoteError> {
+    let context = json!({
+        "variant": VARIANT_PAGES_REHOME,
+        "source_wiki_id": source_wiki_id,
+        "target_wiki_id": target_wiki_id,
+        "pages": pages,
+        "reason": reason,
+    });
+    let answers = json!({ "variant": VARIANT_PAGES_REHOME });
+    let spec = apply_pages_rehome(pool, tree, &context, &answers).await?;
+    let questions = json!([{
+        "id": "variant",
+        "text": format!(
+            "Move {n} pages from {source_wiki_id} to {target_wiki_id}?",
+            n = pages.len()
+        ),
+        "options": [{
+            "id": VARIANT_PAGES_REHOME,
+            "label": format!(
+                "Move {n} pages from `{source_wiki_id}` to `{target_wiki_id}`",
+                n = pages.len()
+            ),
+            "value": VARIANT_PAGES_REHOME,
+            "recommended": true,
+        }]
+    }]);
+    let receipt = proposals::emit_applied_proposal(
+        pool,
+        EmitParams::new(kind::WIKI_PROMOTE, context, questions).with_recipient(recipient),
+        spec.clone(),
+        None,
+    )
+    .await?;
+    Ok(DirectApplied {
+        proposal_id: receipt.proposal_id,
+        spec,
+    })
+}
+
 /// Act-first entry point for the REM grouping pass: pages move into a
 /// sub-wiki that already exists.
 ///
@@ -3018,6 +3149,50 @@ mod tests {
         let tree = WikiTree::open(dir.path()).expect("tree");
         seed_alice(&tree);
         (dir, tree, pool)
+    }
+
+    /// The two destinations a re-home refuses, and they are the whole of what
+    /// separates this verb from regrouping.
+    ///
+    /// A re-home may name any standard wiki — that is the point of it, and why
+    /// it is not the grouping verb — so the only fences left are the two that
+    /// are never right: the wiki the page is already in, and a smart wiki,
+    /// whose pages belong to its consumer and are written verbatim. Filing
+    /// compiler output into one would put marker-wrapped prose inside somebody
+    /// else's plain markdown.
+    #[tokio::test]
+    async fn a_rehome_refuses_the_same_wiki_and_a_smart_one() {
+        let (_dir, tree, pool) = setup().await;
+        let smart = tree.wikis_dir().join("bobproject");
+        std::fs::create_dir_all(&smart).unwrap();
+        std::fs::write(
+            smart.join("_meta.md"),
+            "---\nwiki_id: bobproject\nwiki_type: wiki-user\nparent_wiki_id: null\n\
+             slug: bobproject\ntitle: Bob project\nsmart: true\n---\n",
+        )
+        .unwrap();
+
+        let same = json!({
+            "variant": VARIANT_PAGES_REHOME,
+            "source_wiki_id": "alice",
+            "target_wiki_id": "alice",
+            "pages": ["appunti.md"],
+        });
+        let err = apply_pages_rehome(&pool, &tree, &same, &json!({}))
+            .await
+            .expect_err("a page cannot move to where it already is");
+        assert!(format!("{err}").contains("own wiki"), "unexpected: {err}");
+
+        let into_smart = json!({
+            "variant": VARIANT_PAGES_REHOME,
+            "source_wiki_id": "alice",
+            "target_wiki_id": "bobproject",
+            "pages": ["appunti.md"],
+        });
+        let err = apply_pages_rehome(&pool, &tree, &into_smart, &json!({}))
+            .await
+            .expect_err("compiler output never lands in a smart wiki");
+        assert!(format!("{err}").contains("smart wiki"), "unexpected: {err}");
     }
 
     #[tokio::test]
