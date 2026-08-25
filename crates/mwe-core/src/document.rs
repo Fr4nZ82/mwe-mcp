@@ -731,6 +731,31 @@ pub struct DocumentJob {
     pub finished_at: Option<String>,
 }
 
+impl DocumentJob {
+    /// The uploader as a **bare** user id.
+    ///
+    /// A job stores its principals in wire form (`user:<id>`), and the three
+    /// things that read the uploader all key on the id alone:
+    /// `enrollment_groups.members` is a JSON array of bare ids,
+    /// [`crate::acl::reader_principals`] wraps what it is given in
+    /// `Principal::User`, and the extraction prompt shows a bare `sender_id:`
+    /// exactly as the message classifier's does. Give any of them the wire
+    /// form and it matches nobody — the extractor then sees only the builtin
+    /// `global` group, so no operator scope can widen a fact's audience and a
+    /// subject with no principal of their own falls to the uploader instead
+    /// of the group that answers for them.
+    ///
+    /// Empty for a device-channel `group:` sender, which has no enrolment row
+    /// and no groups of its own either way.
+    fn uploader(&self) -> &str {
+        self.sender_id
+            .as_deref()
+            .unwrap_or(&self.subject_id)
+            .strip_prefix("user:")
+            .unwrap_or("")
+    }
+}
+
 const SELECT_JOB: &str = r#"
     SELECT job_id, source_kind, source_ref, text_sha256, "text", title_hint,
            disposition_requested, format_requested, occurred_at,
@@ -1595,7 +1620,7 @@ async fn extract_segment(
     // The document's sender is the uploader (`sender_id`, materialized to the
     // subject when absent) — the principal `subject_id`/`allow_ids` default against.
     user.push_str("sender_id: ");
-    user.push_str(job.sender_id.as_deref().unwrap_or(&job.subject_id));
+    user.push_str(job.uploader());
     user.push('\n');
     user.push('\n');
     user.push_str(&known_users_block(known_users));
@@ -2065,15 +2090,14 @@ async fn process_job(
         // extractor reads when deciding each fact's `allow_ids`, the same
         // assembly the message classifier uses. A `group:<scope>` device-channel
         // sender (no enrollment row) simply yields no groups.
-        let sender_id_str = job.sender_id.as_deref().unwrap_or(&job.subject_id);
-        let sender_groups = crate::enrollment::groups_with_scope_for(pool, sender_id_str)
+        let sender_groups = crate::enrollment::groups_with_scope_for(pool, job.uploader())
             .await
             .unwrap_or_default();
         // The enrolled roster the extractor resolves a named subject against —
         // the gate that stops `subject_id` minting a `user:<id>` for a person who
         // is not in the system (a relative, a pet). The same roster the message
-        // classifier injects; the message path had it, the document path did not
-        // — which is how unenrolled `user:<X>` subjects were coined.
+        // classifier injects: without it the extractor coins a principal for a
+        // name it has no row for.
         let known_users = crate::enrollment::list_users(pool)
             .await
             .unwrap_or_default();
@@ -2083,7 +2107,7 @@ async fn process_job(
         let known_entities = crate::fact_index::known_entities(
             pool,
             &crate::acl::reader_principals(
-                job.sender_id.as_deref().unwrap_or(&job.subject_id),
+                job.uploader(),
                 &sender_groups
                     .iter()
                     .map(|(g, _)| g.clone())
@@ -2883,12 +2907,20 @@ mod tests {
     // A backend popping scripted complete() responses in order — the
     // pipeline calls the slot N times per job (classify + per-segment
     // extract + per-cluster merge).
-    struct ScriptedLlm(std::sync::Mutex<std::collections::VecDeque<String>>);
+    struct ScriptedLlm {
+        script: std::sync::Mutex<std::collections::VecDeque<String>>,
+        asked: std::sync::Mutex<Vec<String>>,
+    }
     impl ScriptedLlm {
         fn new(responses: &[&str]) -> Self {
-            Self(std::sync::Mutex::new(
-                responses.iter().map(|s| (*s).to_owned()).collect(),
-            ))
+            Self {
+                script: std::sync::Mutex::new(responses.iter().map(|s| (*s).to_owned()).collect()),
+                asked: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+        /// Every prompt the pipeline sent, in order.
+        fn prompts(&self) -> Vec<String> {
+            self.asked.lock().expect("asked mutex").clone()
         }
     }
     #[async_trait::async_trait]
@@ -2898,10 +2930,11 @@ mod tests {
         }
         async fn complete(
             &self,
-            _req: CompletionRequest,
+            req: CompletionRequest,
         ) -> std::result::Result<crate::llm::CompletionResponse, LlmError> {
+            self.asked.lock().expect("asked mutex").push(req.prompt);
             let next = self
-                .0
+                .script
                 .lock()
                 .expect("script mutex")
                 .pop_front()
@@ -2927,6 +2960,87 @@ mod tests {
         );
         std::fs::write(dir.join("_meta.md"), &frontmatter).unwrap();
         std::fs::write(dir.join("cucina.md"), "# index\n").unwrap();
+    }
+
+    /// The extractor is told who uploaded the document and which groups they
+    /// belong to — the two inputs every audience and non-enrolled-subject call
+    /// depends on.
+    ///
+    /// A job keeps its principals in wire form (`user:alice`) and both readers
+    /// key on the bare id, so the wire form matches nobody: the extractor is
+    /// left with the builtin `global` group, and with no operator scope in
+    /// front of it every fact of a shared dossier comes back readable by its
+    /// uploader alone.
+    #[tokio::test]
+    async fn the_extractor_is_told_the_uploader_and_their_groups() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::db::open_or_init(dir.path()).await.expect("db");
+        let wikis = dir.path().join("wikis");
+        std::fs::create_dir_all(&wikis).unwrap();
+        write_wiki(&wikis, "alice", "Alice", "wiki-user");
+        sqlx::query("INSERT INTO enrollment_users (user_id, is_admin) VALUES ('alice', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO enrollment_groups (group_id, members, scope)
+             VALUES ('famiglia', '[\"alice\"]', 'la salute di un parente che la casa accudisce')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        let embedder: Arc<dyn Embedder> = Arc::new(
+            crate::embedder::FakeEmbedder::with_fixed_embedding("fake", vec![0.1, 0.2, 0.3, 0.4]),
+        );
+        let llm = ScriptedLlm::new(&[
+            r#"{"disposition":"dossier","format":"prose","title":"Dossier","page_slug":"dossier.md","target_wiki_id":"alice","summary":"Il quadro clinico.","page_description":"il dossier","style":"prosa","topics":["salute"]}"#,
+            r#"{"facts":[{"body":"Bilbo è allettato da marzo.","target_wiki_id":"alice","target_page":"dossier.md","subject_id":"group:famiglia","subject_external":"Bilbo","allow_ids":["group:famiglia"],"fact_type":"episode","topics":["salute"]}]}"#,
+        ]);
+
+        enqueue(
+            &pool,
+            &policy(),
+            EnqueueRequest {
+                source_kind: "inline".into(),
+                source_ref: None,
+                text: "Bilbo non si è più ripreso dall'intervento: è allettato da marzo.".into(),
+                title_hint: None,
+                disposition: None,
+                format: None,
+                occurred_at: Some("2026-06-12T10:00:00Z".into()),
+                subject: "user:alice".parse().unwrap(),
+                allow: Vec::new(),
+                sender: None,
+                force: false,
+            },
+        )
+        .await
+        .expect("enqueue");
+        assert!(
+            run_one_job(&pool, &tree, &embedder, &llm, dir.path(), &policy())
+                .await
+                .expect("run")
+        );
+
+        let extraction = llm
+            .prompts()
+            .into_iter()
+            .find(|p| p.contains("segment_position"))
+            .expect("the map phase ran");
+        assert!(
+            extraction.contains("sender_id: alice\n"),
+            "the uploader is named the way the roster names them: {extraction}"
+        );
+        assert!(
+            !extraction.contains("sender_id: user:alice"),
+            "and never in wire form: {extraction}"
+        );
+        assert!(
+            extraction.contains("la salute di un parente che la casa accudisce"),
+            "the operator's scope is the audience rule, so it has to be shown: {extraction}"
+        );
+        drop(dir);
     }
 
     #[tokio::test]
