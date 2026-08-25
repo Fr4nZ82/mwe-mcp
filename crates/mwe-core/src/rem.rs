@@ -3849,8 +3849,28 @@ struct CompletionDecision {
 #[derive(Debug, serde::Deserialize)]
 struct CompletionItem {
     target: String,
+    /// Which of the two ways the item closed: `completed` (the intention was
+    /// spent) or `retracted` (it was abandoned). Absent ⇒ `completed`, the
+    /// answer this sweep gave when it only knew one of the two.
+    #[serde(default)]
+    outcome: Option<String>,
     #[serde(default)]
     valid_to: Option<String>,
+}
+
+impl CompletionItem {
+    /// The `decay_reason` this item closes with.
+    ///
+    /// Only the two the sweep can DISCOVER: an intention is spent or it is
+    /// abandoned. `contradicted` is the third closure reason and is not one of
+    /// these — it belongs to a fact that was replaced by a truer statement of
+    /// the same thing, which the dedup and supersede paths own.
+    fn decay_reason(&self) -> &'static str {
+        match self.outcome.as_deref() {
+            Some(fact_index::decay::RETRACTED) => fact_index::decay::RETRACTED,
+            _ => fact_index::decay::COMPLETED,
+        }
+    }
 }
 
 /// One nominated evidence→candidates pairing, ready for the confirmer.
@@ -3945,8 +3965,16 @@ fn completion_cases<'a>(
 /// **evidence** fact is paired with the most similar open items of its
 /// wiki (embedding similarity **nominates only** — a resource cap, not
 /// a semantic gate), a dedicated LLM call decides what the evidence
-/// actually completed, and the confirmed closures land **act-first**
-/// with the same `validity_close` receipt the ingest half writes. The
+/// closed, and the confirmed closures land **act-first**
+/// with the same `validity_close` receipt the ingest half writes.
+///
+/// **Both ways an intention ends.** It is spent (`completed`) or it is
+/// abandoned (`retracted`), and the sweep discovers either. The asymmetry
+/// mattered: this is the ONLY pass that discovers a closure at all — the
+/// contradiction sweep starts from a fact somebody already closed and merely
+/// follows its cluster — so a sweep that knew only "it happened" left every
+/// cancelled commitment open for ever whenever the turn that cancelled it did
+/// not have the commitment in its recall window. The
 /// ingest half also notices the affected user, because somebody asked for
 /// that closure; a sweep closure is the memory's own bookkeeping and says
 /// nothing to anybody.
@@ -4134,8 +4162,9 @@ async fn judge_completion_case(
         if applied.iter().any(|a| a.fact_id == target.fact_id) {
             continue;
         }
-        // The completion instant: the confirmer's resolved date, else the
-        // evidence's own capture instant (when we learned it happened).
+        // The closing instant: the confirmer's resolved date, else the
+        // evidence's own capture instant — when we learned it happened, or
+        // that it no longer would.
         let valid_to = item
             .valid_to
             .as_deref()
@@ -4144,11 +4173,12 @@ async fn judge_completion_case(
             .map_or_else(|| case.evidence.created_at.clone(), str::to_owned);
         // The evidence fact IS the successor: it states the outcome the
         // closed fact was waiting for, so the page can point at its home.
+        let reason = item.decay_reason();
         let Some(prev) = fact_index::close_validity(
             pool,
             &target.fact_id,
             &valid_to,
-            fact_index::decay::COMPLETED,
+            reason,
             Some(&case.evidence.fact_id),
         )
         .await?
@@ -4159,6 +4189,7 @@ async fn judge_completion_case(
             fact_id = %target.fact_id,
             evidence = %case.evidence.fact_id,
             valid_to,
+            reason,
             "rem completion: validity CLOSED (safety-net sweep)"
         );
         applied.push(promote::AppliedClosure {
@@ -4166,7 +4197,7 @@ async fn judge_completion_case(
             wiki_id: target.wiki_id.clone(),
             preview: fact_preview(&target.text),
             valid_to,
-            reason: fact_index::decay::COMPLETED.to_owned(),
+            reason: reason.to_owned(),
             prev,
             surface: promote::ClosureSurface::Fact,
         });
@@ -9898,6 +9929,66 @@ mod tests {
     /// neighbouring evidence (the 2026-07-05 live incident: franz's
     /// "Gandalf" naming rule read as evidence completing morgana's
     /// parallel "Ernest" naming rule — cross-user collateral).
+    /// The other way an intention ends: it is called off.
+    ///
+    /// This is the only pass that DISCOVERS a closure — the contradiction
+    /// sweep starts from one somebody already made — so when it knew only
+    /// "it happened", a commitment cancelled in a turn whose recall window
+    /// did not hold it stayed open for ever, and the memory kept telling the
+    /// agent about an appointment nobody was going to keep.
+    #[tokio::test]
+    async fn completion_sweep_closes_an_abandoned_item_as_retracted() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let open_item = plant_fact(
+            &tree,
+            &pool,
+            "alice",
+            "Il 24 giugno deve aiutare un amico a spostare una lavatrice",
+            "alice",
+        )
+        .await;
+        let evidence = plant_fact(
+            &tree,
+            &pool,
+            "alice",
+            "Ha detto all'amico che non può andare: l'impegno è annullato",
+            "alice",
+        )
+        .await;
+        assert_ne!(open_item, evidence);
+        let resp = format!(
+            "{{\"completions\":[{{\"target\":\"{}\",\"outcome\":\"retracted\",\"valid_to\":null}}]}}",
+            open_item.as_str()
+        );
+        let llm = FakeLlmBackend::new("confirmer", &resp);
+        let index = load_smart_wiki_index(&tree).expect("index");
+        let report = run_completion_sweep(
+            &pool,
+            &tree,
+            &llm,
+            "cycle-test",
+            Utc::now(),
+            &RemPolicy::default(),
+            &index,
+        )
+        .await
+        .expect("sweep");
+        assert_eq!(report.closed, vec![open_item.as_str().to_owned()]);
+        let row = fact_index::find_by_id(&pool, &open_item)
+            .await
+            .unwrap()
+            .expect("row");
+        assert!(row.valid_to.is_some(), "the window closes either way");
+        assert_eq!(
+            row.decay_reason.as_deref(),
+            Some(fact_index::decay::RETRACTED),
+            "an abandoned intention did not happen: closing it as completed \
+             would say the opposite of what the evidence says"
+        );
+        drop(dir);
+    }
+
     #[tokio::test]
     async fn completion_sweep_never_touches_rules_page_facts() {
         let (dir, tree, pool) = setup_workdir().await;
