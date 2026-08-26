@@ -28,6 +28,10 @@
 //!   (a group they belong to is their own shared context, never foreign).
 //!   Observability for the identity-page discipline the Cartografo prompt
 //!   carries — a count in the report/log, never a gate.
+//! - **spent card fact** — an identity card still carrying a fact that has
+//!   stopped holding: the engine closed it (`decay_reason`), or its
+//!   `valid_to` is already past. The card is the always-on base context, so
+//!   a spent claim there is served as true on every turn.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -160,6 +164,18 @@ pub struct ReviewReport {
     /// [`OVERSIZED_PAGE_THRESHOLD`]; parked as a placement re-open so
     /// split-by-mass becomes reachable for a clean grown page.
     pub oversized_pages: Vec<(String, usize)>,
+    /// `(slug, fact_id, why)` facts the plan keeps on an identity card whose
+    /// validity has run out — the engine closed them (`decay_reason`), or
+    /// their `valid_to` is already behind `now`.
+    ///
+    /// The card is the always-on base context: what a consumer is handed in
+    /// every exchange whatever the topic. A claim that has stopped holding
+    /// does not belong in it — «she has a pessary» after it comes out is read
+    /// as true on every turn. The bridge parks each one as a placement
+    /// re-open, so the Cartografo re-homes it onto a topic page where it
+    /// stays readable as history. Never a drop: a spent fact is still what
+    /// happened.
+    pub spent_card_facts: Vec<(String, String, String)>,
 }
 
 impl ReviewReport {
@@ -172,6 +188,7 @@ impl ReviewReport {
             + self.missing_acl_markers.len()
             + self.cross_subject_bloat.len()
             + self.oversized_pages.len()
+            + self.spent_card_facts.len()
     }
 
     /// True when there is nothing to report.
@@ -179,6 +196,27 @@ impl ReviewReport {
     pub const fn is_clean(&self) -> bool {
         self.finding_count() == 0
     }
+}
+
+/// Why a card fact has stopped holding, or `None` while it still holds.
+///
+/// `now` is an ISO-8601 UTC instant and `valid_to` is compared to it
+/// lexically, the way every timestamp in this engine is compared.
+fn spent_reason(f: &crate::planner::FactForPage, now: &str) -> Option<String> {
+    if let Some(reason) = f
+        .decay_reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
+        return Some(reason.to_owned());
+    }
+    let ends = f
+        .valid_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())?;
+    (ends < now).then(|| format!("valid_to {ends}"))
 }
 
 /// Every name this memory holds for somebody who is not a principal, taken
@@ -243,7 +281,8 @@ fn about_someone_else(
 /// and ACL-marker checks; the plan-level checks need only the plan.
 /// `identity` feeds the cross-subject check — pass
 /// `IdentityContext::default()` to skip it (callers that consume only the
-/// plan-shape findings).
+/// plan-shape findings). `now` is the ISO-8601 UTC instant a card fact's
+/// `valid_to` is judged against.
 ///
 /// # Errors
 ///
@@ -253,6 +292,7 @@ pub fn review(
     tree: &WikiTree,
     plan: &CompilationPlan,
     identity: &IdentityContext,
+    now: &str,
 ) -> Result<ReviewReport> {
     let mut report = ReviewReport::default();
     let named_non_principals_here = named_non_principals(plan);
@@ -289,6 +329,19 @@ pub fn review(
                         slug.clone(),
                         f.fact_id.as_str().to_owned(),
                         about,
+                    ));
+                }
+                // A card fact whose validity has run out. Two ways it runs
+                // out and the `valid_to` column only records the second: the
+                // engine closes a fact by writing `decay_reason` (superseded,
+                // retracted, contradicted, completed) without necessarily
+                // stamping an end, and a fact given a horizon at capture
+                // simply reaches it.
+                if let Some(why) = spent_reason(f, now) {
+                    report.spent_card_facts.push((
+                        slug.clone(),
+                        f.fact_id.as_str().to_owned(),
+                        why,
                     ));
                 }
             }
@@ -417,6 +470,10 @@ fn stripped_body(parsed: &parser::ParseOutput) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The instant the reviewer's tests judge a fact's `valid_to` against.
+    /// Later than every fixture window so a closed one reads as closed.
+    const REVIEW_NOW: &str = "2026-09-01T00:00:00Z";
+
     use super::*;
     use crate::planner::{FactForPage, PagePlan};
     use crate::types::FactId;
@@ -490,7 +547,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
-        let r = review(&tree, &plan, &IdentityContext::default()).unwrap();
+        let r = review(&tree, &plan, &IdentityContext::default(), REVIEW_NOW).unwrap();
         assert_eq!(r.empty_leaves, vec!["c".to_owned()]);
         assert_eq!(r.duplicate_fact_homes.len(), 1);
         assert_eq!(r.duplicate_fact_homes[0].1.len(), 2);
@@ -518,7 +575,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
-        let r = review(&tree, &plan, &IdentityContext::default()).unwrap();
+        let r = review(&tree, &plan, &IdentityContext::default(), REVIEW_NOW).unwrap();
         assert_eq!(
             r.oversized_pages,
             vec![("pile".to_owned(), OVERSIZED_PAGE_THRESHOLD)],
@@ -546,7 +603,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
-        let r = review(&tree, &plan, &IdentityContext::default()).unwrap();
+        let r = review(&tree, &plan, &IdentityContext::default(), REVIEW_NOW).unwrap();
         assert!(r.is_clean(), "{r:?}");
     }
 
@@ -570,7 +627,7 @@ mod tests {
         let mut page = leaf("secrets", vec![ffp(2, "user:alice")]);
         page.wiki_id = "alice".to_owned();
         let plan = plan_with(vec![page], BTreeMap::new());
-        let r = review(&tree, &plan, &IdentityContext::default()).unwrap();
+        let r = review(&tree, &plan, &IdentityContext::default(), REVIEW_NOW).unwrap();
         assert_eq!(
             r.missing_acl_markers,
             vec![("secrets".to_owned(), fid(2).as_str().to_owned())],
@@ -598,7 +655,7 @@ mod tests {
         let mut page = leaf("secrets", vec![ffp(2, "user:alice")]);
         page.wiki_id = "alice".to_owned();
         let plan = plan_with(vec![page], BTreeMap::new());
-        let r = review(&tree, &plan, &IdentityContext::default()).unwrap();
+        let r = review(&tree, &plan, &IdentityContext::default(), REVIEW_NOW).unwrap();
         assert!(
             r.missing_acl_markers.is_empty(),
             "marked owned fact is clean"
@@ -636,7 +693,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
 
-        let r = review(&tree, &plan, &identity).unwrap();
+        let r = review(&tree, &plan, &identity, REVIEW_NOW).unwrap();
         let flagged: Vec<String> = r
             .cross_subject_bloat
             .iter()
@@ -654,6 +711,66 @@ mod tests {
         );
         assert_eq!(r.cross_subject_bloat[0].2, "user:bruno");
         assert_eq!(r.cross_subject_bloat[1].2, "group:condominio");
+    }
+
+    /// A card fact that has stopped holding must be nominated to leave the
+    /// card, whichever way it stopped.
+    ///
+    /// The card is what a consumer is handed on EVERY turn, whatever the
+    /// topic. Nothing else re-opens a card that is neither too long nor
+    /// carrying somebody else's fact — so «she has a pessary», once it comes
+    /// out, is served as current until something moves it. Both closures
+    /// count: the engine writing `decay_reason` when a later turn supersedes
+    /// the claim, and a horizon set at capture simply being reached.
+    ///
+    /// A fact still in force stays, `valid_to` or not: a window that has not
+    /// closed is not a closed window.
+    #[test]
+    fn flags_a_card_fact_that_has_stopped_holding() {
+        let mut identity = IdentityContext::default();
+        identity.user_wikis.insert("frodo".to_owned());
+
+        let mut removed = ffp(1, "user:frodo");
+        removed.text = "Frodo wears a wrist brace.".to_owned();
+        removed.decay_reason = Some("superseded".to_owned());
+
+        let mut expired = ffp(2, "user:frodo");
+        expired.text = "Side effects of the 24 June jab: headache, aching joints.".to_owned();
+        expired.valid_to = Some("2026-06-27T23:59:59Z".to_owned());
+
+        let mut standing = ffp(3, "user:frodo");
+        standing.text = "Coeliac: cannot eat gluten.".to_owned();
+
+        // In force, and dated: the horizon is ahead of REVIEW_NOW.
+        let mut ahead = ffp(4, "user:frodo");
+        ahead.text = "On call until December.".to_owned();
+        ahead.valid_to = Some("2026-12-31T23:59:59Z".to_owned());
+
+        let mut card = leaf("frodo", vec![removed, expired, standing, ahead]);
+        card.wiki_id = "frodo".to_owned();
+        card.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
+        let plan = plan_with(vec![card], BTreeMap::new());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
+        let tree = WikiTree::open(dir.path()).unwrap();
+
+        let r = review(&tree, &plan, &identity, REVIEW_NOW).unwrap();
+        let flagged: Vec<(String, String)> = r
+            .spent_card_facts
+            .iter()
+            .map(|(_, id, why)| (id.clone(), why.clone()))
+            .collect();
+        assert_eq!(
+            flagged,
+            vec![
+                (fid(1).as_str().to_owned(), "superseded".to_owned()),
+                (
+                    fid(2).as_str().to_owned(),
+                    "valid_to 2026-06-27T23:59:59Z".to_owned()
+                ),
+            ],
+            "the closed one and the expired one, and neither of the two in force"
+        );
     }
 
     /// A fact whose SUBJECT says the card's person but whose SENTENCE is about
@@ -702,7 +819,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
 
-        let r = review(&tree, &plan, &identity).unwrap();
+        let r = review(&tree, &plan, &identity, REVIEW_NOW).unwrap();
         let flagged: Vec<(String, String)> = r
             .cross_subject_bloat
             .iter()
@@ -742,7 +859,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
 
-        let r = review(&tree, &plan, &identity).unwrap();
+        let r = review(&tree, &plan, &identity, REVIEW_NOW).unwrap();
         assert!(
             r.cross_subject_bloat.is_empty(),
             "topic pages and group-wiki cards are outside the identity discipline"
@@ -785,7 +902,7 @@ mod tests {
         page.wiki_id = "hermes1".to_owned();
         page.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
         let plan = plan_with(vec![page], BTreeMap::new());
-        let r = review(&tree, &plan, &identity).unwrap();
+        let r = review(&tree, &plan, &identity, REVIEW_NOW).unwrap();
         assert_eq!(
             r.cross_subject_bloat,
             vec![(

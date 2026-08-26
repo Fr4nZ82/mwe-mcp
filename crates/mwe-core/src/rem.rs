@@ -987,6 +987,7 @@ pub async fn run_cycle(
         policy,
         &smart_wiki_index,
         &auto_promote.split_targets,
+        now,
     )
     .await?;
     // The forest review runs AFTER the passes that reshape a wiki's own
@@ -4046,6 +4047,7 @@ async fn run_page_merge(
     policy: &RemPolicy,
     smart_wiki_index: &SmartWikiIndex,
     split_targets: &std::collections::BTreeSet<String>,
+    now: DateTime<Utc>,
 ) -> Result<PageMergeReport> {
     let mut report = PageMergeReport::default();
     if policy.page_merge_cap == 0 {
@@ -4065,8 +4067,12 @@ async fn run_page_merge(
     // identity context skips the reviewer's cross-subject check, which the
     // post-compile review in `dream::run_compile` already runs with the real
     // enrollment context.
-    let duplicate_prose = match reviewer::review(tree, &plan, &reviewer::IdentityContext::default())
-    {
+    let duplicate_prose = match reviewer::review(
+        tree,
+        &plan,
+        &reviewer::IdentityContext::default(),
+        &now.to_rfc3339(),
+    ) {
         Ok(r) => r.duplicate_prose,
         Err(e) => {
             report
@@ -8086,6 +8092,7 @@ mod tests {
             &RemPolicy::default(),
             &index,
             &BTreeSet::new(),
+            Utc::now(),
         )
         .await
         .expect("merge sub-job");
@@ -8177,6 +8184,7 @@ mod tests {
             &RemPolicy::default(),
             &index,
             &BTreeSet::new(),
+            Utc::now(),
         )
         .await
         .expect("merge sub-job");

@@ -1824,6 +1824,12 @@ pub struct CartografoSignals {
     /// undone. Rendered into the prompt's `{cadence}` slot — the one place
     /// where the passes that share this prompt part company.
     pub cadence: CartografoCadence,
+    /// The instant this build reads the corpus at (ISO-8601 UTC), so a fact
+    /// line can say whether the claim still holds. A placement question is a
+    /// question about now: the identity card carries what is true of the
+    /// person today, and a spent claim belongs on a topic page where it reads
+    /// as what happened. Empty = unknown, and every fact reads as in force.
+    pub now: String,
 }
 
 /// Which of the three passes is calling the Cartografo.
@@ -3077,6 +3083,7 @@ pub async fn build_wiki_plan(
         // `{cadence}` slot says — the floor, and whether declining a fact is
         // an answer.
         cadence: placement.cadence(),
+        now: now.to_owned(),
         ..CartografoSignals::default()
     };
     if let Some(prev) = &prev {
@@ -3714,16 +3721,47 @@ fn describe_facts(batch: &[FactForPage], signals: &CartografoSignals) -> String 
         .iter()
         .map(|f| {
             format!(
-                "[id:{}] \"{}\" type={} subject={} identity_pages={}",
+                "[id:{}] \"{}\" type={} subject={} identity_pages={}{}",
                 f.fact_id,
                 f.text.replace('\n', " "),
                 f.fact_type.as_deref().unwrap_or("other"),
                 f.subject,
                 signals.identity_scope_tag(&f.subject),
+                spent_tag(f, &signals.now),
             )
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// ` SPENT=<why>` for a fact that has stopped holding, empty while it holds.
+///
+/// Two ways a claim stops and the `valid_to` column only records the second:
+/// the engine closes it by writing `decay_reason` (superseded, retracted,
+/// contradicted, completed), or a horizon set at capture is simply reached.
+/// Timestamps compare lexically, as everywhere in this engine.
+fn spent_tag(f: &FactForPage, now: &str) -> String {
+    if let Some(reason) = f
+        .decay_reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
+        return format!(" SPENT={reason}");
+    }
+    let Some(ends) = f
+        .valid_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    else {
+        return String::new();
+    };
+    if !now.is_empty() && ends < now {
+        format!(" SPENT=ended {ends}")
+    } else {
+        String::new()
+    }
 }
 
 /// The pages a proposal may be folded into: `wiki`'s **concept** pages, or —
@@ -6069,6 +6107,42 @@ mod tests {
         // The user subject falls back to its own page even without a map entry.
         assert!(out.contains("subject=user:bruno identity_pages=bruno"));
         assert!(out.contains("subject=group:famiglia identity_pages=bruno,franz"));
+    }
+
+    /// The fact line tells the Cartografo which claims have stopped holding,
+    /// because a placement question is a question about now.
+    ///
+    /// Without the mark the strong model re-judging a card cannot tell the
+    /// brace somebody still wears from the one that came off in June, and a
+    /// card is served whole into every turn — so the spent one reads as
+    /// current until something moves it. Both closures mark: the engine
+    /// writing `decay_reason`, and a horizon reached. A window still open
+    /// leaves no mark, however far in the future it ends.
+    #[test]
+    fn describe_facts_marks_a_claim_that_has_stopped_holding() {
+        let signals = CartografoSignals {
+            now: "2026-09-01T00:00:00Z".to_owned(),
+            ..CartografoSignals::default()
+        };
+
+        let mut closed = fact(1, "Wears a wrist brace", "user:bruno", "bruno");
+        closed.decay_reason = Some("superseded".to_owned());
+        let mut expired = fact(2, "Side effects of the jab", "user:bruno", "bruno");
+        expired.valid_to = Some("2026-06-27T23:59:59Z".to_owned());
+        let mut ahead = fact(3, "On call until December", "user:bruno", "bruno");
+        ahead.valid_to = Some("2026-12-31T23:59:59Z".to_owned());
+        let holding = fact(4, "Coeliac: cannot eat gluten", "user:bruno", "bruno");
+
+        let out = describe_facts(&[closed, expired, ahead, holding], &signals);
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].ends_with(" SPENT=superseded"), "{}", lines[0]);
+        assert!(
+            lines[1].ends_with(" SPENT=ended 2026-06-27T23:59:59Z"),
+            "{}",
+            lines[1]
+        );
+        assert!(!lines[2].contains("SPENT="), "still in force: {}", lines[2]);
+        assert!(!lines[3].contains("SPENT="), "no horizon: {}", lines[3]);
     }
 
     /// A page proposed by an EARLIER batch of another wiki is a destination,

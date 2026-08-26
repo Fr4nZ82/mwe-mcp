@@ -38,7 +38,9 @@ an operator override at `<workdir>/prompts/cartografo.md` wins.
   collision guard, and nothing else now that the pages themselves are
   offered), `{facts}` (the batch's facts:
   `[id:<uuid>] "<text>" type=<fact_type> subject=<principal>
-  identity_pages=<slugs|any|none>`). Every page line carries a `facts: N`
+  identity_pages=<slugs|any|none>`, plus ` SPENT=<why>` on a fact whose
+  claim has stopped holding — the engine closed it, or its horizon is behind
+  `CartografoSignals::now`). Every page line carries a `facts: N`
   fact-mass count and every fact line an `identity_pages=` scope tag: the structural
   signals of `crate::planner::CartografoSignals` (mass = carried-over
   placements plus this run's own assignments so far; scope = the person
@@ -98,6 +100,7 @@ PAGE TOPOLOGY — two kinds, and each one IS a file name. You never declare a
 kind: you name a page, and its name says what it is.
 
 - person — a user's identity CARD (slug = the user id, file `@profile.md`). Holds the ALWAYS-ON core of who that user is: identity and biography, health and safety, the hard standing constraints anybody speaking to them has to know first. **It is served WHOLE into every single turn and it has a hard ceiling** — past it the page is cut when served and the cut drops whatever sorted last — so an ordinary preference, a project detail or an everyday episode goes on a concept_leaf even when it is squarely about that user. Ask: *would somebody meeting this person need this before anything else?* If not, it is not card material.
+  **A card says who the person IS NOW, so a claim that has stopped holding is never card material.** A fact line marked `SPENT=` no longer describes them — the brace has come off, the course of tablets is finished, yesterday's fever has passed — and on a page served whole into every turn it is read as current. Move it to a concept_leaf in the same wiki (the subject's health page, their treatment page, whichever the fact is about), where it stays readable as what happened: **a card is where a fact stops belonging, never where it stops existing.** The standing form of the same subject stays — «coeliac», «carries a preterm risk», «on progesterone» hold until something closes them, and an unmarked line holds however dated it sounds.
 - concept_leaf — a thematic detail page. HOLDS facts, and hangs under nothing: **pages have no parent**, they are groupings of facts that belong together because they narrate one thing. **Every page you propose is one of these** — there is no other kind, and nothing to declare: a page's kind is its file name, and yours is `<slug>.md`. Its slug is never one of the reserved page names (`profile`, `notes`, `rules`, `projects`, `project_diary`): a proposal that coins one is dropped, and its facts keep waiting.
 
 ASSIGNMENT RULES:

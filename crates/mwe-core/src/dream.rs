@@ -377,12 +377,13 @@ async fn compile_with(
         .iter()
         .map(|(slug, _)| slug.clone())
         .collect();
-    match reviewer::review(tree, &plan, &identity) {
+    match reviewer::review(tree, &plan, &identity, now) {
         Ok(r) if !r.is_clean() || !over_budget.is_empty() => {
             if !r.is_clean() {
                 warn!(
                     findings = r.finding_count(),
                     cross_subject_bloat = r.cross_subject_bloat.len(),
+                    spent_card_facts = r.spent_card_facts.len(),
                     "dream compile: reviewer found issues"
                 );
             }
@@ -420,14 +421,16 @@ async fn compile_with(
 /// - each `cross_subject_bloat` fact → a **refile candidate** (the refile
 ///   judge still decides, and refuses what does not apply);
 /// - each `cross_subject_bloat` page, each `oversized` page, every identity
-///   card the compiler wrote past its ceiling, plus every page failing its
-///   compile repeatedly (the ledger's streak) → a **placement re-open**, so
+///   card the compiler wrote past its ceiling, every card still carrying a
+///   fact that has stopped holding, plus every page failing its compile
+///   repeatedly (the ledger's streak) → a **placement re-open**, so
 ///   the Cartografo re-judges the carried placements with the mass +
 ///   identity + container signals live (split-by-mass can finally fire on an
 ///   old page; a fact-bearing container drains and is garbage-collected once
-///   empty; an over-budget card sheds what is not always-on core). A parked
-///   re-open is consumed only by a build that runs the Cartografo — a
-///   light build carries it (`planner::build_wiki_plan`).
+///   empty; an over-budget card sheds what is not always-on core; a card
+///   whose fact lines now carry `SPENT=` sheds what has stopped being true).
+///   A parked re-open is consumed only by a build that runs the Cartografo —
+///   a light build carries it (`planner::build_wiki_plan`).
 ///
 /// Best-effort like the review itself: a park failure only delays healing.
 async fn park_bridge_signals(
@@ -456,6 +459,13 @@ async fn park_bridge_signals(
     // alternative is not "it stays whole": it is already being CUT when
     // served, in an order nobody chose.
     reopen.extend(cards_over_budget.iter().cloned());
+    // A card fact that has stopped holding. Same repair, different reason:
+    // the always-on core is what a consumer is handed on EVERY turn, so a
+    // spent claim there is read as true until something moves it. The
+    // Cartografo re-homes it onto a topic page, where it stays readable as
+    // what happened — a card is where a fact stops belonging, never where it
+    // stops existing.
+    reopen.extend(r.spent_card_facts.iter().map(|(slug, _, _)| slug.clone()));
     // Pages failing their compile twice in a row re-open too. Map the
     // ledger's source_path key back to a plan slug via the same helper
     // that wrote it.
@@ -498,7 +508,8 @@ async fn park_bridge_signals(
 ///
 /// `llms` is optional: promotion itself is deterministic (no LLM). When `None`
 /// (or when the bag has no `cronista`), the compile step is skipped and only
-/// the promotion runs — the "no strong model configured" path.
+/// the promotion runs, so a half-wired install surfaces as pages that never
+/// compile rather than as a panic.
 ///
 /// # Errors
 ///
