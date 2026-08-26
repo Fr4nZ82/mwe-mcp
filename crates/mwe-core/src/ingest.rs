@@ -2227,6 +2227,10 @@ fn vet_supersede<'a>(
 /// `sender_id`: a supersede replaces what a fact says, never whose fact it is.
 /// See [`fact_index::inherit_allow`] for what carrying the subject across would
 /// cost — it is the case where a fact about Bob ends up unreadable by Bob.
+///
+/// `allow` reaches here already stripped of `global` by
+/// [`apply_reconciled_supersedes`], which skips the call outright when
+/// nothing else is left to carry.
 async fn inherit_audience(pool: &SqlitePool, successor: &FactId, allow: &[Principal]) -> bool {
     match fact_index::inherit_allow(pool, successor, allow).await {
         Ok(true) => true,
@@ -2245,10 +2249,14 @@ async fn inherit_audience(pool: &SqlitePool, successor: &FactId, allow: &[Princi
 /// replaces, **audience first**.
 ///
 /// The order is the whole point. A supersede is a **content update, not a
-/// sharing change**: the new fact INHERITS the superseded fact's allow list.
-/// The reconciler can tell that a claim was restated; it must never be relied
-/// on to restate who may read it, because a re-statement that quietly drops
-/// the allow list re-privatises a shared fact and nothing anywhere says so.
+/// sharing change**: the new fact inherits the superseded fact's allow list,
+/// `global` excepted. The reconciler can tell that a claim was restated; it
+/// must never be relied on to restate who may read it, because a re-statement
+/// that quietly drops the allow list re-privatises a shared fact and nothing
+/// anywhere says so. `global` is the one reader that does not travel: it is
+/// not a wider audience but the absence of one, and a mis-paired supersede
+/// that carried it would publish a fact somebody had just decided to keep
+/// inside their household.
 /// Deciding the supersede after the new fact is written makes this a second
 /// write, where inheriting before the write would have been free. That is the
 /// price of asking the question where it can be answered honestly: the
@@ -2296,12 +2304,33 @@ async fn apply_reconciled_supersedes(
         ) else {
             continue;
         };
+        // The audience travels, EXCEPT `global`. Inheritance exists so a
+        // restatement cannot quietly hide a fact from people who could
+        // already read it; turning a per-fact decision into a public one is
+        // the opposite failure and it is the worse one — public is not a
+        // wider audience, it is the absence of one. So `global` is only ever
+        // reached by deciding it for THIS fact, on its own merits.
+        //
+        // When stripping it leaves nothing, there is nobody to carry over:
+        // the successor keeps the audience the classifier gave it.
         let inherited: Vec<Principal> = prev
             .allow_ids
             .iter()
-            .filter(|p| **p != sender)
+            .filter(|p| **p != sender && !p.is_global())
             .cloned()
             .collect();
+        if inherited.is_empty() {
+            if weld_supersede(pool, &target_id, &successor_id, request.turn_now()).await {
+                applied += 1;
+                tracing::info!(
+                    target = target_id.as_str(),
+                    successor = successor_id.as_str(),
+                    "ingest: reconcile superseded a fact; its audience was public, \
+                     so the successor keeps its own"
+                );
+            }
+            continue;
+        }
         if !inherit_audience(pool, &successor_id, &inherited).await {
             tracing::warn!(
                 successor = successor_id.as_str(),
@@ -13442,6 +13471,99 @@ mod tests {
     }
 
     /// The supersede verb, and the half that must never be lost: a fact that
+    /// A public predecessor does **not** publish its successor.
+    ///
+    /// Inheritance exists so a restatement cannot quietly hide a fact from
+    /// people who could already read it. `global` is the one reader where
+    /// that reasoning inverts: it is not a wider audience but the absence of
+    /// one, and carrying it over turns a decision somebody just made — «the
+    /// household, nobody else» — into a public claim. Measured on the bench
+    /// on 2026-08-26: the classifier answered `group:famiglia` for a
+    /// pregnancy, a mis-paired supersede against a public profile fact
+    /// carried `global` onto it, and every health fact of that person
+    /// followed it public.
+    ///
+    /// So the successor keeps what the classifier gave it, and the supersede
+    /// still applies — the pairing may be wrong, but retiring the old fact is
+    /// a separate question from who reads the new one.
+    #[tokio::test]
+    async fn a_public_predecessor_leaves_its_successors_audience_alone() {
+        let (dir, tree, pool) = setup_workdir().await;
+        let plant = |body: &'static str, allow: Vec<Principal>| {
+            let tree = &tree;
+            let pool = &pool;
+            async move {
+                capture::wiki_capture(
+                    tree,
+                    pool,
+                    fake_embedder(),
+                    CaptureRequest {
+                        subject_external: None,
+                        authored_refs: Vec::new(),
+                        wiki_id: WikiId::parse("alice").unwrap(),
+                        page: Some(PathBuf::from("cucina.md")),
+                        body: body.into(),
+                        subject: Principal::User("alice".into()),
+                        allow,
+                        sender: None,
+                        fact_type: Some("bio".into()),
+                        page_description: None,
+                        topics: vec!["salute".into()],
+                        dedup_threshold: Some(1.01),
+                        valid_from: None,
+                        valid_to: None,
+                        style: None,
+                        salience: None,
+                    },
+                )
+                .await
+                .expect("plant")
+            }
+        };
+        // The profile fact alice declared public at enrolment, and a health
+        // fact the classifier deliberately kept inside the household.
+        let old = plant("alice is a mother", vec![Principal::global()]).await;
+        let new = plant(
+            "alice is 29 weeks pregnant",
+            vec![Principal::Group("famiglia".into())],
+        )
+        .await;
+
+        let candidates = vec![recall::RecallHit::from_row(
+            fact_index::find_by_id(&pool, &old.fact_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            1.0,
+        )];
+        let turn_facts = vec![(new.fact_id.clone(), "alice is 29 weeks pregnant".to_owned())];
+
+        let applied = apply_reconciled_supersedes(
+            &pool,
+            &[LlmSupersede {
+                target: Some(old.fact_id.as_str().to_owned()),
+                successor: Some(new.fact_id.as_str().to_owned()),
+            }],
+            &candidates,
+            &turn_facts,
+            &req("alice is 29 weeks pregnant", "alice"),
+        )
+        .await;
+        assert_eq!(applied, 1, "the supersede still applied");
+
+        let successor = fact_index::find_by_id(&pool, &new.fact_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            successor.allow_ids,
+            vec![Principal::Group("famiglia".into())],
+            "a public predecessor must not publish its successor; the audience \
+             the classifier decided for THIS fact stands"
+        );
+        drop(dir);
+    }
+
     /// replaces another **inherits its audience**.
     ///
     /// A restatement is a content update, not a sharing change. The reconciler
