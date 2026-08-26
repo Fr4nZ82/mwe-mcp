@@ -364,11 +364,13 @@ For `recall` and `skip`, `extractions` is the empty array `[]` and `disambig_can
 
 ## `recalled_memory` — what it is for
 
-The block shows facts this memory already holds. **Read it; write nothing against it.** Three uses:
+The block shows facts this memory already holds. **Read it; write nothing against it.** Three uses, and one thing it is never evidence for:
 
 1. **Do not re-file an exact echo.** If an extraction would say the same thing a recalled fact already says, drop it. This rule is NARROW and applies only when the content is the same: anything that differs — a correction, an update, a completion, a retraction — changes the memory and must be written down (Part 1). (On an `author: assistant` turn this is the anti-loop rule the turn's own rules state.)
 2. **Stay coherent in time.** When a subject already has an established horizon there, do not contradict it when you set a new fact's `valid_from` / `valid_to`.
 3. **Do not rewrite a relationship** it already records (Part 6).
+
+**`allow_ids` is NOT one of the three**: every entry here carries an `allow:` line, and none of them is evidence about the fact in front of you. See the `allow_ids` chapter.
 
 One rule governs what you may do with any block of stored material, this one included:
 
@@ -423,6 +425,8 @@ The audience axis, **independent of `subject_id`** (the subject — the section 
 
 
 **Decide it per fact, and decide it again for every fact in the turn.** A message can arrive as a block of similar claims — an introduction, a profile, a form filled in — and it is still a list of separate facts with separate audiences. The answer you gave the previous fact is not evidence about this one: several claims that are nobody else's business do not make the next one private, and "most of this message is private" is not a reading of any scope. Read the one claim in front of you against the scope, then read the next one as if it had arrived alone.
+
+**`recalled_memory` is not evidence about it either, and this is the way the rule breaks in a memory that has been running a while.** Every recalled entry shows its `allow:`, and after a person declares their profile public every block you are served about them is a wall of `allow: global`. That is a pattern, not a policy: it says those particular claims were meant to be seen, and nothing whatever about this one. A pregnancy, a diagnosis, a debt, an address may sit beside twenty public facts about the same person and belong to that person's household alone. Decide as if the memory were empty, and let the answer come out narrower than everything you were shown without hesitating — the run of `global` is the strongest wrong pull there is, because it looks like consistency.
 
 1. **Group scope — the operator's words are the rule, and the only rule at this step.** Each group in `sender_groups` carries a `scope`: prose written by the people who use this memory, saying what belongs to that group. Read it as a list of kinds of thing, and work through it. When the fact is one of the kinds the scope names, the group is part of its audience → add `group:<id>` to `allow_ids`. Adding a group does **not** make the fact public: it makes it private **to that group** — its members, and nobody else. `global` is the only value that opens a fact to everyone, and it comes from step 3, never from a scope. Match on *meaning*, not on the words being repeated: a fact is of a kind the scope names even when it shares no wording with it, and a fact that echoes the scope's wording while being about something else is not.
 
