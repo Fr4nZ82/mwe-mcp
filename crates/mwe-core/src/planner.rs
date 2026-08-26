@@ -99,8 +99,9 @@ const FOREST_PAGE_CEILING: usize = 400;
 /// The batch's **own** wiki is never cut — that is where most of its facts
 /// belong and where every page it coins is born. What is cut is the rest of
 /// the forest, and [`crate::candidates`] decides what survives the cut: never
-/// alphabetically, and never by nearness alone, because a page that resembles
-/// nothing this wiki holds is exactly the one a search would never find.
+/// alphabetically, and never by nearness alone, because nearness ranks away
+/// exactly the pages nothing else would offer — and the right home for a fact
+/// is not always the page that reads like it.
 const FOREIGN_SELECTION_PAGES: usize = crate::candidates::SELECTION_PAGES;
 
 /// Errors raised by the planner.
@@ -975,12 +976,11 @@ pub fn build_compilation_plan(
     // **A link does not oblige the page at the other end** (founder,
     // 2026-08-23: *«la reciprocità non serve, non è detto che ci debba essere,
     // può capitare ma non è obbligatoria»*). The rule the Cronista writes by
-    // is that a link is worth writing when a search phrased in THIS page's
-    // words would never have found the destination — a question about this
-    // page, asked from this page. The page at the other end may have no reason
-    // at all to point back, and requiring it would make the return link
-    // exactly the decorative one the same prompt forbids. It can happen; it
-    // is never owed.
+    // is that a link carries a reader onward from one of THIS page's facts —
+    // a question asked standing here, of what is written here. The page at the
+    // other end may hold no fact that leads back, and requiring the return
+    // link would make it exactly the link-for-company the same prompt forbids.
+    // It can happen; it is never owed.
     //
     // Recording them is what makes a link **survive**: at the next rewrite the
     // compiler hands them back as this page's mandatory rails, so a Cronista

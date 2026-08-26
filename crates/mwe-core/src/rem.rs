@@ -9030,7 +9030,7 @@ mod tests {
 
         let llm = FakeLlmBackend::new(
             "pro",
-            "{\"link\":\"none\",\"why\":\"a search reaches it already\"}",
+            "{\"link\":\"none\",\"why\":\"nothing here leads there — a shared name is all they have\"}",
         );
         let report = run_rail_writer(
             &pool,

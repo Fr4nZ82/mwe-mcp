@@ -1,7 +1,7 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.32
+version: 1.33
 default_version_at_bootstrap: v1.30
 ---
 
@@ -123,16 +123,16 @@ changes half.** A memory with more pages than that no longer fits its whole
 index in a call, so the Cronista is shown a **selection** instead, composed by
 `crate::candidates` from four sources and tagged line by line: `near`,
 `same-people`, `same-turn`, `far` (plus `same-wiki`, the fallback for a page
-`page_card` has no vector for). **Not the nearest N** — that would be exactly
-the pages this page's own linking rule tells it not to link, since a search
-from here already reaches them. That slice is different for every page, so it
-moves to `{page_index_task}` in
-the **task** half — left in the cacheable one it would write a cache entry per
-page and read none, which is worse than not caching at all — and `{page_index}`
-becomes a single line saying where the pages are listed. The rules about the
-index stay in the cached half either way: only the lines move. Below the
-ceiling nothing changes, because a cached whole index is both cheaper and
-complete.
+`page_card` has no vector for). **Not the nearest N** — a nearest-N list
+offers only pages a search from here may reach on its own, and never the
+distant page that constrains one of these facts, which is the link nothing
+else in the system can produce. That slice is different for every page, so it
+moves to `{page_index_task}` in the **task** half — left in the cacheable one
+it would write a cache entry per page and read none, which is worse than not
+caching at all — and `{page_index}` becomes a single line saying where the
+pages are listed. The rules about the index stay in the cached half either
+way: only the lines move. Below the ceiling nothing changes, because a cached
+whole index is both cheaper and complete.
 
 An operator override without the marker still works: the whole rendered body
 goes to the system prompt as before and nothing is marked cacheable.
@@ -165,10 +165,10 @@ WIKILINK GRAMMAR — links are navigation rails, copy them EXACTLY:
 - RECOMMENDED LINKS ARE MANDATORY, the same way fact completeness is: EVERY link listed there must appear in your `mergedBody`. They are not suggestions — they are this page's rails, and a reader reaches its neighbours ONLY through the links you write. A rail you leave out is a neighbouring page nobody can walk to from here. Weave each one where it belongs in the thread, in the form rule 2 gives (name the neighbour, link it, move on). If one genuinely has no place in the narrative, give it a short closing sentence that says how it relates — never drop it, and never park them all in a list at the end: a link explained by the prose around it is the whole point, a bare address is the weak form of it.
 WHICH LINKS TO WRITE — the part that decides whether this memory works:
 - Understand who reads them. A reader arrives at this page because a SEARCH matched it — the words of a question landed near the words of a fact here. From this page onward, the ONLY way further is the links you wrote. There is no directory, no index, no list of neighbouring pages: a page nobody links is a page reachable only by a search that happens to hit it.
-- So the links worth writing are exactly the ones a SEARCH WOULD NEVER MAKE. Before writing one, ask: would a question phrased in THIS page's words also have found that page? If yes, the link buys little — the search already reaches it. If NO, and someone reading this page would need what is over there, that is precisely the link to write.
-- The case this exists for: a page about cooking dinner says the person is lactose intolerant; the page holding the lactase-pill routine shares not one word with "dinner". No similarity will ever join them. A reader who follows "lactose intolerant → [[wiki_id/intolerances]]" joins them immediately. That is a link doing its job.
-- The counter-case, equally important: do not link decoratively. A link to a page the reader would have found anyway, or one written merely because two pages mention the same person, costs a clause of prose and buys nothing. Relatedness is not the test — UNREACHABILITY is.
-- Where to find them: OTHER PAGES lists pages with the one line saying what each holds — sometimes every page of the memory, sometimes a selection. When a line is tagged, the tag says why that page is in front of you, and a `far` one is there precisely because nothing about it resembles this page: that is where this rule's best answers live. Read the list as a question — "which of these would someone standing on MY page need, and never stumble into?" — and link those. A handful, chosen; not a sweep.
+- So the link worth writing is the one that carries a reader ONWARD from something they have just read — and you find it FACT BY FACT, never by looking at the page as a whole. Take each fact you are about to write and ask: somebody who has just read THIS, what do they need next? What continues it, completes it, or decides whether it still holds? The page holding that answer is the link, and it belongs in the prose beside that fact. One fact may deserve several links; most deserve none. Write the ones for which you can name the reader and what they came for.
+- The strongest link is a CONSTRAINT, not a resemblance. When the destination limits, enables, schedules or decides what this fact says, the two pages can share almost no words and still be inseparable in practice — neither can be acted on without the other. A link like that is worth double, because no search will ever produce it: the shared words are not there to be found. That is a reason a link is VALUABLE, not a bar every link must clear — you do not know which question brought the reader here, so you can never assume a page would have been found anyway.
+- The counter-case, narrow and real: do not link for COMPANY. Two pages that name the same person, and nothing else, need no link between them — a shared name is not a reason to walk from one to the other. Before writing a link, say what the reader gains by arriving there. If the only answer is "that page is about them too", leave it out.
+- Where to find them: OTHER PAGES lists pages with the one line saying what each holds — sometimes every page of the memory, sometimes a selection. When a line is tagged, the tag says why that page is in front of you: `far` means nothing about it resembles this page, so if one of your facts nevertheless continues over there, that is a link nothing else in this system could have found; `near` means a search from here may well arrive already, so such a link has to earn its place by extending a fact rather than by sitting close to one. Read the list against your facts, one fact at a time — "which of these does a reader of THIS need next?" — and link those. A handful, chosen; not a sweep.
 - RECOMMENDED LINKS is the slot for rails the engine requires on this page: the links THIS page already carries, plus any the nightly pass decided it should. It is mandatory and it is the floor, not the ceiling — write every one of them, then keep going by the test above, which is where the links that matter come from. When it says `none specific` it is asking nothing of you and every link here is yours to choose. A page that links to yours puts nothing on this list and asks nothing of you: a link is one page's sentence, not a contract between two.
 
 3. Write flowing PROSE, not a bullet list. Make the RELATIONS between the facts explicit — causality, chronology, roles, implications — that connective thread is the value, not a pile of sentences.

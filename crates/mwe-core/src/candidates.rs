@@ -4,11 +4,12 @@
 //! Two stages ask the same question. The Cartografo decides where a fact goes;
 //! the Cronista decides which pages this page should link to. Past their
 //! ceilings the obvious answer is **the pages nearest theirs**, ranked by card
-//! similarity — and for the second question that is precisely the wrong list,
-//! because a link is worth writing exactly when a search would not have found
-//! the destination anyway. Serving the nearest pages to a model told to link
-//! the unreachable ones is offering it the answers its own rule tells it to
-//! reject.
+//! similarity — and for the second question that is precisely the wrong list.
+//! The link that carries a reader onward often goes to a page resembling this
+//! one in nothing — the page that constrains a fact here while sharing none of
+//! its words — and a nearest-ranked list is exactly where such a page never
+//! appears. Serving only the nearest is hiding the answers this module exists
+//! to offer.
 //!
 //! ## The measurement
 //!
@@ -35,8 +36,9 @@
 //! - [`CandidateSource::Turn`] — pages holding facts extracted from the same
 //!   conversational turns. Two facts of one turn sit at 0.256 textual
 //!   similarity: the association is real and no embedder will find it.
-//! - [`CandidateSource::Far`] — sampled across the far half. These are the
-//!   unreachability rule's candidates, and nothing else offers them.
+//! - [`CandidateSource::Far`] — sampled across the far half. A page that
+//!   constrains a fact here while sharing none of its words appears in no
+//!   other source.
 //!
 //! A fifth, [`CandidateSource::Home`], is not a search: it is the caller's own
 //! ordering, used only when the asking page has no card vector to rank with.
