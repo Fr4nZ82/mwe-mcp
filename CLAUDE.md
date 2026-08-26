@@ -190,9 +190,19 @@ read like alternatives when you meet them in the code, and they are not.
     come along with it. Rename them **as you write**, not afterwards: once the
     paragraph reads as evidence, nobody wants to touch it.
 
-  **Check before committing, not before pushing.** The pre-push hook scans the
-  whole outgoing range, so one bad line means rewriting every commit since. Run
-  it while the work is still in the working tree:
+  **The check fires at commit time, and the last of the three nets is the
+  push.** Three local hooks read the same private blacklist
+  (`$HOME/.config/mwe-scrub-blacklist.txt`, which is never in the repo):
+  `pre-commit` scans the lines a commit adds, `commit-msg` scans the message,
+  and `pre-push` scans the whole outgoing range. The middle one carries the
+  most weight — a message narrates the measurement that justified the change,
+  the measurement is written from real rows, and no check on the *files* will
+  ever see it. Caught at commit a name costs one word; caught at push it costs
+  the rewrite of every commit made since.
+
+  The hooks live in `.git/hooks/`, so a fresh clone has none of them and the
+  blacklist is not there to be found either. Until they are installed, run
+  the same check by hand while the work is still in the working tree:
 
   ```
   BL="$HOME/.config/mwe-scrub-blacklist.txt"
