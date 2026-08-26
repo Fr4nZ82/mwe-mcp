@@ -46,7 +46,8 @@
 //! untouched, so a steady-state compile rewrites nothing).
 //!
 //! The compile-time card those passes write is **owner-tier** (the
-//! [`fact_at_default_visibility`] boundary) — the operator's Obsidian view. The
+//! [`fact_at_default_visibility`] boundary) — it is the wiki's own file, which
+//! the producer side reads and the dashboard shows. The
 //! serve-time counterpart lives here too: [`build_reader_card`] recomputes the
 //! card **per reader** from `fact_index` for the recall navigator, so a reader
 //! never sees the topic of a fact they cannot read

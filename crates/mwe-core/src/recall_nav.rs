@@ -1545,9 +1545,10 @@ fn linked_wiki_candidates(
             let rel = PathBuf::from(format!("{slug}.md"));
             // Vet the page half: safe path + the file actually exists
             // (a mutant / stale link is a dead rail, not a candidate) +
-            // never the channel-only rules page. Existence is checked
-            // Obsidian-style — byte-exact first, else the unique
-            // case-insensitive match — so a link whose case drifted
+            // never the channel-only rules page. Existence is checked the
+            // way a case-insensitive filesystem resolves — byte-exact
+            // first, else the unique case-insensitive match — so a link
+            // whose case drifted
             // from the filename resolves the same way it does on the
             // consumer's local mirror instead of dying silently.
             if !wiki::is_safe_page_path(&rel) {

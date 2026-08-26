@@ -32,8 +32,8 @@ an operator override at `<workdir>/prompts/rem-rails.md` wins.
   `link` must be copied from the candidate list. `instead_of` may name only a
   rail **the REM itself wrote** on this page, and is ignored otherwise: a link
   the page's own prose carries belongs to whoever wrote it — the Cronista, or
-  the owner editing in Obsidian — and this pass does not take a page's own
-  sentences away.
+  an admin editing the page from the dashboard — and this pass does not take a
+  page's own sentences away.
 
 ## What happens to the answer
 

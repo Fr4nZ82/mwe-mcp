@@ -2298,7 +2298,7 @@ pub struct WikiLink {
 /// out of `body` into structured [`WikiLink`]s.
 ///
 /// Lightweight scan — does not handle escapes or nested brackets,
-/// mirroring the Obsidian flavour the rest of the codebase emits via
+/// mirroring the flavour the rest of the codebase emits via
 /// `wiki_link`. The `|display` alias is stripped (resolution never sees
 /// it); the first `/` splits wiki id from page slug. Consumed by the
 /// recall navigator ([`crate::recall_nav`]) to offer both the linked

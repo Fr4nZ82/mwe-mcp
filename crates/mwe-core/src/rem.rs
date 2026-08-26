@@ -1330,7 +1330,8 @@ async fn run_rail_writer(
 /// The links it already carries are **labelled by who wrote them**, because
 /// that decides what the model may do with them: a rail this pass wrote before
 /// may be replaced, a link the page's own prose carries may not — it belongs
-/// to whoever wrote it, the Cronista or the owner editing in Obsidian.
+/// to whoever wrote it, the Cronista or an admin correcting the page from the
+/// dashboard's raw editor.
 fn rail_prompt(
     tree: &WikiTree,
     plan: &CompilationPlan,
@@ -9057,8 +9058,8 @@ mod tests {
     /// **A page whose prose carries a link is not this pass's to change.**
     ///
     /// The swap half of the founder's ruling is a swap of *its own* rails: a
-    /// link the Cronista wrote, or one the owner typed in Obsidian, belongs to
-    /// whoever wrote it. A model naming one in `instead_of` is ignored, and
+    /// link the Cronista wrote, or one an admin typed into the dashboard's raw
+    /// editor, belongs to whoever wrote it. A model naming one in `instead_of` is ignored, and
     /// the new rail is added beside it.
     #[tokio::test]
     async fn the_rail_writer_never_removes_a_link_the_prose_carries() {

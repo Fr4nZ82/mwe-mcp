@@ -7,8 +7,9 @@
 //!
 //! Output empty ⇒ [`Error::InvalidTitle`] (the agent must pass an explicit
 //! `slug`). No automatic transliteration (rejected: ICU dependency
-//! weight + non-determinism). No hash fallback (would hurt Obsidian
-//! navigability).
+//! weight + non-determinism). No hash fallback: a slug is the page's
+//! address — read on the dashboard, written into `[[wikilinks]]` by a
+//! model — and a hash is neither readable nor reconstructible.
 //!
 //! Collision resolver: suffix `°N` from N=2 up to N=99
 //! (`Error::CollisionCapExceeded` past the cap). `°` is reserved

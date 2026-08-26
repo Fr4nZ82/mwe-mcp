@@ -968,7 +968,8 @@ pub fn build_compilation_plan(
     //
     // One source, and it is what somebody wrote: the `[[wikilinks]]` on the
     // page's own file, harvested by [`harvest_prose_links`] — by the Cronista
-    // on the last rewrite, or by the owner editing the page by hand. A page is
+    // on the last rewrite, or by an admin editing the page from the dashboard.
+    // A page is
     // reached because one of its facts ranked, its description matched, or
     // another page's prose links it. There is no fourth way in, and nothing
     // points down at it from above.
@@ -1707,8 +1708,8 @@ pub fn take_refile_candidates(tree: &WikiTree) -> Result<Vec<String>> {
 /// (*«può decidere di rimuoverne uno per far spazio ad un altro migliore»*):
 /// when it names a rail **the REM itself parked on the same page**, that rail
 /// goes. It can never name a link the prose carries — those belong to whoever
-/// wrote them, the Cronista or the owner in Obsidian, and the REM does not
-/// take a page's own sentences away.
+/// wrote them, the Cronista or an admin editing the page from the dashboard,
+/// and the REM does not take a page's own sentences away.
 ///
 /// # Errors
 ///
@@ -2034,9 +2035,10 @@ pub async fn foreign_page_offers(
 ///
 /// - a rewrite is the only thing that changes a page's links, so the file is
 ///   always at least as fresh as any record the engine could keep;
-/// - the owner edits these pages by hand, in Obsidian. A link they wrote
-///   themselves is a link the memory has, and reading the file is what makes
-///   it one the engine defends on the next rewrite instead of quietly dropping.
+/// - an admin can correct a page by hand from the dashboard's raw editor. A
+///   link they wrote themselves is a link the memory has, and reading the file
+///   is what makes it one the engine defends on the next rewrite instead of
+///   quietly dropping.
 ///
 /// Only **page** hops count. A bare `[[wiki_id]]` names a wiki, and recall
 /// opens pages, so it leads nowhere and is not an edge
@@ -3274,7 +3276,8 @@ pub async fn build_wiki_plan(
     }
 
     // The links the pages themselves carry, read off disk: written by the
-    // Cronista on their last rewrite, or by the owner editing them by hand.
+    // Cronista on their last rewrite, or by an admin editing them from the
+    // dashboard.
     let prose_links = harvest_prose_links(tree);
     // The rails the REM decided on an earlier night and the prose has not
     // caught up with yet. They ride the previous plan; the build below drops

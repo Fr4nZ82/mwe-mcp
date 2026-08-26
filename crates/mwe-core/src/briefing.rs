@@ -1203,8 +1203,8 @@ fn render_section(
     if let Some(cite) = target_cite {
         // Stable handle inline so the smart consumer at next
         // bootstrap can open the exact wiki region. Rendered as a
-        // markdown autolink so Obsidian preserves the clickable form
-        // and a plain-text reader still sees the URL.
+        // markdown autolink so a renderer keeps it clickable and a
+        // plain-text reader still sees the URL.
         out.push_str("\n*→ <");
         out.push_str(cite);
         out.push_str(">*\n");

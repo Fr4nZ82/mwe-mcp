@@ -26,7 +26,7 @@
 //!    is bookkeeping, not data.
 //! 2. Any event whose path has a **fresh** sibling marker (`mtime`
 //!    within [`MARKER_TTL`]) is dropped — the change is from mwe-mcp
-//!    itself, not from a third-party editor like Obsidian.
+//!    itself, not from outside.
 //!
 //! Stale markers (older than [`MARKER_TTL`]) do not suppress events;
 //! they survive only as orphans from a crashed writer and are cleared

@@ -1326,7 +1326,8 @@ pub fn resolve_wikilink_href(
 
 /// The view-route href for page `slug` of the wiki at `abs_dir` — `None`
 /// unless the slug maps to a safe path whose file exists. Existence is
-/// checked Obsidian-style (byte-exact first, else the unique
+/// checked the way a case-insensitive filesystem resolves (byte-exact
+/// first, else the unique
 /// case-insensitive match, per
 /// [`mwe_core::wiki::resolve_page_case_insensitive`]) and the href
 /// carries the on-disk spelling.

@@ -648,8 +648,8 @@ pub struct WikiMeta {
     /// (the diagonal-identity model), not a human's. A self-describing mirror of
     /// the authoritative `consumers.system_user_id` binding, stamped at agent-wiki
     /// creation ([`IdentityKind::Agent`]) and backfilled on bot-token mint, so an
-    /// agent wiki announces itself without a DB lookup — the operator sees it in
-    /// Obsidian, and the dashboard / REM can spot it from the `_meta.md` alone.
+    /// agent wiki announces itself without a DB lookup: the dashboard and the REM
+    /// can spot it from the `_meta.md` alone.
     /// Round-tripped only when set (the vast majority of wikis stay lean).
     /// Defaults to `false`. SSOT for "is this an agent?" stays the binding; this
     /// is the cache.
@@ -1515,7 +1515,7 @@ fn list_pages_inner(wiki_root: &Path, cur: &Path, out: &mut Vec<PageInfo>) -> Re
             if name.starts_with('_') {
                 continue;
             }
-            // Case-insensitive `.md` filter so `INTRO.MD` from an Obsidian
+            // Case-insensitive `.md` filter so `INTRO.MD` from a smart-wiki
             // import is still enumerated.
             if !path
                 .extension()
@@ -1565,7 +1565,7 @@ pub fn workdir_relative_source_path(workdir: &Path, abs_path: &Path) -> String {
 /// - no `..` or `.` components
 ///
 /// This is intentionally stricter than the OS-level traversal check — we
-/// also want a stable, Obsidian-friendly charset for the on-disk filenames
+/// also want a stable, portable charset for the on-disk filenames
 /// so the file watcher and re-index pipeline never have to escape weird
 /// codepoints in queries.
 ///
@@ -1573,7 +1573,7 @@ pub fn workdir_relative_source_path(workdir: &Path, abs_path: &Path) -> String {
 /// pair this check with [`page_path_case_hazard`] +
 /// [`page_case_conflict`] so two paths differing only by ASCII case can
 /// never coexist — they would be the SAME file on a smart consumer's
-/// case-insensitive local mirror (Windows/macOS Obsidian).
+/// case-insensitive local mirror (Windows, macOS).
 #[must_use]
 pub fn is_safe_page_path(p: &Path) -> bool {
     if p.is_absolute() {
@@ -1755,7 +1755,7 @@ pub fn page_case_conflict(abs_dir: &Path, rel: &Path) -> Option<String> {
 }
 
 /// Resolve `rel` under `abs_dir` the way a case-insensitive filesystem
-/// (Obsidian on Windows/macOS) would.
+/// (Windows, macOS) would.
 ///
 /// Byte-exact match first, else the UNIQUE ASCII-case-insensitive match
 /// at each level. Returns the on-disk relative path, or `None` when a

@@ -14,7 +14,7 @@
 //! ## The file is the truth; this is a cache
 //!
 //! Same class as the smart-wiki projection of `_meta.md` in
-//! [`crate::sections`]: a hand edit in Obsidian wins, and so does the nightly
+//! [`crate::sections`]: a hand edit from the dashboard wins, and so does the nightly
 //! compile that rewrites pages wholesale. Three properties keep that honest:
 //!
 //! - rows are written by the reindex pipeline ([`crate::reindex`]), the one

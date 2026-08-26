@@ -448,8 +448,7 @@ pub struct PushResponse {
 ///
 /// One link per authored page (`_meta.md` and deletes are not authorship),
 /// with the trailing `.md` stripped and `\` normalised to `/` so the link
-/// reads naturally in Obsidian and parses with
-/// [`crate::recall::extract_wikilinks`].
+/// parses with [`crate::recall::extract_wikilinks`].
 fn authored_refs_for(wiki_id: &WikiId, pages: &[PushPage]) -> Vec<String> {
     pages
         .iter()
