@@ -17,8 +17,14 @@
 //! - [`run_light`] — the cheap, frequent dream: promote buffered captures into
 //!   `fact_index`, then compile the pages that went dirty.
 //! - [`run_full`] — the nightly / on-demand dream: a complete [`rem::run_cycle`]
-//!   reorg (dedup, auto-promote, archive, **parked-comment application**)
-//!   followed by a compile pass.
+//!   reorg (dedup, auto-promote, archive, **parked-comment application**),
+//!   then a review of the prose already on disk, then ONE compile pass that
+//!   answers both — the claims that were waiting and the placements the
+//!   review asked to re-judge. Looking before writing is what makes the night
+//!   self-concluding: the night puts right what the day wrote, instead of
+//!   noticing it a moment too late. A second review closes the pass from
+//!   above and notes what a further night should improve (founder,
+//!   2026-08-26).
 //!
 //! The compile step is gated on the `cronista` slot: absent ⇒ it is skipped and
 //! facts stay buffered/promoted but unwritten (the prose is the product of the
@@ -367,6 +373,12 @@ async fn compile_with(
             reviewer::IdentityContext::default()
         },
     };
+    // The eagle's flight: the review that closes the pass, looking down at
+    // the structure this build has just made. What it finds is for a further
+    // night — the shape a night of moving facts leaves can be sound and still
+    // want straightening, and saying so is the point of looking from up here.
+    // Tonight's own healing already happened, at the head of the pass.
+    //
     // The over-budget cards are the compiler's own finding, not the
     // reviewer's — it measures a card at the moment it writes it, where the
     // served length is still in hand. They travel the same bridge because
@@ -410,13 +422,21 @@ async fn compile_with(
     Ok(report)
 }
 
-/// The findings→healing bridge: persist what tonight's review (and the
-/// compile-failure ledger) learned, so the NEXT cycle's engines act on it.
+/// The findings→healing bridge: persist what a review (and the
+/// compile-failure ledger) learned, as nominations on the plan.
 ///
-/// The reviewer runs at the dream's tail — after this cycle's refile and
-/// after the plan build — so its findings can only influence cycle N+1;
-/// they park on the persisted plan (the `force_dirty` pattern). All
-/// nominations, never verdicts:
+/// **Two reviews park here, and they are two different jobs.**
+/// [`review_before_placing`] runs at the head of the night, so what it finds
+/// is healed by the build a moment later — the night puts right what the day
+/// wrote. The review at the compile's tail is the eagle's flight: it looks
+/// down at the structure the night has just built and notes what a further
+/// pass should improve — moving facts can leave a shape that is sound but
+/// crooked, and the honest answer is *«good enough for now, and tomorrow
+/// night I straighten it»* (founder, 2026-08-26). Its findings are for the
+/// next cycle by design, not for want of a chance to act.
+///
+/// Either way the park is on the persisted plan (the `force_dirty` pattern),
+/// and either way these are nominations, never verdicts:
 ///
 /// - each `cross_subject_bloat` fact → a **refile candidate** (the refile
 ///   judge still decides, and refuses what does not apply);
@@ -496,6 +516,56 @@ async fn park_bridge_signals(
             "dream compile: bridge signals parked for the next cycle"
         ),
         Err(e) => warn!(error = %e, "dream compile: bridge-signal park failed"),
+    }
+}
+
+/// Review what is already written and park what needs re-judging, **before**
+/// the night's one build places anything.
+///
+/// The night's corrections and its new claims are the same job and want the
+/// same judgement: a claim arriving tonight may belong on a page this review
+/// is about to re-open, and a page re-opened after the build was settled is a
+/// page that waits a day. So the reviewer reads the plan and the prose the
+/// last compile left on disk — both are on disk before this night starts —
+/// and its findings park on that plan, where [`run_compile`]'s strong
+/// Cartografo consumes them in the same pass.
+///
+/// The compiler's own over-budget finding is not here and cannot be: a card
+/// is measured past its ceiling **as it is written**, so that one is produced
+/// by the compile and parks for the next night's review, which is this one.
+///
+/// Best-effort throughout, like the review at the compile's tail: a night
+/// that cannot review still places its claims.
+async fn review_before_placing(pool: &SqlitePool, tree: &WikiTree, now: &str) {
+    let plan = match planner::load_previous_plan(tree) {
+        Ok(Some(p)) => p,
+        // Nothing compiled yet: there is no prose to review and no carried
+        // placement to re-judge.
+        Ok(None) => return,
+        Err(e) => {
+            warn!(error = %e, "dream: pre-placement review skipped — plan load failed");
+            return;
+        },
+    };
+    let identity = match reviewer::IdentityContext::load(pool, tree).await {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            warn!(error = %e, "dream: pre-placement review without identity context");
+            reviewer::IdentityContext::default()
+        },
+    };
+    match reviewer::review(tree, &plan, &identity, now) {
+        Ok(r) if !r.is_clean() => {
+            warn!(
+                findings = r.finding_count(),
+                cross_subject_bloat = r.cross_subject_bloat.len(),
+                spent_card_facts = r.spent_card_facts.len(),
+                "dream: pre-placement review found issues — healing them in tonight's build"
+            );
+            park_bridge_signals(pool, tree, &plan, &r, &[]).await;
+        },
+        Ok(_) => {},
+        Err(e) => warn!(error = %e, "dream: pre-placement review failed"),
     }
 }
 
@@ -583,11 +653,14 @@ pub async fn run_light(
     Ok(LightOutcome { light, compile })
 }
 
-/// Run one full dream: a complete reorg followed by a compile pass.
+/// Run one full dream: settle the facts, read what is written, then write once.
 ///
 /// The [`rem::run_cycle`] reorg settles the fact set (dedup, auto-promote,
-/// archive, **parked-comment application**); the compile then rewrites
-/// every page the reorg left dirty.
+/// archive, **parked-comment application**). Then [`review_before_placing`]
+/// reads the prose already on disk while tonight's claims stay in the queue,
+/// so the single compile that follows is handed the whole night's work at
+/// once: place what is waiting, and re-home what the review says sits wrong.
+/// The compile rewrites every page either of them left dirty.
 ///
 /// # Errors
 ///
@@ -605,6 +678,13 @@ pub async fn run_full(
         .await
         .context("rem cycle")?;
     let now = Utc::now().to_rfc3339();
+    // Look before writing. The claims that came in today stay in the queue
+    // while the night reads the prose already on disk, so the single build
+    // below is handed BOTH jobs at once: place what is waiting, and re-judge
+    // the pages this review says were placed wrong. Reviewing after the build
+    // instead would find what the build had just settled, and the finding
+    // would keep until tomorrow.
+    review_before_placing(pool, tree, &now).await;
     let compile = run_compile(pool, tree, embedder.clone(), llms, Cadence::Full, &now).await?;
     // Last, and it must be last: it is the pass that answers for whatever the
     // others left, so nothing may run behind it and put something back.
@@ -742,6 +822,92 @@ fn closing_note(c: &CompileReport) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// The night's review parks its findings BEFORE the night places
+    /// anything, so the build that follows heals them.
+    ///
+    /// This is the ordering the whole pass turns on (founder, 2026-08-26):
+    /// review what is already written while tonight's claims wait, then do
+    /// the work once. Reviewing at the build's tail instead — where the
+    /// reviewer used to be the last thing to run — meant the Cartografo that
+    /// could act on a finding had already finished, and the card stayed
+    /// wrong for a day.
+    ///
+    /// What the test pins is that the park is on the plan when the build
+    /// would read it: a spent fact on a card, no compile in between.
+    #[tokio::test]
+    async fn the_review_parks_before_the_night_places_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open_or_init(dir.path()).await.expect("db");
+        std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
+        let tree = WikiTree::open(dir.path()).expect("tree");
+        let id = crate::types::WikiId::parse("frodo").unwrap();
+        crate::wiki::create_identity_wiki(&tree, &id, "Frodo", crate::wiki::IdentityKind::User)
+            .expect("wiki");
+        let tree = WikiTree::open(dir.path()).expect("reopen");
+
+        // A card carrying a claim the engine has closed.
+        let mut spent = planner::FactForPage {
+            subject_external: None,
+            authored_refs: Vec::new(),
+            fact_id: crate::types::FactId::parse("0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d01").unwrap(),
+            text: "Frodo wears a wrist brace.".to_owned(),
+            fact_type: Some("state".to_owned()),
+            subject: "user:frodo".parse().unwrap(),
+            allow: Vec::new(),
+            sender: None,
+            source_wiki_id: "frodo".to_owned(),
+            valid_from: None,
+            valid_to: None,
+            decay_reason: None,
+            successor_fact_id: None,
+            target_page: None,
+            style: None,
+            salience: Some("high".to_owned()),
+        };
+        spent.decay_reason = Some("superseded".to_owned());
+
+        let mut pages = std::collections::BTreeMap::new();
+        pages.insert(
+            "frodo".to_owned(),
+            planner::PagePlan {
+                title: "Frodo".to_owned(),
+                description: String::new(),
+                style: None,
+                primary_facts: vec![spent],
+                outgoing_links: Vec::new(),
+                wiki_id: "frodo".to_owned(),
+                page_path: crate::wiki::PROFILE_FILENAME.to_owned(),
+                slug: "frodo".to_owned(),
+            },
+        );
+        let plan = planner::CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph: std::collections::BTreeMap::new(),
+            compilation_order: vec!["frodo".to_owned()],
+            generated_at: "2026-08-25T00:00:00Z".to_owned(),
+            fact_count: 1,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
+        };
+        planner::save_plan(&tree, &plan).expect("save");
+
+        review_before_placing(&pool, &tree, "2026-09-01T00:00:00Z").await;
+
+        let back = planner::load_previous_plan(&tree)
+            .expect("read")
+            .expect("plan");
+        assert_eq!(
+            back.reopen_pages,
+            vec!["frodo".to_owned()],
+            "the card must be in front of the Cartografo BEFORE tonight's build runs"
+        );
+        drop(dir);
+    }
 
     /// A card past its ceiling re-opens its own placement, even on a night
     /// the reviewer finds nothing else wrong.
