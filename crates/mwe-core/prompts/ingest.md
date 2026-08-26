@@ -141,7 +141,7 @@ Your task, performed in a single pass:
 2. When the intent is `capture`, read the message and extract EVERY distinct fact worth saving, breaking the message into ATOMIC facts: one fact per element of the `extractions` array. The `extractions` array is the ONLY place a captured fact lives — there are no top-level fact fields. A message that states five things produces five extractions; a message that states one thing produces an array with ONE element; a message that states nothing memorable produces an EMPTY array (with intent `skip`). Splitting is your most important job — never collapse a multi-fact message into a single fact.
 3. For every captured fact, assign its attributes — subject (`subject_id`), **audience (`allow_ids`)**, the validity interval (Part 3), the `style` (Part 4 — plus `target_page`/`page_description` when, and only when, the material is a list), the `requested_container` live-write flag (Part 5), the per-fact `salience` (Part 6), the `engine_rule` governance flag (Part 7), `fact_type`, and `topics` — each decided per fact from the fact's nature plus the turn context. **Every one of them is a decision you make on every fact**, `allow_ids` included: leaving it `[]` says "only the subject and the sender may read this", which is an answer and not a way of skipping the question.
 4. Read `recalled_memory` to stay COHERENT with what is already there: do not restate it, do not contradict its timeline, do not rewrite a relationship it already records.
-5. When the turn carries `attachments:` (media the user sent — photos may ride this very call as images for you to look at), describe each media item inside a captured fact and CLAIM it: list its `catalog_id` in that extraction's `attachments` array (Part 8).
+5. When the turn carries `attachments:` (media the user sent — photos may ride this very call as images for you to look at), describe each media item inside a captured fact and CLAIM it: list its `catalog_id` in that extraction's `attachments` array, under the rules that arrive with the turn.
 
 Four destinations, decided per extraction by the fields you set — there is no separate "wizard" path, this routing is universal:
 - **Identity / always-on facts → the subject's `@profile.md` card.** You do not target it directly and you do not decide it: mark the fact `salience: "high"` (Part 6) — your signal that the material is always-on — and the placement pass chooses the page. Two things follow, and they are the same rule the placement pass applies: `high` is for the core somebody must know FIRST (identity, health and safety, a hard standing constraint), not for an ordinary preference; and a fact that names what it is about (`subject_external`) never lands on a card whatever its salience, because a card carries one subject.
@@ -370,20 +370,6 @@ Examples:
 - "Franz ha l'abbonamento Claude Max" → NOT a behaviour_rule: a normal fact about the user (he owns it); the directive "use Max when you launch Claude Code" WOULD be one (impersonal → `behaviour_scope: "agent-wide"`).
 - "keep my health private" → NOT a behaviour_rule: an `engine_rule` (privacy → ACL).
 - "do not tell my wife what I earn" → NOT a behaviour_rule: an `engine_rule` (privacy/sharing → the salary's ACL; recall never surfaces it for the wife).
-
-
-## Part 8 — `attachments` (per extraction: claim the media this fact describes)
-
-When the turn context carries an `attachments:` section, the user sent media (photos, videos, audio, documents) alongside the message. Each entry shows its `catalog_id`, `kind`, and — when available — a `caption` and/or a consumer-supplied `description`. For `kind: photo` WITHOUT a description, the image itself rides this call: LOOK at it.
-
-Your job per attachment:
-
-- **Describe it inside a fact.** For a photo, fuse what you SEE with the user's caption into one extraction's `body` — concrete, third person, the things worth remembering (who, what, where, occasion): "Photo of Frodo and Sam at the garden gate, spring." For `video`, the caption is the only material (no video understanding) — record it as the fact. For `audio`, the host usually already transcribed it (the transcript IS the message text); the attachment is the recording itself. For `doc`, describe from caption/description.
-- **Claim it**: put the attachment's `catalog_id` (copied EXACTLY from the `attachments:` section — never an id you were not shown) in the describing extraction's `attachments` array. One extraction can claim several media (an album described together); media you do not claim are filed by the engine only when they carry a caption or description (a text-less unclaimed item stays catalogued but enters no page) — claimed and described is always better.
-- **An attachment the turn's text already carries** — an audio note the host transcribed (the transcript IS the message), a document whose content the message restates — needs no fact of its own: claim it on the extraction that records what it says, so the recording rides as provenance. When the turn produces no extraction that can carry it (the transcript became a behaviour rule, or the turn is a `skip`), leave it unclaimed — never emit a contentless extraction (a bare "audio"/"foto" body) just to hold a media item.
-- **Never write marker syntax** (`{{embed=…}}`) in any `body` — the engine renders the markers from your `attachments` claims.
-- When a consumer-supplied `description` is present, trust it as what the media shows (you will not see the bytes) and still fuse it with the caption into the fact.
-- Attachments bias the intent toward `capture`: a photo with no text is still a capture turn (describe the photo). A recall question that merely mentions an old photo claims nothing.
 
 
 ## Output schema (strict JSON)

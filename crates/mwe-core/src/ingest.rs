@@ -3672,6 +3672,14 @@ pub const BUNDLED_INGEST_PROMPT_MD: &str = include_str!("../prompts/ingest.md");
 pub const BUNDLED_INGEST_ASSISTANT_TURN_MD: &str =
     include_str!("../prompts/ingest-assistant-turn.md");
 
+/// The `ingest` classifier's attachment rules (`ingest-attachments.md`).
+///
+/// A **part** of that prompt on the same terms as
+/// [`BUNDLED_INGEST_ASSISTANT_TURN_MD`]: claiming and describing media is
+/// wanted by the turns that carry any, which is about one in five, and it
+/// rides the turn so the cacheable system half stays untouched.
+pub const BUNDLED_INGEST_ATTACHMENTS_MD: &str = include_str!("../prompts/ingest-attachments.md");
+
 /// Bundled default for the closure-confirmer prompt.
 ///
 /// The topic-focused second recall pass of a closure-bearing turn —
@@ -3824,7 +3832,7 @@ fn build_prompt(
     sender_rules: Option<&str>,
     sender_timezone: Option<&str>,
     language_directive: &str,
-    own_turn_rules: Option<&str>,
+    parti: &[&str],
     now: chrono::DateTime<chrono::Utc>,
     policy: &IngestPolicy,
 ) -> String {
@@ -3841,11 +3849,11 @@ fn build_prompt(
     // the person's own words are).
     out.push_str(language_directive);
     out.push_str("\n\n");
-    // The agent's own-turn rules, when this is one. They open the turn for the
-    // same reason the language does: they govern everything below and they are
-    // what this turn is about.
-    if let Some(rules) = own_turn_rules {
-        out.push_str(rules);
+    // The parts this turn needs, above everything else about it. They open the
+    // turn for the same reason the language does: they govern what follows and
+    // they are what this turn is. A turn that needs none carries none.
+    for parte in parti {
+        out.push_str(parte);
         out.push_str("\n\n");
     }
     out.push_str("sender_id: ");
@@ -6420,22 +6428,34 @@ pub async fn wiki_ingest_message(
         .await
         .map_err(|e| IngestError::Recall(RecallError::Db(e)))?;
     let language_directive = locale::render_language_directive(resolved_locale.as_deref());
-    // The own-turn rules are a PART of this prompt, loaded only for the turn
-    // that uses them. A load failure is not fatal: the turn is classified
-    // without them, which is the same as the ordinary path.
-    let own_turn_rules = match request.author {
-        MessageRole::Assistant => prompts::render(
+    // Which PARTS of this prompt the turn needs, in the order they reach it.
+    // Each is loaded only for the turn that uses it, and a part that fails to
+    // load is skipped with a warning: the turn is still classified, by exactly
+    // the rules an ordinary turn gets.
+    let parti_volute: [(&str, &str, bool); 2] = [
+        (
             "ingest-assistant-turn",
-            tree.workdir(),
             BUNDLED_INGEST_ASSISTANT_TURN_MD,
-            &[],
-        )
-        .inspect_err(|e| {
-            tracing::warn!(error = %e, "ingest: own-turn rules unread — classifying without them");
-        })
-        .ok(),
-        MessageRole::User => None,
-    };
+            request.author == MessageRole::Assistant,
+        ),
+        (
+            "ingest-attachments",
+            BUNDLED_INGEST_ATTACHMENTS_MD,
+            !request.attachments.is_empty(),
+        ),
+    ];
+    let mut parti: Vec<String> = Vec::new();
+    for (nome, bundled, serve) in parti_volute {
+        if !serve {
+            continue;
+        }
+        match prompts::render(nome, tree.workdir(), bundled, &[]) {
+            Ok(p) => parti.push(p),
+            Err(e) => tracing::warn!(part = nome, error = %e,
+                "ingest: prompt part unread — classifying without it"),
+        }
+    }
+    let parti: Vec<&str> = parti.iter().map(String::as_str).collect();
     let system_prompt = prompts::render(
         "ingest",
         tree.workdir(),
@@ -6512,7 +6532,7 @@ pub async fn wiki_ingest_message(
         sender_policy.as_deref(),
         sender_timezone.as_deref(),
         &language_directive,
-        own_turn_rules.as_deref(),
+        &parti,
         turn_now,
         policy,
     );
@@ -9460,7 +9480,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now,
             &policy,
         );
@@ -9488,7 +9508,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -9514,7 +9534,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -9548,7 +9568,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -9590,7 +9610,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -9631,7 +9651,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -9669,7 +9689,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -9687,7 +9707,7 @@ mod tests {
             Some(rules),
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -9714,7 +9734,7 @@ mod tests {
             Some(&long),
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -9753,7 +9773,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -9795,7 +9815,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -9828,7 +9848,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -9852,7 +9872,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -9888,7 +9908,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &IngestPolicy::default(),
         );
@@ -10000,7 +10020,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -10039,7 +10059,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -10065,7 +10085,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -10094,7 +10114,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -10130,7 +10150,7 @@ mod tests {
             None,
             Some("Australia/Sydney"),
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -10164,7 +10184,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -10196,7 +10216,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -15120,7 +15140,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -15143,7 +15163,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            None,
+            &[],
             now_fixture(),
             &policy,
         );
@@ -15174,7 +15194,7 @@ mod tests {
             None,
             None,
             &crate::locale::render_memory_language_directive(Some("it-IT")),
-            Some(&regole),
+            &[regole.as_str()],
             now_fixture(),
             &policy,
         );

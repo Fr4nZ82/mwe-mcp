@@ -232,6 +232,10 @@ pub const BUNDLED: &[(&str, &str)] = &[
         "ingest-assistant-turn",
         crate::ingest::BUNDLED_INGEST_ASSISTANT_TURN_MD,
     ),
+    (
+        "ingest-attachments",
+        crate::ingest::BUNDLED_INGEST_ATTACHMENTS_MD,
+    ),
     ("ingest-closures", crate::ingest::BUNDLED_INGEST_CLOSURES_MD),
     (
         "ingest-reconcile",
@@ -328,6 +332,7 @@ pub const PROSE_REGISTRY: &[(&str, PromptOutput)] = &[
     // --- writes memory a person reads ---
     ("ingest", PromptOutput::Prose),
     ("ingest-assistant-turn", PromptOutput::PartOfAnother),
+    ("ingest-attachments", PromptOutput::PartOfAnother),
     ("cronista", PromptOutput::Prose),
     ("cartografo", PromptOutput::Prose),
     ("conciliatore", PromptOutput::Prose),
