@@ -4415,10 +4415,13 @@ pub(crate) fn available_wikis(tree: &WikiTree, cap: usize) -> Result<Vec<Availab
 /// fact regions — those reach the classifier separately, with `fact_id`s, via
 /// `agent_behaviour_rules` ([`push_behaviour_rules_section`]), so the regions
 /// are stripped here: only the free prose is the governance policy, and no
-/// rule is injected twice (or under the wrong section). Returns `None` — and
-/// the prompt's `sender_rules` section reads `(none)`, so the classifier
-/// decides ACL as it did before — for a sender with no identity wiki, no
-/// `@rules.md` (older wikis), a file with no prose, or any read error.
+/// rule is injected twice (or under the wrong section). Headings are dropped
+/// with them — a heading is structure, and the page is seeded with one and
+/// nothing else, so a page carrying only headings carries no policy. Returns
+/// `None` — and the prompt's `sender_rules` section reads `(none)`, so the
+/// classifier decides ACL as it does for anyone who set no rule — for a
+/// sender with no identity wiki, no `@rules.md`, a page with no policy on it,
+/// or any read error.
 /// Best-effort by design: a policy is an aid to the ACL decision, never a hard
 /// gate, so it must never fail the ingest (pillar: the LLM decides).
 fn sender_rules(tree: &WikiTree, sender_id: &str) -> Option<String> {
@@ -4436,7 +4439,12 @@ fn sender_rules(tree: &WikiTree, sender_id: &str) -> Option<String> {
             _ => None,
         })
         .collect();
-    (!prose.trim().is_empty()).then_some(prose)
+    let policy = prose
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!policy.trim().is_empty()).then_some(policy)
 }
 
 /// Append an engine-rule to the sender's `@rules.md`.
@@ -8260,14 +8268,15 @@ mod tests {
         // No identity wiki for the sender yet → best-effort None.
         assert!(sender_rules(&tree, "alice").is_none());
 
-        // Creating alice's identity wiki seeds the default rules.md.
+        // Creating alice's identity wiki seeds a rules.md that is a heading
+        // and nothing else — a page with no policy on it, which reaches the
+        // classifier as no policy rather than as a rule Alice never wrote.
         let id = WikiId::parse("alice").unwrap();
         crate::wiki::create_identity_wiki(&tree, &id, "Alice", crate::wiki::IdentityKind::User)
             .expect("create alice");
         // Re-open so the registry picks up the new wiki for `locate`.
         let tree = WikiTree::open(dir.path()).expect("reopen");
-        let got = sender_rules(&tree, "alice").expect("default rules.md is read");
-        assert!(got.contains("# Rules"));
+        assert!(sender_rules(&tree, "alice").is_none());
 
         // A user-edited policy is read back verbatim.
         let handle = tree.locate(&id).unwrap();

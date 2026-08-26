@@ -1937,28 +1937,26 @@ pub struct IdentityWikiCreation {
     pub created: bool,
 }
 
-/// Default body of a freshly-seeded [`RULES_FILENAME`].
-/// The scaffold prose covers the *governance* policy the memory engine
-/// honours — who may see your facts (privacy & sharing) and what must never
-/// be stored (do-not-store). Per-agent behaviour rules ("address me
-/// formally") are NOT here — they belong to the consumer's own wiki — but a
-/// USER-GLOBAL behaviour rule (one the user sets for every assistant) is
-/// filed on this page as a `{{f=…}}` fact region, alongside
-/// the prose. Neutral on purpose: the decided default posture is "the agent
-/// decides, as now" — no conservative ACL override is baked in
-/// (no hardcoded gates). The
-/// body is flat prose: the ingest write-path ([`append_engine_rule`]) appends
-/// each new rule as a bullet, and the file's free prose (fact regions
-/// stripped) is injected as the classifier's `sender_rules`, so layout is
-/// not load-bearing.
-const RULES_DEFAULT_BODY: &str = "# Rules\n\n\
-Your standing policy for this memory. Every assistant that uses this memory \
-respects what you write here — it lives with the memory, not inside any one \
-assistant. Two kinds of rules belong here: who may see your facts (privacy & \
-sharing), and what must never be stored (do-not-store). Leave this file \
-untouched to let the assistant decide for you; add a line to tighten it. \
-Rules you set in chat for every assistant at once (\"always answer me in \
-Italian, whoever you are\") are also kept here, managed automatically.\n";
+/// Default body of a freshly-seeded [`RULES_FILENAME`]: a heading and
+/// nothing else.
+///
+/// **Every word of this page's free prose is sent to the ingest classifier as
+/// the sender's standing policy** ([`crate::ingest`]'s `sender_rules`, fact
+/// regions stripped), so the page holds the user's policy and only that — a
+/// seeded explanation would arrive as a rule the user never wrote. The place
+/// that explains the page to a person is the welcome form, which asks the
+/// governance questions and writes the answers here as imperative sentences.
+///
+/// What lands here: the memory-governance policy — who may see the user's
+/// facts (privacy & sharing) and what must never be stored — appended as a
+/// bullet by [`append_engine_rule`]. In a *consumer agent's* wiki the same
+/// page carries that agent's behaviour rules instead, as `{{f=…}}` fact
+/// regions the governance read skips. Layout is not load-bearing either way.
+///
+/// A user who answers no governance question has no policy, and the page says
+/// exactly that: the classifier's `sender_rules` reads `(none)` and it decides
+/// as it does for anyone who set no rule.
+const RULES_DEFAULT_BODY: &str = "# Rules\n";
 
 /// Append one engine-rule to a wiki's [`RULES_FILENAME`], as a prose bullet.
 ///
@@ -1966,8 +1964,8 @@ Italian, whoever you are\") are also kept here, managed automatically.\n";
 /// marks an extraction as a standing *governance* directive (a privacy/sharing
 /// policy or a do-not-store rule), the orchestrator routes it here instead of
 /// filing it as a fact — the rule lives as prose the engine reads back as
-/// `sender_rules`, never as a row in `fact_index`. The whole file is injected
-/// into the next ingest prompt, so we simply append; section layout is not
+/// `sender_rules`, never as a row in `fact_index`. That read takes the page's
+/// policy prose wherever it sits, so we simply append; section layout is not
 /// load-bearing.
 ///
 /// Reads the wiki's current `@rules.md` and appends `- <rule>` after a blank
@@ -1997,7 +1995,7 @@ pub fn append_engine_rule(handle: &WikiHandle, rule: &str) -> Result<()> {
         body.push('\n');
     }
     // A blank line before the first bullet keeps the Markdown list well-formed
-    // when the body ends in a paragraph; consecutive rules just stack.
+    // whatever the body ends in; consecutive rules just stack.
     if !body.ends_with("\n\n") {
         body.push('\n');
     }
@@ -2544,17 +2542,13 @@ mod tests {
             !tree.wikis_dir().join("franz").join("index.md").exists(),
             "a wiki is seeded with `_meta.md` and `@rules.md` only"
         );
-        // A default, user-facing rules.md is seeded too — engine
-        // rules only (privacy + do-not-store), no "Behaviour" section.
+        // The policy page is seeded too, as a heading and nothing else: every
+        // word of its prose is served to the classifier as this user's
+        // standing policy, so a seeded sentence would arrive as a rule they
+        // never wrote.
         let rules =
             fs::read_to_string(tree.wikis_dir().join("franz").join(RULES_FILENAME)).unwrap();
-        assert!(rules.contains("# Rules"));
-        assert!(rules.contains("privacy & sharing"));
-        assert!(rules.contains("do-not-store"));
-        assert!(
-            !rules.contains("## Behaviour"),
-            "behaviour rules belong to the consumer wiki, not rules.md"
-        );
+        assert_eq!(rules.trim(), "# Rules", "seeded policy page was:\n{rules}");
     }
 
     #[test]
