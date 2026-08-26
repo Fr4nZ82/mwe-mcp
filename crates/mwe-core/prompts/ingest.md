@@ -146,7 +146,7 @@ Your task, performed in a single pass:
 Four destinations, decided per extraction by the fields you set — there is no separate "wizard" path, this routing is universal:
 - **Identity / always-on facts → the subject's `@profile.md` card.** You do not target it directly and you do not decide it: mark the fact `salience: "high"` (Part 6) — your signal that the material is always-on — and the placement pass chooses the page. Two things follow, and they are the same rule the placement pass applies: `high` is for the core somebody must know FIRST (identity, health and safety, a hard standing constraint), not for an ordinary preference; and a fact that names what it is about (`subject_external`) never lands on a card whatever its salience, because a card carries one subject.
 - **Standing governance rules → the sender's `@rules.md`.** Mark the extraction `engine_rule: true` (Part 7); it is stored as the user's policy prose, NOT as a fact.
-- **Behaviour rules → the calling agent's own wiki.** A directive about HOW THIS AGENT should converse OR operate (tone/style/length/form of address, language/name — or its way of working: what to delegate, which tools/workflow to prefer) is neither a fact about the user nor an engine governance rule. Mark the extraction `behaviour_rule: true` (Part 7b); the engine files it in the consumer agent's own wiki, attributed to the sender — never as a fact in the user's wiki.
+- **Behaviour rules → the calling agent's own wiki.** A directive about HOW THIS AGENT should converse OR operate (tone/style/length/form of address, language/name — or its way of working: what to delegate, which tools/workflow to prefer) is neither a fact about the user nor an engine governance rule. Mark the extraction `behaviour_rule: true` (Part 7); the engine files it in the consumer agent's own wiki, attributed to the sender — never as a fact in the user's wiki.
 - **Everything else → the normal pipeline** (the subject's own memory), with `style`.
 
 
@@ -263,7 +263,7 @@ A fact's `salience` says how always-relevant it is to the subject. It feeds the 
 - `"high"` — must be known in EVERY interaction, regardless of subject. The high bar, reserved for:
   - **the identity core** — who the person is: their name and any aliases; **their role(s) and the people they are tied to (relations — partner, parent, child, sibling, …)**; their birthdate; where they live; their language and timezone; their contacts (email, phone). This is the always-on identity card — file the WHOLE core as `high`, not just the name. A statement of **who someone is to someone else** ("X is Y's partner / son / father") is *always* identity core: `fact_type: "bio"`, `salience: "high"` — **never** an `episode` or a `normal` fact, even when it surfaces mid-conversation or as a correction. Getting a family role wrong (addressing the partner as the child, or vice versa) is exactly the failure the always-on core exists to prevent, so relationships must reach it. See the **relationships** rule right below Part 6's examples.
   - **health & safety** (allergies, intolerances/coeliac, chronic conditions, medications, disabilities, hard dietary limits);
-  - **hard standing constraints** that bind any exchange (a strict accessibility need). A conversational directive is NEVER `high` — plain ("speak to me in Italian", "be informal with me") it is a `behaviour_rule` with `behaviour_scope: "per-user"`, and even the explicitly universal form ("with any assistant at all") stays a `behaviour_rule`, with `behaviour_scope: "user-global"` (Part 7b).
+  - **hard standing constraints** that bind any exchange (a strict accessibility need). A conversational directive is NEVER `high` — plain ("speak to me in Italian", "be informal with me") it is a `behaviour_rule` with `behaviour_scope: "per-user"`, and even the explicitly universal form ("with any assistant at all") stays a `behaviour_rule`, with `behaviour_scope: "user-global"` (Part 7).
   - If forgetting it across a conversation could be harmful, rude, or break trust → `high`.
   - **Birthdate as a date.** When the fact is a birthdate, store and keep the DATE itself ("born on 15 March 1979") — do NOT convert it to an age (an age changes over time, so a fact stating it would be wrong tomorrow). The date is what is stored and shown.
 - `"low"` — trivia / passing colour that rarely matters out of its own topic: a favourite colour, a one-off mood, a minor preference.
@@ -275,7 +275,7 @@ Examples:
 - "Frodo is the dad, he runs the household" → `salience: "high"` (role/identity).
 - "Frodo was born on 22 September 1968" → `salience: "high"` (identity core — birthdate; keep it as the date, do not turn it into an age).
 - "Galadriel is coeliac" → `salience: "high"` (health — must always be known).
-- "I want EVERY assistant to always write to me in Italian" → NOT a salience call at all: a `behaviour_rule` with `behaviour_scope: "user-global"` (Part 7b) — like the plain "write to me in Italian" is one with `"per-user"`. A directive to assistants never rides `salience: "high"`.
+- "I want EVERY assistant to always write to me in Italian" → NOT a salience call at all: a `behaviour_rule` with `behaviour_scope: "user-global"` (Part 7) — like the plain "write to me in Italian" is one with `"per-user"`. A directive to assistants never rides `salience: "high"`.
 - "Frodo watched Jumanji yesterday" → `salience: "normal"` (an episode).
 - "Matteo's favourite colour is green" → `salience: "low"` (trivia).
 
@@ -295,33 +295,28 @@ Examples:
 - "my brother is coming to dinner tonight too" (sender Frodo; `known_users` happens to contain a male entry, say `boromir`) → **NO** relationship naming anyone: the brother is unnamed, and Boromir being in the roster is not evidence he is the brother. At most «Frodo has a brother» (subject `user:frodo`, `bio`) — and NOTHING on any other user's wiki.
 
 
-## Part 7 — `engine_rule` (per extraction: is this a standing GOVERNANCE directive for the memory engine?)
+## Part 7 — standing directives: a rule for the MEMORY, a rule for the AGENT, or neither
 
-Most messages state FACTS about the user's life and world. A few instead state a STANDING RULE about how this memory should be GOVERNED — a directive addressed to the memory engine itself. Those are not facts: they are stored as the user's policy prose in their `@rules.md` (read back to you as `sender_rules` on every later turn), never as a row in the wiki. Set `engine_rule` per extraction:
+Most messages state FACTS about the user's life and world. A few instead state a STANDING RULE, and a rule has two possible addressees. **Read the addressee first — everything else follows from it:**
+
+- addressed to the **MEMORY**, about what it keeps and who may see it → `engine_rule: true`, filed as the user's policy prose in their `@rules.md` (read back to you as `sender_rules` on every later turn), never as a row in the wiki;
+- addressed to **THIS AGENT**, about how it converses or operates → `behaviour_rule: true`, filed in the calling agent's own wiki;
+- addressed to **NOBODY** — a rule of the user's life or world ("no smoking in the house", "we chose Postgres over SQLite") → neither flag: it is an ordinary FACT with `fact_type: "rule"`, and it goes through the normal pipeline. **When in doubt this is the answer**: a fact is recoverable, a misfiled directive silently changes how the memory or the agent behaves. Both flags default to `false` and are simply omitted on the overwhelming majority of extractions, which are facts.
+
+Both flags share one shape, and it is not the shape of a fact. Set `body` to the rule restated as ONE clear standing directive — **in the sender's OWN language**, the LANGUAGE directive applies here exactly as everywhere ("keep health private" from an Italian speaker is restated in Italian, never in English). The other per-fact fields (`subject_id`, `style`, validity, `salience`) are IGNORED for both: only `body` and the flag matter. And neither flag is decided by `fact_type` — a privacy directive may carry `fact_type: "rule"`, but so does a household rule that is a plain fact. The addressee decides, always.
+
+### `engine_rule` — the directive addressed to the memory
 
 - `true` — the extraction is a standing GOVERNANCE rule for the memory engine. Exactly two families belong here:
   - **Privacy / sharing policy** — who may see the user's facts: "always keep my health private", "everything private by default", "never share anything with the work group", "Y may see my plans".
   - **Do-not-store** — what must never be saved: "never save my exact address", "never store card numbers".
-  - Set `body` to the rule restated as ONE clear standing-policy sentence in the third person/imperative, **in the sender's OWN language** — the LANGUAGE directive at the top applies here too. `@rules.md` is the user's own policy prose, appended verbatim and read straight back to them as `sender_rules`; never translate it (e.g. an Italian "keep health private" → `body: "Health information is always private; do not share it with any group."`, NOT an English restatement). The other per-fact fields (`subject_id`, `style`, validity, …) are IGNORED for an engine-rule — only `body` and `engine_rule: true` matter; the engine appends the rule to the sender's `@rules.md`.
-- `false` — DEFAULT, or simply omit the field. Everything else, INCLUDING a world/household rule. The crucial distinction: a `rule` `fact_type` about the WORLD ("no smoking in the house", "we chose Postgres over SQLite") is a normal FACT (`engine_rule: false`) — it describes a decision in the user's life. An engine-rule is addressed to the MEMORY ITSELF ("keep my health private", "never store X"). When in doubt, it is a fact, not an engine-rule (`engine_rule: false`).
 
-`engine_rule` is INDEPENDENT from `fact_type`: a privacy directive may carry `fact_type: "rule"`, but so does a household rule that is a plain fact. Decide `engine_rule` from WHO the rule is addressed to (the memory engine vs the world), not from the `fact_type`.
+### `behaviour_rule` — the directive addressed to the agent
 
-Examples:
-- "always keep my health private" → `engine_rule: true`, `body: "Health information is always private; do not share it with any group."` (privacy policy → `@rules.md`; body in the sender's language).
-- "never save my home address" → `engine_rule: true`, `body: "Never store the home address."` (do-not-store → `@rules.md`).
-- "no smoking in the house" → `engine_rule: false`, a normal `rule` fact about the household.
-- "we decided to use Postgres" → `engine_rule: false`, a normal `rule` fact (an architectural decision).
+They tell the assistant HOW TO BEHAVE: **how to converse** (tone, register, verbosity, persona, the language it speaks, what to bring up) and **how to operate** (which tools to reach for, what to delegate, which workflow to follow). Restate the directive in the **IMPERATIVE** — a command the assistant can act on ("Be informal with me", "Always answer concisely", "Always use Claude Code") — never in the third person ("The agent must…").
 
+`behaviour_scope` — read from the GRAMMATICAL ADDRESSEE: does the directive govern how the agent behaves with THIS user, with EVERYONE this agent serves, or with this user across EVERY assistant?
 
-## Part 7b — `behaviour_rule` (per extraction: a directive about how THIS agent should converse or operate)
-
-A few messages are neither facts nor engine-governance rules: they tell the assistant HOW TO BEHAVE — both **how to converse** (tone, register, verbosity, formatting, the form of address, the language or name to use WITH THIS AGENT) and **how to operate** (this agent's standing way of working: which kinds of task to delegate and to what, which tools or workflow to prefer, a caution to always apply). These belong to the CALLING AGENT's own memory, not the user's: they shape how this agent behaves, they are not knowledge about the user. Set `behaviour_rule` per extraction:
-
-- `true` — the extraction is a standing directive about how this agent should converse OR operate. Restate it in `body` as ONE clear standing directive in the **IMPERATIVE** — a command the assistant can act on ("Be informal with me", "Always answer concisely", "Always use Claude Code"), NOT in the third person ("The agent must…", "The assistant speaks to the user…") — in the sender's OWN language (the LANGUAGE directive applies, exactly as for an `engine_rule`), and set `behaviour_scope` (below). The other per-fact fields (`subject_id`, `style`, validity, `salience`) are IGNORED — only `body`, `behaviour_rule: true`, and `behaviour_scope` matter; the engine files the rule in the calling agent's wiki.
-- `false` — DEFAULT, or omit. Everything else.
-
-`behaviour_scope` — read from the GRAMMATICAL ADDRESSEE: does the directive govern how the agent behaves with THIS user, with EVERYONE this agent serves, or how EVERY assistant behaves with this user? Set it on every `behaviour_rule: true`:
 - `"per-user"` — addressed to the speaker ("with me", "**my** things", "for **my** requests") or a bare imperative with no stated audience. It shapes how THIS agent behaves WITH THIS USER only, so **anyone may set one** (it touches only them). *Examples*: "be informal with me", "speak to me in Italian", "answer me concisely", "call me Franz", "do not give me medical advice", "for MY things always use claude-code".
 - `"agent-wide"` — impersonal / universal ("with everyone", "with anybody", or a how-the-agent-works directive with no per-speaker scope). It changes the agent's behaviour for EVERYONE, so only the ADMIN may set it (the engine refuses a non-admin's). *Examples*: "always use claude-code", "do not give medical advice", "before creating a skill check whether a builtin already exists", "use the local GPU when generating images".
 - `"user-global"` — the user explicitly addresses EVERY assistant they talk to ("EVERY assistant", "with any assistant at all", "whoever you are", "wherever I talk to you"). It shapes how every assistant behaves WITH THIS USER, so **anyone may set one** (it binds only their own conversations); the engine files it in the USER's own memory and every assistant serving them receives it. *Examples*: "I want every assistant to speak to me in Italian", "whoever you are, be informal with me", "with any assistant: never medical advice".
@@ -347,11 +342,13 @@ WHO IS BEING NAMED — resolve the deixis before writing a naming rule. The stor
 
 EXPLICIT NAMING vs VOCATIVE ADDRESS — a naming rule is created or changed ONLY by an EXPLICIT NAMING PREDICATE: a clause whose whole job is to assign the name — "your name is X", "you are called X", "I will call you X", "I call you X", "from now on you are X", "call yourself X". The agent's name used merely as a FORM OF ADDRESS — a vocative to summon its attention before an unrelated request ("Gandalf, turn the volume down", "Gandalf, what is the traffic like this morning?", "ok Sam, go ahead") — carries NO naming intent: it NEVER emits or changes a naming rule, and the rest of the message is processed on its own merits. This holds EVEN WHEN the addressed name differs from the stored one — a mis-heard or mistyped vocative ("Gandalfa, ..." heard for "Gandalf, ...") is address, not a rename. Do NOT reason from spelling proximity in EITHER direction: the discriminator is the PRESENCE OF A NAMING PREDICATE, never how close two spellings are. So an explicit "call yourself Gandalfa" DOES rename even though it is one letter from the current "Gandalf"; and a bare "Gandalfa, turn it down" does NOT rename even though only one letter changed. When the sole occurrence of a name in the turn is vocative, emit no naming rule.
 
-Examples:
+Examples — the cases the rules above do not already walk through:
+- "always keep my health private" → `engine_rule: true`, `body: "Health information is always private; do not share it with any group."` (privacy policy → `@rules.md`; body in the sender's language).
+- "never save my home address" → `engine_rule: true`, `body: "Never store the home address."` (do-not-store → `@rules.md`).
+- "no smoking in the house" → `engine_rule: false`, a normal `rule` fact about the household.
+- "we decided to use Postgres" → `engine_rule: false`, a normal `rule` fact (an architectural decision).
 - "from now on behave like a pirate" → `behaviour_rule: true`, `behaviour_scope: "per-user"`, `body: "Behave like a pirate."` (a persona, addressed to this exchange → per-user).
 - "Gandalf, put on a playlist Galadriel and I both like" → a vocative like any other: NOT a naming rule and NOT a fact, so store nothing — but `recall`, NOT `skip`. WHICH playlist is given only by description, and this memory is the only thing that can say which one is meant. The discriminator is that unresolved reference and nothing else: "Gandalf, put on Metallica" names its own answer and stays `skip`. Do not let *nothing to store* decide *nothing to recall* — and do not let *the agent has work to do* decide *recall*.
-
-
 ## Output schema (strict JSON)
 
 {
@@ -382,7 +379,7 @@ One rule governs what you may do with any block of stored material, this one inc
 Three blocks ARE complete, and there you are expected to compare and choose:
 
 - **`list_pages`** — every list the sender may add to, so reuse an existing one's exact name instead of minting a second (Part 4). You see WHICH lists exist, never WHAT IS ON THEM: an individual item is not something you can act on.
-- **`agent_behaviour_rules`** — every standing directive in force, so revise one with `supersede_target` (Part 7b). You can see everything you would be replacing.
+- **`agent_behaviour_rules`** — every standing directive in force, so revise one with `supersede_target` (Part 7). You can see everything you would be replacing.
 - **`sender_rules`** — the sender's policy in full, so honour it, and do not append a governance rule it already carries (Part 7).
 
 ## The `Project documentation` slot — reference, not memory (turn-level, EVERY turn)
@@ -474,7 +471,7 @@ The `sender_rules` block above is the sender's own `@rules.md`: their standing G
 
 **Do-not-store** — *"never store X" / "never save X"*: do NOT emit an extraction for content the policy forbids. Drop that fact from `extractions` (the rest of the turn is unaffected); if it was the only thing in the message, return intent `skip` with an empty array.
 
-Two things are NOT for the ACL decision: a `(none)` block (decide exactly as you would without it), and any **behaviour rule** (*"address me formally"*) that appears in `@rules.md` — behaviour policy lives in the calling agent's own wiki (captured via `behaviour_rule`, Part 7b), so ignore it here.
+Two things are NOT for the ACL decision: a `(none)` block (decide exactly as you would without it), and any **behaviour rule** (*"address me formally"*) that appears in `@rules.md` — behaviour policy lives in the calling agent's own wiki (captured via `behaviour_rule`, Part 7), so ignore it here.
 
 
 ## Destination — you do NOT choose a wiki (per extraction)

@@ -4463,7 +4463,7 @@ fn append_sender_rule(tree: &WikiTree, sender_id: &str, rule: &str) -> Result<bo
     Ok(true)
 }
 
-/// Page where behaviour rules are filed (the ingest prompt's Part 7b).
+/// Page where behaviour rules are filed (the ingest prompt's Part 7).
 /// Unified with the engine-policy page name: in the *agent's*
 /// wiki this `@rules.md` holds the per-user and agent-wide behaviour facts —
 /// no collision, since [`sender_rules`] (the engine-policy reader) never runs
@@ -4477,7 +4477,7 @@ const BEHAVIOUR_RULES_PAGE: &str = crate::wiki::RULES_FILENAME;
 
 /// The governance scope of a behaviour-rule — who may set it and how widely it
 /// applies. Read from the grammatical **addressee** by the classifier
-/// (`behaviour_scope`, prompt Part 7b), enforced by the engine. *soul vs
+/// (`behaviour_scope`, prompt Part 7), enforced by the engine. *soul vs
 /// operational* (style vs tools) is just an optional content tag now — it no
 /// longer routes anything; this scope axis does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -6773,7 +6773,7 @@ pub async fn wiki_ingest_message(
                 // flags it and tags its scope; the orchestrator files it on
                 // the scope's home rules page, never in the user's fact
                 // memory. GOVERNANCE (behaviour-rule scope from the
-                // addressee, prompt Part 7b):
+                // addressee, prompt Part 7):
                 //  - PER-USER (addressed to the speaker, or a bare imperative)
                 //    is open to anyone — filed subject=user in the agent's wiki,
                 //    recalled only for them on this agent.
