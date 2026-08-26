@@ -2085,6 +2085,17 @@ fn page_index_block(plan: &CompilationPlan) -> String {
 /// merely offered — and why a page that somebody else links to is handed
 /// nothing on that account: a link puts no obligation on the page it points
 /// at (founder, 2026-08-23).
+///
+/// **An identity card is never an obligation.** A card is not reached through
+/// rails: recall serves the speaker's own deterministically, before it has
+/// read the turn, and the cards of the people the turn names besides
+/// ([`crate::recall::turn_subjects`]). A rail to one is a door into a room
+/// the reader is already standing in, and it is not free — a mandatory link
+/// with no place in the narrative is a sentence the page has to grow to host
+/// it. Cards stay in the OFFERING, where naming a person and linking their
+/// card is a choice the prose earns; and a card's OWN rails are untouched,
+/// since this filters what a page must point AT, never what it may point at
+/// from.
 fn recommended_link_targets(plan: &CompilationPlan, slug: &str) -> Vec<String> {
     plan.link_graph
         .get(slug)
@@ -2092,7 +2103,9 @@ fn recommended_link_targets(plan: &CompilationPlan, slug: &str) -> Vec<String> {
             ls.iter()
                 // The graph stores plan slugs; a slug whose page vanished
                 // from the plan would be a dead rail — skip it.
-                .filter_map(|l| plan.pages.get(l).map(plan_page_wikilink))
+                .filter_map(|l| plan.pages.get(l))
+                .filter(|p| p.page_path != crate::wiki::PROFILE_FILENAME)
+                .map(plan_page_wikilink)
                 .collect()
         })
         .unwrap_or_default()
@@ -4753,6 +4766,67 @@ mod tests {
     /// defect it closes. A rail counts as landed when the page text carries
     /// it, in any form the link grammar allows: the `|display` alias is
     /// presentation, and a `.md` suffix addresses the same page.
+    /// A card is offered, never required.
+    ///
+    /// Recall serves the speaker's own card before it has read the turn, and
+    /// the cards of whoever the turn names besides — so a rail to one buys a
+    /// door into a room the reader is already in. It is not free either: a
+    /// mandatory link the narrative has no place for is a sentence the page
+    /// grows to host it, and that sentence carries the link, which is how the
+    /// next build harvests it and requires it again.
+    ///
+    /// A card's own rails are a different question and stay: this filters
+    /// what a page must point AT.
+    #[test]
+    fn an_identity_card_is_never_a_mandatory_rail() {
+        let card = |slug: &str| planner::PagePlan {
+            title: slug.to_owned(),
+            description: String::new(),
+            style: None,
+            primary_facts: Vec::new(),
+            outgoing_links: Vec::new(),
+            wiki_id: slug.to_owned(),
+            page_path: crate::wiki::PROFILE_FILENAME.to_owned(),
+            slug: slug.to_owned(),
+        };
+        let mut leaf = card("impegni_franz");
+        leaf.page_path = "impegni_franz.md".to_owned();
+        leaf.wiki_id = "franz".to_owned();
+        leaf.outgoing_links = vec!["franz".to_owned(), "cucina_franz".to_owned()];
+        let mut topic = card("cucina_franz");
+        topic.page_path = "cucina_franz.md".to_owned();
+        topic.wiki_id = "franz".to_owned();
+
+        let mut pages = std::collections::BTreeMap::new();
+        for p in [leaf, topic, card("franz")] {
+            pages.insert(p.slug.clone(), p);
+        }
+        let mut link_graph = std::collections::BTreeMap::new();
+        link_graph.insert(
+            "impegni_franz".to_owned(),
+            vec!["cucina_franz".to_owned(), "franz".to_owned()],
+        );
+        let plan = planner::CompilationPlan {
+            pages,
+            link_graph,
+            merged_pages: Vec::new(),
+            compilation_order: vec!["impegni_franz".to_owned()],
+            generated_at: "2026-08-26T00:00:00Z".to_owned(),
+            fact_count: 0,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
+        };
+
+        assert_eq!(
+            recommended_link_targets(&plan, "impegni_franz"),
+            vec!["[[franz/cucina_franz]]".to_owned()],
+            "the topic page is required, the card is not"
+        );
+    }
+
     #[test]
     fn missing_rails_reads_the_prose_and_normalises_the_address() {
         let recommended = vec![
