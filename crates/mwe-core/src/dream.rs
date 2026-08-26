@@ -340,7 +340,7 @@ async fn compile_with(
     dream_light::materialise(pool, tree, &embedder, &mut queue, &plan, now)
         .await
         .context("light dream: materialise")?;
-    let mut report = compiler::compile_dirty_pages(pool, tree, &plan, cronista, now)
+    let mut report = compiler::compile_dirty_pages(pool, tree, &plan, cronista, cadence, now)
         .await
         .context("compiler")?;
     report.queue = queue.report;

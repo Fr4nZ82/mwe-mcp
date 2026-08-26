@@ -296,8 +296,9 @@ pub struct PagePlan {
     /// The plan slugs this page links to.
     ///
     /// Taken from the page's own prose at every build ([`build_compilation_plan`]
-    /// step 9), so it is both what the page says and what the compiler will
-    /// require of it next time. **Outgoing only** — a page that links here does
+    /// step 9), so it is what the page says — and, at the hourly cadence, what
+    /// the compiler will require of it next time
+    /// ([`crate::compiler::link_targets`]). **Outgoing only** — a page that links here does
     /// not appear, because a link does not oblige the page at the other end
     /// (founder, 2026-08-23). Part of [`page_fingerprint`]: a page whose links
     /// changed is a page whose prose has to be written again.
@@ -983,10 +984,12 @@ pub fn build_compilation_plan(
     // link would make it exactly the link-for-company the same prompt forbids.
     // It can happen; it is never owed.
     //
-    // Recording them is what makes a link **survive**: at the next rewrite the
-    // compiler hands them back as this page's mandatory rails, so a Cronista
-    // that would otherwise have dropped a link it has no reason to re-invent
-    // has to weave it in again.
+    // Recording them is what makes a link **survive** a rewrite: the compiler
+    // hands them back to the next one. At the hourly cadence it hands them
+    // back as obligations, so a cheap pass cannot drop a link it has no reason
+    // to re-invent; at the nightly one it hands them back as a question, which
+    // is the only place in the engine where a link can be taken away
+    // ([`crate::compiler::link_targets`]).
     for page in pages.values_mut() {
         page.outgoing_links = prose_links
             .get(&(page.wiki_id.clone(), page.page_path.clone()))

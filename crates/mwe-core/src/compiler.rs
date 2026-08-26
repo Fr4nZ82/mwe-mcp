@@ -13,7 +13,7 @@
 //!   rendered deterministically as one bullet record wrapped in its ACL marker,
 //!   bypassing Il Cronista.
 //! - a page with **no facts** → [`compile_empty_leaf`], deterministic: its
-//!   card, plus the rails the plan requires of it. No page lists other pages,
+//!   card, plus the rails this compile requires of it ([`link_targets`]). No page lists other pages,
 //!   so an empty one has nothing to narrate and never reaches a model — but
 //!   the links it is required to carry are still written, because the next
 //!   build reads a page's links off its prose and a page that dropped them
@@ -105,6 +105,16 @@ use crate::wiki::{WikiError, WikiTree, workdir_relative_source_path};
 
 /// Bundled default for the Cronista prompt (compiler prose stage).
 pub const BUNDLED_CRONISTA_MD: &str = include_str!("../prompts/cronista.md");
+
+/// Bundled default for the Cronista's **nightly part**
+/// (`<workdir>/prompts/cronista-night.md`).
+///
+/// Appended to the task half by [`compile_leaf_page`] on
+/// [`crate::dream::Cadence::Full`], and only for a page that already carries
+/// links: it is the brief that turns those links from an inheritance into a
+/// judgement, and a page with none has nothing to judge. It rides the turn,
+/// so the cacheable system half stays byte-identical across both cadences.
+pub const BUNDLED_CRONISTA_NIGHT_MD: &str = include_str!("../prompts/cronista-night.md");
 
 /// Errors raised by the compiler. Per-page LLM/parse failures are collected
 /// into the report (soft); infrastructure failures bubble.
@@ -231,6 +241,7 @@ pub async fn compile_dirty_pages(
     tree: &WikiTree,
     plan: &CompilationPlan,
     cronista: &dyn LlmBackend,
+    cadence: crate::dream::Cadence,
     now: &str,
 ) -> Result<CompileReport> {
     let mut report = CompileReport::default();
@@ -276,6 +287,7 @@ pub async fn compile_dirty_pages(
             &mut tone_cache,
             &mut locale_cache,
             &page_index,
+            cadence,
             now,
         )
         .await
@@ -588,6 +600,7 @@ async fn compile_page(
     tone_cache: &mut HashMap<String, String>,
     locale_cache: &mut HashMap<String, String>,
     page_index: &PageIndex,
+    cadence: crate::dream::Cadence,
     now: &str,
 ) -> Result<PageOutcome> {
     // A wiki's card rides the same dispatch: it renders as prose while it
@@ -613,7 +626,7 @@ async fn compile_page(
     // (the dogfood re-run compiled Tolkien lore onto a zero-fact
     // foundation index). Render the deterministic minimal page instead.
     if page.primary_facts.is_empty() {
-        return compile_empty_leaf(tree, page, &recommended_link_targets(plan, &page.slug), now);
+        return compile_empty_leaf(tree, page, &link_targets(plan, &page.slug, cadence).0, now);
     }
     let wiki_tone = tone_cache
         .entry(page.wiki_id.clone())
@@ -624,7 +637,7 @@ async fn compile_page(
     let tone = tone_for_page(wiki_tone, page);
     let language = cached_language_directive(pool, tree, &page.wiki_id, locale_cache).await;
     compile_leaf_page(
-        pool, tree, plan, page, cronista, &tone, &language, page_index, now,
+        pool, tree, plan, page, cronista, &tone, &language, page_index, cadence, now,
     )
     .await
 }
@@ -726,9 +739,10 @@ async fn compile_leaf_page(
     tone: &str,
     language_directive: &str,
     page_index: &PageIndex,
+    cadence: crate::dream::Cadence,
     now: &str,
 ) -> Result<PageOutcome> {
-    let recommended = recommended_link_targets(plan, &page.slug);
+    let (recommended, prior) = link_targets(plan, &page.slug, cadence);
     let (index_cached, index_task) = page_index.render_for(plan, page);
     let prompt = prompts::render(
         "cronista",
@@ -755,6 +769,15 @@ async fn compile_leaf_page(
             ("links", recommended_links(&recommended).as_str()),
         ],
     )?;
+    // The nightly part rides the END of the rendered prompt, which is the end
+    // of the task half (`split_cronista_prompt` cuts at the marker): the cached
+    // system prefix stays byte-identical whichever cadence is running. A part
+    // that fails to load is skipped with a warning — the page is still written,
+    // by exactly the rules an hourly rewrite gets.
+    let prompt = match night_part(tree, &prior) {
+        Some(part) => format!("{prompt}\n\n{part}"),
+        None => prompt,
+    };
     let max_tokens = cronista_max_tokens(page.primary_facts.len());
     // One retry on an unusable reply (transport error OR unparseable JSON),
     // then the degraded guard-only fallback — a failing Cronista must never
@@ -2077,13 +2100,13 @@ fn page_index_block(plan: &CompilationPlan) -> String {
     }
 }
 
-/// The rails the plan recommends for one page, as canonical wikilinks.
+/// Every link the plan holds for one page, as canonical wikilinks.
 ///
-/// The plan's `link_graph` is not a list of suggestions: it is what **this
-/// page** already says, plus what the REM decided it should say (`planner`,
-/// step 9). That is what makes it enforceable by [`missing_rails`] rather than
-/// merely offered — and why a page that somebody else links to is handed
-/// nothing on that account: a link puts no obligation on the page it points
+/// The plan's `link_graph` is not a wish list: it is what **this page**
+/// already says, plus what the REM decided it should say (`planner`, step 9).
+/// Which of them this compile may re-judge is [`link_targets`]'s question,
+/// not this one's. A page that somebody else links to is handed nothing on
+/// that account either way: a link puts no obligation on the page it points
 /// at (founder, 2026-08-23).
 ///
 /// **An identity card is never an obligation.** A card is not reached through
@@ -2109,6 +2132,73 @@ fn recommended_link_targets(plan: &CompilationPlan, slug: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Render the `cronista-night` part for a page, or `None` when it is not wanted.
+///
+/// `None` on an empty `prior` — a page with no links of its own is asked
+/// nothing and pays nothing for a brief about judging them — and `None` again
+/// when the part cannot be read, which leaves the page written by the rules an
+/// hourly rewrite gets rather than not written at all.
+fn night_part(tree: &WikiTree, prior: &[String]) -> Option<String> {
+    if prior.is_empty() {
+        return None;
+    }
+    match prompts::render(
+        "cronista-night",
+        tree.workdir(),
+        BUNDLED_CRONISTA_NIGHT_MD,
+        &[("prior_links", prior.join(", ").as_str())],
+    ) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            tracing::warn!(error = %e, "compiler: nightly link brief unread — writing without it");
+            None
+        },
+    }
+}
+
+/// A page's links, split by whether **this** compile may re-judge them.
+///
+/// Returns `(required, prior)`. `required` is what the page must say and what
+/// [`missing_rails`] enforces; `prior` is what it said last time, offered to
+/// the night for re-judgement through the `cronista-night` part.
+///
+/// **The split is by cadence, not by a record of who wrote each link**, and it
+/// cannot be anything else: the plan reads a page's links off its own prose
+/// ([`crate::planner::build_compilation_plan`], step 9), and prose does not say
+/// which pass wrote a sentence. What the engine does know is which pass is
+/// running now — and that is the axis the problem has. The hourly pass runs on
+/// the cheap tier, so left free to re-judge it would spend the day undoing the
+/// night; left binding at both cadences (which is what shipped before this
+/// split) its sketch becomes an obligation the strong model cannot lift. So:
+///
+/// - [`Cadence::Light`] — everything is required. The hourly pass writes what
+///   the page has and adds to it; it never takes one away.
+/// - [`Cadence::Full`] — only the rails the REM parked earlier tonight are
+///   required, because [`crate::rem::run_rail_writer`] runs *before* this
+///   compile and a compile free to discard its choice would undo it in the
+///   minute it was made. Everything else is `prior`: the night meets it as
+///   ordinary prose and may keep it, replace it, or let it go.
+fn link_targets(
+    plan: &CompilationPlan,
+    slug: &str,
+    cadence: crate::dream::Cadence,
+) -> (Vec<String>, Vec<String>) {
+    let all = recommended_link_targets(plan, slug);
+    if matches!(cadence, crate::dream::Cadence::Light) {
+        return (all, Vec::new());
+    }
+    // Rendered through `plan_page_wikilink` like `all` is, so the two sides
+    // compare as strings and cannot disagree about what a link looks like.
+    let parked: std::collections::BTreeSet<String> = plan
+        .authored_rails
+        .iter()
+        .filter(|(from, _)| from == slug)
+        .filter_map(|(_, to)| plan.pages.get(to))
+        .map(plan_page_wikilink)
+        .collect();
+    all.into_iter().partition(|l| parked.contains(l))
 }
 
 fn recommended_links(targets: &[String]) -> String {
@@ -2137,9 +2227,9 @@ fn link_address(link: &crate::recall::WikiLink) -> Option<(String, String)> {
 /// Which recommended rails never reached the prose, in the order they were
 /// recommended.
 ///
-/// The compiler hands the Cronista a list of links to weave in and, until
-/// this guard, checked nothing: a third of the links the plan declared
-/// never reached the page text on the corpus this was measured on. A rail
+/// The compiler hands the Cronista a list of links it must weave in and,
+/// until this guard, checked nothing: a third of the required links never
+/// reached the page text on the corpus this was measured on. A rail
 /// that does not land is not a cosmetic loss — the navigator harvests its
 /// candidates from the **prose**, so the neighbour simply cannot be walked
 /// to from here.
@@ -2368,6 +2458,7 @@ fn parse_cronista(raw: &str) -> Option<CronistaOutput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dream::Cadence;
     use crate::llm::FakeLlmBackend;
     use crate::planner::FactForPage;
     use crate::types::{FactId, Principal};
@@ -2859,9 +2950,16 @@ mod tests {
         card.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
         let body = "{\"mergedBody\":\"Chi è Alice.\",\"description\":\"d\"}".to_owned();
         let cronista = FakeLlmBackend::new("fake", &body);
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-05-31T00:00:00Z")
-            .await
-            .expect("compile");
+        compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-05-31T00:00:00Z",
+        )
+        .await
+        .expect("compile");
 
         let meta = std::fs::read_to_string(dir.path().join("wikis/alice/_meta.md")).unwrap();
         assert!(
@@ -2960,9 +3058,16 @@ mod tests {
                 .to_owned();
         let cronista = FakeLlmBackend::new("fake", &body);
         let plan = leaf_plan(&fid);
-        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-05-31T00:00:00Z")
-            .await
-            .expect("compile");
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-05-31T00:00:00Z",
+        )
+        .await
+        .expect("compile");
         assert_eq!(report.leaves, 1);
 
         // The compiled page exists with the marker.
@@ -3029,9 +3134,16 @@ mod tests {
             .to_owned();
         let cronista = FakeLlmBackend::new("fake", &body);
         let plan = leaf_plan(&fid);
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-05-31T00:00:00Z")
-            .await
-            .expect("compile");
+        compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-05-31T00:00:00Z",
+        )
+        .await
+        .expect("compile");
 
         let system = cronista.last_system_prompt().expect("system prompt sent");
         let user = cronista.last_prompt().expect("user prompt sent");
@@ -3133,9 +3245,16 @@ mod tests {
         let body = "{\"mergedBody\":\"<f1>Alice ama la pasta.</f1>\",\"description\":\"Cosa piace ad Alice\",\"style\":\"prosa-tecnica\"}".to_owned();
         let cronista = FakeLlmBackend::new("fake", &body);
         let plan = leaf_plan(&fid);
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-06T00:00:00Z")
-            .await
-            .expect("compile");
+        compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-06-06T00:00:00Z",
+        )
+        .await
+        .expect("compile");
 
         let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
         assert!(
@@ -3190,9 +3309,16 @@ mod tests {
         let mut plan = leaf_plan(&fid);
         // The ingest classifier proposed `prosa-tecnica` for this page.
         plan.pages.get_mut("alice").unwrap().style = Some(crate::wiki::PageStyle::ProsaTecnica);
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-06T00:00:00Z")
-            .await
-            .expect("compile");
+        compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-06-06T00:00:00Z",
+        )
+        .await
+        .expect("compile");
 
         let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
         assert!(
@@ -3248,9 +3374,16 @@ mod tests {
             "fake",
             "{\"mergedBody\":\"PROSE_FROM_CRONISTA\",\"description\":\"d\"}",
         );
-        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-07T00:00:00Z")
-            .await
-            .expect("compile");
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-06-07T00:00:00Z",
+        )
+        .await
+        .expect("compile");
 
         assert_eq!(report.lists, 1, "counted as a list page");
         assert_eq!(report.leaves, 0, "the Cronista leaf path was not taken");
@@ -3329,9 +3462,16 @@ mod tests {
             "fake",
             "{\"mergedBody\":\"INVENTED_LORE\",\"description\":\"d\"}",
         );
-        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
-            .await
-            .expect("compile");
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-06-11T00:00:00Z",
+        )
+        .await
+        .expect("compile");
         assert_eq!(report.leaves, 1, "rendered, counted as a leaf");
 
         let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
@@ -3350,9 +3490,16 @@ mod tests {
         );
 
         // Idempotent: the same compile re-run is a no-op.
-        let report2 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
-            .await
-            .expect("compile 2");
+        let report2 = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-06-11T00:00:00Z",
+        )
+        .await
+        .expect("compile 2");
         assert_eq!(report2.unchanged, 1, "second render matches byte-for-byte");
         drop(dir);
     }
@@ -3405,9 +3552,16 @@ mod tests {
         };
         let cronista =
             FakeLlmBackend::new("fake", "{\"mergedBody\":\"NOPE\",\"description\":\"d\"}");
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-08-23T00:00:00Z")
-            .await
-            .expect("compile");
+        compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-08-23T00:00:00Z",
+        )
+        .await
+        .expect("compile");
 
         let page =
             std::fs::read_to_string(dir.path().join("wikis/alice/@profile.md")).expect("written");
@@ -3503,9 +3657,16 @@ mod tests {
         std::fs::write(alice_dir.join("index.md"), "# Alice\n\n- [[alice/spesa]]\n").unwrap();
 
         let cronista = FakeLlmBackend::new("fake", "unused — lista path");
-        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
-            .await
-            .expect("compile");
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-06-11T00:00:00Z",
+        )
+        .await
+        .expect("compile");
 
         assert_eq!(
             report.orphan_files_swept, 2,
@@ -3582,9 +3743,16 @@ mod tests {
         };
 
         let cronista = FakeLlmBackend::new("fake", "unused — lista path has no LLM");
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
-            .await
-            .expect("compile");
+        compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-06-11T00:00:00Z",
+        )
+        .await
+        .expect("compile");
 
         let page = std::fs::read_to_string(dir.path().join("wikis/alice/spesa.md")).unwrap();
         assert!(
@@ -3733,9 +3901,16 @@ mod tests {
             reopen_pages: Vec::new(),
             authored_rails: Vec::new(),
         };
-        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-01T00:00:00Z")
-            .await
-            .expect("compile");
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-06-01T00:00:00Z",
+        )
+        .await
+        .expect("compile");
         assert_eq!(report.leaves, 1);
 
         let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
@@ -3826,9 +4001,16 @@ mod tests {
         // (the fake returns the same unparseable reply on the retry too).
         let plan = concept_leaf_plan(f.clone(), "karate", None);
         let cronista = FakeLlmBackend::new("fake", "NOT JSON");
-        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
-            .await
-            .expect("compile");
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-06-11T00:00:00Z",
+        )
+        .await
+        .expect("compile");
         assert!(
             report.errors.is_empty(),
             "no hard failure: {:?}",
@@ -3887,9 +4069,16 @@ mod tests {
         let body =
             "{\"mergedBody\":\"<f1>Matteo fa karate il lunedì.</f1>\",\"description\":\"d\"}";
         let cronista = FakeLlmBackend::new("fake", body);
-        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
-            .await
-            .expect("compile");
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-06-11T00:00:00Z",
+        )
+        .await
+        .expect("compile");
         assert_eq!(report.leaves, 1);
 
         let row = fact_index::find_by_id(&pool, &f.fact_id)
@@ -3953,9 +4142,16 @@ mod tests {
         let body =
             "{\"mergedBody\":\"<f1>Matteo fa karate il lunedì.</f1>\",\"description\":\"d\"}";
         let cronista = FakeLlmBackend::new("fake", body);
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
-            .await
-            .expect("compile");
+        compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-06-11T00:00:00Z",
+        )
+        .await
+        .expect("compile");
 
         let row = fact_index::find_by_id(&pool, &f.fact_id)
             .await
@@ -3979,9 +4175,16 @@ mod tests {
         let cronista = FakeLlmBackend::new("fake", "unused — lista path has no LLM");
 
         // First compile writes the record page and stamps offsets.
-        let r1 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
-            .await
-            .expect("compile 1");
+        let r1 = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-06-11T00:00:00Z",
+        )
+        .await
+        .expect("compile 1");
         assert_eq!(r1.lists, 1);
 
         // Knock the row back to a pending render elsewhere (the state a
@@ -3992,9 +4195,16 @@ mod tests {
 
         // The identical plan renders byte-identical content → Unchanged, but
         // the repoint must still stamp the offsets.
-        let r2 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-06-11T00:00:00Z")
-            .await
-            .expect("compile 2");
+        let r2 = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-06-11T00:00:00Z",
+        )
+        .await
+        .expect("compile 2");
         assert_eq!(r2.unchanged, 1);
         let row = fact_index::find_by_id(&pool, &f.fact_id)
             .await
@@ -4613,10 +4823,16 @@ mod tests {
             LlmError::Auth as fn(String) -> LlmError,
         ] {
             let cronista = RefusingCronista::new(make);
-            let report =
-                compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-05-31T00:00:00Z")
-                    .await
-                    .expect("compile");
+            let report = compile_dirty_pages(
+                &pool,
+                &tree,
+                &plan,
+                &cronista,
+                Cadence::Light,
+                "2026-05-31T00:00:00Z",
+            )
+            .await
+            .expect("compile");
             assert_eq!(
                 cronista.calls(),
                 1,
@@ -4645,9 +4861,16 @@ mod tests {
         plant_degraded_fact(&pool, &fid).await;
         let cronista = RefusingCronista::new(LlmError::Transport as fn(String) -> LlmError);
         let plan = leaf_plan(&fid);
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-05-31T00:00:00Z")
-            .await
-            .expect("compile");
+        compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-05-31T00:00:00Z",
+        )
+        .await
+        .expect("compile");
         assert_eq!(cronista.calls(), 2, "transport flakiness earns one retry");
         drop(dir);
     }
@@ -4863,9 +5086,16 @@ mod tests {
             "{\"mergedBody\":\"<f1>Alice ama la pasta</f1>, che compra in [[alice/spesa]].\",\
               \"description\":\"d\"}",
         )]);
-        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
-            .await
-            .expect("compile");
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-07-02T00:00:00Z",
+        )
+        .await
+        .expect("compile");
         assert_eq!(cronista.remaining(), 0, "exactly one call");
         assert_eq!(report.leaves, 1);
         assert!(report.rails_appended.is_empty(), "nothing to append");
@@ -4889,9 +5119,16 @@ mod tests {
                  \"description\":\"d\"}",
             ),
         ]);
-        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
-            .await
-            .expect("compile");
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-07-02T00:00:00Z",
+        )
+        .await
+        .expect("compile");
         assert_eq!(cronista.remaining(), 0, "one rewrite, no more");
         assert_eq!(report.leaves, 1);
         assert!(
@@ -4929,9 +5166,16 @@ mod tests {
                  \"description\":\"d\"}",
             ),
         ]);
-        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
-            .await
-            .expect("compile");
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-07-02T00:00:00Z",
+        )
+        .await
+        .expect("compile");
         assert_eq!(cronista.remaining(), 0, "asked twice, never a third time");
         assert_eq!(report.leaves, 1, "an under-linked page is still a success");
         assert_eq!(
@@ -4956,6 +5200,168 @@ mod tests {
         drop(dir);
     }
 
+    /// The split is by CADENCE, and the hourly pass keeps the old contract.
+    ///
+    /// A page carrying a link of its own plus a rail the REM parked earlier
+    /// tonight: the hourly compile is handed BOTH as mandatory — it writes
+    /// what the page says and adds to it, and never takes one away — while
+    /// the night is handed only the parked rail. That one is minutes old and
+    /// is not this compile's to undo; what the prose already carried is a
+    /// question, and answering it is the night's job.
+    #[test]
+    fn the_night_inherits_a_link_as_a_question_and_the_hour_as_an_order() {
+        let f = ffp(0x71, "Frodo cammina fino al mulino");
+        let mut plan = leaf_plan_with_rail(f, "cammini", "mulino");
+        plan.pages.insert(
+            "acqua".to_owned(),
+            PagePlan {
+                slug: "acqua".to_owned(),
+                title: "acqua".to_owned(),
+                description: "il vicino deciso stanotte".to_owned(),
+                style: None,
+                primary_facts: Vec::new(),
+                outgoing_links: Vec::new(),
+                wiki_id: "alice".to_owned(),
+                page_path: "acqua.md".to_owned(),
+            },
+        );
+        plan.link_graph.insert(
+            "cammini".to_owned(),
+            vec!["mulino".to_owned(), "acqua".to_owned()],
+        );
+        plan.authored_rails = vec![("cammini".to_owned(), "acqua".to_owned())];
+
+        assert_eq!(
+            link_targets(&plan, "cammini", Cadence::Light),
+            (
+                vec!["[[alice/mulino]]".to_owned(), "[[alice/acqua]]".to_owned()],
+                Vec::new()
+            ),
+            "the hourly pass may add a link, never remove one"
+        );
+        assert_eq!(
+            link_targets(&plan, "cammini", Cadence::Full),
+            (
+                vec!["[[alice/acqua]]".to_owned()],
+                vec!["[[alice/mulino]]".to_owned()]
+            ),
+            "tonight's parked rail binds; what the prose already said is offered"
+        );
+    }
+
+    /// At night, a link the page carried and the model let go STAYS gone.
+    ///
+    /// This is the whole point. The same reply at the hourly cadence buys a
+    /// rewrite and, failing that, a bare appended rail
+    /// (`a_dropped_rail_costs_one_rewrite_that_weaves_it_in` beside this).
+    /// Here it costs one call and nothing else: the guard enforces only what
+    /// the compile was told it MUST say, and at night that is the parked
+    /// rails alone. Otherwise the night could never take a link away, and
+    /// every sketch the cheap tier ever wrote would be permanent.
+    #[tokio::test]
+    async fn the_night_may_let_a_link_go_and_nothing_puts_it_back() {
+        let (dir, tree, pool) = setup().await;
+        let f = ffp(0x72, "Alice loves pasta");
+        plant_fact(&pool, &f.fact_id, "user:alice", "Alice loves pasta").await;
+        let plan = leaf_plan_with_rail(f, "cucina", "spesa");
+
+        let cronista = ScriptedCronista::new(vec![Ok(
+            "{\"mergedBody\":\"<f1>Alice ama la pasta</f1>.\",\"description\":\"d\"}",
+        )]);
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Full,
+            "2026-08-26T00:00:00Z",
+        )
+        .await
+        .expect("compile");
+
+        assert_eq!(cronista.remaining(), 0, "one call — no rewrite is bought");
+        assert_eq!(report.leaves, 1);
+        assert!(
+            report.rails_appended.is_empty(),
+            "an offered link that was let go is a decision, not a gap: {:?}",
+            report.rails_appended
+        );
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
+        assert!(
+            !page.contains("[[alice/spesa]]"),
+            "nothing put the link back on the page: {page}"
+        );
+        drop(dir);
+    }
+
+    /// What the night may NOT drop is the rail the REM parked minutes ago.
+    ///
+    /// `crate::rem::run_rail_writer` runs before the compile, so a compile
+    /// free to discard its choice would undo the night's own decision inside
+    /// the same night. A parked rail is handed over as mandatory at both
+    /// cadences, and the guard still appends it.
+    #[tokio::test]
+    async fn a_rail_parked_tonight_still_binds_tonight() {
+        let (dir, tree, pool) = setup().await;
+        let f = ffp(0x73, "Alice loves pasta");
+        plant_fact(&pool, &f.fact_id, "user:alice", "Alice loves pasta").await;
+        let mut plan = leaf_plan_with_rail(f, "cucina", "spesa");
+        plan.authored_rails = vec![("cucina".to_owned(), "spesa".to_owned())];
+
+        let cronista = ScriptedCronista::new(vec![
+            Ok("{\"mergedBody\":\"<f1>Alice ama la pasta</f1>.\",\"description\":\"d\"}"),
+            Ok("{\"mergedBody\":\"<f1>Alice ama la pasta</f1>.\",\"description\":\"d\"}"),
+        ]);
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Full,
+            "2026-08-26T00:00:00Z",
+        )
+        .await
+        .expect("compile");
+
+        assert_eq!(cronista.remaining(), 0, "declined twice, so both calls ran");
+        assert_eq!(
+            report.rails_appended,
+            vec!["cucina: [[alice/spesa]]".to_owned()],
+            "the night cannot discard a decision the same night took"
+        );
+        let page = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
+        assert!(
+            page.contains("[[alice/spesa]]"),
+            "the parked rail is on the page: {page}"
+        );
+        drop(dir);
+    }
+
+    /// The nightly brief is rendered for a page that has links to judge, and
+    /// asked of nothing when it has none — a page with no links of its own
+    /// would be paying for a brief about judging them.
+    #[test]
+    fn the_nightly_brief_carries_the_links_it_asks_about() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let tree = WikiTree::open(dir.path()).expect("tree");
+
+        assert!(
+            night_part(&tree, &[]).is_none(),
+            "a page with no links of its own is asked nothing"
+        );
+        let rendered = night_part(&tree, &["[[alice/spesa]]".to_owned()])
+            .expect("the part renders from the bundled default");
+        assert!(
+            rendered.contains("[[alice/spesa]]"),
+            "the brief names the link it is asking about: {rendered}"
+        );
+        assert!(
+            !rendered.contains("{prior_links}"),
+            "the placeholder is substituted, not shipped: {rendered}"
+        );
+        drop(dir);
+    }
+
     async fn streak_notices(pool: &SqlitePool) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM wiki_events WHERE kind = 'compile_failure_streak'")
             .fetch_one(pool)
@@ -4974,9 +5380,16 @@ mod tests {
         let plan = concept_leaf_plan(f.clone(), "cucina", None);
 
         let cronista = ScriptedCronista::new(vec![Ok("NOT JSON"), Ok(GOOD_CRONISTA)]);
-        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
-            .await
-            .expect("compile");
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-07-02T00:00:00Z",
+        )
+        .await
+        .expect("compile");
         assert_eq!(cronista.remaining(), 0, "exactly one retry happened");
         assert_eq!(report.leaves, 1, "clean compile after the retry");
         assert!(report.degraded.is_empty(), "no degradation recorded");
@@ -5009,9 +5422,16 @@ mod tests {
         planner::save_plan(&tree, &plan).expect("persist plan");
 
         let cronista = ScriptedCronista::new(vec![Ok("NOT JSON"), Err("boom: 500")]);
-        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
-            .await
-            .expect("compile");
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-07-02T00:00:00Z",
+        )
+        .await
+        .expect("compile");
         assert_eq!(cronista.remaining(), 0);
         assert_eq!(report.leaves, 0);
         assert_eq!(report.degraded.len(), 1, "degraded outcome recorded");
@@ -5074,9 +5494,16 @@ mod tests {
         let cronista = FakeLlmBackend::new("fake", "NOT JSON");
 
         // Run 1: degraded append (streak 1, no notice).
-        let r1 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
-            .await
-            .expect("compile 1");
+        let r1 = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-07-02T00:00:00Z",
+        )
+        .await
+        .expect("compile 1");
         assert_eq!(r1.degraded.len(), 1);
         let after_1 = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
         assert_eq!(
@@ -5087,9 +5514,16 @@ mod tests {
 
         // Run 2: idempotent (byte-identical page, still exactly one marker),
         // streak 2 ⇒ the notice fires.
-        let r2 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T01:00:00Z")
-            .await
-            .expect("compile 2");
+        let r2 = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-07-02T01:00:00Z",
+        )
+        .await
+        .expect("compile 2");
         assert_eq!(r2.degraded.len(), 1, "still degraded, never settles clean");
         let after_2 = std::fs::read_to_string(dir.path().join("wikis/alice/cucina.md")).unwrap();
         assert_eq!(after_2, after_1, "second degraded pass is a no-op on disk");
@@ -5106,9 +5540,16 @@ mod tests {
         assert_eq!(streak_notices(&pool).await, 1, "notice at exactly 2");
 
         // Run 3: streak 3 — between thresholds, NO second notice.
-        compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T02:00:00Z")
-            .await
-            .expect("compile 3");
+        compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-07-02T02:00:00Z",
+        )
+        .await
+        .expect("compile 3");
         assert_eq!(
             compile_failures::get(&pool, "wikis/alice/cucina.md")
                 .await
@@ -5153,9 +5594,16 @@ mod tests {
             Ok("STILL NOT JSON"),
             Ok(GOOD_CRONISTA),
         ]);
-        let r1 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
-            .await
-            .expect("compile 1");
+        let r1 = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-07-02T00:00:00Z",
+        )
+        .await
+        .expect("compile 1");
         assert_eq!(r1.degraded.len(), 1);
         assert!(
             compile_failures::get(&pool, "wikis/alice/cucina.md")
@@ -5164,9 +5612,16 @@ mod tests {
                 .is_some()
         );
 
-        let r2 = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T01:00:00Z")
-            .await
-            .expect("compile 2");
+        let r2 = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-07-02T01:00:00Z",
+        )
+        .await
+        .expect("compile 2");
         assert_eq!(cronista.remaining(), 0);
         assert_eq!(r2.leaves, 1, "the proper rewrite landed");
         assert!(r2.degraded.is_empty());
@@ -5224,9 +5679,16 @@ mod tests {
 
         // Both Cronista attempts die on transport; the lista page needs no LLM.
         let cronista = ScriptedCronista::new(vec![Err("connection refused"), Err("timeout")]);
-        let report = compile_dirty_pages(&pool, &tree, &plan, &cronista, "2026-07-02T00:00:00Z")
-            .await
-            .expect("one flaky page must not abort the pass");
+        let report = compile_dirty_pages(
+            &pool,
+            &tree,
+            &plan,
+            &cronista,
+            Cadence::Light,
+            "2026-07-02T00:00:00Z",
+        )
+        .await
+        .expect("one flaky page must not abort the pass");
         assert_eq!(report.degraded.len(), 1, "the flaky page degraded");
         assert_eq!(report.lists, 1, "the other page still compiled");
         assert!(report.errors.is_empty());

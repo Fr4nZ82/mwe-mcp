@@ -272,6 +272,7 @@ pub const BUNDLED: &[(&str, &str)] = &[
     ("cartografo", crate::planner::BUNDLED_CARTOGRAFO_MD),
     ("conciliatore", crate::planner::BUNDLED_CONCILIATORE_MD),
     ("cronista", crate::compiler::BUNDLED_CRONISTA_MD),
+    ("cronista-night", crate::compiler::BUNDLED_CRONISTA_NIGHT_MD),
     (
         "comment-apply",
         crate::comment_apply::BUNDLED_COMMENT_APPLY_MD,
@@ -334,6 +335,7 @@ pub const PROSE_REGISTRY: &[(&str, PromptOutput)] = &[
     ("ingest-assistant-turn", PromptOutput::PartOfAnother),
     ("ingest-attachments", PromptOutput::PartOfAnother),
     ("cronista", PromptOutput::Prose),
+    ("cronista-night", PromptOutput::PartOfAnother),
     ("cartografo", PromptOutput::Prose),
     ("conciliatore", PromptOutput::Prose),
     ("comment-apply", PromptOutput::Prose),

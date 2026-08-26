@@ -1,7 +1,7 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.33
+version: 1.34
 default_version_at_bootstrap: v1.30
 ---
 
@@ -137,6 +137,27 @@ whole index is both cheaper and complete.
 An operator override without the marker still works: the whole rendered body
 goes to the system prompt as before and nothing is marked cacheable.
 
+### The nightly part (v1.34)
+
+`{links}` does not carry the same thing at both cadences, and the difference is
+the whole of `crates/mwe-core/prompts/cronista-night.md` — a **part**
+(`PromptOutput::PartOfAnother`) appended to the **task half** by
+`compile_leaf_page` on `dream::Cadence::Full`, for a page that already carries
+links of its own.
+
+At the hourly cadence `{links}` is everything the page has, and it is
+mandatory: the cheap tier writes what the page says and adds to it, never
+taking one away. At the full cadence `{links}` narrows to the rails
+`rem::run_rail_writer` parked earlier the same night — which stay mandatory,
+because that pass runs *before* the compile and a compile free to discard its
+choice would undo it in the minute it was made — and everything the page's own
+prose carries moves into the part's `{prior_links}`, offered for re-judgement.
+
+The split is by cadence rather than by a record of who wrote each link, and it
+cannot be otherwise: the plan reads a page's links off its own prose, and prose
+does not say which pass wrote a sentence. `compiler::link_targets` carries the
+reasoning.
+
 ## System prompt
 
 **`{locale}`** — substituted before the prompt reaches the model with the
@@ -169,7 +190,7 @@ WHICH LINKS TO WRITE — the part that decides whether this memory works:
 - The strongest link is a CONSTRAINT, not a resemblance. When the destination limits, enables, schedules or decides what this fact says, the two pages can share almost no words and still be inseparable in practice — neither can be acted on without the other. A link like that is worth double, because no search will ever produce it: the shared words are not there to be found. That is a reason a link is VALUABLE, not a bar every link must clear — you do not know which question brought the reader here, so you can never assume a page would have been found anyway.
 - The counter-case, narrow and real: do not link for COMPANY. Two pages that name the same person, and nothing else, need no link between them — a shared name is not a reason to walk from one to the other. Before writing a link, say what the reader gains by arriving there. If the only answer is "that page is about them too", leave it out.
 - Where to find them: OTHER PAGES lists pages with the one line saying what each holds — sometimes every page of the memory, sometimes a selection. When a line is tagged, the tag says why that page is in front of you: `far` means nothing about it resembles this page, so if one of your facts nevertheless continues over there, that is a link nothing else in this system could have found; `near` means a search from here may well arrive already, so such a link has to earn its place by extending a fact rather than by sitting close to one. Read the list against your facts, one fact at a time — "which of these does a reader of THIS need next?" — and link those. A handful, chosen; not a sweep.
-- RECOMMENDED LINKS is the slot for rails the engine requires on this page: the links THIS page already carries, plus any the nightly pass decided it should. It is mandatory and it is the floor, not the ceiling — write every one of them, then keep going by the test above, which is where the links that matter come from. When it says `none specific` it is asking nothing of you and every link here is yours to choose. A page that links to yours puts nothing on this list and asks nothing of you: a link is one page's sentence, not a contract between two.
+- RECOMMENDED LINKS is the slot for rails the engine requires on this page. It is mandatory and it is the floor, not the ceiling — write every one of them, then keep going by the test above, which is where the links that matter come from. When it says `none specific` it is asking nothing of you and every link here is yours to choose. A page that links to yours puts nothing on this list and asks nothing of you: a link is one page's sentence, not a contract between two.
 
 3. Write flowing PROSE, not a bullet list. Make the RELATIONS between the facts explicit — causality, chronology, roles, implications — that connective thread is the value, not a pile of sentences.
 4. Use dated events as EVIDENCE of habits / roles, not as a calendar. Do not turn the page into an agenda of appointments.
