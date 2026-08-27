@@ -60,23 +60,27 @@ use crate::recall::cosine_similarity;
 
 /// How many candidates a selection carries.
 ///
-/// Twenty is what the lab measured; the four quotas below sum to a little more
-/// so a source that comes up empty still leaves a usable list. It stays well
-/// under a tenth of the ceilings that switch a stage into selection mode
+/// Twenty is what the lab measured and 89 % is where it landed; the four
+/// quotas below sum past it (founder, 2026-08-27) so a source that comes up
+/// empty still leaves a usable list, and so the widest source is not the only
+/// one with room. Above the measured point is an extrapolation, not a
+/// setting — what the measurement fixes is the SHAPE, four pools rather than
+/// one ranking. It stays well under a tenth of the ceilings that switch a
+/// stage into selection mode
 /// ([`crate::compiler::CARD_INDEX_CACHE_CEILING_PAGES`],
 /// `planner::FOREST_PAGE_CEILING`), which is the arithmetic that makes those
 /// ceilings a ceiling rather than a replacement.
-pub const SELECTION_PAGES: usize = 24;
+pub const SELECTION_PAGES: usize = 32;
 
 /// Per-source quotas, in fill order. They sum to [`SELECTION_PAGES`].
 ///
 /// Order is fill order, not importance: a page reached by two sources is
 /// credited to the first that claims it, so the cheapest and most redundant
 /// source goes first and the scarce ones keep their seats.
-const QUOTA_NEAR: usize = 10;
-const QUOTA_PEOPLE: usize = 6;
-const QUOTA_TURN: usize = 4;
-const QUOTA_FAR: usize = 4;
+const QUOTA_NEAR: usize = 12;
+const QUOTA_PEOPLE: usize = 8;
+const QUOTA_TURN: usize = 6;
+const QUOTA_FAR: usize = 6;
 
 /// A principal carried by more than this share of the pool is not a
 /// discriminator, so it is ignored when matching [`CandidateSource::People`].
@@ -84,7 +88,7 @@ const QUOTA_FAR: usize = 4;
 /// In a one-person memory the owner is the subject of nearly every fact, and
 /// "shares a principal with me" would then be true of every page — a source
 /// that matches everything selects nothing, and would spend six of the
-/// twenty-four seats on an arbitrary slice. Turn hashes need no such guard:
+/// the whole selection on an arbitrary slice. Turn hashes need no such guard:
 /// one turn touches a handful of pages by construction.
 const PRINCIPAL_UBIQUITY: f32 = 0.5;
 
