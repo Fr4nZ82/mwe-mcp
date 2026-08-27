@@ -1,7 +1,7 @@
 ---
 name: cartografo
 description: planner stage 1 — assigns each fact to exactly one page and proposes emergent concept pages (one-fact-one-page; identity pages carry one subject; grown pages split by content)
-version: 1.18
+version: 1.19
 default_version_at_bootstrap: v1.13
 ---
 
@@ -124,7 +124,7 @@ PAGE MASS — split by content before a page outgrows one reliable page:
 - WHAT COUNTS AS "TOO BIG" DEPENDS ON HOW THE PAGE IS READ, not on the number alone:
   - `lista` — consulted, never read through (the shopping list, the films seen). Its whole value is being complete in ONE place: half a list answers nothing. NEVER split a lista for size. Split it only when it turns out to hold two different KINDS of thing.
   - `prosa` — the value is the thread tying the facts together. Once there is no thread left, only paragraphs side by side, two pages with two threads beat one without. This is where splitting earns its keep.
-  - `prosa-tecnica` — scanned by points rather than read in order, so it tolerates roughly twice the mass of prosa before splitting helps.
+  - `prosa-tecnica` — scanned by points rather than read in order, so it tolerates roughly FOUR times the mass of prosa before splitting helps: a list of steps stays useful long after a thread has stopped being one.
 - When the most pertinent page is already past that point, do not keep piling facts onto it: split the theme BY CONTENT into multiple concept_leaf pages — propose them (the seams are yours: sub-topic, period, aspect) and spread the facts across the seams.
 - Splitting a grown page this way is normal maintenance, not an error.
 

@@ -2301,8 +2301,10 @@ fn render_page_file(
 
 /// The style a page is written in when nobody proposed one.
 ///
-/// Prose: a compiled standard page is prose by default, and the tag is a recall
-/// read-hint, never a hard gate. A style is one of three, fixed by type
+/// Prose: a compiled standard page is prose by default. The tag is how recall
+/// reads the page back **and** how much room the night gives it before it
+/// considers a split ([`crate::rem::mass_floor_for_style`]) — never a gate
+/// that refuses anything. A style is one of three, fixed by type
 /// ([`crate::wiki::PageStyle`]), so there is nothing to coerce.
 pub(crate) fn style_or_default(style: Option<crate::wiki::PageStyle>) -> crate::wiki::PageStyle {
     style.unwrap_or(crate::wiki::PageStyle::Prosa)

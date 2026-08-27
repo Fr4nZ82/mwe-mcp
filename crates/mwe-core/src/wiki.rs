@@ -106,9 +106,10 @@ pub enum PageStyle {
     /// Continuous prose: the value is the thread tying the facts together, and
     /// a page is too big once there is no thread left (floor: 8 facts).
     Prosa,
-    /// Technical prose: short bullets with brief descriptions, scanned by
-    /// points rather than read in order — so it tolerates about twice the mass
-    /// (floor: 16 facts).
+    /// Technical prose: short enumerated points, scanned rather than read in
+    /// order — a list of steps stays useful long after a thread has stopped
+    /// being one, so it tolerates four times the mass (floor: 32 facts, see
+    /// [`crate::rem::RemPolicy::auto_promote_min_page_facts_technical`]).
     #[serde(rename = "prosa-tecnica")]
     ProsaTecnica,
     /// A set: the shopping list, the films seen. Its value is being complete in

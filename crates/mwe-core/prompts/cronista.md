@@ -1,7 +1,7 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.35
+version: 1.36
 default_version_at_bootstrap: v1.30
 ---
 
@@ -192,8 +192,8 @@ WHICH LINKS TO WRITE — the part that decides whether this memory works:
 - Where to find them: OTHER PAGES lists pages with the one line saying what each holds — sometimes every page of the memory, sometimes a selection. When a line is tagged, the tag says why that page is in front of you: `far` means nothing about it resembles this page, so if one of your facts nevertheless continues over there, that is a link nothing else in this system could have found; `near` means a search from here may well arrive already, so such a link has to earn its place by extending a fact rather than by sitting close to one. Read the list against your facts, one fact at a time — "which of these does a reader of THIS need next?" — and link those. A handful, chosen; not a sweep.
 - RECOMMENDED LINKS is the slot for rails the engine requires on this page. It is mandatory and it is the floor, not the ceiling — write every one of them, then keep going by the test above, which is where the links that matter come from. When it says `none specific` it is asking nothing of you and every link here is yours to choose. A page that links to yours puts nothing on this list and asks nothing of you: a link is one page's sentence, not a contract between two.
 
-3. Write flowing PROSE, not a bullet list. Make the RELATIONS between the facts explicit — causality, chronology, roles, implications — that connective thread is the value, not a pile of sentences.
-4. Use dated events as EVIDENCE of habits / roles, not as a calendar. Do not turn the page into an agenda of appointments.
+3. Choose the page's SHAPE before you write it, and report the one you chose under STYLE below. Almost always it is a THREAD: flowing prose that makes the RELATIONS between the facts explicit — causality, chronology, roles, implications — because that connective thread is the value and a pile of sentences is not. The exception is material that plainly reads better as POINTS: a recipe, the steps of a procedure, a set of hours or appointments. There a thread is a WORSE rendering of the same content — write short enumerated points instead, each still wrapped in its own `<fN>` tag. When both feel true, write the thread.
+4. On a page about a PERSON or an episode, use dated events as EVIDENCE of habits and roles rather than as a calendar: do not narrate somebody's life as a diary of dates. This is about how a PERSON is written and not a ban on schedules — a page whose subject IS a schedule is the points case above, and there the dates are the content.
 
 FACT TAGS — the load-bearing part (read carefully):
 - Each fact under YOUR FACTS has a NUMBER. When you write the prose for fact N, WRAP exactly that fact's text in a tag:
@@ -236,12 +236,12 @@ IDENTITY CARD — when the PAGE line below says `Kind: identity_card`:
 
 LANGUAGE: {locale}
 
-STYLE — tag how THIS page reads, so recall knows how to read it back:
-- Pick the page's DOMINANT writing style and return it as `style`. You write flowing prose, so choose between:
-    "prosa"         — interconnected knowledge where the THREAD between facts is the value (people, episodes, stories). The default.
-    "prosa-tecnica" — itemizable / technical content a reader scans point-by-point (a recipe, project notes, an appointment with details). Still prose, just tighter and more enumerated.
-- Do NOT return "lista": that is for atomic-record pages (a shopping list, a filmography) that are NOT written as prose — not your job here.
-- This is a read-hint, not a gate. When unsure, return "prosa".
+STYLE — the shape you chose in rule 3, reported so the engine reads the page back the way it was written:
+- Return the shape you ACTUALLY wrote:
+    "prosa"         — a THREAD: interconnected knowledge where what ties the facts together is the value (people, episodes, stories). This is almost always the answer.
+    "prosa-tecnica" — POINTS: material that plainly reads better enumerated — a recipe, the steps of a procedure, a set of hours or appointments. Tight, scanned by points rather than read through.
+- Do NOT return "lista": that is for atomic-record pages (a shopping list, a filmography) that are not written as prose at all, and they are written without you.
+- **It is not decoration, and it is not only a read hint.** The engine gives a page of points far more room before it considers splitting it, because a thread stops being a thread long before a list of steps stops being useful. So report what you wrote rather than what a page is usually like — and when the two shapes feel equally right, write the thread and say "prosa".
 
 DESCRIPTION — the page's card, and the reason anyone ever arrives here:
 - What the recall navigator sees of this page is its NAME, a handful of keywords, and THIS LINE. It never sees the prose above. It reads the line and decides whether to open the page — so the card is not a summary for someone who has read the page, it is an offer to someone who has not.
