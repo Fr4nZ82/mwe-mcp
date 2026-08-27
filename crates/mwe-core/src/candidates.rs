@@ -439,11 +439,17 @@ impl CandidatePool {
             &mut taken,
             &mut out,
         );
-        // An asker with no card vector has no near half and no far one, so the
-        // caller's own ordering is the only thing left that can say what
-        // exists. With a vector it is never reached: `near` has already said
-        // it, and better.
-        if !ask.has_vector() {
+        // Nothing could be scored, so the caller's own ordering is the only
+        // thing left that can say what exists. Two ways to get here and the
+        // fallback owes both: an asker with no vector to measure from, and a
+        // pool whose destinations carry none to measure against — a memory
+        // whose pages were written before anything embedded their cards, which
+        // is the memory that most needs its first rails. The test is the
+        // RANKING, never the ask: an ask can be rich in vectors and still rank
+        // nothing, and keying on the ask left this pass offering zero
+        // candidates on exactly that memory. Where the ranking did produce
+        // something, `near` has already said what exists, and better.
+        if ranked.is_empty() {
             push(
                 home.iter()
                     .filter(|k| !exclude.contains(*k))
@@ -803,6 +809,32 @@ mod tests {
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
             "nearness and distance both need a vector; the other two do not: {picked:?}"
+        );
+    }
+
+    /// The asker having vectors says nothing about whether anything can be
+    /// RANKED: scoring needs a vector at both ends, and a memory written
+    /// before anything embedded its cards has none at the far end. Keying the
+    /// fallback on the ask left the rail writer offering zero candidates on
+    /// exactly that memory — every nominated page returned before it reached
+    /// the model, silently, because an empty offer is a legal answer.
+    #[test]
+    fn an_asker_rich_in_vectors_still_falls_back_when_nothing_can_be_ranked() {
+        let p = pool(vec![
+            ("me", traits(None, &[], &[])),
+            ("a", traits(None, &[], &[])),
+            ("b", traits(None, &[], &[])),
+        ]);
+        let mut ask = p.ask_for(["me"]);
+        // What `rem::rail_candidates` does: the page's own facts widen the ask.
+        ask.widen_with([vec![1.0, 0.0], vec![0.0, 1.0]]);
+        assert!(ask.has_vector(), "the ask carries the facts' vectors");
+        let home: Vec<String> = ["b", "a"].iter().map(|s| (*s).to_owned()).collect();
+        let picked = p.pick(&ask, &excl(&["me"]), SELECTION_PAGES, &home);
+        assert_eq!(
+            picked.iter().map(|c| c.key.as_str()).collect::<Vec<_>>(),
+            vec!["b", "a"],
+            "nothing ranks, so the caller's own ordering is offered: {picked:?}"
         );
     }
 
