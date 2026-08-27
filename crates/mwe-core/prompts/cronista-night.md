@@ -1,6 +1,6 @@
 ---
 name: cronista-night
-version: 1.1
+version: 1.2
 description: The Cronista's nightly half — the links a page already carries are what it said last time, offered for re-judgement rather than imposed. Spliced into the turn by `compiler::compile_leaf_page` ahead of the page itself, and ONLY on the full compile.
 default_version_at_bootstrap: v1.0
 part_of: cronista
@@ -63,4 +63,11 @@ LINKS THIS PAGE CARRIED LAST TIME: {prior_links}
 - When one extends nothing on this page, LET IT GO. Say nothing about it, write no farewell, leave no trace of it in the prose. A link that survives only because somebody once wrote it is how a memory silts up, and dropping it is a decision — yours, tonight.
 - RECOMMENDED LINKS, listed with the page below, is a different list and it still binds. Those rails were decided earlier tonight, before you were called; not one of them is on the list above, and they are not yours to drop.
 - Copy every link you keep CHARACTER-FOR-CHARACTER from the list above, exactly as WIKILINK GRAMMAR requires. A link retyped in the surrounding slug style points nowhere.
+
+EXAMPLES — five judgements, ordered from doing nothing to taking a link away:
+- The page holds a gym routine and carries a link to a back injury, written beside the fact about lifting weights. It is the right link and it is already where it is needed. LEAVE IT ALONE: changing a link for the sake of changing it leaves the page different without leaving it better.
+- The link is the right one, but it sits in a closing sentence far from the fact it extends, where a reader of that fact never meets it. KEEP IT AND MOVE IT: a link serves whoever has just read that line, not whoever reaches the bottom of the page.
+- The page says Frodo is at school 08:00–14:00, and the link goes to his homework. Among OTHER PAGES there is one holding his afternoon courses, and it is the hours that decide which of them are possible at all. WRITE THAT ONE INSTEAD: you are the pass that can afford to look further.
+- The link was written for a fact that now lives on another page. Nothing left here leads over there. LET IT GO AND SAY NOTHING: no farewell sentence, no trace of it in the prose.
+- Both pages name Bilbo and nothing else joins them. Somebody who has just read a fact here gains nothing by arriving there. LET IT GO: that is the link for company the criterion forbids.
 ```
