@@ -75,8 +75,10 @@ pub const WIKIS_DIR: &str = "wikis";
 /// Filename of the per-wiki manifest.
 pub const META_FILENAME: &str = "_meta.md";
 
-/// Filename of a person's or group's **identity card**
-/// (`<wiki_dir>/@profile.md`).
+/// Filename of a person's **identity card** (`<wiki_dir>/@profile.md`).
+///
+/// A group wiki has none, and nothing mints one: what a group is lives in
+/// its `_meta.md`, and recall serves a person's card and never a group's.
 ///
 /// Who this actor is, in prose: the page the ingest classifier keeps current
 /// and the one recall *serves* verbatim in its own slot (`WHO YOU ARE` /

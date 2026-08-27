@@ -21,7 +21,7 @@
 //!    duplicating them. The engine hands it **structural signals only**
 //!    ([`CartografoSignals`]: per-fact identity-page scope tags from
 //!    enrollment, per-page fact mass) — the prompt carries the placement
-//!    discipline (an identity index carries one subject; a grown page splits
+//!    discipline (an identity card carries one subject; a grown page splits
 //!    by content), never a hardcoded gate in Rust.
 //! 3. **Conciliatore** ([`conciliate_new_pages`]) — strong-model LLM, one call.
 //!    Folds semantically-duplicate proposed pages into existing ones (redirects).
@@ -1796,7 +1796,7 @@ pub fn extract_assigned_fact_ids(plan: &CompilationPlan) -> BTreeMap<String, Str
 ///
 /// - **identity-page scope** (per fact, via its subject) — which `person`
 ///   pages the fact's *subject* covers, so the model can keep a foreign
-///   subject off a user's identity index (an identity index carries one
+///   subject off a user's identity card (an identity card carries one
 ///   subject; the relation surfaces through the page-user's own facts plus
 ///   a `[[wikilink]]`). Computed from enrollment by [`subject_scopes_for`].
 /// - **page mass** (per plan page) — how many facts currently live on each
@@ -2117,7 +2117,7 @@ fn registry_source_path(tree: &WikiTree, e: &ConceptRegistryEntry) -> Option<Str
 /// Compute the per-subject identity-page scope tags for `facts` from the
 /// enrollment tables — the mechanical half of the identity-page discipline.
 ///
-/// A fact is *foreign* to an identity index when its `subject` is a
+/// A fact is *foreign* to an identity card when its `subject` is a
 /// **different user**, or a **group the page's user is not a member of** (a
 /// group the user belongs to is their own shared context, never foreign).
 /// Rendered per distinct subject as the pages the subject covers:
@@ -2125,7 +2125,7 @@ fn registry_source_path(tree: &WikiTree, e: &ConceptRegistryEntry) -> Option<Str
 /// - `user:<id>` → that user's `person`-page slug;
 /// - `group:<g>` → the member users' `person`-page slugs
 ///   ([`enrollment::members_for`]), `none` when the group has no enrolled
-///   members (foreign on every identity index);
+///   members (foreign on every identity card);
 /// - the builtin global group → `any` (universal membership — world context
 ///   is never another subject).
 ///
@@ -6085,7 +6085,7 @@ mod tests {
         let scopes = subject_scopes_for(&pool, &facts).await.expect("scopes");
 
         // Foreign user: bruno's fact covers ONLY bruno's page — franz's
-        // identity index is outside the tag.
+        // identity card is outside the tag.
         assert_eq!(scopes["user:bruno"], "bruno");
         // Own group: franz IS a member, so his page is in the tag (his own
         // shared context, never foreign to him).

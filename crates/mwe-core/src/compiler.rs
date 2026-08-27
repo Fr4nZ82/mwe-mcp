@@ -4234,9 +4234,9 @@ mod tests {
     }
 
     #[test]
-    fn bundled_cronista_prompt_carries_the_identity_index_guard() {
+    fn bundled_cronista_prompt_carries_the_identity_card_guard() {
         // The belt-guard behind the planner's identity-page discipline: when
-        // writing a user's identity index, another subject's detail is
+        // writing a user's identity card, another subject's detail is
         // referenced with its [[wikilink]], never woven into the prose. One
         // sentence by design — plan placement is the load-bearing channel
         // (the Cronista only ever sees the facts the plan gave the page).

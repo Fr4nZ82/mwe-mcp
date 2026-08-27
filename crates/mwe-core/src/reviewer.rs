@@ -75,7 +75,7 @@ pub type Result<T> = std::result::Result<T, ReviewerError>;
 /// Enrollment context for the cross-subject check.
 ///
 /// Carries which wikis are `wiki-user` **identity wikis** (their `@profile.md`
-/// is an identity index — the agent wiki included, it is a normal
+/// is an identity card — the agent wiki included, it is a normal
 /// `wiki-user`) and which groups each of those users belongs to. Group
 /// wikis and emergent sub-wikis carry other `wiki_type`s and never qualify.
 ///
@@ -662,13 +662,13 @@ mod tests {
         );
     }
 
-    /// The identity index of `franz` (a `wiki-user`) planned with facts of
+    /// The identity card of `franz` (a `wiki-user`) planned with facts of
     /// every subject shape: only the foreign SUBJECTS are flagged —
     /// another user's fact and a fact of a group franz is NOT in. His own
     /// facts, a group he belongs to (his own shared context), and global
     /// world context are all clean.
     #[test]
-    fn flags_foreign_subject_facts_on_an_identity_index() {
+    fn flags_foreign_subject_facts_on_an_identity_card() {
         let mut identity = IdentityContext::default();
         identity.user_wikis.insert("franz".to_owned());
         identity.memberships.insert(
@@ -835,10 +835,14 @@ mod tests {
 
     /// The same foreign-subject fact on a TOPIC page (a concept leaf) of the
     /// same wiki is fine — multi-subject detail legitimately lives on topic
-    /// pages; only the identity index carries one subject. A `wiki-group`
-    /// index never qualifies either (out of the 32a scope).
+    /// pages; only an identity card carries one subject.
+    ///
+    /// And the discipline keys on WHOSE wiki it is, not on a page path. The
+    /// second fixture proves it by parking the fact at `@profile.md` inside a
+    /// GROUP's wiki — a page nothing in the engine mints, since a group has
+    /// no card, and one the reviewer must still leave alone if it meets it.
     #[test]
-    fn foreign_fact_on_a_topic_page_or_group_index_is_not_flagged() {
+    fn foreign_fact_on_a_topic_page_or_in_a_group_wiki_is_not_flagged() {
         let mut identity = IdentityContext::default();
         identity.user_wikis.insert("franz".to_owned());
         identity
@@ -848,13 +852,13 @@ mod tests {
         // A concept leaf in franz's wiki holding bruno's fact: not an index.
         let mut topic = leaf("dossier", vec![ffp(2, "user:bruno")]);
         topic.wiki_id = "franz".to_owned();
-        // The famiglia GROUP wiki's index holding bruno's fact: not a
-        // wiki-user wiki (absent from `user_wikis`).
-        let mut group_index = leaf("famiglia", vec![ffp(3, "user:bruno")]);
-        group_index.wiki_id = "famiglia".to_owned();
-        group_index.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
+        // A page of the famiglia GROUP wiki holding bruno's fact, at the
+        // card's own path: not a wiki-user wiki (absent from `user_wikis`).
+        let mut group_page = leaf("famiglia", vec![ffp(3, "user:bruno")]);
+        group_page.wiki_id = "famiglia".to_owned();
+        group_page.page_path = crate::wiki::PROFILE_FILENAME.to_owned();
 
-        let plan = plan_with(vec![topic, group_index], BTreeMap::new());
+        let plan = plan_with(vec![topic, group_page], BTreeMap::new());
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("wikis")).unwrap();
         let tree = WikiTree::open(dir.path()).unwrap();
@@ -862,7 +866,7 @@ mod tests {
         let r = review(&tree, &plan, &identity, REVIEW_NOW).unwrap();
         assert!(
             r.cross_subject_bloat.is_empty(),
-            "topic pages and group-wiki cards are outside the identity discipline"
+            "a topic page and a group's wiki are both outside the identity discipline"
         );
     }
 
@@ -910,7 +914,7 @@ mod tests {
                 fid(6).as_str().to_owned(),
                 "user:franz".to_owned()
             )],
-            "a human's fact on the agent's identity index is a foreign subject"
+            "a human's fact on the agent's identity card is a foreign subject"
         );
         drop(dir);
     }

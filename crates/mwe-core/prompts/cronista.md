@@ -1,7 +1,7 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.34
+version: 1.35
 default_version_at_bootstrap: v1.30
 ---
 
@@ -181,7 +181,7 @@ ONE FACT, ONE PAGE — the rules that make this work:
 
 WIKILINK GRAMMAR — links are navigation rails, copy them EXACTLY:
 - A link names a PAGE: [[wiki_id/page-slug]]. Optionally add a display alias for prose flow: [[wiki_id/page-slug|readable label]] — the part before the | must stay EXACT.
-- NEVER write a link that names a wiki alone ([[wiki_id]]). A link names a PAGE, and a wiki is not one — such a link leads nowhere. To point at a person or a group, link their page: [[wiki_id/profile]].
+- NEVER write a link that names a wiki alone ([[wiki_id]]). A link names a PAGE, and a wiki is not one — such a link leads nowhere. To point at a PERSON, link their card: [[wiki_id/profile]]. A GROUP has no card, so [[group_id/profile]] addresses a file that does not exist and is a dead rail all the same: reach a group through one of its OWN pages when OTHER PAGES offers one, and otherwise just name it in the prose. What ties somebody to a group is who may read a fact, never a link on a page.
 - Every link under OTHER PAGES, RECOMMENDED LINKS and in a (detail at: …) hint is already in canonical form. COPY IT CHARACTER-FOR-CHARACTER — never change hyphens to underscores (or vice versa), never drop or add the wiki_id part, never invent a link target you were not given. A restyled link points nowhere.
 - RECOMMENDED LINKS ARE MANDATORY, the same way fact completeness is: EVERY link listed there must appear in your `mergedBody`. They are not suggestions — they are this page's rails, and a reader reaches its neighbours ONLY through the links you write. A rail you leave out is a neighbouring page nobody can walk to from here. Weave each one where it belongs in the thread, in the form rule 2 gives (name the neighbour, link it, move on). If one genuinely has no place in the narrative, give it a short closing sentence that says how it relates — never drop it, and never park them all in a list at the end: a link explained by the prose around it is the whole point, a bare address is the weak form of it.
 WHICH LINKS TO WRITE — the part that decides whether this memory works:
