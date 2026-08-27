@@ -32,8 +32,9 @@
 //!
 //! It never widens what a reader may see. A key changes the **score** of facts
 //! the reader is already allowed to read — `recall`'s visibility filter runs
-//! before scoring — and the clause text is never returned to anyone. A key
-//! written on a page a reader cannot open still shows them nothing.
+//! before scoring — and the **order** of doors the reader could already open;
+//! the clause text is never returned to anyone. A key written on a page a
+//! reader cannot open still shows them nothing.
 
 use std::collections::HashMap;
 
@@ -344,6 +345,46 @@ pub async fn all_embedded(pool: &SqlitePool) -> Result<Vec<LinkKeyRow>> {
                 covers: serde_json::from_str(&covers).unwrap_or_default(),
                 embedding: blob.as_deref().and_then(|b| decode_embedding(b).ok()),
             }
+        })
+        .collect())
+}
+
+/// The link targets written on `source_path` that stand beside `fact_id`.
+///
+/// The read half of what [`covered_facts`] wrote, asked the other way round:
+/// not *which facts does this link stand for* but *which links stand beside
+/// this fact*. It is exact when the link sits INSIDE the fact's own span —
+/// there `covers` names that one fact and nothing else — and approximate when
+/// it sits in the connective prose between two, where `covers` names both
+/// neighbours.
+///
+/// Used by the recall navigator: a page opened because a search matched one of
+/// its facts has, among its links, the ones that continue THAT fact and the
+/// ones that continue something else on the page. The first are what the
+/// reader came for, and this is how the funnel tells them apart
+/// (`recall_nav::mark_what_extends_the_match`).
+///
+/// # Errors
+///
+/// Propagates the SQL failure.
+pub async fn targets_beside(
+    pool: &SqlitePool,
+    source_path: &str,
+    fact_id: &str,
+) -> Result<Vec<String>> {
+    let rows = sqlx::query("SELECT target, covers FROM link_key WHERE source_path = ?")
+        .bind(source_path)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            let covers: String = r.get("covers");
+            let covers: Vec<String> = serde_json::from_str(&covers).unwrap_or_default();
+            covers
+                .iter()
+                .any(|c| c == fact_id)
+                .then(|| r.get::<String, _>("target"))
         })
         .collect())
 }

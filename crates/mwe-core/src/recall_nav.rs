@@ -132,6 +132,15 @@ pub struct EntryPoint {
     pub page: PathBuf,
     /// Seed family that produced this entry.
     pub origin: EntryOrigin,
+    /// The fact whose text a SEARCH matched to open this door, for a `rag`
+    /// seed and for nothing else.
+    ///
+    /// A search that lands on a page has not landed on the page: it has landed
+    /// on **one claim**, and the reader who follows it arrives wanting what
+    /// that claim leads to. The other families have no such fact — a card is
+    /// served whole, a topic matched the page's own line — so they carry
+    /// `None` and the funnel treats their links as it always has.
+    pub matched_fact: Option<String>,
     /// Relative priority within the fan, `0.0..=1.0`. Ordering material for
     /// the funnel's budget — not a probability.
     ///
@@ -233,6 +242,7 @@ pub async fn gather_entry_points(
             wiki_id: hit.wiki_id.clone(),
             page,
             origin: EntryOrigin::Rag,
+            matched_fact: Some(hit.fact_id.as_str().to_owned()),
             weight: hit.score.clamp(0.0, 1.0),
         });
     }
@@ -310,6 +320,7 @@ fn gather_card_seeds(
                     continue;
                 };
                 out.push(EntryPoint {
+                    matched_fact: None,
                     wiki_id: wiki_id.to_owned(),
                     page: rel_path,
                     origin,
@@ -680,7 +691,8 @@ struct Candidate {
     /// The page to read — always one. The funnel has no wiki-level door.
     page: PathBuf,
     /// Display label of how it surfaced (`rag`, `topic`, `situational`,
-    /// `link`, `card`) — the tiers [`Candidate::prune_tier`] ranks by.
+    /// `link`, `card`) — the tiers [`Candidate::prune_tier`] ranks by, and
+    /// the first of the two keys [`prune_pool`] sorts on.
     origin: &'static str,
     /// The page's one-line card, filled by [`fill_summaries`] **after**
     /// [`prune_pool`] — never by the gatherers. It is the only part of a
@@ -696,6 +708,19 @@ struct Candidate {
     /// card-less page is re-read on every hop it survives.
     summary_read: bool,
     keywords: Vec<String>,
+    /// For a door a search opened: the fact it matched. `None` everywhere
+    /// else, and never inherited — the fact was on the door page, so it says
+    /// nothing about the pages one hop further on.
+    opened_by_fact: Option<String>,
+    /// This link stands beside the fact that opened the page it was found on
+    /// ([`crate::link_key::targets_beside`]).
+    ///
+    /// **A weight, never a filter.** It orders links within their own tier and
+    /// takes nothing out of the pool: the link the navigator most needs is
+    /// often the sideways one, and a funnel that could only walk forward from
+    /// the matched claim would stop finding it — which is the whole reason the
+    /// link rule exists.
+    extends_the_match: bool,
 }
 
 /// The demoted tail: the tier [`Candidate::prune_tier`] assigns anything it
@@ -1161,6 +1186,62 @@ struct FunnelState {
     remaining: usize,
 }
 
+/// Mark the links of a page a SEARCH opened that continue the fact it matched.
+///
+/// A search does not land on a page, it lands on one **claim**, and a reader
+/// following it arrives wanting what that claim leads to. Until this, every
+/// link on the door weighed the same: the one continuing the matched fact and
+/// the one continuing something else three paragraphs down were one tier, in
+/// file order.
+///
+/// Which link stands beside which fact is already recorded — `link_key` writes
+/// it on every page change — so nothing is measured here and nothing is
+/// guessed. It is **exact** where the link sits inside the fact's own span,
+/// which is where the Cronista's brief puts a link that extends a fact.
+///
+/// It does nothing at all when the page was not opened by a search: a card is
+/// served whole, a topic matched the page's own line, and neither has a claim
+/// to continue. And it never travels a second hop — the fact was on the door,
+/// so it says nothing about the pages beyond it.
+async fn mark_what_extends_the_match(
+    pool: &SqlitePool,
+    source_path: &str,
+    door: &Candidate,
+    discoveries: &mut [Candidate],
+) {
+    let Some(fact_id) = door.opened_by_fact.as_deref() else {
+        return;
+    };
+    let targets = match crate::link_key::targets_beside(pool, source_path, fact_id).await {
+        Ok(t) if !t.is_empty() => t,
+        // Absent rows are the ordinary state of a page nobody has reindexed
+        // yet, and an unreadable table is a degradation, not a failure: both
+        // leave the links weighing what they weighed before.
+        Ok(_) => return,
+        Err(e) => {
+            tracing::warn!(source_path, error = %e, "recall_nav: link keys unread — links unweighted");
+            return;
+        },
+    };
+    let beside: BTreeSet<String> = targets.iter().map(|t| normalise_target(t)).collect();
+    for c in discoveries {
+        let key = normalise_target(&format!("{}/{}", c.wiki_id, c.page.display()));
+        c.extends_the_match = beside.contains(&key);
+    }
+}
+
+/// `wiki_id/page` in one spelling: no `.md`, no case, `/` either way.
+///
+/// A stored target is the address a model **wrote** and a candidate's page is
+/// the file that address **resolved to**, so the two agree on the page and can
+/// differ on how it is spelt.
+fn normalise_target(raw: &str) -> String {
+    raw.replace('\\', "/")
+        .trim_end_matches(".md")
+        .trim_end_matches(".MD")
+        .to_ascii_lowercase()
+}
+
 /// Vet one navigator pick against the candidate pool and — when it holds —
 /// open the page, project it for the sender, charge the budget, and push the
 /// fragment. Returns `Some(discoveries)` (the new candidates the opened page
@@ -1241,6 +1322,7 @@ async fn open_target(
     outcome.truncated |= cut;
     let mut discoveries = Vec::new();
     discoveries.extend(linked_wiki_candidates(&text, d, by_id, reader_card));
+    mark_what_extends_the_match(pool, &source_path, cand, &mut discoveries).await;
     outcome.fragments.push(NavigatedFragment {
         wiki_id: cand.wiki_id.clone(),
         page,
@@ -1314,6 +1396,8 @@ fn initial_pool(
                     summary: None,
                     summary_read: false,
                     keywords: reader_page_keywords(d, &ep.page, reader_card),
+                    opened_by_fact: ep.matched_fact.clone(),
+                    extends_the_match: false,
                 }
             })
         })
@@ -1424,8 +1508,13 @@ const fn navigator_retriable(err: &LlmError) -> bool {
 /// the page cards and the authored link graph load-bearing rather than
 /// decorative.
 fn prune_pool(pool: &mut Vec<Candidate>, visited: &BTreeSet<(String, PathBuf)>, cap: usize) {
-    // Stable, so within a tier the producers' order still stands.
-    pool.sort_by_key(Candidate::prune_tier);
+    // Stable, so within a tier the producers' order still stands — and ahead
+    // of it, the links that continue the fact a search actually matched (see
+    // `mark_what_extends_the_match`). It orders, it never removes: a link that
+    // extends nothing the search asked for is still in the pool, still
+    // offered, still openable. The sideways link is the one this whole rule
+    // exists for, and a funnel that could only walk forward would lose it.
+    pool.sort_by_key(|c| (c.prune_tier(), !c.extends_the_match));
     let mut seen: BTreeSet<(String, PathBuf)> = BTreeSet::new();
     pool.retain(|c| {
         let key = (c.wiki_id.clone(), c.page.clone());
@@ -1526,6 +1615,8 @@ fn linked_wiki_candidates(
                         summary: None,
                         summary_read: false,
                         keywords,
+                        opened_by_fact: None,
+                        extends_the_match: false,
                     });
                 }
             }
@@ -1568,6 +1659,8 @@ fn linked_wiki_candidates(
                 summary: None,
                 summary_read: false,
                 keywords,
+                opened_by_fact: None,
+                extends_the_match: false,
             });
         }
     }
@@ -2346,7 +2439,76 @@ mod tests {
             summary: None,
             summary_read: false,
             keywords: Vec::new(),
+            opened_by_fact: None,
+            extends_the_match: false,
         }
+    }
+
+    /// The link that continues the fact a SEARCH matched goes first — and the
+    /// one that continues something else is still there behind it.
+    ///
+    /// A search lands on one claim, not on a page, so of the links written on
+    /// the door the ones beside that claim are what the reader came for. It is
+    /// a **weight**: the funnel opens fewer pages than it is offered, so order
+    /// decides what gets walked, and nothing decides what exists. The sideways
+    /// link — the one that extends a different fact entirely — is exactly what
+    /// the whole link rule was written to produce, and removing it here would
+    /// undo that in the one place it is finally read.
+    #[test]
+    fn a_link_that_continues_the_matched_fact_is_walked_first_and_the_others_stay() {
+        let visited = BTreeSet::new();
+        let mut extends = cand("alice", "corsi.md", "link");
+        extends.extends_the_match = true;
+        let mut pool = vec![
+            cand("alice", "ricette.md", "link"),
+            extends,
+            cand("alice", "vacanza.md", "link"),
+        ];
+        prune_pool(&mut pool, &visited, 16);
+        assert_eq!(
+            pool[0].page,
+            PathBuf::from("corsi.md"),
+            "the link beside the matched fact leads"
+        );
+        assert_eq!(
+            pool.len(),
+            3,
+            "and it takes nothing away — a weight, not a filter"
+        );
+        // Within the demoted rest, the producers' order still stands.
+        assert_eq!(pool[1].page, PathBuf::from("ricette.md"));
+    }
+
+    /// The boost never outranks the tier: a `card` rail beside the matched
+    /// fact is still a card rail. Tier is about how a door was reached at all,
+    /// and this only orders doors that were reached the same way.
+    #[test]
+    fn the_boost_orders_within_a_tier_and_never_across_one() {
+        let visited = BTreeSet::new();
+        let mut boosted_card = cand("alice", "carta.md", "card");
+        boosted_card.extends_the_match = true;
+        let mut pool = vec![boosted_card, cand("alice", "rotaia.md", "link")];
+        prune_pool(&mut pool, &visited, 16);
+        assert_eq!(
+            pool[0].page,
+            PathBuf::from("rotaia.md"),
+            "the tier wins: an authored link outranks a card rail either way"
+        );
+    }
+
+    /// A stored target is the address a model WROTE; a candidate's page is the
+    /// file that address resolved to. They agree on the page and may differ on
+    /// the `.md`, the case and the separator.
+    #[test]
+    fn a_written_address_and_the_file_it_resolved_to_compare_equal() {
+        assert_eq!(normalise_target("alice/Cucina.md"), "alice/cucina");
+        assert_eq!(normalise_target("alice/cucina"), "alice/cucina");
+        assert_eq!(normalise_target("alice\\cucina.MD"), "alice/cucina");
+        assert_ne!(
+            normalise_target("alice/cucina"),
+            normalise_target("bob/cucina"),
+            "the wiki half still discriminates"
+        );
     }
 
     #[test]
@@ -2707,6 +2869,8 @@ mod tests {
                     summary: None,
                     summary_read: false,
                     keywords: Vec::new(),
+                    opened_by_fact: None,
+                    extends_the_match: false,
                 }
                 .prune_tier(),
             "a card rail must sort below the entry fan"
@@ -2741,6 +2905,7 @@ mod tests {
             wiki_id: wiki.to_owned(),
             page: PathBuf::from(page),
             origin,
+            matched_fact: None,
             weight,
         }
     }
