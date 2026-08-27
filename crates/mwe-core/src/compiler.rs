@@ -769,13 +769,10 @@ async fn compile_leaf_page(
             ("links", recommended_links(&recommended).as_str()),
         ],
     )?;
-    // The nightly part rides the END of the rendered prompt, which is the end
-    // of the task half (`split_cronista_prompt` cuts at the marker): the cached
-    // system prefix stays byte-identical whichever cadence is running. A part
-    // that fails to load is skipped with a warning — the page is still written,
-    // by exactly the rules an hourly rewrite gets.
+    // A part that fails to load is skipped with a warning — the page is still
+    // written, by exactly the rules an hourly rewrite gets.
     let prompt = match night_part(tree, &prior) {
-        Some(part) => format!("{prompt}\n\n{part}"),
+        Some(part) => splice_task_part(&prompt, &part),
         None => prompt,
     };
     let max_tokens = cronista_max_tokens(page.primary_facts.len());
@@ -2132,6 +2129,33 @@ fn recommended_link_targets(plan: &CompilationPlan, slug: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Open the task half with `part`: after the marker line, ahead of the page.
+///
+/// The rendered prompt becomes three pieces — the standing brief, the part,
+/// the page — and each boundary is forced:
+///
+/// - it cannot ride the **cached** half, because it carries this page's own
+///   links and would write a cache entry per page while reading none, which is
+///   worse than not caching at all (the same trap `{page_index_task}` avoids);
+/// - it cannot follow the **page** either, because the brief opens by telling
+///   the model its page is at the very end.
+///
+/// So it opens the task half, which is also where it belongs on its own terms:
+/// a part is an instruction about how to write this page, and an instruction
+/// comes before the thing it governs — the same order, for the same reason, as
+/// the parts that open an `ingest` turn.
+fn splice_task_part(prompt: &str, part: &str) -> String {
+    let (system, task) = split_cronista_prompt(prompt);
+    let Some(task) = task else {
+        // An operator override with no marker is one undivided document sent
+        // as the system prompt: there is no task half to open, so the part
+        // rides the end rather than being dropped.
+        return format!("{prompt}\n\n{part}");
+    };
+    let (marker, page) = task.split_once('\n').unwrap_or((task, ""));
+    format!("{system}\n\n{marker}\n\n{part}\n\n{page}")
 }
 
 /// Render the `cronista-night` part for a page, or `None` when it is not wanted.
@@ -5362,6 +5386,50 @@ mod tests {
             "the placeholder is substituted, not shipped: {rendered}"
         );
         drop(dir);
+    }
+
+    /// Three pieces, in this order: the standing brief, the part, the page.
+    ///
+    /// Both boundaries are forced. The part carries this page's own links, so
+    /// in the cached half it would write an entry per page and read none; and
+    /// it cannot follow the page either, because the brief opens by telling the
+    /// model its page is at the very end. What is left is the head of the task
+    /// half — which is also where an instruction about writing a page belongs.
+    #[test]
+    fn the_part_opens_the_task_half_and_the_cached_prefix_is_untouched() {
+        let rendered = format!(
+            "standing brief\n\n{CRONISTA_TASK_MARKER}\nPAGE: \"Cucina\"\n\nYOUR FACTS: 1. pasta"
+        );
+        let spliced = splice_task_part(&rendered, "NIGHT BRIEF");
+
+        let (system, task) = split_cronista_prompt(&spliced);
+        assert_eq!(
+            system, "standing brief",
+            "the cacheable prefix is byte-identical whichever cadence runs: {system}"
+        );
+        let task = task.expect("the marker still cuts the prompt");
+        let brief = task
+            .find("NIGHT BRIEF")
+            .expect("the part is in the task half");
+        let page = task.find("PAGE:").expect("the page is in the task half");
+        assert!(
+            brief < page,
+            "the instruction comes before the page it governs: {task}"
+        );
+        assert!(
+            task.starts_with(CRONISTA_TASK_MARKER),
+            "the marker still leads the task half: {task}"
+        );
+    }
+
+    /// An operator override predating the marker is one undivided document.
+    /// There is no task half to open, so the part rides its end rather than
+    /// being silently dropped — the night still gets its brief.
+    #[test]
+    fn a_markerless_override_still_receives_the_part() {
+        let spliced = splice_task_part("an override with no marker at all", "NIGHT BRIEF");
+        assert!(spliced.starts_with("an override with no marker at all"));
+        assert!(spliced.ends_with("NIGHT BRIEF"), "{spliced}");
     }
 
     async fn streak_notices(pool: &SqlitePool) -> i64 {

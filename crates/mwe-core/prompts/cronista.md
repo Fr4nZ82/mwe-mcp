@@ -1,7 +1,7 @@
 ---
 name: cronista
 description: Compiler stage 3 — writes a narrative LEAF page from its own facts as cohesive prose, tagging each fact's span with a lightweight `<fN>` tag (the code renders the bare runtime region markers; one-fact-one-page, starvation index, identity-card reference distance)
-version: 1.36
+version: 1.38
 default_version_at_bootstrap: v1.30
 ---
 
@@ -102,7 +102,7 @@ The body is one document but ships as **two halves**, cut on the
 | Half | Content | Where it rides |
 |---|---|---|
 | Before the line | the standing brief + `{page_index}` | the **system** prompt, marked cacheable |
-| From the line on | `{title}` / `{slug}` / `{tone}`, `{primary_facts}`, `{links}`, `{page_index_task}` | the **user** turn, followed by the write instruction |
+| From the line on | any appended **part**, then `{title}` / `{slug}` / `{tone}`, `{primary_facts}`, `{links}`, `{page_index_task}` | the **user** turn, followed by the write instruction |
 
 Why: the brief plus the index is ~5.8k tokens and is **byte-identical for
 every page of one compile run**, while a page's own facts are ~170 tokens on
@@ -141,9 +141,19 @@ goes to the system prompt as before and nothing is marked cacheable.
 
 `{links}` does not carry the same thing at both cadences, and the difference is
 the whole of `crates/mwe-core/prompts/cronista-night.md` — a **part**
-(`PromptOutput::PartOfAnother`) appended to the **task half** by
-`compile_leaf_page` on `dream::Cadence::Full`, for a page that already carries
-links of its own.
+(`PromptOutput::PartOfAnother`) spliced in by `compile_leaf_page` on
+`dream::Cadence::Full`, for a page that already carries links of its own.
+
+**Where it goes, and why there.** The rendered prompt is three pieces: the
+standing brief, then the part, then the page. It sits **immediately after the
+marker line** — first thing in the task half, ahead of `PAGE:` — for two
+reasons that both matter. It cannot ride the cached half: it carries
+`{prior_links}`, which differs per page, so it would write a cache entry per
+page and read none. And it must not follow the page either, because the brief
+opens by telling the model its page is at the very end. A part is an
+instruction about how to write this page, and instructions come before the
+thing they govern — the same order, for the same reason, as the parts that open
+an `ingest` turn.
 
 At the hourly cadence `{links}` is everything the page has, and it is
 mandatory: the cheap tier writes what the page says and adds to it, never

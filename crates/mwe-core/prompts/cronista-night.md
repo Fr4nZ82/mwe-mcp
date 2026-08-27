@@ -1,21 +1,23 @@
 ---
 name: cronista-night
-version: 1.0
-description: The Cronista's nightly half — the links a page already carries are what it said last time, offered for re-judgement rather than imposed. Appended to the turn by `compiler::compile_leaf_page`, and ONLY on the full compile.
+version: 1.1
+description: The Cronista's nightly half — the links a page already carries are what it said last time, offered for re-judgement rather than imposed. Spliced into the turn by `compiler::compile_leaf_page` ahead of the page itself, and ONLY on the full compile.
 default_version_at_bootstrap: v1.0
 part_of: cronista
-appended_when: the compile is the nightly full pass, and the page already carries links of its own
+appended_when: the compile is the nightly full pass, and the page already carries links of its own (it opens the task half, before the page)
 ---
 
 # `cronista-night` — the night may change its mind about a link
 
 A **part** of the `cronista` prompt (`crate::prompts::PromptOutput::PartOfAnother`),
-appended to the **task half** by `crate::compiler::compile_leaf_page`. Loaded via
+spliced into the **task half** by `crate::compiler::compile_leaf_page` — right
+after the `=== PAGE TO WRITE ===` marker, ahead of the page itself, because an
+instruction about how to write a page comes before the page. Loaded via
 `mwe_core::prompts::render("cronista-night", workdir, BUNDLED_CRONISTA_NIGHT_MD, vars)`.
 
 ## Runtime contract
 
-- **When it is appended**: `dream::Cadence::Full` — the nightly REM compile or
+- **When it is spliced in**: `dream::Cadence::Full` — the nightly REM compile or
   an operator-driven one — **and** the page carries links of its own. A page
   with none is asked nothing and pays nothing.
 - **Model**: whatever the full cadence resolved, which is the `cronista` slot —
@@ -59,6 +61,6 @@ LINKS THIS PAGE CARRIED LAST TIME: {prior_links}
 - Judge them by WHICH LINKS TO WRITE above, one fact at a time. For each fact you are writing, ask whether one of these is the page a reader of THAT fact needs next. When it is, keep it — and put it beside that fact, not wherever it happened to sit before.
 - When a better destination exists among OTHER PAGES, write that one INSTEAD. Look harder for it than a hurried pass would: this brief exists because you are the pass that can afford to.
 - When one extends nothing on this page, LET IT GO. Say nothing about it, write no farewell, leave no trace of it in the prose. A link that survives only because somebody once wrote it is how a memory silts up, and dropping it is a decision — yours, tonight.
-- RECOMMENDED LINKS above is a different list and it still binds. Those rails were decided earlier tonight, before you were called; they are not on the list above and they are not yours to drop.
+- RECOMMENDED LINKS, listed with the page below, is a different list and it still binds. Those rails were decided earlier tonight, before you were called; not one of them is on the list above, and they are not yours to drop.
 - Copy every link you keep CHARACTER-FOR-CHARACTER from the list above, exactly as WIKILINK GRAMMAR requires. A link retyped in the surrounding slug style points nowhere.
 ```
