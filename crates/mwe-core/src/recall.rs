@@ -305,13 +305,14 @@ fn names_of(user: &EnrolledUserLite) -> Vec<String> {
 /// call**. The speaker's own identity is deterministic and free: the
 /// engine has it before it reads the turn.
 ///
-/// The order is not cosmetic. This list is **cut** where the identity cards
-/// are served ([`IngestPolicy::max_mentioned_cards`], 2), so an alphabetical
-/// order — a `BTreeSet`, say — would serve a turn naming three people the two
-/// whose ids sort first: *«cosa preparo per Carol e Bob?»* drops whoever loses
-/// the alphabet, on every turn, forever. Mention order says which
-/// person the question is built around, and where a list is cut the order IS
-/// the selection (founder, 2026-08-09).
+/// The order is not cosmetic. This list **leads** the identity cards served
+/// ([`IngestPolicy::max_mentioned_cards`]), and what it does not fill is
+/// filled by the subjects of the facts the search returned — so an
+/// alphabetical order, a `BTreeSet` say, would serve a turn naming three
+/// people the ones whose ids sort first: *«cosa preparo per Carol e Bob?»*
+/// drops whoever loses the alphabet, on every turn, forever. Mention order
+/// says which person the question is built around, and where a list is cut
+/// the order IS the selection (founder, 2026-08-09).
 #[must_use]
 pub fn turn_subjects(query: &str, sender_id: &str, roster: &[EnrolledUserLite]) -> Vec<String> {
     let raw: Vec<&str> = query

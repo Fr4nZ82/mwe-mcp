@@ -537,15 +537,17 @@ pub struct IngestPolicy {
     /// inserita deterministicamente nel recall, ci costa caratteri, ma ci dà
     /// una porta di ingresso con le cose più importanti di un utente che
     /// comunque vanno sempre prese in considerazione»*. The gate is
-    /// deliberately the coarse one — the turn **names** them — because the
-    /// card holds what is worth knowing about a person whenever they come up
-    /// at all, not only when the turn is *about* them.
+    /// deliberately the coarse one — the turn **names** them, or the search
+    /// returned a fact **about** them — because the card holds what is worth
+    /// knowing about a person whenever they come up at all.
     ///
     /// Bounded by count rather than by a second character budget: each card
     /// is already fitted to `max_sender_identity_chars`, which is 69c's
     /// authored ceiling, so a card within its bound is never cut. The count
-    /// is what stops a turn naming four people from spending the whole block
-    /// on biographies.
+    /// is what stops a turn about four people from spending the whole block
+    /// on biographies. It is also the only route to a card: a card is not a
+    /// link destination (`compiler::recommended_link_targets`), so no walk
+    /// arrives at one.
     pub max_mentioned_cards: usize,
     /// Canned `suggested_seed` returned on every fallback path. Short
     /// on purpose — the agent will rewrite it.
@@ -622,7 +624,7 @@ impl Default for IngestPolicy {
             // at their authored target (~1 800) already cost more than the
             // navigated prose budget. Raise it when the traces say turns name
             // more people than that and the extra card earns its characters.
-            max_mentioned_cards: 2,
+            max_mentioned_cards: 3,
             fallback_suggested_seed: "I've noted that.".to_owned(),
             structural_suggested_seed:
                 "This looks like a structural change — open the dashboard to continue.".to_owned(),
@@ -5245,7 +5247,7 @@ async fn who_is_speaking_section(
 }
 
 /// Header of the block's third-party identity slot.
-const HDR_PEOPLE_MENTIONED: &str = "PEOPLE THIS TURN NAMES:";
+const HDR_PEOPLE_MENTIONED: &str = "PEOPLE THIS TURN IS ABOUT:";
 
 /// The cards served for the third parties a turn names, and the bookkeeping
 /// every other slot needs to not repeat them.
@@ -5262,8 +5264,9 @@ struct MentionedCards {
     rails: Vec<(String, String)>,
 }
 
-/// **`PEOPLE THIS TURN NAMES`** — the identity card of each enrolled person
-/// the turn names, served deterministically.
+/// **`PEOPLE THIS TURN IS ABOUT`** — the identity card of each enrolled
+/// person the turn names OR the search found facts about, served
+/// deterministically.
 ///
 /// Founder's ruling, 2026-08-04, on the measurement below: *«la scheda degli
 /// utenti nominati va inserita deterministicamente nel recall, ci costa
@@ -5283,12 +5286,30 @@ struct MentionedCards {
 /// property of a muffin, never *«Carol è celiaca: non può consumare
 /// glutine»*. That sentence, and the pregnancy, live on the card.
 ///
-/// **The gate is that the turn names them** — [`recall::turn_subjects`], a
-/// word match over the enrolled roster, no model call. Deliberately coarse:
-/// the card is what is worth knowing about a person *whenever they come up*,
-/// so a passing mention is not a false positive, it is a cheap piece of
-/// context. What bounds the slot is the **count**
-/// ([`IngestPolicy::max_mentioned_cards`]), not a cleverer gate.
+/// **Two gates, in this order, and neither costs a model call.**
+///
+/// First, **the turn names them** — [`recall::turn_subjects`], a word match
+/// over the enrolled roster. Deliberately coarse: the card is what is worth
+/// knowing about a person *whenever they come up*, so a passing mention is
+/// not a false positive, it is a cheap piece of context. Mention order is
+/// the selection where the list is cut (founder, 2026-08-09), so these lead.
+///
+/// Then, **the search found facts about them**: every hit carries its
+/// subject, so the people the turn is really about arrive even when it names
+/// none of them. *«Cosa può mangiare mia moglie?»* matches the roster nowhere
+/// — and returns her coeliac facts, which say whose they are. This is the
+/// gate that reads a paraphrase, and it is free: the hits are already in hand
+/// here, ranked, from the search that ran before the classifier.
+///
+/// A person the turn names and the memory knows nothing about no longer
+/// spends a seat on an empty card — they only reach the first gate, and the
+/// second fills the seat with somebody the search actually found.
+///
+/// What bounds the slot is the **count**
+/// ([`IngestPolicy::max_mentioned_cards`]), not a cleverer gate. It is the
+/// only route to a card now: a card is not a link destination
+/// (`compiler::recommended_link_targets`), so nothing else can carry a reader
+/// to one.
 ///
 /// **Projected for the reader, never the subject.** [`identity_card`] is
 /// given `sender` — the person the block is being built for — so a region on
@@ -5302,6 +5323,7 @@ async fn people_mentioned_section(
     tree: &WikiTree,
     sender: &SenderContext,
     turn_text: &str,
+    hits: &[recall::RecallHit],
     policy: &IngestPolicy,
 ) -> Option<MentionedCards> {
     if policy.max_mentioned_cards == 0 {
@@ -5314,7 +5336,17 @@ async fn people_mentioned_section(
             return None;
         },
     };
-    let subjects = recall::turn_subjects(turn_text, &sender.sender_id, &roster);
+    let mut subjects = recall::turn_subjects(turn_text, &sender.sender_id, &roster);
+    // The second gate: whoever the returned facts are about, in the order the
+    // search ranked them. A group-owned fact names no person and is skipped.
+    for hit in hits {
+        if let Principal::User(id) = &hit.subject_id {
+            let id = id.to_lowercase();
+            if !subjects.contains(&id) {
+                subjects.push(id);
+            }
+        }
+    }
     let mut section = String::from(HDR_PEOPLE_MENTIONED);
     let mut page_paths = Vec::new();
     let mut served = Vec::new();
@@ -7545,12 +7577,14 @@ pub async fn wiki_ingest_message(
         .map(|_| (sender_ctx.sender_id.clone(), PathBuf::from(IDENTITY_PAGE)))
         .into_iter()
         .collect();
-    // `PEOPLE THIS TURN NAMES` — the same treatment for the third parties the
-    // turn names (founder 2026-08-04). It runs here, beside the
+    // `PEOPLE THIS TURN IS ABOUT` — the same treatment for the third parties
+    // the turn is about (founder 2026-08-04). It runs here, beside the
     // speaker's card and before the walk, for the same three reasons: no
     // completion, arrives whatever the navigator decides, and the pages it
     // serves must then be injected nowhere else.
-    let mentioned = people_mentioned_section(pool, tree, &sender_ctx, &request.text, policy).await;
+    let mentioned =
+        people_mentioned_section(pool, tree, &sender_ctx, &request.text, &recall_hits, policy)
+            .await;
     if let Some(m) = &mentioned {
         served_identity.extend(m.served.iter().cloned());
     }
@@ -10727,6 +10761,7 @@ mod tests {
             &tree,
             &SenderContext::user("franz"),
             "cosa cucino stasera per alice?",
+            &[],
             &IngestPolicy::default(),
         )
         .await
@@ -10788,6 +10823,7 @@ mod tests {
                 &tree,
                 &SenderContext::user("alice"),
                 "cosa mangio stasera?",
+                &[],
                 &policy,
             )
             .await
@@ -10800,11 +10836,125 @@ mod tests {
                 &tree,
                 &SenderContext::user("franz"),
                 "ricordami di chiamare l'idraulico",
+                &[],
                 &policy,
             )
             .await
             .is_none(),
             "a turn naming nobody opens no slot"
+        );
+    }
+
+    /// The second gate: a turn that names nobody the roster can match still
+    /// gets the card, because the facts the search returned say whose they
+    /// are. This is the paraphrase case — *«mia moglie»* is in no roster —
+    /// and it is the only route left, a card being no link destination.
+    #[tokio::test]
+    async fn a_card_arrives_from_the_facts_the_search_found_when_the_turn_names_nobody() {
+        let (dir, _, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        // A card private to its subject renders to nothing for anybody else,
+        // which would pass this test for the ACL's reason and not the gate's.
+        sqlx::query("UPDATE fact_index SET subject_id = 'global' WHERE fact_id = ?")
+            .bind(ALICE_FACT_A)
+            .execute(&pool)
+            .await
+            .expect("publish the town");
+        let file = crate::enrollment::EnrollmentFile {
+            version: 1,
+            users: ["alice", "franz"]
+                .into_iter()
+                .map(|id| crate::enrollment::UserEntry {
+                    id: id.to_owned(),
+                    aliases: Vec::new(),
+                    is_admin: false,
+                    locale: None,
+                    timezone: None,
+                })
+                .collect(),
+            groups: Vec::new(),
+        };
+        crate::enrollment::mirror_to_db(&pool, &file)
+            .await
+            .expect("mirror");
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+        let policy = IngestPolicy::default();
+        let turn = "cosa cucino stasera per mia moglie?";
+
+        assert!(
+            people_mentioned_section(
+                &pool,
+                &tree,
+                &SenderContext::user("franz"),
+                turn,
+                &[],
+                &policy,
+            )
+            .await
+            .is_none(),
+            "the roster matches nothing in this turn — the first gate is shut"
+        );
+
+        let hits = vec![sample_recall_hit("01a03e05-65da-7b50-9af4-9e40272e1d21")];
+        let out = people_mentioned_section(
+            &pool,
+            &tree,
+            &SenderContext::user("franz"),
+            turn,
+            &hits,
+            &policy,
+        )
+        .await
+        .expect("the hit's subject opens the second gate");
+        assert!(
+            out.section.contains("Alice lives in Bologna."),
+            "the card of whoever the search found rides the block: {}",
+            out.section
+        );
+        assert_eq!(
+            out.served,
+            vec![("alice".to_owned(), PathBuf::from(IDENTITY_PAGE))],
+        );
+    }
+
+    /// A group-owned hit names no person, and the speaker is served
+    /// elsewhere: neither may spend one of the slot's seats.
+    #[tokio::test]
+    async fn neither_a_group_hit_nor_the_speakers_own_facts_open_the_second_gate() {
+        let (dir, _, pool) = setup_workdir().await;
+        seed_alice_card(&dir, &pool).await;
+        let file = crate::enrollment::EnrollmentFile {
+            version: 1,
+            users: vec![crate::enrollment::UserEntry {
+                id: "alice".to_owned(),
+                aliases: Vec::new(),
+                is_admin: false,
+                locale: None,
+                timezone: None,
+            }],
+            groups: Vec::new(),
+        };
+        crate::enrollment::mirror_to_db(&pool, &file)
+            .await
+            .expect("mirror");
+        let tree = WikiTree::open(dir.path()).expect("reopen tree");
+
+        let mut group_hit = sample_recall_hit("01a03e05-65da-7b50-9af4-9e40272e1d21");
+        group_hit.subject_id = Principal::Group("famiglia".to_owned());
+        let own_hit = sample_recall_hit("01a03e07-c115-71e1-9f5d-0679ab67171c");
+
+        assert!(
+            people_mentioned_section(
+                &pool,
+                &tree,
+                &SenderContext::user("alice"),
+                "cosa mangio stasera?",
+                &[group_hit, own_hit],
+                &IngestPolicy::default(),
+            )
+            .await
+            .is_none(),
+            "a group is not a person, and the speaker is WHO IS SPEAKING's job"
         );
     }
 
@@ -16755,7 +16905,7 @@ mod tests {
             assemble_recall_block(
                 Some("WHO YOU ARE: ...".into()),
                 Some("WHO IS SPEAKING:\n- franz — dev".into()),
-                Some("PEOPLE THIS TURN NAMES:\n\n- carol\nshe is coeliac".into()),
+                Some("PEOPLE THIS TURN IS ABOUT:\n\n- carol\nshe is coeliac".into()),
                 Some("YOUR RECENT HISTORY WITH THIS USER: ...".into()),
                 Some("flat".into()),
                 None,
@@ -16764,10 +16914,10 @@ mod tests {
             .as_deref(),
             Some(
                 "WHO YOU ARE: ...\n\nWHO IS SPEAKING:\n- franz — dev\n\n\
-                 PEOPLE THIS TURN NAMES:\n\n- carol\nshe is coeliac\n\n\
+                 PEOPLE THIS TURN IS ABOUT:\n\n- carol\nshe is coeliac\n\n\
                  YOUR RECENT HISTORY WITH THIS USER: ...\n\nflat"
             ),
-            "identity leads, then the speaker, then the people the turn names, then the history, then the facts"
+            "identity leads, then the speaker, then the people the turn is about, then the history, then the facts"
         );
     }
 

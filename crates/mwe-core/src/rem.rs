@@ -1314,10 +1314,15 @@ async fn run_rail_writer(
         return Ok(report);
     }
 
-    // The candidate pool, once for the pass.
+    // The candidate pool, once for the pass. An identity card is not a
+    // destination — the compiler refuses one as a rail
+    // (`compiler::recommended_link_targets`), so offering it here would spend
+    // a model call and one of the page's link slots on a choice that is
+    // dropped before the page is written.
     let by_source_path: BTreeMap<String, String> = plan
         .pages
         .iter()
+        .filter(|(_, p)| !p.is_identity_card())
         .filter_map(|(slug, p)| {
             Some((
                 crate::planner::plan_page_source_path(tree, p)?,
@@ -1468,6 +1473,9 @@ async fn rail_candidates(
         .pages
         .values()
         .filter(|p| p.wiki_id == page.wiki_id && p.slug != slug)
+        // The fence the pool applies, applied to the fallback too: a card is
+        // not a destination, and this list bypasses the pool entirely.
+        .filter(|p| !p.is_identity_card())
         .collect();
     home.sort_by_key(|p| std::cmp::Reverse(p.primary_facts.len()));
     let home: Vec<String> = home.into_iter().map(|p| p.slug.clone()).collect();

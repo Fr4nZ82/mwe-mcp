@@ -1981,6 +1981,9 @@ async fn build_page_index(pool: &SqlitePool, tree: &WikiTree, plan: &Compilation
     let by_source_path: BTreeMap<String, String> = plan
         .pages
         .iter()
+        // An identity card is not a destination — see
+        // [`recommended_link_targets`] for why it is offered to nobody.
+        .filter(|(_, p)| !p.is_identity_card())
         .filter_map(|(slug, p)| Some((plan_page_source_path(tree, p)?, slug.clone())))
         .collect();
     let candidates = crate::candidates::CandidatePool::load(pool, &by_source_path).await;
@@ -2087,7 +2090,10 @@ fn page_index_block(plan: &CompilationPlan) -> String {
         .iter()
         .filter_map(|s| {
             let p = plan.pages.get(s)?;
-            Some(format!("- {}: {}", plan_page_wikilink(p), p.description))
+            // An identity card is not a destination — see
+            // [`recommended_link_targets`] for why it is offered to nobody.
+            (!p.is_identity_card())
+                .then(|| format!("- {}: {}", plan_page_wikilink(p), p.description))
         })
         .collect();
     if lines.is_empty() {
@@ -2106,16 +2112,18 @@ fn page_index_block(plan: &CompilationPlan) -> String {
 /// that account either way: a link puts no obligation on the page it points
 /// at (founder, 2026-08-23).
 ///
-/// **An identity card is never an obligation.** A card is not reached through
-/// rails: recall serves the speaker's own deterministically, before it has
-/// read the turn, and the cards of the people the turn names besides
-/// ([`crate::recall::turn_subjects`]). A rail to one is a door into a room
-/// the reader is already standing in, and it is not free — a mandatory link
-/// with no place in the narrative is a sentence the page has to grow to host
-/// it. Cards stay in the OFFERING, where naming a person and linking their
-/// card is a choice the prose earns; and a card's OWN rails are untouched,
-/// since this filters what a page must point AT, never what it may point at
-/// from.
+/// **An identity card is not a destination, and this is where that is
+/// enforced for rails.** A card is never reached by walking to it: recall
+/// serves the speaker's own deterministically, before it has read the turn,
+/// and the cards of the people the turn is about besides
+/// ([`crate::recall::turn_subjects`]). So a link to one is a door into a room
+/// the reader is already standing in, and it is not free — it costs a page's
+/// link slot and, when mandatory, a sentence the page has to grow to host it.
+/// The same fence stands wherever a destination is offered — the page index
+/// and the rail writer's pool both drop cards before anyone chooses — so no
+/// pass can spend a decision on a target this one would refuse. A card's OWN
+/// rails are untouched: this is about what may be pointed AT, never about
+/// what a card may point at from.
 fn recommended_link_targets(plan: &CompilationPlan, slug: &str) -> Vec<String> {
     plan.link_graph
         .get(slug)
@@ -4262,10 +4270,10 @@ mod tests {
     #[test]
     fn bundled_cronista_prompt_carries_the_identity_card_guard() {
         // The belt-guard behind the planner's identity-page discipline: when
-        // writing a user's identity card, another subject's detail is
-        // referenced with its [[wikilink]], never woven into the prose. One
-        // sentence by design — plan placement is the load-bearing channel
-        // (the Cronista only ever sees the facts the plan gave the page).
+        // writing a user's identity card, another subject is NAMED and left
+        // there, never woven into the prose with their details. One sentence
+        // by design — plan placement is the load-bearing channel (the
+        // Cronista only ever sees the facts the plan gave the page).
         assert!(
             BUNDLED_CRONISTA_MD.contains("never weave ANOTHER subject's detail"),
             "identity-index reference-distance guard present"
@@ -4690,9 +4698,7 @@ mod tests {
                     primary_facts: vec![ffp(2, "secret bob fact")],
                     outgoing_links: Vec::new(),
                     wiki_id: s.to_owned(),
-                    // A person's node is their card, not the wiki map — the
-                    // map is not a link target at all (63 §8).
-                    page_path: crate::wiki::PROFILE_FILENAME.to_owned(),
+                    page_path: "hobbies.md".to_owned(),
                 },
             );
         }
@@ -4711,16 +4717,66 @@ mod tests {
         };
         let idx = page_index_block(&plan);
         assert!(
-            idx.contains("[[bob/@profile]]: bob desc"),
+            idx.contains("[[bob/hobbies]]: bob desc"),
             "shows other page description"
         );
         assert!(
-            idx.contains("[[alice/@profile]]: alice desc"),
+            idx.contains("[[alice/hobbies]]: alice desc"),
             "includes the page being written — the block is one per run"
         );
         assert!(
             !idx.contains("secret bob fact"),
             "NEVER another page's facts"
+        );
+    }
+
+    /// A card is served whole with every turn, so offering it as a link
+    /// target sends a reader to a page they already hold. Dropping it here is
+    /// what stops the Cronista choosing one at all: the rail filter in
+    /// [`recommended_link_targets`] guards a different door — a link the
+    /// page's own prose already carries, which no pass chose today.
+    #[test]
+    fn the_page_index_offers_no_identity_card() {
+        let mut pages = BTreeMap::new();
+        for (slug, path) in [
+            ("alice", "hobbies.md"),
+            ("bob", crate::wiki::PROFILE_FILENAME),
+        ] {
+            pages.insert(
+                slug.to_owned(),
+                PagePlan {
+                    slug: slug.to_owned(),
+                    title: slug.to_owned(),
+                    description: format!("{slug} desc"),
+                    style: None,
+                    primary_facts: Vec::new(),
+                    outgoing_links: Vec::new(),
+                    wiki_id: slug.to_owned(),
+                    page_path: path.to_owned(),
+                },
+            );
+        }
+        let plan = CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph: BTreeMap::new(),
+            compilation_order: vec!["alice".to_owned(), "bob".to_owned()],
+            generated_at: "t".to_owned(),
+            fact_count: 0,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
+        };
+        let idx = page_index_block(&plan);
+        assert!(
+            idx.contains("[[alice/hobbies]]"),
+            "an ordinary page is offered"
+        );
+        assert!(
+            !idx.contains("@profile"),
+            "an identity card is offered to nobody: {idx}"
         );
     }
 
@@ -5082,19 +5138,19 @@ mod tests {
         let recommended = vec![
             "[[alice/spesa]]".to_owned(),
             "[[alice/cucina]]".to_owned(),
-            "[[bob/@profile]]".to_owned(),
+            "[[bob/hobbies]]".to_owned(),
         ];
         let body = "Fa la [[alice/spesa|spesa]] il sabato, e cucina in [[alice/cucina.md]].";
         assert_eq!(
             missing_rails(&recommended, body),
-            vec!["[[bob/@profile]]".to_owned()],
+            vec!["[[bob/hobbies]]".to_owned()],
             "an aliased link and a .md-suffixed one both land; only bob's is missing"
         );
         // A bare wiki link names a MAP, which no reader may open, so it can
         // never stand in for the rail to a page of that wiki.
         assert_eq!(
-            missing_rails(&["[[bob/@profile]]".to_owned()], "Ne parla con [[bob]]."),
-            vec!["[[bob/@profile]]".to_owned()],
+            missing_rails(&["[[bob/hobbies]]".to_owned()], "Ne parla con [[bob]]."),
+            vec!["[[bob/hobbies]]".to_owned()],
         );
         assert!(missing_rails(&[], "nessun binario").is_empty());
     }

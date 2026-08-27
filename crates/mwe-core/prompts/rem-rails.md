@@ -1,6 +1,6 @@
 ---
 name: rem-rails
-version: 2.0
+version: 2.1
 description: REM rail writer — read an under-linked page's facts one at a time and decide, for each, whether a reader of THAT fact needs a page they cannot get to from here; answers with none, one or several links, each naming the fact it was written for; strict JSON out, act-first, the compiler imposes the chosen rails on the next rewrite
 default_version_at_bootstrap: v1.0
 ---
@@ -26,7 +26,9 @@ an operator override at `<workdir>/prompts/rem-rails.md` wins.
 - **Placeholders**: `{page}` (the nominated page — its address, its card and
   its **numbered** facts), `{links}` (the links it already carries, or `none`),
   `{candidates}` (the destinations, one per line, each tagged with the source
-  that offered it — see `crate::candidates::CandidateSource`), `{budget}` (how
+  that offered it — see `crate::candidates::CandidateSource`; an **identity
+  card is never among them**, because every turn is already served the cards
+  it needs and the compiler refuses one as a rail), `{budget}` (how
   many links this page still has room for: `rem::PAGE_RAIL_BUDGET` minus what
   it already carries).
 - **What the candidates are ranked against**: the page's card vector **and
