@@ -1176,11 +1176,31 @@ pub struct RailWriterReport {
     pub disabled_reason: Option<String>,
 }
 
-/// One page's answer from the rail writer.
+/// One page's answer from the rail writer: a link per fact that needs one.
 #[derive(Debug, Default, serde::Deserialize)]
 struct RailDecision {
     #[serde(default)]
+    links: Vec<RailChoice>,
+    /// **Not part of the contract.** It is the key a prompt override asking
+    /// for a single link produces, and it is read for one purpose: to say out
+    /// loud that the override and this parser are asking different questions,
+    /// rather than parking nothing and reading like a page that needed no
+    /// rails. A single link could not be parked anyway — it names no fact, and
+    /// a link that names no fact is discarded below.
+    #[serde(default)]
     link: String,
+}
+
+/// One link the rail writer decided, and the fact it decided it for.
+#[derive(Debug, Default, serde::Deserialize)]
+struct RailChoice {
+    #[serde(default)]
+    link: String,
+    /// The fact's 1-based number in the page block. A choice that names none
+    /// is discarded: this pass answers a question about one fact, and an
+    /// answer that cannot say which fact was not that answer.
+    #[serde(default)]
+    for_fact: Option<usize>,
     #[serde(default)]
     instead_of: Option<String>,
     #[serde(default)]
@@ -1193,7 +1213,8 @@ struct RailDecision {
 /// che il navigatore segue alla fine li ha decisi il REM»* (2026-08-04). Every
 /// other link in this engine is decided by whoever is writing one page at a
 /// time and never revisits the choice; this is the pass that looks at a page
-/// from outside and decides it should point somewhere.
+/// from outside and reads its facts one at a time, asking of each what a
+/// reader who has just met it would need and cannot reach from here.
 ///
 /// **Who is nominated is shape, with measured evidence on top.** The shape is
 /// a page carrying fewer than [`PAGE_RAIL_BUDGET`] links, fewest first: a page
@@ -1307,25 +1328,30 @@ async fn run_rail_writer(
     let candidates = crate::candidates::CandidatePool::load(pool, &by_source_path).await;
 
     for slug in nominees {
-        match judge_one_rail(pool, tree, llm, cycle_id, &plan, &candidates, slug).await {
-            Ok(Some(outcome)) => {
+        match judge_rails(pool, tree, llm, cycle_id, &plan, &candidates, slug).await {
+            // One page, one judgement, however many links came back — a page
+            // the model looked at and left alone was still judged.
+            Ok(outcomes) => {
                 report.judged += 1;
-                report.written.push((slug.to_owned(), outcome.to));
-                if let Some(dropped) = outcome.replaced {
-                    report.replaced.push((slug.to_owned(), dropped));
-                }
-                if let Some(receipt) = outcome.receipt {
-                    report.receipts.push(receipt);
+                for outcome in outcomes {
+                    report.written.push((slug.to_owned(), outcome.to));
+                    if let Some(dropped) = outcome.replaced {
+                        report.replaced.push((slug.to_owned(), dropped));
+                    }
+                    if let Some(receipt) = outcome.receipt {
+                        report.receipts.push(receipt);
+                    }
                 }
             },
-            Ok(None) => report.judged += 1,
             Err(e) => report.errors.push(format!("rail {slug}: {e}")),
         }
     }
     Ok(report)
 }
 
-/// What the model is shown about one under-linked page.
+/// What the model is shown about one under-linked page: its card, its facts
+/// NUMBERED (the answer names one of those numbers), the links it carries,
+/// the candidate destinations, and how many links it still has room for.
 ///
 /// The links it already carries are **labelled by who wrote them**, because
 /// that decides what the model may do with them: a rail this pass wrote before
@@ -1339,6 +1365,7 @@ fn rail_prompt(
     page: &crate::planner::PagePlan,
     offered: &[crate::candidates::Candidate],
     mine: &BTreeSet<&str>,
+    budget: usize,
 ) -> Result<String> {
     let links = plan
         .link_graph
@@ -1360,10 +1387,13 @@ fn rail_prompt(
                     .join("\n")
             },
         );
+    // Numbered, because the answer names one: `for_fact` is an index into
+    // exactly this list, so the rendering and the parsing share one origin.
     let facts = page
         .primary_facts
         .iter()
-        .map(|f| format!("- {}", f.text.replace('\n', " ")))
+        .enumerate()
+        .map(|(i, f)| format!("{}. {}", i + 1, f.text.replace('\n', " ")))
         .collect::<Vec<_>>()
         .join("\n");
     let page_block = format!(
@@ -1391,6 +1421,7 @@ fn rail_prompt(
             ("page", page_block.as_str()),
             ("links", links.as_str()),
             ("candidates", candidates_block.as_str()),
+            ("budget", budget.to_string().as_str()),
         ],
     )
     .map_err(RemError::from)
@@ -1406,22 +1437,26 @@ struct RailOutcome {
     receipt: Option<String>,
 }
 
-/// Ask the model for the one link worth writing from `slug`, and park it.
+/// The destinations offered for one page, ranked on its card AND its facts.
 ///
-/// `Ok(None)` is the common answer and not a failure: a link nobody needs
-/// costs a clause of prose on every future rewrite of the page.
-async fn judge_one_rail(
+/// The card vector says what the page is ABOUT, and a selection ranked on it
+/// offers the neighbourhood of that theme. But the question this pass asks is
+/// per fact — what does somebody who has just read THIS need next — and the
+/// answer often lives nowhere near the page's own centre: a week's page holds
+/// school hours whose neighbour is a page of afternoon courses, and the two
+/// themes resemble each other in nothing. Ranked on the card alone that
+/// candidate reaches the model only if the `far` sample happens to draw it.
+///
+/// Scoring is max-over-the-bag, so widening with the facts is strictly
+/// additive: every page the card alone would have offered is still offered. A
+/// fact the embedder never reached contributes nothing and costs nothing.
+async fn rail_candidates(
     pool: &SqlitePool,
-    tree: &WikiTree,
-    llm: &dyn LlmBackend,
-    cycle_id: &str,
     plan: &CompilationPlan,
     candidates: &crate::candidates::CandidatePool,
     slug: &str,
-) -> Result<Option<RailOutcome>> {
-    let Some(page) = plan.pages.get(slug) else {
-        return Ok(None);
-    };
+    page: &crate::planner::PagePlan,
+) -> Vec<crate::candidates::Candidate> {
     let exclude: BTreeSet<String> = std::iter::once(slug.to_owned())
         .chain(plan.link_graph.get(slug).into_iter().flatten().cloned())
         .collect();
@@ -1437,10 +1472,163 @@ async fn judge_one_rail(
     home.sort_by_key(|p| std::cmp::Reverse(p.primary_facts.len()));
     let home: Vec<String> = home.into_iter().map(|p| p.slug.clone()).collect();
 
-    let ask = candidates.ask_for([slug]);
-    let offered = candidates.pick(&ask, &exclude, crate::candidates::SELECTION_PAGES, &home);
+    let mut ask = candidates.ask_for([slug]);
+    let fact_ids: Vec<&str> = page
+        .primary_facts
+        .iter()
+        .map(|f| f.fact_id.as_str())
+        .collect();
+    match crate::fact_index::embeddings_of(pool, &fact_ids).await {
+        Ok(vs) => ask.widen_with(vs),
+        Err(e) => tracing::warn!(slug, error = %e,
+            "rails: fact vectors unread — ranking on the page's card alone"),
+    }
+    candidates.pick(&ask, &exclude, crate::candidates::SELECTION_PAGES, &home)
+}
+
+/// The destination and the fact one choice names, or `None` when a fence drops it.
+///
+/// Three fences, each dropping a single choice rather than the whole answer —
+/// one bad line does not cost the good ones beside it:
+///
+/// - the destination must be a page the model was **offered**, so a name it
+///   invented reaches nothing;
+/// - two choices naming one destination are one rail, and the second would
+///   park nothing while spending a receipt to say so;
+/// - `for_fact` must be a number in this page's own list, because the pass
+///   answers a question about one fact and an answer that cannot say which
+///   fact was not that answer.
+fn accepted_choice<'c>(
+    choice: &'c RailChoice,
+    page: &crate::planner::PagePlan,
+    offered: &[crate::candidates::Candidate],
+    taken: &mut BTreeSet<String>,
+    slug: &str,
+) -> Option<(&'c str, String)> {
+    let to = choice.link.trim();
+    if to.is_empty() || to.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    if !offered.iter().any(|c| c.key == to) {
+        tracing::warn!(
+            slug,
+            to,
+            "rem rails: model named a page it was not offered — skipped"
+        );
+        return None;
+    }
+    if !taken.insert(to.to_owned()) {
+        return None;
+    }
+    let Some(for_fact) = choice
+        .for_fact
+        .filter(|n| *n >= 1 && *n <= page.primary_facts.len())
+        .map(|n| page.primary_facts[n - 1].fact_id.as_str().to_owned())
+    else {
+        tracing::warn!(
+            slug,
+            to,
+            "rem rails: a link naming no fact of this page — skipped"
+        );
+        return None;
+    };
+    Some((to, for_fact))
+}
+
+/// Park one accepted rail and leave its receipt. `None` when the park refused.
+///
+/// The rail is parked first, so a receipt failure is reported and survived
+/// rather than raised: undoing the park to keep the paper trail tidy would
+/// throw away the decision the model was called to make. The fact the rail was
+/// written for rides the receipt — the park itself carries `(from, to)` and
+/// nothing more.
+async fn park_one_rail(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    cycle_id: &str,
+    from: &str,
+    to: &str,
+    for_fact: Option<&str>,
+    replaced: Option<String>,
+    why: &str,
+) -> Option<RailOutcome> {
+    match crate::planner::park_authored_rail(tree, from, to, replaced.as_deref()) {
+        Ok(true) => {},
+        Ok(false) => return None,
+        Err(e) => {
+            tracing::warn!(from, to, error = %e, "rem rails: rail not parked");
+            return None;
+        },
+    }
+    let context = serde_json::json!({
+        "from": from,
+        "to": to,
+        "for_fact": for_fact,
+        "instead_of": replaced,
+        "why": why,
+        "cycle_id": cycle_id,
+    });
+    let params = crate::proposals::EmitParams::new(
+        crate::proposals::kind::RAIL_ADD,
+        context.clone(),
+        serde_json::json!([]),
+    );
+    let receipt =
+        match crate::proposals::emit_applied_proposal(pool, params, context, Some("rem")).await {
+            Ok(e) => Some(e.proposal_id),
+            Err(e) => {
+                tracing::warn!(
+                    from,
+                    to,
+                    error = %e,
+                    "rem rails: the rail is parked, the receipt is not recorded"
+                );
+                None
+            },
+        };
+    Some(RailOutcome {
+        to: to.to_owned(),
+        replaced,
+        receipt,
+    })
+}
+
+/// Ask the model which of `slug`'s facts needs a neighbour, and park what it says.
+///
+/// An empty answer is the common one and not a failure: a link nobody needs
+/// costs a clause of prose on every future rewrite of the page.
+///
+/// Three fences stand between the reply and the plan, and each drops a single
+/// choice rather than the whole answer — one bad line does not cost the good
+/// ones beside it:
+///
+/// - the destination must be a page the model was **offered**, so a name it
+///   invented reaches nothing;
+/// - `for_fact` must be a number in the page's own list, because this pass
+///   answers a question about one fact and an answer that cannot say which
+///   fact was not that answer;
+/// - the page's remaining room (`PAGE_RAIL_BUDGET` minus what it carries)
+///   caps how many are parked, so one night can fill a page but not flood it.
+async fn judge_rails(
+    pool: &SqlitePool,
+    tree: &WikiTree,
+    llm: &dyn LlmBackend,
+    cycle_id: &str,
+    plan: &CompilationPlan,
+    candidates: &crate::candidates::CandidatePool,
+    slug: &str,
+) -> Result<Vec<RailOutcome>> {
+    let Some(page) = plan.pages.get(slug) else {
+        return Ok(Vec::new());
+    };
+    let carried = plan.link_graph.get(slug).map_or(0, Vec::len);
+    let budget = PAGE_RAIL_BUDGET.saturating_sub(carried);
+    if budget == 0 {
+        return Ok(Vec::new());
+    }
+    let offered = rail_candidates(pool, plan, candidates, slug, page).await;
     if offered.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
 
     let mine: BTreeSet<&str> = plan
@@ -1449,88 +1637,71 @@ async fn judge_one_rail(
         .filter(|(a, _)| a == slug)
         .map(|(_, b)| b.as_str())
         .collect();
-    let prompt = rail_prompt(tree, plan, slug, page, &offered, &mine)?;
+    let prompt = rail_prompt(tree, plan, slug, page, &offered, &mine, budget)?;
     // A page whose neighbourhood has not changed gets the same answer, so a
     // byte-identical re-ask is the most expensive no-op in the cycle.
     let memo_key = rem_verdicts::key(llm.model_id(), &prompt);
     if rem_verdicts::is_settled(pool, rem_verdicts::kind::RAIL, &memo_key).await? {
-        return Ok(None);
+        return Ok(Vec::new());
     }
 
     let resp = llm
         .complete(
             CompletionRequest::new(prompt)
                 .with_temperature(0.2)
-                .with_max_tokens(400),
+                .with_max_tokens(700),
         )
         .await
         .map_err(|e| RemError::Llm(format!("rail writer failed on {slug}: {e}")))?;
     let decision: RailDecision = first_json_object(&resp.text)
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
-    let to = decision.link.trim();
-    if to.is_empty() || to.eq_ignore_ascii_case("none") {
-        rem_verdicts::record_negative(pool, rem_verdicts::kind::RAIL, &memo_key, slug).await?;
-        return Ok(None);
-    }
-    // Anti-hallucination: the destination must be one of the pages offered.
-    if !offered.iter().any(|c| c.key == to) {
+
+    if decision.links.is_empty() && !decision.link.trim().is_empty() {
         tracing::warn!(
             slug,
-            to,
-            "rem rails: model named a page it was not offered — skipped"
+            "rem rails: the reply carries a single `link` and this pass reads `links` \
+             — the prompt override in the workdir asks a different question from the \
+             one the code parses"
         );
-        return Ok(None);
-    }
-    // The swap half, and its fence: only a rail this pass wrote may go.
-    let replaced = decision
-        .instead_of
-        .as_deref()
-        .map(str::trim)
-        .filter(|d| mine.contains(d))
-        .map(ToOwned::to_owned);
-    match crate::planner::park_authored_rail(tree, slug, to, replaced.as_deref()) {
-        Ok(true) => {},
-        Ok(false) => return Ok(None),
-        Err(e) => {
-            tracing::warn!(slug, to, error = %e, "rem rails: rail not parked");
-            return Ok(None);
-        },
     }
 
-    let context = serde_json::json!({
-        "from": slug,
-        "to": to,
-        "instead_of": replaced,
-        "why": decision.why,
-        "cycle_id": cycle_id,
-    });
-    let params = crate::proposals::EmitParams::new(
-        crate::proposals::kind::RAIL_ADD,
-        context.clone(),
-        serde_json::json!([]),
-    );
-    // The rail is already parked, so a receipt failure is reported and
-    // survived, never raised: undoing the park to keep the paper trail tidy
-    // would throw away the decision the model was called to make.
-    let receipt =
-        match crate::proposals::emit_applied_proposal(pool, params, context, Some("rem")).await {
-            Ok(e) => Some(e.proposal_id),
-            Err(e) => {
-                tracing::warn!(
-                    slug,
-                    to,
-                    error = %e,
-                    "rem rails: the rail is parked, the receipt is not recorded"
-                );
-                None
-            },
+    let mut out: Vec<RailOutcome> = Vec::new();
+    let mut taken: BTreeSet<String> = BTreeSet::new();
+    for choice in decision.links {
+        if out.len() == budget {
+            break;
+        }
+        let Some((to, for_fact)) = accepted_choice(&choice, page, &offered, &mut taken, slug)
+        else {
+            continue;
         };
-    Ok(Some(RailOutcome {
-        to: to.to_owned(),
-        replaced,
-        receipt,
-    }))
+        // The swap half, and its fence: only a rail this pass wrote may go.
+        let replaced = choice
+            .instead_of
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| mine.contains(d))
+            .map(ToOwned::to_owned);
+        if let Some(outcome) = park_one_rail(
+            pool,
+            tree,
+            cycle_id,
+            slug,
+            to,
+            Some(&for_fact),
+            replaced,
+            &choice.why,
+        )
+        .await
+        {
+            out.push(outcome);
+        }
+    }
+    if out.is_empty() {
+        rem_verdicts::record_negative(pool, rem_verdicts::kind::RAIL, &memo_key, slug).await?;
+    }
+    Ok(out)
 }
 
 // ---------- Smart family index ----------
@@ -8949,7 +9120,8 @@ mod tests {
 
         let llm = FakeLlmBackend::new(
             "pro",
-            "{\"link\":\"intolleranze\",\"instead_of\":null,\"why\":\"a reader on the cooking page needs it and would never search for it\"}",
+            "{\"links\":[{\"link\":\"intolleranze\",\"for_fact\":1,\"instead_of\":null,\
+             \"why\":\"a reader of this fact needs it and would never search for it\"}]}",
         );
         let policy = RemPolicy {
             rail_writer_cap: 1,
@@ -9004,6 +9176,150 @@ mod tests {
         drop(dir);
     }
 
+    /// One page, several facts, several links — and each one names its fact.
+    ///
+    /// The pass used to answer with a single destination per page, which is a
+    /// question about the page. A question asked of one fact at a time has as
+    /// many answers as there are facts that need one, and the page's own
+    /// remaining room is what bounds them.
+    #[tokio::test]
+    async fn a_page_gets_one_rail_per_fact_that_needs_one() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let mut pages = std::collections::BTreeMap::new();
+        for slug in ["cucina", "intolleranze", "auto"] {
+            pages.insert(slug.to_owned(), kin_leaf(slug, "alice", 2));
+        }
+        let plan = CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph: BTreeMap::new(),
+            compilation_order: Vec::new(),
+            generated_at: "t".to_owned(),
+            fact_count: 6,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
+        };
+        crate::planner::save_plan(&tree, &plan).expect("save plan");
+
+        // Two good answers, then two the fences drop: one naming a page that
+        // was never offered, one naming no fact at all.
+        let llm = FakeLlmBackend::new(
+            "pro",
+            "{\"links\":[\
+               {\"link\":\"intolleranze\",\"for_fact\":1,\"why\":\"decides what may be eaten\"},\
+               {\"link\":\"cucina\",\"for_fact\":2,\"why\":\"decides when it can be cooked\"},\
+               {\"link\":\"inventata\",\"for_fact\":1,\"why\":\"a page nobody offered\"},\
+               {\"link\":\"spesa\",\"why\":\"and this one names no fact\"}]}",
+        );
+        let policy = RemPolicy {
+            rail_writer_cap: 1,
+            ..RemPolicy::default()
+        };
+        let report = run_rail_writer(
+            &pool,
+            &tree,
+            Some(&llm),
+            "cycle-rails",
+            &day::DayPerimeter::default(),
+            &policy,
+        )
+        .await
+        .expect("rail writer");
+
+        // Every page carries no link, so the cap judges the first by slug.
+        assert_eq!(report.judged, 1, "one page, one judgement");
+        assert!(
+            report.written.iter().all(|(from, _)| from == "auto"),
+            "one page answered, and both its links came from it: {report:?}"
+        );
+        let mut written: Vec<&str> = report.written.iter().map(|(_, to)| to.as_str()).collect();
+        written.sort_unstable();
+        assert_eq!(
+            written,
+            vec!["cucina", "intolleranze"],
+            "both answers that clear the fences are parked: {report:?}"
+        );
+        assert_eq!(report.receipts.len(), 2, "one receipt each");
+
+        // The facts are numbered in the page block, because `for_fact` is an
+        // index into exactly that list.
+        let shown = llm.last_prompt().expect("the model was asked");
+        assert!(shown.contains("1. "), "the facts are numbered: {shown}");
+        drop(dir);
+    }
+
+    /// The page's own remaining room bounds the night, so one pass can fill a
+    /// page and never flood it: a page carrying five of its six budgeted links
+    /// has room for one more, whatever the model returns.
+    #[tokio::test]
+    async fn the_page_budget_bounds_what_one_night_may_add() {
+        let (dir, tree, pool) = setup_workdir().await;
+        write_wiki(&tree, "alice", "Alice", "wiki-user");
+        let mut pages = std::collections::BTreeMap::new();
+        for slug in ["cucina", "intolleranze", "auto"] {
+            pages.insert(slug.to_owned(), kin_leaf(slug, "alice", 2));
+        }
+        let mut link_graph = BTreeMap::new();
+        link_graph.insert(
+            "cucina".to_owned(),
+            (0..PAGE_RAIL_BUDGET - 1)
+                .map(|i| format!("v{i}"))
+                .collect::<Vec<_>>(),
+        );
+        let plan = CompilationPlan {
+            pages,
+            merged_pages: Vec::new(),
+            link_graph,
+            compilation_order: Vec::new(),
+            generated_at: "t".to_owned(),
+            fact_count: 6,
+            dirty_pages: Vec::new(),
+            force_dirty: Vec::new(),
+            refile_candidates: Vec::new(),
+            reopen_pages: Vec::new(),
+            authored_rails: Vec::new(),
+        };
+        crate::planner::save_plan(&tree, &plan).expect("save plan");
+
+        let llm = FakeLlmBackend::new(
+            "pro",
+            "{\"links\":[\
+               {\"link\":\"intolleranze\",\"for_fact\":1,\"why\":\"first\"},\
+               {\"link\":\"auto\",\"for_fact\":2,\"why\":\"second\"}]}",
+        );
+        // `cucina` carries the most links, so it is nominated last; the other
+        // two carry none. Judge all three and count what `cucina` was allowed.
+        let policy = RemPolicy {
+            rail_writer_cap: 3,
+            ..RemPolicy::default()
+        };
+        let report = run_rail_writer(
+            &pool,
+            &tree,
+            Some(&llm),
+            "cycle-rails",
+            &day::DayPerimeter::default(),
+            &policy,
+        )
+        .await
+        .expect("rail writer");
+
+        let from_cucina = report
+            .written
+            .iter()
+            .filter(|(from, _)| from == "cucina")
+            .count();
+        assert_eq!(
+            from_cucina, 1,
+            "one seat left, one rail parked, whatever the model returned: {report:?}"
+        );
+        drop(dir);
+    }
+
     /// `none` is a real answer, and the common one: a link nobody needs costs
     /// a clause of prose on every future rewrite and buys nothing.
     #[tokio::test]
@@ -9029,10 +9345,7 @@ mod tests {
         };
         crate::planner::save_plan(&tree, &plan).expect("save plan");
 
-        let llm = FakeLlmBackend::new(
-            "pro",
-            "{\"link\":\"none\",\"why\":\"nothing here leads there — a shared name is all they have\"}",
-        );
+        let llm = FakeLlmBackend::new("pro", "{\"links\":[]}");
         let report = run_rail_writer(
             &pool,
             &tree,
@@ -9097,7 +9410,8 @@ mod tests {
 
         let llm = FakeLlmBackend::new(
             "pro",
-            "{\"link\":\"intolleranze\",\"instead_of\":\"spesa\",\"why\":\"better\"}",
+            "{\"links\":[{\"link\":\"intolleranze\",\"for_fact\":1,\"instead_of\":\"spesa\",\
+             \"why\":\"better\"}]}",
         );
         let policy = RemPolicy {
             rail_writer_cap: 1,
@@ -9159,7 +9473,10 @@ mod tests {
         };
         crate::planner::save_plan(&tree, &plan).expect("save plan");
 
-        let llm = FakeLlmBackend::new("pro", "{\"link\":\"qualcosa\"}");
+        let llm = FakeLlmBackend::new(
+            "pro",
+            "{\"links\":[{\"link\":\"qualcosa\",\"for_fact\":1}]}",
+        );
         let report = run_rail_writer(
             &pool,
             &tree,

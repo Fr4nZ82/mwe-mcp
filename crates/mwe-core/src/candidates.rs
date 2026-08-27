@@ -156,6 +156,18 @@ impl Ask {
     pub const fn has_vector(&self) -> bool {
         !self.embeddings.is_empty()
     }
+
+    /// Widen the ask with more directions to be near.
+    ///
+    /// Scoring takes the **best** similarity across the whole bag, so adding a
+    /// vector can only raise a candidate's score and never lower one: an ask
+    /// carrying a page's card plus each of its facts offers everything the card
+    /// alone would have, and the pages only a single fact points at besides.
+    /// That is the difference between "what is this page about" and "what does
+    /// somebody standing on this fact need".
+    pub fn widen_with(&mut self, vectors: impl IntoIterator<Item = Vec<f32>>) {
+        self.embeddings.extend(vectors);
+    }
 }
 
 /// One chosen candidate: the caller's own key, and why it was chosen.
@@ -563,6 +575,58 @@ mod tests {
 
     fn sources(picked: &[Candidate]) -> BTreeSet<CandidateSource> {
         picked.iter().map(|c| c.source).collect()
+    }
+
+    /// A page one FACT points at, which the page itself points nowhere near.
+    ///
+    /// This is the whole of asking per fact. The asker's card sits at one end
+    /// of the space and the destination at the other, so on the card alone it
+    /// ranks below every filler and never reaches the model as `near`. Widen
+    /// the ask with the vector of a single fact that DOES sit beside it, and it
+    /// ranks first — without displacing anything the card was already offering,
+    /// because scoring takes the best across the bag rather than an average.
+    #[test]
+    fn a_fact_reaches_the_page_its_own_page_is_nowhere_near() {
+        let mut entries = vec![
+            ("me", traits(Some(&[1.0, 0.0]), &[], &[])),
+            // Diametrically opposite the asker's card.
+            ("courses", traits(Some(&[-1.0, 0.0]), &[], &[])),
+        ];
+        let mut owned: Vec<String> = Vec::new();
+        for i in 0_u8..30 {
+            let step = f32::from(i) / 60.0;
+            owned.push(format!("filler{i}"));
+            entries.push(("", traits(Some(&[1.0 - step, step]), &[], &[])));
+        }
+        for (i, name) in owned.iter().enumerate() {
+            entries[i + 2].0 = name.as_str();
+        }
+        let p = pool(entries);
+        let exclude = excl(&["me"]);
+
+        let on_the_card = p.pick(&p.ask_for(["me"]), &exclude, SELECTION_PAGES, &[]);
+        assert!(
+            !on_the_card
+                .iter()
+                .any(|c| c.key == "courses" && c.source == CandidateSource::Near),
+            "asked on the page's own card it is never a near candidate: {on_the_card:?}"
+        );
+
+        let mut widened = p.ask_for(["me"]);
+        widened.widen_with([vec![-0.99_f32, 0.05]]);
+        let with_the_fact = p.pick(&widened, &exclude, SELECTION_PAGES, &[]);
+        assert_eq!(
+            with_the_fact
+                .iter()
+                .find(|c| c.key == "courses")
+                .map(|c| c.source),
+            Some(CandidateSource::Near),
+            "the fact's own neighbourhood reaches the model: {with_the_fact:?}"
+        );
+        assert!(
+            with_the_fact.iter().any(|c| c.key == "filler0"),
+            "and widening takes nothing away: the card's own nearest is still there"
+        );
     }
 
     /// The whole point: a page nothing resembles still reaches the model,

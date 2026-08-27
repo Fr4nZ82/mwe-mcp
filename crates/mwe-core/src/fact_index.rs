@@ -1294,6 +1294,41 @@ pub async fn sample_embedding_dim(pool: &SqlitePool) -> Result<Option<usize>> {
     Ok(n.and_then(|v| usize::try_from(v).ok()))
 }
 
+/// The stored vectors of `ids`, in no particular order.
+///
+/// A fact with no vector — the embedder was down when it was written — is
+/// simply absent from the result, never an error and never a zero row: a zero
+/// vector would score as a real direction against every candidate.
+///
+/// Used where a question is asked of a page's FACTS rather than of the page:
+/// what a page is near is its own theme, and what one of its facts is near can
+/// be somewhere else entirely, which is the whole reason to ask per fact.
+///
+/// # Errors
+///
+/// As [`sqlx::Error`], plus a corrupt blob from [`decode_embedding`].
+pub async fn embeddings_of(pool: &SqlitePool, ids: &[&str]) -> Result<Vec<Vec<f32>>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT embedding FROM fact_index \
+         WHERE fact_id IN ({placeholders}) AND deleted_at IS NULL AND embedding IS NOT NULL"
+    );
+    let mut q = sqlx::query_scalar::<_, Vec<u8>>(&sql);
+    for id in ids {
+        q = q.bind(*id);
+    }
+    q.fetch_all(pool)
+        .await?
+        .iter()
+        .map(|b| decode_embedding(b))
+        .collect()
+}
+
 // ---------- Queries ----------
 
 /// Most recent `updated_at` among the **active** facts of one page.
