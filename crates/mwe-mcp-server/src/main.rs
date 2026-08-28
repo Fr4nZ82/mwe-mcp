@@ -229,6 +229,22 @@ enum Command {
     /// migration count, token secret presence + length.
     Doctor,
 
+    /// Bring the index up to date now, instead of waiting for the sweep a
+    /// running server does every [`reindex::SAFETY_NET_INTERVAL`].
+    ///
+    /// The watcher is the normal route and it is event-driven — but it
+    /// deliberately ignores the engine's **own** writes (`watcher`, the
+    /// marker protocol), so a page the compiler just wrote reaches the index
+    /// only on that sweep. Which is fine while a server is up, and no route
+    /// at all when one is not: a workdir restored from a backup, or one whose
+    /// markdown was edited with the server down, has no way to say "read it
+    /// again" and no way to know when it has been read.
+    ///
+    /// Same work as the sweep, run once and reported: what it scanned, what
+    /// it wrote, and how many page cards it embedded — the vectors every
+    /// candidate ranking scores against.
+    Reindex,
+
     /// Major upgrade entrypoint. Today's behaviour is the **floor**:
     /// re-runs compile-time embedded migrations, re-seeds the
     /// bundled operational prompts from `include_str!`, and reports what
@@ -454,6 +470,7 @@ async fn main() -> Result<()> {
             clear_2fa,
         } => cmd_admin_reset(&cli.workdir, &user, ttl_hours, invited_by, clear_2fa).await,
         Command::Doctor => cmd_doctor(&cli.workdir).await,
+        Command::Reindex => cmd_reindex(&cli.workdir, &config).await,
         Command::Migrate { dry_run } => cmd_migrate(&cli.workdir, dry_run).await,
         Command::Backup { out } => cmd_backup(&cli.workdir, &out).await,
         Command::Rem { command } => match command {
@@ -710,6 +727,40 @@ fn install_usage_ledger(pool: &sqlx::SqlitePool, config: &Config, source: usage:
 /// against this CLI invocation. Set `rem.schedule.mode: disabled` in
 /// `mwe-mcp.config.yaml` when you intend to drive REM from an external
 /// scheduler so the in-process scheduler stays quiet.
+/// `mwe-mcp reindex` — the sweep, on demand.
+///
+/// Takes the lockfile like every other one-shot command, so it refuses to run
+/// beside a live server: that server is already sweeping, and two writers over
+/// one workdir is the thing the lock exists to prevent.
+async fn cmd_reindex(workdir: &Path, config: &Config) -> Result<()> {
+    info!(workdir = %workdir.display(), "mwe-mcp reindex: starting");
+
+    let lock = lockfile::acquire(workdir)
+        .map_err(|e| anyhow!("lockfile: {e} (is `mwe-mcp serve` already running?)"))?;
+    let pool = db::open_or_init(workdir)
+        .await
+        .context("opening engine.db")?;
+    let tree = WikiTree::open(workdir).context("opening wikis/ tree")?;
+    let embedder: Arc<dyn Embedder> = config
+        .embedding
+        .build_embedder()
+        .await
+        .context("building embedder")?;
+
+    let report = reindex::reindex_full(&pool, &tree, embedder)
+        .await
+        .context("full reindex")?;
+
+    println!("files scanned  : {}", report.files_scanned);
+    println!("rows inserted  : {}", report.total_inserted);
+    println!("rows updated   : {}", report.total_updated);
+    println!("rows orphaned  : {}", report.total_orphaned);
+    println!("page cards     : {}", report.cards_refreshed);
+
+    drop(lock);
+    Ok(())
+}
+
 async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
     info!(workdir = %workdir.display(), "mwe-mcp rem run-cycle: starting");
 
