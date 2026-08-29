@@ -1981,9 +1981,6 @@ async fn build_page_index(pool: &SqlitePool, tree: &WikiTree, plan: &Compilation
     let by_source_path: BTreeMap<String, String> = plan
         .pages
         .iter()
-        // An identity card is not a destination — see
-        // [`recommended_link_targets`] for why it is offered to nobody.
-        .filter(|(_, p)| !p.is_identity_card())
         .filter_map(|(slug, p)| Some((plan_page_source_path(tree, p)?, slug.clone())))
         .collect();
     let candidates = crate::candidates::CandidatePool::load(pool, &by_source_path).await;
@@ -2090,10 +2087,7 @@ fn page_index_block(plan: &CompilationPlan) -> String {
         .iter()
         .filter_map(|s| {
             let p = plan.pages.get(s)?;
-            // An identity card is not a destination — see
-            // [`recommended_link_targets`] for why it is offered to nobody.
-            (!p.is_identity_card())
-                .then(|| format!("- {}: {}", plan_page_wikilink(p), p.description))
+            Some(format!("- {}: {}", plan_page_wikilink(p), p.description))
         })
         .collect();
     if lines.is_empty() {
@@ -2112,18 +2106,21 @@ fn page_index_block(plan: &CompilationPlan) -> String {
 /// that account either way: a link puts no obligation on the page it points
 /// at (founder, 2026-08-23).
 ///
-/// **An identity card is not a destination, and this is where that is
-/// enforced for rails.** A card is never reached by walking to it: recall
-/// serves the speaker's own deterministically, before it has read the turn,
-/// and the cards of the people the turn is about besides
-/// ([`crate::recall::turn_subjects`]). So a link to one is a door into a room
-/// the reader is already standing in, and it is not free — it costs a page's
-/// link slot and, when mandatory, a sentence the page has to grow to host it.
-/// The same fence stands wherever a destination is offered — the page index
-/// and the rail writer's pool both drop cards before anyone chooses — so no
-/// pass can spend a decision on a target this one would refuse. A card's OWN
-/// rails are untouched: this is about what may be pointed AT, never about
-/// what a card may point at from.
+/// **An identity card is never an OBLIGATION.** A mandatory link with no place
+/// in the narrative is a sentence the page has to grow to host it, and a card
+/// is the destination least likely to have earned one: a reader who arrives
+/// with that person in the turn was served the card whole already
+/// ([`crate::recall::turn_subjects`]), and the funnel marks a served card
+/// visited, so it is never walked to on top of that.
+///
+/// **Whether to OFFER one is a different question, and the answer is yes.** It
+/// stays in the page index, where linking it is a choice the prose earns: the
+/// card of somebody this turn is not about is served to nobody, so a link to
+/// it is a real door — and every link's clause becomes a recall key
+/// ([`crate::link_key`]) whether or not anybody ever walks it. What is fenced
+/// here is only what a page MUST point at. A card's OWN rails are untouched:
+/// this is about what may be pointed AT, never about what a card may point at
+/// from.
 fn recommended_link_targets(plan: &CompilationPlan, slug: &str) -> Vec<String> {
     plan.link_graph
         .get(slug)
@@ -4730,13 +4727,12 @@ mod tests {
         );
     }
 
-    /// A card is served whole with every turn, so offering it as a link
-    /// target sends a reader to a page they already hold. Dropping it here is
-    /// what stops the Cronista choosing one at all: the rail filter in
-    /// [`recommended_link_targets`] guards a different door — a link the
-    /// page's own prose already carries, which no pass chose today.
+    /// The card of somebody this turn is not about reaches the reader by no
+    /// other route, so the index offers it and the prose decides. What a page
+    /// may never be REQUIRED to point at is a separate fence, and it lives in
+    /// [`recommended_link_targets`].
     #[test]
-    fn the_page_index_offers_no_identity_card() {
+    fn the_page_index_offers_an_identity_card_like_any_other_page() {
         let mut pages = BTreeMap::new();
         for (slug, path) in [
             ("alice", "hobbies.md"),
@@ -4775,8 +4771,8 @@ mod tests {
             "an ordinary page is offered"
         );
         assert!(
-            !idx.contains("@profile"),
-            "an identity card is offered to nobody: {idx}"
+            idx.contains("[[bob/@profile]]"),
+            "and so is a card — choosing it is the prose's call: {idx}"
         );
     }
 
