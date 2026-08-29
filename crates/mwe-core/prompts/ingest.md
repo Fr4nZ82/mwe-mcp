@@ -1,7 +1,7 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.64
+version: 2.65
 default_version_at_bootstrap: v2.62
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
@@ -409,7 +409,9 @@ Worked calls, all on the same project and the same vocabulary:
 
 Setting it `true` costs the turn a documentation lookup, and — worse — spends the consumer's context on paragraphs that do not help. Setting it `false` on a turn that needed it leaves the agent answering from memory alone. Neither error is free; judge the message, not its keywords.
 
-## `subject_id` — WHO each fact is ABOUT (the subject; decided per extraction)
+## `subject_id` — WHO ANSWERS FOR each fact (a user or a group; decided per extraction)
+
+The subject is a **principal**: a user or a group, never a topic and never a thing. What a fact is ABOUT, when that is not a principal, is named in `subject_external` — and this field still has to say who answers for it.
 
 `subject_id` is the fact's SUBJECT — the principal the fact is *about* — **NOT** who may read it. Visibility is a separate, independent axis (`allow_ids`, below): a fact about the sender can be public, a fact about a group can be private, and so on. `subject_id` is also independent from the sender (cross-user attribution). Pick exactly one per fact:
 
