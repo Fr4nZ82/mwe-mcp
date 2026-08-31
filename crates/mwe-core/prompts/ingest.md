@@ -1,7 +1,7 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.65
+version: 2.66
 default_version_at_bootstrap: v2.62
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
@@ -357,6 +357,7 @@ Examples — the cases the rules above do not already walk through:
 "needs_disambig":      false | true,
 "needs_project_docs":  false | true,
 "disambig_candidates": [ { "candidate_id": "...", "description": "..." }, ... ],
+"fact_scores":         [ { "target": "<fact_id copied EXACTLY from recalled_memory>", "multiplier": 0.90 … 1.10 }, ... ],
 "extractions":         [ { "target_page": "<`lista` extractions AND requested containers ONLY (Part 4's two cases): the page file name, from list_pages when it exists — NEVER a reserved name; omit otherwise>", "subject_id": "user:<id>" | "group:<id>" | "global", "subject_external": "<the NAME of what the fact is about when that is not a principal — see the `subject_external` section; omit otherwise>", "allow_ids": [ "user:<id>" | "group:<id>" | "global", ... ], "fact_type": "bio" | "state" | "preference" | "rule" | "plan" | "episode" | "other", "valid_from": "<ISO-8601 Z resolved against current_time>", "valid_to": "<ISO-8601 Z>" | null, "style": "prosa" | "prosa-tecnica" | "lista", "page_description": "<same two cases, and only for a NEW page: one line saying what it holds; omit otherwise>", "requested_container": false | true, "salience": "high" | "normal" | "low", "engine_rule": false | true, "behaviour_rule": false | true, "behaviour_scope": "per-user" | "agent-wide" | "user-global", "topics": [ "<tag>", ... ], "body": "<the atomic fact, third person, dates resolved>", "supersede_target": "<behaviour-rule fact_id from agent_behaviour_rules — NEVER a fact_id from recalled_memory>" | null, "attachments": [ "<catalog_id from this turn's attachments>", ... ] }, ... ]
 }
 
@@ -371,6 +372,19 @@ The block shows facts this memory already holds. **Read it; write nothing agains
 3. **Do not rewrite a relationship** it already records (Part 6).
 
 **`allow_ids` is NOT one of the three**: every entry here carries an `allow:` line, and none of them is evidence about the fact in front of you. See the `allow_ids` chapter.
+
+### `fact_scores` — say which of them actually answers the turn
+
+There is a fourth use, and it is the only one that writes anything: for each recalled fact you may return a **multiplier between 0.90 and 1.10**, saying how well it answers THIS message compared to how similar it merely looks.
+
+You are the only reader that has seen the question and the facts and understood both. The number beside each entry is a **distance**, and a distance cannot tell that *«likes Metallica»* answers *«what music do I like»* while *«born on 12 March»* does not. That is the whole job here: **1.10 for the fact that answers, 0.90 for the one that is merely about the same subject.**
+
+- Copy `target` **exactly** from `recalled_memory`. An id that was not shown to you is dropped.
+- Score only what you have an opinion about. A fact you leave out keeps its place — silence is the correct answer for most of the block.
+- **`fact_scores` is empty on most turns.** It earns its place when a turn asks something specific and the block answers it obliquely; when everything shown is equally on-topic, judging is noise.
+- Never use it to hide a fact. The band cannot remove anything, and it is not meant to: a fact you dislike still surfaces, one rank lower.
+
+This does not break the rule below about samples. **Ranking a sample is a reading; it changes the order of what you were shown and asserts nothing about what you were not.**
 
 One rule governs what you may do with any block of stored material, this one included:
 

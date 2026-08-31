@@ -841,6 +841,32 @@ struct LlmIngestPlan {
     /// `recalled_memory`, and only the fact's SUBJECT may change it from chat.
     #[serde(default)]
     acl_changes: Vec<LlmAclChange>,
+    /// The classifier's own opinion of how well each recalled fact answers
+    /// THIS turn, one multiplier per fact it cares to judge.
+    ///
+    /// It is the only thing in the read path that has read the question and
+    /// the facts and understood both: cosine measures a distance, and a
+    /// distance does not know that «likes Metallica» answers «what music do I
+    /// like» while «born on 12 March» does not. Optional in every direction —
+    /// an absent array, an unparseable one, or one naming facts that were
+    /// never shown all leave the order exactly as recall left it.
+    #[serde(default)]
+    fact_scores: Vec<LlmFactScore>,
+}
+
+/// One requested re-score of a recalled fact (see
+/// [`LlmIngestPlan::fact_scores`]).
+#[derive(Debug, Clone, Deserialize)]
+struct LlmFactScore {
+    /// `fact_id` from `recalled_memory`.
+    #[serde(default)]
+    #[serde(alias = "fact_id")]
+    target: Option<String>,
+    /// How much better or worse this fact answers the turn than its distance
+    /// suggests. Clamped server-side to [`FACT_SCORE_MIN`]..=[`FACT_SCORE_MAX`].
+    #[serde(default)]
+    #[serde(alias = "score")]
+    multiplier: Option<f32>,
 }
 
 /// One requested validity closure of an existing fact (see
@@ -5666,6 +5692,68 @@ const HDR_RELEVANT_MEMORY: &str =
 /// exactly as before the floor existed.
 ///
 /// `None` when nothing survives — the section is omitted entirely.
+/// Floor of the classifier's re-score, and its ceiling
+/// ([`FACT_SCORE_MAX`]). Founder's ruling, 2026-08-03: **±10 %**.
+///
+/// A band and not a free hand, because the classifier is being asked to
+/// revise a number it can see. On this corpus the 1st and 10th hits of a turn
+/// sit **0.1026** apart, so ±10 % on a typical `0.45` hit is `±0.045` —
+/// roughly 45 % of the whole band. A strong voice by construction, which is
+/// the intent; anything wider would not be a revision but a replacement.
+pub const FACT_SCORE_MIN: f32 = 0.90;
+/// Ceiling of the classifier's re-score. See [`FACT_SCORE_MIN`].
+pub const FACT_SCORE_MAX: f32 = 1.10;
+
+/// Applies the classifier's per-fact multipliers and re-sorts, returning a
+/// NEW list and leaving the caller's untouched.
+///
+/// **A separate list is the point, not an implementation detail.** The same
+/// `Vec<RecallHit>` is handed to the navigator's entry fan, where a `rag`
+/// seed's weight IS the hit's score — so re-scoring in place would also
+/// reorder the pages the walk STARTS from. That is the more valuable half and
+/// the riskier one, and it waits on the reproducibility measurement: a score
+/// that lands differently on each call is worse than cosine, which at least
+/// is wrong the same way every time.
+///
+/// Anti-hallucination is inherited, not re-invented: an id the model did not
+/// see is **dropped**, exactly as `supersede_target`, `closures`,
+/// `validity_edits` and `acl_changes` drop theirs. A missing or non-finite
+/// multiplier is dropped the same way, so a malformed array is worth exactly
+/// as much as an absent one.
+fn reranked_hits(hits: &[RecallHit], scores: &[LlmFactScore]) -> Vec<RecallHit> {
+    let mut out = hits.to_vec();
+    if scores.is_empty() {
+        return out;
+    }
+    let mut applied = 0usize;
+    for score in scores {
+        let (Some(target), Some(multiplier)) = (score.target.as_deref(), score.multiplier) else {
+            continue;
+        };
+        if !multiplier.is_finite() {
+            continue;
+        }
+        let Some(hit) = out.iter_mut().find(|h| h.fact_id.as_str() == target) else {
+            continue;
+        };
+        hit.score *= multiplier.clamp(FACT_SCORE_MIN, FACT_SCORE_MAX);
+        applied += 1;
+    }
+    if applied == 0 {
+        return out;
+    }
+    // Stable by construction: `sort_by` keeps the recall order among hits the
+    // classifier left alone, so a turn it declines to judge renders exactly as
+    // it did before.
+    out.sort_by(|a, b| b.score.total_cmp(&a.score));
+    tracing::debug!(
+        applied,
+        offered = scores.len(),
+        "ingest: classifier re-scored recalled facts"
+    );
+    out
+}
+
 fn format_snippet(
     hits: &[RecallHit],
     navigated_paths: &[String],
@@ -7746,12 +7834,12 @@ pub async fn wiki_ingest_message(
         if let Some(m) = &mentioned {
             nav_paths.extend(m.page_paths.iter().cloned());
         }
-        format_snippet(
-            &recall_hits,
-            &nav_paths,
-            &project_docs,
-            policy.relevance_floor,
-        )
+        // The classifier's own reading of the hits, applied HERE and nowhere
+        // else: navigation has already run above from the unrevised list, so
+        // this turn's walk is untouched by construction as well as by
+        // intent ([`reranked_hits`]).
+        let revised = reranked_hits(&recall_hits, &plan.fact_scores);
+        format_snippet(&revised, &nav_paths, &project_docs, policy.relevance_floor)
     } else {
         None
     };
@@ -8751,6 +8839,7 @@ mod tests {
             closure_topics: Vec::new(),
             validity_edits: Vec::new(),
             acl_changes: Vec::new(),
+            fact_scores: Vec::new(),
         };
         let request = req("comprare il latte", "alice");
         let policy = IngestPolicy::default();
@@ -8800,6 +8889,7 @@ mod tests {
             closure_topics: Vec::new(),
             validity_edits: Vec::new(),
             acl_changes: Vec::new(),
+            fact_scores: Vec::new(),
         };
         let request = req("a fact", "alice");
         let policy = IngestPolicy::default();
@@ -8845,6 +8935,7 @@ mod tests {
             closure_topics: Vec::new(),
             validity_edits: Vec::new(),
             acl_changes: Vec::new(),
+            fact_scores: Vec::new(),
         };
         let request = req("alice prefers coffee black", "alice");
         let policy = IngestPolicy::default();
@@ -8898,6 +8989,7 @@ mod tests {
             closure_topics: Vec::new(),
             validity_edits: Vec::new(),
             acl_changes: Vec::new(),
+            fact_scores: Vec::new(),
         };
         let request = req("alice prefers coffee black", "alice");
         let policy = IngestPolicy::default();
@@ -8939,6 +9031,7 @@ mod tests {
             closure_topics: Vec::new(),
             validity_edits: Vec::new(),
             acl_changes: Vec::new(),
+            fact_scores: Vec::new(),
         };
         let request = req("hello", "alice");
         let policy = IngestPolicy::default();
@@ -9015,6 +9108,7 @@ mod tests {
             closure_topics: Vec::new(),
             validity_edits: Vec::new(),
             acl_changes: Vec::new(),
+            fact_scores: Vec::new(),
         };
         let request = req("public fact", "alice");
         let policy = IngestPolicy::default();
@@ -9373,6 +9467,7 @@ mod tests {
             closure_topics: Vec::new(),
             validity_edits: Vec::new(),
             acl_changes: Vec::new(),
+            fact_scores: Vec::new(),
         }
     }
 
@@ -10500,6 +10595,149 @@ mod tests {
         assert_eq!(page_of("wikis/franz/acmesigns/README.md"), "README.md");
         // Unexpected shapes fall back to the whole path rather than lying.
         assert_eq!(page_of("odd.md"), "odd.md");
+    }
+
+    // ---------- the classifier's re-score of the recalled facts ----------
+
+    /// Two hits, a whisker apart, and the classifier says the second one is
+    /// the one that answers.
+    fn scored_pair() -> Vec<RecallHit> {
+        let mk = |id: &str, text: &str, score: f32| RecallHit {
+            fact_id: FactId::parse(id).unwrap(),
+            wiki_id: "alice".into(),
+            source_path: "wikis/alice/note.md".into(),
+            region_start: None,
+            region_end: None,
+            text: text.into(),
+            subject_id: Principal::User("alice".into()),
+            allow_ids: Vec::new(),
+            sender_id: None,
+            fact_type: None,
+            created_at: "2026-05-18".into(),
+            valid_from: None,
+            valid_to: None,
+            score,
+            fresh: false,
+        };
+        vec![
+            mk(
+                "018f1234-5678-7abc-9def-0123456789ab",
+                "alice was born on 12 march",
+                0.47,
+            ),
+            mk(
+                "018f1234-5678-7abc-9def-0123456789ac",
+                "alice likes metallica",
+                0.45,
+            ),
+        ]
+    }
+
+    fn score_of(hits: &[RecallHit], id: &str) -> f32 {
+        hits.iter()
+            .find(|h| h.fact_id.as_str() == id)
+            .expect("hit present")
+            .score
+    }
+
+    /// The whole point: a distance cannot tell which fact ANSWERS, and the
+    /// classifier can. Two hits 0.02 apart swap places on a ±10 % band.
+    #[test]
+    fn the_classifier_can_lift_the_fact_that_answers_over_the_one_that_merely_matches() {
+        let scores = vec![
+            LlmFactScore {
+                target: Some("018f1234-5678-7abc-9def-0123456789ab".into()),
+                multiplier: Some(0.90),
+            },
+            LlmFactScore {
+                target: Some("018f1234-5678-7abc-9def-0123456789ac".into()),
+                multiplier: Some(1.10),
+            },
+        ];
+        let out = reranked_hits(&scored_pair(), &scores);
+        assert_eq!(out[0].text, "alice likes metallica", "{out:?}");
+    }
+
+    /// The band is a fence, not a suggestion: anything outside it is pulled
+    /// back to the edge rather than refused, so one wild number costs the
+    /// ordering nothing.
+    #[test]
+    fn a_multiplier_outside_the_band_is_clamped_to_it() {
+        let scores = vec![
+            LlmFactScore {
+                target: Some("018f1234-5678-7abc-9def-0123456789ab".into()),
+                multiplier: Some(9.0),
+            },
+            LlmFactScore {
+                target: Some("018f1234-5678-7abc-9def-0123456789ac".into()),
+                multiplier: Some(0.0),
+            },
+        ];
+        let out = reranked_hits(&scored_pair(), &scores);
+        let close = |got: f32, want: f32| (got - want).abs() < 1e-6;
+        let lifted = 0.47f32 * FACT_SCORE_MAX;
+        let pushed = 0.45f32 * FACT_SCORE_MIN;
+        assert!(
+            close(
+                score_of(&out, "018f1234-5678-7abc-9def-0123456789ab"),
+                lifted
+            ),
+            "{out:?}"
+        );
+        assert!(
+            close(
+                score_of(&out, "018f1234-5678-7abc-9def-0123456789ac"),
+                pushed
+            ),
+            "{out:?}"
+        );
+    }
+
+    /// An id the model never saw is dropped, the same way `supersede_target`,
+    /// `closures`, `validity_edits` and `acl_changes` drop theirs — and a
+    /// malformed entry is worth exactly what an absent one is worth.
+    #[test]
+    fn an_unseen_id_or_a_missing_multiplier_changes_nothing() {
+        let hits = scored_pair();
+        for scores in [
+            vec![LlmFactScore {
+                target: Some("018f1234-5678-7abc-9def-0123456789ff".into()),
+                multiplier: Some(1.10),
+            }],
+            vec![LlmFactScore {
+                target: Some("018f1234-5678-7abc-9def-0123456789ab".into()),
+                multiplier: None,
+            }],
+            vec![LlmFactScore {
+                target: None,
+                multiplier: Some(1.10),
+            }],
+            vec![LlmFactScore {
+                target: Some("018f1234-5678-7abc-9def-0123456789ab".into()),
+                multiplier: Some(f32::NAN),
+            }],
+            Vec::new(),
+        ] {
+            let out = reranked_hits(&hits, &scores);
+            assert_eq!(out[0].text, hits[0].text, "{scores:?}");
+            assert!((score_of(&out, "018f1234-5678-7abc-9def-0123456789ab") - 0.47).abs() < 1e-6);
+        }
+    }
+
+    /// A fact the classifier declined to judge keeps its place. Half an
+    /// opinion must not shuffle the half it had no opinion about.
+    #[test]
+    fn a_fact_left_unjudged_keeps_its_place() {
+        let scores = vec![LlmFactScore {
+            target: Some("018f1234-5678-7abc-9def-0123456789ac".into()),
+            multiplier: Some(1.02),
+        }];
+        let out = reranked_hits(&scored_pair(), &scores);
+        assert_eq!(
+            out[0].text, "alice was born on 12 march",
+            "0.47 > 0.45 * 1.02: {out:?}"
+        );
+        assert!((score_of(&out, "018f1234-5678-7abc-9def-0123456789ab") - 0.47).abs() < 1e-6);
     }
 
     #[test]
