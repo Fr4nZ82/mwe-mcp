@@ -808,6 +808,14 @@ async fn cmd_rem_run_cycle(workdir: &Path, config: &Config) -> Result<()> {
         report.cycle.auto_promote.applied.len(),
     );
     println!(
+        "accorpamento   : judged={} merged={}",
+        report.cycle.topic_merge.examined,
+        report.cycle.topic_merge.merged.len(),
+    );
+    for (loser, winner, moved) in &report.cycle.topic_merge.merged {
+        println!("                 {loser} -> {winner} ({moved} facts)");
+    }
+    println!(
         "archive        : paths={} proposals={}",
         report.cycle.archive_detector.paths_examined,
         report.cycle.archive_detector.proposals_emitted.len(),

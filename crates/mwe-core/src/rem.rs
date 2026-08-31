@@ -173,6 +173,12 @@ pub struct RemPolicy {
     /// structural signals only nominate, the LLM decides. `0` disables
     /// the sub-job.
     pub page_merge_cap: usize,
+    /// Pairs of near-duplicate topic words the night may put to the model.
+    ///
+    /// Counts the pairs that reach a JUDGEMENT, not the pairs the vector
+    /// proposes: the vocabulary offers many and the night buys a few, richest
+    /// first. Zero switches the sweep off.
+    pub topic_merge_cap: usize,
     /// Maximum number of page moves the structural review applies per cycle.
     ///
     /// A **resource** cap on a costly, visible act, not a semantic gate: the
@@ -320,6 +326,7 @@ impl Default for RemPolicy {
             auto_promote_min_page_facts_technical: 32,
             auto_promote_group_min_pages: 9,
             page_merge_cap: 3,
+            topic_merge_cap: 4,
             structure_review_cap: 3,
             completion_sweep_cap: 8,
             refile_sweep_cap: 5,
@@ -372,6 +379,10 @@ pub struct RemCycleReport {
     /// Page-merge sub-job report — LLM-confirmed consolidation of
     /// near-synonym concept pages (act-first, with a receipt).
     pub page_merge: PageMergeReport,
+    /// Topic-word merge report — near-duplicate words the night folded into
+    /// one, so a word counts for what it means rather than for how it was
+    /// spelt that day.
+    pub topic_merge: crate::topic_rank::TopicMergeReport,
     /// What the structural review moved — the one pass that looks at the
     /// whole forest, and the only one that can move a page between wikis.
     pub structure_review: StructureReviewReport,
@@ -990,6 +1001,23 @@ pub async fn run_cycle(
         now,
     )
     .await?;
+    // Word merging rides the same slot and the same act-first discipline as
+    // the page merge above, and runs beside it for the same reason: both fold
+    // two near-synonyms into one, one over pages and one over the words that
+    // say what a fact is about. It touches no page and needs no compile —
+    // topic words live in `fact_index` alone.
+    let topic_merge = crate::topic_rank::merge_near_duplicates(
+        pool,
+        &embedder,
+        llms.revisor,
+        policy.topic_merge_cap,
+    )
+    .await
+    .unwrap_or_else(|e| crate::topic_rank::TopicMergeReport {
+        errors: vec![format!("topic merge: {e}")],
+        ..Default::default()
+    });
+
     // The forest review runs AFTER the passes that reshape a wiki's own
     // subtree and BEFORE the ones that move single facts: it should judge the
     // structure the night has already tidied, and a fact that is about to
@@ -1098,6 +1126,8 @@ pub async fn run_cycle(
         promote_proposals = auto_promote.applied.len(),
         merge_candidates = page_merge.candidates_examined,
         merges_applied = page_merge.applied.len(),
+        topic_pairs_judged = topic_merge.examined,
+        topic_words_merged = topic_merge.merged.len(),
         completion_evidence = completion_sweep.evidence_examined,
         completions_closed = completion_sweep.closed.len(),
         refile_bridge_seeded = refile_sweep.bridge_candidates,
@@ -1139,6 +1169,7 @@ pub async fn run_cycle(
         revisor,
         auto_promote,
         page_merge,
+        topic_merge,
         structure_review,
         completion_sweep,
         refile_sweep,

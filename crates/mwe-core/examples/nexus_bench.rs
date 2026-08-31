@@ -659,7 +659,7 @@ async fn cmd_candidates(o: &HashMap<String, String>) -> Result<(), String> {
     }
     let out = PathBuf::from(opt(o, "out")?);
 
-    // Without labels the two topic roads simply find nothing, and the run
+    // Without labels the two label-driven candidate roads find nothing, and the run
     // measures the other four. That is a different experiment, not a
     // broken one, so it is allowed — and it is said out loud.
     let labels: HashMap<String, Label> = match o.get("topics") {
@@ -668,7 +668,7 @@ async fn cmd_candidates(o: &HashMap<String, String>) -> Result<(), String> {
             .map(|l| (l.fact.clone(), l))
             .collect(),
         None => {
-            eprintln!("no --topics: the macrotopic and topic roads are OFF");
+            eprintln!("no --topics: the macrotopic and microtopic roads are OFF");
             HashMap::new()
         },
     };

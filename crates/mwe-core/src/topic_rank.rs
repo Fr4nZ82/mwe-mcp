@@ -28,10 +28,14 @@
 //! macrotopic non "contiene" microtopics raggruppati»*). So this module ranks
 //! **words**, not levels: it reads both slots of every fact into one count.
 
+use std::sync::Arc;
+
 use sqlx::Row;
 use sqlx::SqlitePool;
 
+use crate::embedder::Embedder;
 use crate::fact_index::Result;
+use crate::llm::{CompletionRequest, LlmBackend};
 
 /// How many words are macrotopics at any moment.
 ///
@@ -174,9 +178,224 @@ pub async fn recent_reuse(pool: &SqlitePool, sample: usize) -> Result<Option<f32
     Ok(Some(ratio))
 }
 
+// ---------------------------------------------------------------------------
+// accorpare — two words that mean the same thing become one
+// ---------------------------------------------------------------------------
+
+/// How near two words must sit before the model is asked whether they are the
+/// same thing.
+///
+/// Measured on a real vocabulary of 671 words: the variants that need merging
+/// sit at 0.75–0.82 (`pressione` / `pressione arteriosa` 0.80, `renale` /
+/// `funzione renale` 0.80, `finanziamento` / `finanziamento auto` 0.82), and
+/// words of the same subject that must NOT merge sit around 0.55–0.65
+/// (`nutrizione` / `idratazione` 0.65, `pressione` / `peso` 0.65). The gap is
+/// wide, and the threshold sits inside it rather than at either edge — this
+/// only decides who gets ASKED, and asking costs one line of a prompt.
+pub const MERGE_THRESHOLD: f32 = 0.72;
+
+/// What one night's merging did.
+#[derive(Debug, Clone, Default)]
+pub struct TopicMergeReport {
+    /// Pairs that reached the model.
+    pub examined: usize,
+    /// `(loser, winner, facts moved)` for every pair the model confirmed.
+    pub merged: Vec<(String, String, usize)>,
+    /// Failures that did not stop the sweep.
+    pub errors: Vec<String>,
+}
+
+const MERGE_SYSTEM: &str =
+    "You are shown two words used to tag facts in one household's memory, with how
+many facts carry each. Say whether they NAME THE SAME THING.
+
+Yes only when one is a spelling, an inflection or a wordier form of the other,
+so that a reader would never choose between them on purpose: `pressione` and
+`pressione arteriosa`, `finanziamento` and `finanziamento auto`, `nutrizione`
+and `alimentazione`.
+
+No when they are two different things that happen to live in the same subject.
+`nutrizione` and `idratazione` are both about food and drink and are NOT the
+same word. `prezzo` and `garanzia` are both about buying a car. Merging those
+loses the distinction the narrower word exists to make, and nothing gives it
+back.
+
+When you are unsure, answer no. A duplicate left standing costs one wasted
+word; a wrong merge costs a distinction, silently, forever.
+
+Answer with JSON and nothing else: {\"same\": true|false}";
+
+/// Merges the vocabulary's near-duplicates: the vector proposes the pairs,
+/// the model decides, and the loser's facts are rewritten to the winner.
+///
+/// **The winner is the better-attested word, never the shorter or the
+/// prettier one.** A merge exists to make a word count for more, so the facts
+/// move to whichever of the two already carries more of them; a tie goes
+/// alphabetically, so two runs of the same night agree.
+///
+/// Prevention would be better than repair — a labeller shown the words already
+/// near the fact would not coin the duplicate at all — but prevention needs a
+/// vector lookup on the path of every turn, and this needs none: it runs once
+/// a night, on words, and touches no turn.
+pub async fn merge_near_duplicates(
+    pool: &SqlitePool,
+    embedder: &Arc<dyn Embedder>,
+    llm: &dyn LlmBackend,
+    cap: usize,
+) -> Result<TopicMergeReport> {
+    let mut report = TopicMergeReport::default();
+    if cap == 0 {
+        return Ok(report);
+    }
+    let words = count_words(pool).await?;
+    if words.len() < 2 {
+        return Ok(report);
+    }
+
+    let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(words.len());
+    for w in &words {
+        match embedder.embed(&w.word).await {
+            Ok(v) => vectors.push(v),
+            Err(e) => {
+                report
+                    .errors
+                    .push(format!("merge: cannot embed `{}`: {e}", w.word));
+                return Ok(report);
+            },
+        }
+    }
+
+    // Every pair above the threshold, richest first: the pair that would move
+    // the most facts is the one worth the night's first call.
+    let mut pairs: Vec<(usize, usize, f32)> = Vec::new();
+    for i in 0..words.len() {
+        for j in (i + 1)..words.len() {
+            let near = crate::recall::cosine_similarity(&vectors[i], &vectors[j]);
+            if near >= MERGE_THRESHOLD {
+                pairs.push((i, j, near));
+            }
+        }
+    }
+    pairs.sort_by_key(|(i, j, _)| std::cmp::Reverse(words[*i].facts.min(words[*j].facts)));
+
+    // A word already merged away this night must not be argued about again:
+    // its facts have moved and its count is stale.
+    let mut settled: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (i, j, near) in pairs {
+        if report.examined >= cap {
+            break;
+        }
+        let (a, b) = (&words[i], &words[j]);
+        if settled.contains(&a.word) || settled.contains(&b.word) {
+            continue;
+        }
+        let (winner, loser) = if (b.facts, &a.word) > (a.facts, &b.word) {
+            (b, a)
+        } else {
+            (a, b)
+        };
+        report.examined += 1;
+        let prompt = format!(
+            "WORD A: `{}` — {} facts\nWORD B: `{}` — {} facts\n",
+            winner.word, winner.facts, loser.word, loser.facts
+        );
+        let request = CompletionRequest {
+            prompt,
+            system: Some(MERGE_SYSTEM.to_string()),
+            max_tokens: Some(60),
+            temperature: Some(0.0),
+            stop: Vec::new(),
+            images: Vec::new(),
+            truncation_expected: false,
+            cache_system: true,
+        };
+        let same = match llm.complete(request).await {
+            Ok(r) => first_bool(&r.text, "same").unwrap_or(false),
+            Err(e) => {
+                report
+                    .errors
+                    .push(format!("merge: `{}`/`{}`: {e}", winner.word, loser.word));
+                continue;
+            },
+        };
+        if !same {
+            continue;
+        }
+        match rewrite_word(pool, &loser.word, &winner.word).await {
+            Ok(moved) => {
+                settled.insert(loser.word.clone());
+                tracing::info!(
+                    loser = loser.word,
+                    winner = winner.word,
+                    moved,
+                    near,
+                    "rem: topic words merged"
+                );
+                report
+                    .merged
+                    .push((loser.word.clone(), winner.word.clone(), moved));
+            },
+            Err(e) => report
+                .errors
+                .push(format!("merge: rewrite `{}`: {e}", loser.word)),
+        }
+    }
+    Ok(report)
+}
+
+/// Reads a `{"same": …}` reply, tolerant of fences and prose around it.
+fn first_bool(raw: &str, key: &str) -> Option<bool> {
+    let start = raw.find('{')?;
+    let end = raw[start..].find('}')? + start;
+    serde_json::from_str::<serde_json::Value>(&raw[start..=end])
+        .ok()?
+        .get(key)?
+        .as_bool()
+}
+
+/// Rewrites `loser` to `winner` on every live fact carrying it, returning how
+/// many facts moved.
+///
+/// A fact already carrying both collapses to one word, and that is correct
+/// rather than a loss: the pair said the same thing twice, which is exactly
+/// what the merge decided.
+async fn rewrite_word(pool: &SqlitePool, loser: &str, winner: &str) -> Result<usize> {
+    let rows = sqlx::query(
+        "SELECT fact_id, topics FROM fact_index
+          WHERE deleted_at IS NULL AND superseded_at IS NULL
+            AND EXISTS (SELECT 1 FROM json_each(fact_index.topics) WHERE json_each.value = ?)",
+    )
+    .bind(loser)
+    .fetch_all(pool)
+    .await?;
+
+    let mut moved = 0usize;
+    for row in &rows {
+        let id: String = row.get("fact_id");
+        let current: Vec<String> =
+            serde_json::from_str(&row.get::<String, _>("topics")).unwrap_or_default();
+        let mut next: Vec<String> = Vec::with_capacity(current.len());
+        for w in current {
+            let w = if w == loser { winner.to_owned() } else { w };
+            if !next.contains(&w) {
+                next.push(w);
+            }
+        }
+        sqlx::query("UPDATE fact_index SET topics = ? WHERE fact_id = ?")
+            .bind(serde_json::to_string(&next).unwrap_or_else(|_| "[]".to_owned()))
+            .bind(&id)
+            .execute(pool)
+            .await?;
+        moved += 1;
+    }
+    Ok(moved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embedder::FakeEmbedder;
+    use crate::llm::FakeLlmBackend;
     use sqlx::sqlite::SqlitePoolOptions;
 
     async fn make_pool() -> SqlitePool {
@@ -326,5 +545,106 @@ mod tests {
         let pool = make_pool().await;
         fact(&pool, "01", &["a", "b"]).await;
         assert_eq!(recent_reuse(&pool, 10).await.unwrap(), None);
+    }
+
+    // ---------- accorpare ----------
+
+    /// A word the embedder puts on top of another, and the model confirms:
+    /// the facts move to the better-attested one, and nothing else changes.
+    #[tokio::test]
+    async fn a_confirmed_pair_moves_its_facts_to_the_better_attested_word() {
+        let pool = make_pool().await;
+        // Two words in the whole vocabulary, so exactly one pair exists and
+        // the model's answer is the only thing that can decide it.
+        for i in 1..=3 {
+            fact(&pool, &format!("{i:02}"), &["pressione"]).await;
+        }
+        fact(&pool, "04", &["pressione arteriosa"]).await;
+
+        // A fixed embedding puts EVERY pair above the threshold, so the model
+        // is the only thing deciding — which is the contract under test.
+        let embedder: Arc<dyn Embedder> =
+            Arc::new(FakeEmbedder::with_fixed_embedding("fake", vec![1.0, 0.0]));
+        let llm = FakeLlmBackend::new("fake", r#"{"same": true}"#);
+        let report = merge_near_duplicates(&pool, &embedder, &llm, 1)
+            .await
+            .unwrap();
+
+        assert_eq!(report.examined, 1);
+        assert_eq!(report.merged.len(), 1, "{report:?}");
+        let (loser, winner, moved) = &report.merged[0];
+        assert_eq!(winner, "pressione", "three facts beat one");
+        assert_eq!(loser, "pressione arteriosa");
+        assert_eq!(*moved, 1);
+
+        let counts = count_words(&pool).await.unwrap();
+        assert!(
+            counts.iter().all(|w| w.word != "pressione arteriosa"),
+            "{counts:?}"
+        );
+        assert_eq!(
+            counts.iter().find(|w| w.word == "pressione").unwrap().facts,
+            4,
+            "the merged fact now carries the winner: {counts:?}"
+        );
+    }
+
+    /// The model's refusal is the end of it. A near pair that means two
+    /// different things keeps both words, and the vector's opinion does not
+    /// override that — the distinction the narrower word makes is exactly what
+    /// a wrong merge destroys, silently and for good.
+    #[tokio::test]
+    async fn a_refused_pair_keeps_both_words() {
+        let pool = make_pool().await;
+        fact(&pool, "01", &["nutrizione", "porzioni"]).await;
+        fact(&pool, "02", &["idratazione", "acqua"]).await;
+        let embedder: Arc<dyn Embedder> =
+            Arc::new(FakeEmbedder::with_fixed_embedding("fake", vec![1.0, 0.0]));
+        let llm = FakeLlmBackend::new("fake", r#"{"same": false}"#);
+        let report = merge_near_duplicates(&pool, &embedder, &llm, 4)
+            .await
+            .unwrap();
+
+        assert!(report.examined > 0, "pairs were offered: {report:?}");
+        assert!(report.merged.is_empty(), "{report:?}");
+        let counts = count_words(&pool).await.unwrap();
+        assert!(counts.iter().any(|w| w.word == "nutrizione"));
+        assert!(counts.iter().any(|w| w.word == "idratazione"));
+    }
+
+    /// The cap counts pairs that reach the MODEL, so one night cannot spend
+    /// the whole vocabulary's worth of calls.
+    #[tokio::test]
+    async fn the_cap_bounds_the_calls_not_the_pairs_considered() {
+        let pool = make_pool().await;
+        for i in 1..=6 {
+            fact(
+                &pool,
+                &format!("{i:02}"),
+                &[&format!("w{i}"), &format!("n{i}")],
+            )
+            .await;
+        }
+        let embedder: Arc<dyn Embedder> =
+            Arc::new(FakeEmbedder::with_fixed_embedding("fake", vec![1.0, 0.0]));
+        let llm = FakeLlmBackend::new("fake", r#"{"same": false}"#);
+        let report = merge_near_duplicates(&pool, &embedder, &llm, 2)
+            .await
+            .unwrap();
+        assert_eq!(report.examined, 2, "{report:?}");
+    }
+
+    /// Nothing to merge is not an error, and costs no call.
+    #[tokio::test]
+    async fn a_vocabulary_of_one_word_is_left_alone() {
+        let pool = make_pool().await;
+        fact(&pool, "01", &["salute"]).await;
+        let embedder: Arc<dyn Embedder> = Arc::new(FakeEmbedder::new("fake", 4));
+        let llm = FakeLlmBackend::new("fake", r#"{"same": true}"#);
+        let report = merge_near_duplicates(&pool, &embedder, &llm, 4)
+            .await
+            .unwrap();
+        assert_eq!(report.examined, 0);
+        assert!(report.merged.is_empty());
     }
 }
