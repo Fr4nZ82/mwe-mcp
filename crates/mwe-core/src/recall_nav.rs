@@ -487,10 +487,13 @@ pub struct Served<'a> {
     /// `(wiki_id, page)` — entered as already visited: never offered as a
     /// candidate, never opened, never charged to the budget.
     pub pages: &'a [(String, PathBuf)],
-    /// `(wiki_id, projected markdown)` of the identity cards among them — the
-    /// one thing rescued from a served page, its `[[wikilinks]]`. A served
-    /// page never reaches [`open_target`], which is the only place a rail is
-    /// harvested, so without this its links reach the funnel by no route.
+    /// `(wiki_id, projected markdown)` of the identity cards among them, and
+    /// both halves are used. The **links** feed the funnel — a served page
+    /// never reaches [`open_target`], the only place a rail is harvested, so
+    /// without this they arrive by no route. The **prose** goes into the
+    /// navigator's own prompt ([`build_user_prompt`]): it is where a family
+    /// word gets a name, and the navigator has nothing else to resolve one
+    /// with.
     pub cards: &'a [(String, String)],
 }
 
@@ -931,6 +934,7 @@ pub async fn navigate(
         let user = build_user_prompt(
             turn_text,
             sender,
+            served.cards,
             &candidates,
             &outcome.fragments,
             outcome.hops,
@@ -1784,6 +1788,7 @@ async fn fill_summaries(
 fn build_user_prompt(
     turn_text: &str,
     sender: &SenderContext,
+    cards: &[(String, String)],
     pool: &[Candidate],
     fragments: &[NavigatedFragment],
     hops_spent: usize,
@@ -1794,6 +1799,21 @@ fn build_user_prompt(
     let mut out = String::new();
     let _ = writeln!(out, "TURN (from sender `{}`):", sender.sender_id);
     out.push_str(turn_text.trim());
+    // The identity cards the consumer was already handed, in full. Costs
+    // nothing new — [`Served::cards`] carries the projected markdown for the
+    // rails, and until now the prose around those rails was dropped on the
+    // floor. Without it the navigator reads «da noi» or «papà» and has no
+    // way to learn who that is: it knows the sender's id and not one fact
+    // about them, so a turn whose subject is named only by a family word
+    // sends it hunting on the words alone.
+    if !cards.is_empty() {
+        out.push_str("\n\nWHO THIS TURN IS ABOUT — cards the reader already has:\n");
+        for (wiki_id, markdown) in cards {
+            let _ = writeln!(out, "=== {wiki_id} ===");
+            out.push_str(markdown.trim());
+            out.push('\n');
+        }
+    }
     let _ = writeln!(
         out,
         "\n\nBUDGET: hop {} of {max_hops}; ~{chars_remaining} characters of prose still collectable.",
@@ -2424,6 +2444,51 @@ mod tests {
             None
         );
         assert_eq!(page_within(Path::new("wikis/alice"), "wikis/alice/"), None);
+    }
+
+    // ---------- build_user_prompt ----------
+
+    /// The cards the consumer was handed reach the navigator's own prompt.
+    ///
+    /// Without them it reads a family word — «da noi», «papà» — and has the
+    /// sender's id and not one fact about them, so the only person it can
+    /// resolve is nobody. The prose costs nothing new: [`Served::cards`]
+    /// already carries it for the rails.
+    #[test]
+    fn the_prompt_carries_the_cards_the_consumer_was_handed() {
+        let cards = vec![(
+            "alice".to_owned(),
+            "# Alice\n\nVive con bob in viale delle betulle.".to_owned(),
+        )];
+        let prompt = build_user_prompt(
+            "da noi la pasta si fa con due pentole",
+            &SenderContext::user("alice"),
+            &cards,
+            &[cand("alice", "cucina.md", "rag")],
+            &[],
+            0,
+            2,
+            8_000,
+        );
+        assert!(prompt.contains("WHO THIS TURN IS ABOUT"), "{prompt}");
+        assert!(prompt.contains("viale delle betulle"), "{prompt}");
+    }
+
+    /// A turn that named nobody gets no block at all — an empty heading would
+    /// read as "nobody exists", which is a different claim.
+    #[test]
+    fn the_prompt_omits_the_block_when_no_card_was_served() {
+        let prompt = build_user_prompt(
+            "che tempo fa",
+            &SenderContext::user("alice"),
+            &[],
+            &[cand("alice", "cucina.md", "rag")],
+            &[],
+            0,
+            2,
+            8_000,
+        );
+        assert!(!prompt.contains("WHO THIS TURN IS ABOUT"), "{prompt}");
     }
 
     // ---------- prune_pool ----------

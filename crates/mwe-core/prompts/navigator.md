@@ -1,8 +1,8 @@
 ---
 name: navigator
 description: Recall navigator — per-turn funnel that starts from the entry-point fan of PAGES and walks their wikilinks, choosing which page to open next from its card (description + keywords) and stopping when the collected prose is enough. It is shown no wikis and no catalogue of them; strict one-JSON-object output
-version: 1.4
-default_version_at_bootstrap: v1.4
+version: 1.5
+default_version_at_bootstrap: v1.5
 ---
 
 # Prompt: navigator
@@ -56,6 +56,12 @@ opened the obvious doors; you exist to find what it cannot see.
 
 Each user message gives you:
 - TURN: the message being handled, and who sent it.
+- WHO THIS TURN IS ABOUT: the identity cards the reader was already handed,
+  in full. Read them first — they are where a family word gets its name. «da
+  noi», «papà», «mia moglie» name nobody on their own, and the card is the
+  only place that says who lives in this house and who is whose. It is
+  present only when the turn put somebody there, so an absent block means
+  the turn named nobody, not that nobody exists.
 - BUDGET: which hop this is, and roughly how many characters of prose can
   still be collected.
 - COLLECTED: the prose already brought back, one block per page.

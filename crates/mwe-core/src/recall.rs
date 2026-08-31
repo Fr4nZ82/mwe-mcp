@@ -258,10 +258,25 @@ pub const SUBJECT_COVERAGE_UPLIFT: f32 = 0.15;
 /// forms that place the speaker IN the question are listed. Admitting them
 /// would invite the asker's unrelated facts into questions about somebody
 /// else, which is the failure this whole signal exists to avoid.
+///
+/// **The plural is here for the same reason the singular is**: «da noi la
+/// pasta si fa con due pentole» is a question the speaker stands inside, and
+/// without these forms it names nobody at all — no identity card is served
+/// and no subject earns the coverage uplift. What the plural does NOT do is
+/// name the *other* people it covers: `noi` is a household, not a roster
+/// entry, and nothing here can resolve it to one. That resolution is the
+/// navigator's, and it needs the speaker's card to make it
+/// ([`crate::recall_nav`]).
+///
+/// Italian `ci` is absent for the clitic reason above — «**ci** vuole un'ora»
+/// is not first person at all — and English `us` for a different one: it
+/// lowercases the same as `US`, and a turn about a country would arm the
+/// speaker's own facts.
 const FIRST_PERSON: &[&str] = &[
-    // Italian: subject pronoun, tonic object, possessives.
-    "io", "me", "mio", "mia", "miei", "mie", // English.
-    "my", "mine", "myself",
+    // Italian: subject pronouns, tonic object, possessives.
+    "io", "me", "mio", "mia", "miei", "mie", "noi", "nostro", "nostra", "nostri", "nostre",
+    // English.
+    "my", "mine", "myself", "we", "our", "ours",
 ];
 
 /// The one first-person form that must be matched **with its case**.
@@ -3027,12 +3042,42 @@ mod tests {
         );
     }
 
+    /// A turn the speaker stands inside without naming themself. Before the
+    /// plural was listed this returned nothing at all: no card served, no
+    /// coverage uplift, and a navigator left to guess who «noi» is.
+    #[test]
+    fn turn_subjects_puts_the_speaker_in_when_the_first_person_is_plural() {
+        assert_eq!(
+            turn_subjects("da noi la pasta si fa con due pentole", "alice", &roster()),
+            vec!["alice"]
+        );
+        assert_eq!(
+            turn_subjects("our car needs the tyres done", "alice", &roster()),
+            vec!["alice"]
+        );
+    }
+
+    /// The plural names a household, never a roster entry: nothing here can
+    /// say WHO ELSE «noi» covers, and pretending otherwise would put a second
+    /// person's facts into a turn that never named them.
+    #[test]
+    fn the_plural_names_the_speaker_and_nobody_else() {
+        assert_eq!(
+            turn_subjects("noi mangiamo alle otto", "alice", &roster()),
+            vec!["alice"]
+        );
+    }
+
     /// The exclusion that keeps this signal honest: an unstressed clitic
     /// makes the speaker the ADDRESSEE, not a subject, so their unrelated
     /// facts must not be invited into a question about somebody else.
     #[test]
     fn turn_subjects_leaves_the_speaker_out_when_they_are_only_addressed() {
         let s = turn_subjects("mi ricordi che macchina ha bob?", "alice", &roster());
+        assert_eq!(s, vec!["bob"], "{s:?}");
+        // `ci` is the plural of the same trap, and «ci vuole» is not first
+        // person at all.
+        let s = turn_subjects("ci vuole un'ora per arrivare da bob", "alice", &roster());
         assert_eq!(s, vec!["bob"], "{s:?}");
     }
 
