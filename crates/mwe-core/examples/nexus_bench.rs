@@ -20,6 +20,8 @@
 //! judge       re-read every proposed nexus adversarially, one call each
 //! nodes       write a relation sentence over each cluster of nexuses
 //! ask         answer a query flat over facts, then over facts + nodes + walk
+//! eval        score a gold set: coverage flat, and flat plus the macrotopic hop
+//! vocab       does the vocabulary of topic words separate synonyms by vector?
 //! ```
 //!
 //!
@@ -190,8 +192,11 @@ struct Label {
     fact: String,
     #[serde(default)]
     macrotopic: String,
+    /// The fine grain. `topic` is accepted on the wire so a label file
+    /// written before the name settled still loads.
     #[serde(default)]
-    topic: String,
+    #[serde(alias = "topic")]
+    microtopic: String,
 }
 
 /// A fact and the facts a model will be asked about it.
@@ -280,12 +285,15 @@ async fn run() -> Result<(), String> {
         "judge" => cmd_judge(&opts).await,
         "nodes" => cmd_nodes(&opts).await,
         "ask" => cmd_ask(&opts).await,
+        "eval" => cmd_eval(&opts).await,
+        "vocab" => cmd_vocab(&opts).await,
         other => Err(format!("unknown subcommand `{other}`\n\n{}", usage())),
     }
 }
 
 fn usage() -> String {
-    "usage: nexus_bench <topics|candidates|weave|judge|nodes|ask> [--k v ...]".to_string()
+    "usage: nexus_bench <topics|candidates|weave|judge|nodes|ask|eval|vocab> [--k v ...]"
+        .to_string()
 }
 
 /// `--key value` pairs, the only shape this harness needs.
@@ -554,7 +562,7 @@ async fn cmd_topics(o: &HashMap<String, String>) -> Result<(), String> {
                         .unwrap_or_default()
                         .trim()
                         .to_lowercase(),
-                    topic: item
+                    microtopic: item
                         .get("topic")
                         .and_then(Value::as_str)
                         .unwrap_or_default()
@@ -574,8 +582,8 @@ async fn cmd_topics(o: &HashMap<String, String>) -> Result<(), String> {
     let mut fine: HashSet<&str> = HashSet::new();
     for l in &labels {
         *per_macro.entry(l.macrotopic.clone()).or_default() += 1;
-        if !l.topic.is_empty() {
-            fine.insert(l.topic.as_str());
+        if !l.microtopic.is_empty() {
+            fine.insert(l.microtopic.as_str());
         }
     }
     println!("labelled     : {} of {} facts", labels.len(), facts.len());
@@ -703,11 +711,11 @@ async fn cmd_candidates(o: &HashMap<String, String>) -> Result<(), String> {
             let theirs = label_of(&f.id);
             !mine.macrotopic.is_empty()
                 && theirs.macrotopic == mine.macrotopic
-                && theirs.topic != mine.topic
+                && theirs.microtopic != mine.microtopic
         });
         let n_top = fill(&facts, &scored, "topic", QUOTA_TOPIC, &mut taken, |f| {
             let theirs = label_of(&f.id);
-            !mine.topic.is_empty() && theirs.topic == mine.topic
+            !mine.microtopic.is_empty() && theirs.microtopic == mine.microtopic
         });
 
         // The chance road, drawn from the tail the four signals never reach.
@@ -1503,6 +1511,321 @@ async fn cmd_ask(o: &HashMap<String, String>) -> Result<(), String> {
             ""
         };
         println!("  {s:.3} {how:<5} #{flat_rank:<4} {}{mark}", short(&f.text));
+    }
+    Ok(())
+}
+
+/// Facts the flat pass keeps, matching the engine's own flat slot
+/// (`IngestPolicy::recall_top_k`), so the two columns are read at the depth
+/// the product actually serves.
+const EVAL_FLAT_DEPTH: usize = 10;
+
+/// Extra facts the macrotopic hop may add on top of the flat pass. Same
+/// order of magnitude as the flat slot: a road that had to double the block
+/// to find anything would be paying for its hits with the reader's attention.
+const EVAL_HOP_DEPTH: usize = 10;
+
+/// Overridden by `--hop`, so the same run can ask what the road costs at half
+/// the budget without a rebuild.
+
+/// Flat hits whose labels seed the hop. Only what a reader would actually
+/// have looked at can say what the turn is ABOUT.
+const EVAL_SEED_HITS: usize = 3;
+
+/// One gold entry, in the shape `recall eval` already reads so the same file
+/// scores both engines.
+#[derive(Deserialize)]
+struct GoldQuery {
+    #[serde(default)]
+    id: Option<String>,
+    query: String,
+    expect: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct GoldSet {
+    queries: Vec<GoldQuery>,
+}
+
+/// Scores a gold set two ways and prints the difference.
+///
+/// **The question is not whether the macrotopic finds something — it is
+/// whether it finds what the vector could not.** So the hop is scored as an
+/// ADDITION to the flat pass, never as a replacement: the flat block is kept
+/// whole and the road is charged only with what it adds beyond it.
+///
+/// The hop is the only shape available at query time. A question has no
+/// macrotopic of its own — nobody labelled it — so the road reads the labels
+/// off the facts the vector already found, and pulls in their neighbours that
+/// share a macrotopic and differ in microtopic. That last clause is the road:
+/// same area, different thing inside it, which is exactly the pair the vector
+/// puts on top of each other and cannot separate.
+async fn cmd_eval(o: &HashMap<String, String>) -> Result<(), String> {
+    let db = PathBuf::from(opt(o, "db")?);
+    let facts = load_facts(&db, o.get("before").map(String::as_str)).await?;
+    let labels: HashMap<String, Label> = read_jsonl::<Label>(Path::new(opt(o, "topics")?))?
+        .into_iter()
+        .map(|l| (l.fact.clone(), l))
+        .collect();
+    let gold: GoldSet = serde_yaml::from_str(
+        &fs::read_to_string(opt(o, "gold")?).map_err(|e| format!("cannot read the gold: {e}"))?,
+    )
+    .map_err(|e| format!("cannot parse the gold: {e}"))?;
+
+    let embedder = load_embedder(o)?;
+    // The control the road has to beat. The hop adds facts, so some of what
+    // it finds would have arrived from depth alone — and a road that buys
+    // only what a bigger `top_k` buys is a knob, not a road.
+    let hop_depth = o
+        .get("hop")
+        .and_then(|h| h.parse().ok())
+        .unwrap_or(EVAL_HOP_DEPTH);
+    let deep_depth = EVAL_FLAT_DEPTH + hop_depth;
+    let (mut flat_hit, mut hop_hit, mut deep_hit, mut total) = (0usize, 0usize, 0usize, 0usize);
+
+    for q in &gold.queries {
+        let qv = embedder
+            .embed(&q.query)
+            .await
+            .map_err(|e| format!("cannot embed a query: {e}"))?;
+        let mut ranked: Vec<(&Fact, f32)> = facts
+            .iter()
+            .map(|f| (f, cosine_similarity(&qv, &f.vector)))
+            .collect();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+        let flat: Vec<&Fact> = ranked
+            .iter()
+            .take(EVAL_FLAT_DEPTH)
+            .map(|(f, _)| *f)
+            .collect();
+        let seeds: HashSet<String> = flat
+            .iter()
+            .take(EVAL_SEED_HITS)
+            .filter_map(|f| labels.get(&f.id))
+            .map(|l| l.macrotopic.clone())
+            .filter(|m| !m.is_empty())
+            .collect();
+        let seen: HashSet<&str> = flat.iter().map(|f| f.id.as_str()).collect();
+        // Microtopics the block already speaks for. The road exists to bring
+        // back what the block does NOT already say, so a fact repeating one of
+        // these is not a gain however near it sits.
+        let mut spoken: HashSet<String> = flat
+            .iter()
+            .filter_map(|f| labels.get(&f.id))
+            .map(|l| l.microtopic.clone())
+            .collect();
+        // **One fact per microtopic, and never a microtopic twice.** Taking
+        // the ten NEAREST of the area would reproduce the exact failure this
+        // road exists to fix: four sentences of the shape "X takes Y at hour
+        // Z" sit on top of each other in vector space, so the nearest of them
+        // is also the least informative — the block already holds its twin.
+        // Cosine order survives only as a tie-break WITHIN a microtopic: of
+        // two facts saying different things, the nearer one represents its own
+        // better.
+        let hop: Vec<&Fact> = ranked
+            .iter()
+            .map(|(f, _)| *f)
+            .filter(|f| !seen.contains(f.id.as_str()))
+            .filter(|f| {
+                labels.get(&f.id).is_some_and(|l| {
+                    seeds.contains(&l.macrotopic)
+                        && !l.microtopic.is_empty()
+                        && spoken.insert(l.microtopic.clone())
+                })
+            })
+            .take(hop_depth)
+            .collect();
+
+        let deep: Vec<&Fact> = ranked.iter().take(deep_depth).map(|(f, _)| *f).collect();
+        let covers = |pool: &[&Fact], needle: &str| {
+            let needle = needle.to_lowercase();
+            pool.iter().any(|f| f.text.to_lowercase().contains(&needle))
+        };
+        let together: Vec<&Fact> = flat.iter().chain(hop.iter()).copied().collect();
+        let (mut f_n, mut h_n, mut d_n) = (0usize, 0usize, 0usize);
+        let mut gained: Vec<&str> = Vec::new();
+        for e in &q.expect {
+            if covers(&flat, e) {
+                f_n += 1;
+            }
+            if covers(&together, e) {
+                h_n += 1;
+                if !covers(&flat, e) {
+                    gained.push(if covers(&deep, e) {
+                        "(anche in profondità)"
+                    } else {
+                        e.as_str()
+                    });
+                }
+            }
+            if covers(&deep, e) {
+                d_n += 1;
+            }
+        }
+        flat_hit += f_n;
+        hop_hit += h_n;
+        deep_hit += d_n;
+        total += q.expect.len();
+        let label = q.id.as_deref().unwrap_or(&q.query);
+        let mark = if gained.is_empty() {
+            String::new()
+        } else {
+            format!("  +{}", gained.join(", "))
+        };
+        println!(
+            "  {label:<34} piatto {f_n}/{n} · piatto profondo {d_n}/{n} · col macrotopic {h_n}/{n} (+{hop}){mark}",
+            n = q.expect.len(),
+            hop = hop.len()
+        );
+    }
+    let pct = |x: usize| 100.0 * x as f32 / total.max(1) as f32;
+    println!(
+        "\ncopertura su {total} attese:\n  piatto ({EVAL_FLAT_DEPTH} fatti)         {:.0}%  ({flat_hit})\n  \
+         piatto profondo ({deep_depth} fatti) {:.0}%  ({deep_hit})   <- il controllo\n  \
+         col macrotopic          {:.0}%  ({hop_hit})",
+        pct(flat_hit),
+        pct(deep_hit),
+        pct(hop_hit)
+    );
+    Ok(())
+}
+
+/// Words offered to a labeller as "these already exist". Twenty short words
+/// is a couple of hundred characters of prompt — the price of not coining a
+/// synonym of something already in the vocabulary.
+const VOCAB_SHORTLIST: usize = 20;
+
+/// Asks whether a vocabulary of topic words can be kept free of duplicates by
+/// showing a labeller the words already near the fact it is about to label.
+///
+/// Two things have to hold and neither is obvious. **A synonym must sit
+/// nearer its twin than an unrelated word of the same area does** — otherwise
+/// a shortlist is noise. And **the word a fact actually deserves must be
+/// reachable from the fact's own vector** — otherwise the shortlist never
+/// contains the right answer and the labeller coins a new word every time,
+/// which is the state this design exists to leave.
+async fn cmd_vocab(o: &HashMap<String, String>) -> Result<(), String> {
+    let db = PathBuf::from(opt(o, "db")?);
+    let facts = load_facts(&db, o.get("before").map(String::as_str)).await?;
+    let labels: HashMap<String, Label> = read_jsonl::<Label>(Path::new(opt(o, "topics")?))?
+        .into_iter()
+        .map(|l| (l.fact.clone(), l))
+        .collect();
+
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for l in labels.values() {
+        for w in [&l.macrotopic, &l.microtopic] {
+            if !w.is_empty() {
+                *counts.entry(w.clone()).or_default() += 1;
+            }
+        }
+    }
+    let words: Vec<String> = counts.keys().cloned().collect();
+    println!("parole distinte nel vocabolario: {}", words.len());
+
+    let embedder = load_embedder(o)?;
+    let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(words.len());
+    for w in &words {
+        vectors.push(
+            embedder
+                .embed(w)
+                .await
+                .map_err(|e| format!("cannot embed `{w}`: {e}"))?,
+        );
+    }
+
+    // 1. Do known synonyms come out on top of each other?
+    println!("\n== i vicini di una parola, per vettore ==");
+    for probe in [
+        "nutrizione",
+        "pressione",
+        "renale",
+        "finanziamento",
+        "integratori",
+    ] {
+        let Some(i) = words.iter().position(|w| w == probe) else {
+            continue;
+        };
+        let mut near: Vec<(&str, f32)> = words
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(j, w)| (w.as_str(), cosine_similarity(&vectors[i], &vectors[j])))
+            .collect();
+        near.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let shown: Vec<String> = near
+            .iter()
+            .take(5)
+            .map(|(w, s)| format!("{w} {s:.2}"))
+            .collect();
+        println!("  {probe:<16} -> {}", shown.join(" · "));
+    }
+
+    // 2. Would the shortlist have contained the word the fact actually got?
+    let mut reachable = 0usize;
+    let mut judged = 0usize;
+    for f in &facts {
+        let Some(l) = labels.get(&f.id) else { continue };
+        if l.microtopic.is_empty() {
+            continue;
+        }
+        judged += 1;
+        let mut near: Vec<(&str, f32)> = words
+            .iter()
+            .enumerate()
+            .map(|(j, w)| (w.as_str(), cosine_similarity(&f.vector, &vectors[j])))
+            .collect();
+        near.sort_by(|a, b| b.1.total_cmp(&a.1));
+        if near
+            .iter()
+            .take(VOCAB_SHORTLIST)
+            .any(|(w, _)| *w == l.microtopic)
+        {
+            reachable += 1;
+        }
+    }
+    println!(
+        "\n== la parola scelta era fra le {VOCAB_SHORTLIST} più vicine al fatto? ==\n  \
+         {reachable} su {judged}  ({:.0}%)   [lista corta calcolata sui VETTORI DELLE PAROLE]",
+        100.0 * reachable as f32 / judged.max(1) as f32
+    );
+
+    // The cheap shortlist: the words already written on the facts recall
+    // found. Nothing new is embedded — the block is already the material
+    // nearest the turn, so the vocabulary on it is the vocabulary near the
+    // turn. Whether that is as good as asking the words themselves is the
+    // difference between a design that works and one that looks like it does.
+    for depth in [10usize, 20] {
+        let mut hit = 0usize;
+        let mut seen = 0usize;
+        for f in &facts {
+            let Some(l) = labels.get(&f.id) else { continue };
+            if l.microtopic.is_empty() {
+                continue;
+            }
+            seen += 1;
+            let mut near: Vec<(&Fact, f32)> = facts
+                .iter()
+                .filter(|g| g.id != f.id)
+                .map(|g| (g, cosine_similarity(&f.vector, &g.vector)))
+                .collect();
+            near.sort_by(|a, b| b.1.total_cmp(&a.1));
+            let offered: HashSet<&str> = near
+                .iter()
+                .take(depth)
+                .filter_map(|(g, _)| labels.get(&g.id))
+                .flat_map(|gl| [gl.macrotopic.as_str(), gl.microtopic.as_str()])
+                .filter(|w| !w.is_empty())
+                .collect();
+            if offered.contains(l.microtopic.as_str()) {
+                hit += 1;
+            }
+        }
+        println!(
+            "  {hit} su {seen}  ({:.0}%)   [lista corta presa dai {depth} FATTI più vicini — gratis]",
+            100.0 * hit as f32 / seen.max(1) as f32
+        );
     }
     Ok(())
 }

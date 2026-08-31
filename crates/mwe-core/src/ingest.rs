@@ -869,6 +869,44 @@ struct LlmFactScore {
     multiplier: Option<f32>,
 }
 
+/// The two words a fact carries about what it is ABOUT: the broad one, then
+/// the narrow one.
+///
+/// Two, because the pair exists to be **counted**: a word groups facts only
+/// when it comes back, and a word coined for one fact and never used again
+/// says nothing about anything. The broad word is what a ranking can promote;
+/// the narrow one is what says this fact is not its neighbour.
+pub const MAX_FACT_TOPICS: usize = 2;
+
+/// Prefixes the ENGINE writes into the same column for its own bookkeeping.
+///
+/// They are not topics and never were: the project signposts needed a way to
+/// find their own rows and reused a column that already existed
+/// (`crate::signposts`). A classifier that could write one would forge a
+/// signpost, and — the reason this list will outlive that one — a ranking
+/// that counted them would rank `signpost-day:2026-07-14`, a fresh word every
+/// day, forever.
+const ENGINE_TOPIC_PREFIXES: &[&str] = &["signpost-", "project-signpost"];
+
+/// Normalises what the classifier wrote into the pair, dropping the rest.
+fn normalize_fact_topics(raw: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(MAX_FACT_TOPICS);
+    for word in raw {
+        let word = word.trim().to_lowercase();
+        if word.is_empty()
+            || ENGINE_TOPIC_PREFIXES.iter().any(|p| word.starts_with(p))
+            || out.contains(&word)
+        {
+            continue;
+        }
+        out.push(word);
+        if out.len() == MAX_FACT_TOPICS {
+            break;
+        }
+    }
+    out
+}
+
 /// One requested validity closure of an existing fact (see
 /// [`LlmIngestPlan::closures`]).
 #[derive(Debug, Clone, Deserialize)]
@@ -1608,7 +1646,7 @@ fn validate_capture_plan(
         allow,
         sender: Some(Principal::User(request.sender_id.clone())),
         fact_type: unit.fact_type.map(str::to_owned),
-        topics: unit.topics.to_vec(),
+        topics: normalize_fact_topics(unit.topics),
         dedup_threshold: Some(policy.dedup_threshold),
         // Thread the per-fact validity interval the classifier deduced
         // through to the capture row, canonicalised: `fact_index` compares
@@ -10595,6 +10633,56 @@ mod tests {
         assert_eq!(page_of("wikis/franz/acmesigns/README.md"), "README.md");
         // Unexpected shapes fall back to the whole path rather than lying.
         assert_eq!(page_of("odd.md"), "odd.md");
+    }
+
+    // ---------- the two words a fact carries ----------
+
+    #[test]
+    fn the_pair_is_two_words_lowercased_and_in_the_order_written() {
+        assert_eq!(
+            normalize_fact_topics(&[
+                "  Salute ".into(),
+                "NAUSEA".into(),
+                "terzo".into(),
+                "quarto".into()
+            ]),
+            vec!["salute", "nausea"],
+            "broad first, narrow second, the rest dropped"
+        );
+    }
+
+    /// Empty, blank and repeated words cost nothing and take no slot: a
+    /// classifier that says the same word twice has said one word.
+    #[test]
+    fn blanks_and_repeats_do_not_take_a_slot() {
+        assert_eq!(
+            normalize_fact_topics(&[
+                String::new(),
+                "  ".into(),
+                "auto".into(),
+                "AUTO".into(),
+                "finanziamento".into()
+            ]),
+            vec!["auto", "finanziamento"]
+        );
+        assert!(normalize_fact_topics(&[]).is_empty());
+    }
+
+    /// The engine writes its own bookkeeping into this column, and the
+    /// classifier must not be able to write it: one of these words forges a
+    /// project signpost, and `signpost-day:` coins a fresh word every day —
+    /// which a ranking over these words would count as a subject.
+    #[test]
+    fn the_engines_own_markers_can_never_be_written_by_the_model() {
+        assert_eq!(
+            normalize_fact_topics(&[
+                "signpost-description".into(),
+                "project-signpost".into(),
+                "signpost-day:2026-07-14".into(),
+                "salute".into(),
+            ]),
+            vec!["salute"]
+        );
     }
 
     // ---------- the classifier's re-score of the recalled facts ----------

@@ -597,9 +597,12 @@ async fn replay(
 /// decision.
 const TURN_FIELDS: &[&str] = &["intent", "needs_disambig", "needs_project_docs"];
 
-/// Per-extraction fields compared verbatim. Prose and free tags (`body`,
-/// `page_description`, `topics`, `valid_from`) are excluded for the same
-/// reason: they are generated language, not a decision.
+/// Per-extraction fields compared verbatim. Generated language (`body`,
+/// `page_description`, `valid_from`) is excluded for the same reason: it is
+/// wording, not a decision. `topics` is excluded on a different ground — the
+/// pair is two chosen words, so it IS a decision, but one whose value is
+/// whether the same word comes back across many facts, which a per-record
+/// diff of one sample cannot see.
 const EXTRACTION_FIELDS: &[&str] = &[
     "target_wiki_id",
     "target_page",
