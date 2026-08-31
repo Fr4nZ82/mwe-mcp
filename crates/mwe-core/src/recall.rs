@@ -250,6 +250,33 @@ pub(crate) fn window_closed_at(
 /// everything that surfaced before still surfaces.
 pub const SUBJECT_COVERAGE_UPLIFT: f32 = 0.15;
 
+/// Slots of the flat block reserved for the **topic road**: facts that share
+/// a macrotopic with what similarity already found, and say something else
+/// inside it.
+///
+/// A quota and not an extension. The road's whole claim is that four
+/// sentences of the shape *«X takes Y at hour Z»* sit on top of each other in
+/// vector space, so similarity returns one of them and cannot see that the
+/// other three exist — but a road that ANSWERED by making the block bigger
+/// would be buying its hits with the reader's attention, and a deeper `top_k`
+/// buys the same thing without a second mechanism. So it takes the last two
+/// seats: the weakest similarity hits step aside for material similarity is
+/// structurally unable to reach.
+///
+/// It can lose, and that is what makes it a quota. Two hits that would have
+/// been shown are not, and on a turn where similarity was right all the way
+/// down that is a cost with no return.
+pub const TOPIC_ROAD_SLOTS: usize = 2;
+
+/// Similarity hits the road reads its macrotopics from, and therefore the seats it
+/// may never take.
+///
+/// A question carries no topic of its own — nobody labelled it — so the only
+/// thing that says which macrotopic the turn is in is what similarity already
+/// found. A road allowed to fill the whole block would have nothing to walk
+/// from and would fill it with nothing.
+pub const TOPIC_ROAD_SEEDS: usize = 3;
+
 /// First-person forms that put the SPEAKER among the turn's subjects.
 ///
 /// Deliberately narrow, and the exclusions are the point. «**mi** ricordi
@@ -784,6 +811,13 @@ async fn search_inner(
         },
     };
     let candidates = fact_index::find_by_filters(pool, &filters).await?;
+    // The macrotopics this memory currently has. One grouped read per turn, and it
+    // is what tells the road where it may walk: without it the road is off,
+    // which is the correct state for a memory that has none.
+    let broad: Vec<String> = crate::topic_rank::macrotopics(pool)
+        .await
+        .map(|ws| ws.into_iter().map(|w| w.word).collect())
+        .unwrap_or_default();
     let scored = score_and_filter(
         &q_emb,
         candidates,
@@ -792,6 +826,7 @@ async fn search_inner(
         &subjects,
         &roster,
         &link_scores,
+        &broad,
     );
     if bump {
         bump_recall_hits_from(pool, &scored).await?;
@@ -827,6 +862,7 @@ fn score_and_filter(
     subjects: &[String],
     roster: &[EnrolledUserLite],
     link_scores: &HashMap<String, f32>,
+    macrotopics: &[String],
 ) -> Vec<RecallHit> {
     // The down-rank anchors on the engine wall-clock. (A backlog replay
     // re-living turns via `occurred_at` ranks against the present —
@@ -859,11 +895,83 @@ fn score_and_filter(
     // wins the top-K (a NaN here would mean the embedding had a
     // zero magnitude, which the dot product surfaces as 0.0 / 0.0).
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Less));
-    scored
-        .into_iter()
-        .take(top_k)
-        .map(|(s, row)| RecallHit::from_row(row, s))
-        .collect()
+    take_with_topic_road(scored, top_k, macrotopics)
+}
+
+/// Fills the block: similarity first, then [`TOPIC_ROAD_SLOTS`] seats for the
+/// road (see the constant for why it takes seats rather than adding them).
+///
+/// The road opens only where it can pay. It needs a macrotopic among what
+/// similarity found — nothing else says which macrotopic the turn is in, because a
+/// question carries no topic of its own, nobody having labelled it — and it
+/// admits a fact only when that fact's OTHER word is one the block does not
+/// already speak for. Taking the nearest facts of the macrotopic instead would
+/// return the twins similarity had already ranked and rejected, which is the
+/// failure the road exists to fix.
+fn take_with_topic_road(
+    scored: Vec<(f32, FactIndexRow)>,
+    top_k: usize,
+    macrotopics: &[String],
+) -> Vec<RecallHit> {
+    let seats = if macrotopics.is_empty() {
+        0
+    } else {
+        TOPIC_ROAD_SLOTS.min(top_k.saturating_sub(TOPIC_ROAD_SEEDS))
+    };
+    let by_similarity = top_k.saturating_sub(seats);
+
+    let mut out: Vec<RecallHit> = Vec::with_capacity(top_k);
+    let mut spoken: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut areas: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut rest: Vec<(f32, FactIndexRow)> = Vec::new();
+
+    for (score, row) in scored {
+        if out.len() < by_similarity {
+            for t in &row.topics {
+                if macrotopics.iter().any(|m| m == t) {
+                    areas.insert(t.clone());
+                }
+                spoken.insert(t.clone());
+            }
+            out.push(RecallHit::from_row(row, score));
+        } else {
+            rest.push((score, row));
+        }
+    }
+    if seats == 0 || areas.is_empty() {
+        // Nothing to walk from: fill the reserved seats the ordinary way
+        // rather than serve a shorter block than the caller asked for.
+        out.extend(
+            rest.into_iter()
+                .take(top_k - out.len())
+                .map(|(s, row)| RecallHit::from_row(row, s)),
+        );
+        return out;
+    }
+    let mut taken = 0usize;
+    let mut leftovers: Vec<(f32, FactIndexRow)> = Vec::new();
+    for (score, row) in rest {
+        let in_area = row.topics.iter().any(|t| areas.contains(t));
+        let says_something_new = row.topics.iter().any(|t| !spoken.contains(t));
+        if taken < seats && in_area && says_something_new {
+            for t in &row.topics {
+                spoken.insert(t.clone());
+            }
+            taken += 1;
+            out.push(RecallHit::from_row(row, score));
+        } else {
+            leftovers.push((score, row));
+        }
+    }
+    // Seats the road could not fill go back to similarity: an empty seat
+    // would shorten the block for nobody's benefit.
+    out.extend(
+        leftovers
+            .into_iter()
+            .take(top_k.saturating_sub(out.len()))
+            .map(|(s, row)| RecallHit::from_row(row, s)),
+    );
+    out
 }
 
 async fn bump_recall_hits_from(pool: &SqlitePool, hits: &[RecallHit]) -> RecallResult<()> {
@@ -2993,6 +3101,131 @@ mod tests {
 
     // ---------- score_and_filter ----------
 
+    // ---------- the topic road ----------
+
+    /// A fixture row carrying an explicit pair of topic words. Only the
+    /// fields the road reads are meaningful.
+    fn row_with(id: &str, embedding: Vec<f32>, topics: &[&str]) -> FactIndexRow {
+        let mut row = sample_row(id, "global", None, "x");
+        row.embedding = embedding;
+        row.topics = topics.iter().map(|t| (*t).to_owned()).collect();
+        row
+    }
+
+    /// The case the road exists for: several facts of one area whose
+    /// sentences sit on top of each other, so similarity ranks the nearest
+    /// and cannot see that the others say different things. The reserved
+    /// seats reach past the twins.
+    #[test]
+    fn the_road_reaches_a_fact_similarity_ranked_last() {
+        let query = vec![1.0, 0.0];
+        let twins: Vec<FactIndexRow> = (1u8..=4)
+            .map(|i| {
+                let drift = f32::from(i);
+                row_with(
+                    &format!("018f1234-5678-7abc-9def-00000000000{i}"),
+                    vec![drift.mul_add(-0.01, 1.0), drift * 0.02],
+                    &["salute", "nausea"],
+                )
+            })
+            .collect();
+        let other = row_with(
+            "018f1234-5678-7abc-9def-000000000009",
+            vec![0.2, 0.98],
+            &["salute", "orario"],
+        );
+        let mut pool = twins.clone();
+        pool.push(other.clone());
+        let hits = score_and_filter(
+            &query,
+            pool,
+            &SenderContext::anonymous(),
+            5,
+            &[],
+            &[],
+            &HashMap::new(),
+            &["salute".to_owned()],
+        );
+        assert_eq!(hits.len(), 5, "{hits:?}");
+        assert_eq!(
+            hits[0].fact_id, twins[0].fact_id,
+            "similarity keeps its seats"
+        );
+        assert!(
+            hits.iter().any(|h| h.fact_id == other.fact_id),
+            "the fact saying something ELSE in the area is in, though similarity \
+             ranked it last: {hits:?}"
+        );
+    }
+
+    /// Without areas the road is off, and the block is filled exactly as it
+    /// was — which is the state of every memory too young to have any.
+    #[test]
+    fn no_areas_means_no_road_and_an_unchanged_block() {
+        let query = vec![1.0, 0.0];
+        let a = row_with(
+            "018f1234-5678-7abc-9def-000000000001",
+            vec![1.0, 0.0],
+            &["salute"],
+        );
+        let b = row_with(
+            "018f1234-5678-7abc-9def-000000000002",
+            vec![0.99, 0.14],
+            &["salute"],
+        );
+        let c = row_with(
+            "018f1234-5678-7abc-9def-000000000003",
+            vec![0.2, 0.98],
+            &["salute"],
+        );
+        let hits = score_and_filter(
+            &query,
+            vec![a.clone(), b.clone(), c],
+            &SenderContext::anonymous(),
+            2,
+            &[],
+            &[],
+            &HashMap::new(),
+            &[],
+        );
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].fact_id, a.fact_id);
+        assert_eq!(hits[1].fact_id, b.fact_id);
+    }
+
+    /// A seat the road cannot fill goes back to similarity. Serving a shorter
+    /// block would cost the reader a hit and buy nothing.
+    #[test]
+    fn a_seat_the_road_cannot_fill_returns_to_similarity() {
+        let query = vec![1.0, 0.0];
+        let a = row_with(
+            "018f1234-5678-7abc-9def-000000000001",
+            vec![1.0, 0.0],
+            &["salute", "nausea"],
+        );
+        let b = row_with(
+            "018f1234-5678-7abc-9def-000000000002",
+            vec![0.99, 0.14],
+            &["salute", "nausea"],
+        );
+        let c = row_with(
+            "018f1234-5678-7abc-9def-000000000003",
+            vec![0.2, 0.98],
+            &["salute", "nausea"],
+        );
+        let hits = score_and_filter(
+            &query,
+            vec![a, b, c],
+            &SenderContext::anonymous(),
+            3,
+            &[],
+            &[],
+            &HashMap::new(),
+            &["salute".to_owned()],
+        );
+        assert_eq!(hits.len(), 3, "every seat filled, road or not: {hits:?}");
+    }
+
     #[test]
     fn score_and_filter_ranks_descending_and_truncates() {
         let query = vec![1.0, 0.0];
@@ -3010,6 +3243,7 @@ mod tests {
             &[],
             &[],
             &HashMap::new(),
+            &[],
         );
         assert_eq!(hits.len(), 2);
         // First must be the perfect match, then row2.
@@ -3179,6 +3413,7 @@ mod tests {
             &[],
             &roster(),
             &HashMap::new(),
+            &[],
         );
         assert_eq!(
             base[0].fact_id, single.fact_id,
@@ -3193,6 +3428,7 @@ mod tests {
             &subjects,
             &roster(),
             &HashMap::new(),
+            &[],
         );
         assert_eq!(
             with[0].fact_id, both.fact_id,
@@ -3229,6 +3465,7 @@ mod tests {
             &subjects,
             &roster(),
             &HashMap::new(),
+            &[],
         );
         assert_eq!(out.len(), 2, "both still served: {out:?}");
     }
@@ -3259,6 +3496,7 @@ mod tests {
             &[],
             &[],
             &HashMap::new(),
+            &[],
         );
         assert_eq!(hits.len(), 1, "private row must drop out");
         assert_eq!(hits[0].fact_id, row_public.fact_id);
@@ -3275,6 +3513,7 @@ mod tests {
             &[],
             &[],
             &HashMap::new(),
+            &[],
         );
         assert!(out.is_empty());
     }

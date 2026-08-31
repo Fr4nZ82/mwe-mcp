@@ -869,13 +869,14 @@ struct LlmFactScore {
     multiplier: Option<f32>,
 }
 
-/// The two words a fact carries about what it is ABOUT: the broad one, then
-/// the narrow one.
+/// The two words a fact carries about what it is ABOUT: the macrotopic, then
+/// the microtopic.
 ///
 /// Two, because the pair exists to be **counted**: a word groups facts only
 /// when it comes back, and a word coined for one fact and never used again
-/// says nothing about anything. The broad word is what a ranking can promote;
-/// the narrow one is what says this fact is not its neighbour.
+/// says nothing about anything. Which of the two is a macrotopic is decided
+/// by [`crate::topic_rank`] from the counts, never here and never by the
+/// classifier: the pair is two words, not a level and its child.
 pub const MAX_FACT_TOPICS: usize = 2;
 
 /// Prefixes the ENGINE writes into the same column for its own bookkeeping.
@@ -10647,7 +10648,7 @@ mod tests {
                 "quarto".into()
             ]),
             vec!["salute", "nausea"],
-            "broad first, narrow second, the rest dropped"
+            "macrotopic first, microtopic second, the rest dropped"
         );
     }
 
