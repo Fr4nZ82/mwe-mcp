@@ -841,8 +841,8 @@ struct LlmIngestPlan {
     /// `recalled_memory`, and only the fact's SUBJECT may change it from chat.
     #[serde(default)]
     acl_changes: Vec<LlmAclChange>,
-    /// The classifier's own opinion of how well each recalled fact answers
-    /// THIS turn, one multiplier per fact it cares to judge.
+    /// The classifier's vote on how well each recalled fact answers THIS
+    /// turn, one multiplier per fact it cares to judge.
     ///
     /// It is the only thing in the read path that has read the question and
     /// the facts and understood both: cosine measures a distance, and a
@@ -854,7 +854,7 @@ struct LlmIngestPlan {
     fact_scores: Vec<LlmFactScore>,
 }
 
-/// One requested re-score of a recalled fact (see
+/// One vote on a recalled fact (see
 /// [`LlmIngestPlan::fact_scores`]).
 #[derive(Debug, Clone, Deserialize)]
 struct LlmFactScore {
@@ -5731,7 +5731,7 @@ const HDR_RELEVANT_MEMORY: &str =
 /// exactly as before the floor existed.
 ///
 /// `None` when nothing survives — the section is omitted entirely.
-/// Floor of the classifier's re-score, and its ceiling
+/// Floor of the classifier's vote, and its ceiling
 /// ([`FACT_SCORE_MAX`]). Founder's ruling, 2026-08-03: **±10 %**.
 ///
 /// A band and not a free hand, because the classifier is being asked to
@@ -5740,11 +5740,11 @@ const HDR_RELEVANT_MEMORY: &str =
 /// roughly 45 % of the whole band. A strong voice by construction, which is
 /// the intent; anything wider would not be a revision but a replacement.
 pub const FACT_SCORE_MIN: f32 = 0.90;
-/// Ceiling of the classifier's re-score. See [`FACT_SCORE_MIN`].
+/// Ceiling of the classifier's vote. See [`FACT_SCORE_MIN`].
 pub const FACT_SCORE_MAX: f32 = 1.10;
 
-/// Applies the classifier's per-fact multipliers and re-sorts, returning a
-/// NEW list and leaving the caller's untouched.
+/// Applies the classifier's vote and re-sorts, returning a NEW list and
+/// leaving the caller's untouched.
 ///
 /// **A separate list is the point, not an implementation detail.** The same
 /// `Vec<RecallHit>` is handed to the navigator's entry fan, where a `rag`
@@ -5759,7 +5759,7 @@ pub const FACT_SCORE_MAX: f32 = 1.10;
 /// `validity_edits` and `acl_changes` drop theirs. A missing or non-finite
 /// multiplier is dropped the same way, so a malformed array is worth exactly
 /// as much as an absent one.
-fn reranked_hits(hits: &[RecallHit], scores: &[LlmFactScore]) -> Vec<RecallHit> {
+fn apply_classifier_vote(hits: &[RecallHit], scores: &[LlmFactScore]) -> Vec<RecallHit> {
     let mut out = hits.to_vec();
     if scores.is_empty() {
         return out;
@@ -5788,7 +5788,7 @@ fn reranked_hits(hits: &[RecallHit], scores: &[LlmFactScore]) -> Vec<RecallHit> 
     tracing::debug!(
         applied,
         offered = scores.len(),
-        "ingest: classifier re-scored recalled facts"
+        "ingest: classifier voted on the recalled facts"
     );
     out
 }
@@ -7876,8 +7876,8 @@ pub async fn wiki_ingest_message(
         // The classifier's own reading of the hits, applied HERE and nowhere
         // else: navigation has already run above from the unrevised list, so
         // this turn's walk is untouched by construction as well as by
-        // intent ([`reranked_hits`]).
-        let revised = reranked_hits(&recall_hits, &plan.fact_scores);
+        // intent ([`apply_classifier_vote`]).
+        let revised = apply_classifier_vote(&recall_hits, &plan.fact_scores);
         format_snippet(&revised, &nav_paths, &project_docs, policy.relevance_floor)
     } else {
         None
@@ -10686,7 +10686,7 @@ mod tests {
         );
     }
 
-    // ---------- the classifier's re-score of the recalled facts ----------
+    // ---------- the classifier's vote on the recalled facts ----------
 
     /// Two hits, a whisker apart, and the classifier says the second one is
     /// the one that answers.
@@ -10743,7 +10743,7 @@ mod tests {
                 multiplier: Some(1.10),
             },
         ];
-        let out = reranked_hits(&scored_pair(), &scores);
+        let out = apply_classifier_vote(&scored_pair(), &scores);
         assert_eq!(out[0].text, "alice likes metallica", "{out:?}");
     }
 
@@ -10762,7 +10762,7 @@ mod tests {
                 multiplier: Some(0.0),
             },
         ];
-        let out = reranked_hits(&scored_pair(), &scores);
+        let out = apply_classifier_vote(&scored_pair(), &scores);
         let close = |got: f32, want: f32| (got - want).abs() < 1e-6;
         let lifted = 0.47f32 * FACT_SCORE_MAX;
         let pushed = 0.45f32 * FACT_SCORE_MIN;
@@ -10807,7 +10807,7 @@ mod tests {
             }],
             Vec::new(),
         ] {
-            let out = reranked_hits(&hits, &scores);
+            let out = apply_classifier_vote(&hits, &scores);
             assert_eq!(out[0].text, hits[0].text, "{scores:?}");
             assert!((score_of(&out, "018f1234-5678-7abc-9def-0123456789ab") - 0.47).abs() < 1e-6);
         }
@@ -10821,7 +10821,7 @@ mod tests {
             target: Some("018f1234-5678-7abc-9def-0123456789ac".into()),
             multiplier: Some(1.02),
         }];
-        let out = reranked_hits(&scored_pair(), &scores);
+        let out = apply_classifier_vote(&scored_pair(), &scores);
         assert_eq!(
             out[0].text, "alice was born on 12 march",
             "0.47 > 0.45 * 1.02: {out:?}"

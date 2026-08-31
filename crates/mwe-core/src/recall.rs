@@ -250,32 +250,32 @@ pub(crate) fn window_closed_at(
 /// everything that surfaced before still surfaces.
 pub const SUBJECT_COVERAGE_UPLIFT: f32 = 0.15;
 
-/// Slots of the flat block reserved for the **topic road**: facts that share
+/// Seats of the flat block reserved for the **macrotopic quota**: facts that share
 /// a macrotopic with what similarity already found, and say something else
 /// inside it.
 ///
-/// A quota and not an extension. The road's whole claim is that four
+/// Seats taken, never added. The quota's whole claim is that four
 /// sentences of the shape *«X takes Y at hour Z»* sit on top of each other in
 /// vector space, so similarity returns one of them and cannot see that the
-/// other three exist — but a road that ANSWERED by making the block bigger
+/// other three exist — but a quota that ANSWERED by making the block bigger
 /// would be buying its hits with the reader's attention, and a deeper `top_k`
 /// buys the same thing without a second mechanism. So it takes the last two
 /// seats: the weakest similarity hits step aside for material similarity is
 /// structurally unable to reach.
 ///
-/// It can lose, and that is what makes it a quota. Two hits that would have
+/// It can lose, and that is what a quota means. Two hits that would have
 /// been shown are not, and on a turn where similarity was right all the way
 /// down that is a cost with no return.
-pub const TOPIC_ROAD_SLOTS: usize = 2;
+pub const MACROTOPIC_QUOTA: usize = 2;
 
-/// Similarity hits the road reads its macrotopics from, and therefore the seats it
-/// may never take.
+/// Similarity hits the quota reads its macrotopics from, and therefore the
+/// seats it may never take.
 ///
 /// A question carries no topic of its own — nobody labelled it — so the only
 /// thing that says which macrotopic the turn is in is what similarity already
-/// found. A road allowed to fill the whole block would have nothing to walk
+/// found. A quota allowed to fill the whole block would have nothing to read
 /// from and would fill it with nothing.
-pub const TOPIC_ROAD_SEEDS: usize = 3;
+pub const MACROTOPIC_QUOTA_SEEDS: usize = 3;
 
 /// First-person forms that put the SPEAKER among the turn's subjects.
 ///
@@ -895,20 +895,20 @@ fn score_and_filter(
     // wins the top-K (a NaN here would mean the embedding had a
     // zero magnitude, which the dot product surfaces as 0.0 / 0.0).
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Less));
-    take_with_topic_road(scored, top_k, macrotopics)
+    take_with_macrotopic_quota(scored, top_k, macrotopics)
 }
 
-/// Fills the block: similarity first, then [`TOPIC_ROAD_SLOTS`] seats for the
-/// road (see the constant for why it takes seats rather than adding them).
+/// Fills the block: similarity first, then [`MACROTOPIC_QUOTA`] seats for the
+/// macrotopic quota (see the constant for why it takes seats, not adds them).
 ///
-/// The road opens only where it can pay. It needs a macrotopic among what
+/// The quota opens only where it can pay. It needs a macrotopic among what
 /// similarity found — nothing else says which macrotopic the turn is in, because a
 /// question carries no topic of its own, nobody having labelled it — and it
 /// admits a fact only when that fact's OTHER word is one the block does not
 /// already speak for. Taking the nearest facts of the macrotopic instead would
 /// return the twins similarity had already ranked and rejected, which is the
-/// failure the road exists to fix.
-fn take_with_topic_road(
+/// failure the quota exists to fix.
+fn take_with_macrotopic_quota(
     scored: Vec<(f32, FactIndexRow)>,
     top_k: usize,
     macrotopics: &[String],
@@ -916,7 +916,7 @@ fn take_with_topic_road(
     let seats = if macrotopics.is_empty() {
         0
     } else {
-        TOPIC_ROAD_SLOTS.min(top_k.saturating_sub(TOPIC_ROAD_SEEDS))
+        MACROTOPIC_QUOTA.min(top_k.saturating_sub(MACROTOPIC_QUOTA_SEEDS))
     };
     let by_similarity = top_k.saturating_sub(seats);
 
@@ -963,7 +963,7 @@ fn take_with_topic_road(
             leftovers.push((score, row));
         }
     }
-    // Seats the road could not fill go back to similarity: an empty seat
+    // Seats the quota could not fill go back to similarity: an empty seat
     // would shorten the block for nobody's benefit.
     out.extend(
         leftovers
@@ -3101,7 +3101,7 @@ mod tests {
 
     // ---------- score_and_filter ----------
 
-    // ---------- the topic road ----------
+    // ---------- the macrotopic quota ----------
 
     /// A fixture row carrying an explicit pair of topic words. Only the
     /// fields the road reads are meaningful.
@@ -3112,12 +3112,12 @@ mod tests {
         row
     }
 
-    /// The case the road exists for: several facts of one area whose
+    /// The case the quota exists for: several facts of one area whose
     /// sentences sit on top of each other, so similarity ranks the nearest
     /// and cannot see that the others say different things. The reserved
     /// seats reach past the twins.
     #[test]
-    fn the_road_reaches_a_fact_similarity_ranked_last() {
+    fn the_quota_reaches_a_fact_similarity_ranked_last() {
         let query = vec![1.0, 0.0];
         let twins: Vec<FactIndexRow> = (1u8..=4)
             .map(|i| {
@@ -3158,10 +3158,10 @@ mod tests {
         );
     }
 
-    /// Without areas the road is off, and the block is filled exactly as it
-    /// was — which is the state of every memory too young to have any.
+    /// Without macrotopics the quota is off and the block is filled exactly as
+    /// it was — the state of a memory that has none yet.
     #[test]
-    fn no_areas_means_no_road_and_an_unchanged_block() {
+    fn no_macrotopics_means_no_quota_and_an_unchanged_block() {
         let query = vec![1.0, 0.0];
         let a = row_with(
             "018f1234-5678-7abc-9def-000000000001",
@@ -3193,10 +3193,10 @@ mod tests {
         assert_eq!(hits[1].fact_id, b.fact_id);
     }
 
-    /// A seat the road cannot fill goes back to similarity. Serving a shorter
+    /// A seat the quota cannot fill goes back to similarity. Serving a shorter
     /// block would cost the reader a hit and buy nothing.
     #[test]
-    fn a_seat_the_road_cannot_fill_returns_to_similarity() {
+    fn a_seat_the_quota_cannot_fill_returns_to_similarity() {
         let query = vec![1.0, 0.0];
         let a = row_with(
             "018f1234-5678-7abc-9def-000000000001",
@@ -3223,7 +3223,7 @@ mod tests {
             &HashMap::new(),
             &["salute".to_owned()],
         );
-        assert_eq!(hits.len(), 3, "every seat filled, road or not: {hits:?}");
+        assert_eq!(hits.len(), 3, "every seat filled, quota or not: {hits:?}");
     }
 
     #[test]
