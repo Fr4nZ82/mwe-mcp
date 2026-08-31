@@ -1520,13 +1520,11 @@ async fn cmd_ask(o: &HashMap<String, String>) -> Result<(), String> {
 /// the product actually serves.
 const EVAL_FLAT_DEPTH: usize = 10;
 
-/// Extra facts the macrotopic hop may add on top of the flat pass. Same
-/// order of magnitude as the flat slot: a road that had to double the block
-/// to find anything would be paying for its hits with the reader's attention.
+/// Extra facts the macrotopic hop may add on top of the flat pass, when
+/// `--hop` says nothing. Same order of magnitude as the flat slot: a hop that
+/// had to double the block to find anything would be paying for its hits with
+/// the reader's attention.
 const EVAL_HOP_DEPTH: usize = 10;
-
-/// Overridden by `--hop`, so the same run can ask what the road costs at half
-/// the budget without a rebuild.
 
 /// Flat hits whose labels seed the hop. Only what a reader would actually
 /// have looked at can say what the turn is ABOUT.
