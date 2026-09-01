@@ -2255,15 +2255,15 @@ fn vet_supersede<'a>(
         );
         return None;
     };
-    // Nothing replaces itself. A claim filed moments ago is BOTH a fact this
-    // turn wrote and a fact recall can surface, so the two lists the judge
-    // picks from overlap and it can name one id for both roles. What comes
-    // back then is incoherent — and acted on it is destructive: the weld finds
-    // the target still buffered, closes its window, and the supersede link
-    // that would explain the closure is never written, leaving a fact that
-    // nothing contradicted marked `contradicted`. Measured 2026-08-25 on a
-    // replay of one week: 48 of 61 supersedes named the same fact twice, among
-    // them a permanent physical limit closed the day it was recorded.
+    // Nothing replaces itself. The two lists the judge picks from are disjoint
+    // by construction — [`reconcile_candidates`] keeps the turn's own facts out
+    // of the candidate set — so this can only fire on an id the model invented
+    // and then named twice. It stands ahead of the candidate lookup so the log
+    // names the mistake that was actually made, and it is worth refusing
+    // loudly: acted on, a self-supersede is destructive rather than merely
+    // useless, because the weld closes the target's window and writes no
+    // successor link to explain it, leaving a fact that nothing contradicted
+    // marked `contradicted`.
     if target_id == successor_id {
         tracing::warn!(
             target = target_raw,
@@ -2551,9 +2551,21 @@ fn reconcile_candidate_line(h: &RecallHit, now: &chrono::DateTime<chrono::Utc>) 
 /// reason: that suppression exists to stop the recall *block* saying a thing
 /// twice, and it must never hide a candidate from a verb that acts on it. The
 /// flat hits arrive already filtered by it — so a claim the user made two
-/// turns ago, whose message is still in the window, was invisible here, which
-/// is precisely the claim a correction arriving now is correcting. Costs one
-/// extra embed of the message; the buffered rows carry staged vectors.
+/// turns ago, whose message is still in the window, would be invisible here,
+/// which is precisely the claim a correction arriving now is correcting. Costs
+/// one extra embed of the message; the buffered rows carry staged vectors.
+///
+/// **The facts this turn filed are not candidates.** Their ids seed the
+/// union's dedup set, so whichever leg surfaces one drops it the way it drops
+/// a repeat, and no verb can name it. They reach the stage by the other door,
+/// the `{new_facts}` block, where they are legal only as a `successor`. A verb
+/// allowed to name them would be judging a claim against itself: two atomics
+/// off one message marked as contradicting each other, or an episode archived
+/// as spent in the instant it is born, which the next turn's recall then
+/// down-ranks. The fresh leg's budget is widened by their count so the
+/// exclusion costs it no slots — its default is three, and the turn's own
+/// claims are the buffered rows nearest the message being searched, so they
+/// would take the whole slot before any older candidate reached it.
 async fn reconcile_candidates(
     pool: &SqlitePool,
     embedder: &Arc<dyn Embedder>,
@@ -2562,9 +2574,13 @@ async fn reconcile_candidates(
     nav_paths: &[String],
     sender_ctx: &SenderContext,
     fresh_top_k: usize,
+    turn_facts: &[(FactId, String)],
 ) -> Vec<RecallHit> {
     let mut out: Vec<RecallHit> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<String> = turn_facts
+        .iter()
+        .map(|(id, _)| id.as_str().to_owned())
+        .collect();
     for h in flat {
         if seen.insert(h.fact_id.as_str().to_owned()) {
             out.push(h.clone());
@@ -2590,7 +2606,7 @@ async fn reconcile_candidates(
         embedder.as_ref(),
         query,
         sender_ctx,
-        fresh_top_k,
+        fresh_top_k.saturating_add(turn_facts.len()),
         &std::collections::HashSet::new(),
     )
     .await
@@ -2708,12 +2724,19 @@ async fn reconcile_after_reading(
 /// slot (a same-day target lives only there), the union deduplicated by
 /// fact id. Every failure is soft — a topic that cannot be recalled
 /// contributes no candidates.
+///
+/// The facts this turn filed are held out, on the same terms as
+/// [`reconcile_candidates`]: a closure gesture ends something that was
+/// already there, and the buffered rows nearest this message are the claims
+/// this very message just made. The fresh budget is widened by their count so
+/// holding them out costs the slot nothing.
 async fn recall_topic_candidates(
     pool: &SqlitePool,
     embedder: &Arc<dyn Embedder>,
     topics: &[String],
     sender_ctx: &SenderContext,
     policy: &IngestPolicy,
+    turn_facts: &[(FactId, String)],
 ) -> Vec<RecallHit> {
     let mut candidates: Vec<RecallHit> = Vec::new();
     for topic in topics
@@ -2746,7 +2769,7 @@ async fn recall_topic_candidates(
             embedder.as_ref(),
             topic,
             sender_ctx,
-            policy.recall_fresh_top_k,
+            policy.recall_fresh_top_k.saturating_add(turn_facts.len()),
             &std::collections::HashSet::new(),
         )
         .await
@@ -2755,6 +2778,9 @@ async fn recall_topic_candidates(
             Vec::new()
         });
         for hit in promoted.into_iter().chain(fresh) {
+            if turn_facts.iter().any(|(id, _)| *id == hit.fact_id) {
+                continue;
+            }
             if !candidates.iter().any(|c| c.fact_id == hit.fact_id) {
                 candidates.push(hit);
             }
@@ -2773,18 +2799,18 @@ async fn recall_topic_candidates(
 /// on a wrong recalled fact. When the classifier instead names the
 /// gesture's TOPICS (`closure_topics` — targets it could not see), this
 /// pass recalls each topic as its own focused query (promoted facts + the
-/// fresh buffered slot, so a same-day target is reachable), shows the
-/// deduplicated candidate union to a strict confirmer on the same ingest
-/// slot, and returns the confirmed closures together with the candidates
-/// they validate against. Every limit here is a resource cap; which
-/// candidates close is the confirmer's judgment, and an empty answer is
-/// always a valid one.
+/// fresh buffered slot, so a same-day target is reachable, less whatever this
+/// turn itself filed), shows the deduplicated candidate union to a strict
+/// confirmer on the same ingest slot, and returns the confirmed closures
+/// together with the candidates they validate against. Every limit here is a
+/// resource cap; which candidates close is the confirmer's judgment, and an
+/// empty answer is always a valid one.
 ///
 /// Soft end to end: a recall or LLM failure returns no closures — the
 /// turn never dies on the second pass.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the turn's full context (store, tree, embedder, slot, request, clock, policy); a one-off bundle struct for the single call site would only rename the problem"
+    reason = "the turn's full context (store, tree, embedder, slot, request, clock, topics, sender, policy, the facts it filed); a one-off bundle struct for the single call site would only rename the problem"
 )]
 async fn confirm_topic_closures(
     pool: &SqlitePool,
@@ -2796,8 +2822,10 @@ async fn confirm_topic_closures(
     topics: &[String],
     sender_ctx: &SenderContext,
     policy: &IngestPolicy,
+    turn_facts: &[(FactId, String)],
 ) -> (Vec<LlmClosure>, Vec<RecallHit>) {
-    let candidates = recall_topic_candidates(pool, embedder, topics, sender_ctx, policy).await;
+    let candidates =
+        recall_topic_candidates(pool, embedder, topics, sender_ctx, policy, turn_facts).await;
     if candidates.is_empty() {
         tracing::info!("ingest: closure topics recalled no candidates — nothing to close");
         return (Vec::new(), Vec::new());
@@ -7681,6 +7709,7 @@ pub async fn wiki_ingest_message(
                     &plan.closure_topics,
                     &sender_ctx,
                     policy,
+                    &turn_facts,
                 )
                 .await;
                 turn_closures.extend(confirmed);
@@ -7882,6 +7911,7 @@ pub async fn wiki_ingest_message(
             &nav_paths,
             &sender_ctx,
             policy.recall_fresh_top_k,
+            &turn_facts,
         )
         .await;
         let decision =
@@ -9536,14 +9566,13 @@ mod tests {
 
     /// Nothing replaces itself, and the judge is allowed to think it does.
     ///
-    /// A claim filed moments ago is BOTH a fact this turn wrote and a fact
-    /// recall can surface, so the two lists the judge picks from overlap and
-    /// it can name one id for both roles. Acted on, the weld finds the target
-    /// still buffered, closes its window, and writes no supersede link —
-    /// leaving a fact that nothing contradicted marked `contradicted`, dated
-    /// the moment the engine noticed. Measured 2026-08-25 on a replay of one
-    /// week: 48 of 61 supersedes named the same fact twice, among them a
-    /// permanent physical limit closed the day it was recorded.
+    /// The candidate list and the facts this turn wrote share no id, so one id
+    /// arriving in both roles is a model that invented it. The guard refuses
+    /// it ahead of the candidate lookup, which would refuse it too, because
+    /// acted on a self-supersede is destructive rather than merely useless:
+    /// the weld finds the target still buffered, closes its window and writes
+    /// no supersede link, leaving a fact that nothing contradicted marked
+    /// `contradicted`, dated the moment the engine noticed.
     #[test]
     fn a_fact_never_supersedes_itself() {
         let id = "0190f3c2-7a4e-7c31-9b02-2f6a1c8e5d77";
@@ -14466,11 +14495,82 @@ mod tests {
             &[],
             &SenderContext::user("alice"),
             10,
+            &[],
         )
         .await;
         assert!(
             candidates.iter().any(|c| c.text.contains("latte")),
             "the stage that acts on it still sees it: {candidates:?}"
+        );
+        drop(dir);
+    }
+
+    /// Buffer one claim of alice's, returning the id it will carry.
+    async fn buffer_claim(pool: &SqlitePool, body: &str) -> FactId {
+        capture_buffer::buffer_capture(
+            pool,
+            CaptureRequest {
+                subject_external: None,
+                authored_refs: Vec::new(),
+                wiki_id: WikiId::parse("alice").unwrap(),
+                page: Some(PathBuf::from("appunti.md")),
+                body: body.into(),
+                subject: Principal::User("alice".into()),
+                allow: Vec::new(),
+                sender: None,
+                fact_type: Some("episode".into()),
+                page_description: None,
+                topics: vec!["spesa".into()],
+                dedup_threshold: None,
+                valid_from: None,
+                valid_to: None,
+                style: None,
+                salience: None,
+            },
+            None,
+        )
+        .await
+        .expect("buffer")
+        .capture_id
+    }
+
+    /// The facts this turn just filed are held out of the candidate set, and
+    /// holding them out costs the fresh slot no room.
+    ///
+    /// Every verb of the stage acts on a candidate, so a fact that reaches the
+    /// list can be closed, re-dated or marked as replaced by a sibling off the
+    /// same message: *«ho comprato il latte»* archiving its own episode as
+    /// spent in the instant it is born, or two atomics from one sentence each
+    /// named as the other's contradiction. The claim the stage is actually for
+    /// is the OLDER one, and it only reaches the list because the fresh
+    /// budget is widened by the count held out — at `fresh_top_k` = 1 the
+    /// turn's own capture is the row the leg reaches first, and it would take
+    /// the only slot there is.
+    #[tokio::test]
+    async fn the_turns_own_facts_are_not_candidates() {
+        let (dir, _, pool) = setup_workdir().await;
+        let older = buffer_claim(&pool, "alice deve comprare il latte").await;
+        let this_turn = buffer_claim(&pool, "alice ha comprato il latte").await;
+
+        let candidates = reconcile_candidates(
+            &pool,
+            &fake_embedder(),
+            "ho comprato il latte",
+            &[],
+            &[],
+            &SenderContext::user("alice"),
+            1,
+            &[(this_turn.clone(), "alice ha comprato il latte".to_owned())],
+        )
+        .await;
+
+        assert!(
+            !candidates.iter().any(|c| c.fact_id == this_turn),
+            "no verb may name what this turn just wrote: {candidates:?}"
+        );
+        assert!(
+            candidates.iter().any(|c| c.fact_id == older),
+            "the claim the stage is for still fits the widened slot: {candidates:?}"
         );
         drop(dir);
     }

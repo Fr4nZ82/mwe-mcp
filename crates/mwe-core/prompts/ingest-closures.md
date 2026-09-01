@@ -1,8 +1,8 @@
 ---
 name: ingest-closures
 description: Closure confirmer — topic-focused second recall pass for a closure-bearing turn whose targets missed the first recall window; strict JSON out; close nothing rather than a doubtful target
-version: 1.1
-default_version_at_bootstrap: v1.1
+version: 1.2
+default_version_at_bootstrap: v1.2
 ---
 
 # Prompt: ingest-closures
@@ -19,7 +19,10 @@ The system prompt for the ingest **closure confirmer**
   turn's `recalled_memory`). The orchestrator re-recalls each topic as its own
   focused query — the whole-message embedding is what washed the topic out
   (dogfood re-run 2026-06-11: "forget the greenhouse…" ranked a dozen shopping
-  items above the greenhouse facts) — and shows the candidate union to this prompt.
+  items above the greenhouse facts) — and shows the candidate union to this
+  prompt. *The facts this turn just filed are held out of that union*: a
+  closure ends something that was already there, and the buffered rows nearest
+  this message are the claims this very message just made.
 - **Model**: the `ingest` slot (the turn's classifier backend).
 - **Placeholders**: `{message}` (the user's verbatim message),
   `{current_time}` (the turn's semantic clock — `occurred_at` when replayed),
@@ -48,7 +51,7 @@ Decide which candidates this message actually closes. Rules:
 USER MESSAGE:
 {message}
 
-CANDIDATES (fact_id · validity · text):
+CANDIDATES — facts that existed BEFORE this turn (fact_id · validity · text):
 {candidates}
 
 Output ONE strict JSON object, nothing else:

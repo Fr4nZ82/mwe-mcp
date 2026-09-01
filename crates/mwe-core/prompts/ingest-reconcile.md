@@ -1,8 +1,8 @@
 ---
 name: ingest-reconcile
 description: Reconciler — after the memory has been read, decide what this turn closes, replaces, re-dates or re-shares among the facts the turn actually saw; strict JSON out; change nothing rather than the wrong thing
-version: 1.1
-default_version_at_bootstrap: v1.1
+version: 1.2
+default_version_at_bootstrap: v1.2
 ---
 
 # Prompt: ingest-reconcile
@@ -28,9 +28,10 @@ The system prompt for the **reconciliation stage**
   still-**buffered** captures, re-fetched here with **no** already-in-context
   suppression: that suppression stops the recall *block* saying a thing twice,
   and must never hide a candidate from a verb that acts on it. Skipped entirely
-  when the union is empty. *The facts this turn just filed are NOT candidates —
-  they are the separate `{new_facts}` block below, and they are legal only as a
-  `successor`.*
+  when the union is empty. *The facts this turn just filed are NOT candidates:
+  their ids seed the union's dedup set, so whichever leg surfaces one drops it.
+  They reach this stage only through the `{new_facts}` block below, where they
+  are legal only as a `successor`.*
 - **Model**: the `ingest` slot (the same cheap tier as the classifier).
 - **Placeholders**: `{message}` (the user's verbatim message), `{current_time}`
   (the turn's semantic clock — `occurred_at` when replayed), `{candidates}`
@@ -61,7 +62,7 @@ Four verbs, and each one has to be plainly stated by the message:
 
    `valid_to`: when the message says WHEN it stopped holding, resolve it against current_time = {current_time}; otherwise null (= this turn's instant).
 
-2. `supersedes` — the fact is REPLACED by something this turn wrote. Use this, not "contradicted", whenever the message restates the same claim with a new value: "the appointment moved to the 20th", "Bob works at Initech now", "we changed the wifi password". **THE TEST — can both be true at once?** A supersede is one slot holding a new value, so the old and the new CANNOT both hold: an appointment is not on the 14th and the 20th, Bob does not hold that job at ACME and at Initech, a password is not two strings. If the two can be true of the person at the same moment, they are two facts and this is NOT a supersede, however much they overlap in subject or wording — «she is a mother» and «she is 29 weeks pregnant» are both true together, and superseding either would delete a claim nobody withdrew. Ask the question before naming a pair; overlapping words are what makes a wrong pair look right. `target` is the OLD fact, from the candidates; `successor` is one of the FACTS THIS TURN WROTE, listed below — never invent one, never name a candidate. **They are always two different facts.** A claim filed moments ago can appear in both lists, and naming it for both roles says a thing replaced itself, which is not a statement about anything: if the only fact you would name is the one this turn just wrote, there is no supersede here. If nothing this turn wrote is the replacement, it is a closure, not a supersede. A supersede carries the audience over by itself: do NOT also emit an acl_change for it.
+2. `supersedes` — the fact is REPLACED by something this turn wrote. Use this, not "contradicted", whenever the message restates the same claim with a new value: "the appointment moved to the 20th", "Bob works at Initech now", "we changed the wifi password". **THE TEST — can both be true at once?** A supersede is one slot holding a new value, so the old and the new CANNOT both hold: an appointment is not on the 14th and the 20th, Bob does not hold that job at ACME and at Initech, a password is not two strings. If the two can be true of the person at the same moment, they are two facts and this is NOT a supersede, however much they overlap in subject or wording — «she is a mother» and «she is 29 weeks pregnant» are both true together, and superseding either would delete a claim nobody withdrew. Ask the question before naming a pair; overlapping words are what makes a wrong pair look right. `target` is the OLD fact, from the candidates; `successor` is one of the FACTS THIS TURN WROTE, listed below — never invent one, never name a candidate. **The two lists share nothing:** every candidate existed before this turn, every entry below was written by it, and no id is in both. If nothing this turn wrote is the replacement, it is a closure, not a supersede. A supersede carries the audience over by itself: do NOT also emit an acl_change for it.
 
 3. `validity_edits` — the fact stays true, its DATES were wrong. A correction, not a completion: "the milk expires on the 20th, not the 25th", "the appointment was always at 6, not 5". Set `valid_from` and/or `valid_to`; leave a field null to keep it. If the fact itself changed, that is a closure, not a date correction.
 
@@ -83,7 +84,7 @@ USER MESSAGE:
 FACTS THIS TURN WROTE (fact_id · text) — the only legal `successor` values:
 {new_facts}
 
-CANDIDATES (fact_id · validity · audience · text):
+CANDIDATES — facts that existed BEFORE this turn (fact_id · validity · audience · text):
 {candidates}
 
 Output ONE strict JSON object, nothing else:
