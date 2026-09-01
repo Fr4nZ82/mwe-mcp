@@ -6389,6 +6389,10 @@ pub async fn wiki_ingest_message(
     // ([`recall_nav::hits_as_doors`]). Splitting here rather than searching
     // twice — the scan reads the whole readable corpus either way, so the
     // extra rows are carried out of the same query.
+    //
+    // Both halves are replaced further down on a turn whose classifier
+    // returns a `completed_message`: the same division, re-made on the
+    // sentence that says what the turn is about.
     let mut ranked = match recall::wiki_recall(
         pool,
         Arc::clone(&embedder),
@@ -6405,7 +6409,7 @@ pub async fn wiki_ingest_message(
             Vec::new()
         },
     };
-    let seed_tail: Vec<RecallHit> = ranked.split_off(ranked.len().min(policy.recall_top_k));
+    let mut seed_tail: Vec<RecallHit> = ranked.split_off(ranked.len().min(policy.recall_top_k));
     let mut recall_hits = ranked;
     // Cross-consumer recent window, fetched HERE rather than at the
     // end of the turn: it is served back to the consumer as its own field, but
@@ -6879,11 +6883,15 @@ pub async fn wiki_ingest_message(
     // the navigator picks where to walk from these hits, the identity cards
     // are served from the people they name, and the block renders last.
     //
-    // MERGED, never replaced. The first pass is not wrong, only blind: a hit
-    // it found on the words alone is still a hit, so the two are merged by
-    // fact, the better score wins, and the list is cut back to the depth it
-    // already had. The block does not grow; what changes is which facts fill
-    // it.
+    // It TAKES THE PLACE of the first, on both halves: the block takes
+    // `recall_top_k` and the entry fan takes the rest, which is the same
+    // division the first search made, made again on the better sentence.
+    // Keeping the first would mean scoring each fact on its best reading
+    // across the two, and one of the two is the vague question — a fact would
+    // enter the block for having answered the worse phrasing. The first search
+    // has its own job and keeps it: it is the classifier's inventory, and it
+    // stands alone on every turn where nothing was left implicit, which is
+    // most of them.
     if let Some(completed) = plan
         .completed_message
         .as_deref()
@@ -6901,29 +6909,23 @@ pub async fn wiki_ingest_message(
         )
         .await
         {
-            Ok(second) => {
+            Ok(mut ranked) => {
                 let before = recall_hits.len();
-                let mut best: std::collections::HashMap<String, RecallHit> =
-                    std::mem::take(&mut recall_hits)
-                        .into_iter()
-                        .map(|h| (h.fact_id.to_string(), h))
-                        .collect();
-                for hit in second {
-                    best.entry(hit.fact_id.to_string())
-                        .and_modify(|kept| {
-                            if hit.score > kept.score {
-                                kept.score = hit.score;
-                            }
-                        })
-                        .or_insert(hit);
-                }
-                recall_hits = best.into_values().collect();
-                recall_hits.sort_by(|a, b| b.score.total_cmp(&a.score));
-                recall_hits.truncate(depth);
+                // The fresh slot is not a similarity result — it is the
+                // un-promoted buffer, ranked by recency and rendered under a
+                // heading of its own — so it survives the swap untouched.
+                let fresh: Vec<RecallHit> = std::mem::take(&mut recall_hits)
+                    .into_iter()
+                    .filter(|h| h.fresh)
+                    .collect();
+                seed_tail = ranked.split_off(ranked.len().min(policy.recall_top_k));
+                recall_hits = ranked;
+                recall_hits.extend(fresh);
                 tracing::debug!(
                     completed,
                     before,
                     after = recall_hits.len(),
+                    doors = seed_tail.len(),
                     "ingest: searched again on the completed message"
                 );
             },
@@ -10793,6 +10795,56 @@ mod tests {
     }
 
     // ---------- the completed message ----------
+
+    /// The second search TAKES THE PLACE of the first, so the block it fills
+    /// is still `recall_top_k` deep and not the whole seed depth.
+    ///
+    /// The seed depth is what the entry fan needs to find doors on distinct
+    /// pages; carrying it into the block would treble the characters injected
+    /// into the consumer's prompt on every turn the classifier completes.
+    #[tokio::test]
+    async fn the_completed_message_does_not_widen_the_block() {
+        let (dir, tree, pool) = setup_workdir().await;
+        for i in 0..6u8 {
+            insert_page_fact(
+                &pool,
+                &format!("018f1234-5678-7abc-9def-0000000d000{i}"),
+                "alice",
+                "wikis/alice/note.md",
+                &format!("Alice keeps spare key number {i} at the gate."),
+                Principal::User("alice".into()),
+            )
+            .await;
+        }
+        let llm = FakeLlmBackend::new(
+            "fake",
+            r#"{"intent":"recall","completed_message":"le chiavi di alice"}"#,
+        );
+        let policy = IngestPolicy {
+            recall_top_k: 2,
+            nav_seed_depth: 6,
+            relevance_floor: 0.0,
+            ..IngestPolicy::default()
+        };
+        let resp = wiki_ingest_message(
+            &pool,
+            &tree,
+            fake_embedder(),
+            &llm,
+            None,
+            req("dove sono le sue?", "alice"),
+            &policy,
+        )
+        .await
+        .expect("ingest");
+        let snippet = resp.context_snippet.expect("recall block present");
+        let promoted = snippet.lines().filter(|l| l.starts_with("- (")).count();
+        assert_eq!(
+            promoted, 2,
+            "the block keeps recall_top_k, not the seed depth: {snippet}"
+        );
+        drop(dir);
+    }
 
     /// The field the second search runs on parses off the wire, and is absent
     /// on the turns that need nothing written in — which is most of them.
