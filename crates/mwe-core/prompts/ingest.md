@@ -1,7 +1,7 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.69
+version: 2.70
 default_version_at_bootstrap: v2.62
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
@@ -607,7 +607,7 @@ These anchor the `subject_id` rule above: the subject is what the fact is ABOUT,
 **Case 1 — sender is `group:<scope>` (device-channel)**
 - Input: `sender_id`: `group:family`; `current_message`: "Riccardo, remember the pasta after dinner".
 - Output: `intent`: `"capture"`, `extractions`: one element →
-  - `subject_id`: `"group:family"`, `allow_ids`: `[]`, `fact_type`: `"plan"`, `target_page`: `"promemoria.md"`, `style`: `"lista"`, `topics`: `["reminder", "dinner", "pasta"]`, `body`: `"Reminder for Riccardo: pasta after dinner."`
+  - `subject_id`: `"group:family"`, `allow_ids`: `[]`, `fact_type`: `"plan"`, `target_page`: `"promemoria.md"`, `style`: `"lista"`, `topics`: `["reminder", "pasta"]`, `body`: `"Reminder for Riccardo: pasta after dinner."`
 - Reasoning: the capture comes through a shared family device, no individual is the steward → the family owns it, and the engine files it in the family's memory. `allow_ids` is empty because it has nothing left to add: a fact is always readable by its SUBJECT, and the subject here IS the family. Empty means "nobody beyond them" — it never means the question was skipped.
 
 **Case 2 — collective list, no single steward (emergent collective entity)**
@@ -619,7 +619,7 @@ These anchor the `subject_id` rule above: the subject is what the fact is ABOUT,
 **Case 3 — single steward, group reads (announcement-to-group)**
 - Input: `sender_id`: `user:frodo`; `current_message`: "I have organised a picnic for Saturday at 3".
 - Output: `intent`: `"capture"`, `extractions`: one element →
-  - `subject_id`: `"user:frodo"`, `allow_ids`: `["group:family"]`, `fact_type`: `"plan"`, `style`: `"prosa-tecnica"`, `topics`: `["picnic", "family", "weekend"]`, `body`: `"Picnic organised for Saturday at 15:00."`
+  - `subject_id`: `"user:frodo"`, `allow_ids`: `["group:family"]`, `fact_type`: `"plan"`, `style`: `"prosa-tecnica"`, `topics`: `["outings", "picnic"]`, `body`: `"Picnic organised for Saturday at 15:00."`
 - Reasoning: Frodo is the steward → he owns it, and the engine files it in his memory. The family is the audience, so `group:family` is widened in `allow_ids`. Contrast with case 1: same family, but the fact lands elsewhere, because its subject is a different person.
 
 ## Worked example — one message, several facts, independent subjects
@@ -629,7 +629,7 @@ The point of the array: a single turn can carry facts that belong to DIFFERENT p
 - Input: `sender_id`: `user:frodo`; `known_users` includes `id: bob`; the sender belongs to `group:family` (scope: shared plans, who-is-home, the kids' school); `current_message`: "Tomorrow I am at the dentist at 9, Bob has moved to AcmeCorp, and on Saturday there is the children's play".
 - Output: `intent`: `"capture"`, `extractions`: THREE elements →
   - [0] `body`: `"Frodo has a dentist appointment at 9:00 on <date resolved from 'tomorrow'>."`, `subject_id`: `"user:frodo"`, `fact_type`: `"plan"`, `valid_from`: `"<current_time>"`, `valid_to`: `"<resolved tomorrow 09:00 Z>"`, `style`: `"prosa-tecnica"`, `salience`: `"normal"`, `topics`: `["health", "dentist"]`, `supersede_target`: null
-  - [1] `body`: `"Bob has moved to AcmeCorp."`, `subject_id`: `"user:bob"`, `fact_type`: `"state"`, `valid_from`: `"<current_time>"`, `valid_to`: null, `style`: `"prosa"`, `salience`: `"normal"`, `topics`: `["work", "acmecorp"]`, `supersede_target`: null
+  - [1] `body`: `"Bob has moved to AcmeCorp."`, `subject_id`: `"user:bob"`, `fact_type`: `"state"`, `valid_from`: `"<current_time>"`, `valid_to`: null, `style`: `"prosa"`, `salience`: `"normal"`, `topics`: `["work", "employer"]`, `supersede_target`: null
   - [2] `body`: `"The children's play is on Saturday <resolved date>."`, `subject_id`: `"group:family"`, `fact_type`: `"plan"`, `valid_from`: `"<current_time>"`, `valid_to`: `"<resolved Saturday 00:00 Z>"`, `style`: `"prosa-tecnica"`, `salience`: `"normal"`, `topics`: `["school", "play"]`, `supersede_target`: null
 - Reasoning: one turn, three atomic facts, three different subjects — Frodo's own plan, a cross-user fact about Bob (resolved via `known_users`), and a family-scope fact (the kids' school is in the family scope). Each therefore lands in a different memory without you naming one. Validity is per fact and independent from `fact_type`: Bob's job is a `state` fact_type yet `valid_to: null` (it holds until a later fact supersedes it), while the two dated commitments take a concrete `valid_to` (spent once past). `style` is per fact and independent again — and none of the three is `lista`, so none of them names a page: the engine files each in its subject's memory and the consolidation settles it. `salience` is per fact too — all three are `normal` here: an appointment, a job change, and a school date are ordinary knowledge, not always-on base context (none would be `high` — that bar is for identity, health/safety, or hard standing constraints).
 
