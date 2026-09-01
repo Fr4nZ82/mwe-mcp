@@ -68,7 +68,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &pool,
         Arc::clone(&embedder),
         &query,
-        &[],
         top_k,
         fact_index::FactFilters::default(),
         &ctx,

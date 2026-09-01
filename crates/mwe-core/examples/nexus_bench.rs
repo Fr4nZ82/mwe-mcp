@@ -1579,7 +1579,8 @@ async fn cmd_eval(o: &HashMap<String, String>) -> Result<(), String> {
         .and_then(|h| h.parse().ok())
         .unwrap_or(EVAL_HOP_DEPTH);
     let deep_depth = EVAL_FLAT_DEPTH + hop_depth;
-    let (mut flat_hit, mut hop_hit, mut deep_hit, mut total) = (0usize, 0usize, 0usize, 0usize);
+    let (mut flat_hit, mut hop_hit, mut deep_hit, mut kind_hit, mut total) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
 
     for q in &gold.queries {
         let qv = embedder
@@ -1636,12 +1637,38 @@ async fn cmd_eval(o: &HashMap<String, String>) -> Result<(), String> {
             .collect();
 
         let deep: Vec<&Fact> = ranked.iter().take(deep_depth).map(|(f, _)| *f).collect();
+
+        // The founder's proposal: every KIND of statement gets a seat. Count
+        // the types the flat block already shows, then admit the best-scoring
+        // fact of each type it does not — a diversity axis the vector cannot
+        // see at all, because a `bio` and an `episode` about the same subject
+        // are the same distance from the question.
+        let shown_kinds: HashSet<&str> = flat
+            .iter()
+            .map(|f| f.kind.as_str())
+            .filter(|k| !k.is_empty())
+            .collect();
+        let mut want: HashSet<&str> = HashSet::new();
+        let mut by_kind: Vec<&Fact> = Vec::new();
+        for (f, _) in &ranked {
+            if flat.iter().any(|g| g.id == f.id) || f.kind.is_empty() {
+                continue;
+            }
+            if !shown_kinds.contains(f.kind.as_str()) && want.insert(f.kind.as_str()) {
+                by_kind.push(f);
+            }
+        }
+        let with_kinds: Vec<&Fact> = flat
+            .iter()
+            .copied()
+            .chain(by_kind.iter().copied())
+            .collect();
         let covers = |pool: &[&Fact], needle: &str| {
             let needle = needle.to_lowercase();
             pool.iter().any(|f| f.text.to_lowercase().contains(&needle))
         };
         let together: Vec<&Fact> = flat.iter().chain(hop.iter()).copied().collect();
-        let (mut f_n, mut h_n, mut d_n) = (0usize, 0usize, 0usize);
+        let (mut f_n, mut h_n, mut d_n, mut k_n) = (0usize, 0usize, 0usize, 0usize);
         let mut gained: Vec<&str> = Vec::new();
         for e in &q.expect {
             if covers(&flat, e) {
@@ -1660,10 +1687,14 @@ async fn cmd_eval(o: &HashMap<String, String>) -> Result<(), String> {
             if covers(&deep, e) {
                 d_n += 1;
             }
+            if covers(&with_kinds, e) {
+                k_n += 1;
+            }
         }
         flat_hit += f_n;
         hop_hit += h_n;
         deep_hit += d_n;
+        kind_hit += k_n;
         total += q.expect.len();
         let label = q.id.as_deref().unwrap_or(&q.query);
         let mark = if gained.is_empty() {
@@ -1672,19 +1703,22 @@ async fn cmd_eval(o: &HashMap<String, String>) -> Result<(), String> {
             format!("  +{}", gained.join(", "))
         };
         println!(
-            "  {label:<34} piatto {f_n}/{n} · piatto profondo {d_n}/{n} · col macrotopic {h_n}/{n} (+{hop}){mark}",
+            "  {label:<30} piatto {f_n}/{n} · profondo {d_n}/{n} · macrotopic {h_n}/{n} · \
+             un-per-tipo {k_n}/{n} (+{kinds}){mark}",
             n = q.expect.len(),
-            hop = hop.len()
+            kinds = by_kind.len()
         );
     }
     let pct = |x: usize| 100.0 * x as f32 / total.max(1) as f32;
     println!(
         "\ncopertura su {total} attese:\n  piatto ({EVAL_FLAT_DEPTH} fatti)         {:.0}%  ({flat_hit})\n  \
          piatto profondo ({deep_depth} fatti) {:.0}%  ({deep_hit})   <- il controllo\n  \
-         col macrotopic          {:.0}%  ({hop_hit})",
+         col macrotopic          {:.0}%  ({hop_hit})\n  \
+         un fatto per tipo       {:.0}%  ({kind_hit})",
         pct(flat_hit),
         pct(deep_hit),
-        pct(hop_hit)
+        pct(hop_hit),
+        pct(kind_hit)
     );
     Ok(())
 }

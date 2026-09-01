@@ -1,7 +1,7 @@
 ---
 name: ingest
 description: Classifier driving `wiki_ingest_message` — one JSON object per turn (intent + an `extractions[]` array of atomic facts, the SOLE fact container; every fact is prose, each carrying a per-fact validity interval `valid_from`/`valid_to`, a per-fact `style` (and, for `lista` material or a requested container, a `target_page` + `page_description`), a `requested_container` live-write flag, a per-fact `salience`, and an `engine_rule` flag routing a standing governance directive to `@rules.md` instead of `fact_index`, a `behaviour_rule` flag (with a `behaviour_scope` of `per-user`/`agent-wide`/`user-global`, read from the addressee) routing a how-an-agent-converses-or-operates directive to the calling consumer's own wiki — or, user-global, to the sender's identity wiki for every assistant serving them — and an `attachments` claim list linking the turn's media to the fact that describes them); targets the strong-model tier
-version: 2.68
+version: 2.69
 default_version_at_bootstrap: v2.62
 source_of_truth: crates/mwe-core/src/ingest.rs (fn wiki_ingest_message)
 ---
@@ -357,6 +357,7 @@ Examples — the cases the rules above do not already walk through:
 "needs_disambig":      false | true,
 "needs_project_docs":  false | true,
 "disambig_candidates": [ { "candidate_id": "...", "description": "..." }, ... ],
+"completed_message":   "<the turn's message with what the speaker left implicit written in — omit when nothing is implicit>",
 "fact_scores":         [ { "target": "<fact_id copied EXACTLY from recalled_memory>", "multiplier": 0.90 … 1.10 }, ... ],
 "extractions":         [ { "target_page": "<`lista` extractions AND requested containers ONLY (Part 4's two cases): the page file name, from list_pages when it exists — NEVER a reserved name; omit otherwise>", "subject_id": "user:<id>" | "group:<id>" | "global", "subject_external": "<the NAME of what the fact is about when that is not a principal — see the `subject_external` section; omit otherwise>", "allow_ids": [ "user:<id>" | "group:<id>" | "global", ... ], "fact_type": "bio" | "state" | "preference" | "rule" | "plan" | "episode" | "other", "valid_from": "<ISO-8601 Z resolved against current_time>", "valid_to": "<ISO-8601 Z>" | null, "style": "prosa" | "prosa-tecnica" | "lista", "page_description": "<same two cases, and only for a NEW page: one line saying what it holds; omit otherwise>", "requested_container": false | true, "salience": "high" | "normal" | "low", "engine_rule": false | true, "behaviour_rule": false | true, "behaviour_scope": "per-user" | "agent-wide" | "user-global", "topics": [ "<the macrotopic>", "<the microtopic>" ], "body": "<the atomic fact, third person, dates resolved>", "supersede_target": "<behaviour-rule fact_id from agent_behaviour_rules — NEVER a fact_id from recalled_memory>" | null, "attachments": [ "<catalog_id from this turn's attachments>", ... ] }, ... ]
 }
@@ -372,6 +373,23 @@ The block shows facts this memory already holds. **Read it; write nothing agains
 3. **Do not rewrite a relationship** it already records (Part 6).
 
 **`allow_ids` is NOT one of the three**: every entry here carries an `allow:` line, and none of them is evidence about the fact in front of you. See the `allow_ids` chapter.
+
+### `completed_message` — write in what the speaker left out
+
+**The search ran before you did**, on the words of the message and nothing else. So a turn like *«i suoi reni sono peggiorati»* was searched for as written — no name in it, no way for the search to know whose kidneys. You are the first thing in this turn that has `recent_messages` in front of it, so you are the first thing that can say what the turn is really about.
+
+**When the turn points at somebody or something without naming it, write the message again with the name in it**, and the engine searches again on yours:
+
+- «i suoi reni sono peggiorati» → «i reni di bob sono peggiorati»
+- «quanto costava?» after a turn about a car → «quanto costava la Toyota Corolla usata»
+- «lo prendo domani» → «prendo il ferro domani»
+
+**Rules, and they are narrow:**
+
+- **Only from `recent_messages`.** The completion has to be *in the conversation*. Never from `recalled_memory` — a fact that merely looks related is not what the speaker meant, and putting its subject in would search for the wrong person with confidence.
+- **Write the same message, not a better one.** Keep the wording, keep the question, keep the tense. You are filling in a pronoun or a missing object, not rephrasing and not answering.
+- **Omit the field when nothing is implicit.** Most turns name what they are about, and repeating them costs a search for nothing. If you would write the message unchanged, leave it out.
+- **When you cannot tell who or what, leave it out.** A guess sends the search after the wrong person, and the block it fills is what the agent will answer from.
 
 ### `fact_scores` — say which of them actually answers the turn
 

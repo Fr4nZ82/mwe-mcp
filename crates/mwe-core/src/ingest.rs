@@ -841,6 +841,19 @@ struct LlmIngestPlan {
     /// `recalled_memory`, and only the fact's SUBJECT may change it from chat.
     #[serde(default)]
     acl_changes: Vec<LlmAclChange>,
+    /// The turn's message with what the speaker left implicit written in —
+    /// «i suoi reni sono peggiorati» → «i reni di bob sono peggiorati».
+    ///
+    /// The search runs BEFORE this call and can only look for the words the
+    /// turn actually contains, so a turn whose subject lives in the previous
+    /// exchange is searched for blind. The classifier is the first thing in
+    /// the turn that has the conversation in front of it, so it is the first
+    /// thing that can say what the turn is really asking.
+    ///
+    /// `None` on the turns that need nothing written in, which is most of
+    /// them.
+    #[serde(default)]
+    completed_message: Option<String>,
     /// The classifier's vote on how well each recalled fact answers THIS
     /// turn, one multiplier per fact it cares to judge.
     ///
@@ -2713,7 +2726,6 @@ async fn recall_topic_candidates(
             pool,
             Arc::clone(embedder),
             topic,
-            &[],
             policy.recall_top_k,
             fact_index::FactFilters::default(),
             sender_ctx,
@@ -6332,7 +6344,7 @@ pub async fn wiki_ingest_message(
     embedder: Arc<dyn Embedder>,
     llm: &dyn LlmBackend,
     navigator: Option<&dyn LlmBackend>,
-    request: IngestRequest,
+    mut request: IngestRequest,
     policy: &IngestPolicy,
 ) -> Result<IngestResponse> {
     let start = std::time::Instant::now();
@@ -6381,7 +6393,6 @@ pub async fn wiki_ingest_message(
         pool,
         Arc::clone(&embedder),
         &request.text,
-        &[],
         policy.nav_seed_depth.max(policy.recall_top_k),
         fact_index::FactFilters::default(),
         &sender_ctx,
@@ -6434,6 +6445,30 @@ pub async fn wiki_ingest_message(
         },
     };
     let recent_window = format_recent_window(&window_entries, turn_now, policy);
+
+    // The classifier cannot resolve «i suoi reni» without the conversation,
+    // and a consumer is not obliged to send one. When it sends none the window
+    // just fetched already holds the requester's own surface — that is what
+    // `SurfaceFilter::IncludeRequester` above is for — so the block is filled
+    // from it rather than left empty. The consumer's own copy still WINS when
+    // it exists: the engine holds only the turns it was shown, so a consumer
+    // that calls memory on some turns and not others has the fuller record of
+    // its own surface.
+    if request.recent_messages.is_empty() {
+        request.recent_messages = window_entries
+            .iter()
+            .rev()
+            .take(policy.max_recent_messages)
+            .map(|e| RecentMessage {
+                role: e.author,
+                text: e.text.clone(),
+                timestamp: Some(e.occurred_at.clone()),
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+    }
 
     // What the agent is ALREADY being shown this turn, as message
     // fingerprints: its own replayed transcript plus the window just fetched.
@@ -6833,6 +6868,70 @@ pub async fn wiki_ingest_message(
         },
     };
     tracing::debug!(intent = plan.intent.as_str(), "ingest: LLM plan parsed");
+
+    // The second search. The first one ran before anything in this turn had
+    // read the conversation, so it looked for the words the turn contains and
+    // not for what the turn is about; now that the completed message exists,
+    // the same search is worth running again on it.
+    //
+    // It costs no completion — the classifier wrote the sentence inside the
+    // call it was already making — and everything downstream is still ahead:
+    // the navigator picks where to walk from these hits, the identity cards
+    // are served from the people they name, and the block renders last.
+    //
+    // MERGED, never replaced. The first pass is not wrong, only blind: a hit
+    // it found on the words alone is still a hit, so the two are merged by
+    // fact, the better score wins, and the list is cut back to the depth it
+    // already had. The block does not grow; what changes is which facts fill
+    // it.
+    if let Some(completed) = plan
+        .completed_message
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty() && *c != request.text.trim())
+    {
+        let depth = policy.nav_seed_depth.max(policy.recall_top_k);
+        match recall::wiki_recall(
+            pool,
+            Arc::clone(&embedder),
+            completed,
+            depth,
+            fact_index::FactFilters::default(),
+            &sender_ctx,
+        )
+        .await
+        {
+            Ok(second) => {
+                let before = recall_hits.len();
+                let mut best: std::collections::HashMap<String, RecallHit> =
+                    std::mem::take(&mut recall_hits)
+                        .into_iter()
+                        .map(|h| (h.fact_id.to_string(), h))
+                        .collect();
+                for hit in second {
+                    best.entry(hit.fact_id.to_string())
+                        .and_modify(|kept| {
+                            if hit.score > kept.score {
+                                kept.score = hit.score;
+                            }
+                        })
+                        .or_insert(hit);
+                }
+                recall_hits = best.into_values().collect();
+                recall_hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+                recall_hits.truncate(depth);
+                tracing::debug!(
+                    completed,
+                    before,
+                    after = recall_hits.len(),
+                    "ingest: searched again on the completed message"
+                );
+            },
+            Err(err) => {
+                tracing::warn!(error = %err, "ingest: second search failed, the first stands");
+            },
+        }
+    }
 
     // Step 4 — route based on intent.
     let intent = parse_intent(&plan.intent);
@@ -8879,6 +8978,7 @@ mod tests {
             validity_edits: Vec::new(),
             acl_changes: Vec::new(),
             fact_scores: Vec::new(),
+            completed_message: None,
         };
         let request = req("comprare il latte", "alice");
         let policy = IngestPolicy::default();
@@ -8929,6 +9029,7 @@ mod tests {
             validity_edits: Vec::new(),
             acl_changes: Vec::new(),
             fact_scores: Vec::new(),
+            completed_message: None,
         };
         let request = req("a fact", "alice");
         let policy = IngestPolicy::default();
@@ -8975,6 +9076,7 @@ mod tests {
             validity_edits: Vec::new(),
             acl_changes: Vec::new(),
             fact_scores: Vec::new(),
+            completed_message: None,
         };
         let request = req("alice prefers coffee black", "alice");
         let policy = IngestPolicy::default();
@@ -9029,6 +9131,7 @@ mod tests {
             validity_edits: Vec::new(),
             acl_changes: Vec::new(),
             fact_scores: Vec::new(),
+            completed_message: None,
         };
         let request = req("alice prefers coffee black", "alice");
         let policy = IngestPolicy::default();
@@ -9071,6 +9174,7 @@ mod tests {
             validity_edits: Vec::new(),
             acl_changes: Vec::new(),
             fact_scores: Vec::new(),
+            completed_message: None,
         };
         let request = req("hello", "alice");
         let policy = IngestPolicy::default();
@@ -9148,6 +9252,7 @@ mod tests {
             validity_edits: Vec::new(),
             acl_changes: Vec::new(),
             fact_scores: Vec::new(),
+            completed_message: None,
         };
         let request = req("public fact", "alice");
         let policy = IngestPolicy::default();
@@ -9507,6 +9612,7 @@ mod tests {
             validity_edits: Vec::new(),
             acl_changes: Vec::new(),
             fact_scores: Vec::new(),
+            completed_message: None,
         }
     }
 
@@ -10683,6 +10789,29 @@ mod tests {
                 "salute".into(),
             ]),
             vec!["salute"]
+        );
+    }
+
+    // ---------- the completed message ----------
+
+    /// The field the second search runs on parses off the wire, and is absent
+    /// on the turns that need nothing written in — which is most of them.
+    #[test]
+    fn the_completed_message_parses_and_is_absent_by_default() {
+        let with: LlmIngestPlan = serde_json::from_str(
+            r#"{"intent":"recall","completed_message":"i reni di bob sono peggiorati"}"#,
+        )
+        .expect("parses");
+        assert_eq!(
+            with.completed_message.as_deref(),
+            Some("i reni di bob sono peggiorati")
+        );
+
+        let without: LlmIngestPlan =
+            serde_json::from_str(r#"{"intent":"recall"}"#).expect("parses");
+        assert_eq!(
+            without.completed_message, None,
+            "most turns complete nothing"
         );
     }
 

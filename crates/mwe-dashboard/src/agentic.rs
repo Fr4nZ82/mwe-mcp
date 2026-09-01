@@ -807,7 +807,6 @@ async fn dispatch_wiki_recall(
         ctx.pool,
         Arc::clone(&ctx.embedder),
         &args.query,
-        &[],
         top_k,
         FactFilters::default(),
         &ctx.sender_ctx,

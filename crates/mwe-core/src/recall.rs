@@ -277,6 +277,24 @@ pub const MACROTOPIC_QUOTA: usize = 2;
 /// from and would fill it with nothing.
 pub const MACROTOPIC_QUOTA_SEEDS: usize = 3;
 
+/// Whether the block admits one fact of every **tipo di fatto** the memory
+/// holds and the block does not already show.
+///
+/// The one axis similarity is blind to by construction: «è celiaca» and «ieri
+/// ha mangiato la pizza» sit the same distance from *«cosa cucino stasera»*,
+/// because a vector measures what a sentence is ABOUT and not what KIND of
+/// statement it is. A block filled with `episode` will keep filling with
+/// `episode`, and the `bio` that answers is never reached however deep the
+/// search goes.
+///
+/// **These seats are ADDED, not taken** — the opposite of the macrotopic
+/// quota beside it, and deliberately: a type missing from the block is
+/// missing because nothing of that kind ranked, so there is no weak hit to
+/// trade away, and taking a seat from similarity would pay for a type nobody
+/// asked about with a fact somebody did. Measured on twelve real questions:
+/// 64% → 75% coverage for about six extra facts a turn.
+pub const ONE_FACT_PER_KIND: bool = true;
+
 /// First-person forms that put the SPEAKER among the turn's subjects.
 ///
 /// Deliberately narrow, and the exclusions are the point. «**mi** ricordi
@@ -940,12 +958,18 @@ fn take_with_macrotopic_quota(
     }
     if seats == 0 || areas.is_empty() {
         // Nothing to walk from: fill the reserved seats the ordinary way
-        // rather than serve a shorter block than the caller asked for.
-        out.extend(
-            rest.into_iter()
-                .take(top_k - out.len())
-                .map(|(s, row)| RecallHit::from_row(row, s)),
-        );
+        // rather than serve a shorter block than the caller asked for. The
+        // per-kind seats still run — they answer a different question and do
+        // not need a macrotopic to answer it.
+        let mut spare: Vec<(f32, FactIndexRow)> = Vec::new();
+        for (score, row) in rest {
+            if out.len() < top_k {
+                out.push(RecallHit::from_row(row, score));
+            } else {
+                spare.push((score, row));
+            }
+        }
+        add_one_fact_per_kind(&mut out, spare);
         return out;
     }
     let mut taken = 0usize;
@@ -965,13 +989,42 @@ fn take_with_macrotopic_quota(
     }
     // Seats the quota could not fill go back to similarity: an empty seat
     // would shorten the block for nobody's benefit.
-    out.extend(
-        leftovers
-            .into_iter()
-            .take(top_k.saturating_sub(out.len()))
-            .map(|(s, row)| RecallHit::from_row(row, s)),
-    );
+    let mut spare: Vec<(f32, FactIndexRow)> = Vec::new();
+    for (score, row) in leftovers {
+        if out.len() < top_k {
+            out.push(RecallHit::from_row(row, score));
+        } else {
+            spare.push((score, row));
+        }
+    }
+    add_one_fact_per_kind(&mut out, spare);
     out
+}
+
+/// Adds the best-scoring fact of every `fact_type` the block does not already
+/// show (see [`ONE_FACT_PER_KIND`] for why these seats are added and not
+/// taken).
+///
+/// A fact with no type is skipped rather than given a seat of its own: an
+/// absent type is not a kind of statement, and the untyped tail would take
+/// one seat on every turn and always the same one.
+fn add_one_fact_per_kind(block: &mut Vec<RecallHit>, spare: Vec<(f32, FactIndexRow)>) {
+    if !ONE_FACT_PER_KIND {
+        return;
+    }
+    let mut shown: std::collections::HashSet<String> = block
+        .iter()
+        .filter_map(|h| h.fact_type.clone())
+        .filter(|k| !k.is_empty())
+        .collect();
+    for (score, row) in spare {
+        let Some(kind) = row.fact_type.clone().filter(|k| !k.is_empty()) else {
+            continue;
+        };
+        if shown.insert(kind) {
+            block.push(RecallHit::from_row(row, score));
+        }
+    }
 }
 
 async fn bump_recall_hits_from(pool: &SqlitePool, hits: &[RecallHit]) -> RecallResult<()> {
@@ -2104,16 +2157,10 @@ fn capture_matches_filters(cap: &BufferedCapture, filters: &fact_index::FactFilt
 
 // ---------- wiki_recall ----------
 
-/// `_internal.wiki_recall` — hybrid recall used by the LLM ingest.
+/// `_internal.wiki_recall` — the flat fact search behind one turn.
 ///
-/// Today this is a thin wrapper over [`wiki_search`] — semantic top-K
-/// against active facts in the requested scope, ACL filtered, with
-/// the recall-counter side effect. The `recent_messages` slice is
-/// accepted but ignored at this stage; a later revision will use it to
-/// weight the score against very-recent conversational context.
-///
-/// Kept as a separate entry point so the call site in `wiki_ingest_message`
-/// is stable from day one, even while the body grows policy.
+/// A thin name over [`wiki_search`], kept because the ingest call site reads
+/// better for it and because the two have drifted apart before.
 ///
 /// # Errors
 ///
@@ -2122,7 +2169,6 @@ pub async fn wiki_recall(
     pool: &SqlitePool,
     embedder: Arc<dyn Embedder>,
     query: &str,
-    _recent_messages: &[String],
     top_k: usize,
     filters: fact_index::FactFilters,
     sender: &SenderContext,
@@ -3100,6 +3146,121 @@ mod tests {
     }
 
     // ---------- score_and_filter ----------
+
+    // ---------- one fact per tipo di fatto ----------
+
+    fn row_kind(id: &str, embedding: Vec<f32>, kind: Option<&str>) -> FactIndexRow {
+        let mut row = sample_row(id, "global", None, "x");
+        row.embedding = embedding;
+        row.fact_type = kind.map(str::to_owned);
+        row
+    }
+
+    /// The case this exists for: the block fills with one kind of statement
+    /// and the fact that answers is another kind, sitting the same distance
+    /// from the question. Similarity cannot reach it however deep it goes.
+    #[test]
+    fn a_kind_the_block_does_not_show_earns_a_seat_of_its_own() {
+        let query = vec![1.0, 0.0];
+        let episodes: Vec<FactIndexRow> = (1u8..=3)
+            .map(|i| {
+                let drift = f32::from(i);
+                row_kind(
+                    &format!("018f1234-5678-7abc-9def-00000000000{i}"),
+                    vec![drift.mul_add(-0.01, 1.0), drift * 0.02],
+                    Some("episode"),
+                )
+            })
+            .collect();
+
+        let bio = row_kind(
+            "018f1234-5678-7abc-9def-000000000009",
+            vec![0.1, 0.99],
+            Some("bio"),
+        );
+        let mut pool = episodes;
+        pool.push(bio.clone());
+        let hits = score_and_filter(
+            &query,
+            pool,
+            &SenderContext::anonymous(),
+            2,
+            &[],
+            &[],
+            &HashMap::new(),
+            &[],
+        );
+        assert_eq!(
+            hits.len(),
+            3,
+            "two by similarity, one for the missing kind: {hits:?}"
+        );
+        assert!(
+            hits.iter().any(|h| h.fact_id == bio.fact_id),
+            "the `bio` similarity ranked last is in: {hits:?}"
+        );
+    }
+
+    /// A kind the block already shows buys nothing. The seats exist to add a
+    /// KIND, not to add facts.
+    #[test]
+    fn a_kind_already_in_the_block_earns_nothing() {
+        let query = vec![1.0, 0.0];
+        let pool: Vec<FactIndexRow> = (1u8..=4)
+            .map(|i| {
+                let drift = f32::from(i);
+                row_kind(
+                    &format!("018f1234-5678-7abc-9def-00000000000{i}"),
+                    vec![drift.mul_add(-0.01, 1.0), drift * 0.02],
+                    Some("episode"),
+                )
+            })
+            .collect();
+        let hits = score_and_filter(
+            &query,
+            pool,
+            &SenderContext::anonymous(),
+            2,
+            &[],
+            &[],
+            &HashMap::new(),
+            &[],
+        );
+        assert_eq!(hits.len(), 2, "one kind, no extra seats: {hits:?}");
+    }
+
+    /// A fact with no type is not a kind. Giving the untyped tail a seat
+    /// would spend one on every turn, always on the same fact.
+    #[test]
+    fn an_untyped_fact_is_not_a_kind() {
+        let query = vec![1.0, 0.0];
+        let typed = row_kind(
+            "018f1234-5678-7abc-9def-000000000001",
+            vec![1.0, 0.0],
+            Some("episode"),
+        );
+        let a = row_kind(
+            "018f1234-5678-7abc-9def-000000000002",
+            vec![0.99, 0.1],
+            Some("episode"),
+        );
+        let untyped = row_kind(
+            "018f1234-5678-7abc-9def-000000000003",
+            vec![0.1, 0.99],
+            None,
+        );
+        let hits = score_and_filter(
+            &query,
+            vec![typed, a, untyped],
+            &SenderContext::anonymous(),
+            2,
+            &[],
+            &[],
+            &HashMap::new(),
+            &[],
+        );
+        assert_eq!(hits.len(), 2, "{hits:?}");
+    }
 
     // ---------- the macrotopic quota ----------
 
@@ -5635,7 +5796,7 @@ mod tests {
     // -- wiki_recall --
 
     #[tokio::test]
-    async fn wiki_recall_delegates_to_search_today() {
+    async fn wiki_recall_delegates_to_search() {
         let pool = make_pool().await;
         let mut rows = Vec::new();
         insert_row(
@@ -5653,7 +5814,6 @@ mod tests {
             &pool,
             embedder,
             "q",
-            &["earlier message".into()],
             5,
             FactFilters::default(),
             &SenderContext::anonymous(),
