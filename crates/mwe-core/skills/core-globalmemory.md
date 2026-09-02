@@ -127,10 +127,11 @@ contact's birthday, a colleague's role, a shared address — returns **nothing**
 from it, even when that fact sits in a wiki the user owns. For those, call
 `wiki_search` with **no `subject_ids` in `scope`**: it spans the whole corpus
 the user is allowed to read (ACL-filtered), including other people's pages they
-have access to. If the top snippet doesn't carry the exact fact, `wiki_read` the
-page it points to — the prose holds detail the snippet may omit. (Empirically
-confirmed: a "when was X born" query draws a blank on `recall_core_global` but
-lands the right page via `wiki_search`.)
+have access to. If the top snippet doesn't carry the exact fact, open the page
+the hit names — every hit carries `wiki_id` and `path`, and those two are
+`wiki_read`'s arguments — because the prose holds detail the snippet may omit.
+(Empirically confirmed: a "when was X born" query draws a blank on
+`recall_core_global` but lands the right page via `wiki_search`.)
 
 For a question that needs **depth or to connect things across pages** ("tell me
 everything about X", "how does Y relate to Z"), use **`wiki_navigate`** instead
@@ -157,7 +158,7 @@ Concretely:
   Explore` (read-only search) or `general-purpose` when the recall
   needs to combine `wiki_search` + `wiki_read` + light synthesis.
   Hand the subagent a self-contained prompt that includes the user
-  query and the scope filter (`subject_ids`, `wiki_types` allowlist),
+  query and the scope filter (`subject_ids`, `smart: false`),
   ask for a short report (target ≤ 200 words, citing
   `wiki://<wiki_id>/<path>` for each fact). Use the distillate
   verbatim in your reply; do **not** re-issue `wiki_search` in the
@@ -184,11 +185,13 @@ Use:
     query: "<user query>",
     scope: {
       subject_ids: ["user:<your sender_id>"],
-      wiki_types: ["wiki-user","wiki-tech","wiki-lists"]
+      smart: false
     }
   })
 
-If a hit is promising, read it with wiki_read. Return ≤ 200 words:
+If a hit is promising, read the page it names:
+wiki_read({ wiki_id: <hit.wiki_id>, path: <hit.path> }).
+Return ≤ 200 words:
 bullet list of relevant facts, each followed by the
 wiki://<wiki_id>/<path> citation. If nothing is relevant, return
 exactly "no relevant memory."
@@ -303,9 +306,11 @@ transversal mode without prompting.
 - ❌ **Don't recall on every turn.** Once per topic shift, not once
   per prompt. The user is paying for your token budget; redundant
   recalls burn it without information gain.
-- ❌ **Don't drop the `wiki_types` allowlist from `scope`.** Without the
-  allowlist, the search will hit smart wikis the user owns and
-  leak project context into a generic session.
+- ❌ **Don't drop `smart: false` from `scope`.** That flag is what keeps
+  smart wikis out; without it the search hits the project wikis the user
+  owns and leaks project context into a generic session. (`wiki_types` is
+  a different axis — free-form labels each deployment chooses — and it
+  filters on the label, never on smart-ness.)
 - ❌ **Don't write to a *project* smart wiki from here.** Without a
   project cwd you have no `project_id` context and no `.mwe/state.json` to
   track op_log_head, so a project-wiki write would be guesswork. Your own

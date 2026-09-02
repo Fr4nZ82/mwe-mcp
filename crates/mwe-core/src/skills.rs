@@ -4,10 +4,11 @@
 //! A "skill" is a markdown document that documents how a consumer LLM
 //! agent should behave in a given mode: the always-loaded `core`, the
 //! transversal `core-globalmemory`, the smart-wiki-bound
-//! `smart-consumer`, the per-class `standard-conversational`, the
-//! codebase pattern `smart-codebase`, and the one-shot first-connect
-//! procedure `smart-onboarding` (fetched only when a project turns out
-//! to have no memory yet, so the everyday skills stop paying for it).
+//! `smart-consumer`, its mirror-less web variant `web-smart-consumer`,
+//! the per-class `standard-conversational`, the codebase pattern
+//! `smart-codebase`, and the one-shot first-connect procedure
+//! `smart-onboarding` (fetched only when a project turns out to have no
+//! memory yet, so the everyday skills stop paying for it).
 //!
 //! Bundled skills ship as `.md` files inside `crates/mwe-core/skills/`,
 //! embedded into the binary at compile time. They are identical for
@@ -30,14 +31,15 @@
 //!
 //! ## Distribution
 //!
-//! Three modalities all read from the same in-memory + DB catalog:
+//! Two pull modalities read the same embedded catalog:
 //!
 //! 1. **MCP tools** (`skill_list`, `skill_fetch`) — for consumers
 //!    that already speak MCP.
 //! 2. **HTTP endpoints** (`/skills`, `/skills/<name>.md`) — for
 //!    consumers that prefer plain HTTP; ships alongside this module.
-//! 3. **`InitializeResult.instructions`** — deferred to a future
-//!    milestone; the pull modes above are enough for MVP.
+//!
+//! The MCP handshake's `InitializeResult.instructions` carries no skill
+//! body: it names the one to load, and the client pulls it.
 //!
 //! ## What this module does NOT do
 //!
@@ -76,10 +78,6 @@ pub enum SkillError {
         /// Free-form detail.
         detail: String,
     },
-
-    /// Underlying database error.
-    #[error("skills db error: {0}")]
-    Db(#[from] sqlx::Error),
 }
 
 /// Result alias for this module.

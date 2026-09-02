@@ -38,7 +38,7 @@ If something is clearly private, or the user signals it should not be stored, do
 
 ## Writing your wiki
 
-`wiki_admin_push` writes pages verbatim — `mode=create` for a new page, `mode=upsert` to update. Push **only** the page you're changing now; never re-send pages you didn't touch (a push carries exactly what you send, so re-sending unchanged pages would overwrite them). You loaded the current content with `pull`, so edit from that.
+`wiki_admin_push` writes pages verbatim. Use `mode=upsert` for everything you do day to day — a page you are adding and a page you are updating are the same call. (`mode=create` forges a whole new *wiki*, which is not something you need: you already own one.) Push **only** the page you're changing now; never re-send pages you didn't touch (a push carries exactly what you send, so re-sending unchanged pages would overwrite them). You loaded the current content with `pull`, so edit from that.
 
 ## Access control
 

@@ -1,7 +1,7 @@
 ---
 name: smart-codebase
 version: 1.8.0
-description: "Maintenance pattern for a software project's smart wiki: modules/decisions/runbooks/architecture layout, module- and decision-page conventions, the change-log page, source_ref discipline, last_synced cadence. First connect (importing an existing docs/ or wiki, the CLAUDE.md documentation-rules resolution, the shape report) is not here — it lives in smart-onboarding."
+description: "Maintenance pattern for a software project's smart wiki: modules/decisions/runbooks/architecture layout, module- and decision-page conventions, the change-log page, page frontmatter conventions. First connect (importing an existing docs/ or wiki, the CLAUDE.md documentation-rules resolution, the shape report) is not here — it lives in smart-onboarding."
 depends_on: ["core", "smart-consumer"]
 applies_to:
   consumer_class: smart
@@ -14,11 +14,10 @@ status: implemented
 
 This skill concretises `smart-consumer` for the most common case:
 **a software project's smart wiki**. It defines how the bundled
-`wiki-companion` type maps to a real codebase, what belongs on a module,
-decision or change-log page, and the day-to-day discipline (`source_ref`
-frontmatter, `last_synced` bumps) that keeps REM's read-side sub-jobs
-useful. Bringing an existing `docs/` tree or wiki *in* is a one-shot job
-and lives in [`smart-onboarding`](smart-onboarding.md).
+`wiki-companion` type maps to a real codebase and what belongs on a
+module, decision or change-log page. Bringing an existing `docs/` tree
+or wiki *in* is a one-shot job and lives in
+[`smart-onboarding`](smart-onboarding.md).
 
 ## When this skill applies
 
@@ -42,9 +41,16 @@ The bundled `wiki-companion` type suggests four top-level
 subdirectories under your local mirror (`state.local_wiki_root` —
 `.mwe/wiki/` by default, or the directory you ingested in place).
 Deviations are neither an error nor a warning — the server does not
-check folder shape at all — but the standard layout lets REM's
-read-side dedup and your team's recall hit the right files without
-surprise:
+check folder shape at all. What the standard layout buys is that one
+subject lands on one page, which is what recall ranks on and what a
+teammate scanning the tree expects.
+
+The **page frontmatter conventions** in the third column are the same
+kind of thing: a convention for the people (and the agents) who read
+the pages. The server stores a page's bytes as you push them and reads
+none of those fields. Keep them consistent anyway — they are how a
+reader tells which source a page covers and how current it claims to
+be.
 
 | Folder | What lives there | Page frontmatter convention |
 |---|---|---|
@@ -53,7 +59,7 @@ surprise:
 | `runbooks/` | One page per operational procedure (deploy steps, rollback, oncall response, recovery from $known-incident). Steps explicit, copy-pasteable. | `runbook_id: <slug>`, `severity: routine/oncall/incident`, `last_synced` |
 | `architecture/` | Cross-module concerns: data flow, service topology, event/queue ownership. Diagrams (mermaid / ascii) go here. Fewer files than `modules/`, broader scope. | `topic: <slug>`, `last_synced` |
 | `_briefing.md` (root) | Your inbox — see `smart-consumer`. Others reach it with `wiki_admin_notify`; **you** write it with an ordinary `wiki_admin_push` (the server refuses a smart consumer notifying its own wiki). | (you own it; the server appends to it) |
-| `_meta.md` (root) | Auto-managed metadata: `owner_user`, `shared_with`, `wiki_type`. Edited via dashboard `/wikis/<id>/sharing`, not by the smart consumer. | (managed by the server) |
+| `_meta.md` (root) | Auto-managed metadata: `owner_user`, `shared_with`, `wiki_type`. Edited via dashboard `/dashboard/wiki/<id>/sharing`, not by the smart consumer. | (managed by the server) |
 
 Other folders (`adr/`, `notes/`, `playbooks/`, `glossary/`) are simply
 tolerated: there is a single bundled smart-wiki type and no custom-type
@@ -102,9 +108,9 @@ references, etc.)
 ```
 
 `source_ref` is a glob (or list of globs) pointing at the code the
-page documents. It lets the user check coverage from the dashboard
-`/wikis/<id>` view (planned): "which source modules have no page on the
-smart wiki?".
+page documents, so a reader can go from the page to the source it is
+about — and so **you** can answer "which source modules have no page
+yet?" by walking the tree yourself. Nothing on the server reads it.
 
 **Do not** put per-function or per-line details in module pages. The
 smart wiki is for the why, not the what — the what lives in the
@@ -114,15 +120,13 @@ source itself, where it can't drift.
 
 Every `wiki_admin_push` that materially updates a page bumps
 `last_synced` in the frontmatter to the current time. Cosmetic edits
-(typo, link fix) **don't** bump — they would reset the freshness
-signal REM uses for read-side preference.
+(typo, link fix) **don't** bump — a date that moves for a typo tells
+the next reader the content was reviewed when it was not.
 
-REM's recall pre-indexing sub-job prefers pages with recent
-`last_synced` when the user's query hits the same topic from
-multiple pages. Pages with `last_synced` older than 90 days (no
-edits) get a soft staleness warning in `_briefing.md` from the
-Briefing dispatcher — the user can confirm "still accurate, bump
-the date manually" or "rewrite this section".
+It is a claim to a human reader, not a signal to the engine: recall
+ranks on the meaning of the text, and no server-side job reads this
+field. Keep it honest and it stays useful; let it drift and it is worse
+than absent.
 
 A typical edit cycle:
 
@@ -213,9 +217,10 @@ rotation meet: the log survives whole, just paged and navigable.
 ## Anti-patterns
 
 - ❌ **One giant `architecture/overview.md` for everything.** Split
-  by concern (data-flow, topology, deployment, etc.). REM's recall
-  preference can't help if every architectural query hits the same
-  monolithic page.
+  by concern (data-flow, topology, deployment, etc.). Every
+  architectural query then lands on the same page, and the answer is
+  whichever slab of it happened to embed closest — recall cannot pick a
+  concern out of a page that mixes them all.
 - ❌ **Module pages that paraphrase the code.** That kind of doc
   decays fastest. Write the why and the contracts; trust the source
   for the what.
@@ -223,8 +228,8 @@ rotation meet: the log survives whole, just paged and navigable.
   asciidiagrams in the page body. The smart wiki is markdown +
   Obsidian — binary attachments don't render in the dashboard and
   REM can't index them.
-- ❌ **Bumping `last_synced` on cosmetic edits.** You burn the
-  freshness signal REM uses for recall preference.
+- ❌ **Bumping `last_synced` on cosmetic edits.** The date then says
+  the page was reviewed on a day nobody reviewed it.
 - ❌ **Fighting a layout that already works.** The canonical folders are
   a suggestion the server never checks; a project with its own structure
   keeps it. There is no custom-type escape hatch and none is needed —

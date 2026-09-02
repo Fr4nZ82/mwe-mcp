@@ -349,7 +349,7 @@ foreign `(sender_id, consumer_id)` pair.
 ```
 lease = wiki_admin_lease_acquire(
     wiki_id = state.wiki_id,
-    ttl_seconds = 60,     # default 60s; cap 300s — keep it short
+    ttl_sec = 60,         # default 60s; cap 300s — keep it short
 )
 # lease.lease_id, lease.expires_at
 
@@ -379,10 +379,10 @@ grace + 7d retention.
 
 To replace the whole wiki after a local regeneration, push the new
 page set with `mode: upsert` and list every now-removed page in the
-push's `delete` paths. There is no single "replace everything" mode —
+push's `deletes` list. There is no single "replace everything" mode —
 `upsert` (+ deletes) is the only edit mode beside `create`. Each op is
-recorded in the op-log; the dashboard's `/wikis/<id>/op-log` exposes a
-one-click revert window.
+recorded in the op-log; the dashboard's `/dashboard/wiki/<id>/op-log`
+exposes a one-click revert window.
 
 ### Read the push response — it tells you things you cannot see
 
@@ -608,7 +608,7 @@ when it lands).
 ## Shared-with smart wikis
 
 The owner can extend read access to the smart wiki via the
-dashboard `/wikis/<id>/sharing` page, adding `user:<id>` /
+dashboard `/dashboard/wiki/<id>/sharing` page, adding `user:<id>` /
 `group:<id>` / `global` entries to `_meta.md` field `shared_with`.
 Read-side resolution (owner → user → group → global → denied) is
 handled by `mwe_core::wiki_admin::resolve_read_access`; you do not

@@ -38,7 +38,7 @@ fn destructive(t: Tool) -> Tool {
 
 /// The tool surface, in wire order.
 ///
-/// Families A through K:
+/// Families A through L:
 /// - A — `wiki_ingest_message`
 /// - B — `events_poll`, `events_ack` (structural-change notices ride
 ///   here as `structure_applied` events; there is no `structure_proposal_*`
@@ -49,18 +49,21 @@ fn destructive(t: Tool) -> Tool {
 /// - F — `consumer_register`, `wiki_ingest_external`
 /// - G — `dashboard_link`
 /// - H — `wiki_admin_push`, `wiki_admin_pull`, `wiki_admin_signpost`,
-///   `wiki_admin_notify` (smart-wiki authoritative writes for smart
-///   consumers, project signposts into the owner's standard memory, +
-///   briefing inbox open to any reader).
+///   `wiki_admin_notify`, `wiki_admin_lease_acquire`,
+///   `wiki_admin_lease_release` (smart-wiki authoritative writes for smart
+///   consumers, project signposts into the owner's standard memory, a
+///   briefing inbox open to any reader, + the cooperative lease that
+///   coordinates pushes across a user's devices).
 /// - I — `skill_list`, `skill_fetch` (server-served skill catalog;
 ///   every skill is bundled, and public).
-/// - K — `smart_bootstrap`, `recall_core_global` (atomic primitives for
-///   the Claude Code hook bundle: deterministic smart-wiki resume on
-///   session start + canonical transversal recall on every user prompt.
-///   Both gated on `consumer_class=smart`).
-/// - L — `wiki_forget` (authority-routed forget: the caller deletes a fact
-///   they authored, or opens an audience vote to forget one they own but did
-///   not author; voting itself stays dashboard-only).
+/// - K — `smart_bootstrap`, `recall_core_global` (atomic primitives for the
+///   Claude Code hook bundle: deterministic smart-wiki resume on session
+///   start + canonical transversal recall. Both gated on
+///   `consumer_class=smart`).
+/// - L — `wiki_forget`, `wiki_forget_bulk` (authority-routed forget: the
+///   caller deletes a fact they authored, or opens an audience vote to forget
+///   one they own but did not author; voting itself stays dashboard-only.
+///   The bulk form is a self-delete over the caller's own facts).
 #[must_use]
 pub fn all_tools() -> Vec<Tool> {
     vec![
@@ -171,12 +174,13 @@ fn wiki_ingest_message() -> Tool {
                 },
                 "metadata": {
                     "type": "object",
-                    "description": "Free-form. The dispatcher honours `disambig_choice` for the second-turn commit, `locale` (BCP-47 tag, explicit LANGUAGE directive — overrides the per-user `enrollment_users.locale` default), `occurred_at` (the turn's semantic clock for backlog replays) and `authored_refs` (provenance breadcrumbs from a preceding wiki_admin_push).",
+                    "description": "Free-form. The dispatcher honours `disambig_choice` for the second-turn commit, `locale` (BCP-47 tag, explicit LANGUAGE directive — overrides the per-user `enrollment_users.locale` default), `occurred_at` (the turn's semantic clock for backlog replays), `authored_refs` (provenance breadcrumbs from a preceding wiki_admin_push) and `channel` (which surface this turn arrived on).",
                     "properties": {
                         "disambig_choice": { "type": "string" },
                         "locale": { "type": "string", "description": "BCP-47 tag (`it-IT`, `en-US`, ...). Wins over `enrollment_users.locale`." },
                         "occurred_at": { "type": "string", "description": "ISO-8601/RFC-3339 instant the message was originally uttered (backlog replay / import). Relative dates, validity windows and the due-soon horizon resolve against it instead of the server clock; operational timestamps stay wall-clock. A malformed value is rejected." },
-                        "authored_refs": { "type": "array", "items": { "type": "string" }, "description": "Smart consumers only: plain `[[wiki_id/page]]` wikilinks for project-wiki pages this turn just authored (echo `wiki_admin_push`'s `authored_refs`). Lets personal memory record a reference to that page instead of duplicating its body. Blank entries / non-strings are ignored." }
+                        "authored_refs": { "type": "array", "items": { "type": "string" }, "description": "Smart consumers only: plain `[[wiki_id/page]]` wikilinks for project-wiki pages this turn just authored (echo `wiki_admin_push`'s `authored_refs`). Lets personal memory record a reference to that page instead of duplicating its body. Blank entries / non-strings are ignored." },
+                        "channel": { "type": "string", "description": "Opaque label for the surface this turn arrived on (`telegram`, `cli:`, …). A multi-channel consumer tags its surfaces apart so the cross-consumer recent window serves back every OTHER surface's turns and not this one's." }
                     }
                 },
                 "attachments": {
@@ -244,7 +248,7 @@ fn events_ack() -> Tool {
 fn wiki_read() -> Tool {
     read_only(materialize(
         "wiki_read",
-        "Read the rendered content of a **specific page** of a wiki for the given sender, with ACL applied. `path` is **required** — name the page you want; there is no default. Any page of the wiki can be named; the only paths refused are the engine's own files — **any** name starting with `_` (`_meta.md`, `_briefing.md`, …) — which are bookkeeping rather than memory. A page path comes from a `wiki_search` hit or a `wiki_navigate` fragment. Must be a safe relative path; an unknown page is `not_found`. Returns `content_rendered_for_sender` plus `redacted_count`, behind the wiki-level visibility gate. For a **standard** wiki, marked regions are redacted per the per-fragment ACL while prose passes; a **smart** wiki is markerless, so the wiki-level gate alone governs and the page passes whole. The `format` and `include_archived` arguments are accepted but not yet honored.",
+        "Read the rendered content of a **specific page** of a wiki for the given sender, with ACL applied. `path` is **required** — name the page you want; there is no default. Any page of the wiki can be named; the only paths refused are the engine's own files — **any** name starting with `_` (`_meta.md`, `_briefing.md`, …) — which are bookkeeping rather than memory. A page path comes from a `wiki_search` / `wiki_navigate` hit's `path` field, or from a `wiki_navigate` fragment's `page`. Must be a safe relative path; an unknown page is `not_found`. Returns `content_rendered_for_sender` plus `redacted_count`, behind the wiki-level visibility gate. For a **standard** wiki, marked regions are redacted per the per-fragment ACL while prose passes; a **smart** wiki is markerless, so the wiki-level gate alone governs and the page passes whole.",
         json!({
             "type": "object",
             "required": ["wiki_id", "path"],
@@ -252,9 +256,7 @@ fn wiki_read() -> Tool {
             "properties": {
                 "wiki_id": { "type": "string" },
                 "sender_id": { "type": "string" },
-                "path": { "type": "string", "description": "Page path relative to the wiki directory, e.g. `recipes/pasta.md`. Required; never one of the engine's own `_`-prefixed files. Safe relative paths only (`[A-Za-z0-9._-]` components, no traversal)." },
-                "include_archived": { "type": "boolean", "default": false },
-                "format": { "type": "string", "enum": ["markdown", "json_blocks"], "default": "markdown" }
+                "path": { "type": "string", "description": "Page path relative to the wiki directory, e.g. `recipes/pasta.md`. Required; never one of the engine's own `_`-prefixed files. Safe relative paths only (`[A-Za-z0-9._-]` components, no traversal)." }
             }
         }),
     ))
@@ -263,7 +265,7 @@ fn wiki_read() -> Tool {
 fn wiki_search() -> Tool {
     read_only(materialize(
         "wiki_search",
-        "Semantic search over the **whole corpus the sender can read** (ACL-filtered), including other people's / other entities' pages they have access to. **Use this — not `recall_core_global`, which returns only facts whose subject is the caller — for anything about someone or something other than the caller** (a contact's birthday, a colleague's role). If a hit's snippet omits the exact fact, `wiki_read` the page it points to — the prose holds detail the snippet may miss. This is a **flat** top-K lookup; for a question that needs depth or to follow the structure across pages, use **`wiki_navigate`** instead (it returns these flat hits too). Returns top-K hits. The `scope` field `smart`: set to `true` to keep only smart-wiki hits, `false` to exclude them (matched on each wiki's `smart:` flag in its `_meta.md`). `wiki_types` is applied as a post-filter by resolving each hit's `wiki_type` from its `_meta.md`.",
+        "Semantic search over the **whole corpus the sender can read** (ACL-filtered), including other people's / other entities' pages they have access to. **Use this — not `recall_core_global`, which returns only facts whose subject is the caller — for anything about someone or something other than the caller** (a contact's birthday, a colleague's role). Every hit carries `wiki_id` + `path`: if the snippet omits the exact fact, `wiki_read(wiki_id, path)` — the prose holds detail the snippet may miss. This is a **flat** top-K lookup; for a question that needs depth or to follow the structure across pages, use **`wiki_navigate`** instead (it returns these flat hits too). Returns top-K hits, `top_k` clamped to 50. The `scope` field `smart`: set to `true` to keep only smart-wiki hits, `false` to exclude them (matched on each wiki's `smart:` flag in its `_meta.md`). `wiki_types` is applied as a post-filter by resolving each hit's `wiki_type` from its `_meta.md`; the labels are free-form per deployment, so leave it out unless you know the ones in use.",
         json!({
             "type": "object",
             "required": ["query"],
@@ -274,13 +276,13 @@ fn wiki_search() -> Tool {
                 "top_k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 },
                 "scope": {
                     "type": "object",
+                    "additionalProperties": false,
                     "properties": {
                         "subject_ids": { "type": "array", "items": { "type": "string" }, "description": "Keep only facts whose SUBJECT — who the fact is about — is one of these principals (`user:<id>` / `group:<id>` / `global`). Not who wrote it (that is the sender) and not who may read it (that is the allow list)." },
                         "owner_ids": { "type": "array", "items": { "type": "string" }, "description": "DEPRECATED spelling of `subject_ids`, still honoured. Prefer `subject_ids`: this axis is the fact's subject, never its author or its audience." },
                         "wiki_types": { "type": "array", "items": { "type": "string" } },
                         "smart": { "type": "boolean", "description": "Keep only hits whose per-wiki smart flag matches (true → smart wikis only, false → standard wikis only), read from each wiki's `smart:` flag in its `_meta.md`." },
-                        "valid_at": { "type": "string", "description": "Dated query (ISO-8601 instant): keep only facts whose validity window contains this instant — 'what was true on June 4th?'. Without it, a closed window only down-ranks a hit, never hides it." },
-                        "include_archived": { "type": "boolean", "default": false }
+                        "valid_at": { "type": "string", "description": "Dated query (ISO-8601 instant): keep only facts whose validity window contains this instant — 'what was true on June 4th?'. Without it, a closed window only down-ranks a hit, never hides it." }
                     }
                 }
             }
@@ -291,7 +293,7 @@ fn wiki_search() -> Tool {
 fn wiki_navigate() -> Tool {
     read_only(materialize(
         "wiki_navigate",
-        "**Deep recall** over the whole corpus the sender can read (ACL-filtered): a navigator follows the wiki structure hop by hop — the path it takes to reach an answer becomes the answer's context. Returns `navigated` prose fragments, each with its `(wiki_id, page)` (the path), **plus** the flat top-K hits, so this is a **superset** of `wiki_search`. Costlier and slower than `wiki_search` (one LLM call per hop), so reach for it on a **question that needs depth or context** ('tell me everything about X', 'how does Y relate to Z'); use plain `wiki_search` for a quick one-line lookup. To steer it, pass `topics` (themes to look up) and `subjects` (the people/groups the query is about, as `user:<id>`/`group:<id>`) — you know them from the conversation; if you omit them the server extracts them from `query`. Smart wikis are not funnel-navigated (free markdown, not card/wikilink-structured) but their content still surfaces in the flat hits. If no navigator model is wired, `navigator_available` is `false` and only the flat hits come back.",
+        "**Deep recall** over the whole corpus the sender can read (ACL-filtered): a navigator follows the wiki structure hop by hop — the path it takes to reach an answer becomes the answer's context. Returns `navigated` prose fragments, each with its `(wiki_id, page)` (the path), **plus** the flat top-K hits, each carrying `wiki_id` + `path` for a follow-up `wiki_read`, so this is a **superset** of `wiki_search`. Costlier and slower than `wiki_search` (one LLM call per hop), so reach for it on a **question that needs depth or context** ('tell me everything about X', 'how does Y relate to Z'); use plain `wiki_search` for a quick one-line lookup. To steer it, pass `topics` (themes to look up) and `subjects` (the people/groups the query is about, as `user:<id>`/`group:<id>`) — you know them from the conversation; if you omit them the server extracts them from `query`. Smart wikis are not funnel-navigated (free markdown, not card/wikilink-structured) but their content still surfaces in the flat hits. If no navigator model is wired, `navigator_available` is `false` and only the flat hits come back.",
         json!({
             "type": "object",
             "required": ["query"],
@@ -299,7 +301,7 @@ fn wiki_navigate() -> Tool {
             "properties": {
                 "query": { "type": "string", "description": "What to recall, in natural language." },
                 "sender_id": { "type": "string", "description": "Optional override of the token's sender_id (must match)." },
-                "top_k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Cap on the flat hits returned (and the RAG seeds that feed the funnel)." },
+                "top_k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Cap on the flat hits returned (and the RAG seeds that feed the funnel). Clamped to 50." },
                 "topics": { "type": "array", "items": { "type": "string" }, "description": "Optional. Salient themes to look up (free text). Supplying these (or `subjects`) skips server-side extraction." },
                 "subjects": { "type": "array", "items": { "type": "string" }, "description": "Optional. Principals the query is about — `user:<id>` / `group:<id>`. Supplying them (or `topics`) skips server-side extraction. Naming a person here does not by itself open a door — pass their name in `topics` too if you want the pages that mention them matched." },
                 "owners": { "type": "array", "items": { "type": "string" }, "description": "DEPRECATED spelling of `subjects`, still honoured. Prefer `subjects`." }
@@ -320,6 +322,7 @@ fn tool_log_search() -> Tool {
                 "tool_name_filter": { "type": "string" },
                 "date_range": {
                     "type": "object",
+                    "additionalProperties": false,
                     "properties": {
                         "from": { "type": "string" },
                         "to": { "type": "string" }
@@ -335,13 +338,14 @@ fn tool_log_search() -> Tool {
 fn wiki_lint() -> Tool {
     read_only(materialize(
         "wiki_lint",
-        "Run consistency checks over the corpus. Currently ships marker_malformed / orphan_facts / meta_invalid / embed_missing; the other 4 advertised checks return zero issues for now.",
+        "Run consistency checks over the corpus. Four of the seven advertised checks are implemented — marker_malformed / orphan_facts / meta_invalid / embed_missing; the other three (broken_crosslinks, acl_inconsistent, superseded_chain) return zero issues.",
         json!({
             "type": "object",
             "additionalProperties": false,
             "properties": {
                 "scope": {
                     "type": "object",
+                    "additionalProperties": false,
                     "properties": {
                         "wiki_ids": { "type": "array", "items": { "type": "string" } }
                     }
@@ -402,12 +406,11 @@ fn wiki_ingest_external() -> Tool {
                 "source": {
                     "type": "object",
                     "required": ["type"],
+                    "additionalProperties": false,
                     "properties": {
                         "type": { "type": "string", "enum": ["media", "inline", "file", "git", "url"] },
                         "catalog_id": { "type": "string", "description": "Required for type=media: an already-uploaded catalog id (POST /media)." },
-                        "content": { "type": "string", "description": "Required for type=inline: the document text." },
-                        "path": { "type": "string" },
-                        "git_ref": { "type": "string" }
+                        "content": { "type": "string", "description": "Required for type=inline: the document text." }
                     }
                 },
                 "text": { "type": "string", "description": "Trusted seam: consumer-supplied extraction of the source bytes. Required for non-textual media (e.g. PDF)." },
@@ -507,7 +510,7 @@ fn wiki_admin_pull() -> Tool {
 fn wiki_admin_signpost() -> Tool {
     materialize(
         "wiki_admin_signpost",
-        "Tell the owner's standard memory that this project exists (H family). Smart consumers only, and only for a smart-wiki the caller owns. Writes two kinds of short **signpost** into the owner's reserved `projects.md`: a `description` (what the project is, in plain language) and an `activity` line for one day (what happened that day). A signpost is a POINTER, not a record — it exists so a conversational turn that never names the project can still discover it and dig into the documentation; what was actually done belongs in the project wiki. Caps are enforced server-side (400 chars description, 250 activity) and an over-long field is REFUSED with the measured length, never truncated. Activity lines older than the 5-day window are dropped automatically. Re-writing an unchanged signpost is a no-op, so refreshing on every `wiki_admin_push` is free.",
+        "DEPRECATED — do not call: pass `description` and `activity` as fields on `wiki_admin_push` instead, and the server writes both signposts as part of the push. This tool still answers, for a consumer that has not moved yet. Tell the owner's standard memory that this project exists (H family). Smart consumers only, and only for a smart-wiki the caller owns. Writes two kinds of short **signpost** into the owner's reserved pages: the `description` (what the project is, in plain language) onto `@projects.md`, and an `activity` line for one day (what happened that day) onto `@projects_diary.md`. A signpost is a POINTER, not a record — it exists so a conversational turn that never names the project can still discover it and dig into the documentation; what was actually done belongs in the project wiki. Caps are enforced server-side (400 chars description, 250 activity) and an over-long field is REFUSED with the measured length, never truncated. Activity lines older than the 5-day window are dropped automatically. Re-writing an unchanged signpost is a no-op.",
         json!({
             "type": "object",
             "required": ["wiki_id"],
@@ -608,7 +611,7 @@ fn wiki_admin_notify() -> Tool {
 fn skill_list() -> Tool {
     read_only(materialize(
         "skill_list",
-        "List the bundled skills available to this consumer (I family): `core`, `core-globalmemory`, `smart-consumer`, `smart-onboarding`, `standard-conversational`, `smart-codebase` (shipped with mwe-mcp via rust-embed). Each entry carries `name`, `version`, `description`, `depends_on`, `etag` (content hash), and `source` (`bundled`).",
+        "List the bundled skills available to this consumer (I family): `core`, `core-globalmemory`, `smart-codebase`, `smart-consumer`, `smart-onboarding`, `standard-conversational`, `web-smart-consumer` (shipped with mwe-mcp via rust-embed). Each entry carries `name`, `version`, `description`, `depends_on`, `etag` (content hash), and `source` (`bundled`).",
         json!({
             "type": "object",
             "additionalProperties": false,
@@ -632,7 +635,7 @@ fn skill_fetch() -> Tool {
             "required": ["name"],
             "additionalProperties": false,
             "properties": {
-                "name": { "type": "string", "description": "Skill name (no `.md` suffix): `core`, `core-globalmemory`, `smart-consumer`, `smart-onboarding`, `standard-conversational`, `smart-codebase`." },
+                "name": { "type": "string", "description": "Skill name (no `.md` suffix): `core`, `core-globalmemory`, `smart-codebase`, `smart-consumer`, `smart-onboarding`, `standard-conversational`, `web-smart-consumer`." },
                 "version": { "type": "string", "description": "Optional version pin. Reserved — today the only version on disk is the current one; HTTP `/skills/<name>/<version>.md` is the future plumbing." }
             }
         }),
@@ -664,10 +667,6 @@ fn dashboard_link() -> Tool {
                         "chat_seed": { "type": "string" }
                     },
                     "additionalProperties": true
-                },
-                "channel": {
-                    "type": "string",
-                    "enum": ["telegram", "discord", "slack", "browser", "vscode", "voice_fallback"]
                 }
             }
         }),
@@ -764,20 +763,10 @@ mod tests {
 
     #[test]
     fn all_tools_present_with_unique_names() {
-        // History: the surface was trimmed from 14 → 11, then grew as
-        // families were added — 13, then H closed at 14, I opened at 16,
-        // J opened at 19, H extended to 21, and K opened with
-        // `smart_bootstrap` + `recall_core_global` → 23. The wiki_type
-        // redesign removed the J family (`wiki_type_register` / `_list` /
-        // `_describe`) → 20; the act-first conversion removed the last
-        // proposal tool (`structure_proposal_list`) → 19. The K tools
-        // stay, both gated on `consumer_class=smart`; both designed for
-        // the Claude Code hook bundle (`SessionStart` +
-        // `UserPromptSubmit`). `wiki_navigate` (deep recall via the funnel)
-        // opened in family D → 20. `wiki_forget` (authority-routed forget)
-        // opened family L → 21; `wiki_forget_bulk` (bulk self-delete) → 22;
-        // `wiki_admin_signpost` (project signposts into the owner's
-        // standard memory) extended H → 23.
+        // The roster is a contract: a consumer's tool list is a snapshot
+        // taken at connect, so a name that changes shape breaks a live
+        // session. Pinning the count as well as the names catches a tool
+        // added to `all_tools` without a decision about the surface.
         let tools = all_tools();
         assert_eq!(tools.len(), 23);
         let names: std::collections::HashSet<_> = tools.iter().map(|t| t.name.as_ref()).collect();

@@ -283,8 +283,11 @@ pub async fn dispatch(
         // skills were removed in the `wiki_type` teardown.)
         "skill_list" => tools::call_skill_list(state, identity, args).await,
         "skill_fetch" => tools::call_skill_fetch(state, identity, args).await,
-        // K family — atomic primitives for the Claude Code hook
-        // bundle (`SessionStart` + `UserPromptSubmit`). Both gated on
+        // K family — atomic primitives the Claude Code hook bundle leans
+        // on: its one `SessionStart` hook nudges the model to call
+        // `smart_bootstrap`, and per-prompt recall through
+        // `recall_core_global` is model-driven (a hook's command line
+        // cannot be templated with the prompt). Both gated on
         // `consumer_class=smart` server-side.
         "smart_bootstrap" => tools::call_smart_bootstrap(state, identity, args).await,
         "recall_core_global" => tools::call_recall_core_global(state, identity, args).await,

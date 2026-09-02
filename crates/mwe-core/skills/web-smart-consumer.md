@@ -46,9 +46,13 @@ single source of truth and work in-context:
    the pages you send, so re-sending unchanged (or half-remembered) pages would
    clobber good content. One page changed → push one page.
 
-Because there is no local mirror and no optimistic-concurrency check yet, if the
-wiki may have changed since your last `pull` (the user could have edited it from
-the dashboard), **pull again before a batch of writes**.
+Because there is no local mirror, pull again before a batch of writes whenever
+the wiki may have changed since your last `pull` (the user could have edited it
+from the dashboard). To be told instead of guessing, stamp the `op_log_head` a
+pull returns and pass it back as `wiki_admin_push`'s `expected_op_log_head`: a
+write that landed in between makes the push fail with
+`409 conflicting_op_log_head` rather than overwrite it — pull, re-diff,
+re-push. Omit the field and the last writer wins.
 
 ## No always-on recall — search and save on demand
 
@@ -69,9 +73,9 @@ There is no per-turn recall block injected for you. So:
     subject-scoped by design — a fact about someone else is out of its reach
     even when it sits in a wiki the user owns), so go straight to `wiki_search`
     for those.
-  - A `wiki_search` hit points you at a page; if the snippet doesn't carry the
-    exact fact, `wiki_read` the page (pass its `path`) — the prose holds detail
-    the snippet may omit.
+  - A `wiki_search` hit names the page it came from: `wiki_id` + `path`, which
+    are `wiki_read`'s two arguments. If the snippet doesn't carry the exact
+    fact, read that page — the prose holds detail the snippet may omit.
   - `wiki_navigate` is the **deep** counterpart of `wiki_search`: a navigator
     walks the wiki structure hop by hop and returns the path it took as context,
     **plus** the flat hits (so it is a superset). It costs an LLM call per hop,

@@ -67,7 +67,7 @@ pub const EXPIRER_CLEANUP_GRACE_SECS: i64 = 3_600;
 
 /// How long released rows linger in the table for audit before the
 /// expirer removes them, in seconds. Seven days is a comfortable
-/// reading window for the `/wikis/<id>/op-log` dashboard.
+/// reading window for the `/dashboard/wiki/<id>/op-log` page.
 pub const EXPIRER_RELEASED_RETENTION_SECS: i64 = 7 * 24 * 3_600;
 
 /// Errors returned by [`acquire`].

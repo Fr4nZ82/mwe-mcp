@@ -15,8 +15,8 @@ mwe-mcp via MCP. It is **not** a tutorial — it is the irreducible
 contract: who you are on the wire, which deeper skill to load next,
 and what to do when authentication breaks. The substantive per-class
 behaviour lives in `smart-consumer`, `core-globalmemory`,
-`standard-conversational`, and `smart-codebase`; this file
-points you at the right one.
+`standard-conversational`, `smart-codebase` and `web-smart-consumer`;
+this file points you at the right one.
 
 ## Cardinal rule
 
@@ -119,6 +119,13 @@ on_session_start():
         load_skill("standard-conversational")   # per-turn ingest pattern
 ```
 
+This dispatcher is for an agent with a working directory. A smart
+consumer reached **over the web** — the claude.ai app, or any MCP custom
+connector — has no local filesystem, no cwd and no `.mwe/state.json` to
+branch on, so none of the routing above applies to it: it follows
+`web-smart-consumer` for the whole session, and its host supplies that
+skill through its own upload rather than `skill_fetch`.
+
 ## The `project_id` — derive it, pass it, and let the server answer
 
 Two devices that clone the same repo must land on the **same** id, or the
@@ -179,6 +186,7 @@ skills.
 | `smart-codebase` | `smart-consumer` + software project | concrete folder layout, module / decision / change-log page conventions |
 | `smart-onboarding` | `consumer_class=smart` + `first_connect.hint` (or the user asks) | **first connect, once per project**: the intro, the faithful import, the shape report, the page-repair proposal |
 | `standard-conversational` | `consumer_class=standard` (or absent) | `wiki_ingest_message` loop, `events_poll`, structural notices |
+| `web-smart-consumer` | `consumer_class=smart` reached over the web (no local filesystem) | mirror-less session loop against ONE dedicated smart wiki: `smart_bootstrap` → `wiki_admin_pull` → edit → `wiki_admin_push` |
 
 **If a skill names a tool you cannot see**, the server is newer than your
 session: a consumer's tool list is a snapshot taken at connect, so a tool

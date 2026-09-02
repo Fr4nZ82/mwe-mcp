@@ -637,7 +637,7 @@ pub struct WikiMeta {
     /// share only extends the read/notify perimeter.
     ///
     /// Empty for the vast majority of wikis. The dashboard manages this
-    /// roster via the `/wikis/<id>/sharing` route.
+    /// roster via the `/dashboard/wiki/<id>/sharing` route.
     pub shared_with: Vec<Principal>,
     /// Forge-time `wiki_type` overrides (free-form YAML object).
     pub style_overrides: serde_yaml::Mapping,

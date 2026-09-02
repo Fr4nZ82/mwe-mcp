@@ -267,7 +267,7 @@ pub struct RemPolicy {
     /// 1 hour — slow clients about to re-acquire still win the race.
     pub lease_expirer_grace: chrono::Duration,
     /// Lease expirer: released rows older than this retention
-    /// window are deleted. The dashboard `/wikis/<id>/op-log` reads
+    /// window are deleted. The `/dashboard/wiki/<id>/op-log` page reads
     /// the table for past leases, so the window doubles as the UI
     /// visibility budget. Default 7 days.
     pub lease_expirer_retention: chrono::Duration,

@@ -742,6 +742,125 @@ async fn wiki_read_strips_frontmatter_so_card_topics_never_leak() {
     );
 }
 
+/// A hit names the page it came from, spelled the way `wiki_read` takes it.
+///
+/// The index stores a page as a **workdir**-relative `source_path`
+/// (`wikis/alice/notes/pasta.md`) and `wiki_read` wants it **wiki**-relative
+/// (`notes/pasta.md`), so the two spellings are one wiki directory apart. Every
+/// skill tells the agent to open the page behind a thin snippet; that
+/// instruction is only followable if the round trip below works, and the
+/// sub-directory in the path is the part a naive strip gets wrong.
+#[tokio::test]
+async fn a_search_hit_carries_the_page_path_wiki_read_takes() {
+    let (state, identity, dir) = fixture(false, None).await;
+    mirror_to_db(
+        &state.pool,
+        &EnrollmentFile {
+            version: 1,
+            users: vec![UserEntry {
+                id: "alice".into(),
+                aliases: Vec::new(),
+                is_admin: false,
+                locale: None,
+                timezone: None,
+            }],
+            groups: Vec::new(),
+        },
+    )
+    .await
+    .expect("mirror enrollment");
+
+    let wiki_dir = dir.path().join("wikis").join("alice");
+    std::fs::create_dir_all(wiki_dir.join("notes")).expect("mkdir alice/notes");
+    std::fs::write(
+        wiki_dir.join("_meta.md"),
+        "---\nwiki_id: alice\nwiki_type: wiki-user\nparent_wiki_id: null\n\
+         slug: alice\ntitle: Alice\nacl_default: 'user:alice'\n---\n",
+    )
+    .expect("write _meta.md");
+    std::fs::write(
+        wiki_dir.join("notes").join("pasta.md"),
+        "# Pasta\n\n{{subject=user:alice f=01900000-0000-7000-8000-0000000000aa}}\n\
+         Carbonara needs guanciale, never pancetta.\n{{/}}\n",
+    )
+    .expect("write pasta.md");
+
+    let fact_id =
+        mwe_core::types::FactId::parse("01900000-0000-7000-8000-0000000000aa").expect("fact id");
+    mwe_core::fact_index::insert(
+        &state.pool,
+        &mwe_core::fact_index::NewFact {
+            subject_external: None,
+            authored_refs: Vec::new(),
+            fact_id,
+            wiki_id: "alice".to_owned(),
+            source_path: "wikis/alice/notes/pasta.md".to_owned(),
+            region_start: Some(0),
+            region_end: Some(40),
+            text: "Carbonara needs guanciale, never pancetta.".to_owned(),
+            embedding: state
+                .embedder
+                .embed("Carbonara needs guanciale, never pancetta.")
+                .await
+                .expect("embed"),
+            subject_id: "user:alice".parse().unwrap(),
+            allow_ids: Vec::new(),
+            sender_id: Some("user:alice".parse().unwrap()),
+            fact_type: None,
+            topics: Vec::new(),
+            valid_from: None,
+            valid_to: None,
+            target_page: None,
+            style: None,
+            salience: None,
+            source_ref: None,
+        },
+    )
+    .await
+    .expect("insert fact");
+
+    let tree = WikiTree::open(dir.path()).expect("reopen");
+    let state = McpState { tree, ..state };
+
+    let out = call(
+        &state,
+        &identity,
+        "wiki_search",
+        json!({"query": "carbonara", "scope": {"smart": false}}),
+    )
+    .await
+    .expect("search");
+    let hit = out["results"]
+        .as_array()
+        .expect("results array")
+        .first()
+        .expect("one hit");
+    assert_eq!(hit["kind"], json!("fact"));
+    assert_eq!(
+        hit["path"],
+        json!("notes/pasta.md"),
+        "the hit must name the page relative to its own wiki, got: {hit}"
+    );
+
+    // The promise the skills make: the hit's two fields ARE wiki_read's
+    // arguments.
+    let page = call(
+        &state,
+        &identity,
+        "wiki_read",
+        json!({"wiki_id": hit["wiki_id"], "path": hit["path"]}),
+    )
+    .await
+    .expect("wiki_read must accept the path a hit carries");
+    assert!(
+        page["content_rendered_for_sender"]
+            .as_str()
+            .expect("rendered body")
+            .contains("guanciale"),
+        "{page}"
+    );
+}
+
 #[tokio::test]
 async fn wiki_search_runs_against_empty_corpus() {
     let (state, identity, _dir) = fixture(false, None).await;
@@ -883,9 +1002,23 @@ async fn wiki_ingest_external_rejects_unknown_disposition() {
     assert!(err.contains("invalid_input"), "{err}");
 }
 
+/// A `file` / `git` / `url` source is refused as unimplemented, and the source
+/// object carries no argument for one: `type`, `content` and `catalog_id` are
+/// the whole shape, so a locator arrives as an unknown field and is named in
+/// the refusal.
 #[tokio::test]
 async fn wiki_ingest_external_rejects_file_source() {
     let (state, identity, _dir) = fixture(false, None).await;
+    let err = call(
+        &state,
+        &identity,
+        "wiki_ingest_external",
+        json!({"source": {"type": "file"}}),
+    )
+    .await
+    .expect_err("must reject");
+    assert!(err.contains("not_implemented_phase_c"), "{err}");
+
     let err = call(
         &state,
         &identity,
@@ -894,7 +1027,10 @@ async fn wiki_ingest_external_rejects_file_source() {
     )
     .await
     .expect_err("must reject");
-    assert!(err.contains("not_implemented_phase_c"), "{err}");
+    assert!(
+        err.contains("invalid_input") && err.contains("path"),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -1523,22 +1659,21 @@ async fn wiki_admin_pull_shape_mode_returns_counters_and_no_content() {
     assert!(page["shape"]["sections"].as_u64().is_some());
 }
 
-/// The subject filter must be READ under both spellings.
+/// The subject filter must be READ under both spellings, and a key the
+/// surface does not have must be REFUSED.
 ///
-/// `scope.subject_ids` is canonical; `scope.owner_ids` is the pre-rename
-/// spelling and stays accepted. Both arguments are `#[serde(default)]` with no
-/// `deny_unknown_fields`, and the `scope` object does not declare
-/// `additionalProperties: false` — so a key the server does not recognise is
-/// never rejected. The filter simply vanishes, and the caller receives every
-/// fact it may read instead of one subject's. Over-returning other people's
-/// memory is precisely what the per-fragment ACL exists to prevent, which is
-/// why "the argument was read at all" is pinned here independently of any
-/// corpus, embedder or ranking.
+/// `scope.subject_ids` is canonical; `scope.owner_ids` is the deprecated
+/// spelling, declared as a serde alias and therefore still a known field. A
+/// misspelling is neither: it would leave the filter unset, and the caller
+/// would receive every fact it may read instead of one subject's — over-
+/// returning other people's memory is precisely what the per-fragment ACL
+/// exists to prevent. So `WikiSearchScope` denies unknown fields and the
+/// `scope` schema declares `additionalProperties: false`, and the refusal
+/// names the key so the caller can fix the spelling.
 ///
-/// The probe is a deliberately malformed principal: a key that IS read reports
-/// an error, a key that is ignored reports nothing. The third case is the
-/// control — without it the two assertions above could pass for the wrong
-/// reason.
+/// The probe for the two accepted spellings is a deliberately malformed
+/// principal: a key that IS read reports an error about the principal, a key
+/// that is ignored reports nothing.
 #[tokio::test]
 async fn the_subject_filter_is_read_under_both_spellings() {
     let (state, identity, _dir) = fixture(false, None).await;
@@ -1558,15 +1693,43 @@ async fn the_subject_filter_is_read_under_both_spellings() {
         );
     }
 
-    // Control: an unrecognised key really is swallowed whole.
-    call(
+    let err = call(
         &state,
         &identity,
         "wiki_search",
-        json!({"query": "x", "scope": {"proprietor_ids": ["not-a-principal"]}}),
+        json!({"query": "x", "scope": {"proprietor_ids": ["user:alice"]}}),
     )
     .await
-    .expect("an unrecognised scope key is silently ignored — that is the trap");
+    .expect_err("a key the surface does not have must be refused, never dropped");
+    assert!(
+        err.contains("invalid_input") && err.contains("proprietor_ids"),
+        "the refusal must name the offending key, got: {err}"
+    );
+}
+
+/// A misspelled top-level parameter is refused, and the message names it.
+///
+/// Every schema advertises `additionalProperties: false`; nothing on the wire
+/// enforces it (rmcp validates the tool name and hands the rest to the
+/// handler), so the guarantee is the `deny_unknown_fields` on each wire
+/// struct. Without it a typo runs the call with the argument missing — the
+/// worst kind of failure, because it succeeds.
+#[tokio::test]
+async fn an_unknown_top_level_parameter_is_refused_by_name() {
+    let (state, identity, _dir) = fixture(false, None).await;
+
+    let err = call(
+        &state,
+        &identity,
+        "wiki_search",
+        json!({"query": "x", "topk": 5}),
+    )
+    .await
+    .expect_err("a misspelled parameter must be refused");
+    assert!(
+        err.contains("invalid_input") && err.contains("topk"),
+        "the refusal must name the offending parameter, got: {err}"
+    );
 }
 
 #[tokio::test]

@@ -17,7 +17,7 @@
 //!   `project_id` / slug / title, and `project_id` to ask the exact
 //!   question "does *this* project already have memory?" — answered in
 //!   [`FirstConnect`], the datum that triggers onboarding.
-//! - [`recall_core_global`] — used by the `UserPromptSubmit` hook.
+//! - [`recall_core_global`] — the model's own per-prompt recall call.
 //!   Wraps [`crate::recall::wiki_search`] with the canonical
 //!   "transversal recall" filter documented in the bundled skill
 //!   `core-globalmemory.md`: keep only facts whose **subject** is the

@@ -64,12 +64,16 @@ Server → { intent_classified: "recall",
                              Today is 18 May, Frodo recorded
                              71 kg yesterday, 17 May.",
            suggested_seed:  "You recorded 71 kg yesterday, down
-                             from 72 kg 8 days ago.",
-           pending_votes: null, ... }
+                             from 72 kg 8 days ago.", ... }
 Agent → injects context_snippet into its own system prompt for this
         turn, rephrases suggested_seed in product voice
 Agent → "Yes, you are at 71 kg — a kilo down since Thursday, just as you remembered."
 ```
+
+The optional blocks are **absent**, not null, when they do not apply:
+`pending_votes` appears only when the user owes a vote on a pending
+forget request, and `document_promoted` only when an oversized paste
+was moved to the media rail.
 
 The only call you make **outside** `wiki_ingest_message` during a
 normal turn is to surface a URL the server tells you about (see
@@ -80,10 +84,10 @@ normal turn is to surface a URL the server tells you about (see
 For each user message:
 
 1. **Maintain a rolling window** of the last ~6–10 conversation turns
-   in `recent_messages`. The server caps it at 6 internally and uses
-   it for **coreference** ("the dentist from yesterday" → which dentist?),
-   not for recall. The window is *not* persisted server-side — it is yours
-   to keep.
+   in `recent_messages`. The server keeps the **last 16** of whatever you
+   send and uses them for **coreference** ("the dentist from yesterday" →
+   which dentist?), not for recall. The window is *not* persisted
+   server-side — it is yours to keep.
 2. **Call `wiki_ingest_message`** with the raw text + the window. You
    may pass `context_hint` (`conversation` default,
    `dashboard_command`, `import`) and `metadata.locale` (see
@@ -136,7 +140,10 @@ Verified against
   context_snippet?: string;              // recalled MEMORY, preformatted
   rules?: string;                        // standing BEHAVIOUR directives to APPLY (not relay)
   suggested_seed?: string;               // reply draft
-  capture_id?: string;                   // audit-only; do not echo to user
+  recent_window?: string;                // the user's live thread from their OTHER
+                                         //   surfaces, preformatted; inject verbatim
+  capture_id?: string;                   // id of the fact this turn captured; for your
+                                         //   own bookkeeping, do not echo it to the user
   needs_disambig: boolean;
   disambig_candidates: Array<{
     candidate_id: string;
@@ -144,6 +151,9 @@ Verified against
   }>;
   llm_used: string;                      // diagnostic
   took_ms: number;
+  pending_votes?: {...};                 // key present ONLY when the user owes a vote
+  document_promoted?: {...};             // key present ONLY when an oversized paste was
+                                         //   promoted to the media rail
 }
 ```
 
@@ -202,8 +212,9 @@ dispatches events to the right user; after dispatching, call
 
 ```typescript
 events_poll({ consumer_id, since?, kinds?, top_k? })
-  → { events: Array<{ event_id, kind, payload, emitted_at, ... }>,
-      has_more, took_ms }
+  → { events: Array<{ event_id, kind, wiki_id, fact_id, payload,
+                      emitted_at }>,
+      has_more }
 ```
 
 ### Event kinds
@@ -270,12 +281,12 @@ cycle-aware.
 
 ### Keep `recent_messages` short
 
-The server caps `recent_messages` at 6 internally for coreference.
-Sending more is harmless but wastes tokens. The "real" context the
-LLM needs — past facts, decisions, the user's preferences — comes
-back in `context_snippet`, because that's where mwe-mcp's memory
-lives. Recent messages are only for short-term pronoun resolution in
-the current conversation.
+The server carries the last 16 of them into the classifier prompt, for
+coreference; sending more than that is harmless but wastes tokens. The
+"real" context the LLM needs — past facts, decisions, the user's
+preferences — comes back in `context_snippet`, because that's where
+mwe-mcp's memory lives. Recent messages are only for short-term pronoun
+resolution in the current conversation.
 
 ### Do not cache `wiki_read` / `wiki_search` results across senders
 
@@ -289,11 +300,14 @@ not the bot's own `sender_id`.
 
 ### Use opaque `wiki_id`, never paths
 
-Tool outputs do not return filesystem paths like `wiki/frodo/note.md`.
-The filesystem layout is an implementation detail mwe-mcp may
-rearrange in any minor release. Use the `wiki_id` you get from
-`wiki_ingest_message.capture_id` or `wiki_search` results; pass that
-opaque id back when calling `wiki_read`.
+Tool outputs do not return filesystem paths like
+`wikis/frodo/note.md`. Where a wiki keeps its files is an
+implementation detail mwe-mcp may rearrange in any minor release. A
+`wiki_search` (or `wiki_navigate`) hit carries the pair you need —
+`wiki_id` plus `path`, the page spelled relative to that wiki — and
+those two are exactly `wiki_read`'s arguments. (`capture_id` from
+`wiki_ingest_message` is not one of them: it is the id of the fact the
+turn captured, which `wiki_forget` takes.)
 
 ## Anti-patterns
 
@@ -306,9 +320,10 @@ opaque id back when calling `wiki_read`.
   There is no `structure_proposal_*` family on the MCP surface. The dashboard
   is the only surface for those actions. Surface a `dashboard_link` URL
   instead.
-- ❌ **Calling `_internal.*` tools directly.** They return `403
-  not_exposed`. Use `wiki_ingest_message` for everything
-  conversational.
+- ❌ **Inventing a tool name.** Anything outside the roster
+  `tools/list` returns is answered `not_found` — the dispatcher matches
+  on the name and has no other branch. Use `wiki_ingest_message` for
+  everything conversational.
 - ❌ **Re-routing on `intent_classified`.** The `intent_classified`
   field is **audit-only** (debug, logging). Don't branch your code
   on it. The `suggested_seed` already carries whatever the server
@@ -334,10 +349,9 @@ opaque id back when calling `wiki_read`.
 |---|---|---|
 | A | `wiki_ingest_message` | the workhorse — every user turn |
 | B | `events_poll` / `events_ack` | polling cycle |
-| C | `structure_proposal_list` | (read-only; how many proposals open) |
 | D | `wiki_read` / `wiki_search` | explicit recall when the user asks for it |
 | F | `consumer_register` | first-time daemon registration |
-| F | `wiki_ingest_external` | bulk import (`variant: inline` only today) |
+| F | `wiki_ingest_external` | bulk import (`source: {type: "inline", content: "…"}`; `media` takes an uploaded `catalog_id`, and `file` / `git` / `url` answer `not_implemented_phase_c`) |
 | G | `dashboard_link` | mint a one-shot URL into the dashboard |
 | H | `wiki_admin_notify` | relay observations into a smart wiki's `_briefing.md` |
 

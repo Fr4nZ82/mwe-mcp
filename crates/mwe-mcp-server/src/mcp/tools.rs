@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Per-tool handlers for the 19 MCP tools.
+//! Per-tool handlers for the MCP tools.
 //!
 //! Each handler reads the validated [`IdentityProfile`], deserialises
 //! the JSON args into a private input struct, calls the matching
@@ -51,6 +51,18 @@ const DASHBOARD_LINK_TTL: Duration = Duration::from_secs(10 * 60);
 
 // ---------- Common deserialisation helpers ----------
 
+/// Deserialise a tool call's arguments into its wire struct.
+///
+/// Every wire struct in this module carries `#[serde(deny_unknown_fields)]`,
+/// which is what makes the schemas' `additionalProperties: false` real: rmcp
+/// validates the tool *name* and nothing else, so without the attribute a
+/// misspelled parameter is dropped in silence and the call runs with the
+/// argument missing — a filter that vanishes returns other people's memory
+/// instead of one subject's. Refusing names the offending key in the
+/// `invalid_input` message, so the caller can fix the spelling.
+///
+/// A deprecated spelling stays a *declared* field (`#[serde(alias = …)]`), so
+/// it keeps working: only names the surface never had are refused.
 fn parse_args<T: for<'de> Deserialize<'de>>(args: &Value) -> Result<T, ToolError> {
     serde_json::from_value::<T>(args.clone())
         .map_err(|e| invalid_input(format!("malformed arguments: {e}")))
@@ -100,6 +112,7 @@ fn forbid_guest(identity: &IdentityProfile, what: &str) -> Result<(), ToolError>
 // ============================================================
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct IngestArgs {
     text: String,
     sender_id: Option<String>,
@@ -124,6 +137,7 @@ struct IngestArgs {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RecentMessageArg {
     role: String,
     text: String,
@@ -137,6 +151,7 @@ struct RecentMessageArg {
 /// `kind` is accepted for the consumer's own bookkeeping but the
 /// catalog row's kind is authoritative.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AttachmentArg {
     catalog_id: String,
     #[serde(default)]
@@ -647,6 +662,7 @@ fn map_ingest_err(e: &ingest::IngestError) -> ToolError {
 // ============================================================
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EventsPollArgs {
     consumer_id: String,
     #[serde(default)]
@@ -697,6 +713,7 @@ pub(super) async fn call_events_poll(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EventsAckArgs {
     consumer_id: String,
     event_ids: Vec<i64>,
@@ -774,6 +791,7 @@ async fn require_consumer_registered(state: &McpState, consumer_id: &str) -> Res
 // ============================================================
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiReadArgs {
     wiki_id: String,
     sender_id: Option<String>,
@@ -782,10 +800,6 @@ struct WikiReadArgs {
     /// Validated by [`mwe_core::wiki::is_safe_page_path`].
     #[serde(default)]
     path: Option<String>,
-    #[serde(default)]
-    include_archived: bool,
-    #[serde(default)]
-    format: Option<String>,
 }
 
 pub(super) async fn call_wiki_read(
@@ -795,8 +809,6 @@ pub(super) async fn call_wiki_read(
 ) -> Result<Value, ToolError> {
     let args: WikiReadArgs = parse_args(&args)?;
     forbid_sender_mismatch(identity, args.sender_id.as_deref())?;
-    let _ = args.include_archived; // accepted, not yet honored (archive surface)
-    let _ = args.format;
     // Page selection. The body and the per-fact ACL map MUST resolve to the
     // *same* page — reading page X while loading another page's ACL would be
     // a leak.
@@ -945,7 +957,55 @@ pub(super) async fn call_wiki_read(
     }))
 }
 
+/// Ceiling on `top_k` for `wiki_search` / `wiki_navigate`, matching the
+/// `maximum: 50` both schemas advertise. A schema maximum is a hint no
+/// transport enforces, so the value is clamped here: an unbounded `top_k`
+/// asks the ranker for the whole readable corpus in one answer.
+const MAX_SEARCH_TOP_K: usize = 50;
+
+/// Every wiki on disk, keyed by `wiki_id`, carrying its workdir-relative
+/// directory and its free-form `wiki_type` label — from one tree walk.
+///
+/// The index stores a fact's page as a **workdir**-relative `source_path`
+/// (`wikis/alice/notes/pasta.md`) while `wiki_read` takes a **wiki**-relative
+/// one (`notes/pasta.md`). Only the walked tree knows where the first ends and
+/// the second begins — sub-wikis nest inside their parent's directory — so the
+/// boundary is resolved once per call and read per hit.
+fn wiki_dir_index(
+    tree: &mwe_core::wiki::WikiTree,
+) -> std::collections::HashMap<String, (String, String)> {
+    tree.walk()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|w| {
+            (
+                w.meta.wiki_id.as_str().to_owned(),
+                (
+                    w.rel_dir.to_string_lossy().replace('\\', "/"),
+                    w.meta.wiki_type,
+                ),
+            )
+        })
+        .collect()
+}
+
+/// The page a hit points at, spelled the way `wiki_read`'s `path` wants it.
+///
+/// `None` when the hit names no page — a buffered capture is a claim that is
+/// not written anywhere yet — or when its wiki left the tree between recall
+/// and shaping.
+fn hit_page_path(
+    dirs: &std::collections::HashMap<String, (String, String)>,
+    wiki_id: &str,
+    source_path: &str,
+) -> Option<String> {
+    let (dir, _) = dirs.get(wiki_id)?;
+    let rest = source_path.strip_prefix(dir.as_str())?.strip_prefix('/')?;
+    (!rest.is_empty()).then(|| rest.to_owned())
+}
+
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiSearchArgs {
     query: String,
     sender_id: Option<String>,
@@ -956,13 +1016,13 @@ struct WikiSearchArgs {
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct WikiSearchScope {
     #[serde(default)]
     #[serde(alias = "owner_ids")]
     subject_ids: Vec<String>,
     #[serde(default)]
     wiki_types: Vec<String>,
-    /// Filter hits down to wikis whose
     /// Which corpus to search. `Some(false)` searches the **fact**
     /// store (standard-wiki memory), `Some(true)` searches the
     /// **section** index (smart-wiki documentation), `None` searches
@@ -984,7 +1044,7 @@ struct WikiSearchScope {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "post-filter resolves wiki_type per hit + family allowlist inline; splitting hides the linear filter pipeline"
+    reason = "corpus selection, the wiki_type post-filter and the hit shaping live as one linear pipeline; splitting hides the order they depend on"
 )]
 pub(super) async fn call_wiki_search(
     state: &McpState,
@@ -1022,7 +1082,7 @@ pub(super) async fn call_wiki_search(
         valid_at,
         ..Default::default()
     };
-    let top_k = args.top_k.unwrap_or(20);
+    let top_k = args.top_k.unwrap_or(20).min(MAX_SEARCH_TOP_K);
     // Corpus selection happens HERE, before ranking: `scope.smart` picks a
     // table rather than filtering a mixed top-K afterwards. That is what makes
     // the caller's `top_k` honoured — filtering afterwards, a request for 20
@@ -1073,30 +1133,19 @@ pub(super) async fn call_wiki_search(
         .filter(|s| !s.wiki_types.is_empty())
         .map(|s| s.wiki_types.iter().cloned().collect());
 
-    // `wiki_type` is a free-form label that still lives only in
-    // `_meta.md`, so this axis stays a per-hit tree lookup (cached).
-    // Unknown wiki_ids — the hit's wiki was deleted between recall and
-    // filter — drop out of an explicit type filter and pass otherwise.
-    let mut type_cache: std::collections::HashMap<String, Option<String>> =
-        std::collections::HashMap::new();
+    // `wiki_type` is a free-form label that lives only in `_meta.md`, and the
+    // page a hit points at needs its wiki's own directory stripped off — both
+    // answers come out of the same walk. A wiki_id the walk does not know (the
+    // hit's wiki was deleted between recall and filter) drops out of an
+    // explicit type filter and passes otherwise.
+    let wiki_dirs = wiki_dir_index(&state.tree);
     let mut filtered: Vec<recall::SearchHit> = Vec::new();
     for hit in hits {
         if let Some(allow) = allowed_types.as_ref() {
-            let wiki_id = hit.wiki_id().to_owned();
-            let resolved = type_cache.entry(wiki_id).or_insert_with_key(|id| {
-                WikiId::parse(id).ok().and_then(|parsed| {
-                    state
-                        .tree
-                        .locate(&parsed)
-                        .ok()
-                        .map(|h| h.meta().wiki_type.clone())
-                })
-            });
-            let resolved = resolved.clone();
-            let Some(t) = resolved else {
+            let Some((_, wiki_type)) = wiki_dirs.get(hit.wiki_id()) else {
                 continue;
             };
-            if !allow.contains(&t) {
+            if !allow.contains(wiki_type) {
                 continue;
             }
         }
@@ -1109,10 +1158,14 @@ pub(super) async fn call_wiki_search(
     let results: Vec<Value> = filtered
         .into_iter()
         .map(|h| match h {
+            // `path` is the page `wiki_read` opens to get the prose a snippet
+            // had to cut: the instruction "read the page the hit points to" is
+            // only followable because the hit carries the page.
             recall::SearchHit::Fact(f) => json!({
                 "wiki_id": f.wiki_id,
                 "kind": "fact",
                 "fact_id": f.fact_id.as_str(),
+                "path": hit_page_path(&wiki_dirs, &f.wiki_id, &f.source_path),
                 "snippet": f.text,
                 "score": f.score,
             }),
@@ -1122,7 +1175,7 @@ pub(super) async fn call_wiki_search(
                 // Sections are keyed by position, not by a fact id: the
                 // handle is stable across reindexes, a minted id was not.
                 "section": s.handle(),
-                "source_path": s.source_path,
+                "path": hit_page_path(&wiki_dirs, &s.wiki_id, &s.source_path),
                 "heading_path": s.heading_path,
                 "snippet": s.text,
                 "score": s.score,
@@ -1141,6 +1194,7 @@ pub(super) async fn call_wiki_search(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiNavigateArgs {
     query: String,
     sender_id: Option<String>,
@@ -1228,7 +1282,7 @@ pub(super) async fn call_wiki_navigate(
     // caller AND the RAG seeds that feed the funnel. The funnel walks
     // wikilinks and page structure, which only standard wikis carry, so
     // the seeds are facts by construction.
-    let top_k = args.top_k.unwrap_or(20);
+    let top_k = args.top_k.unwrap_or(20).min(MAX_SEARCH_TOP_K);
     let flat_hits = recall::wiki_search(
         &state.pool,
         Arc::clone(&state.embedder),
@@ -1291,7 +1345,10 @@ pub(super) async fn call_wiki_navigate(
     // The flat floor is the whole visible corpus, so it carries the
     // smart-wiki sections too — they are funnel-skipped (free markdown has
     // no wikilink/heading structure the funnel walks) but must still
-    // surface here. Merged into one score-ordered list.
+    // surface here. Merged into one score-ordered list. `path` is the same
+    // page key the `navigated` fragments carry, so both halves of the answer
+    // name a page `wiki_read` opens.
+    let wiki_dirs = wiki_dir_index(&state.tree);
     let mut flat_ranked: Vec<(f32, Value)> = flat_hits
         .iter()
         .map(|h| {
@@ -1301,6 +1358,7 @@ pub(super) async fn call_wiki_navigate(
                     "wiki_id": h.wiki_id,
                     "kind": "fact",
                     "fact_id": h.fact_id.as_str(),
+                    "path": hit_page_path(&wiki_dirs, &h.wiki_id, &h.source_path),
                     "snippet": h.text,
                     "score": h.score,
                 }),
@@ -1314,7 +1372,7 @@ pub(super) async fn call_wiki_navigate(
                 "wiki_id": s.wiki_id,
                 "kind": "section",
                 "section": s.handle(),
-                "source_path": s.source_path,
+                "path": hit_page_path(&wiki_dirs, &s.wiki_id, &s.source_path),
                 "heading_path": s.heading_path,
                 "snippet": s.text,
                 "score": s.score,
@@ -1500,6 +1558,7 @@ async fn record_navigate_trace(parts: NavigateTraceParts<'_>) {
 // ============================================================
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct ToolLogSearchArgs {
     #[serde(default)]
     sender_id_filter: Option<String>,
@@ -1514,6 +1573,7 @@ struct ToolLogSearchArgs {
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct DateRangeArg {
     #[serde(default)]
     from: Option<String>,
@@ -1579,6 +1639,7 @@ pub(super) async fn call_tool_log_search(
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct WikiLintArgs {
     #[serde(default)]
     scope: Option<WikiLintScope>,
@@ -1587,6 +1648,7 @@ struct WikiLintArgs {
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct WikiLintScope {
     #[serde(default)]
     wiki_ids: Vec<String>,
@@ -1703,6 +1765,7 @@ async fn lint_report_readable_by(
 // ============================================================
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ConsumerRegisterArgs {
     consumer_id: String,
     #[serde(default)]
@@ -1776,6 +1839,7 @@ pub(super) async fn call_consumer_register(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiIngestExternalArgs {
     source: WikiIngestExternalSource,
     /// The trusted text seam: consumer-supplied extraction of the source
@@ -1809,6 +1873,7 @@ struct WikiIngestExternalArgs {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiIngestExternalSource {
     #[serde(rename = "type")]
     kind: String,
@@ -2240,13 +2305,12 @@ pub(super) async fn call_wiki_ingest_external(
 // ============================================================
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DashboardLinkArgs {
     intent: String,
     sender_id: Option<String>,
     #[serde(default)]
     context: Option<Value>,
-    #[serde(default)]
-    channel: Option<String>,
 }
 
 #[allow(clippy::unused_async, reason = "uniform async dispatcher signature")]
@@ -2335,7 +2399,6 @@ pub(super) async fn call_dashboard_link(
     let exp_iso = chrono::DateTime::<chrono::Utc>::from_timestamp(claims.exp, 0)
         .map(|d| d.to_rfc3339())
         .unwrap_or_default();
-    let _ = args.channel;
     Ok(json!({
         "url": url,
         "token_expires_at": exp_iso,
@@ -2348,6 +2411,7 @@ pub(super) async fn call_dashboard_link(
 // ============================================================
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiAdminPushArgs {
     mode: String,
     #[serde(default)]
@@ -2412,6 +2476,7 @@ struct WikiAdminPushArgs {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiAdminPushPageArg {
     path: String,
     content: String,
@@ -2638,6 +2703,7 @@ async fn signpost_hint(state: &McpState, wiki_id: &WikiId) -> Option<String> {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiAdminPullArgs {
     wiki_id: String,
     /// Narrow to these wiki-relative page paths. Empty = whole wiki.
@@ -2713,6 +2779,7 @@ pub(super) async fn call_wiki_admin_pull(
 // ----- wiki_admin_lease_acquire + _release -----
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiAdminLeaseAcquireArgs {
     wiki_id: String,
     #[serde(default)]
@@ -2744,6 +2811,7 @@ pub(super) async fn call_wiki_admin_lease_acquire(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiAdminLeaseReleaseArgs {
     lease_id: String,
 }
@@ -2795,6 +2863,7 @@ fn lease_release_error_to_tool_error(err: &mwe_core::wiki_admin_leases::ReleaseE
 // ----- wiki_admin_signpost -----
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiAdminSignpostArgs {
     wiki_id: String,
     #[serde(default)]
@@ -2804,6 +2873,7 @@ struct WikiAdminSignpostArgs {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiAdminSignpostActivity {
     day: String,
     text: String,
@@ -2878,6 +2948,7 @@ fn signpost_error_to_tool_error(err: &mwe_core::signposts::SignpostError) -> Too
 // ----- wiki_admin_notify -----
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiAdminNotifyArgs {
     wiki_id: String,
     topic: String,
@@ -2892,6 +2963,7 @@ struct WikiAdminNotifyArgs {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiAdminNotifySource {
     kind: String,
     #[serde(rename = "ref")]
@@ -3029,6 +3101,7 @@ fn admin_error_to_tool_error(err: &mwe_core::wiki_admin::AdminError) -> ToolErro
 // ============================================================
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SkillListArgs {
     // Reserved for future class-aware filtering; today every consumer
     // sees the full bundle. Accepted but currently unused.
@@ -3054,6 +3127,7 @@ pub(super) async fn call_skill_list(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SkillFetchArgs {
     name: String,
     // Version pin reserved for the future `/skills/<name>/<version>.md`
@@ -3108,7 +3182,7 @@ fn skill_error_to_tool_error(err: &mwe_core::skills::SkillError) -> ToolError {
     use mwe_core::skills::SkillError as E;
     let (class, msg) = match err {
         E::NotFound(_) => (ToolErrorClass::NotFound, err.to_string()),
-        E::MalformedBundled { .. } | E::Db(_) => (ToolErrorClass::InternalError, err.to_string()),
+        E::MalformedBundled { .. } => (ToolErrorClass::InternalError, err.to_string()),
     };
     ToolError::new(class, msg)
 }
@@ -3118,6 +3192,7 @@ fn skill_error_to_tool_error(err: &mwe_core::skills::SkillError) -> ToolError {
 // ============================================================
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct SmartBootstrapArgs {
     #[serde(default)]
     project_hint: Option<String>,
@@ -3212,6 +3287,7 @@ pub(super) async fn call_smart_bootstrap(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RecallCoreGlobalArgs {
     query: String,
     #[serde(default)]
@@ -3293,29 +3369,43 @@ fn smart_error_to_tool_error(err: &mwe_core::smart::SmartError) -> ToolError {
 // ============================================================
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiForgetArgs {
     fact_id: String,
+    /// Free-form note stamped into the tombstone's `deleted_reason`.
     #[serde(default)]
-    #[allow(
-        dead_code,
-        reason = "audit-only note; accepted on the wire, not yet persisted"
-    )]
     reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WikiForgetBulkArgs {
     scope: String,
     #[serde(default)]
     wiki_id: Option<String>,
     #[serde(default)]
     page: Option<String>,
+    /// Free-form note stamped into every tombstone's `deleted_reason`.
     #[serde(default)]
-    #[allow(
-        dead_code,
-        reason = "audit-only note; accepted on the wire, not yet persisted"
-    )]
     reason: Option<String>,
+}
+
+/// Longest caller note kept in `fact_index.deleted_reason`. The column is free
+/// TEXT and the audit view renders it in a table cell, so a runaway note would
+/// be a page of prose in a column meant for a phrase.
+const MAX_FORGET_REASON_CHARS: usize = 200;
+
+/// The `deleted_reason` a forget stamps: the mechanism that retired the row,
+/// plus the caller's note when one rode the call. Keeping the mechanism first
+/// means the audit view still sorts and groups by *how* a fact was retired.
+fn forget_reason(mechanism: &str, note: Option<&str>) -> String {
+    note.map(str::trim).filter(|s| !s.is_empty()).map_or_else(
+        || mechanism.to_owned(),
+        |n| {
+            let clipped: String = n.chars().take(MAX_FORGET_REASON_CHARS).collect();
+            format!("{mechanism}: {clipped}")
+        },
+    )
 }
 
 /// `wiki_forget` — authority-routed forget of a single fact, the consumer-MCP
@@ -3378,7 +3468,7 @@ pub(super) async fn call_wiki_forget(
             &state.pool,
             state.embedder.clone(),
             &fact_id,
-            "consumer_forget",
+            &forget_reason("consumer_forget", args.reason.as_deref()),
         )
         .await
         .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
@@ -3486,7 +3576,7 @@ pub(super) async fn call_wiki_forget_bulk(
         &sender,
         wiki_id.as_deref(),
         source_path.as_deref(),
-        "consumer_forget_bulk",
+        &forget_reason("consumer_forget_bulk", args.reason.as_deref()),
     )
     .await
     .map_err(|e| ToolError::new(ToolErrorClass::InternalError, e.to_string()))?;
